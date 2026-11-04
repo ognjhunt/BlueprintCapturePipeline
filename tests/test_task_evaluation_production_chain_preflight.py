@@ -535,6 +535,34 @@ def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_cr
     ]
 
 
+def test_the_beta_rigid_lane_refuses_a_probe_or_screening_unit_without_the_credit_guard(tmp_path: Path) -> None:
+    """Both paid beta lanes reach the Vast adapter; the beta_rigid lane observes them, so each is checked."""
+
+    from blueprint_pipeline import provider_credit_admission as credit
+    from blueprint_pipeline.production_preflight_routes import BETA_RIGID_UNITS
+
+    key_file = tmp_path / "vast_api_key"
+    key_file.write_text("k\n")
+    probe = "blueprint-rigid-robot-free-probe-runner.service"
+    screening = "blueprint-beta-policy-screening.service"
+    assert {probe, screening} <= set(BETA_RIGID_UNITS) & set(preflight.PAID_ALLOCATION_UNITS)
+    units = {probe: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file)}},
+             screening: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file), credit.ENABLED_ENV: "false"}}}
+    findings = preflight.provider_credit_check(
+        units, observer=lambda *, api_key: credit.observe_vast_credit(
+            api_key=api_key, request=lambda **_kw: (200, {"credit": 20.6})))
+    assert [row for row in findings if row["code"] == "provider_credit_guard_disabled"] == [
+        preflight._finding("blocker", "provider_credit_guard_disabled", unit=probe, env=credit.ENABLED_ENV, value=None),
+        preflight._finding("blocker", "provider_credit_guard_disabled", unit=screening, env=credit.ENABLED_ENV,
+                           value="false"),
+    ]
+    for unit in units.values():
+        unit["effective_environment"][credit.ENABLED_ENV] = "true"
+    assert [row["code"] for row in preflight.provider_credit_check(
+        units, observer=lambda *, api_key: credit.observe_vast_credit(
+            api_key=api_key, request=lambda **_kw: (200, {"credit": 20.6})))] == ["provider_credit_available"]
+
+
 def _probe_argv(command: list[str]) -> list[str]:
     """The argv the probe subcommand actually receives, from ``probe`` onward.
 

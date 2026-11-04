@@ -21,6 +21,14 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
 Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
 Environment=BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/beta-policy-screening
+# Each new attempt (sealed bundle, allocator job directory with its 1 GiB
+# policy_canary_output disk hold, launch receipts) is reserved on the work volume;
+# the budget ledger, plans and publications stay above. Existing attempts keep their paths.
+Environment=BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT=/mnt/blueprint-work/beta-policy-screening-work
+# Vast credit admission (provider_credit_admission): each launch needs a fresh
+# balance that covers its own cap plus the reserve, or it stops at $0 before
+# allocating. Off, Vast stops the instance mid-episode when the balance runs out.
+Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true
 Environment=BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/team-scene-packets
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.beta_policy_screening_worker --max-campaigns 2 --max-launches 1'
@@ -38,7 +46,12 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
-ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/beta-policy-screening
+ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/beta-policy-screening /mnt/blueprint-work/beta-policy-screening-work
 TasksMax=512
+# Host memory (8.3 GB, no swap): its allocator child's bundle reads at a full
+# room are not measured on the host, so MemoryMax stays at main's, with no
+# throttle, until it is. It holds paid work: -200, after batch jobs, before
+# the money-safety units.
 MemoryMax=8G
+OOMScoreAdjust=-200
 CPUQuota=200%

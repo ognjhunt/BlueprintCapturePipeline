@@ -94,6 +94,13 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint/robot-models", "evidence_hot", "blueprint", "immutable verified imported robot models and source/license provenance; never reclaimed"),
     StorageRoot("/mnt/blueprint-work/embodiment-preparation", "evidence_hot", "blueprint", "grant-bound public source bundles and retained native import evidence; never reclaimed"),
     StorageRoot("/mnt/blueprint-work", "container", "blueprint", "bulk work volume"),
+    # A paid lane's bulk beside its root-disk queue (the queue roots below keep the ledgers).
+    StorageRoot("/mnt/blueprint-work/beta-policy-screening-work", "evidence_hot", "blueprint",
+                "screening attempts: sealed bundles, allocator job directories, launch intents and "
+                "reconciliation evidence; the budget ledger stays in beta-policy-screening; never evicted"),
+    StorageRoot("/mnt/blueprint-work/rigid-robot-free-probe-work", "work", "blueprint",
+                "rigid robot-free probe attempts' sealed bundles and allocator job directories; the queue "
+                "and attempt records stay in rigid-robot-free-probes"),
     StorageRoot("/mnt/blueprint-work/lanes", "container", "blueprint", "lane scratch parent"),
     StorageRoot("/mnt/blueprint-work/lanes/*", "lane_scratch", "blueprint", "owned lane scratch folders"),
     StorageRoot(f"{_INPUTS}/lanes", "container", "blueprint", "lane input scratch parent"),
@@ -155,7 +162,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-policy-runs", "work", "blueprint", "owner-scoped team policy run intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/team-evaluations", "work", "blueprint", "team evaluation run queue; each entry points to its run's job directory"),
-    StorageRoot(f"{_CONTROL_PLANE}/rigid-robot-free-probes", "work", "blueprint", "rigid robot-free probe queue and its capped attempts (inputs, bundle, allocator results)"),
+    StorageRoot(f"{_CONTROL_PLANE}/rigid-robot-free-probes", "work", "blueprint", "rigid robot-free probe queue and its capped attempts (inputs, authority, allocator receipts; bundle and allocator job directory unless staged on rigid-robot-free-probe-work)"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-policy-work", "work", "blueprint", "selected G1 preparation, run and settlement work"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaign-work", "work", "blueprint", "G1 campaign preparation and settlement work"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-preparations", "work", "blueprint", "preparation queue"),

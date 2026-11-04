@@ -35,6 +35,14 @@ requires `set_robot_enabled`, `step_without_robot_action` and
 `scripted_control_action`. This release does not
 install an unspecified simulator or manufacture its qualification.
 
+The website Atlas worker reads the same variable right after a job's Atlas
+review. A website family job whose families no catalog runtime registers is
+held there (`website_task_family_runtime_preparation_required`), before its
+full Atlas scene is bought (`website_early_task_hold`). Install the catalog in
+`/etc/blueprint/pipeline-control-plane.env`, which both the worker and the
+screening service read, then reopen each held job with
+`website_atlas_preview.retry_failed_job`. Its retained review is reused.
+
 No non-fixture family environment, qualified family runtime catalog, task
 assets or family policy endpoint is bundled. The default candidate catalog
 still contains the rigid/articulated DROID candidates. A stock Gymnasium or

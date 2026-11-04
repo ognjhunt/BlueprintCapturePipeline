@@ -33,6 +33,7 @@ from .robot_eval_evaluation_run_adapter import (
     execute_robot_eval_request_as_evaluation_run,
 )
 from .robot_eval_job_orchestrator import run_robot_eval_job_request_inbox
+from .website_robot_fit_hold import preparation_binding_digest
 from .website_task_target_choice import correction_binding_digest
 from .core.stage_outcome import stage_ledger_outcome_kind
 from .task_evaluation_supervisor import (
@@ -889,7 +890,11 @@ def run_end_to_end(
         },
         # A site's correction of the object the robot moves reruns preparation
         # from its retained stage outputs; a confirmation of the guess does not.
-        input_binding_digest=correction_binding_digest(Path(context.capture_root) / "pipeline"),
+        # So does a change of the catalog or team registry a robot fit hold was
+        # decided against (website_robot_fit_hold); nothing else changes it.
+        input_binding_digest=preparation_binding_digest(
+            Path(context.capture_root) / "pipeline",
+            correction_binding_digest(Path(context.capture_root) / "pipeline")),
     )
     if (
         _completed_website_preparation_only(pipeline)

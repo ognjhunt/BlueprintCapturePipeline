@@ -234,11 +234,56 @@ def _triangle_footprint_overlap_count(
     )
 
 
+#: Triangles measured at once: each block's float64 temporaries stay near 50 MB, however many the mesh
+#: holds (a scanned room: 6.5 M), where the whole mesh at once took about 1.2 GB.
+TRIANGLE_BLOCK = 1 << 18
+
+
+def triangle_measures(stage_vertices: np.ndarray, faces: np.ndarray, *, block: int | None = None) -> dict[str, np.ndarray]:
+    """Per triangle, worked out ``block`` triangles at a time: its doubled area, whether that is valid
+    (finite and above 1e-12), its normal's absolute z (0 where invalid), its cross product's z, and its
+    corners' mean, lowest and highest z.
+
+    Each is the same arithmetic on the same corners as over the whole array at once, so the values are
+    bit for bit those; only the block's temporaries are ever held, beside the per-triangle results.
+    """
+    vertices = np.asarray(stage_vertices, dtype=np.float64)
+    faces = np.asarray(faces, dtype=np.int64)
+    count, step = len(faces), int(block or TRIANGLE_BLOCK)
+    values = {name: np.empty(count) for name in ("double_area", "normal_z", "cross_z", "centroid_z",
+                                                 "lowest_z", "highest_z")}
+    values["valid"] = np.empty(count, dtype=bool)
+    for start in range(0, count, step):
+        end = min(count, start + step)
+        triangles = vertices[faces[start:end]]
+        cross = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+        double_area = np.linalg.norm(cross, axis=1)
+        valid = np.isfinite(double_area) & (double_area > 1e-12)
+        normal_z = np.zeros_like(double_area)
+        normal_z[valid] = np.abs(cross[valid, 2]) / double_area[valid]
+        heights = triangles[:, :, 2]
+        values["double_area"][start:end] = double_area
+        values["valid"][start:end] = valid
+        values["normal_z"][start:end] = normal_z
+        values["cross_z"][start:end] = cross[:, 2]
+        values["centroid_z"][start:end] = heights.mean(axis=1)
+        values["lowest_z"][start:end] = heights.min(axis=1)
+        values["highest_z"][start:end] = heights.max(axis=1)
+    return values
+
+
+def triangles_of(stage_vertices: np.ndarray, faces: np.ndarray, index: np.ndarray) -> np.ndarray:
+    """The corners of the triangles ``index`` names (a mask or indices), as ``vertices[faces][index]`` gives them."""
+    return np.asarray(stage_vertices, dtype=np.float64)[np.asarray(faces, dtype=np.int64)[index]]
+
+
 def _infer_horizontal_support_surface(
     *,
     stage_vertices: np.ndarray,
     faces: np.ndarray,
-) -> tuple[float, np.ndarray, dict[str, Any]]:
+    measures: Mapping[str, np.ndarray] | None = None,
+    return_support_triangles: bool = True,
+) -> tuple[float, np.ndarray | None, dict[str, Any]]:
     """Infer the dominant lower horizontal surface without using the global minimum.
 
     A reconstruction can contain low outliers below the actual floor.  Treating the
@@ -246,17 +291,16 @@ def _infer_horizontal_support_surface(
     robot just outside the finite mesh.  This gate instead selects the lower
     horizontal height band with the greatest projected triangle area.  It remains a
     derived geometry candidate until Isaac observes live contact.
+
+    The triangles are measured in blocks (``triangle_measures``, or ``measures`` already taken of
+    these ones). A caller that needs only the floor's height passes ``return_support_triangles=False``
+    and gets ``None`` in their place: a scanned room's floor is most of its triangles.
     """
 
-    triangles = np.asarray(stage_vertices, dtype=np.float64)[np.asarray(faces, dtype=np.int64)]
-    edges_a = triangles[:, 1] - triangles[:, 0]
-    edges_b = triangles[:, 2] - triangles[:, 0]
-    cross = np.cross(edges_a, edges_b)
-    double_area = np.linalg.norm(cross, axis=1)
-    valid = np.isfinite(double_area) & (double_area > 1e-12)
-    normal_z = np.zeros_like(double_area)
-    normal_z[valid] = np.abs(cross[valid, 2]) / double_area[valid]
-    centroids_z = triangles[:, :, 2].mean(axis=1)
+    corners, corner_faces = np.asarray(stage_vertices, dtype=np.float64), np.asarray(faces, dtype=np.int64)
+    measures = triangle_measures(corners, corner_faces) if measures is None else measures
+    double_area, valid = measures["double_area"], measures["valid"]
+    normal_z, centroids_z = measures["normal_z"], measures["centroid_z"]
     minimum_z = float(np.min(stage_vertices[:, 2]))
     maximum_z = float(np.max(stage_vertices[:, 2]))
     vertical_extent = max(0.0, maximum_z - minimum_z)
@@ -297,11 +341,20 @@ def _infer_horizontal_support_surface(
     floor_z = float(np.average(centroids_z[selected_indices], weights=selected_areas))
     tolerance = 1.1 * bin_width
     support_mask = horizontal & (np.abs(centroids_z - floor_z) <= tolerance)
-    support_triangles = triangles[support_mask]
-    if support_triangles.size == 0:
+    support_index = np.flatnonzero(support_mask)
+    if support_index.size == 0:
         raise ExternalSceneRobotPlacementError(
             ["external_placement_horizontal_support_surface_missing"]
         )
+    # The support's plan bounds, a block of its triangles at a time: min and max are exact either way.
+    support_low = np.full(2, np.inf)
+    support_high = np.full(2, -np.inf)
+    for start in range(0, support_index.size, TRIANGLE_BLOCK):
+        plan = triangles_of(corners, corner_faces, support_index[start:start + TRIANGLE_BLOCK])[:, :, :2]
+        support_low = np.minimum(support_low, plan.min(axis=(0, 1)))
+        support_high = np.maximum(support_high, plan.max(axis=(0, 1)))
+    support_triangles = (triangles_of(corners, corner_faces, support_mask) if return_support_triangles
+                         else None)
     evidence = {
         "schema_version": "external_scene_support_surface_candidate.v1",
         "status": "derived_geometry_candidate_unverified_in_isaac",
@@ -315,14 +368,10 @@ def _infer_horizontal_support_surface(
             "q05": round(robust_lower_z, 9),
             "q95": round(robust_upper_z, 9),
         },
-        "support_triangle_count": int(support_triangles.shape[0]),
+        "support_triangle_count": int(support_index.size),
         "support_bounds_xy_collision_stage": {
-            "minimum": [
-                round(float(value), 9) for value in support_triangles[:, :, :2].min(axis=(0, 1))
-            ],
-            "maximum": [
-                round(float(value), 9) for value in support_triangles[:, :, :2].max(axis=(0, 1))
-            ],
+            "minimum": [round(float(value), 9) for value in support_low],
+            "maximum": [round(float(value), 9) for value in support_high],
         },
         "selected_band_area_stage_units_squared": round(float(area_by_bin[selected_bin]), 9),
         "global_minimum_vertex_z_rejected_as_floor": round(minimum_z, 9),

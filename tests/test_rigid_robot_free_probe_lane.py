@@ -42,6 +42,7 @@ from blueprint_pipeline import rigid_robot_free_probe_worker as worker
 from blueprint_pipeline import robot_arm_path_clearance as arm
 from blueprint_pipeline import scene_physics_preflight as physics
 from blueprint_pipeline import robot_free_probe_gate as gate
+from blueprint_pipeline import robot_free_readiness_retention as retention
 from blueprint_pipeline import team_candidate_quick10_registry as registry
 from blueprint_pipeline import website_task_context
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
@@ -77,6 +78,14 @@ def retask_packet(packet: Path, task_spec: dict[str, Any]) -> None:
     plan_path = packet / PLAN
     plan = json.loads(plan_path.read_text())
     plan["task_spec"] = task_spec
+    # Its task object spawns where the task starts, as every compiled packet's does (rigid_support_seating).
+    offset = task_spec["interaction_affordance"]["asset_root_from_scoring_frame"]["position_m"]
+    root = {"position_world_m": [a - b for a, b in zip(task_spec["start_pose_world"][:3], offset, strict=True)],
+            "orientation_xyzw": list(task_spec["start_pose_world"][3:])}
+    for row in plan["objects"]:
+        if row.get("task_subject") is True:
+            row["pose_world"] = copy.deepcopy(root)
+            row.setdefault("reset_state", {})["root_pose_world"] = copy.deepcopy(root)
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     receipt_path = packet / PACKET_RECEIPT
@@ -225,8 +234,12 @@ def host_runtime(world: dict[str, Any]) -> worker.ProbeRuntime:
         world["launches"].append({"device": device, "render_path": appearance_render_path})
         return types.SimpleNamespace(close=lambda: None), {"status": "qualified", "render_path": appearance_render_path}
 
-    def build(plan: dict[str, Any], *, device: str, bundle_root: Path, preconstruction_receipt: Any) -> Any:
+    def build(plan: dict[str, Any], *, device: str, bundle_root: Path, preconstruction_receipt: Any,
+              enable_cameras: bool) -> Any:
         assert (Path(bundle_root) / PLAN).is_file()
+        assert enable_cameras is False  # the probe reads object state, never an image
+        if world["build_error"] is not None:
+            raise world["build_error"]
         world["host"] = _Host(plan, **world["host_options"])
         return world["host"].built
 
@@ -261,7 +274,8 @@ def fake_transport(world: dict[str, Any]):
                 "provider_mutations_performed": 2, "provider_create_attempted": True,
                 "continuing_spend_from_this_run": world["continuing_spend"], "all_staged_objects_absent": True,
                 "estimated_cost_usd": 0.31, "candidate_policy_queried": result["candidate_policy_queried"],
-                "blockers": [] if completed else list(result["blockers"]) or ["rigid_robot_free_probe_runtime_not_completed"]}
+                "blockers": [] if completed else [*world["transport_blockers"], *(
+                    list(result["blockers"]) or ["rigid_robot_free_probe_runtime_not_completed"])]}
 
     return run
 
@@ -300,7 +314,7 @@ def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options:
         "facts": facts, "context": context, "webapp_calls": [], "webapp_refusal": None, "transport_calls": [],
         "grant": website_sponsorship(context), "grant_reads": [], "grant_failure": None, "webapp_window": False,
         "published": [], "launches": [], "host_options": dict(host_options), "continuing_spend": False,
-        "allocator_calls": []}
+        "allocator_calls": [], "build_error": None, "transport_blockers": []}
     monkeypatch.setattr(registry, "profile_for_capture", lambda root: dict(profile) if str(
         Path(root).resolve()) == profile["capture_root"] else None)
     monkeypatch.setattr(registry, "scene_facts", lambda _profile: copy.deepcopy(world["facts"]))
@@ -313,7 +327,7 @@ def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options:
     monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
     for name in ("BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT", "BLUEPRINT_GCP_BUDGET_GUARD_CONFIG",
                  "BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "BLUEPRINT_VAST_MAX_ISAAC_DRIVER", runner.QUEUE_ENV,
-                 "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"):
+                 runner.WORK_ENV, "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(lane.ENABLE_ENV, "1")
 
@@ -464,7 +478,10 @@ def test_the_lane_refuses_before_any_spend(tmp_path, monkeypatch, case, blocker,
                                    "webapp_exhausted": "website_scene_preparation_budget_exhausted",
                                    "webapp_missing": "website_scene_sponsorship_missing"}[case]
     elif case == "decided":
-        (world["probe_root"] / gate.RECEIPT_FILENAME).write_text(json.dumps({"status": "failed"}))
+        # Decided for this request: bound to its scene revision and task specification.
+        binding = current_probe_state(world["capture"])["request"]["binding"]
+        (world["probe_root"] / gate.RECEIPT_FILENAME).write_text(json.dumps(
+            {"status": "failed", **{field: binding[field] for field in retention.RECEIPT_BINDING_FIELDS}}))
     elif case == "over_cap":
         argv = _with(argv, "--adp-max-spend-usd", "2.0")
     elif case == "over_rate":
@@ -715,6 +732,69 @@ def test_a_queued_rigid_scene_is_probed_once_and_its_passed_receipt_admits_teams
     assert len(world["allocator_calls"]) == 1
 
 
+def test_with_a_work_root_the_bundle_and_allocator_job_land_there_and_the_queue_keeps_the_records(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    work_root = tmp_path / "work-volume" / "rigid-robot-free-probe-work"
+    work_root.mkdir(parents=True)
+    monkeypatch.setenv(runner.WORK_ENV, str(work_root))
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    rows = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert rows[0]["status"] == "decided", rows
+    assert _receipt(world)["status"] == "passed"
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    [attempt] = runner._attempts(job)
+    work = work_root / "jobs" / job.name / "attempts" / attempt.name
+    record = json.loads((attempt / runner.ATTEMPT_FILENAME).read_text())
+    assert record[runner.WORK_DIR_FIELD] == str(work) and runner.attempt_work_dir(attempt) == work
+    # The bulk is on the work root; the attempt's records and receipts stay in the queue.
+    assert (work / "bundle").is_dir() and (work / "allocator" / lane.FUNDING_FILENAME).is_file()
+    assert not (attempt / "bundle").exists() and not (attempt / "allocator").exists()
+    for name in (runner.ATTEMPT_FILENAME, runner.AUTHORITY_FILENAME, runner.INGEST_FILENAME,
+                 runner.RESULT_FILENAME, "paid_admission.json"):
+        assert (attempt / name).is_file(), name
+    argv = world["allocator_calls"][0]
+    assert argv[argv.index("--adp-job-dir") + 1] == str(work / "allocator")
+    assert argv[argv.index("--adapter-output") + 1] == str(attempt / runner.RESULT_FILENAME)
+    assert json.loads((attempt / runner.INGEST_FILENAME).read_text())["funded"] is True
+    # One funded attempt is counted from the work root, as from the queue before.
+    assert runner._counts(job) == (1, 0)
+
+
+def test_a_work_root_attempt_whose_volume_is_gone_holds_and_a_legacy_attempt_keeps_its_queue_paths(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    legacy = staged_attempt(world)["root"]
+    assert runner.WORK_DIR_FIELD not in json.loads((legacy / runner.ATTEMPT_FILENAME).read_text())
+    assert runner.attempt_work_dir(legacy) == legacy and (legacy / "bundle").is_dir()
+
+    state = current_probe_state(world["capture"])
+    job = runner._job_dir(world["queue"], state)
+    # A configured root that is not there stages nothing (configuration, not a staging refusal).
+    monkeypatch.setenv(runner.WORK_ENV, str(tmp_path / "absent"))
+    with pytest.raises(runner.RigidRobotFreeProbeWorkRootError):
+        runner.new_attempt_work_dir(job, 1)
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+    monkeypatch.setenv(runner.WORK_ENV, str(work_root))
+    work = runner.new_attempt_work_dir(job, 1)
+    staged = runner.stage_attempt(job, 1, state=state, commit=COMMIT, work_dir=work)
+    attempt = staged["root"]
+    assert runner.attempt_work_dir(attempt) == work and (work / "bundle").is_dir()
+    # An allocator ran and returned, but the volume holding its job directory is not mounted:
+    # whether it was funded cannot be read, so the capture waits instead of funding another.
+    (attempt / runner.INTENT_FILENAME).write_text("{}")
+    (attempt / runner.RESULT_FILENAME).write_text(json.dumps({"status": "blocked", "blockers": ["x"]}))
+    work.rename(work.with_name("moved"))
+    assert runner.settle_attempt(attempt, state=state)["state"] in runner.WAITING_STATES
+    assert not (attempt / runner.INGEST_FILENAME).exists()
+    # A recorded work dir that is not this attempt's is refused, never followed.
+    record = json.loads((attempt / runner.ATTEMPT_FILENAME).read_text())
+    (attempt / runner.ATTEMPT_FILENAME).write_text(json.dumps({**record, runner.WORK_DIR_FIELD: str(legacy)}))
+    with pytest.raises(runner.RigidRobotFreeProbeIngestError, match="work_dir_invalid"):
+        runner.attempt_work_dir(attempt)
+
+
 def test_a_scene_that_cannot_hold_its_goal_fails_and_that_receipt_is_final(tmp_path, monkeypatch) -> None:
     world = build_world(tmp_path, monkeypatch, support_max_xy=(3.05, -1.4))
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
@@ -813,15 +893,58 @@ def test_a_launched_allocator_without_a_result_is_never_followed_by_another(tmp_
     assert len(world["allocator_calls"]) == 1 and world["transport_calls"] == []
 
 
-def test_a_refusal_before_funding_defers_to_the_next_wake_up_and_is_bounded(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(("refusal", "blocker"), [
+    # The upstream cap and the job's dollar ceiling share the WebApp's code (websiteSceneSponsorship.ts).
+    ("website_scene_preparation_budget_exhausted", "rigid_robot_free_probe_website_grant_exhausted"),
+    ("provider_terms_not_configured_or_changed",
+     "rigid_robot_free_probe_website_grant_refused:provider_terms_not_configured_or_changed"),
+])
+def test_a_webapp_money_refusal_defers_without_counting_and_stages_nothing_until_its_wait(
+        tmp_path, monkeypatch, refusal, blocker) -> None:
     world = build_world(tmp_path, monkeypatch)
-    world["webapp_refusal"] = "website_scene_preparation_budget_exhausted"
+    world["webapp_refusal"] = refusal
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    hooks = runner_hooks(world)
+    clock = [time.time()]
+    hooks["now"] = lambda: clock[0]
+    row = runner.run_queue(world["queue"], hooks=hooks)[0]
+    assert row["status"] == "deferred" and blocker in row["blockers"], row
+    assert len(world["allocator_calls"]) == 1
+    clock[0] = time.time()
+    # Every later wake-up inside the wait stages nothing, reserves nothing and seals nothing
+    # (capture-447ae4f4: four such refusals sealed attempts_exhausted).
+    for _ in range(runner.MAX_UNFUNDED_ATTEMPTS + 2):
+        row = runner.run_queue(world["queue"], hooks=hooks)[0]
+        assert (row["status"], row["reason"]) == ("deferred", runner.GRANT_REFUSED_STATE), row
+        assert 0 < row["retry_after_seconds"] <= runner.GRANT_REFUSAL_RETRY_SECONDS and blocker in row["blockers"]
+    assert len(world["allocator_calls"]) == 1 and len(world["webapp_calls"]) == 1
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    assert runner._counts(job) == (0, 0) and not (job / runner.TERMINAL_FILENAME).exists()
+    (attempt,) = runner._attempts(job)
+    assert json.loads((attempt / runner.INGEST_FILENAME).read_text())["state"] == runner.GRANT_REFUSED_STATE
+    # After the wait one more attempt asks the WebApp; still refused, still uncounted.
+    clock[0] += runner.GRANT_REFUSAL_RETRY_SECONDS + 1
+    assert runner.run_queue(world["queue"], hooks=hooks)[0]["status"] == "deferred"
+    assert len(world["allocator_calls"]) == 2 and runner._counts(job) == (0, 0)
+    # The owner lifts the stop (a raised cap or ceiling): the next attempt after the wait is funded and decided.
+    world["webapp_refusal"] = None
+    clock[0] += runner.GRANT_REFUSAL_RETRY_SECONDS + 1
+    assert runner.run_queue(world["queue"], hooks=hooks)[0]["status"] == "decided"
+    assert _receipt(world)["status"] == "passed" and len(world["transport_calls"]) == 1
+
+
+def test_a_refusal_before_funding_that_is_not_the_webapps_defers_to_the_next_wake_up_and_is_bounded(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    # The WebApp already holds this exact binding: one binding is never paid twice, and it is not a money stop.
+    monkeypatch.setattr(lane, "reserve_probe_funding", lambda **_kwargs: (
+        None, ["rigid_robot_free_probe_website_grant_already_reserved"]))
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
     hooks = runner_hooks(world)
     for attempt in range(runner.MAX_UNFUNDED_ATTEMPTS - 1):
         row = runner.run_queue(world["queue"], hooks=hooks)[0]
         assert row["status"] == "deferred", row
-        assert "rigid_robot_free_probe_website_grant_exhausted" in row["blockers"]
+        assert "rigid_robot_free_probe_website_grant_already_reserved" in row["blockers"]
         assert len(world["allocator_calls"]) == attempt + 1  # one attempt per wake-up, never a tight loop
     final = runner.run_queue(world["queue"], hooks=hooks)[0]
     assert final["status"] == "attempts_exhausted" and final["detail"]["unfunded_attempts"] == 4, final
@@ -974,6 +1097,203 @@ def test_a_staging_refusal_is_final_under_its_release_and_retried_once_by_a_new_
     assert row[runner.RELEASE_REQUEUE_FIELD] == [old, new, later]
 
 
+def _half(world: dict[str, Any], support: dict[str, Any] | None) -> None:
+    """The capture's compiled team half record, as ``team_scene_packet`` writes its support's (or none)."""
+
+    path = world["tmp"] / "team_scene_inputs.v1.json"
+    path.write_text(json.dumps({"base_native_packet": {"path": str(world["packet"] / PACKET_RECEIPT)},
+                                **({"task_support_pad": support} if support is not None else {})}))
+    world["profile"]["team_scene_inputs_path"] = str(path)
+
+
+def test_a_half_its_support_check_holds_stages_nothing_and_its_recompiled_request_runs(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline.rigid_support_pad import UNMODELLED_HALF
+
+    world = build_world(tmp_path, monkeypatch)
+    # As capture-447ae4f4's half was compiled, before its support was modelled: refused while staging.
+    _half(world, None)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert row["status"] == "staging_refused", row
+    assert row["detail"]["reason"] == "rigid_robot_free_probe_" + UNMODELLED_HALF
+    # The CPU rest check's own hold is refused the same way: nothing reserved on the grant, no GPU rented.
+    reason = "rigid_support_start_rest_off_start:0.5mm/0.021rad"
+    _half(world, {"status": "held", "reasons": [reason]})
+    with pytest.raises(runner.RigidRobotFreeProbeBundleError, match="rigid_robot_free_probe_" + reason):
+        staged_attempt(world, 1)
+    assert world["allocator_calls"] == [] and world["webapp_calls"] == []
+    held = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    sealed = json.loads((held / runner.TERMINAL_FILENAME).read_text())
+    # The recompiled half seats its object on the planarized support (this stand-in's support is flat
+    # already): a new task, so a new request and its own job. The old request's sealed terminal stays
+    # where it is and blocks nothing.
+    spec = copy.deepcopy(world["spec"])
+    spec["interaction_affordance"]["support_alignment"]["start_support"] = {
+        "basis": "scene_collider_highest_point_under_collision_footprint", "collider_top_z_m": 0.7545}
+    retask_packet(world["packet"], spec)
+    world["facts"]["scene"]["task_spec"] = scored_task_spec(spec, world["contract"])
+    _half(world, {"status": "consistent", "reasons": []})
+    assert runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])["status"] == "queued"
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    assert job != held and row["status"] == "decided" and _receipt(world)["status"] == "passed", row
+    assert json.loads((held / runner.TERMINAL_FILENAME).read_text()) == sealed
+    assert len(world["allocator_calls"]) == 1
+
+
+# --- an attempt budget our own runtime spent is re-driven once per newly deployed release ------------
+
+# capture-447ae4f4's first GPU run (Vast 59017963, 2026-11-03): Arena's DROID rig has no such setter.
+CAMERA_CRASH = AttributeError("'DroidCameraCfgWithExteriorRight' object has no attribute 'set_use_tiled_camera'")
+CRASH_BLOCKERS = ["provider_runtime_result_missing_from_output_zip",
+                  "rigid_robot_free_probe_failed_at_simulation_app_launched:AttributeError:"
+                  "'DroidCameraCfgWithExteriorRight' object has no attribute 'set_use_tiled_camera'"]
+
+
+def _crashing(world: dict[str, Any]) -> None:
+    world["build_error"] = CAMERA_CRASH
+    world["transport_blockers"] = [CRASH_BLOCKERS[0]]
+
+
+def _healed(world: dict[str, Any]) -> None:
+    world["build_error"] = None
+    world["transport_blockers"] = []
+
+
+def _under(world: dict[str, Any], monkeypatch: pytest.MonkeyPatch, release: str) -> dict[str, Any]:
+    """The runner's hooks with ``release`` deployed: the allocator's checkout is that release too."""
+    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers",
+                        lambda: ([], {"orchestrator_source_commit": release}))
+    return {**runner_hooks(world), "source_commit": lambda: release}
+
+
+def _work_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    work = (tmp_path / "work").resolve()
+    work.mkdir()
+    monkeypatch.setenv(runner.WORK_ENV, str(work))
+    return work
+
+
+def test_the_probe_result_is_one_the_provider_output_inspection_reads() -> None:
+    from blueprint_pipeline.wam_provider_output import RUNTIME_RESULT_FILENAMES, inspect_provider_runtime_output_archive
+    import io
+
+    # Unlisted, every probe run (a recorded one too) was blocked provider_runtime_result_missing_from_output_zip.
+    assert worker.RESULT_FILENAME in RUNTIME_RESULT_FILENAMES
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(worker.RESULT_FILENAME, json.dumps({"status": "completed", "blockers": []}))
+    with zipfile.ZipFile(buffer) as archive:
+        inspection = inspect_provider_runtime_output_archive(archive, zip_path="out.zip", zip_size_bytes=1)
+    assert inspection["runtime_result_present"] is True and inspection["runtime_result_status"] == "completed"
+
+
+def test_an_exhausted_probe_our_runtime_crashed_is_redriven_once_by_a_new_release(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    work = _work_root(tmp_path, monkeypatch)
+    old, new = "c" * 40, COMMIT
+    _crashing(world)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, old))
+    assert row["status"] == "attempts_exhausted" and row[runner.RELEASE_COMMIT_FIELD] == old, row
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    # The queue exactly as the runner leaves capture-447ae4f4's probe: two funded attempts, each
+    # allocated and blocked by the crash, their bulk on the work volume, then attempts_exhausted.
+    attempts = runner._attempts(job)
+    assert [attempt.name for attempt in attempts] == ["00", "01"]
+    sealed = {attempt.name: (attempt / runner.INGEST_FILENAME).read_bytes() for attempt in attempts}
+    for attempt in attempts:
+        ingest = json.loads(sealed[attempt.name])
+        assert {key: ingest[key] for key in ("state", "funded", "allocated", "allocator_status")} == {
+            "state": "allocated_blocked", "funded": True, "allocated": True, "allocator_status": "blocked"}, ingest
+        assert ingest["allocator_blockers"] == CRASH_BLOCKERS
+        assert runner.attempt_work_dir(attempt) == work / "jobs" / job.name / "attempts" / attempt.name
+        assert runner._funded(attempt)
+    assert row["detail"]["funded_attempts"] == 2 and row["detail"]["unfunded_attempts"] == 0
+    assert len(world["allocator_calls"]) == 2
+    terminal = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    state = current_probe_state(world["capture"])
+    # Final under the release that sealed it (the website job is held by name); not under a new one.
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, old)) == []
+    assert runner.final_terminal(state, queue_root=world["queue"], release=old) == terminal
+    assert runner.final_terminal(state, queue_root=world["queue"], release=new) is None
+    # The deployed fix: one more funded attempt, at the lane's caps, on the next index.
+    _healed(world)
+    (row,) = runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, new))
+    assert row["status"] == "decided" and _receipt(world)["status"] == "passed", row
+    marker = row["superseded_terminal"]
+    assert marker["superseded_status"] == "attempts_exhausted" and marker["superseded_release_commit"] == old
+    assert marker[runner.RELEASE_COMMIT_FIELD] == new
+    assert marker["superseded_terminal_digest"] == terminal["terminal_digest"]
+    history = job / runner.SUPERSEDED_DIRNAME
+    assert json.loads((history / f"{terminal['terminal_digest'][7:23]}.terminal.json").read_text()) == terminal
+    first, second, third = runner._attempts(job)
+    assert {attempt.name: (attempt / runner.INGEST_FILENAME).read_bytes() for attempt in (first, second)} == sealed
+    assert json.loads((third / runner.INGEST_FILENAME).read_text())["state"] == "decided"
+    staged = json.loads((third / runner.AUTHORITY_FILENAME).read_text())
+    assert (staged["hard_cap_usd"], staged["max_hourly_rate_usd"], staged["hard_ttl_seconds"]) == (
+        lane.HARD_CAP_USD, lane.MAX_HOURLY_RATE_USD, lane.HARD_TTL_SECONDS) == (1.0, 0.8, 3600)
+    assert runner._counts(job) == (3, 0) and len(world["allocator_calls"]) == 3
+    final = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    assert final["status"] == "decided" and final[runner.RELEASE_REQUEUE_FIELD] == [old, new]
+
+
+def test_a_runtime_redrive_is_once_per_release_and_two_at_most(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    _work_root(tmp_path, monkeypatch)
+    _crashing(world)
+    releases = ["c" * 40, "d" * 40, "e" * 40, "f" * 40]
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, releases[0]))
+    assert row["status"] == "attempts_exhausted" and len(world["allocator_calls"]) == 2
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    for index, release in enumerate(releases[1:3], start=1):
+        # Each new release funds exactly one more attempt; the crash stands, so it seals again under that one.
+        (row,) = runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, release))
+        assert row["status"] == "attempts_exhausted" and row[runner.RELEASE_COMMIT_FIELD] == release, row
+        assert row["detail"]["funded_attempts"] == 2 + index and len(world["allocator_calls"]) == 2 + index
+        assert row[runner.RELEASE_REQUEUE_FIELD] == releases[:index + 1]
+        # Never twice under the same release, however its entry comes back.
+        assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, release)) == []
+        runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+        (again,) = runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, release))
+        assert again["status"] == "attempts_exhausted" and "superseded_terminal" not in again, again
+        assert len(world["allocator_calls"]) == 2 + index
+    # Two extra attempts spent: no later release funds another, even once the crash is fixed.
+    _healed(world)
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, releases[3])) == []
+    state = current_probe_state(world["capture"])
+    assert runner.final_terminal(state, queue_root=world["queue"], release=releases[3])["status"] == "attempts_exhausted"
+    assert [attempt.name for attempt in runner._attempts(job)] == ["00", "01", "02", "03"]
+    assert runner._counts(job) == (4, 0) and len(world["allocator_calls"]) == 4 == 2 + runner.MAX_RUNTIME_REDRIVES
+    assert len(list((job / runner.SUPERSEDED_DIRNAME).glob("*.supersession.json"))) == 2
+
+
+def test_an_exhausted_probe_that_is_not_our_runtimes_failure_is_never_redriven(tmp_path, monkeypatch) -> None:
+    # Two recordings the scorer could not decide: a scene outcome, not a crash of ours.
+    world = build_world(tmp_path, monkeypatch, readback_fails=True)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert row["status"] == "attempts_exhausted" and len(world["allocator_calls"]) == 2, row
+    world["host_options"] = {}
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, "d" * 40)) == []
+    assert len(world["allocator_calls"]) == 2
+    # Only an allocated attempt blocked by our own runtime alone counts as ours.
+    crash = {"state": "allocated_blocked", "funded": True, "allocated": True, "allocator_blockers": CRASH_BLOCKERS}
+    assert runner._runtime_failure(crash)
+    assert runner._runtime_failure({**crash, "allocator_blockers": CRASH_BLOCKERS[:1]})
+    assert runner._runtime_failure({**crash, "allocator_blockers": CRASH_BLOCKERS[1:]})
+    for record in (
+        {**crash, "allocator_blockers": [*CRASH_BLOCKERS, "vast_offer_search_no_capacity"]},  # provider capacity
+        {**crash, "allocator_blockers": []},
+        {**crash, "state": "undecided"},  # a scorer outcome
+        {**crash, "state": "funded_unallocated"},  # funded, never allocated: the provider's
+        {"state": runner.GRANT_REFUSED_STATE, "funded": False, "allocated": False,
+         "allocator_blockers": ["rigid_robot_free_probe_website_grant_exhausted"]},  # a money refusal
+    ):
+        assert not runner._runtime_failure(record), record
+
+
 def test_an_allocator_that_cannot_start_allocates_nothing_and_defers(tmp_path, monkeypatch) -> None:
     world = build_world(tmp_path, monkeypatch)
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
@@ -1022,6 +1342,244 @@ def test_a_different_trace_beside_the_source_launch_is_a_conflict_never_overwrit
     with pytest.raises(runner.RigidRobotFreeProbeIngestError, match="trace_conflict"):
         runner.retain_trace_file(root, {"trace_digest": "sha256:2"})
     assert json.loads((root / worker.TRACE_FILENAME).read_text()) == {"trace_digest": "sha256:1"}
+
+
+# --- the trace and receipt beside the launch are the current request's --------------------------------
+
+
+def _superseded_request_evidence(world: dict[str, Any], *, decided: bool = False) -> dict[str, Any]:
+    """Request A's trace and receipt beside the launch, as the lane retained them before the scene was recompiled.
+
+    capture-447ae4f4, 2026-11-03 22:54Z: request bdfe6a51 (the bumpy-table compile #3349 fixed) recorded a trace
+    whose untouched object rested 14.7 mm off the task's start, scored ``probe_unavailable``, beside the launch
+    request 9319f26e later probed. Request A here is the same task compiled with its start 0.5 mm higher, so
+    its binding and plan are not the current request's.
+    """
+    from blueprint_pipeline.rigid_robot_free_probe_recorder import record_rigid_robot_free_probe
+    from blueprint_pipeline.rigid_robot_free_readiness_score import score_rigid_robot_free_readiness
+    from blueprint_pipeline.team_robot_free_probe import probe_request
+    from tests.test_rigid_support_seating import _OffsetSupport
+
+    spec = copy.deepcopy(world["scored"])
+    start = list(spec["start_pose_world"])
+    spec["start_pose_world"] = [*start[:2], start[2] + 0.0005, *start[3:]]
+    request = probe_request(task_spec=spec, scene_revision_digest=REVISION)
+    current = current_probe_state(world["capture"])["request"]
+    assert request["request_digest"] != current["request_digest"] and request["binding"] != current["binding"]
+    scene = (FlatSupport(spec["start_pose_world"], support_max_xy=(3.05, -1.4)) if decided
+             else _OffsetSupport(spec["start_pose_world"], start_offset=-0.0147))
+    trace = record_rigid_robot_free_probe(scene=scene, plan=request["plan"], binding=request["binding"])
+    receipt = score_rigid_robot_free_readiness(task_spec=spec, physics_probe=trace,
+                                               configured_scene_revision_digest=REVISION)
+    assert trace["status"] == "recorded" and receipt["status"] == ("failed" if decided else "probe_unavailable")
+    assert runner.retain_trace_file(world["probe_root"], trace, request=request) == "written"
+    assert retention.retain_receipt(world["probe_root"], receipt, supersede_other_request=True) == "written"
+    return {"request": request, "trace": trace, "receipt": receipt,
+            "trace_bytes": (world["probe_root"] / worker.TRACE_FILENAME).read_bytes(),
+            "receipt_bytes": (world["probe_root"] / gate.RECEIPT_FILENAME).read_bytes()}
+
+
+def _kept(world: dict[str, Any], name: str, data: bytes) -> dict[str, Any]:
+    """The history copy of ``name`` holding ``data``, byte for byte; return its marker."""
+    digest = hashlib.sha256(data).hexdigest()
+    kept = world["probe_root"] / retention.HISTORY_DIRNAME / f"{digest}.{name}"
+    assert kept.read_bytes() == data
+    marker = json.loads(kept.with_name(kept.name + ".supersession.json").read_text())
+    assert marker["schema_version"] == retention.SUPERSESSION_SCHEMA and marker["file"] == name
+    assert marker["sha256"] == "sha256:" + digest and marker["history_file"] == kept.name
+    assert marker["marker_digest"] == canonical_digest(marker, digest_field="marker_digest")
+    return marker
+
+
+def _admits(world: dict[str, Any], receipt: dict[str, Any]) -> None:
+    gate.require_robot_free_probe(
+        receipt, scene_revision_digest=REVISION, task_spec_digest=canonical_digest(world["scored"]),
+        task_kind="rigid_pick_place",
+        task_success_contract_digest=gate.task_success_contract_binding("rigid_pick_place", world["contract"]))
+
+
+def test_a_completed_run_refused_beside_a_superseded_requests_trace_is_reingested_once_at_no_cost(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    _work_root(tmp_path, monkeypatch)
+    old, new = "c" * 40, COMMIT
+    superseded = _superseded_request_evidence(world)
+    # The release that sealed capture-447ae4f4's job (88497b47) kept one trace per launch.
+    per_request = runner.retain_trace_file
+    monkeypatch.setattr(runner, "retain_trace_file", lambda root, trace, **_request: per_request(root, trace))
+    # Its attempts, exactly: 00 crashed inside our runtime (funded), 01 the WebApp refused (money,
+    # uncounted), 02 completed with this request's trace and was refused beside request A's.
+    _crashing(world)
+    hooks = _under(world, monkeypatch, old)
+    clock = [time.time()]
+    hooks["now"] = lambda: clock[0]
+    allocate = hooks["allocator_runner"]
+
+    def crash_then_refuse(argv: list[str], *, attempt: Path) -> int:
+        code = allocate(argv, attempt=attempt)
+        _healed(world)
+        world["webapp_refusal"] = "website_scene_preparation_budget_exhausted"
+        return code
+
+    hooks["allocator_runner"] = crash_then_refuse
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=hooks)
+    assert row["status"] == "deferred" and "rigid_robot_free_probe_website_grant_exhausted" in row["blockers"], row
+    hooks["allocator_runner"], world["webapp_refusal"] = allocate, None
+    clock[0] = time.time() + runner.GRANT_REFUSAL_RETRY_SECONDS + 1
+    (row,) = runner.run_queue(world["queue"], hooks=hooks)
+    assert row["status"] == "trace_conflict" and row[runner.RELEASE_COMMIT_FIELD] == old, row
+    assert row["detail"]["ingest_refusal"] == "rigid_robot_free_probe_trace_conflict"
+    assert row["detail"]["allocator_status"] == "completed" and row["detail"]["funded"] is True
+    monkeypatch.setattr(runner, "retain_trace_file", per_request)
+    state = current_probe_state(world["capture"])
+    job = runner._job_dir(world["queue"], state)
+    attempts = runner._attempts(job)
+    assert [attempt.name for attempt in attempts] == ["00", "01", "02"]
+    assert [json.loads((attempt / runner.INGEST_FILENAME).read_text())["state"] for attempt in attempts] == [
+        "allocated_blocked", runner.GRANT_REFUSED_STATE, "trace_conflict"]
+    refused = (attempts[2] / runner.INGEST_FILENAME).read_bytes()
+    terminal = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    native = json.loads(next((runner.attempt_work_dir(attempts[2]) / "allocator").rglob(
+        worker.RESULT_FILENAME)).read_text())
+    # Request A's trace and undecided receipt are still beside the launch; neither is request B's.
+    assert (world["probe_root"] / worker.TRACE_FILENAME).read_bytes() == superseded["trace_bytes"]
+    assert (world["probe_root"] / gate.RECEIPT_FILENAME).read_bytes() == superseded["receipt_bytes"]
+    assert state["status"] == "probe_required" and state["receipt"] is None and state["receipt_status"] is None
+    assert state["superseded_receipt"]["receipt_digest"] == superseded["receipt"]["receipt_digest"]
+    assert not list((world["queue"] / "pending").glob("*.json")) and list((world["queue"] / "done").glob("*.json"))
+    spent = (len(world["allocator_calls"]), len(world["webapp_calls"]), len(world["transport_calls"]))
+    assert spent == (3, 3, 2)  # three allocator runs, three reservations asked (one refused), two GPU runs
+    # Final under the release that sealed it; not under a newly deployed one.
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, old)) == []
+    assert runner.final_terminal(state, queue_root=world["queue"], release=old) == terminal
+    assert runner.final_terminal(state, queue_root=world["queue"], release=new) is None
+    assert runner._superseded_trace_conflict(job, terminal) == attempts[2]
+    # The deployed fix ingests attempt 02's retained result once: nothing is allocated, reserved or run.
+    (row,) = runner.run_queue(world["queue"], hooks={**_under(world, monkeypatch, new), "now": hooks["now"]})
+    assert row["status"] == "decided", row
+    assert (len(world["allocator_calls"]), len(world["webapp_calls"]), len(world["transport_calls"])) == spent
+    assert runner._attempts(job) == attempts and runner._counts(job) == (2, 0)
+    receipt = _receipt(world)
+    assert receipt["status"] == "passed" and receipt["physics_probe_digest"] == native["trace_digest"]
+    assert receipt["checks"]["zero_action_not_success"] is True and receipt["checks"]["direct_placement_success"] is True
+    _admits(world, receipt)
+    # Request B's trace is the one beside the launch now; request A's trace and receipt are kept.
+    assert json.loads((world["probe_root"] / worker.TRACE_FILENAME).read_text()) == native["trace"]
+    trace_marker = _kept(world, worker.TRACE_FILENAME, superseded["trace_bytes"])
+    assert trace_marker["superseded_binding"] == superseded["request"]["binding"]
+    assert trace_marker["superseded_digest"] == superseded["trace"]["trace_digest"]
+    assert trace_marker["superseded_by"] == {"probe_request_digest": state["request"]["request_digest"],
+                                             "trace_digest": native["trace_digest"]}
+    receipt_marker = _kept(world, gate.RECEIPT_FILENAME, superseded["receipt_bytes"])
+    assert receipt_marker["superseded_status"] == "probe_unavailable"
+    assert receipt_marker["superseded_by"]["receipt_digest"] == receipt["receipt_digest"]
+    # The job's history: the marker names the attempt it re-ingested, and its refused record sits beside it.
+    marker = row["superseded_terminal"]
+    assert marker["superseded_status"] == "trace_conflict" and marker["superseded_release_commit"] == old
+    assert marker[runner.RELEASE_COMMIT_FIELD] == new and marker[runner.REINGEST_FIELD] == "02"
+    assert marker["superseded_ingest_digest"] == terminal["detail"]["record_digest"]
+    history, name = job / runner.SUPERSEDED_DIRNAME, terminal["terminal_digest"][7:23]
+    assert (history / f"{name}.attempt-02.ingest.json").read_bytes() == refused
+    assert json.loads((history / f"{name}.terminal.json").read_text()) == terminal
+    reingested = json.loads((attempts[2] / runner.INGEST_FILENAME).read_text())
+    assert reingested["state"] == "decided" and reingested["trace_write"] == "written_superseding"
+    assert reingested["retention"]["write"] == "superseded_other_request"
+    assert reingested["trace_digest"] == native["trace_digest"]
+    final = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    assert final["status"] == "decided" and final[runner.RELEASE_REQUEUE_FIELD] == [old, new]
+    # Once: neither this release nor a later one reads it again, and nothing more is spent.
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, new)) == []
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, "d" * 40)) == []
+    assert (len(world["allocator_calls"]), len(world["webapp_calls"]), len(world["transport_calls"])) == spent
+
+
+def test_a_different_trace_of_the_attempts_own_request_stays_a_final_conflict(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline.rigid_robot_free_probe_recorder import record_rigid_robot_free_probe
+
+    world = build_world(tmp_path, monkeypatch)
+    old = "c" * 40
+    request = current_probe_state(world["capture"])["request"]
+    # Another recording of this very request (its object falls off the support's edge) is already retained.
+    own = record_rigid_robot_free_probe(scene=FlatSupport(world["spec"]["start_pose_world"], support_max_xy=(3.05, -1.4)),
+                                        plan=request["plan"], binding=request["binding"])
+    assert runner.retain_trace_file(world["probe_root"], own, request=request) == "written"
+    retained = (world["probe_root"] / worker.TRACE_FILENAME).read_bytes()
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, old))
+    assert row["status"] == "trace_conflict" and row["detail"]["ingest_refusal"].endswith("trace_conflict"), row
+    state = current_probe_state(world["capture"])
+    job = runner._job_dir(world["queue"], state)
+    terminal = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    # A real conflict: no release re-ingests it, and the retained trace is never overwritten or set aside.
+    assert runner._superseded_trace_conflict(job, terminal) is None
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, COMMIT)) == []
+    assert runner.final_terminal(state, queue_root=world["queue"], release=COMMIT) == terminal
+    assert (world["probe_root"] / worker.TRACE_FILENAME).read_bytes() == retained
+    assert not (world["probe_root"] / retention.HISTORY_DIRNAME).exists() and _receipt(world) is None
+    assert len(world["allocator_calls"]) == 1
+    with pytest.raises(runner.RigidRobotFreeProbeIngestError, match="trace_binding_mismatch"):
+        runner.retain_trace_file(world["probe_root"], own, request={**request, "plan": {}})
+
+
+def test_a_decided_receipt_of_a_superseded_request_never_shadows_the_current_one(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    superseded = _superseded_request_evidence(world, decided=True)
+    # Request A's sealed failure is not request B's verdict: B is still to be probed, and the gate never admits A's.
+    state = current_probe_state(world["capture"])
+    assert state["status"] == "probe_required" and state["receipt"] is None and state["receipt_status"] is None
+    assert state["superseded_receipt"] == {
+        "receipt_digest": superseded["receipt"]["receipt_digest"], "status": "failed",
+        "task_spec_digest": superseded["request"]["binding"]["task_spec_digest"],
+        "configured_scene_revision_digest": REVISION}
+    with pytest.raises(gate.RobotFreeProbeGateError):
+        _admits(world, _receipt(world))
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert row["status"] == "decided" and len(world["allocator_calls"]) == 1, row
+    receipt = _receipt(world)
+    assert receipt["status"] == "passed" and receipt["task_spec_digest"] == canonical_digest(world["scored"])
+    _admits(world, receipt)
+    assert _kept(world, gate.RECEIPT_FILENAME, superseded["receipt_bytes"])["superseded_status"] == "failed"
+    assert _kept(world, worker.TRACE_FILENAME, superseded["trace_bytes"])["superseded_status"] == "recorded"
+    # Decided for request B itself: never replaced, by any writer.
+    retained = (world["probe_root"] / gate.RECEIPT_FILENAME).read_bytes()
+    assert retention.retain_receipt(world["probe_root"], {**superseded["receipt"], **{
+        field: receipt[field] for field in retention.RECEIPT_BINDING_FIELDS}},
+        supersede_other_request=True) == "kept_existing_decided"
+    assert (world["probe_root"] / gate.RECEIPT_FILENAME).read_bytes() == retained
+
+
+def test_only_the_current_requests_writer_sets_a_decided_receipt_of_another_request_aside(tmp_path) -> None:
+    root = tmp_path / "launch"
+    root.mkdir()
+    bound = {"configured_scene_revision_digest": REVISION, "replacement_asset_digest": None}
+    a = {**bound, "status": "failed", "task_spec_digest": "sha256:" + "a" * 64, "receipt_digest": "sha256:1"}
+    b = {**bound, "status": "passed", "task_spec_digest": "sha256:" + "b" * 64, "receipt_digest": "sha256:2"}
+    assert retention.retain_receipt(root, a) == "written"
+    sealed = (root / gate.RECEIPT_FILENAME).read_bytes()
+    # Scene preparation's retention scores the revision, not a probe request: it never sets a decided receipt aside.
+    assert retention.retain_receipt(root, b) == "kept_existing_decided"
+    assert (root / gate.RECEIPT_FILENAME).read_bytes() == sealed
+    assert retention.retain_receipt(root, b, supersede_other_request=True) == "superseded_other_request"
+    assert json.loads((root / gate.RECEIPT_FILENAME).read_text()) == b
+    kept = root / retention.HISTORY_DIRNAME / f"{hashlib.sha256(sealed).hexdigest()}.{gate.RECEIPT_FILENAME}"
+    assert kept.read_bytes() == sealed
+    # An undecided receipt a decided one replaces is kept too; the same bytes set aside twice stay one copy.
+    unavailable = {**b, "status": "probe_unavailable", "receipt_digest": "sha256:3"}
+    other = root / "other"
+    other.mkdir()
+    for _ in range(2):
+        assert retention.retain_receipt(other, unavailable) in {"written", "unchanged"}
+        (other / gate.RECEIPT_FILENAME).chmod(0o640)
+        assert retention.set_aside(other, gate.RECEIPT_FILENAME, superseded_by={"why": "test"})["file"] == (
+            gate.RECEIPT_FILENAME)
+    assert len(list((other / retention.HISTORY_DIRNAME).glob(f"*.{gate.RECEIPT_FILENAME}"))) == 1
+    assert retention.set_aside(other, gate.RECEIPT_FILENAME, superseded_by={}) is None
+    assert retention.retain_receipt(other, unavailable) == "written"
+    assert retention.retain_receipt(other, b) == "replaced_unavailable"
+    assert retention.receipt_bound_to_request(b, {"binding": {**bound, "task_spec_digest": b["task_spec_digest"]}})
+    assert not retention.receipt_bound_to_request(a, {"binding": {**bound, "task_spec_digest": b["task_spec_digest"]}})
 
 
 # --- the hook: enqueue launches nothing --------------------------------------------------------

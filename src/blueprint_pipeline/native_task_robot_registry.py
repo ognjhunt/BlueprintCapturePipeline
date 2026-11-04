@@ -98,8 +98,29 @@ def add_droid_exterior_right_slot(embodiment: Any, cameras: Sequence[Mapping[str
                                       EXTERIOR_RIGHT_RUNTIME_NAME: slot}))
     extended = extended_type(**{field.name: getattr(rig, field.name) for field in fields(rig)},
                              **{EXTERIOR_RIGHT_RUNTIME_NAME: slot})
-    extended.set_use_tiled_camera(rig.use_tiled_camera)
+    _carry_tiling_choice(rig, extended)
     embodiment.camera_config = extended
+
+
+def _carry_tiling_choice(rig: Any, extended: Any) -> None:
+    """Give ``extended`` the rig's tiled-camera choice where the field copy did not carry it.
+
+    Pinned Arena (``isaaclab_arena/utils/cameras.py`` at ``ARENA_COMMIT``) keeps the choice
+    outside the dataclass fields: ``ArenaCameraCfg.use_tiled_camera`` is a property over a
+    ``ClassVar`` an instance shadows, and there is no ``set_use_tiled_camera`` (capture-447ae4f4's
+    probe crashed calling one). Only what the rig exposes is used; nothing is invented.
+    """
+    if not hasattr(rig, "use_tiled_camera") or "use_tiled_camera" in {field.name for field in fields(rig)}:
+        return  # no tiling choice in this Arena, or a field the copy already carried
+    value = rig.use_tiled_camera
+    setter = getattr(extended, "set_use_tiled_camera", None)
+    if callable(setter):
+        setter(value)
+        return
+    declared = getattr(type(extended), "use_tiled_camera", None)
+    if isinstance(declared, property) and declared.fset is None:
+        return  # read-only, so derived from what the copy carried
+    extended.use_tiled_camera = value
 
 
 def build_droid_embodiment(

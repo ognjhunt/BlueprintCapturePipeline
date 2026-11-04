@@ -163,6 +163,33 @@ def _subject_label(entry: Mapping[str, Any], targets: Mapping[str, Mapping[str, 
     return label if isinstance(label, str) and label.strip() else None
 
 
+def _subject_profile(task_context: Mapping[str, Any], task_semantics: Mapping[str, Any] | None,
+                     source_video_digest: str | None):
+    from .task_profile_contracts import task_profile_for
+    from .website_task_semantics import effective_task_profile
+    profile = task_profile_for(effective_task_profile(task_context=task_context, task_semantics=task_semantics,
+                                                      source_video_digest=source_video_digest))
+    return profile if profile is not None and profile.profile_id in {"rigid_pick_place",
+                                                                     "articulated_open_close"} else None
+
+
+def subject_rigidity(task_context: Mapping[str, Any], *, subjects: Sequence[Mapping[str, Any]],
+                     targets: Mapping[str, Mapping[str, Any]], task_semantics: Mapping[str, Any] | None = None,
+                     source_video_digest: str | None = None) -> dict[str, Any] | None:
+    """The one captured task object's rigidity reading under the rigid pick/place profile, or None.
+
+    ``task_profile_contracts.task_object_rigidity``: the object analysis's class and stated
+    reason, or the label word backstop for an analysis that carries none.
+    """
+    if "task_family" not in task_context or len(subjects) != 1:
+        return None
+    profile = _subject_profile(task_context, task_semantics, source_video_digest)
+    if profile is None or profile.profile_id != "rigid_pick_place":
+        return None
+    from .task_profile_contracts import task_object_rigidity
+    return task_object_rigidity({**subjects[0], "semantic_label": _subject_label(subjects[0], targets)})
+
+
 def native_task_subject_gap(task_context: Mapping[str, Any], *, subjects: Sequence[Mapping[str, Any]],
                             targets: Mapping[str, Mapping[str, Any]],
                             task_semantics: Mapping[str, Any] | None = None,
@@ -175,40 +202,47 @@ def native_task_subject_gap(task_context: Mapping[str, Any], *, subjects: Sequen
     ``website_single_manipulated_subject_required``. Older contexts without an analysis
     family keep their compatibility path; a family task and an authored synthetic
     subject never reach this. The hold reports Blueprint's implementation gap only.
+    The object analysis's ``deformable`` holds; ``rigid`` and ``unknown`` go on
+    (``subject_rigidity``). The label word list decides only without a classification.
     """
     if "task_family" not in task_context or len(subjects) < 1:
         return None
     family = task_context["task_family"]
-    from .task_profile_contracts import deformable_subject_noun, task_profile_for
-    from .website_task_semantics import effective_task_profile
-    profile = task_profile_for(effective_task_profile(task_context=task_context, task_semantics=task_semantics,
-                                                      source_video_digest=source_video_digest))
-    if profile is None or profile.profile_id not in {"rigid_pick_place", "articulated_open_close"}:
+    profile = _subject_profile(task_context, task_semantics, source_video_digest)
+    if profile is None:
         return None
     ids = [str(row.get("target_id")) for row in subjects]
     label = _subject_label(subjects[0], targets) if len(subjects) == 1 else None
+    rigidity = None
     if len(subjects) > 1:
-        code, noun = MULTI_OBJECT_GAP, None
+        code = MULTI_OBJECT_GAP
         reason = (f"The task moves {len(subjects)} objects. Blueprint's {profile.profile_id} evaluation represents "
                   "one task object; the job is held while an evaluation for several objects is prepared. The task "
                   "is not narrowed to one of them.")
         missing = ["multi_object_task_profile", "independent_task_scorer", "reset_contract"]
     else:
-        noun = deformable_subject_noun(label) if profile.profile_id == "rigid_pick_place" else None
-        if noun is None:
+        rigidity = subject_rigidity(task_context, subjects=subjects, targets=targets, task_semantics=task_semantics,
+                                    source_video_digest=source_video_digest)
+        if rigidity is None or rigidity["rigidity"] != "deformable":
             return None
         code = DEFORMABLE_OBJECT_GAP
-        reason = (f"The task object is a {noun}, a soft or flexible object. Blueprint's rigid pick-and-place "
-                  "evaluation models a rigid body; the job is held while a deformable-object evaluation is "
-                  "prepared. The object is not authored as a rigid stand-in.")
+        noun = rigidity["label_word_screen"]
+        named = f"a {noun}" if noun else (f"'{label}'" if label else "the manipulated object")
+        basis = ("the object analysis classified it as deformable" if rigidity["source"] == "object_analysis"
+                 else "its label names a soft object")
+        reason = (f"The task object is {named}, a soft or flexible object ({basis}). Blueprint's rigid "
+                  "pick-and-place evaluation models a rigid body; the job is held while a deformable-object "
+                  "evaluation is prepared. The object is not authored as a rigid stand-in.")
         missing = ["deformable_object_asset_authoring", "deformable_native_physics", "independent_task_scorer"]
+    from .task_profile_contracts import RIGIDITY_BASIS
     return {
         "code": code, "task_family": family, "task_context_digest": task_context.get("context_digest"),
         "job_disposition": "held_for_preparation", "description": task_context.get("description"),
         "reason": reason, "missing": missing, "inferred_profile_id": profile.profile_id,
         "subject_target_ids": ids,
-        **({"subject_label": label, "subject_basis": "manipulated_target_label_text_screen",
-            "deformable_noun": noun} if noun is not None else {}),
+        **({"subject_label": label, "subject_basis": RIGIDITY_BASIS[rigidity["source"]],
+            "deformable_noun": rigidity["label_word_screen"], "task_object_rigidity": rigidity}
+           if rigidity is not None else {}),
         **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
            if family == "general_task" and task_semantics is not None else {}),
         "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",

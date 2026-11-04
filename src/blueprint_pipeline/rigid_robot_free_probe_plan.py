@@ -111,6 +111,7 @@ def probe_context(task_spec: Mapping[str, Any]) -> dict[str, Any]:
         lift = max(lift, carry_height - max(float(spec["start_pose_world"][2]), target[2]))
     destination_pose = spec.get("destination_pose_world") if spec.get("destination_relation") else None
     return {
+        "release_rest_z_m": _measured_goal_rest_z(task_spec, default=target[2]),
         "destination_pose_world": destination_pose,
         "spec": spec, "criteria": criteria, "start": list(spec["start_pose_world"]), "target": target,
         "criteria_contract_digest": str(spec["task_success_contract"]["contract_digest"]),
@@ -123,6 +124,25 @@ def probe_context(task_spec: Mapping[str, Any]) -> dict[str, Any]:
         "workspace": workspace, "subject_bounds": subject, "surface": surface,
         "retreat": criteria.get("retreat"),
     }
+
+
+def _measured_goal_rest_z(task_spec: Mapping[str, Any], *, default: float) -> float:
+    """Where a correct placement rests on the scene's collider at the goal, when the compile measured it.
+
+    ``rigid_support_seating`` through the native adapter
+    (``interaction_affordance.support_alignment.goal_support``). The virtual
+    carrier lowers the object onto that surface, as a correct placement does,
+    instead of onto the success region's centre height; the success window
+    itself is unchanged.
+    """
+
+    affordance = task_spec.get("interaction_affordance")
+    alignment = affordance.get("support_alignment") if isinstance(affordance, Mapping) else None
+    goal = alignment.get("goal_support") if isinstance(alignment, Mapping) else None
+    value = goal.get("rest_scoring_z_m") if isinstance(goal, Mapping) else None
+    if type(value) in (int, float) and math.isfinite(value):
+        return float(value)
+    return float(default)
 
 
 def interpolate_pose(a: Sequence[float], b: Sequence[float], fraction: float) -> list[float]:
@@ -252,7 +272,8 @@ def physics_plan(context: Mapping[str, Any]) -> dict[str, Any]:
     plan = {
         "schema_version": PLAN_SCHEMA, "physics_hz": PHYSICS_HZ,
         "start_scoring_pose_world": list(context["start"]),
-        "release_scoring_pose_world": [*context["target"][:2], context["target"][2] + RELEASE_CLEARANCE_M,
+        "release_scoring_pose_world": [*context["target"][:2],
+                                       context.get("release_rest_z_m", context["target"][2]) + RELEASE_CLEARANCE_M,
                                        *context["reference_xyzw"]],
         "carry_lift_m": context["lift_m"], "carry_seconds": list(CARRY_SECONDS),
         "zero_action_seconds": max(ZERO_ACTION_MINIMUM_SECONDS, hold_seconds),

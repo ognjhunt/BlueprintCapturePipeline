@@ -85,6 +85,19 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
                         if reconciliation is not None else {
                             "path": str(collision), "digest": normalized["output"]["sha256"],
                             "size_bytes": normalized["output"]["size_bytes"]})
+    if reconciliation is None:
+        # A rigid task that starts and ends on one registered support: the collider the scene revision
+        # seals has that support flat at the success plane, checked on the CPU (``website_support_pad``).
+        # Any other task keeps the normalized collider and these inputs exactly as before.
+        from .website_support_pad import seal_support_pad
+        pad = seal_support_pad(preparation=preparation, collision=collision, output_root=output_root)
+        handoff_lease_checkpoint("website_runtime_inputs_after_support_pad")
+        if pad is not None:
+            derived = pad.get("derived_collider")
+            if derived is not None:
+                collision_record = {"path": derived["path"], "digest": derived["sha256"],
+                                    "size_bytes": derived["size_bytes"]}
+            collision_record["support_pad"] = pad
     from .website_object_observations import materialize_object_observations, REFERENCE_ROLE
     observations = materialize_object_observations(preparation=preparation, source_geometry=source_geometry,
         task_masks=task_masks, output_root=output_root / "object_observations")

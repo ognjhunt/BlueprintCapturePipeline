@@ -30,11 +30,13 @@ ReadOnlyPaths=/etc/blueprint
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane /var/lib/blueprint/task-evaluation-inputs
 ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 TasksMax=512
-MemoryMax=8G
-# Host safety net (batch job, retried): the host has 8.3 GB and no swap, so
-# MemoryMax above never binds and the kernel's OOM killer acts on the whole
-# host. It counts this unit 20% of the host larger (+200), so a batch job goes
-# before the always-on services and the money-safety units.
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: 3.2 GB on 2026-10-31 (docs/research/control-plane-host-profile-2026-10-31.md);
+# MemoryMax is 1.5x that.
+MemoryHigh=4G
+MemoryMax=5G
 OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=90min

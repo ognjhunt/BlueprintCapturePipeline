@@ -318,6 +318,16 @@ def build_scene_configuration_python_wheelhouse(
         raise
 
 
+def _file_sha256(path: Path) -> str:
+    """A wheel's digest, read in blocks: a CUDA wheel is hundreds of MB."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return "sha256:" + digest.hexdigest()
+
+
 def validate_scene_configuration_python_wheelhouse(
     *, root: str | Path, profile: str = DEFAULT_RUNTIME_PROFILE, verify_bytes: bool = True
 ) -> dict[str, Any]:
@@ -379,8 +389,7 @@ def validate_scene_configuration_python_wheelhouse(
             or path.stat().st_size != row.get("size_bytes")
             or (
                 verify_bytes
-                and "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-                != row.get("sha256")
+                and _file_sha256(path) != row.get("sha256")
             )
         ):
             raise ValueError(

@@ -654,6 +654,14 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     retain_task_semantics(job_dir=output_root, receipt=receipt, task_context=task_context,
                           source_video_digest=source_digest)
     write_json(output_root / "atlas_scene_review.json", review)
+    if feedback is None:
+        # A task with no native profile, or no installed runtime, holds here, before any
+        # World Labs stage: the review has read the whole job (website_early_task_hold).
+        from .website_early_task_hold import hold_after_review
+        held = hold_after_review(output_root=output_root, task_context=task_context,
+                                 source_video_digest=source_digest)
+        if held is not None:
+            return held
     if route == "geometry_only":
         # The scene stays as filmed, subject included: nothing is removed or edited,
         # and no generated completion or refined splat is bought.

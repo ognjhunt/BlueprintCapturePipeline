@@ -291,12 +291,13 @@ def test_sam_spend_uses_signed_current_capture_reservation(monkeypatch, source_d
 
 
 def test_new_sponsorship_expiry_uses_signed_issuance_not_request_start(monkeypatch):
-    value = {**sponsorship(), "expires_at_epoch": 1000.8 + 86400,
+    from blueprint_pipeline.website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
+    value = {**sponsorship(), "expires_at_epoch": 1000.8 + WEBSITE_JOB_WINDOW_MAX_SECONDS,
              "consent": {"accepted_at_epoch": 1000.8}}
     value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
     monkeypatch.setattr(module, "website_webapp_request", lambda **_: value)
     assert module.load_website_scene_sponsorship(task_context=context(), now=1000) == value
-    for fields in ({"expires_at_epoch": 1000.8 + 86401},
+    for fields in ({"expires_at_epoch": 1000.8 + WEBSITE_JOB_WINDOW_MAX_SECONDS + 1},
                    {"consent": {"accepted_at_epoch": 1061}}, {"expires_at_epoch": 999}):
         bad = {**value, **fields}
         bad["authority_digest"] = canonical_digest(bad, digest_field="authority_digest")

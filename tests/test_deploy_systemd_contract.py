@@ -321,11 +321,12 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         task_limit = {"blueprint-existing-policy-canary-watchdog.service": 64,
                       "blueprint-existing-policy-canary-continuation.service": 128}.get(unit.name, 512)
         assert f"TasksMax={task_limit}" in text, unit.name
-        # Compilation uses bounded appearance-cache chunks and a tighter limit
-        # so it cannot exhaust the shared control-plane host during packet build.
+        # Each unit's cap is in HOST_MEMORY (test_every_control_plane_unit_is_capped_below_the_host); a guard's
+        # and a unit this host does not run keep the cap they had.
         memory_limit = (
-            "1G" if unit.name == "blueprint-existing-policy-canary-watchdog.service"
-            else "4G" if unit.name == "blueprint-task-evaluation-episode-compilation.service"
+            HOST_MEMORY[unit.name][2] if unit.name in HOST_MEMORY
+            else HOST_MEMORY_KEPT[unit.name][1] if unit.name in HOST_MEMORY_KEPT
+            else "1G" if unit.name == "blueprint-existing-policy-canary-watchdog.service"
             else "8G"
         )
         assert f"MemoryMax={memory_limit}" in text, unit.name
@@ -346,16 +347,8 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
     assert "threshold=40" in baseline
 
 
-#: Batch units, retried when killed. The host has 8.3 GB and no swap: the 8G MemoryMax most units carry never
-#: binds, and the kernel's OOM killer chose the team packet compile four times on 2026-11-03.
-HOST_SAFETY_BATCH_UNITS = (
-    "blueprint-team-scene-packet.service",
-    "blueprint-task-evaluation-scene-progression.service",
-    "blueprint-task-evaluation-launch-preparation.service",
-    "blueprint-embodiment-preparation.service",
-    "blueprint-control-plane-storage-gc.service",
-)
-#: Money safety, and the door to the host: the OOM killer passes them over.
+#: Money safety, and the door to the host (#3329): the OOM killer passes them over. Never weakened: no
+#: throttle, no pressure kill, the memory cap each had before. G1 campaign settlement settles money too.
 HOST_SAFETY_GUARD_UNITS = (
     "blueprint-gpu-spend-guard.service",
     "blueprint-operator-door.service",
@@ -363,6 +356,65 @@ HOST_SAFETY_GUARD_UNITS = (
     "blueprint-task-evaluation-launch-supervisor.service",
     "blueprint-task-evaluation-launch-reconciler.service",
     "blueprint-task-evaluation-terminal-resource-release.service",
+    "blueprint-native-g1-team-campaign-settlement.service",
+)
+#: Host memory (8.3 GB, no swap). Units with a new cap that binds below the host, so a runaway is killed in
+#: its own unit, never host-wide (the kernel's OOM killer took the whole host's view five times on
+#: 2026-11-03): (OOMScoreAdjust, MemoryHigh, MemoryMax, highest recorded peak). The peak is the larger of the
+#: host's journal since 10-27, docs/research/control-plane-host-profile-2026-10-31.md and a local run at
+#: capture-447's scale, and MemoryMax is at least 1.5x it. MemoryHigh, 1G under MemoryMax from 2G up,
+#: reclaims a unit's page cache before the host has to. +200: batch jobs, retried; -200: money ledgers and
+#: the WebApp's intake, which go after them.
+HOST_MEMORY = {
+    "blueprint-team-scene-packet.service": ("200", "4G", "5G", "1.9G"),
+    "blueprint-task-evaluation-scene-progression.service": ("200", "4G", "5G", "3.2G"),
+    "blueprint-control-plane-storage-gc.service": ("200", "2G", "3G", "722M"),
+    "blueprint-pipeline-control-plane.service": ("200", "2G", "3G", "569M"),
+    "blueprint-task-evaluation-launch-preparation.service": ("200", "1G", "2G", "32M"),
+    "blueprint-task-evaluation-configured-controls-progression.service": ("200", "1G", "2G", "149M"),
+    "blueprint-website-atlas-provider-poll.service": ("200", "1G", "2G", "62M"),
+    "blueprint-agent-execution.service": ("200", "1G", "2G", "202M"),
+    "blueprint-task-evaluation-episode-compilation.service": ("200", "3G", "4G", "60M"),
+    "blueprint-agent-stage-replay.service": ("200", "3G", "4G", "116M"),
+    "blueprint-provider-billing-reconciler.service": ("-200", "3G", "4G", "1.7G"),
+    "blueprint-pipeline-intake.service": ("-200", "2G", "3G", "1.5G"),
+    "blueprint-task-evaluation-episode-compilation-remote.service": ("-200", "1G", "2G", "424M"),
+}
+#: Units that keep the cap main gave them, with no throttle, and only gain an OOM order. Their heavy step at a
+#: full room is not measured on the host (a website capture's preparation in the handoff listener, which
+#: passed 4.8 GB locally; a full Atlas run; an allocator child's bundle reads), or a recorded peak times 1.5 does
+#: not fit below the host (activation and embodiment preparation, 4.2 GB), or the cap is already small.
+#: -500 for the door's own units, as the door.
+HOST_MEMORY_KEPT = {
+    "blueprint-pubsub-handoff-listener.service": ("200", "8G"),
+    "blueprint-task-evaluation-launch-activation.service": ("200", "8G"),
+    "blueprint-embodiment-preparation.service": ("200", "8G"),
+    "blueprint-scene-object-discovery.service": ("200", "8G"),
+    "blueprint-control-plane-preflight.service": ("200", "1G"),
+    "blueprint-control-plane-capacity.service": ("200", "512M"),
+    "blueprint-completed-replay-cache-gc.service": ("200", "512M"),
+    "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "8G"),
+    "blueprint-website-atlas-preview.service": ("-200", "8G"),
+    "blueprint-team-evaluation-runner.service": ("-200", "8G"),
+    "blueprint-beta-policy-screening.service": ("-200", "8G"),
+    "blueprint-rigid-robot-free-probe-runner.service": ("-200", "8G"),
+    "blueprint-task-evaluation-policy-canary-dispatcher.service": ("-200", "8G"),
+    "blueprint-native-g1-team-campaign-dispatcher.service": ("-200", "8G"),
+    "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "8G"),
+    "blueprint-existing-policy-canary-continuation.service": ("-200", "8G"),
+    "blueprint-agent-run-dispatcher.service": ("-200", "8G"),
+    "blueprint-scene-project-spend-refresh.service": ("-200", "512M"),
+    "blueprint-operator-door-runner.service": ("-500", "256M"),
+    "blueprint-operator-door-hold-sweep.service": ("-500", "256M"),
+}
+#: Units in deploy/systemd that this host's deploy does not install: GPU workers and their pool, the isolated
+#: staging intake, and the capture reconstruction queue.
+NOT_ON_THE_CONTROL_PLANE = (
+    "blueprint-production-gpu-campaign-control-plane.service",
+    "blueprint-production-gpu-worker-agent.service",
+    "blueprint-production-gpu-worker-pool.service",
+    "blueprint-pipeline-intake-staging.service",
+    "blueprint-capture-reconstruction-dispatcher.service",
 )
 
 
@@ -375,24 +427,49 @@ def _directives(unit: str) -> dict[str, list[str]]:
     return values
 
 
-def test_batch_units_give_way_to_the_money_safety_units_and_the_door_on_a_full_host() -> None:
-    for unit in HOST_SAFETY_BATCH_UNITS:
+def _gigabytes(value: str) -> float:
+    return float(value[:-1]) / (1024 if value.endswith("M") else 1)
+
+
+def _deployed_services() -> set[str]:
+    import ast
+
+    tree = ast.parse((REPO_ROOT / "scripts" / "deploy_control_plane_commit.py").read_text(encoding="utf-8"))
+    node = next(n for n in tree.body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", "") == "DEFAULT_DEPLOYED_SYSTEMD_UNITS" for t in n.targets))
+    return {unit for unit in ast.literal_eval(node.value) if unit.endswith(".service")}
+
+
+def test_every_control_plane_unit_is_capped_below_the_host() -> None:
+    services = {unit.name for unit in SYSTEMD_DIR.glob("*.service")}
+    covered = set(HOST_MEMORY) | set(HOST_MEMORY_KEPT) | set(HOST_SAFETY_GUARD_UNITS)
+    assert not set(HOST_MEMORY) & set(HOST_MEMORY_KEPT)
+    assert services == covered | set(NOT_ON_THE_CONTROL_PLANE)
+    assert _deployed_services() <= covered
+    for unit, (adjust, high, maximum, peak) in HOST_MEMORY.items():
         values = _directives(unit)
-        # Moderately first to go; never protected on its own, which would hand the kill to a guard.
-        assert values["OOMScoreAdjust"] == ["200"], unit
-        # No throttle until a peak is known: systemd's and the kernel's figures for the team packet disagree.
+        assert values["OOMScoreAdjust"] == [adjust], unit
+        assert values["MemoryMax"] == [maximum], unit
+        assert values.get("MemoryHigh") == (None if high is None else [high]), unit
+        # Binds below the host's 8.3 GB with the always-on services' 2-3 GB left over, and never under 1.5x
+        # the unit's highest recorded peak.
+        assert 1.5 * _gigabytes(peak) <= _gigabytes(maximum) <= 5, unit
+        assert high == (None if _gigabytes(maximum) < 2 else f"{int(_gigabytes(maximum)) - 1}G"), unit
+        assert not {"ManagedOOMMemoryPressure", "ManagedOOMSwap"} & set(values), unit
+    for unit, (adjust, maximum) in HOST_MEMORY_KEPT.items():
+        values = _directives(unit)
+        assert values["OOMScoreAdjust"] == [adjust], unit
+        assert values["MemoryMax"] == [maximum], unit
         assert not {"MemoryHigh", "ManagedOOMMemoryPressure", "ManagedOOMSwap"} & set(values), unit
     for unit in HOST_SAFETY_GUARD_UNITS:
         values = _directives(unit)
         assert values["OOMScoreAdjust"] == ["-500"], unit
-        # Never weakened: no throttle, no pressure kill, the memory cap each had before.
         assert not {"MemoryHigh", "ManagedOOMMemoryPressure", "ManagedOOMSwap"} & set(values), unit
         assert values["MemoryMax"] == (["1G"] if unit in {"blueprint-operator-door.service",
                                                           "blueprint-existing-policy-canary-watchdog.service"}
                                        else ["8G"]), unit
-    others = [unit.name for unit in SYSTEMD_DIR.glob("*.service")
-              if unit.name not in HOST_SAFETY_BATCH_UNITS + HOST_SAFETY_GUARD_UNITS]
-    assert not [unit for unit in others if {"OOMScoreAdjust", "MemoryHigh"} & set(_directives(unit))]
+    for unit in NOT_ON_THE_CONTROL_PLANE:
+        assert not {"OOMScoreAdjust", "MemoryHigh"} & set(_directives(unit)), unit
 
 
 def test_isolated_staging_intake_has_separate_identity_state_and_installer() -> None:
@@ -1157,14 +1234,24 @@ def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read
     (BLUEPRINT_VAST_CREDIT_GUARD_ENABLED); production turns them on in the unit files
     that reach the Vast adapter, and the chain preflight refuses a paid unit without it."""
 
+    from blueprint_pipeline.task_evaluation_production_chain_preflight import PAID_ALLOCATION_UNITS
+
     flag = "Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true"
-    for name in (
-        "blueprint-pubsub-handoff-listener.service",
-        "blueprint-task-evaluation-launch-dispatcher.service",
-        "blueprint-task-evaluation-policy-canary-dispatcher.service",
-        "blueprint-task-evaluation-sam31-preparation-execution.service",
-    ):
-        assert flag in (SYSTEMD_DIR / name).read_text(encoding="utf-8"), name
+    # The two paid lanes website jobs use, which once ran with the guard off.
+    assert {"blueprint-rigid-robot-free-probe-runner.service",
+            "blueprint-beta-policy-screening.service"} <= set(PAID_ALLOCATION_UNITS)
+    for name in PAID_ALLOCATION_UNITS:
+        text = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
+        assert flag in text, name
+        assert "BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=false" not in text, name
+    # A unit that can launch a Vast instance (it arms the caller-exit watchdog or holds
+    # the instance SSH key) is a paid allocation unit, so the preflight checks its guard.
+    launching = sorted(
+        unit.name for unit in SYSTEMD_DIR.glob("blueprint-*.service")
+        if re.search(r"^Environment=BLUEPRINT_VAST_(WATCHDOG_CALLER_EXIT_SURVIVAL|SSH_IDENTITY_FILE)=",
+                     unit.read_text(encoding="utf-8"), re.M)
+    )
+    assert launching and sorted(set(launching) - set(PAID_ALLOCATION_UNITS)) == []
     capacity = (SYSTEMD_DIR / "blueprint-control-plane-capacity.service").read_text(encoding="utf-8")
     assert flag in capacity
     assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in capacity
@@ -1194,6 +1281,40 @@ def test_volume_admission_units_map_bulk_roles_to_their_writers() -> None:
         encoding="utf-8"
     )
     assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work" in capacity
+
+
+def test_probe_and_screening_attempts_stage_on_the_work_volume_and_stay_watched() -> None:
+    """The root disk sits at its floor, so the probe's and screening's attempt bulk (bundles, the
+    allocator job directory and its policy_canary_output hold) goes to the work volume. The queues
+    stay on the root disk; the spend guard still finds the attempts' owner records; the deploy
+    provisions both roots; the storage table classifies them."""
+
+    from blueprint_pipeline.beta_policy_screening_coordinator import WORK_ROOT_ENV as SCREENING_WORK_ENV
+    from blueprint_pipeline.control_plane_storage_roots import classify_path
+    from blueprint_pipeline.rigid_robot_free_probe_runner import WORK_ENV as PROBE_WORK_ENV
+    from tests.test_deploy_control_plane_commit import deploy
+
+    guard = _read("blueprint-gpu-spend-guard.service")
+    for unit, env, root, queue, storage_class in (
+        ("blueprint-rigid-robot-free-probe-runner.service", PROBE_WORK_ENV,
+         "/mnt/blueprint-work/rigid-robot-free-probe-work",
+         "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE=/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes",
+         "work"),
+        ("blueprint-beta-policy-screening.service", SCREENING_WORK_ENV,
+         "/mnt/blueprint-work/beta-policy-screening-work",
+         "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/beta-policy-screening",
+         "evidence_hot"),
+    ):
+        text = _read(unit)
+        assert f"Environment={env}={root}\n" in text, unit
+        assert f"Environment={queue}\n" in text, unit
+        rw = [token for line in text.splitlines() if line.startswith("ReadWritePaths=")
+              for token in line.removeprefix("ReadWritePaths=").split()]
+        assert root in rw, unit
+        assert f"--output-root {root} " in guard and f"ReadOnlyPaths=-{root}\n" in guard
+        assert root in deploy._WORK_VOLUME_PROVISIONABLE
+        classified = classify_path(root + "/attempts/x")
+        assert classified is not None and classified.path == root and classified.storage_class == storage_class
 
 
 def test_streamed_canary_units_bind_the_b2_artifact_store() -> None:

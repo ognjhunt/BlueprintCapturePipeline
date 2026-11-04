@@ -38,6 +38,7 @@ import numpy as np
 from .core.handoff_lease import HandoffLeaseError, handoff_effect
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+from .website_support_geometry import SUPPORT_FACE_BLOCK
 
 REVISION = "website_collider_conditioning.v1"
 #: The one support basis that is a fit to bumpy triangles. Level faces are already
@@ -138,8 +139,6 @@ def flatten_placement_surfaces(vertices: np.ndarray, faces: np.ndarray,
     plan = [axis for axis in range(3) if axis != up]
     surfaces, untouched = _surfaces(placements, len(faces))
     uncertainty = _finite(placement_uncertainty_m)
-    upright = vertices.copy()
-    upright[:, up] *= up_sign
     claim = np.full(len(vertices), -1, dtype=np.int64)
     conflict = np.zeros(len(vertices), dtype=bool)
     heights = np.zeros(len(vertices))
@@ -148,7 +147,9 @@ def flatten_placement_surfaces(vertices: np.ndarray, faces: np.ndarray,
         face_ids = np.unique(np.concatenate([np.asarray(row["support"]["face_indices"], dtype=np.int64)
                                              for row in members]))
         # The fit support_under made: a plane through the surface's face centres.
-        centres = upright[faces[face_ids]].mean(axis=1)
+        corners = vertices[faces[face_ids]]
+        corners[:, :, up] *= up_sign
+        centres = corners.mean(axis=1)
         middle = centres.mean(axis=0)
         normal = np.linalg.svd(centres - middle, full_matrices=False)[2][-1]
         normal = normal if normal[up] >= 0 else -normal
@@ -180,7 +181,10 @@ def flatten_placement_surfaces(vertices: np.ndarray, faces: np.ndarray,
         inverse = inverse.reshape(-1)
         key_of = np.full(len(vertices), -1, dtype=np.int64)
         key_of[near] = inverse
-        touched = np.flatnonzero((key_of[faces] >= 0).any(axis=1))
+        # The faces using one of those positions, a block of faces at a time (never all their keys at once).
+        touched = np.flatnonzero(np.concatenate([np.zeros(0, dtype=bool)] + [
+            (key_of[faces[start:start + SUPPORT_FACE_BLOCK]] >= 0).any(axis=1)
+            for start in range(0, len(faces), SUPPORT_FACE_BLOCK)]))
         member = np.zeros(len(faces), dtype=bool)
         member[face_ids] = True
         rows = key_of[faces[touched]]

@@ -20,10 +20,6 @@ class ImmutableInputResolutionError(ValueError):
     """Raised when a dispatch child cannot prove a staged input identity."""
 
 
-def _sha256(payload: bytes) -> str:
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
-
-
 def _lexical_absolute(path: str | Path) -> str:
     return os.path.abspath(str(Path(path).expanduser()))
 
@@ -108,8 +104,13 @@ def resolve_immutable_input(
         raise ImmutableInputResolutionError(
             "immutable_input_staging_target_invalid"
         )
-    payload = staged_resolved.read_bytes()
-    if len(payload) != expected_size_bytes or _sha256(payload) != expected_digest:
+    # In blocks: a staged input can be the 1.2 GB provider bundle a scene-configuration profile binds.
+    digest, size = hashlib.sha256(), 0
+    with staged_resolved.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+            size += len(block)
+    if size != expected_size_bytes or "sha256:" + digest.hexdigest() != expected_digest:
         raise ImmutableInputResolutionError(
             "immutable_input_staging_target_identity_mismatch"
         )

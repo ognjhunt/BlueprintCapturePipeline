@@ -389,6 +389,112 @@
       ],
       "type": "object"
     },
+    "reach_rank": {
+      "additionalProperties": false,
+      "description": "The candidate's reach evidence and the tier it places it in (website_candidate_feasibility.reach_rank): 1 own arm solved through the task and reached it, 2 unmeasured, 3 solve searched and did not reach without a proof. The plan funds tier 3 after every unflagged candidate; with an intake ranking that is the only change to its order, and without one learned policies go before scripted baselines and tier 1 before tier 2, each group in the default order. Ranking removes nothing.",
+      "properties": {
+        "basis": {
+          "enum": [
+            "own_arm_solve_passed",
+            "reach_unmeasured",
+            "own_arm_solve_flagged"
+          ]
+        },
+        "feasibility_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            }
+          ]
+        },
+        "feasibility_status": {
+          "enum": [
+            null,
+            "feasible",
+            "unassessed"
+          ]
+        },
+        "reach_source": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          ]
+        },
+        "reasons": {
+          "items": {
+            "maxLength": 300,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        "report_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            }
+          ]
+        },
+        "solve_source": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          ]
+        },
+        "solve_status": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          ]
+        },
+        "tier": {
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "required": [
+        "basis",
+        "feasibility_digest",
+        "feasibility_status",
+        "reach_source",
+        "reasons",
+        "report_digest",
+        "solve_source",
+        "solve_status",
+        "tier"
+      ],
+      "type": "object"
+    },
     "receipt": {
       "additionalProperties": false,
       "properties": {
@@ -565,6 +671,9 @@
                 "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
                 "type": "string"
               },
+              "reach_rank": {
+                "$ref": "#/$defs/reach_rank"
+              },
               "scenario_cells": {
                 "items": {
                   "$ref": "#/$defs/cell"
@@ -646,6 +755,9 @@
                 "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
                 "type": "string"
               },
+              "reach_rank": {
+                "$ref": "#/$defs/reach_rank"
+              },
               "scenario_cells": {
                 "items": {
                   "$ref": "#/$defs/cell"
@@ -705,6 +817,9 @@
                   "scripted_simulator_state_baseline",
                   "learned_policy"
                 ]
+              },
+              "reach_rank": {
+                "$ref": "#/$defs/reach_rank"
               },
               "status": {
                 "enum": [

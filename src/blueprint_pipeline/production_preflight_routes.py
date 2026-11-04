@@ -45,9 +45,12 @@ _PATHS = {
     ),
     "blueprint-rigid-robot-free-probe-runner.service": (
         ("BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE", f"{ROOT}/rigid-robot-free-probes", "write"),
+        # New attempts' bundles and allocator job directories (the work volume).
+        ("BLUEPRINT_RIGID_ROBOT_FREE_PROBE_WORK_ROOT", "/mnt/blueprint-work/rigid-robot-free-probe-work", "write"),
     ),
     "blueprint-beta-policy-screening.service": (
         ("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", f"{ROOT}/beta-policy-screening", "write"),
+        ("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", "/mnt/blueprint-work/beta-policy-screening-work", "write"),
         # Its pass returns transient team-half blocks to pending (team_scene_packet_worker).
         ("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", f"{ROOT}/team-scene-packets", "write"),
     ),

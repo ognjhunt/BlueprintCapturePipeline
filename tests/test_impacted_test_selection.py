@@ -77,6 +77,37 @@ def test_source_change_maps_direct_and_importing_tests(tmp_path: Path) -> None:
     assert any(reason.startswith("impacted_test_count_exceeds_wide_ceiling:") for reason in broad["reasons"])
 
 
+@pytest.mark.parametrize(("changed_path", "source"), [
+    ("src/blueprint_pipeline/native_task_widget.py", "value = 1\n"),
+    ("src/blueprint_pipeline/rigid_robot_free_probe_widget.py", "value = 1\n"),
+    ("src/blueprint_pipeline/widget_isaac_launch.py", "value = 1\n"),
+    ("src/blueprint_pipeline/widget_robot_registry.py", "value = 1\n"),
+    ("src/blueprint_pipeline/widget.py", "def build():\n    from isaaclab_arena.scene.scene import Scene\n"),
+    ("tests/test_widget_fake.py", "FAKE = 'isaaclab.sensors'\n"),
+])
+def test_isaac_facing_change_runs_the_pinned_api_contract(tmp_path: Path, changed_path: str, source: str) -> None:
+    (tmp_path / "src/blueprint_pipeline").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / changed_path).write_text(source)
+    (tmp_path / MODULE.ISAAC_API_CONTRACT_TEST).write_text("def test_contract(): pass\n")
+    plan = MODULE.build_plan(tmp_path, [changed_path])
+    assert MODULE.ISAAC_API_CONTRACT_TEST in plan["selected_tests"]
+    assert "isaac_api_surface:1" in plan["reasons"]
+
+
+def test_unrelated_change_does_not_run_the_pinned_api_contract(tmp_path: Path) -> None:
+    (tmp_path / "src/blueprint_pipeline").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src/blueprint_pipeline/widget.py").write_text("ISAAC = 'isaaclab mentioned in text'\n")
+    (tmp_path / MODULE.ISAAC_API_CONTRACT_TEST).write_text("def test_contract(): pass\n")
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/widget.py"])
+    assert MODULE.ISAAC_API_CONTRACT_TEST not in plan["selected_tests"]
+
+
+def test_the_contract_test_the_rule_selects_exists() -> None:
+    assert (ROOT / MODULE.ISAAC_API_CONTRACT_TEST).is_file()
+
+
 def _widget_tree(tmp_path: Path, *, consumers: int, unrelated: int) -> set[str]:
     source = tmp_path / "src/blueprint_pipeline"
     source.mkdir(parents=True)

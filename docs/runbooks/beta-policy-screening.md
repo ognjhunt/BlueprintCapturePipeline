@@ -149,6 +149,24 @@ reservation and no pending row, rows that still do not fit close as `deferred`
 (`beta_screening_site_budget_exhausted`). Plans from before the waitlist keep
 their `deferred` rows and are never funded.
 
+Plan order, which is also the waitlist's funding order, uses each candidate's
+reach evidence (`website_candidate_feasibility.reach_rank`). Its tier is 1
+(`own_arm_solve_passed`) when its own arm was solved through the task in its
+model on this scene and reached it (`team_arm_reach` `passed`, or the packet
+Franka's recorded station search cleared), 3 (`own_arm_solve_flagged`) when a
+fixed arm's solve searched and did not reach, with no proof that it cannot
+(`flagged`), and its declared reach did not refuse it, and 2
+(`reach_unmeasured`) otherwise. Tier 3 candidates go after every unflagged
+one, so a flagged body never spends first. When the job has an intake ranking
+(`website_candidate_ranking`), that is the only change: the ranking's order
+stands, with unranked candidates after it as before. On the default-priority
+path (no intake ranking) learned policies then go before scripted baselines,
+ranked or not, and tier 1 before tier 2, each group in the default priority and
+identifier order. Flagged candidates are never excluded.
+Each row but an infeasible one records its `reach_rank`: the tier, the solve's
+source, status, report digest and reasons, and the digest of the retained
+`candidate_feasibility.json`.
+
 A plan freezes the commit it was prepared against, and preparation refuses
 another (`beta_screening_implementation_commit_changed`). When a deploy lands
 while a campaign has a queued candidate at the old commit, or one refused for

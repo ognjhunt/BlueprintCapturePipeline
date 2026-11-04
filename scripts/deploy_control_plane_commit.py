@@ -1686,6 +1686,13 @@ def _finish_release_retirement(
 
 _SANDBOX_DIRECTIVES = ("ReadWritePaths=", "ReadOnlyPaths=")
 _UNIT_PROVISIONABLE_PREFIX = "/var/lib/blueprint/"
+# Service-owned directories a unit writes directly on the work volume; each is created only
+# when the volume's mount point exists, never anywhere else under /mnt.
+_WORK_VOLUME_PROVISIONABLE = frozenset({
+    "/mnt/blueprint-work/embodiment-preparation",
+    "/mnt/blueprint-work/rigid-robot-free-probe-work",
+    "/mnt/blueprint-work/beta-policy-screening-work",
+})
 _UNIT_FILE_SUFFIXES = (".json", ".jsonl", ".lock", ".env", ".sqlite", ".log", ".txt")
 
 
@@ -2012,7 +2019,7 @@ def _install_unit_sandbox_paths(
                 continue
             file_like = Path(path_text).suffix in _UNIT_FILE_SUFFIXES
             if ((path_text.startswith(_UNIT_PROVISIONABLE_PREFIX) and not file_like)
-                    or (path_text == "/mnt/blueprint-work/embodiment-preparation" and host_path.parent.is_dir())):
+                    or (path_text in _WORK_VOLUME_PROVISIONABLE and host_path.parent.is_dir())):
                 pending.append((unit, path_text, host_path))
                 continue
             blockers.append(f"deploy_unit_sandbox_path_missing:{unit}:{path_text}")

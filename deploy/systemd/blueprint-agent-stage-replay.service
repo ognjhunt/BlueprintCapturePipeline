@@ -26,7 +26,13 @@ InaccessiblePaths=-/etc/blueprint/provider-secrets
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/agent-execution
 ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/stage-replays/agent-execution
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 116M on the host.
+MemoryHigh=3G
 MemoryMax=4G
+OOMScoreAdjust=200
 TasksMax=128
 CPUQuota=100%
 Environment=BLUEPRINT_AGENT_EXECUTION_CONFIG=/etc/blueprint/agent-execution.json

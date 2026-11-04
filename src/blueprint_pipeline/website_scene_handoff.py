@@ -14,7 +14,7 @@ from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as
 from .decision_evidence_contracts import canonical_digest
 from .website_task_preparation import (
     GEOMETRY_ONLY_BLOCKER, compile_website_scene_preparation, native_task_preparation_gap,
-    native_task_subject_gap, native_task_subject_profile,
+    native_task_subject_gap, native_task_subject_profile, subject_rigidity,
 )
 from .website_scene_runtime_inputs import prepare_website_runtime_inputs
 
@@ -103,6 +103,37 @@ def _rigid_verdict_and_fit(*, preparation: Mapping[str, Any], collision_path: Pa
                                          collision_path=collision_path)
 
 
+def _robot_fit_precheck(*, preparation: Mapping[str, Any], verdict: Mapping[str, Any] | None,
+                        collision_path: Path, native_root: Path) -> dict[str, Any]:
+    """Whether a robot the screening catalog runs can do the task in this room (``website_robot_fit_precheck``).
+
+    It fails open: a failure is recorded as ``unknown`` and the handoff goes on, since only a ``no_fit``
+    the late checks would also make holds the job. A lost handoff lease stops it, as it stops every write.
+    """
+    try:
+        from .website_robot_fit_hold import team_registry_state
+        from .website_robot_fit_precheck import FILENAME, registered_team_bodies, robot_fit_precheck
+        registry, registry_digest = team_registry_state()
+        try:
+            bodies, flags = (registered_team_bodies(registry) if registry is not None else {}), []
+        except (OSError, ValueError, KeyError, TypeError):
+            bodies, registry_digest = {}, "unreadable"
+        if registry_digest == "unreadable":
+            # The operator's team registry did not read: its bodies stay unknown, never refused.
+            flags = ["team_registry_unreadable"]
+        value = robot_fit_precheck(preparation=preparation, collision_path=collision_path, verdict=verdict,
+                                   team_bodies=bodies, team_registry_digest=registry_digest)
+        write_json(native_root / FILENAME, value)
+        # What a hold was decided against rides on the handoff, so a change reruns it (website_robot_fit_hold).
+        return {"path": str(native_root / FILENAME), "digest": value["precheck_digest"], "status": value["status"],
+                "hold_reason": value["hold_reason"], "counts": value["counts"],
+                "recheck_inputs": value["recheck_inputs"], **({"flags": flags} if flags else {})}
+    except HandoffLeaseError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - unknown never holds a job; this is recorded
+        return {"status": "unknown", "hold_reason": None, "error": type(exc).__name__}
+
+
 def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
                             native_root: Path) -> dict[str, Any]:
     """Where a geometry-only job ends: the capability verdict and the robot fit table, CPU only.
@@ -149,18 +180,27 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
 
     Runtime inputs (unless the caller already made them), the collision and
     appearance stages, the construction inputs, the rights admission and the
-    capability verdict, with the informational robot fit table beside it. The
+    capability verdict, with the informational robot fit table beside it, and
+    the robot fit precheck (``website_robot_fit_precheck``). The
     handoff and a renewal re-issue
     (``website_preparation_renewal``) share it, so the inputs bound to a
     preparation's digest cannot drift between them. Records into ``result``
     and returns whether the preparation may be registered: intake ready,
-    appearance authored and no abstention.
+    appearance authored, no abstention and no ``website_robot_fit_none`` hold.
     """
     if runtime_inputs is None:
         runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base_scene,
             source_geometry=source_geometry, task_masks=task_masks, output_root=native_root)
     result["runtime_inputs"] = {"status": runtime_inputs["status"], "digest": runtime_inputs["digest"],
                                 "path": str(native_root / "runtime_inputs.json")}
+    pad = (runtime_inputs.get("collision") or {}).get("support_pad")
+    support_hold = None
+    if isinstance(pad, Mapping):
+        from .website_support_pad import hold_reason
+        support_hold = hold_reason(pad)
+        result["task_support_pad"] = {key: pad[key] for key in ("status", "reason", "scene_revision_collider")
+                                      if key in pad}
+        result["task_support_pad"]["hold_reason"] = support_hold
     from .website_native_background import prepare_collision_stage, prepare_appearance_stage, prepare_construction_stages
     collision_stage = prepare_collision_stage(native_root / "runtime_inputs.json")
     write_json(native_root / "collision_stage_inputs.json", collision_stage)
@@ -181,20 +221,41 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
         construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
     write_json(native_root / "construction_inputs.json", construction)
     result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
-    if (preparation["status"] == "intake_ready"
-            and preparation["intake_request"]["task"]["strategy"] == "pick_and_place"):
-        # Abstain before the owner is asked to pay when no enabled embodiment can carry the
-        # task; one the gate cannot model is unassessed and never refused.
-        verdict, fit = _rigid_verdict_and_fit(preparation=preparation,
-                                              collision_path=Path(runtime_inputs["collision"]["path"]),
-                                              native_root=native_root)
-        result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
-            **({"risks": verdict["risks"]} if "risks" in verdict else {}),
-            "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
-        result["robot_fit_table"] = fit
-        if verdict["status"] == "abstained":
-            result.update(status="needs_input", blockers=list(verdict["blockers"]))
-    return preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained"
+    held = False
+    if preparation["status"] == "intake_ready":
+        from .usd_binary_read_cache import read_scope
+        collision = Path(runtime_inputs["collision"]["path"])
+        verdict = None
+        # One read scope for every search below: a USDA text collider is read once (``usd_binary_read_cache``).
+        with read_scope():
+            if preparation["intake_request"]["task"]["strategy"] == "pick_and_place":
+                # Abstain before the owner is asked to pay when no enabled embodiment can carry the
+                # task; one the gate cannot model is unassessed and never refused.
+                verdict, fit = _rigid_verdict_and_fit(preparation=preparation, collision_path=collision,
+                                                      native_root=native_root)
+                result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
+                    **({"risks": verdict["risks"]} if "risks" in verdict else {}),
+                    "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
+                result["robot_fit_table"] = fit
+                if verdict["status"] == "abstained":
+                    result.update(status="needs_input", blockers=list(verdict["blockers"]))
+            # Before ARTISAN and the GPU scene build: hold, never fail, when no catalog robot can do the
+            # task here by a refusal the late checks also make; an unknown is flagged and goes on.
+            precheck = _robot_fit_precheck(preparation=preparation, verdict=verdict, collision_path=collision,
+                                           native_root=native_root)
+        result["robot_fit_precheck"] = precheck
+        if precheck.get("status") == "no_fit" and isinstance(precheck.get("hold_reason"), str):
+            held = True
+            prior = list(result.get("blockers") or []) if result.get("status") == "needs_input" else []
+            result.update(status="needs_input", blockers=prior + [precheck["hold_reason"]])
+        if isinstance(support_hold, str):
+            # The object cannot rest where it is scored on the collider the scene would seal: no stage of it
+            # can be scored, so nothing is registered, enqueued or paid for (``website_support_pad``).
+            held = True
+            prior = list(result.get("blockers") or []) if result.get("status") == "needs_input" else []
+            result.update(status="needs_input", blockers=prior + [support_hold])
+    return (preparation["status"] == "intake_ready" and not held
+            and result.get("capability_verdict", {}).get("status") != "abstained")
 
 
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
@@ -235,6 +296,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         atlas = atlas_scene_source(capture_root=capture_root, output_root=root / "atlas")
         handoff_lease_checkpoint("website_scene_handoff_after_source")
         if atlas["status"] != "ready":
+            # The Atlas lane held the task after its review, before buying the scene.
+            from .website_early_task_hold import retain_task_preparation_hold
+            video = clean_plate.get("input_video_path")
+            held = retain_task_preparation_hold(capture_root=capture_root, task_context=context,
+                                                source_video=Path(video) if isinstance(video, str) else None)
+            if held is not None:
+                return held
             result.update(status="awaiting_reconstruction" if atlas["status"] == "pending" else "needs_input",
                 blockers=[atlas["reason"]], geometry_backend=None, provider_mutation_performed=False,
                 visual_reconstruction_ready=False,
@@ -396,6 +464,12 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             if gap is not None:
                 result["source_geometry_digest"] = geometry["digest"]
                 return retain_gap(gap)
+            # Rigid or unknown goes on; the reading, its source and an unknown's flag stay on the record.
+            rigidity = subject_rigidity(context, subjects=subjects, targets=targets, **semantics_options)
+            if rigidity is not None:
+                result["task_object_rigidity"] = rigidity
+                if "flag" in rigidity:
+                    result["flags"] = [rigidity["flag"]]
         # Each articulated task target needs views of its whole assembly from
         # the full track, not only the geometry frames. Retained receipts and
         # decoded frames make a restart free.

@@ -379,7 +379,8 @@ def reissue_renewed_preparation(*, capture_root: str | Path, queue_root: str | P
 
 
 def _native(result: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: result[key] for key in ("runtime_inputs", "capability_verdict") if key in result}
+    return {key: result[key] for key in ("runtime_inputs", "capability_verdict", "robot_fit_precheck", "task_support_pad")
+            if key in result}
 
 
 def _outcome(target: Path, value: dict[str, Any]) -> dict[str, Any]:
@@ -431,6 +432,10 @@ def _register_and_enqueue(*, target, preparation, stored, context_path, workspac
             # Nothing is registered or enqueued: the re-issue stops where the handoff would have.
             verdict = native.get("capability_verdict") or {}
             code = ("website_preparation_renewal_capability_abstained" if verdict.get("status") == "abstained"
+                    else "website_preparation_renewal_robot_fit_none"
+                    if (native.get("robot_fit_precheck") or {}).get("status") == "no_fit"
+                    else "website_preparation_renewal_rigid_support_held"
+                    if (native.get("task_support_pad") or {}).get("hold_reason")
                     else "website_preparation_renewal_appearance_not_authored")
             _outcome(target, {**summary, **_native(native), "status": "held", "blockers": [code]})
             raise ValueError(code)
