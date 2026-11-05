@@ -450,7 +450,7 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
         return None
     if _amount(_budget(ledger, state["site_id"], campaign_id=plan["campaign_id"])["reserved_usd"]) > 0:
         return None
-    stale = False
+    stale = machine = False
     for candidate in plan["candidates"]:
         row = rows[candidate["candidate_id"]]
         frozen = (candidate.get("execution_spec") or {}).get("implementation_commit")
@@ -469,11 +469,11 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
                 # limit still decides every reservation.
                 or row["status"] == "deferred" and row.get("blockers") == [BUDGET_EXHAUSTED_BLOCKER]
                 and frozen not in (None, implementation_commit) and not _spent(row)
-                and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < SITE_LIMIT
-                # Its machine failed while starting the simulator: planned again at any commit, bounded.
-                or _machine_faulted(row)
-                and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])):
+                and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < SITE_LIMIT):
             stale = True
+        # Its machine failed while starting the simulator: planned again at any commit, bounded.
+        machine = machine or (_machine_faulted(row)
+                              and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"]))
     # A candidate whose retries ran out left the chain; a raised retry bound admits it again
     # at the next deploy, once (the plan that re-admits it freezes the new commit).
     frozen_commits = {(candidate.get("execution_spec") or {}).get("implementation_commit")
@@ -487,11 +487,13 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
         # The scene's team half was compiled again since this plan froze it: a half the plan
         # cannot read is not known to differ, so it never re-plans on its own.
         stale = planned_half(plan) not in (None, scene_half)
-    if not stale:
+    if not stale and not machine:
         return None
+    # A machine fault alone changed nothing of ours, so a harness failure beside it waits for its fix:
+    # it is planned again only when the commit (or the scene half) changed.
     return [candidate["candidate_id"] for candidate in plan["candidates"]
             if not _spent(rows[candidate["candidate_id"]])
-            or _harness_failed(rows[candidate["candidate_id"]])
+            or stale and _harness_failed(rows[candidate["candidate_id"]])
             and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])
             or _machine_faulted(rows[candidate["candidate_id"]])
             and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] + dropped or None

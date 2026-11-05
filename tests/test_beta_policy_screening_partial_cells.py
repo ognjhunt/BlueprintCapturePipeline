@@ -560,6 +560,23 @@ def test_a_machine_that_crashed_starting_the_simulator_spends_no_harness_retry_a
         candidate["candidate_id"] for candidate in value["candidates"])
 
 
+def test_a_machine_fault_alone_never_runs_a_harness_failure_again_without_a_deploy(tmp_path):
+    value = make_plan(count=2)
+    crashed, broken = value["candidates"]
+    root = tmp_path / "queue"
+    _, rows, _ = run_campaign(root, value, {crashed["candidate_id"]: {"successes": 0, "stop": "machine", "at": 0},
+                                            broken["candidate_id"]: {"successes": 0, "stop": "setup", "at": 0}})
+    assert coordinator._machine_faulted(rows[crashed["candidate_id"]])
+    assert coordinator._harness_failed(rows[broken["candidate_id"]])
+    ledger = json.loads((root / coordinator.LEDGER_FILENAME).read_text())
+    frozen = crashed["execution_spec"]["implementation_commit"]
+    # Same commit: only the machine fault runs again; the harness failure waits for its fix.
+    assert coordinator._replan_scope(ledger, value, frozen) == [crashed["candidate_id"]]
+    # After a deploy both are planned again (the harness failure within its own bound).
+    assert sorted(coordinator._replan_scope(ledger, value, "f" * 40)) == sorted(
+        [crashed["candidate_id"], broken["candidate_id"]])
+
+
 def test_machine_faults_are_planned_again_a_bounded_number_of_times():
     row = {"status": "blocked", "blockers": ["policy_canary_session_machine_fault:simulator_start_crash"]}
     ledger = {"campaigns": {}}
