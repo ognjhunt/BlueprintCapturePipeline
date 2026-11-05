@@ -38,7 +38,6 @@ from blueprint_pipeline.team_evaluation_worker_retention import (
     seal_runtime_stop_sidecar,
 )
 from blueprint_pipeline.team_embodiment import apply_team_embodiment, is_team_plan
-from blueprint_pipeline.team_policy_episode_outcome import episode_failure_fields
 from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan as _resolved_scene_plan
 from blueprint_pipeline.task_family_policy_canary_execution import (
     _run_family_canary_episode, _construction_lineage_mode, family_render_backend, qualify_family_policy_scene, beta_result_binding,
@@ -1215,33 +1214,6 @@ def _emit_cell_progress(stage: str, index: int, *, progress_path: Path | None = 
     if progress_path is not None:
         with progress_path.open("a", encoding="ascii") as stream:
             stream.write(marker)
-    _write_progress_channel(marker)
-
-
-_EPISODE_STOP_MARKER = "BLUEPRINT_POLICY_CANARY_EPISODE_STOPPED"
-_EPISODE_STOP_STAGES = frozenset({"before_first_observation", "after_first_observation", "action_delivery_rejected"})
-
-
-def _emit_episode_stop(index: int, evidence: Any) -> None:
-    """Name a stopped episode's typed failure on the provider console, which the host keeps.
-
-    The episode's failure record lives in the output archive, which is gone once a
-    run settles; this one line is not. Typed fields only (stage, exception class,
-    leading code), never the message. It never changes execution.
-    """
-    try:
-        value = dict(evidence) if isinstance(evidence, Mapping) else {}
-        fields = episode_failure_fields({**value, "status": "blocked"})
-        stage = value.get("episode_failure_stage")
-        _write_progress_channel(
-            f"{_EPISODE_STOP_MARKER} cell={int(index)} "
-            f"stage={stage if stage in _EPISODE_STOP_STAGES else 'unknown'} "
-            f"type={fields.get('failure_type', 'unknown')} code={fields.get('failure_code', 'untyped')}\n")
-    except Exception:  # noqa: BLE001 - a lost diagnostic line must not change execution
-        return
-
-
-def _write_progress_channel(marker: str) -> None:
     raw_fd = os.environ.get(_CELL_PROGRESS_FD_ENV)
     if raw_fd is None:
         return
@@ -2086,8 +2058,7 @@ def _run_selected_cell(
             result = _run_episode_impl(session, policy, context, episode_progress)
             report_progress("episode_completed")
             return result
-        except PolicyCanaryEpisodeFailure as exc:
-            _emit_episode_stop(selected_cell_index, exc.evidence)
+        except PolicyCanaryEpisodeFailure:
             raise
         except Exception as exc:
             failure_path = _write_episode_failure_gap(
@@ -2097,11 +2068,9 @@ def _run_selected_cell(
                 failure=exc,
                 progress=episode_progress,
             )
-            evidence = _read(failure_path)
-            _emit_episode_stop(selected_cell_index, evidence)
             raise PolicyCanaryEpisodeFailure(
                 cause=exc,
-                evidence=evidence,
+                evidence=_read(failure_path),
             ) from exc
 
     def close_policy(policy: Mapping[str, Any]) -> None:

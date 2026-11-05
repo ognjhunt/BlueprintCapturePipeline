@@ -72,37 +72,6 @@ def test_cell_progress_only_emits_fixed_milestones(tmp_path, monkeypatch) -> Non
             os.close(write_fd)
 
 
-def test_a_stopped_episode_names_its_typed_failure_on_the_console(tmp_path, monkeypatch) -> None:
-    """2026-11-05: ten episodes stopped before the first policy query and the archive holding
-    why was gone at settlement. One typed line per stopped episode reaches the console the host
-    keeps; never the message."""
-    read_fd, write_fd = os.pipe()
-    try:
-        monkeypatch.setenv(worker._CELL_PROGRESS_FD_ENV, str(write_fd))
-        worker._emit_episode_stop(3, {
-            "episode_failure_stage": "before_first_observation", "failure_type": "PolicyEpisodeError",
-            "failure_message": "policy_episode_prestart_readiness_failed:reset_joint_state_out_of_bounds at /secret/path",
-            "failure_code": "policy_episode_prestart_readiness_failed:reset_joint_state_out_of_bounds"})
-        worker._emit_episode_stop(4, {"failure_message": "free text with /a/path", "failure_type": "not a name",
-                                      "episode_failure_stage": "made_up"})
-        worker._emit_episode_stop(5, None)
-        os.close(write_fd)
-        write_fd = -1
-        assert os.read(read_fd, 4096).decode().splitlines() == [
-            "BLUEPRINT_POLICY_CANARY_EPISODE_STOPPED cell=3 stage=before_first_observation type=PolicyEpisodeError"
-            " code=policy_episode_prestart_readiness_failed:reset_joint_state_out_of_bounds",
-            "BLUEPRINT_POLICY_CANARY_EPISODE_STOPPED cell=4 stage=unknown type=unknown code=untyped",
-            "BLUEPRINT_POLICY_CANARY_EPISODE_STOPPED cell=5 stage=unknown type=unknown code=untyped",
-        ]
-        # A lost channel never changes execution.
-        monkeypatch.setenv(worker._CELL_PROGRESS_FD_ENV, "not-a-number")
-        worker._emit_episode_stop(6, {})
-    finally:
-        os.close(read_fd)
-        if write_fd >= 0:
-            os.close(write_fd)
-
-
 def _scene_plan() -> dict[str, object]:
     value: dict[str, object] = {
         "schema_version": "native_task_arena_scene_plan.v1",

@@ -103,6 +103,21 @@ def episode_failure_fields(row: Mapping[str, Any]) -> dict[str, str]:
     return fields
 
 
+EPISODE_STOP_MARKER = "BLUEPRINT_POLICY_CANARY_EPISODE_STOPPED"
+_EPISODE_STOP_STAGES = frozenset({"before_first_observation", "after_first_observation", "action_delivery_rejected"})
+_CELL_INDEX = re.compile(r"[0-9]{1,4}")
+
+
+def episode_stop_line(cell_index: Any, record: Any) -> str:
+    """The one console line naming a stopped episode: cell, stage, exception class and leading code."""
+    value = record if isinstance(record, Mapping) else {}
+    fields = episode_failure_fields({**value, "status": "blocked"})
+    stage = value.get("episode_failure_stage")
+    cell = str(cell_index) if _CELL_INDEX.fullmatch(str(cell_index)) else "unknown"
+    return (f"{EPISODE_STOP_MARKER} cell={cell} stage={stage if stage in _EPISODE_STOP_STAGES else 'unknown'} "
+            f"type={fields.get('failure_type', 'unknown')} code={fields.get('failure_code', 'untyped')}\n")
+
+
 def first_batch_failure(rows: Sequence[Mapping[str, Any]]) -> str | None:
     reasons: dict[str, int] = {}
     for row in rows:
