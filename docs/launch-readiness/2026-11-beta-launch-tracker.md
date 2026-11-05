@@ -21,7 +21,14 @@ Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door
   - the Cloud Run team-scene lane, inert until configured (#3331).
 
   The re-plan froze 63fa4d739 for cosmos3, molmoact2 and pi0_droid_jointpos_100k_polaris. WebApp #1220 (practice-run cache privacy fixes) had been live since 16:30Z.
-- Merged after it, not yet deployed: #3401 (harness retry limit 7, the other session).
+- `64e25c2cd` (live about 17:25Z, the other session): #3401, harness retry limit 7.
+- `3aa16eda8` (21:16Z request, live 21:37Z, this session). Deployed as a money fix while pi0_droid_jointpos_100k_polaris was running (it closed at 21:27Z); cosmos3 and molmoact2 were waiting for GPU capacity with no machine allocated. It carried:
+  - #3404: DROID policies on the RoboLab path had been fed their gripper state inverted. The adapter measured Robotiq inner-finger body origins (0 m open, 0.083 m closed) against the probe's pad-centre endpoints, so open read as closed. Rigid release was scored the same way. The fix binds the servo's pad readback. Plans now carry `screening_harness_revision` 1, and robolab.v1 results under revision 0 are not counted: each such candidate is planned again once, inside the site's allowance (owner approval 2026-11-05).
+  - #3403: a simulator start-up crash on the rented machine is a machine fault, never a harness retry.
+  - #3402: this tracker's earlier entry.
+
+  capture-447 results made before it are not counted: pi05 9 scored / 0 succeeded, groot 10 / 0 (two runs moved the tray), pi0_droid_jointpos_100k_polaris 10 / 0. Site spend at deploy: $16.18 of $30.
+- Merged after it, not yet deployed: #3405 (the same pad readback in the controls gate, controls worker, policy worker and `controlled_native_isaac`; no beta screening path).
 
 ## Operating notes (2026-11-02)
 
