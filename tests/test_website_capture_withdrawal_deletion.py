@@ -191,7 +191,8 @@ def world(tmp_path):
     resolution = {"run_roots": (launches, canaries, prepared), "intent_root": control / "task-evaluation-scene-intents",
                   "binding_root": control / "website-source-bindings",
                   "object_store": deletion.B2ObjectVersions(store, BUCKET), "uncovered_roots": (uncovered,),
-                  "scan_offloaded_archives": True}
+                  "scan_offloaded_archives": True, "screening_queue_root": control / "beta-policy-screening",
+                  "screening_work_root": tmp_path / "work/beta-policy-screening-work"}
     return {"capture": capture, "site": capture.parents[1], "store": store, "resolution": resolution,
             "construction": construction, "canary": canary, "other": other, "launches": launches,
             "prepared": prepared / intent_id, "review": review, "offloaded": offloaded, "workspace": workspace,
@@ -516,7 +517,9 @@ def test_cli_delete_is_a_dry_run_unless_applied_with_authorization(world, tmp_pa
         roots += ["--run-root", str(root)]
     argv = ["website_capture_withdrawal", "delete", "--capture-root", str(world["capture"]), *roots,
             "--intent-root", str(world["resolution"]["intent_root"]),
-            "--binding-root", str(world["resolution"]["binding_root"])]
+            "--binding-root", str(world["resolution"]["binding_root"]),
+            "--screening-queue-root", str(world["resolution"]["screening_queue_root"]),
+            "--screening-work-root", str(world["resolution"]["screening_work_root"])]
     before = _snapshot(tmp_path)
     monkeypatch.setattr(sys, "argv", argv)
     withdrawal.main()

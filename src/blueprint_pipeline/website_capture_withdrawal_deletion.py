@@ -23,6 +23,12 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   artifacts name, with each object version and delete marker listed through
   the existing artifact store client, and every archived Atlas preview of the
   site's walkthrough (found by its name, so also after workspace retirement);
+- every beta policy screening attempt of a campaign bound to the site by the
+  screening ledger, and the provider output archives its promotion receipts name
+  (``website_capture_withdrawal_screening``): one whose money is final and whose
+  staged objects are proven absent is deleted; one still active, reserved,
+  unsettled or with unproven staged objects is deferred with a typed reason until
+  a later run. Ledger rows, and so the site budget, are never touched;
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
 
 The plan reads every run's JSON records once (streamed, any size), so it is an
@@ -54,6 +60,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from . import website_capture_withdrawal as withdrawal
+from . import website_capture_withdrawal_screening as screening
 from .control_plane_storage_roots import roots_of_class
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
@@ -216,8 +223,13 @@ def _lineage_intents(identity: Mapping[str, str], site: Path, intent_root: Path 
 
 
 def _inventory(directory: Path) -> list[list[Any]]:
+    def unreadable(error: OSError) -> None:
+        # A directory that is gone inventories as empty; anything inside it that cannot be listed refuses.
+        if not (isinstance(error, FileNotFoundError) and error.filename == os.fspath(directory)):
+            raise WithdrawalDeletionError("website_withdrawal_deletion_record_unreadable") from error
+
     rows = []
-    for root, directories, files in os.walk(directory):
+    for root, directories, files in os.walk(directory, onerror=unreadable):
         for name in sorted((*directories, *files)):
             path = Path(root) / name
             info = os.lstat(path)
@@ -452,7 +464,9 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                              intent_root: Path | None = DEFAULT_INTENT_ROOT,
                              binding_root: Path | None = DEFAULT_BINDING_ROOT, object_store: Any = None,
                              cloud_storage: Any = None, scan_offloaded_archives: bool = False,
-                             uncovered_roots: Sequence[Path] = UNCOVERED_ROOTS) -> dict[str, Any]:
+                             uncovered_roots: Sequence[Path] = UNCOVERED_ROOTS,
+                             screening_queue_root: Path | None = screening.DEFAULT_QUEUE_ROOT,
+                             screening_work_root: Path | None = screening.DEFAULT_WORK_ROOT) -> dict[str, Any]:
     """Resolve every Pipeline-controlled copy of the site; reads only (the GCS plan is the existing one)."""
 
     site, identity = _site_identity(Path(capture_root))
@@ -505,11 +519,15 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                      "leftovers": [str(path) for path in unit["leftovers"]], "object_uris": uris,
                      "judged_by": unit["judged_by"]})
     workspace = _scene_workspace(site, identity, unresolved)
+    screened, foreign_uris = screening.plan_screening(identity, lineage["intents"], queue_root=screening_queue_root,
+                                                      work_root=screening_work_root, unresolved=unresolved,
+                                                      site_root=site)
     uris = sorted({uri for run in runs for uri in run["object_uris"]}
+                  | {uri for attempt in screened["attempts"] for uri in attempt["object_uris"]}
                   | ({workspace["archive_uri"]} if workspace["archive_uri"] else set())
                   | set(_atlas_preview_uris(object_store, identity, unresolved)))
     # A content-addressed object an unbound run also names is not this site's to delete.
-    unbound_uris = set()
+    unbound_uris = set(foreign_uris)
     for key, unit in units.items():
         if key not in bound:
             unbound_uris.update(filter(None, map(_pointer_uri, unit["pointer_values"])))
@@ -536,7 +554,7 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
         "legal_hold": identity["legal_hold"], "site_root": str(site),
         "scene_files": {"count": len(local), "digest": canonical_digest({"rows": [
             [row["path"], row["size"], row["inode"], row["mtime_ns"]] for row in local]})},
-        "scene_workspace": workspace, "runs": runs, "objects": objects,
+        "scene_workspace": workspace, "runs": runs, "screening": screened, "objects": objects,
         "object_bucket": getattr(object_store, "bucket", None),
         "cloud_plan_digest": cloud["digest"] if cloud else None,
         "cloud_bucket": cloud["bucket"] if cloud else None,
@@ -567,6 +585,7 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
                       "intents": plan["lineage"]["intents"],
                       "reason": "the withdrawal journal and source registrations/intents carry identifiers, "
                                 "not capture bytes, and stay as audit"})
+    remaining.extend(screening.remaining(plan["screening"]))
     return remaining
 
 
@@ -579,6 +598,9 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     in progress refuses (``atlas_preview_busy``) and the operator retries. It holds
     each capture's screening review-video retention lock the same way
     (``review_videos_busy``), so no video is copied in while the site is deleted.
+    The screening deletes come first, after their re-plan under the screening
+    coordinator's ledger lock, which is released before any of them
+    (``website_capture_withdrawal_screening.apply_screening``).
     """
 
     _require(authorize_complete_deletion is True, "explicit_authorization_required")
@@ -626,7 +648,19 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     _require(not plan["unresolved"], "unresolved_copies")
     _require(plan["legal_hold"] is False, "legal_hold")
     store, deleted = resolution.get("object_store"), {"objects": [], "runs": [], "files": []}
+    # Screening first: if its attempts changed since the plan, nothing at all is deleted.
+    screened = {uri for attempt in plan["screening"]["attempts"] for uri in attempt["object_uris"]}
+    identity = {key: plan[key] for key in ("request_id", "scene_id", "capture_id")}
+    removed, screening_objects = screening.apply_screening(
+        plan["screening"], [row for row in plan["objects"] if row["uri"] in screened], store,
+        lambda unresolved: screening.plan_screening(
+            identity, plan["lineage"]["intents"], unresolved=unresolved, site_root=Path(plan["site_root"]),
+            **{f"{name}_root": Path(plan["screening"][f"{name}_root"]) if plan["screening"][f"{name}_root"] else None
+               for name in ("queue", "work")}))
+    deleted["objects"].extend(screening_objects)
     for row in plan["objects"]:
+        if row["uri"] in screened:
+            continue
         for key, version in row["versions"]:
             store.delete(key, version)
         _require(store.versions(row["uri"]) == [], "object_versions_remaining")
@@ -668,10 +702,14 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
         **{key: plan[key] for key in ("request_id", "scene_id", "capture_id", "tombstone_digest")},
         "deleted": {**deleted, "scene_files": len(local_plan["files"]),
                     "scene_local_cleanup_receipt_digest": local["local_cleanup_receipt_digest"],
-                    "capture_source_bucket_prefix": f"scenes/{plan['scene_id']}/" if cloud_storage else None},
+                    "capture_source_bucket_prefix": f"scenes/{plan['scene_id']}/" if cloud_storage else None,
+                    "beta_screening": screening.receipt_section(plan["screening"], removed, store,
+                                                                screening_objects)},
         "remaining": remaining,
-        "covered_copies_deleted": True,
-        "pipeline_controlled_deletion_complete": not plan["uncovered_pipeline_roots"] and cloud_storage is not None,
+        # A deferred screening attempt is covered but not yet deleted.
+        "covered_copies_deleted": not plan["screening"]["deferred"],
+        "pipeline_controlled_deletion_complete": (not plan["uncovered_pipeline_roots"] and cloud_storage is not None
+                                                  and not screening.incomplete(plan["screening"])),
         "provider_copies_deleted": False, "physical_erasure_proven": False,
         "applied_at_iso": datetime.now(timezone.utc).isoformat(),
     }
@@ -688,7 +726,8 @@ def run_cli(args: Any) -> dict[str, Any]:
     cloud = withdrawal.GoogleWebsiteCleanupStorage(args.bucket) if args.bucket else None
     resolution = {"run_roots": tuple(args.run_root or DEFAULT_RUN_ROOTS), "intent_root": args.intent_root,
                   "binding_root": args.binding_root, "object_store": store, "cloud_storage": cloud,
-                  "scan_offloaded_archives": args.scan_offloaded_archives}
+                  "scan_offloaded_archives": args.scan_offloaded_archives,
+                  "screening_queue_root": args.screening_queue_root, "screening_work_root": args.screening_work_root}
     if not args.apply:
         return {"mode": "dry_run", "plan": plan_withdrawal_deletion(capture_root=args.capture_root, **resolution)}
     return apply_withdrawal_deletion(capture_root=args.capture_root, expected_plan_digest=args.expected_plan_digest
@@ -703,6 +742,10 @@ def add_cli_arguments(parser: Any) -> None:
     parser.add_argument("--binding-root", type=Path, default=DEFAULT_BINDING_ROOT)
     parser.add_argument("--object-store", action="store_true",
                         help="Use the configured B2 artifact store client to list and delete object versions")
+    parser.add_argument("--screening-queue-root", type=Path, default=screening.DEFAULT_QUEUE_ROOT,
+                        help="Beta screening queue root holding the ledger and plans")
+    parser.add_argument("--screening-work-root", type=Path, default=screening.DEFAULT_WORK_ROOT,
+                        help="Beta screening work root holding attempt directories")
     parser.add_argument("--scan-offloaded-archives", action="store_true",
                         help="Read offloaded run archives whose pointer cannot show their site")
     parser.add_argument("--apply", action="store_true", help="Delete; without it the deletion is a dry run")
