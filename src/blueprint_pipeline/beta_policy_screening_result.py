@@ -256,7 +256,7 @@ def screening_publication(
             "session_result_digest": summary.get("session_result_digest"),
             **_publication_execution_evidence(configured, summary),
         })
-        entry = publication_entry(configured["candidate_id"], summary) if row["status"] == "completed" else None
+        entry = publication_entry(candidates[-1], summary) if row["status"] == "completed" else None
         if entry is not None:
             review_videos.append(entry)
     value = {

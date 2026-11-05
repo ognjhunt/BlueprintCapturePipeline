@@ -27,7 +27,7 @@ def register_beta_screening_review_video_routes(app: FastAPI, *, require_admissi
     @app.get("/api/live-pipeline/beta-screening-review-videos/{video_sha256}",
              dependencies=[Depends(require_admission)])
     async def read_review_video(request: Request, video_sha256: str, request_id: str = "",
-                                capture_id: str = "") -> StreamingResponse:
+                                capture_id: str = "", manifest_digest: str = "") -> StreamingResponse:
         if (not request.headers.get("x-blueprint-pipeline-signature")
                 or getattr(request.state, "intake_client_id", "") != "blueprint-webapp"):
             raise HTTPException(status_code=403, detail="screening review video issuer not authorized")
@@ -35,7 +35,8 @@ def register_beta_screening_review_video_routes(app: FastAPI, *, require_admissi
         storage_root = Path(configured) if configured and Path(configured).is_absolute() else None
         try:
             stream, size = await run_in_threadpool(open_video, request_id=request_id, capture_id=capture_id,
-                                                   digest="sha256:" + video_sha256, storage_root=storage_root)
+                                                   digest="sha256:" + video_sha256, storage_root=storage_root,
+                                                   manifest_digest=manifest_digest or None)
         except PreviewUnavailable:
             raise HTTPException(status_code=404, detail="beta_screening_review_video_unavailable") from None
         except Exception as exc:  # noqa: BLE001 - name only the class

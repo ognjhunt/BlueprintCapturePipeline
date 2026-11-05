@@ -31,9 +31,9 @@ PLENTY = SimpleNamespace(free=10**15)
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _mp4(milliseconds: int, filler: bytes) -> bytes:
-    """A minimal MP4: ftyp, mdat, then moov holding a version-0 mvhd at a 1 kHz timescale."""
-    mvhd_body = bytes(4) + struct.pack(">IIII", 0, 0, 1000, milliseconds) + bytes(80)
+def _mp4(milliseconds: int, filler: bytes, timescale: int = 1000) -> bytes:
+    """A minimal MP4: ftyp, mdat, then moov holding a version-0 mvhd (a 1 kHz timescale by default)."""
+    mvhd_body = bytes(4) + struct.pack(">IIII", 0, 0, timescale, milliseconds) + bytes(80)
     mvhd = struct.pack(">I4s", 8 + len(mvhd_body), b"mvhd") + mvhd_body
     return (struct.pack(">I4s", 16, b"ftyp") + b"isom" + bytes(4)
             + struct.pack(">I4s", 8 + len(filler), b"mdat") + filler
@@ -384,3 +384,138 @@ def test_mp4_duration_reads_both_header_versions_and_refuses_anything_else(tmp_p
     for data in (b"", b"not an mp4 at all", struct.pack(">I4s", 4, b"moov")):
         path.write_bytes(data)
         assert videos.mp4_duration_seconds(path) is None
+    # A header stating more than a day is not trusted: the website refuses such a duration.
+    path.write_bytes(_mp4(100_000, b"x", timescale=1))
+    assert videos.mp4_duration_seconds(path) is None
+    path.write_bytes(_mp4(86_400, b"x", timescale=1))
+    assert videos.mp4_duration_seconds(path) == 86_400
+
+
+def test_an_out_of_range_duration_never_reaches_the_ledger_or_the_publication(world):
+    reference = _retain(world)
+    for bad in (100_000.0, -1.0, float("nan"), True):
+        tampered = json.loads(json.dumps(reference))
+        tampered["videos"][0]["duration_seconds"] = bad
+        assert videos.valid_reference(tampered) is None
+    summary = {"review_videos": json.loads(json.dumps(reference)), "episode_outcomes": [
+        {"cell_id": cell["cell_id"], "outcome": "success"} for cell in world.candidate["scenario_cells"]]}
+    summary["review_videos"]["videos"][0]["duration_seconds"] = 100_000.0
+    row = {"candidate_id": "candidate-000", "status": "completed", "episodes_planned": 10, "episodes_succeeded": 10,
+           "episodes_failed": 0, "episodes_void": 0}
+    entry = videos.publication_entry(row, summary)
+    assert entry is not None and entry["practice_runs"][0]["videos"][0]["duration_seconds"] is None
+    assert videos.publication_entry_valid(entry, row)
+
+
+@pytest.mark.parametrize("change", ["cell_id", "counts", "camera", "size", "outcome", "no_videos"])
+def test_an_entry_the_website_would_refuse_is_left_out_and_the_result_still_published(world, change):
+    reference = _retain(world)
+    outcomes = [{"cell_id": cell["cell_id"], "outcome": "success"} for cell in world.candidate["scenario_cells"]]
+    row = {"candidate_id": "candidate-000", "status": "completed", "episodes_planned": 10, "episodes_succeeded": 10,
+           "episodes_failed": 0, "episodes_void": 0}
+    summary = {"review_videos": json.loads(json.dumps(reference)), "episode_outcomes": outcomes}
+    assert videos.publication_entry(row, summary) is not None
+    if change == "cell_id":
+        outcomes[0]["cell_id"] = "not an identifier"
+    elif change == "counts":
+        row["episodes_succeeded"], row["episodes_failed"] = 9, 1
+    elif change == "camera":
+        summary["review_videos"]["videos"][0]["camera"] = "Side View"
+    elif change == "size":
+        summary["review_videos"]["videos"][0]["size_bytes"] = videos.MAX_VIDEO_BYTES + 1
+    elif change == "outcome":
+        outcomes[0]["outcome"] = "maybe"
+    else:
+        summary["review_videos"]["videos"] = [dict(video, cell_id="elsewhere") for video in reference["videos"]]
+    assert videos.publication_entry(row, summary) is None
+
+
+def test_production_acceptance_reads_a_publication_with_practice_run_videos():
+    from blueprint_pipeline.production_autonomy_acceptance import AcceptanceEvidenceError, _publication_contract
+
+    fixture = json.loads((ROOT / "tests/fixtures/beta_policy_screening_review_videos_publication.v2.json").read_text())
+    assert _publication_contract(fixture)["schema_version"] == "beta_policy_screening_publication.v2"
+
+    def sealed(value):
+        return {**value, "publication_digest": cross_runtime_canonical_digest(value, digest_field="publication_digest")}
+    broken = json.loads(json.dumps(fixture))
+    broken["review_videos"][0]["practice_runs"][0]["outcome"] = "failure"
+    with pytest.raises(AcceptanceEvidenceError, match="publication_contract_invalid"):
+        _publication_contract(sealed(broken))
+    retained = {**json.loads(json.dumps(fixture)), "schema_version": "beta_policy_screening_publication.v1",
+                "purpose": "screening", "claim_ceiling": "diagnostic_policy_execution", "recommendation_eligible": False}
+    with pytest.raises(AcceptanceEvidenceError, match="publication_contract_invalid"):
+        _publication_contract(sealed(retained))
+
+
+def test_a_pass_waits_for_withdrawal_deletion_and_never_recreates_a_removed_capture(world, monkeypatch):
+    import fcntl
+
+    base = world.capture / "pipeline" / videos.DIRNAME
+    base.mkdir()
+    monkeypatch.setattr(videos, "LOCK_WAIT_SECONDS", 0)
+    with (base / videos.LOCK_NAME).open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert _retain(world)["blockers"] == ["beta_screening_review_videos_capture_busy"]
+    assert not world.directory.exists()
+    import shutil
+    shutil.rmtree(world.capture / "pipeline")
+    reference = _retain(world)
+    assert reference["blockers"] == [videos.CHANGED] and not (world.capture / "pipeline").exists()
+
+
+def test_a_capture_withdrawn_mid_copy_loses_what_was_copied_and_gets_no_manifest(world, monkeypatch):
+    copy = videos._copy
+
+    def withdraw_after_first(*args, **kwargs):
+        record = copy(*args, **kwargs)
+        if not (world.capture.parent.parent / "website_withdrawal").exists():
+            _withdraw(world.capture)
+        return record
+    monkeypatch.setattr(videos, "_copy", withdraw_after_first)
+    assert _retain(world)["blockers"] == [videos.CHANGED]
+    assert not world.directory.exists()
+
+
+def test_a_capture_replaced_mid_copy_is_never_written_into(world, monkeypatch):
+    copy, moved = videos._copy, world.capture.with_name("walkthrough-job-1.old")
+
+    def replace_after_first(*args, **kwargs):
+        record = copy(*args, **kwargs)
+        if not moved.exists():
+            world.capture.rename(moved)
+            (world.capture / "pipeline").mkdir(parents=True)
+        return record
+    monkeypatch.setattr(videos, "_copy", replace_after_first)
+    assert _retain(world)["blockers"] == [videos.CHANGED]
+    assert list((world.capture / "pipeline").iterdir()) == []
+
+
+def test_every_streamed_write_keeps_the_free_space_floor(world, tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_configured_scene_object_store as object_store
+
+    index = _promoted_index(world, tmp_path)
+    monkeypatch.setattr(videos, "_source", lambda _lane: ("promoted_archive", index))
+    monkeypatch.setattr(object_store, "presign_configured_scene_artifact", lambda **_kw: URL)
+    calls = []
+
+    def filling(_path):
+        calls.append(1)
+        return PLENTY if len(calls) == 1 else SimpleNamespace(free=1)
+    reference = _retain(world, opener=RangeStore(world.archive).opener, disk_usage=filling)
+    assert reference["status"] == "not_retained" and videos.NO_SPACE in reference["blockers"]
+    assert len(calls) > 1 and not world.directory.exists()
+
+
+def test_a_video_is_found_however_many_attempts_the_capture_has(world):
+    reference = _retain(world)
+    for index in range(70):
+        (world.capture / "pipeline" / videos.DIRNAME / f"a{index:03d}").mkdir()
+    video = reference["videos"][0]
+    stream, _size = videos.open_video(request_id="job-1", capture_id="walkthrough-job-1", digest=video["sha256"],
+                                      storage_root=world.storage, manifest_digest=reference["manifest_digest"])
+    stream.close()
+    from blueprint_pipeline.website_atlas_preview_store import PreviewUnavailable
+    with pytest.raises(PreviewUnavailable):
+        videos.open_video(request_id="job-1", capture_id="walkthrough-job-1", digest=video["sha256"],
+                          storage_root=world.storage, manifest_digest="sha256:" + "0" * 64)

@@ -576,7 +576,9 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
 
     It holds every same-site Atlas preview lock throughout, so no preview step can
     publish a new copy between this plan's object listing and its deletion; a step
-    in progress refuses (``atlas_preview_busy``) and the operator retries.
+    in progress refuses (``atlas_preview_busy``) and the operator retries. It holds
+    each capture's screening review-video retention lock the same way
+    (``review_videos_busy``), so no video is copied in while the site is deleted.
     """
 
     _require(authorize_complete_deletion is True, "explicit_authorization_required")
@@ -600,6 +602,19 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise WithdrawalDeletionError("website_withdrawal_deletion_atlas_preview_busy") from None
+        from .beta_screening_review_videos import DIRNAME as REVIEW_VIDEOS, LOCK_NAME as REVIEW_LOCK
+        for path in sorted(site.glob(f"captures/*/pipeline/{REVIEW_VIDEOS}/{REVIEW_LOCK}")):
+            _require(not any(item.is_symlink() for item in (path, *path.parents)), "unsafe_entry")
+            try:
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError:
+                raise WithdrawalDeletionError("website_withdrawal_deletion_review_videos_lock_unsafe") from None
+            lock = locks.enter_context(os.fdopen(descriptor, "rb"))
+            _require(stat.S_ISREG(os.fstat(lock.fileno()).st_mode), "review_videos_lock_unsafe")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise WithdrawalDeletionError("website_withdrawal_deletion_review_videos_busy") from None
         return _apply_withdrawal_deletion(capture_root=capture_root, expected_plan_digest=expected_plan_digest,
                                           **resolution)
 
