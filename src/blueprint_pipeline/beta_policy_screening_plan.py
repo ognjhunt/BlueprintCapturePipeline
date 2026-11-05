@@ -38,7 +38,13 @@ QUOTE_SCHEMA_VERSION = "beta_policy_screening_cost_quote.v1"
 # Decision Proof qualified or physical evidence. It does not limit the job's
 # use of its own result, which is published as a simulation estimate.
 CLAIM_CEILING = "diagnostic_policy_execution"
-SITE_BUDGET_USD = Decimal("15.00")
+#: The most one plan may budget: the site's whole screening allowance (the coordinator's
+#: ``SITE_LIMIT``, raised from $15 on 2026-11-05 on the owner's approval).
+SITE_BUDGET_USD = Decimal("30.00")
+#: What a plan budgets when its caller names nothing: one campaign's share. A re-plan is a
+#: new campaign, so a site reaches its allowance across re-plans; the site limit decides
+#: every reservation either way.
+CAMPAIGN_BUDGET_USD = Decimal("15.00")
 # A runnable candidate the budget cannot fund yet. Plans built before the
 # waitlist list such rows as ``deferred`` with the same reason and no
 # execution fields; those stay valid and are never funded.
@@ -462,7 +468,7 @@ def _site_fitted_quote(quote: Mapping[str, Any], available: Decimal, *, floor: D
 
 
 def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *, campaign_id: str,
-                         candidate_ids: Sequence[str] | None = None, budget_usd: str = "15.00",
+                         candidate_ids: Sequence[str] | None = None, budget_usd: str = str(CAMPAIGN_BUDGET_USD),
                          episodes_per_candidate: int = DEFAULT_EPISODES,
                          capabilities: Mapping[str, Any] | None = None,
                          cost_quotes: Mapping[str, Any] | None = None,
@@ -863,7 +869,7 @@ def _job_ceiling_available(record: Any) -> Decimal:
 
 
 def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *,
-                                     job_ceiling: Mapping[str, Any], budget_usd: str = "15.00",
+                                     job_ceiling: Mapping[str, Any], budget_usd: str = str(CAMPAIGN_BUDGET_USD),
                                      **options: Any) -> dict[str, Any]:
     """``build_screening_plan`` within its website job's one dollar ceiling.
 
@@ -900,7 +906,7 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
 
 
 __all__ = ["PLAN_SCHEMA_VERSION", "QUOTE_SCHEMA_VERSION", "EXECUTION_SCHEMA_VERSION", "CLAIM_CEILING",
-           "DISABLED_BLOCKER", "SITE_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
+           "DISABLED_BLOCKER", "SITE_BUDGET_USD", "CAMPAIGN_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
            "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "TASK_KIND_BLOCKERS", "WAITLISTED",
            "WAITLIST_BLOCKER", "BetaPolicyScreeningPlanError", "build_job_ceiling_screening_plan",
            "build_screening_plan", "catalog_blockers",

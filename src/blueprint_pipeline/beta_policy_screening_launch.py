@@ -78,6 +78,8 @@ def _identity(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str
 
 
 def _check_quote(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
+    from .beta_policy_screening_plan import SITE_BUDGET_USD
+
     quote = candidate["cost_quote"]
     expires = datetime.fromisoformat(str(quote["valid_until"]).replace("Z", "+00:00"))
     cap = Decimal(str(candidate["max_cost_usd"]))
@@ -85,7 +87,7 @@ def _check_quote(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
     rate = Decimal(str(execution["max_hourly_rate_usd"]))
     ttl = execution["hard_ttl_seconds"]
     if (expires.tzinfo is None or expires <= datetime.now(timezone.utc)
-            or not cap.is_finite() or not Decimal("0") < cap <= Decimal(str(plan["budget_usd"])) <= Decimal("15")
+            or not cap.is_finite() or not Decimal("0") < cap <= Decimal(str(plan["budget_usd"])) <= SITE_BUDGET_USD
             or not rate.is_finite() or rate <= 0 or type(ttl) is not int or ttl < 1800
             or rate * Decimal(ttl) / Decimal(3600) > cap
             or quote.get("quote_digest") != canonical_digest(quote, digest_field="quote_digest")

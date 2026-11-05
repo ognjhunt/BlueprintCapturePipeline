@@ -94,7 +94,8 @@ def test_waitlist_never_takes_money_planned_for_a_pending_candidate(tmp_path):
     assert statuses(tmp_path) == ["pending"] * 3 + ["waitlisted"]
 
 
-def test_waitlist_waits_while_another_campaign_holds_a_reservation(tmp_path):
+def test_waitlist_waits_while_another_campaign_holds_a_reservation(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator, "SITE_LIMIT", Decimal("15"))  # two $8 campaigns, one fits
     first = plan(cost="8.00")
     second = waitlisted_plan(campaign_id="campaign-2", cost="8.00", count=1)
     for value in (first, second):

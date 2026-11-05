@@ -88,7 +88,7 @@ def test_proven_slot_race_archives_zero_spend_intent_and_uses_one_fresh_attempt(
     assert old["capacity_refusal_receipt"] == _record(backend.paths[0] / "allocator_result.json")
     assert "launch_intent_at" in old and "launch_intent_at" not in waiting["attempt"]
     assert waiting["attempt"]["attempt_id"] != old["attempt_id"] and waiting["attempt"]["generation"] == 1
-    assert publication(tmp_path)["budget"] == {"currency": "USD", "limit_usd": "15",
+    assert publication(tmp_path)["budget"] == {"currency": "USD", "limit_usd": "30",
         "reserved_usd": "4", "spent_upper_bound_usd": "0", "committed_upper_bound_usd": "4"}
     process(tmp_path, backend)
     assert backend.launches == 1 and backend.allocations == 0
