@@ -1018,7 +1018,8 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
             _settle(root, attempt, candidate)
             if isinstance(observation.get("result"), Mapping):
                 try:
-                    summary = candidate_result_summary(observation["result"], plan=plan, candidate=candidate)
+                    summary = candidate_result_summary(observation["result"], plan=plan, candidate=candidate,
+                                                       review_videos=observation.get("review_videos"))
                 except (ValueError, TypeError, KeyError):
                     row.update(status="blocked", blockers=["beta_screening_native_result_invalid"])
                 else:

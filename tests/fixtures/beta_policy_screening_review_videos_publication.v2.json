@@ -1,0 +1,235 @@
+{
+  "budget": {
+    "committed_upper_bound_usd": "4",
+    "currency": "USD",
+    "limit_usd": "15",
+    "reserved_usd": "0",
+    "spent_upper_bound_usd": "4"
+  },
+  "campaign_id": "campaign-1",
+  "candidates": [
+    {
+      "blockers": [],
+      "candidate_id": "candidate-000",
+      "configuration_digest": "sha256:d0fe07a1db1f5ca7135355ff8d1245491268aa2a3570ee9319ffadcc891c626d",
+      "display_name": "candidate-000",
+      "episodes_failed": 3,
+      "episodes_planned": 10,
+      "episodes_scored": 10,
+      "episodes_succeeded": 7,
+      "episodes_void": 0,
+      "session_result_digest": "sha256:74f3dbb0b3accfada0544a9ce95e954b3cb19335671b202c88404479df70d7dd",
+      "status": "completed",
+      "success_rate": 0.7
+    }
+  ],
+  "catalog_digest": "sha256:062891064b414e27ee37e454392a00981eb0d44f94a2a9baafd04edadc5971a1",
+  "claim_ceiling": "simulation_estimate",
+  "execution_operator": {
+    "kind": "blueprint"
+  },
+  "generated_at": "2026-11-05T13:40:38.559656+00:00",
+  "plan_digest": "sha256:b4cc4e9fe780b7953a56f71ea32240760b200b80a172fc89afbdb03f5fdddc6f",
+  "publication_digest": "sha256:ca2ea5cb7f7fc719f38c14f71c19d5e5c532ad61b9a3be64b7e91fe7a6130798",
+  "purpose": "job_evaluation",
+  "review_videos": [
+    {
+      "candidate_id": "candidate-000",
+      "manifest_digest": "sha256:26b495ca02ad2fd86b9637415dfc1126f9e3b4df13ecfa8d01b29600ee047d58",
+      "practice_runs": [
+        {
+          "cell_id": "screening.site-job-1.000",
+          "outcome": "success",
+          "videos": [
+            {
+              "camera": "external",
+              "duration_seconds": 2.5,
+              "phase": "run",
+              "sha256": "sha256:f67e3eed9df418206b0871ece76f35e476ce3a87963d18d53d14d0232564b5c5",
+              "size_bytes": 2252
+            },
+            {
+              "camera": "overview",
+              "duration_seconds": 2.5,
+              "phase": "run",
+              "sha256": "sha256:ca837f6da59471273c16e686da698b001c304a90f7c19cedc47c4c4a92f250ca",
+              "size_bytes": 2252
+            },
+            {
+              "camera": "wrist",
+              "duration_seconds": 2.5,
+              "phase": "run",
+              "sha256": "sha256:f2cfb8914c0490d93c60829b09b12aaa4039c02fb8a992683a97577a5aa09f91",
+              "size_bytes": 2060
+            },
+            {
+              "camera": "external",
+              "duration_seconds": 0.25,
+              "phase": "setup_check",
+              "sha256": "sha256:a9aafefc4d3afa0f90c96510f23c36978789417341d6b6244f15cb9e889cc0d1",
+              "size_bytes": 179
+            },
+            {
+              "camera": "overview",
+              "duration_seconds": 0.25,
+              "phase": "setup_check",
+              "sha256": "sha256:c7c003d4941f98ccba814232e906dff3b51ebea7471c68f3a39655ede78c4701",
+              "size_bytes": 179
+            },
+            {
+              "camera": "wrist",
+              "duration_seconds": 0.25,
+              "phase": "setup_check",
+              "sha256": "sha256:ec07d1e37f6a7fc46e4ff38ee14b9888f729cccea230fb79ac470574f4574905",
+              "size_bytes": 176
+            }
+          ]
+        },
+        {
+          "cell_id": "screening.site-job-1.001",
+          "outcome": "success",
+          "videos": [
+            {
+              "camera": "external",
+              "duration_seconds": 2.501,
+              "phase": "run",
+              "sha256": "sha256:6af5fdbd341376398134708a934f8e7cde3e885f91d2be41617529fc5b6c7f1b",
+              "size_bytes": 2252
+            },
+            {
+              "camera": "overview",
+              "duration_seconds": 2.501,
+              "phase": "run",
+              "sha256": "sha256:2dd4ba6d5ae0da482e567bc64ff491b7421db3c7d6a85165b80f467ea08d0f6d",
+              "size_bytes": 2252
+            },
+            {
+              "camera": "wrist",
+              "duration_seconds": 2.501,
+              "phase": "run",
+              "sha256": "sha256:f722084985a42159cfb0aa6903bb111ebf00ddaa68791cb1b0d5637c66d99bad",
+              "size_bytes": 2060
+            },
+            {
+              "camera": "external",
+              "duration_seconds": 0.25,
+              "phase": "setup_check",
+              "sha256": "sha256:1f6779de7b54fbe0af7fc211ec1901ed3b0548e79f451a51e331f122b9e0202a",
+              "size_bytes": 179
+            },
+            {
+              "camera": "overview",
+              "duration_seconds": 0.25,
+              "phase": "setup_check",
+              "sha256": "sha256:b94fb5645299eed2ba2c0bc3c636a551b65d78132a82fc3b11b39065b3a93372",
+              "size_bytes": 179
+            },
+            {
+              "camera": "wrist",
+              "duration_seconds": 0.25,
+              "phase": "setup_check",
+              "sha256": "sha256:ba1b0376547232166e968f9078f6e21d6076cb67bbd368fcedfdde5ea6db3b33",
+              "size_bytes": 176
+            }
+          ]
+        },
+        {
+          "cell_id": "screening.site-job-1.002",
+          "outcome": "success",
+          "videos": [
+            {
+              "camera": "external",
+              "duration_seconds": 2.502,
+              "phase": "run",
+              "sha256": "sha256:22aaeff905cdb1fd0706a74c46eb3a2e530bfffde09d0ae54e0d6531015a0abb",
+              "size_bytes": 2252
+            },
+            {
+              "camera": "overview",
+              "duration_seconds": 2.502,
+              "phase": "run",
+              "sha256": "sha256:e0a66f4fcc572a9f6703ec82c5e17789141b63cbecb792528119bcc4371e32ed",
+              "size_bytes": 2252
+            },
+            {
+              "camera": "wrist",
+              "duration_seconds": 2.502,
+              "phase": "run",
+              "sha256": "sha256:607bfce6c2194b624c555518a6abe72bb170235f84c6c8b2da454810b89474db",
+              "size_bytes": 2060
+            },
+            {
+              "camera": "external",
+              "duration_seconds": 0.25,
+              "phase": "setup_check",
+              "sha256": "sha256:b578f917d718c6134b26b1d026b903e0807572a76015ecaa2503323da3a9b008",
+              "size_bytes": 179
+            },
+            {
+              "camera": "overview",
+              "duration_seconds": 0.25,
+              "phase": "setup_check",
+              "sha256": "sha256:7c8ae36b48bb91de7efdd3eb3a989c2b98462e65955da7f37bfb8d239d709543",
+              "size_bytes": 179
+            },
+            {
+              "camera": "wrist",
+              "duration_seconds": 0.25,
+              "phase": "setup_check",
+              "sha256": "sha256:aa3b695fdba0e03901fdadb57887c3f6a4a4d79df8d59f99892b85859d67c995",
+              "size_bytes": 176
+            }
+          ]
+        },
+        {
+          "cell_id": "screening.site-job-1.003",
+          "outcome": "success",
+          "videos": []
+        },
+        {
+          "cell_id": "screening.site-job-1.004",
+          "outcome": "success",
+          "videos": []
+        },
+        {
+          "cell_id": "screening.site-job-1.005",
+          "outcome": "success",
+          "videos": []
+        },
+        {
+          "cell_id": "screening.site-job-1.006",
+          "outcome": "success",
+          "videos": []
+        },
+        {
+          "cell_id": "screening.site-job-1.007",
+          "outcome": "failure",
+          "videos": []
+        },
+        {
+          "cell_id": "screening.site-job-1.008",
+          "outcome": "failure",
+          "videos": []
+        },
+        {
+          "cell_id": "screening.site-job-1.009",
+          "outcome": "failure",
+          "videos": []
+        }
+      ]
+    }
+  ],
+  "revision": 6,
+  "scenario_plan_digest": "sha256:a0edfce03c98ac3682c566654054c26aa1b2a1364cb94c2b0386adac7d50d322",
+  "schema_version": "beta_policy_screening_publication.v2",
+  "site_id": "site-job-1",
+  "source": {
+    "capture_id": "walkthrough-job-1",
+    "scene_intent_digest": "sha256:10c7b2dbb092617a6430e882d89dfc5ecc80810111c1b5c24be97dde5a4d9849",
+    "scene_intent_id": "scene-intent-1",
+    "scene_revision_digest": "sha256:1e2ba01aec123bffa0a96874811c1d37bc94728a16c5b84a4b6ba817987a4201",
+    "task_context_digest": "sha256:2684afa515ed28e1831fe715d9765d075588f9dc1825cbf7be2623af2c7932d8",
+    "task_id": "task-1"
+  },
+  "status": "completed"
+}

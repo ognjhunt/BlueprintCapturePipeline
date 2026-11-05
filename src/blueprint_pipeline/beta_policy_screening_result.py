@@ -20,6 +20,13 @@ did not pass observation integrity ran its episodes anyway (only privacy,
 rights and money stop a run). The summary keeps that gate's typed
 ``observation_quality_flags`` with the estimate. The v2 publication has no
 field for them, so they stay in the ledger and are not published.
+
+A run's retained episode review videos (``beta_screening_review_videos``) are
+referenced from its summary as ``review_videos``: the manifest's path and digest
+and one row per video, or ``not_retained`` with typed blockers. They never
+change the counts or the estimate. The publication lists each completed
+candidate's practice runs, with their outcome and videos, in ``review_videos``
+beside the candidates; a publication without any carries no such field.
 """
 from __future__ import annotations
 
@@ -72,8 +79,23 @@ def _not_returned_reasons(result: Mapping[str, Any], cells: list[Mapping[str, An
 
 def candidate_result_summary(
     value: Mapping[str, Any], *, plan: Mapping[str, Any], candidate: Mapping[str, Any],
+    review_videos: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Count only the exact simulator-bound, closed native session's episodes."""
+    """Count only the exact simulator-bound, closed native session's episodes.
+
+    ``review_videos`` (the retention's reference) is kept as given when valid;
+    it never changes a count.
+    """
+    from .beta_screening_review_videos import valid_reference
+
+    summary = _counted_summary(value, plan=plan, candidate=candidate)
+    reference = valid_reference(review_videos)
+    return {**summary, "review_videos": reference} if reference is not None else summary
+
+
+def _counted_summary(
+    value: Mapping[str, Any], *, plan: Mapping[str, Any], candidate: Mapping[str, Any],
+) -> dict[str, Any]:
     if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
         from .beta_policy_screening_g1 import summarize_result
         return summarize_result(value, plan=plan, candidate=candidate)
@@ -214,7 +236,9 @@ def screening_publication(
     *, plan: Mapping[str, Any], state: Mapping[str, Any], budget: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Customer-safe progress: no endpoint, local path, credential or prompt bytes."""
-    candidates = []
+    from .beta_screening_review_videos import publication_entry
+
+    candidates, review_videos = [], []
     for configured in plan["candidates"]:
         row = state["candidates"][configured["candidate_id"]]
         summary = row.get("summary") or {}
@@ -232,6 +256,9 @@ def screening_publication(
             "session_result_digest": summary.get("session_result_digest"),
             **_publication_execution_evidence(configured, summary),
         })
+        entry = publication_entry(configured["candidate_id"], summary) if row["status"] == "completed" else None
+        if entry is not None:
+            review_videos.append(entry)
     value = {
         "schema_version": PUBLICATION_SCHEMA,
         "campaign_id": plan["campaign_id"], "site_id": plan["site_id"],
@@ -241,7 +268,8 @@ def screening_publication(
         "revision": state["revision"], "status": campaign_status(state["candidates"]),
         "purpose": "job_evaluation", "execution_operator": {"kind": "blueprint"},
         "claim_ceiling": CLAIM_CEILING,
-        "candidates": candidates, "budget": dict(budget),
+        "candidates": candidates, **({"review_videos": review_videos} if review_videos else {}),
+        "budget": dict(budget),
         "generated_at": state["updated_at"], "publication_digest": "",
     }
     value["publication_digest"] = cross_runtime_canonical_digest(value, digest_field="publication_digest")
