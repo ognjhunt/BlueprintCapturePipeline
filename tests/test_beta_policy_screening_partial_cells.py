@@ -32,7 +32,9 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
     BETA_RUN_KIND, PROVIDER_BUNDLE_SCHEMA_VERSION, PROVIDER_RESULT_FILENAME, consume_session_authority_once,
     validate_session_authority,
 )
-from blueprint_pipeline.policy_canary_cell_setup_failure import cell_setup_failure, seal_cell_setup_failure
+from blueprint_pipeline.policy_canary_cell_setup_failure import (
+    cell_setup_failure, seal_cell_machine_fault, seal_cell_setup_failure,
+)
 from tests.test_beta_policy_screening_coordinator import native_result, plan as make_plan, seal
 from tests.test_native_task_arena_policy_canary_session import _authority, _record
 
@@ -159,6 +161,17 @@ def provider_result(value, candidate, output_root: Path, *, successes: int, stop
                                 children=[*children[:at], failed], failure=failure,
                                 construction_lineage_mode=LINEAGE, aggregate=worker._aggregate_isolated_cell_results,
                                 seal_result=worker._seal_result)
+    elif stop == "machine":
+        # The cell's simulator died by a fatal signal while Isaac was starting and wrote nothing.
+        child_root = output_root / "cell_runs" / f"{at:02d}"
+        child_root.mkdir(parents=True, exist_ok=True)
+        (child_root / "cell_progress.log").write_text("".join(
+            f"BLUEPRINT_POLICY_CANARY_PROGRESS:cell={at}:stage={stage}\n"
+            for stage in ("static_preflight_passed", "isaac_launch_started")))
+        (child_root / "worker_console.log").write_text("[Fatal] terminating this process with exit code 139.\n")
+        assert seal_cell_machine_fault(exit_code=139, inputs=inputs, index=at, child_root=child_root,
+            output_root=output_root, children=children[:at], authority=authority, construction_lineage_mode=LINEAGE,
+            aggregate=worker._aggregate_isolated_cell_results, seal_result=worker._seal_result)
     else:
         raise AssertionError(stop)
     return json.loads((output_root / PROVIDER_RESULT_FILENAME).read_text())
@@ -522,3 +535,54 @@ def test_a_void_episode_names_its_typed_failure_in_the_ledger_summary(tmp_path):
                      "failure_type": "PolicyEpisodeError",
                      "failure_code": "policy_episode_prestart_readiness_failed:reset_joint_state_out_of_bounds"}
     assert set(second) == {"cell_id", "outcome", "reason"}  # a scored episode carries no failure
+
+
+def test_a_machine_that_crashed_starting_the_simulator_spends_no_harness_retry_and_runs_again(tmp_path):
+    """2026-11-05: a pi05 cell segfaulted in the GPU driver 2 s into Isaac start-up (owner: never a harness retry)."""
+    value = make_plan(count=2)
+    crashed, other = value["candidates"]
+    root = tmp_path / "queue"
+    _, rows, executor = run_campaign(root, value, {crashed["candidate_id"]: {"successes": 0, "stop": "machine", "at": 0},
+                                                   other["candidate_id"]: {"successes": 0, "stop": "machine", "at": 0}})
+    for candidate in (crashed, other):
+        assert executor.observations[candidate["candidate_id"]]["blockers"] == [
+            "policy_canary_session_machine_fault:simulator_start_crash"]
+        row = rows[candidate["candidate_id"]]
+        # Its money is settled like any closed run; it is not ours and nothing else is held for it.
+        assert row["status"] == "blocked" and row["attempt"]["reservation_status"] == "committed"
+        assert coordinator._machine_faulted(row) and not coordinator._harness_failed(row)
+    ledger = json.loads((root / coordinator.LEDGER_FILENAME).read_text())
+    state = ledger["campaigns"][value["campaign_id"]]
+    assert coordinator._harness_failures(ledger, state["site_id"], crashed["candidate_id"]) == 0
+    # Planned again at the same commit: nothing to deploy, the next offer search finds another machine.
+    frozen = crashed["execution_spec"]["implementation_commit"]
+    assert sorted(coordinator._replan_scope(ledger, value, frozen)) == sorted(
+        candidate["candidate_id"] for candidate in value["candidates"])
+
+
+def test_a_machine_fault_alone_never_runs_a_harness_failure_again_without_a_deploy(tmp_path):
+    value = make_plan(count=2)
+    crashed, broken = value["candidates"]
+    root = tmp_path / "queue"
+    _, rows, _ = run_campaign(root, value, {crashed["candidate_id"]: {"successes": 0, "stop": "machine", "at": 0},
+                                            broken["candidate_id"]: {"successes": 0, "stop": "setup", "at": 0}})
+    assert coordinator._machine_faulted(rows[crashed["candidate_id"]])
+    assert coordinator._harness_failed(rows[broken["candidate_id"]])
+    ledger = json.loads((root / coordinator.LEDGER_FILENAME).read_text())
+    frozen = crashed["execution_spec"]["implementation_commit"]
+    # Same commit: only the machine fault runs again; the harness failure waits for its fix.
+    assert coordinator._replan_scope(ledger, value, frozen) == [crashed["candidate_id"]]
+    # After a deploy both are planned again (the harness failure within its own bound).
+    assert sorted(coordinator._replan_scope(ledger, value, "f" * 40)) == sorted(
+        [crashed["candidate_id"], broken["candidate_id"]])
+
+
+def test_machine_faults_are_planned_again_a_bounded_number_of_times():
+    row = {"status": "blocked", "blockers": ["policy_canary_session_machine_fault:simulator_start_crash"]}
+    ledger = {"campaigns": {}}
+    for count in range(1, coordinator.MACHINE_FAULT_RETRY_LIMIT + 2):
+        ledger["campaigns"][f"campaign-{count}"] = {"site_id": "site-a", "candidates": {"c": dict(row)}}
+        assert coordinator._machine_fault_retry_allowed(ledger, "site-a", "c") is (
+            count <= coordinator.MACHINE_FAULT_RETRY_LIMIT)
+    # Another blocker beside it is not a machine fault alone.
+    assert not coordinator._machine_faulted({**row, "blockers": [*row["blockers"], "beta_screening_other"]})
