@@ -60,6 +60,14 @@ LEDGER_FILENAME = "screening_ledger.v1.json"
 SITE_LIMIT = Decimal("15")
 CAPACITY_RETRY_SECONDS = 60
 CAPACITY_WAIT_BLOCKER = "beta_screening_waiting_for_capacity"
+# No rentable GPU met the run's price, driver and region rules when the allocator searched. Nothing
+# was created, so the attempt waits and searches again: 2, 4, 8, 16, then every 30 minutes, at most
+# OFFER_SHORTAGE_RETRY_CAP times (about five hours) before the candidate is blocked by name.
+OFFER_WAIT_BLOCKER = "beta_screening_waiting_for_gpu_capacity"
+OFFER_SHORTAGE_EXHAUSTED_BLOCKER = "beta_screening_gpu_capacity_unavailable"
+OFFER_SHORTAGE_RETRY_CAP = 12
+OFFER_SHORTAGE_FIRST_RETRY_SECONDS = 120
+OFFER_SHORTAGE_MAX_RETRY_SECONDS = 1800
 # A candidate retries a refusal whose control read got no answer (a 429, a 5xx,
 # a timeout) at most this many times in all: a launch preflight read again, or
 # a fresh attempt after its allocator fenced its own create. Each fresh attempt
@@ -590,6 +598,23 @@ def _retry_after_capacity(earlier_retries: int = 0) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
 
 
+def _offer_shortage(observation: Mapping[str, Any]) -> bool:
+    """The allocator's offer search found nothing to rent (its typed codes), before any create."""
+    return any(isinstance(code, str) and (code.startswith("no_vast_offer_") or code == "vast_offer_selection_blocked")
+               for code in observation.get("blockers") or [])
+
+
+def _offer_shortage_retries(row: Mapping[str, Any]) -> int:
+    value = row.get("offer_shortage_retries", 0)
+    # An unreadable count is treated as spent, so the cap always holds.
+    return value if type(value) is int and 0 <= value <= OFFER_SHORTAGE_RETRY_CAP else OFFER_SHORTAGE_RETRY_CAP
+
+
+def _retry_after_offer_shortage(earlier_retries: int) -> str:
+    delay = min(OFFER_SHORTAGE_MAX_RETRY_SECONDS, OFFER_SHORTAGE_FIRST_RETRY_SECONDS * 2 ** earlier_retries)
+    return (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+
+
 def _transport_retries(row: Mapping[str, Any]) -> int:
     value = row.get("transport_retries", 0)
     # An unreadable count is treated as spent, so the cap always holds.
@@ -909,6 +934,24 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                 row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
                                   "retry_not_before": _retry_after_capacity()}
                 row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
+                return
+            if _offer_shortage(observation):
+                # Proven zero allocation: the market had no qualifying offer. Wait and search again
+                # under a fresh identity holding the same reservation, a bounded number of times.
+                retries = _offer_shortage_retries(row)
+                if retries < OFFER_SHORTAGE_RETRY_CAP:
+                    attempt.update(reservation_status="released", closed_at=_now(),
+                                   terminal_reason="no_qualifying_gpu_offer", no_policy_api_calls_proven=True)
+                    row["offer_shortage_retries"] = retries + 1
+                    row.setdefault("attempt_history", []).append(json.loads(json.dumps(attempt)))
+                    row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
+                                      "retry_not_before": _retry_after_offer_shortage(retries)}
+                    # The WebApp lets a published candidate return to preparing only with the
+                    # capacity-wait code; the second code names which capacity.
+                    row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER, OFFER_WAIT_BLOCKER])
+                    return
+                attempt["reservation_status"] = "released"
+                row.update(status="blocked", blockers=[OFFER_SHORTAGE_EXHAUSTED_BLOCKER])
                 return
             attempt["reservation_status"] = "released"
             row.update(status="blocked", blockers=_safe_blockers(observation.get("blockers"),
