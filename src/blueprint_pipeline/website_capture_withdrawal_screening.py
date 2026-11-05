@@ -17,21 +17,27 @@ names. Each of its attempts (the current one and its history) is then:
 
 - deletable once its money is final (released, or committed and settled, held
   at its maximum, or never allocated) and its staged provider objects are
-  proven absent (by its settlement, or by each staging directory's absence
-  proof). Its directory is inventoried, and every sealed promotion receipt (a
-  superseded one too) and member index inside it names the output and witness
-  archives to delete;
+  proven absent (by its settlement, or in each staging directory by its
+  absence proof or by the staging cleanup's own record proving every key of
+  exactly that manifest absent: download mode and pre-launch refusals clean up
+  without promotion and write no proof). Its directory is inventoried, and every
+  sealed promotion receipt (a superseded one too) and member index inside it
+  names the output and witness archives to delete;
 - deferred, with a typed reason, while its candidate is active, its
   reservation is open, its settlement is still to be decided (settlement reads
-  the attempt's directory), or a staging directory has no absence proof (the
-  directory is the only record of those staged keys). A later deletion run
-  deletes it once that changes; the receipt names it until then.
+  the attempt's directory), or a staging directory (or a staging binding written
+  before any manifest) proves nothing gone (the directory is the only record of
+  those staged keys). A later deletion run deletes it once that changes; the
+  receipt names it, and the step that can prove the keys gone, until then.
 
-``apply_screening`` deletes under the coordinator's ledger lock, held only for
-these deletes: it resolves the site's attempts again and refuses unless they
-are exactly the reviewed ones, then takes each staging directory's promotion
-lock without waiting, deletes the attempt's archive versions, proves them
-absent, and removes the directory.
+``apply_screening`` holds the coordinator's ledger lock only while it resolves
+the site's attempts again, and refuses unless they are exactly the reviewed
+ones. Every deletable money state is terminal (no coordinator step writes into
+such an attempt's directory or changes its money again), so the B2 deletes and
+directory removals run after the lock is released: for each attempt it takes
+each staging directory's promotion lock without waiting, checks the inventory
+again, deletes the archive versions, proves them absent, and removes the
+directory.
 
 The ledger is never written: its rows keep every attempt's spend and
 settlement, which is what the site budget counts. Plans, planning inputs,
@@ -40,8 +46,10 @@ ledger that cannot be read, an attempt directory no ledger row names, an
 attempt id or directory outside the coordinator's layout, an attempts root
 that is not there (an unmounted work volume), an unsealed or unreadable
 record (another site's too), a campaign naming the site but booked to
-another, or an archive reference outside the promotion layout fails closed
-into ``unresolved``. Records here carry identifiers, paths and object keys
+another, an archive reference outside the promotion layout, or a symlink, unreadable
+directory or other non-regular entry in an attempt's directory (another site's
+too: it could hide a record naming a shared archive) fails closed into
+``unresolved``. Records here carry identifiers, paths and object keys
 only, never what a file holds.
 """
 from __future__ import annotations
@@ -66,10 +74,13 @@ from .provider_output_promotion_records import (
     RECEIPT_SCHEMA,
     STAGING_MANIFEST_FILENAME,
     ProviderOutputPromotionRecordError,
+    _cleanup_proves_absence,
+    _manifest_and_keys,
     load_staged_object_absence_proof,
     staged_object_keys,
 )
 from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
+from .wam_provider_object_store import STAGING_BINDING_FILENAME
 
 # The units' values (deploy/systemd/blueprint-beta-policy-screening.service), unless set here too.
 DEFAULT_QUEUE_ROOT = Path(os.environ.get(coordinator.QUEUE_ROOT_ENV) or coordinator.DEFAULT_QUEUE_ROOT)
@@ -81,6 +92,8 @@ RESERVATION_OPEN = _PREFIX + "screening_reservation_open"
 SETTLEMENT_PENDING = _PREFIX + "screening_settlement_pending"
 STAGED_UNPROVEN = _PREFIX + "screening_staged_objects_unproven"
 _SUPERSEDED = RECEIPT_FILENAME + ".superseded-"
+# ``cleanup_staged_wam_provider_objects`` writes it beside the manifest on every run.
+CLEANUP_FILENAME = "wam_provider_object_store_cleanup.json"
 _RECORDS = (RECEIPT_FILENAME, INDEX_FILENAME)
 _ARCHIVE_KINDS = (OUTPUT_ARTIFACT_KIND, WITNESS_ARTIFACT_KIND)
 # ``_new_attempt``'s ids: anything else is not a coordinator attempt and is never a path here.
@@ -173,6 +186,33 @@ def _is_record(name: str) -> bool:
     return name in _RECORDS or name.startswith(_SUPERSEDED)
 
 
+def _reason(error: Exception) -> str:
+    from .website_capture_withdrawal_deletion import WithdrawalDeletionError
+    return str(error) if isinstance(error, WithdrawalDeletionError) else _PREFIX + "record_unreadable"
+
+
+def _records_in(directory: Path) -> list[Path]:
+    """Every promotion record under ``directory``, or a refusal.
+
+    A directory that cannot be listed, a symlink, or any entry that is neither a
+    directory nor a regular file raises: each could hide a record naming an archive
+    this deletion would otherwise take for unshared. Entry types come from the
+    listing itself, so a file an active run renames away mid-walk does not refuse.
+    """
+    from .website_capture_withdrawal_deletion import _require
+    records, pending = [], [directory]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                    continue
+                _require(entry.is_file(follow_symlinks=False), "unsafe_entry")
+                if _is_record(entry.name):
+                    records.append(Path(entry.path))
+    return sorted(records)
+
+
 def _named_by(directory: Path, unresolved: list[dict[str, Any]]) -> set[str]:
     """Archives an attempt that is not deleted now names: each record on its own; one unreadable is unresolved."""
     from .website_capture_withdrawal_deletion import WithdrawalDeletionError
@@ -181,32 +221,60 @@ def _named_by(directory: Path, unresolved: list[dict[str, Any]]) -> set[str]:
     if directory.is_symlink() or not directory.is_dir():
         unresolved.append({"path": str(directory), "reason": _PREFIX + "unsafe_entry"})
         return set()
+    try:
+        records = _records_in(directory)
+    except (WithdrawalDeletionError, OSError) as error:
+        unresolved.append({"path": str(directory), "reason": _reason(error)})
+        return set()
     uris = set()
-    for root, _directories, files in os.walk(directory):
-        for name in filter(_is_record, files):
-            try:
-                uris |= _record_names(Path(root) / name, name)[0]
-            except (WithdrawalDeletionError, OSError) as error:
-                reason = str(error) if isinstance(error, WithdrawalDeletionError) else _PREFIX + "record_unreadable"
-                unresolved.append({"path": str(Path(root) / name), "reason": reason})
+    for path in records:
+        try:
+            uris |= _record_names(path, path.name)[0]
+        except (WithdrawalDeletionError, OSError) as error:
+            unresolved.append({"path": str(path), "reason": _reason(error)})
     return uris
 
 
+def _staged_proven(staging: Path) -> bool:
+    """Its absence proof, or the staging cleanup's own record proving every key of exactly this manifest absent.
+
+    Only an attempt whose money is final asks: it never allocated, or its provider
+    was verified at zero, so nothing can stage an object after that cleanup ran.
+    """
+    from .website_capture_withdrawal_deletion import WithdrawalDeletionError, _json
+    try:
+        if load_staged_object_absence_proof(staging) is not None:
+            return True
+        digest, _manifest, keys = _manifest_and_keys(staging)
+        return _cleanup_proves_absence(_json(staging / CLEANUP_FILENAME), digest, keys)
+    except (ProviderOutputPromotionRecordError, WithdrawalDeletionError, OSError):
+        return False
+
+
 def _staged_unproven(directory: Path, relative_paths: list[str]) -> list[dict[str, Any]]:
-    """Each staging directory without a valid absence proof, with the staged keys only its manifest records."""
+    """Each staging directory proving nothing gone, with the staged keys only it records and the step that can.
+
+    A binding with no manifest beside it is a staging that stopped after its bundle
+    upload began: no cleanup can run on it, so its keys are for an operator.
+    """
     from .website_capture_withdrawal_deletion import _json
-    rows = []
+    rows, present = [], set(relative_paths)
     for relative in relative_paths:
-        if relative.rpartition("/")[2] != STAGING_MANIFEST_FILENAME:
+        parent, _, name = relative.rpartition("/")
+        staging = directory / parent
+        manifest = f"{parent}/{STAGING_MANIFEST_FILENAME}" if parent else STAGING_MANIFEST_FILENAME
+        if name == STAGING_MANIFEST_FILENAME and not _staged_proven(staging):
+            value = _json(staging / name)
+            keys = staged_object_keys(value)
+            step = "provider_output_resume" if value.get("output_promotion_required") is True else "staging_cleanup"
+        elif name == STAGING_BINDING_FILENAME and manifest not in present:
+            value = _json(staging / name)
+            keys = [(role, str(value.get(f"{role}_key") or "")) for role in ("bundle", "output")]
+            step = "delete_by_hand"
+        else:
             continue
-        staging = directory / relative.rpartition("/")[0]
-        try:
-            proven = load_staged_object_absence_proof(staging) is not None
-        except ProviderOutputPromotionRecordError:
-            proven = False
-        if not proven:
-            keys = staged_object_keys(_json(staging / STAGING_MANIFEST_FILENAME))
-            rows.append({"staging_dir": str(staging), "keys": [{"role": role, "key": key} for role, key in keys]})
+        rows.append({"staging_dir": str(staging), "next_step": step,
+                     "keys": [{"role": role, "key": key} for role, key in keys]})
     return rows
 
 
@@ -251,18 +319,40 @@ def _retained(queue_root: Path, campaign_id: str, plan: Mapping[str, Any], attem
     return [str(path) for path in paths if path.exists()]
 
 
+def _deleted_before(site_root: Path | None, scene_id: str) -> set[str]:
+    """Attempts an earlier sealed deletion receipt of this site deleted with nothing left unrecorded.
+
+    An unreadable or unsealed receipt proves nothing: its attempts stay reported.
+    """
+    from .website_capture_withdrawal_deletion import RECEIPT_SCHEMA as DELETION_RECEIPT, WithdrawalDeletionError, _json
+    directory = Path(site_root) / "website_withdrawal" / "deletion_receipts" if site_root else None
+    deleted: set[str] = set()
+    for path in sorted(directory.glob("*.json")) if directory and directory.is_dir() else []:
+        try:
+            value = _json(path)
+            if (value.get("schema_version") == DELETION_RECEIPT and value.get("scene_id") == scene_id
+                    and _sealed(value, "digest")):
+                deleted.update(map(str, value["deleted"]["beta_screening"].get("attempt_ids_fully_deleted") or []))
+        except (WithdrawalDeletionError, OSError, AttributeError, KeyError, TypeError):
+            continue
+    return deleted
+
+
 def plan_screening(identity: Mapping[str, str], intents: list[str], *, queue_root: Path | None,
-                   work_root: Path | None, unresolved: list[dict[str, Any]]) -> tuple[dict[str, Any], set[str]]:
+                   work_root: Path | None, unresolved: list[dict[str, Any]],
+                   site_root: Path | None = None) -> tuple[dict[str, Any], set[str]]:
     """The site's screening attempts (deletable and deferred), and the archives no deletion here may touch.
 
     The second value is every archive another site's attempt, or one of this
-    site's deferred attempts, names.
+    site's deferred attempts, names. ``site_root`` holds this site's earlier
+    deletion receipts: an attempt one of them deleted is not reported as lost.
     """
     from .website_capture_withdrawal_deletion import WithdrawalDeletionError, _inventory
     section: dict[str, Any] = {"queue_root": str(queue_root) if queue_root else None,
                                "work_root": str(work_root) if work_root else None,
                                "queue_root_present": bool(queue_root) and Path(queue_root).is_dir(),
-                               "campaigns": [], "attempts": [], "deferred": [], "retained_records": []}
+                               "campaigns": [], "attempts": [], "deferred": [], "retained_records": [],
+                               "deleted_earlier": []}
     if not section["queue_root_present"]:
         return section, set()
     queue_root = Path(queue_root)
@@ -331,11 +421,12 @@ def plan_screening(identity: Mapping[str, str], intents: list[str], *, queue_roo
                                      witness_pending=pending,
                                      staging_locks=[path for path in paths if path.rpartition("/")[2] == LOCK_FILENAME])
                     except (WithdrawalDeletionError, OSError) as error:
-                        reason = str(error) if isinstance(error, WithdrawalDeletionError) else _PREFIX + \
-                            "record_unreadable"
-                        unresolved.append({"path": str(directory), "reason": reason})
+                        unresolved.append({"path": str(directory), "reason": _reason(error)})
                         continue
                 section["attempts"].append(entry)
+    earlier = _deleted_before(site_root, identity["scene_id"])
+    section["deleted_earlier"] = sorted(attempt["attempt_id"] for attempt in section["attempts"]
+                                        if attempt["directory"] is None and attempt["attempt_id"] in earlier)
     unresolved.extend({"path": str(root), "reason": _PREFIX + "screening_attempt_root_unavailable"}
                       for root in sorted(unavailable))
     # Every attempt directory is the ledger's; one it does not name may be any site's.
@@ -346,19 +437,25 @@ def plan_screening(identity: Mapping[str, str], intents: list[str], *, queue_roo
 
 @contextmanager
 def ledger_lock(queue_root: Path | None) -> Iterator[None]:
-    """Hold the coordinator's ledger lock, so no attempt of the site changes state while it is deleted.
+    """Hold the coordinator's ledger lock, so the ledger read for the re-plan is one the coordinator wrote whole.
 
     The lock file is the coordinator's; it is never created here (an operator-owned
-    file would lock the worker out). With no lock file nothing has ever reserved.
+    file would lock the worker out). With no ledger and no lock file nothing has ever
+    reserved; a ledger without its lock file, or a lock that cannot be opened, refuses.
     """
+    from .website_capture_withdrawal_deletion import WithdrawalDeletionError, _require
     if queue_root is None:
         yield
         return
+    ledger = Path(queue_root) / coordinator.LEDGER_FILENAME
     try:
         descriptor = os.open(Path(queue_root) / ".ledger.lock", os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
+        _require(not (ledger.exists() or ledger.is_symlink()), "screening_ledger_lock_missing")
         yield
         return
+    except OSError:
+        raise WithdrawalDeletionError(_PREFIX + "screening_ledger_lock_unavailable") from None
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
@@ -386,9 +483,11 @@ def apply_screening(section: Mapping[str, Any], objects: list[Mapping[str, Any]]
                     ) -> tuple[list[Mapping[str, Any]], list[dict[str, Any]]]:
     """Delete the reviewed attempts' archives, then their directories; never a ledger row.
 
-    Under the ledger lock only: the site's attempts are resolved again and must
-    be exactly the reviewed ones. Returns the removed attempts and the deleted
-    object rows.
+    Under the ledger lock only, the site's attempts are resolved again and must
+    be exactly the reviewed ones. The lock is released before any delete: each
+    attempt here is in a terminal money state, which no coordinator step leaves
+    or writes into, and its inventory is checked again just before it goes.
+    Returns the removed attempts and the deleted object rows.
     """
     from .website_capture_withdrawal_deletion import _inventory, _require
     versions = {row["uri"]: row["versions"] for row in objects}
@@ -398,25 +497,25 @@ def apply_screening(section: Mapping[str, Any], objects: list[Mapping[str, Any]]
         current, protected = replan(unresolved)
         uris = {uri for attempt in section["attempts"] for uri in attempt["object_uris"]}
         _require(not unresolved and current == section and not uris & protected, "screening_changed")
-        for attempt in section["attempts"]:
-            if attempt["directory"] is None:
-                continue
-            directory = Path(attempt["directory"])
-            with ExitStack() as stack:
-                _promotion_locks(stack, directory, attempt["staging_locks"])
-                _require(canonical_digest({"rows": _inventory(directory)}) == attempt["inventory_digest"],
-                         "screening_attempt_changed")
-                for uri in attempt["object_uris"]:
-                    if uri in done:
-                        continue
-                    for key, version in versions[uri]:
-                        store.delete(key, version)
-                    _require(store.versions(uri) == [], "object_versions_remaining")
-                    deleted.append({"uri": uri, "versions_deleted": len(versions[uri])})
-                    done.add(uri)
-                # The archives are proven gone first, so a crash here leaves records naming only gone objects.
-                shutil.rmtree(directory)
-            removed.append(attempt)
+    for attempt in section["attempts"]:
+        if attempt["directory"] is None:
+            continue
+        directory = Path(attempt["directory"])
+        with ExitStack() as stack:
+            _promotion_locks(stack, directory, attempt["staging_locks"])
+            _require(canonical_digest({"rows": _inventory(directory)}) == attempt["inventory_digest"],
+                     "screening_attempt_changed")
+            for uri in attempt["object_uris"]:
+                if uri in done:
+                    continue
+                for key, version in versions[uri]:
+                    store.delete(key, version)
+                _require(store.versions(uri) == [], "object_versions_remaining")
+                deleted.append({"uri": uri, "versions_deleted": len(versions[uri])})
+                done.add(uri)
+            # The archives are proven gone first, so a crash here leaves records naming only gone objects.
+            shutil.rmtree(directory)
+        removed.append(attempt)
     return removed, deleted
 
 
@@ -437,11 +536,16 @@ def receipt_section(section: Mapping[str, Any], removed: list[Mapping[str, Any]]
             "attempt_files_deleted": sum(attempt["file_count"] for attempt in removed),
             "archive_objects_deleted": len(uris), "archive_object_versions_deleted": sum(versions.values()),
             "archive_object_keys": [store.key(uri) for uri in uris],
+            # A later run reads these back: an attempt deleted here with nothing unrecorded is not lost.
+            "attempt_ids_fully_deleted": sorted(attempt["attempt_id"] for attempt in removed
+                                                if not attempt["witness_pending"]),
             "deferred": [dict(row) for row in section["deferred"]], "ledger_rows_deleted": 0}
 
 
 def _absent_allocated(section: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    return [attempt for attempt in section["attempts"] if attempt["directory"] is None and attempt["allocated"]]
+    """Allocated attempts whose directory was gone before this run, and no earlier run of this lane removed."""
+    return [attempt for attempt in section["attempts"] if attempt["directory"] is None and attempt["allocated"]
+            and attempt["attempt_id"] not in section["deleted_earlier"]]
 
 
 def incomplete(section: Mapping[str, Any]) -> bool:
@@ -459,9 +563,15 @@ def remaining(section: Mapping[str, Any]) -> list[dict[str, Any]]:
         rows.append({"holder": "beta_screening_queue_root_absent", "path": section["queue_root"],
                      "reason": "the named screening queue root does not exist here, so no screening ledger was read"})
     for reason, holder, why in (
-            (STAGED_UNPROVEN, "beta_screening_staging_store", "no settlement or absence proof shows these staged "
-             "provider objects gone, and the attempt directory is the only record of their keys; run "
-             "provider-output-resume first, then the deletion again"),
+            (STAGED_UNPROVEN, "beta_screening_staging_store", "no settlement, absence proof or completed staging "
+             "cleanup shows these staged provider objects gone, and the attempt directory is the only record of "
+             "their keys. Each staging directory names its next step: staging_cleanup, run `python -m "
+             "blueprint_pipeline.wam_provider_object_store --job-dir <staging_dir> --cleanup-staged-objects`; "
+             "provider_output_resume (the manifest requires output promotion), run provider-output-resume for the "
+             "attempt, or that staging cleanup if no output was ever staged; then run the deletion again. "
+             "delete_by_hand: no manifest was written, so no tool can prove these keys gone; an operator deletes "
+             "them from the staging store by hand, and the attempt stays deferred while that binding is their "
+             "only record"),
             (None, "beta_screening_attempts_deferred", "still active, or its money is not final; run the "
              "deletion again once it settles")):
         deferred = [dict(row) for row in section["deferred"] if (row["reason"] == STAGED_UNPROVEN) == bool(reason)]

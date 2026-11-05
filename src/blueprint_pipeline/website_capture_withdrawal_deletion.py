@@ -223,8 +223,13 @@ def _lineage_intents(identity: Mapping[str, str], site: Path, intent_root: Path 
 
 
 def _inventory(directory: Path) -> list[list[Any]]:
+    def unreadable(error: OSError) -> None:
+        # A directory that is gone inventories as empty; anything inside it that cannot be listed refuses.
+        if not (isinstance(error, FileNotFoundError) and error.filename == os.fspath(directory)):
+            raise WithdrawalDeletionError("website_withdrawal_deletion_record_unreadable") from error
+
     rows = []
-    for root, directories, files in os.walk(directory):
+    for root, directories, files in os.walk(directory, onerror=unreadable):
         for name in sorted((*directories, *files)):
             path = Path(root) / name
             info = os.lstat(path)
@@ -515,7 +520,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                      "judged_by": unit["judged_by"]})
     workspace = _scene_workspace(site, identity, unresolved)
     screened, foreign_uris = screening.plan_screening(identity, lineage["intents"], queue_root=screening_queue_root,
-                                                      work_root=screening_work_root, unresolved=unresolved)
+                                                      work_root=screening_work_root, unresolved=unresolved,
+                                                      site_root=site)
     uris = sorted({uri for run in runs for uri in run["object_uris"]}
                   | {uri for attempt in screened["attempts"] for uri in attempt["object_uris"]}
                   | ({workspace["archive_uri"]} if workspace["archive_uri"] else set())
@@ -592,8 +598,9 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     in progress refuses (``atlas_preview_busy``) and the operator retries. It holds
     each capture's screening review-video retention lock the same way
     (``review_videos_busy``), so no video is copied in while the site is deleted.
-    The screening deletes come first, under the screening coordinator's ledger lock
-    held only for them (``website_capture_withdrawal_screening.apply_screening``).
+    The screening deletes come first, after their re-plan under the screening
+    coordinator's ledger lock, which is released before any of them
+    (``website_capture_withdrawal_screening.apply_screening``).
     """
 
     _require(authorize_complete_deletion is True, "explicit_authorization_required")
@@ -647,7 +654,7 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     removed, screening_objects = screening.apply_screening(
         plan["screening"], [row for row in plan["objects"] if row["uri"] in screened], store,
         lambda unresolved: screening.plan_screening(
-            identity, plan["lineage"]["intents"], unresolved=unresolved,
+            identity, plan["lineage"]["intents"], unresolved=unresolved, site_root=Path(plan["site_root"]),
             **{f"{name}_root": Path(plan["screening"][f"{name}_root"]) if plan["screening"][f"{name}_root"] else None
                for name in ("queue", "work")}))
     deleted["objects"].extend(screening_objects)

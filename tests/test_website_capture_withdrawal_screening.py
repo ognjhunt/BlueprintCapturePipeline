@@ -73,15 +73,19 @@ def _promotion(output: dict, witness: dict | None = None, *, witness_state: str 
                          "staged_objects": staged, "private_url_recorded": False}, "receipt_digest")
 
 
+def _cleanup(staging: Path) -> dict:
+    """The staging cleanup's record once it proved every staged key of this manifest absent."""
+    keys = staged_object_keys(json.loads((staging / STAGING_MANIFEST_FILENAME).read_text()))
+    return {"schema_version": CLEANUP_SCHEMA, "staging_manifest_sha256": staging_manifest_sha256(staging),
+            "status": "completed", "blockers": [], "all_objects_absent": True,
+            "all_ephemeral_objects_absent": True, "exact_object_count": len(keys),
+            "objects": [{"key_sha256": key_sha256(key), "absence": {"absence_confirmed": True}} for _, key in keys]}
+
+
 def _absence_proof(staging: Path, receipt: dict) -> None:
     """The proof promotion's gated cleanup writes once every staged key is proven absent."""
-    keys = staged_object_keys(json.loads((staging / STAGING_MANIFEST_FILENAME).read_text()))
-    cleanup = {"schema_version": CLEANUP_SCHEMA, "staging_manifest_sha256": staging_manifest_sha256(staging),
-               "status": "completed", "blockers": [], "all_objects_absent": True,
-               "all_ephemeral_objects_absent": True, "exact_object_count": len(keys),
-               "objects": [{"key_sha256": key_sha256(key), "absence": {"absence_confirmed": True}} for _, key in keys]}
     base._write(staging / ABSENCE_PROOF_FILENAME,
-                build_staged_object_absence_proof(staging_dir=staging, cleanup=cleanup, promotion=receipt))
+                build_staged_object_absence_proof(staging_dir=staging, cleanup=_cleanup(staging), promotion=receipt))
 
 
 def _attempt_dir(directory: Path, *, output: dict | None = None, witness: dict | None = None,
@@ -352,7 +356,7 @@ def test_staged_objects_without_an_absence_proof_defer_the_attempt_until_proven(
     staged = f"staging/beta-policy-screening/{held.name}"
     row = next(row for row in plan["screening"]["deferred"] if row["attempt_id"] == held.name)
     assert row["reason"] == screening.STAGED_UNPROVEN
-    assert row["staged_objects"] == [{"staging_dir": str(held / STAGING), "keys": [
+    assert row["staged_objects"] == [{"staging_dir": str(held / STAGING), "next_step": "provider_output_resume", "keys": [
         {"role": "bundle", "key": f"{staged}/bundle.tar"}, {"role": "output", "key": f"{staged}/out.zip"}]}]
     receipt = base._apply(world, plan)
     # The only record of those staged keys stays, and so does the attempt's archive.
@@ -394,27 +398,52 @@ def test_an_attempt_outside_the_coordinator_layout_is_never_a_path(world, screen
     assert (queue / "plans/screening-site-current.json").is_file() and world["store"].deleted == []
 
 
-def test_the_ledger_lock_is_held_only_for_the_screening_deletes(world, screened, monkeypatch):
+def test_the_ledger_lock_is_held_only_to_re_plan_never_across_the_deletes(world, screened, monkeypatch):
     lock_path = screened["queue"] / ".ledger.lock"
-    screening_keys = {world["resolution"]["object_store"].key(screened["archives"][name]["uri"])
-                      for name in ("output", "witness", "held")}
-    held_during: dict[str, bool] = {}
-    store = world["resolution"]["object_store"]
-    delete = store.delete
+    held: list[tuple[str, bool]] = []
 
-    def observed(key, version):
-        with lock_path.open("r") as probe:
+    def probe(step):
+        with lock_path.open("r") as other:
             try:
-                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                held_during[key] = False
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held.append((step, False))
             except BlockingIOError:
-                held_during[key] = True
+                held.append((step, True))
+
+    store = world["resolution"]["object_store"]
+    delete, rmtree, plan_screening = store.delete, screening.shutil.rmtree, screening.plan_screening
+
+    def deleting(key, version):
+        probe("delete")
         delete(key, version)
 
-    monkeypatch.setattr(store, "delete", observed)
-    base._apply(world, base._plan(world))
-    assert {key for key, held in held_during.items() if held} == screening_keys
-    assert any(not held for held in held_during.values())  # the run, workspace and offload objects
+    def removing(path, *args, **kwargs):
+        if Path(path).name.startswith("screen-"):
+            probe("rmtree")
+        rmtree(path, *args, **kwargs)
+
+    def planning(*args, **kwargs):
+        probe("plan")
+        return plan_screening(*args, **kwargs)
+
+    plan = base._plan(world)
+    monkeypatch.setattr(store, "delete", deleting)
+    monkeypatch.setattr(screening.shutil, "rmtree", removing)
+    monkeypatch.setattr(screening, "plan_screening", planning)
+    base._apply(world, plan)
+    # The apply's own plan runs unlocked, its re-plan under the lock; no B2 delete or rmtree holds it.
+    assert [step for step in held if step[0] == "plan"] == [("plan", False), ("plan", True)]
+    assert {step for step in held if step[0] != "plan"} == {("delete", False), ("rmtree", False)}
+    assert sum(step == ("rmtree", False) for step in held) == 3 and not screened["dirs"]["settled"].exists()
+
+
+def test_a_ledger_without_its_coordinator_lock_file_refuses_before_any_deletion(world, screened, tmp_path):
+    (screened["queue"] / ".ledger.lock").unlink()
+    plan = base._plan(world)
+    before = base._snapshot(tmp_path)
+    with pytest.raises(deletion.WithdrawalDeletionError, match="screening_ledger_lock_missing"):
+        base._apply(world, plan)
+    assert base._snapshot(tmp_path) == before and world["store"].deleted == []
 
 
 def test_an_attempt_that_changes_before_the_lock_refuses_before_anything_is_deleted(world, screened, tmp_path,
@@ -573,3 +602,97 @@ def test_default_roots_are_the_screening_unit_roots():
                               (coordinator.WORK_ROOT_ENV, screening.DEFAULT_WORK_ROOT)):
         if not os.environ.get(variable):
             assert f"Environment={variable}={default}\n" in unit
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_a_staging_cleanup_record_proving_every_key_absent_lets_an_unsettled_attempt_go(world, screened, gated):
+    """Download mode and pre-launch refusals clean up without promotion, so they write no absence proof."""
+    held = screened["dirs"]["held"]
+    staging = held / STAGING
+    (staging / ABSENCE_PROOF_FILENAME).unlink()
+    manifest = json.loads((staging / STAGING_MANIFEST_FILENAME).read_text())
+    if not gated:
+        manifest.pop("output_promotion_required")
+    base._write(staging / STAGING_MANIFEST_FILENAME, manifest)
+    # A cleanup record bound to another manifest proves nothing here: deferred, with a step that can work.
+    base._write(staging / "wam_provider_object_store_cleanup.json",
+                {**_cleanup(staging), "staging_manifest_sha256": "0" * 64})
+    plan = base._plan(world)
+    row = next(row for row in plan["screening"]["deferred"] if row["attempt_id"] == held.name)
+    assert row["reason"] == screening.STAGED_UNPROVEN
+    assert [entry["next_step"] for entry in row["staged_objects"]] == [
+        "provider_output_resume" if gated else "staging_cleanup"]
+    receipt = base._apply(world, plan)
+    reason = {row["holder"]: row for row in receipt["remaining"]}["beta_screening_staging_store"]["reason"]
+    assert "--cleanup-staged-objects" in reason and held.is_dir()
+    base._write(staging / "wam_provider_object_store_cleanup.json", _cleanup(staging))
+    plan = base._plan(world)
+    assert plan["unresolved"] == [] and held.name not in {row["attempt_id"] for row in plan["screening"]["deferred"]}
+    base._apply(world, plan)
+    assert not held.exists() and not world["store"].present(screened["archives"]["held"]["uri"])
+
+
+def test_a_staging_binding_without_a_manifest_defers_the_attempt_and_names_its_keys(world, screened):
+    """Staging writes its binding before uploading the bundle; a crash before the manifest leaves only it."""
+    history = screened["dirs"]["history"]
+    staging = history / "allocator/attempts/attempt_001/object_store_staging"
+    base._write(staging / "wam_provider_object_store_staging_binding.json",
+                {"bundle_key": "staging/x/bundle.tar", "output_key": "staging/x/out.zip"})
+    plan = base._plan(world)
+    row = next(row for row in plan["screening"]["deferred"] if row["attempt_id"] == history.name)
+    assert row["reason"] == screening.STAGED_UNPROVEN
+    assert row["staged_objects"] == [{"staging_dir": str(staging), "next_step": "delete_by_hand", "keys": [
+        {"role": "bundle", "key": "staging/x/bundle.tar"}, {"role": "output", "key": "staging/x/out.zip"}]}]
+    receipt = base._apply(world, plan)
+    assert (staging / "wam_provider_object_store_staging_binding.json").is_file()
+    holders = {row["holder"]: row for row in receipt["remaining"]}
+    assert holders["beta_screening_staging_store"]["attempts"][0]["staged_objects"] == row["staged_objects"]
+
+
+@pytest.mark.parametrize("fault", ["symlinked_directory", "unreadable_directory", "fifo", "own_unreadable"])
+def test_a_record_the_walk_cannot_see_fails_closed_and_never_frees_a_shared_archive(world, screened, tmp_path,
+                                                                                     monkeypatch, fault):
+    other, shared = screened["dirs"]["other"], screened["archives"]["output"]
+    hidden = other / "hidden"
+    if fault == "symlinked_directory":
+        # Another site's record naming this site's output, behind a symlinked directory.
+        base._write(tmp_path / "elsewhere/provider_output_promotion.v1.json", _promotion(shared))
+        os.symlink(tmp_path / "elsewhere", hidden)
+    elif fault == "fifo":
+        os.mkfifo(other / "pipe")
+    else:
+        if fault == "own_unreadable":
+            hidden = screened["dirs"]["settled"] / "hidden"
+        base._write(hidden / "provider_output_promotion.v1.json", _promotion(shared))
+        scandir = os.scandir
+
+        def unreadable(path=".", *args):
+            if Path(path) == hidden:
+                raise PermissionError(13, "Permission denied", str(path))
+            return scandir(path, *args)
+
+        monkeypatch.setattr(os, "scandir", unreadable)
+    plan = base._plan(world)
+    assert plan["unresolved"], fault
+    before = base._snapshot(tmp_path)
+    with pytest.raises(deletion.WithdrawalDeletionError, match="unresolved_copies"):
+        base._apply(world, plan)
+    assert base._snapshot(tmp_path) == before and world["store"].present(shared["uri"])
+
+
+def test_a_later_run_does_not_report_attempts_an_earlier_run_deleted(world, screened):
+    queue, ids = screened["queue"], screened["ids"]
+    first = base._apply(world, base._plan(world))
+    assert first["deleted"]["beta_screening"]["attempt_ids_fully_deleted"] == sorted(
+        ids[name] for name in ("settled", "history", "held"))
+
+    def settle(row):
+        row["status"] = "completed"
+        row["attempt"].update(reservation_status="committed", **_settled(ids["active"], "4", "1.31"))
+
+    _row(queue, "screening-site-current", "learned-c", settle)
+    plan = base._plan(world)
+    assert plan["screening"]["deleted_earlier"] == sorted(ids[name] for name in ("settled", "history", "held"))
+    receipt = base._apply(world, plan)
+    assert "beta_screening_allocated_attempt_directory_absent" not in {row["holder"] for row in receipt["remaining"]}
+    assert screening.incomplete(plan["screening"]) is False and receipt["covered_copies_deleted"] is True
