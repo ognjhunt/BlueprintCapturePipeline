@@ -5,7 +5,7 @@ You are picking up from a Claude Code cloud session on another account that ran 
 ## 0. First 15 minutes, in order
 
 1. Bootstrap the cloud session. Repos: `ognjhunt/BlueprintCapturePipeline` (Pipeline) and `ognjhunt/Blueprint-WebApp` (WebApp). From the WebApp checkout run `bash scripts/cloud/bootstrap.sh`, then `bash scripts/cloud/doctor.sh`. Then `. ~/.blueprint-cloud/env.sh` in every shell, which gives the Pipeline venv, the pinned uv and the operator door URL. Read both repos' `CLAUDE.md` and `AGENTS.md`, and the WebApp's `docs/runbooks/cloud-scene-runs.md`.
-2. Check the in-flight deploy (section 3.1): `python3 scripts/operator_door.py requests` (Pipeline repo) and `python3 scripts/operator_door.py status`. If commit `2f688aa98933b4449b1b98273d92bf539e2d26d2` (or anything newer on main) is not running, deploy it:
+2. Check the in-flight deploy (section 3.1). It was launched at 14:48Z as door request `20261105T144801Z-deploy-8daa6693`, unit `blueprint-operator-door-deploy-2f688aa98933-8daa6693.service`: run `operator_door.py journal blueprint-operator-door-deploy-2f688aa98933-8daa6693.service -n 100` and `operator_door.py status` to see whether 2f688aa9 is the running release. Also: `python3 scripts/operator_door.py requests` (Pipeline repo) and `python3 scripts/operator_door.py status`. If commit `2f688aa98933b4449b1b98273d92bf539e2d26d2` (or anything newer on main) is not running, deploy it:
    `python3 scripts/operator_door.py deploy 2f688aa98933b4449b1b98273d92bf539e2d26d2 --operation-key deploy-2f688aa9-budget30 --wait --timeout 2400`
    The key is idempotent, so reuse it. If main has moved, deploy the newest attested commit with a new key.
 3. Confirm the screening re-plan (section 2.4) and watch the runs.
