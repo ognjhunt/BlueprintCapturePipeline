@@ -167,7 +167,35 @@ You are picking up from a Claude Code cloud session on another account that ran 
   - how long `.ledger.lock` is held during network deletes (could it starve the coordinator?);
   - whether the "money final" classification covers every reservation state;
   - staged copies left behind.
-- Fix must-fixes, wait for green CI, merge, deploy. Prefer a quiet moment: no screening run mid-launch.
+- **Independent review finished (14:58Z). Not ready to merge.** File:line refer to `src/blueprint_pipeline/website_capture_withdrawal_screening.py` at ee00915b0 unless noted. A probe test reproducing must-fix 1 and 3 and should-fix 5 was in the old session's scratchpad and is lost; rewrite it as real tests.
+- **Must-fix**
+  1. **An unmounted work volume counts as "already deleted"** (`:212` `if directory.exists()`, `:180` silently skips a missing attempts root).
+     - With `/mnt/blueprint-work` unmounted, apply runs clean, the archives stay in B2, and the receipt says `covered_copies_deleted: True`.
+     - Fix: count an absent directory as deleted only when its parent `attempts` directory exists and is a real directory, not a symlink. Otherwise add `screening_attempt_root_unavailable` to `unresolved`.
+  2. **Deleting a held attempt's directory destroys the only record of its staged copies** (`:210`, `:264`, `:295`, and `website_capture_withdrawal_deletion.py:679`).
+     - The staged keys live only in `object_store_staging/wam_provider_object_store_staging_manifest.json` inside the attempt directory.
+     - Fix: accept a valid `staged_object_absence_proof.v1.json` (`load_staged_object_absence_proof`). Otherwise defer with `screening_staged_objects_unproven` ("run provider-output-resume first").
+     - Set `pipeline_controlled_deletion_complete` to false while any staged copy is unproven, and record the staged keys in `remaining`.
+  3. **Attempt IDs are not pattern-checked; directories are not confined** (`:196` uses `coordinator._attempt_path`).
+     - Reproduced: a ledger row with `attempt_id: "../plans"` deleted `<queue>/plans`. `".."` would delete the whole queue root.
+     - Fix: require `re.fullmatch(r"screen-[0-9a-f]{32}", attempt_id)` and `directory.parent in {queue_root/"attempts", work_root/"attempts"}`, with neither root a symlink. Otherwise add the attempt to `unresolved`.
+- **Should-fix**
+  4. **`.ledger.lock` is held for the whole apply** (`website_capture_withdrawal_deletion.py:617-619`), which starves the coordinator for every site during network deletes. There's no deadlock and no overspend.
+     - Fix: re-plan and check the digest without the lock. Then lock, re-run `plan_screening` and require it to equal `plan["screening"]`. Do only the screening deletes under the lock, then release.
+  5. **The shared-archive check fails open** (`:136-149`): one unsealed `...superseded-x` file drops a whole foreign directory's names.
+     - Fix: collect names per record, send an unreadable foreign record to `unresolved`, and protect archives that this site's deferred attempts name.
+  6. **The plan seal is not verified** (`:85-100`, `_plan_record` trusts `plan_digest`).
+     - Fix: use `canonical_digest(plan, digest_field="plan_digest")` or `validate_screening_plan`.
+     - Also flag `screening_campaign_names_another_site` when a campaign binds by capture or intent but its ledger `site_id` is another site.
+  7. **Object keys are confined only to the bucket.** Require the kind to be `policy-canary-provider-output` or `policy-canary-paired-witness`, and the key prefix `{LARGE_ARTIFACT_KEY_PREFIX}/{kind}/sha256/<hex>/`.
+  8. **Receipt honesty:**
+     - Report a named queue root that doesn't exist (`:174`).
+     - Report allocated attempts whose directory is absent.
+     - Report receipts whose `paired_witness.state` is `pending`.
+     - List `selections/`, holds and the `attempts/<id>.attempt_dir.json` pointers among retained records.
+  9. **Unlocked writers:** take each staging directory's `.provider_output_promotion.lock` without blocking before deleting it, which guards against `provider-output-resume` re-promoting. Expect `backfill_runtime_diagnostics` races to fail closed.
+- Checked and fine: the "money final" classification, deleting a final attempt's directory (nothing later reads it), crash safety, and symlinks inside attempts.
+- Then: wait for green CI, merge, deploy. Prefer a quiet moment: no screening run mid-launch.
 
 ### 3.5 Backlog (lower priority, from the old session's task list)
 
