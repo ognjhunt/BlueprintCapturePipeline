@@ -98,6 +98,19 @@ def _check_quote(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
         raise ValueError("beta_screening_cost_quote_invalid_or_expired")
 
 
+def current_commit() -> str:
+    """The commit this release runs.
+
+    Preparation compares it with the plan's frozen commit every time, also before it reuses
+    an earlier preparation: a row waiting for capacity re-enters preparation each tick, and
+    Vast launches wait while a deploy switches, so a bundle staged during a deploy's build
+    would otherwise launch the old release's code right after the switch (2026-11-05). A
+    refusal is free (nothing was allocated) and the row is planned again at the new commit.
+    """
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
 def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
                       attempt_dir: Path) -> dict[str, Any]:
     """Build and static-preflight a sealed provider bundle; never allocate."""
@@ -114,16 +127,14 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     _check_quote(plan, candidate)
     family = candidate["execution_spec"].get("backend") == FAMILY_BACKEND
     omission = None
+    execution = candidate["execution_spec"]
+    if current_commit() != execution.get("implementation_commit"):
+        raise ValueError("beta_screening_implementation_commit_changed")
     previous = root / "prepared.json"
     if previous.exists():
         prepared = _read(previous)
         _validate_prepared(plan, candidate, root, prepared)
         return prepared
-    execution = candidate["execution_spec"]
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2],
-                            capture_output=True, text=True, check=True).stdout.strip()
-    if commit != execution.get("implementation_commit"):
-        raise ValueError("beta_screening_implementation_commit_changed")
     if (execution.get("schema_version") != EXECUTION_SCHEMA
             or execution.get("backend") not in {"robolab.v1", FAMILY_BACKEND}
             or execution.get("candidate_id") != candidate["candidate_id"]

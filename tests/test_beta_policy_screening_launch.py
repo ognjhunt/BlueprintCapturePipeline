@@ -64,6 +64,13 @@ def test_real_single_candidate_robolab_bundle_passes_both_pre_create_gates(tmp_p
     assert preflight["status"] == "passed", preflight.get("blockers")
     assert launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=tmp_path / "attempt") == prepared
     assert not (tmp_path / "attempt" / "allocator_launch_intent.json").exists()
+    # A deploy switched while the row waited for capacity: the staged bundle holds the old
+    # release's code, so reusing it is refused (free) and the row is planned at the new commit.
+    monkeypatch.setattr(launch, "current_commit", lambda: "e" * 40)
+    with pytest.raises(ValueError, match="beta_screening_implementation_commit_changed"):
+        launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=tmp_path / "attempt")
+    assert launch._read(tmp_path / "attempt" / "prepared.json") == prepared
+    assert not (tmp_path / "attempt" / "allocator_launch_intent.json").exists()
 
 
 def test_openpi_polaris_variant_is_selected_and_bundled_like_pi05(tmp_path, monkeypatch):
