@@ -237,3 +237,53 @@ def test_a_campaign_with_no_harness_failure_on_record_launches_as_before(tmp_pat
     coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=running,
                                         max_launches=2)
     assert [row["status"] for row in publication(tmp_path)["candidates"]] == ["running", "running"]
+
+
+def _all_void_summary(count, reason="simulator_failed_before_policy"):
+    return {"episodes_scored": 0, "episodes_succeeded": 0, "episodes_failed": 0, "episodes_void": count,
+            "success_rate": None, "session_result_digest": "sha256:" + "0" * 64,
+            "episode_outcomes": [{"cell_id": f"cell-{index}", "outcome": "void", "reason": reason}
+                                 for index in range(count)]}
+
+
+def test_a_completed_run_whose_every_episode_was_void_is_a_harness_failure(tmp_path, monkeypatch):
+    """2026-11-05: pi05 reached a loaded policy in all ten cells, the session closed cleanly, and
+    every episode stopped in the simulator before the first policy query. Nothing about the policy
+    was measured: it is retried after a deploy like any harness failure, and its sibling waits."""
+    monkeypatch.setattr(coordinator, "candidate_result_summary",
+                        lambda *_args, **_kwargs: _all_void_summary(2))
+    closed = {"status": "completed", "result": {"session": "closed"},
+              "provider_allocation_performed": True, "provider_zero_verified": True}
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    for _ in range(2):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                            executor=Backend(closed))
+    rows = publication(tmp_path)["candidates"]
+    assert [(row["status"], row["blockers"]) for row in rows] == [
+        ("completed", []), ("blocked", [coordinator.HARNESS_HOLD_BLOCKER])]
+    assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) is None
+    assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
+        "candidate-000", "candidate-001"]
+
+
+def test_one_scored_episode_is_a_result_not_a_harness_failure():
+    summary = _all_void_summary(3)
+    scored = {**summary, "episodes_scored": 1, "episodes_void": 2, "episode_outcomes": [
+        {"cell_id": "cell-0", "outcome": "failure", "reason": "task_not_completed"}, *summary["episode_outcomes"][1:]]}
+    assert coordinator._harness_failed({"status": "completed", "blockers": [], "summary": summary})
+    assert not coordinator._harness_failed({"status": "completed", "blockers": [], "summary": scored})
+    # No outcomes at all is not evidence that every episode was void.
+    assert not coordinator._harness_failed({"status": "completed", "blockers": [],
+                                            "summary": {**summary, "episode_outcomes": []}})
+    assert not coordinator._harness_failed({"status": "running", "blockers": [], "summary": summary})
+
+
+def test_an_all_void_completion_does_not_prove_the_harness_for_its_siblings():
+    void_row = {"status": "completed", "blockers": [], "summary": _all_void_summary(2)}
+    state = {"site_id": "site-1", "candidates": {"a": void_row, "b": {"status": "running"},
+                                                 "c": {"status": "pending"}}}
+    ledger = {"campaigns": {"campaign-1": state}}
+    assert coordinator._unproven_retry_in_flight(ledger, state, "c")
+    proven = {**state, "candidates": {**state["candidates"], "a": {
+        "status": "completed", "blockers": [], "summary": {**_all_void_summary(2), "episodes_scored": 1}}}}
+    assert not coordinator._unproven_retry_in_flight({"campaigns": {"campaign-1": proven}}, proven, "c")

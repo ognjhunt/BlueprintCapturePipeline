@@ -402,3 +402,46 @@ def test_a_gate_verdict_below_the_cell_names_its_integrity_blockers(tmp_path):
     verdict = rows["cell_runs/00/prepolicy_observation_gate/native_asset_composition_gate/external/verdict.json"]
     assert verdict["policy_observation_integrity_passed"] is False and verdict["frame_structure_passed"] is True
     assert summary["unread_member_counts"]["nested_json_member"] == 1
+
+
+def _failure_record(cell: int) -> bytes:
+    return json.dumps({
+        "schema_version": "policy_canary_episode_failure_evidence.v2", "status": "blocked",
+        "cell_id": f"cell-{cell}", "episode_failure_stage": "before_first_observation",
+        "episode_failure_cause": "infrastructure", "failure_type": "PolicyEpisodeError",
+        "failure_message": f"policy_episode_prestart_readiness_failed:check_{cell} token={FAKE_TOKEN}",
+        "failure_code": f"policy_episode_prestart_readiness_failed:check_{cell}",
+        "candidate_policy_queried": False}).encode()
+
+
+def test_a_clean_session_with_stopped_episodes_still_collects_their_failure_records(tmp_path):
+    """2026-11-05: the session closed cleanly with all ten episodes void, so nothing was
+    collected and the archive was gone at settlement. Each episode's own failure record is
+    now read (bounded), redacted, and kept."""
+    stopped = {f"cell_runs/{cell:02d}/episodes/run--cell-{cell}--pi05_droid.failure_gap.json": _failure_record(cell)
+               for cell in range(diagnostics.MAX_EPISODE_FAILURE_RECORDS + 3)}
+    q10 = quick10_shaped_archive(cells=1, extra_members=stopped)
+    transfer = _collect(RangeStore(q10.archive))
+    summary = transfer["runtime_diagnostics"]
+    assert summary["status"] == "completed", summary.get("reason")
+    records = [row for row in summary["results"] if row["member"].endswith(".failure_gap.json")]
+    assert len(records) == diagnostics.MAX_EPISODE_FAILURE_RECORDS
+    assert summary["unread_member_counts"]["episode_failure_record_cap"] == 3
+    assert records[0]["failure_code"].startswith("policy_episode_prestart_readiness_failed:check_")
+    assert (records[0]["episode_failure_stage"], records[0]["failure_type"]) == (
+        "before_first_observation", "PolicyEpisodeError")
+    assert any(item["field"] == "failure_message" for item in records[0]["error_messages"])
+    assert FAKE_TOKEN not in json.dumps(transfer)
+    # Other per-episode JSON is still only counted.
+    assert summary["unread_member_counts"].get("nested_json_member", 0) > 0
+    # The compact copy for the command result keeps each stopped episode's typed failure.
+    kept = [row for row in diagnostics.compact(summary)["failing_results"] if row["member"].endswith(".failure_gap.json")]
+    assert kept and all(row["failure_code"].startswith("policy_episode_prestart_readiness_failed") for row in kept)
+
+
+def test_diagnostics_are_wanted_for_a_clean_result_only_without_episode_failure_records():
+    clean = {"runtime_result_present": True, "runtime_result_status": "completed_unqualified"}
+    assert not diagnostics.diagnostics_wanted(clean)
+    assert not diagnostics.diagnostics_wanted(clean, ["cell_runs/00/episodes/x.score_receipt.json"])
+    assert diagnostics.diagnostics_wanted(clean, ["cell_runs/00/episodes/x.failure_gap.json"])
+    assert diagnostics.diagnostics_wanted(clean, ["cell_runs/00/episodes/x.failure_evidence.json"])

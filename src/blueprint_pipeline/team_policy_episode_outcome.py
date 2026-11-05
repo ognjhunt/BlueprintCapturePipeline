@@ -1,8 +1,15 @@
 """Pure shared policy-outcome classification and the first-batch spending gate."""
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any
 
 FIRST_BATCH_CELLS = 25
+#: A typed failure code: a lowercase code with at most three qualifiers, never a path or free text.
+FAILURE_CODE = re.compile(r"[a-z][a-z0-9_]{0,95}(?::[A-Za-z0-9_.]{1,96}){0,3}")
+FAILURE_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,79}")
+_CODE_HEAD = re.compile(r"[a-z][a-z0-9_]{0,95}")
+_CODE_QUALIFIER = re.compile(r"[A-Za-z0-9_.]{1,96}")
+_MODULE_NOT_FOUND = re.compile(r"No module named '([A-Za-z_][A-Za-z0-9_.]{0,95})'")
 INTERFACE_FAILURE_REASONS = frozenset({"policy_service_did_not_answer", "policy_action_invalid",
                                       "policy_service_error", "policy_action_beyond_joint_limits"})
 
@@ -56,6 +63,44 @@ def episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
     if row.get("episode_failure_stage") == "after_first_observation":
         return "void", "simulator_failed_during_episode"
     return "void", "simulator_failed_before_policy"
+
+
+def failure_code(message: Any) -> str | None:
+    """The typed code an episode failure's message leads with, or ``None``.
+
+    Only a message's first error (before ``;``) is read, and only its leading
+    colon-separated segments that are typed codes: the first segment stops at
+    the first character that is not a code, so a path, a scene name or prose is
+    never kept. ``No module named 'x'`` becomes ``module_not_found:x``.
+    """
+    text = str(message or "").strip()
+    missing = _MODULE_NOT_FOUND.search(text)
+    if missing:
+        return f"module_not_found:{missing[1]}"
+    segments = text.split(";", 1)[0].split(":")
+    if not _CODE_HEAD.fullmatch(segments[0]):
+        return None
+    kept = [segments[0]]
+    for segment in segments[1:4]:
+        if not _CODE_QUALIFIER.fullmatch(segment):
+            break
+        kept.append(segment)
+    return ":".join(kept)
+
+
+def episode_failure_fields(row: Mapping[str, Any]) -> dict[str, str]:
+    """``failure_type`` and ``failure_code`` of an episode that did not complete, each only when typed."""
+    if row.get("status") == "completed":
+        return {}
+    fields: dict[str, str] = {}
+    kind = row.get("failure_type") or row.get("typed_harness_failure")
+    if isinstance(kind, str) and FAILURE_TYPE.fullmatch(kind):
+        fields["failure_type"] = kind
+    code = row.get("failure_code")
+    code = code if isinstance(code, str) and FAILURE_CODE.fullmatch(code) else failure_code(row.get("failure_message"))
+    if code is not None:
+        fields["failure_code"] = code
+    return fields
 
 
 def first_batch_failure(rows: Sequence[Mapping[str, Any]]) -> str | None:

@@ -492,3 +492,33 @@ def test_actual_parent_first_cell_timeout_seals_no_beta_prefix(tmp_path, monkeyp
         pass
     path = output / PROVIDER_RESULT_FILENAME
     assert not path.exists() or not json.loads(path.read_text()).get("episodes")
+
+
+def test_a_void_episode_names_its_typed_failure_in_the_ledger_summary(tmp_path):
+    """2026-11-05: ten void episodes, and the archive that said why was gone at settlement.
+    The summary keeps each stopped episode's exception class and leading typed code, never
+    its message."""
+    value = make_plan(count=1)
+    candidate = value["candidates"][0]
+    inner = provider_result(value, candidate, tmp_path / "out", successes=4)
+    joined = dict(inner, provider_allocations_observed=1, status="completed_unqualified",
+                  session_closeout={"provider_allocations_observed": 1, "teardown_completed": True,
+                                    "provider_zero_confirmed": True})
+    stopped = {key: item for key, item in joined["episodes"][0].items()
+               if key not in ("episode", "deterministic_score_digest")}
+    # The shape the worker's failure record gives an episode that stopped before its first observation.
+    stopped.update(status="blocked", failure_type="PolicyEpisodeError", typed_harness_failure="PolicyEpisodeError",
+                   failure_message="policy_episode_prestart_readiness_failed:reset_joint_state_out_of_bounds;"
+                                   "second error at <path>",
+                   episode_failure_stage="before_first_observation", candidate_policy_queried=False,
+                   actions_reached_robot=False, policy_outcome_interpretable=False,
+                   visual_evidence={"status": "unavailable_before_first_observation", "media_gap": {
+                       "type": "before_first_observation", "reason": "policy_canary_episode_runner_failed"}})
+    # A session with any stopped episode closes as blocked.
+    joined.update(episodes=[stopped, *joined["episodes"][1:]], status="blocked")
+    summary = candidate_result_summary(seal(dict(joined), "result_digest"), plan=value, candidate=candidate)
+    first, second = summary["episode_outcomes"][:2]
+    assert first == {"cell_id": stopped["cell_id"], "outcome": "void", "reason": "simulator_failed_before_policy",
+                     "failure_type": "PolicyEpisodeError",
+                     "failure_code": "policy_episode_prestart_readiness_failed:reset_joint_state_out_of_bounds"}
+    assert set(second) == {"cell_id", "outcome", "reason"}  # a scored episode carries no failure

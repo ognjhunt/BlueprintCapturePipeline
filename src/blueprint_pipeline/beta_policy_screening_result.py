@@ -29,7 +29,7 @@ import re
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from .team_policy_episode_outcome import episode_outcome
+from .team_policy_episode_outcome import episode_failure_fields, episode_outcome
 from .policy_execution_evidence import (
     candidate_execution_kinds, evidence_kind, SCRIPTED, SCRIPTED_ACTION_SOURCE, scripted_episode_outcome,
 )
@@ -127,7 +127,10 @@ def candidate_result_summary(
             if row.get("deterministic_score_digest") != canonical_digest({"value": score}):
                 raise ValueError("beta_screening_result_score_binding_mismatch")
         outcome, reason = scripted_episode_outcome(row) if evidence_kind(row) == SCRIPTED else episode_outcome(row)
-        returned[row["cell_id"]] = {"cell_id": row["cell_id"], "outcome": outcome, "reason": reason}
+        # An episode that did not complete names its typed failure (ledger only; never its message),
+        # so a run whose output archive is gone still says what stopped it.
+        returned[row["cell_id"]] = {"cell_id": row["cell_id"], "outcome": outcome, "reason": reason,
+                                    **episode_failure_fields(row)}
     missing = _not_returned_reasons(result, cells, set(returned))
     outcomes = [returned.get(cell["cell_id"]) or {"cell_id": cell["cell_id"], "outcome": "void",
                                                   "reason": missing[cell["cell_id"]]} for cell in cells]

@@ -341,11 +341,23 @@ HARNESS_RETRY_LIMIT = 4
 HARNESS_HOLD_BLOCKER = "beta_screening_held_after_launch_failure"
 
 
+def _measured_nothing(row: Mapping[str, Any]) -> bool:
+    """A completed row whose every episode was void: the session closed, but the simulator
+    stopped each episode (2026-11-05: all ten before the first policy query), so nothing about
+    the policy was measured. Any scored episode is a result and never counts here."""
+    summary = row.get("summary") or {}
+    outcomes = summary.get("episode_outcomes")
+    return (row.get("status") == "completed" and not summary.get("episodes_scored")
+            and isinstance(outcomes, list) and bool(outcomes)
+            and all(isinstance(outcome, Mapping) and outcome.get("outcome") == "void" for outcome in outcomes))
+
+
 def _harness_failed(row: Mapping[str, Any]) -> bool:
-    """A spent row our harness failed: blocked only by a harness code, with no episode scored."""
+    """A spent row our harness failed: blocked only by a harness code, or completed with every
+    episode void; either way with no episode scored."""
     blockers = set(row.get("blockers") or [])
     return (row.get("status") == "blocked" and bool(blockers) and blockers <= HARNESS_FAILURE_BLOCKERS
-            and not (row.get("summary") or {}).get("episodes_scored"))
+            and not (row.get("summary") or {}).get("episodes_scored")) or _measured_nothing(row)
 
 
 def _harness_failures(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> int:
@@ -366,7 +378,7 @@ def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any
     one waits (still pending, nothing reserved) for the active one's result.
     """
     rows = state["candidates"]
-    if any(row["status"] == "completed" for row in rows.values()):
+    if any(row["status"] == "completed" and not _harness_failed(row) for row in rows.values()):
         return False
     if not any(_harness_failures(ledger, state["site_id"], key) for key in rows):
         return False

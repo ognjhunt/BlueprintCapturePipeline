@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from .decision_evidence_contracts import canonical_digest
 from .policy_execution_evidence import evidence_kind, SCRIPTED, scripted_fields
 from .policy_canary_media_integrity import bound_media_artifact as _bound_media_artifact
+from .team_policy_episode_outcome import failure_code
 
 # Also shipped in standalone policy bundles, which have no paired-session module.
 PROVIDER_RESULT_FILENAME = "native_task_arena_policy_canary_session_result.v1.json"
@@ -259,6 +260,8 @@ def _write_episode_failure_gap(
         "failure_type": type(failure).__name__,
         "typed_harness_failure": type(failure).__name__,
         "failure_message": safe_message or None,
+        # The message's leading typed code, kept by summaries that never copy the message.
+        "failure_code": failure_code(safe_message),
         "failure_message_digest": _digest(raw_message),
         "candidate_policy_action_queries": raw_queries,
         "commanded_actions": commanded_actions,
