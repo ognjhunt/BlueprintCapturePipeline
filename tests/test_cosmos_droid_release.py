@@ -22,8 +22,11 @@ from blueprint_pipeline.cosmos_droid_dependencies import (
 )
 from blueprint_pipeline.cosmos_droid_provisioning import client_wheels, server_environment
 from blueprint_pipeline.cosmos_droid_source import (
+    CHECKPOINT_REGISTRY_FILES,
     SOURCE_ARCHIVE,
     SOURCE_MANIFEST,
+    checkpoint_registry_downloads,
+    checkpoint_registry_path,
     extract_source,
     verify_source_directory,
 )
@@ -118,6 +121,111 @@ def test_snapshot_downloads_every_file_the_pinned_processor_opens(tmp_path, cand
     manifest = selected.verified_snapshot_manifest(tmp_path / selected.SNAPSHOT_STAGED_NAME)
     assert opened, "no processor file reads found in the pinned source"
     assert sorted(opened - {row["path"] for row in manifest["required_files"]}) == []
+
+
+_SOURCE = "cosmos_framework/"
+# Pinned-source modules the policy server's model load runs for these snapshots,
+# traced from action_policy_server_robolab through OmniInference.create into the
+# hydra targets each snapshot's config.json names.
+_LOAD_MODULES = (
+    "scripts/action_policy_server_robolab.py", "inference/inference.py", "inference/common/inference.py",
+    "inference/common/args.py", "inference/args.py", "inference/model.py", "model/generator/omni_mot_model.py",
+    "model/generator/tokenizers/wan2pt2_vae_4x16x16.py", "data/generator/processors/__init__.py",
+    "data/generator/processors/base.py", "model/generator/mot/unified_mot.py", "configs/base/defaults/reasoner.py",
+)
+# Names outside checkpoint_db itself that lead into the checkpoint registry.
+_REGISTRY_ROUTES = {"maybe_download_hf_model_from_s3", "load_language_model_safetensors", "GuardrailRunners",
+                    "download_checkpoint", "checkpoint_hf"}
+# Every function in those modules that can reach the registry, with the traced
+# reason these loads skip it. None marks the one call they make.
+_REGISTRY_CALLERS = {
+    "scripts/action_policy_server_robolab.py:_resolve_checkpoint_path": "checkpoint path is a local directory",
+    "inference/inference.py:_create": "local directory whose bundled processor serves the tokenizer node",
+    "inference/common/inference.py:create": "the wrapper disables guardrails",
+    "inference/common/args.py:download_checkpoint": "checkpoint_hf is unset for a local directory",
+    "inference/common/args.py:_build_checkpoint": "sets checkpoint_hf only for registered checkpoint names",
+    "model/generator/omni_mot_model.py:load_pretrained_model_if_needed": "training hook; pretrained weights off",
+    "model/generator/omni_mot_model.py:_load_language_model": "training hook; pretrained weights off",
+    "model/generator/tokenizers/wan2pt2_vae_4x16x16.py:_video_vae": None,
+    "data/generator/processors/__init__.py:_download_llm_tokenizer": "text-only tokenizer types",
+    "data/generator/processors/__init__.py:build_processor_lazy": "repository is unset once the node points at the checkpoint",
+    "data/generator/processors/base.py:__init__": "the processor name is the checkpoint directory",
+    "configs/base/defaults/reasoner.py:download_tokenizer_files": "only the Qwen2 tokenizer node calls it",
+}
+# Each snapshot's config.json, by the sha256 its manifest pins, configures the
+# video tokenizer wan2pt2_vae_interface with this (bucket_name, vae_path).
+_VIDEO_TOKENIZER = {
+    "da6a23cbf4477aafda3e773874bf2c98d6869156e8a450d944e2f28c94eee00b":
+        ("", "pretrained/tokenizers/video/wan2pt2/Wan2.2_VAE.pth"),
+    "11577909f49e95d62456b6a497cf7b883f8987a3186d720d838ea5de0e493366":
+        ("bucket", "pretrained/tokenizers/video/wan2pt2/Wan2.2_VAE.pth"),
+}
+
+
+def _registry_callers(modules):
+    found = set()
+    for name, module in modules.items():
+        names = set(_REGISTRY_ROUTES)
+        for node in ast.walk(module):
+            if isinstance(node, ast.ImportFrom) and node.module == "cosmos_framework.utils.checkpoint_db":
+                names |= {alias.asname or alias.name for alias in node.names}
+        for function in (node for node in ast.walk(module) if isinstance(node, ast.FunctionDef)):
+            if any(getattr(node, "id", getattr(node, "attr", None)) in names for node in ast.walk(function)):
+                found.add(f"{name}:{function.name}")
+    return found
+
+
+def _registered_files(module):
+    """s3 URI to CheckpointFileHf keywords, for each registration in register_checkpoints."""
+    register = next(node for node in module.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "register_checkpoints")
+    files = {}
+    for call in ast.walk(register):
+        if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "CheckpointConfig":
+            fields = {keyword.arg: keyword.value for keyword in call.keywords}
+            if getattr(fields["hf"].func, "id", None) == "CheckpointFileHf":
+                uri = next(keyword.value for keyword in fields["s3"].keywords if keyword.arg == "uri")
+                files[ast.literal_eval(uri)] = {keyword.arg: ast.literal_eval(keyword.value)
+                                                for keyword in fields["hf"].keywords}
+    return files
+
+
+@pytest.mark.parametrize("candidate", CANDIDATES)
+def test_every_registry_file_the_pinned_model_load_fetches_is_pinned_and_provisioned(tmp_path, candidate):
+    # The pinned registry shells out to `uvx hf download`, which the GPU image
+    # lacks and the offline server must not run, so a registry file that is not
+    # pinned and provisioned stops the policy server during model load.
+    selected = profile(candidate)
+    stage_runtime(tmp_path, candidate)
+    with zipfile.ZipFile(tmp_path / SOURCE_ARCHIVE) as archive:
+        modules = {name: ast.parse(archive.read(_SOURCE + name)) for name in _LOAD_MODULES}
+        registry = ast.unparse(ast.parse(archive.read(_SOURCE + "utils/checkpoint_db.py")))
+        registered = _registered_files(ast.parse(archive.read(_SOURCE + "inference/common/checkpoints.py")))
+    assert sorted(_registry_callers(modules) ^ set(_REGISTRY_CALLERS)) == [], "unaudited registry caller"
+    # The tokenizer prefixes a bucket only when one is set, and _video_vae
+    # resolves the result with download_checkpoint_v2. An s3 URI's bucket is
+    # rewritten to "bucket"; a bare relative path is looked up under s3://bucket/.
+    vae = ast.unparse(modules["model/generator/tokenizers/wan2pt2_vae_4x16x16.py"])
+    assert "vae_path_full = f's3://{bucket_name}/{vae_path}' if bucket_name else vae_path" in vae
+    assert "pretrained_path = download_checkpoint_v2(pretrained_path)" in vae
+    assert "sanitize_uri(f's3://bucket/{checkpoint_uri}')" in registry
+    # Every registry file download passes the argument list the server answers.
+    assert ("cmd_args = [self.repository, '--repo-type', self.repository_type.value, '--revision', "
+            "self.revision, self.filename]\n        path = _hf_download(cmd_args)") in registry
+    manifest = selected.verified_snapshot_manifest(tmp_path / selected.SNAPSHOT_STAGED_NAME)
+    config_sha256 = next(row["sha256"] for row in manifest["required_files"] if row["path"] == "config.json")
+    reached = registered["s3://bucket/" + _VIDEO_TOKENIZER[config_sha256][1]]
+    assert "repository_type" not in reached  # a model repository
+    pinned = [{key: row[key] for key in ("repository", "revision", "filename")} for row in CHECKPOINT_REGISTRY_FILES]
+    assert pinned == [reached]
+    # Provisioned: inside the transfer bound and fetched where the server reads.
+    assert CHECKPOINT_BYTES[candidate] == sum(row["size_bytes"] for row in
+                                              [*manifest["required_files"], *CHECKPOINT_REGISTRY_FILES])
+    assert runtime_contract(candidate)["checkpoint_registry_files"] == [dict(row) for row in CHECKPOINT_REGISTRY_FILES]
+    for row, destination in checkpoint_registry_downloads(tmp_path / "store"):
+        assert row["url"].startswith(f"https://huggingface.co/{row['repository']}/resolve/{row['revision']}/")
+        assert destination == checkpoint_registry_path(tmp_path / "store", row)
+        assert re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) and row["size_bytes"] > 0
 
 
 def test_fixed_source_archive_cannot_gain_an_unverified_import(tmp_path):

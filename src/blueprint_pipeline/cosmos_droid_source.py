@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+from urllib.parse import quote
 import zipfile
 
 SOURCE_REVISION = "2f603cb114ff8b335e116060444d0b6caee3a85e"
@@ -18,6 +19,31 @@ SOURCE_PARTS = tuple(
     f"{SOURCE_ARCHIVE}.part-{index:03d}"
     for index in range((SOURCE_ARCHIVE_BYTES + SOURCE_PART_BYTES - 1) // SOURCE_PART_BYTES)
 )
+# Files this source's checkpoint registry (register_checkpoints in
+# cosmos_framework/inference/common/checkpoints.py) fetches while either DROID
+# policy model loads: both snapshots' video tokenizer resolves to the Wan2.2 VAE.
+# The source fetches them with `uvx hf download`, which the GPU image lacks and
+# the offline server must not run, so provisioning fetches them exactly and the
+# server answers the registry from that store. Repository, revision and filename
+# are the registration's; size and sha256 are the publisher's LFS record there.
+CHECKPOINT_REGISTRY_FILES = (
+    {"repository": "Wan-AI/Wan2.2-TI2V-5B", "revision": "921dbaf3f1674a56f47e83fb80a34bac8a8f203e",
+     "filename": "Wan2.2_VAE.pth", "size_bytes": 2_818_839_170, "license": "apache-2.0",
+     "sha256": "20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36"},
+)
+CHECKPOINT_REGISTRY_BYTES = sum(row["size_bytes"] for row in CHECKPOINT_REGISTRY_FILES)
+CHECKPOINT_REGISTRY_STORE = "checkpoint-registry"
+
+
+def checkpoint_registry_path(store: str | Path, row: dict) -> Path:
+    return Path(store) / row["repository"] / row["revision"] / row["filename"]
+
+
+def checkpoint_registry_downloads(store: str | Path) -> list[tuple[dict, Path]]:
+    """Exact fetch rows for the registry files, each with the path the server answers."""
+    return [({**row, "url": f"https://huggingface.co/{row['repository']}/resolve/{row['revision']}/"
+              f"{quote(row['filename'])}?download=true"}, checkpoint_registry_path(store, row))
+            for row in CHECKPOINT_REGISTRY_FILES]
 
 
 def source_manifest(path: str | Path | None = None) -> dict:
