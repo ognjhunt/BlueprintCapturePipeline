@@ -25,9 +25,10 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   site's walkthrough (found by its name, so also after workspace retirement);
 - every beta policy screening attempt of a campaign bound to the site by the
   screening ledger, and the provider output archives its promotion receipts name
-  (``website_capture_withdrawal_screening``): one whose money is final is deleted;
-  one still active, reserved or unsettled is deferred with a typed reason until a
-  later run. Ledger rows, and so the site budget, are never touched;
+  (``website_capture_withdrawal_screening``): one whose money is final and whose
+  staged objects are proven absent is deleted; one still active, reserved,
+  unsettled or with unproven staged objects is deferred with a typed reason until
+  a later run. Ledger rows, and so the site budget, are never touched;
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
 
 The plan reads every run's JSON records once (streamed, any size), so it is an
@@ -588,9 +589,9 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
 
     It holds every same-site Atlas preview lock throughout, so no preview step can
     publish a new copy between this plan's object listing and its deletion; a step
-    in progress refuses (``atlas_preview_busy``) and the operator retries. It
-    also holds the screening coordinator's ledger lock, so no attempt of the site
-    changes state between the re-resolved plan and its deletion.
+    in progress refuses (``atlas_preview_busy``) and the operator retries. The
+    screening deletes come first, under the screening coordinator's ledger lock
+    held only for them (``website_capture_withdrawal_screening.apply_screening``).
     """
 
     _require(authorize_complete_deletion is True, "explicit_authorization_required")
@@ -614,8 +615,6 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise WithdrawalDeletionError("website_withdrawal_deletion_atlas_preview_busy") from None
-        locks.enter_context(screening.ledger_lock(resolution.get("screening_queue_root",
-                                                                 screening.DEFAULT_QUEUE_ROOT)))
         return _apply_withdrawal_deletion(capture_root=capture_root, expected_plan_digest=expected_plan_digest,
                                           **resolution)
 
@@ -627,7 +626,19 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     _require(not plan["unresolved"], "unresolved_copies")
     _require(plan["legal_hold"] is False, "legal_hold")
     store, deleted = resolution.get("object_store"), {"objects": [], "runs": [], "files": []}
+    # Screening first: if its attempts changed since the plan, nothing at all is deleted.
+    screened = {uri for attempt in plan["screening"]["attempts"] for uri in attempt["object_uris"]}
+    identity = {key: plan[key] for key in ("request_id", "scene_id", "capture_id")}
+    removed, screening_objects = screening.apply_screening(
+        plan["screening"], [row for row in plan["objects"] if row["uri"] in screened], store,
+        lambda unresolved: screening.plan_screening(
+            identity, plan["lineage"]["intents"], unresolved=unresolved,
+            **{f"{name}_root": Path(plan["screening"][f"{name}_root"]) if plan["screening"][f"{name}_root"] else None
+               for name in ("queue", "work")}))
+    deleted["objects"].extend(screening_objects)
     for row in plan["objects"]:
+        if row["uri"] in screened:
+            continue
         for key, version in row["versions"]:
             store.delete(key, version)
         _require(store.versions(row["uri"]) == [], "object_versions_remaining")
@@ -645,8 +656,6 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
             else:
                 target.unlink(missing_ok=True)
             deleted["files"].append(path)
-    # Each attempt's archives went with the objects above, so a crash here leaves records naming only gone objects.
-    screened = screening.delete_attempt_directories(plan["screening"])
     workspace = plan["scene_workspace"]
     for path in workspace["retiring_leftovers"]:
         shutil.rmtree(path)
@@ -672,12 +681,13 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
         "deleted": {**deleted, "scene_files": len(local_plan["files"]),
                     "scene_local_cleanup_receipt_digest": local["local_cleanup_receipt_digest"],
                     "capture_source_bucket_prefix": f"scenes/{plan['scene_id']}/" if cloud_storage else None,
-                    "beta_screening": screening.receipt_section(plan["screening"], screened, store, plan["objects"])},
+                    "beta_screening": screening.receipt_section(plan["screening"], removed, store,
+                                                                screening_objects)},
         "remaining": remaining,
         # A deferred screening attempt is covered but not yet deleted.
         "covered_copies_deleted": not plan["screening"]["deferred"],
         "pipeline_controlled_deletion_complete": (not plan["uncovered_pipeline_roots"] and cloud_storage is not None
-                                                  and not plan["screening"]["deferred"]),
+                                                  and not screening.incomplete(plan["screening"])),
         "provider_copies_deleted": False, "physical_erasure_proven": False,
         "applied_at_iso": datetime.now(timezone.utc).isoformat(),
     }
