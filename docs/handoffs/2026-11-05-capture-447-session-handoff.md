@@ -2,6 +2,15 @@
 
 You are picking up from a Claude Code cloud session on another account that ran out of usage. Its container and transcript are gone; this document is everything you need. Read it fully before acting. Work autonomously: the owner wants progress without being asked questions, except for the hard stops below.
 
+## UPDATE 17:40Z (old session)
+
+- **Live:** 64e25c2c, since 17:25Z (#3401, retry 7). 63fa4d73 had gone live at 16:59Z (#3399 OpenPI fix, #3398 backfill, #3397, #3331).
+- **Screening:** campaign `screening-eef2121ccd09f64c47d7fdaceb4d70f9`, frozen at 63fa4d73. **cosmos3 has been running since 17:13Z.** molmoact2 and pi0_100k are pending; the other pi0 rows are waitlisted. pi05 was dropped at 7 failures; the next re-plan at 64e25c2c re-admits it once (limit 7).
+- **NEW BUG, fix open: WebApp PR #1221.** The WebApp's `screeningCampaignIdentity` included `budget.limit_usd`. After the $30 raise, every revision of a campaign first published at $15 got a 409 identity conflict.
+  - 16 publications for older campaigns are stuck, including groot's, so its backfilled videos can't land.
+  - #1221 removes the limit from the identity and refuses only a lowered limit. Merge it when CI is green; Render deploys it, and the outbox then drains on its own.
+- The door refuses holds on `blueprint-beta-policy-screening.timer` (`hold_unit_profile_refused`).
+
 ## UPDATE 17:00Z (old session): read this first
 
 - **#3400 is CLOSED** as a duplicate. The other session's **#3399** (merged) already fixes the OpenPI `ping_timeout` bug.
