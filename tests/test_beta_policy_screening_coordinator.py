@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-from blueprint_pipeline.beta_policy_screening_plan import validate_screening_plan
+from blueprint_pipeline.beta_policy_screening_plan import SCREENING_HARNESS_REVISION, validate_screening_plan
 from blueprint_pipeline.beta_policy_screening_result import candidate_result_summary
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
@@ -62,6 +62,8 @@ def plan(*, campaign_id="campaign-1", site_id="site-job-1", cost="4.00", count=1
              "scenario_cells": cells, "scenario_plan_digest": canonical_digest({"cells": cells}), "budget_usd": "15.00",
              "maximum_planned_cost_usd": f"{Decimal(cost) * count:.2f}", "purpose": "screening",
              "claim_ceiling": "diagnostic_policy_execution", "candidates": rows,
+             # Made by today's planner: under the current harness revision.
+             "screening_harness_revision": SCREENING_HARNESS_REVISION,
              "source": {"scene_intent_id": "scene-intent-1", "scene_intent_digest": digest("intent"),
                         "capture_id": "walkthrough-job-1", "task_id": "task-1",
                         "task_context_digest": digest("context"), "scene_revision_digest": scene_digest}}

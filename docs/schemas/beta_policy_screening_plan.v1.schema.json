@@ -910,6 +910,11 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "type": "string"
     },
+    "screening_harness_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The screening harness revision the plan was made under. Plans made before revisions existed omit it (revision 0). Results a candidate on an affected backend produced under a lower revision than RESULTS_NOT_COUNTED_BELOW names are not counted, and that candidate is planned again once at the next deploy. Revision 1 (2026-11-05): RoboLab DROID policies were given their gripper state inverted."
+    },
     "schema_version": {
       "const": "beta_policy_screening_plan.v1"
     },
