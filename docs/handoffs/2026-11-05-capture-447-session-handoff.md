@@ -154,7 +154,7 @@ You are picking up from a Claude Code cloud session on another account that ran 
 
 ### 3.4 Pipeline #3397: withdrawal deletion now covers screening work. Review, merge, deploy
 
-- Branch `claude/withdrawal-deletes-screening-work`, head ee00915b0. 134 tests passed.
+- Branch `claude/withdrawal-deletes-screening-work`, head 2ca33f0fb (review fixes applied). 134 tests passed.
 - **What it does:**
   - New helper `website_capture_withdrawal_screening.py`.
   - Deletes the attempt directories, plus every version and delete marker of the promoted output and witness archives, through `B2ObjectVersions`.
@@ -167,6 +167,7 @@ You are picking up from a Claude Code cloud session on another account that ran 
   - how long `.ledger.lock` is held during network deletes (could it starve the coordinator?);
   - whether the "money final" classification covers every reservation state;
   - staged copies left behind.
+- **UPDATE 15:10Z: all nine review points below are FIXED** in commit `2ca33f0fb` on the branch. 180 tests passed with `-m ''`, and the PR body is updated. Next: wait for green CI on 2ca33f0fb, spot-check the fixes, merge, deploy. The list below is kept for reference.
 - **Independent review finished (14:58Z). Not ready to merge.** File:line refer to `src/blueprint_pipeline/website_capture_withdrawal_screening.py` at ee00915b0 unless noted. A probe test reproducing must-fix 1 and 3 and should-fix 5 was in the old session's scratchpad and is lost; rewrite it as real tests.
 - **Must-fix**
   1. **An unmounted work volume counts as "already deleted"** (`:212` `if directory.exists()`, `:180` silently skips a missing attempts root).
