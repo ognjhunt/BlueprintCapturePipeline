@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tarfile
 import time
@@ -48,6 +49,39 @@ class TransferBudget:
         self.attempted_bytes += size
 
 
+# A bounded fetch has at most 600 seconds for its whole response, so a 5 GB checkpoint shard
+# needed more than 8 MB/s for its whole length; a slower rented link refused it
+# (SecurityValidationError: total time limit). A file larger than this is fetched in byte
+# ranges of this size, each its own bounded request (a floor of about 1.8 MB/s), appended in
+# order, and verified whole by size and sha256 as before.
+RANGE_CHUNK_BYTES = 1024**3
+
+
+def _fetch_ranges(fetch, url: str, *, size: int, temporary: Path, deadline: float) -> None:
+    part = temporary.with_name(temporary.name + ".range")
+    if part.exists() or part.is_symlink():
+        raise ValueError("local_policy_download_partial_exists")
+    with temporary.open("xb"):
+        pass
+    try:
+        offset = 0
+        while offset < size:
+            last = min(size, offset + RANGE_CHUNK_BYTES) - 1
+            response = fetch(url, allowed_origins=ALLOWED_ORIGINS,
+                timeout_seconds=max(1, min(600, int(remaining_seconds(deadline)))), max_bytes=last - offset + 1,
+                max_redirects=5, output_path=part, headers={"Range": f"bytes={offset}-{last}"})
+            # A server that ignores the range answers 200 with the whole file, which the byte bound
+            # refuses; a short or partial answer is refused here.
+            if getattr(response, "status", None) != 206 or part.stat().st_size != last - offset + 1:
+                raise ValueError("local_policy_download_range_invalid")
+            with temporary.open("ab") as output, part.open("rb") as chunk:
+                shutil.copyfileobj(chunk, output, 8 * 1024 * 1024)
+            part.unlink()
+            offset = last + 1
+    finally:
+        part.unlink(missing_ok=True)
+
+
 def fetch_exact(row: dict, destination: Path, *, deadline: float, fetch=None,
                 budget: TransferBudget | None = None) -> dict:
     """No retry, ambient credentials, arbitrary output tree or unbounded reads."""
@@ -72,16 +106,47 @@ def fetch_exact(row: dict, destination: Path, *, deadline: float, fetch=None,
     try:
         if budget is not None:
             budget.reserve(size)
-        (fetch or fetch_bounded_https)(row["url"], allowed_origins=ALLOWED_ORIGINS,
-            timeout_seconds=max(1, min(600, int(remaining_seconds(deadline)))), max_bytes=size,
-            max_redirects=5, output_path=temporary)
+        if size > RANGE_CHUNK_BYTES:
+            _fetch_ranges(fetch or fetch_bounded_https, row["url"], size=size, temporary=temporary,
+                          deadline=deadline)
+        else:
+            (fetch or fetch_bounded_https)(row["url"], allowed_origins=ALLOWED_ORIGINS,
+                timeout_seconds=max(1, min(600, int(remaining_seconds(deadline)))), max_bytes=size,
+                max_redirects=5, output_path=temporary)
         remaining_seconds(deadline)
         if temporary.stat().st_size != size or _sha256(temporary, deadline=deadline) != expected:
             raise ValueError("local_policy_download_bytes_changed")
         os.replace(temporary, destination)
         return {"status": "verified", "size_bytes": size, "sha256": expected, "cache_hit": False}
+    except Exception as exc:
+        # Which public file failed, for provisioning_failure_code; never a URL or a path.
+        exc.local_policy_download = destination.name
+        raise
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def provisioning_failure_code(prefix: str, exc: BaseException) -> str:
+    """The typed blocker a provisioning entry point records for a failure.
+
+    A failure that is already one of this provider's typed codes is kept. Any other is
+    ``<prefix>_provisioning_failed:<class>``, plus a refused download's fixed security reason
+    (``SecurityValidationError`` messages are fixed strings, never a URL) and the file it was
+    fetching, both reduced to lowercase code characters.
+    """
+
+    from .core.security_controls import SecurityValidationError
+
+    reason = str(exc)
+    if re.fullmatch(rf"(?:{re.escape(prefix)}|local_policy)_[a-z0-9_]{{1,120}}", reason):
+        return reason
+    parts = [f"{prefix}_provisioning_failed", type(exc).__name__]
+    if isinstance(exc, SecurityValidationError):
+        parts.append(re.sub(r"[^a-z0-9]+", "_", reason.lower()).strip("_")[:60])
+    download = getattr(exc, "local_policy_download", None)
+    if isinstance(download, str):
+        parts.append(re.sub(r"[^a-z0-9._-]+", "_", download.lower()).strip("_")[:60])
+    return ":".join(part for part in parts if part)
 
 
 def _command(argv: list[str], *, deadline: float, env: dict | None = None) -> None:
