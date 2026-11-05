@@ -131,6 +131,7 @@ def execute_native_controls(*, cell_runtime: Any, built: Any, scene_plan: Mappin
     from .native_task_construction_plan import materialize_rigid_construction_phase_plan
     from .native_task_arena_controls_worker import _control_plan_global_ik_joint_targets
     from .native_franka_pose_servo import PINK_GLOBAL_REFERENCE_SEEDS
+    from .native_task_episode_environment import policy_gripper_pad_binding
 
     root = output_root / "strict_controls"
     root.mkdir(parents=True, exist_ok=False)
@@ -154,6 +155,10 @@ def execute_native_controls(*, cell_runtime: Any, built: Any, scene_plan: Mappin
             raise RuntimeError("strict_controls_gripper_unresolved")
         env.reset(seed=seed)
         servo = cell_runtime.make_servo(env=env, robot=robot, gripper_convention=gripper)
+        # Scored gripper width reads the probe's pads, never the body origins. The
+        # readback keeps its grasp frame: phase arrival is gated in the adapter's
+        # finger-midpoint frame the control targets are written in.
+        pads = policy_gripper_pad_binding(servo)
         phases = materialize_rigid_construction_phase_plan(scene_plan)
         plan = _control_candidate(scene_plan, phases)
         targets, ik = _control_plan_global_ik_joint_targets(
@@ -170,7 +175,7 @@ def execute_native_controls(*, cell_runtime: Any, built: Any, scene_plan: Mappin
         environment, _ = cell_runtime.build_episode_environment(
             built=built, gripper_convention=gripper, servo=servo, task_readback=readback,
             to_tensor=cell_runtime.to_tensor, scripted_pose_joint_targets=targets,
-            scripted_pose_phase_targets=plan["scripted_positive_actions"])
+            scripted_pose_phase_targets=plan["scripted_positive_actions"], **pads)
         environment = cell_runtime.wrap_rigid_scoring_environment(
             environment=environment, task_readback=readback, task_spec=scene_plan["task_spec"])
         pair = run_task_neutral_controls(

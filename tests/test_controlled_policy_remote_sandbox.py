@@ -111,6 +111,18 @@ def test_controller_action_order_and_units_match_offered_robot():
         validate_native_controller_interface(contract)
 
 
+def test_controlled_native_environment_reads_the_gripper_from_the_servo_pads():
+    """The policy's gripper state and the scored width read the body origins, inverted."""
+
+    import blueprint_pipeline.controlled_native_isaac as module
+    from tests.test_native_task_episode_environment import pad_binding_wiring
+
+    calls = pad_binding_wiring(module, "build_controlled_native_environment")
+
+    assert calls["NativeRigidTaskArenaReadback"] == [True]
+    assert calls["build_native_task_episode_environment"] == [True]
+
+
 def test_dedicated_worker_bridge_serves_only_after_qualification_and_cleans(tmp_path):
     if shutil.which("openssl") is None:
         pytest.skip("openssl unavailable")

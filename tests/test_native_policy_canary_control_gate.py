@@ -153,7 +153,8 @@ def test_cell_control_gate_reuses_real_control_runner_and_native_phase_targets(t
     native = SimpleNamespace(unwrapped=SimpleNamespace(scene={"robot": object()}), reset=lambda **kwargs: None)
     runtime = SimpleNamespace(
         gripper_probe=lambda **kwargs: {"status": "measured", "open_command": 0., "closed_command": 1.},
-        make_servo=lambda **kwargs: object(), make_rigid_task_readback=lambda built: object(),
+        make_servo=lambda **kwargs: SimpleNamespace(current_gripper_pad_readback=lambda: {}),
+        make_rigid_task_readback=lambda built: object(),
         build_episode_environment=lambda **kwargs: (environment, {}),
         wrap_rigid_scoring_environment=lambda **kwargs: kwargs["environment"], to_tensor=lambda value: value)
     receipt = execute_native_controls(cell_runtime=runtime, built=SimpleNamespace(env=native), scene_plan=scene,
@@ -198,6 +199,65 @@ def test_cell_control_gate_reuses_real_control_runner_and_native_phase_targets(t
             control_id=CONTROL_IDS[1], gripper_open_command=0., gripper_closed_command=1., output_dir=tmp_path/'old-terminal')
         assert failed['control_passed'] is False
         assert failed['score']['failed_criteria'] == ['retreat']
+
+
+_STRICT_CAMERA_GATE = {"policy_observation_integrity_passed": True, "snapshot": {"cameras": [
+    {"role": role, "observability": {"thresholds": {"effective_minimum_pixels": 4}},
+     "semantic_label_pixels": {"task_object": 20, "task_support": 20}}
+    for role in ("external", "wrist", "overview")]}}
+
+
+def _strict_controls_seams(tmp_path, monkeypatch, servo):
+    """Run the strict controls up to the episode seam and record what it received."""
+
+    from blueprint_pipeline import native_task_arena_controls_worker as worker
+    from tests.test_native_task_control_plan import _rigid_scene
+
+    monkeypatch.setattr(worker, "_control_plan_global_ik_joint_targets",
+                        lambda **kwargs: ([], {"status": "all_unique_poses_solved_or_bound"}))
+    seams = {}
+
+    def make_rigid_task_readback(built, **kwargs):
+        seams["readback"] = kwargs
+        return object()
+
+    def build_episode_environment(**kwargs):
+        seams["environment"] = kwargs
+        raise RuntimeError("fixture_stops_at_the_episode_seam")
+
+    native = SimpleNamespace(unwrapped=SimpleNamespace(scene={"robot": object()}), reset=lambda **kwargs: None)
+    runtime = SimpleNamespace(
+        gripper_probe=lambda **kwargs: {"status": "measured", "open_command": 0., "closed_command": 1.},
+        make_servo=lambda **kwargs: servo, make_rigid_task_readback=make_rigid_task_readback,
+        build_episode_environment=build_episode_environment,
+        wrap_rigid_scoring_environment=lambda **kwargs: kwargs["environment"], to_tensor=lambda value: value)
+    receipt = execute_native_controls(
+        cell_runtime=runtime, built=SimpleNamespace(env=native),
+        scene_plan=_rigid_scene(scene_id="fixture", asset_id="subject"),
+        gate=_STRICT_CAMERA_GATE, output_root=tmp_path)
+    return receipt, seams
+
+
+def test_strict_controls_score_the_gripper_width_from_the_servo_pads(tmp_path, monkeypatch):
+    """The scored width read the inner-finger body origins: 0 m open, 0.064 m closed."""
+
+    servo = SimpleNamespace(current_gripper_pad_readback=lambda: {"measured": {}})
+    receipt, seams = _strict_controls_seams(tmp_path, monkeypatch, servo)
+
+    assert receipt["blockers"] == ["fixture_stops_at_the_episode_seam"]
+    assert seams["environment"]["gripper_pad_readback_callback"] is servo.current_gripper_pad_readback
+    # The readback keeps its grasp frame: the control targets are written in the
+    # adapter's finger-midpoint frame and phase arrival is gated on it.
+    assert seams["readback"] == {}
+
+
+def test_strict_controls_without_a_pad_readback_fail_closed(tmp_path, monkeypatch):
+    receipt, seams = _strict_controls_seams(tmp_path, monkeypatch, SimpleNamespace())
+
+    assert receipt["status"] == "blocked"
+    assert receipt["blockers"] == ["native_task_episode_gripper_pad_readback_missing"]
+    assert seams == {}
+    assert receipt["candidate_policy_queried"] is False
 
 
 def test_explicit_control_contract_cannot_load_policies_with_only_camera_gate(tmp_path):
