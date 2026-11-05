@@ -245,6 +245,8 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "adp009d_hold_trace.py",
     "adp009d_newton_collision_adapter.py",
     "policy_canary_worker_evidence.py",
+    # Imported by the worker evidence for typed episode failure codes (#3388).
+    "team_policy_episode_outcome.py",
     "task_object_native_settle_gate.py",
     "task_object_native_settle_runtime.py",
     "policy_canary_media_integrity.py",
