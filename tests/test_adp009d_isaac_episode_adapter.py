@@ -900,6 +900,191 @@ def test_droid_gripper_state_is_closed_fraction_from_the_measured_probe_span() -
     assert adapter.read_policy_inputs()["gripper_position"] == pytest.approx(0.5)
 
 
+# The Robotiq 2F-85 in the pinned Arena DROID asset, as production measured it:
+# the inner-finger body origins coincide when the jaw is open and spread to the
+# pad travel as it closes, while the fingertip pad centres the convention probe
+# seals run the other way, 0.104 m open and 0.021 m closed.
+_PROBE_CLOSED_PAD_SEPARATION_M = 0.02098
+_PROBE_OPEN_PAD_SEPARATION_M = 0.10415
+_BODY_ORIGIN_SEPARATION_CLOSED_M = 0.08317
+
+
+def _robotiq_pad_adapter(
+    body_origin_separation_m: float, *, articulated: bool = False
+) -> IsaacEpisodeAdapter:
+    """Adapter over the live asset geometry, read through the real servo seam."""
+
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+
+    robot = _Robot()
+    bodies = robot.data.body_names
+    # Closing carries each body origin across the jaw centreline, so the
+    # origins spread while the pads they carry come together.
+    for side, sign in (("left", 1.0), ("right", -1.0)):
+        robot.data.body_pose_w[0, bodies.index(f"{side}_inner_finger"), :3] = [
+            sign * body_origin_separation_m / 2.0, 0.0, 1.0,
+        ]
+    servo = object.__new__(NativeFrankaDifferentialIkServo)
+    servo.binding = {"controlled_body_index": bodies.index("base_link")}
+    servo._robot, servo._to_torch = robot, _to_torch
+    servo._finger_body_indices = {
+        side: bodies.index(f"{side}_inner_finger") for side in ("left", "right")
+    }
+    pad_offset = _PROBE_OPEN_PAD_SEPARATION_M / 2.0
+    servo._pad_center_offsets_in_finger_body = {
+        "left": [-pad_offset, 0.0, 0.0],
+        "right": [pad_offset, 0.0, 0.0],
+    }
+    return IsaacEpisodeAdapter(
+        env=_Env(),
+        robot=robot,
+        rigid_task_object=None if articulated else _Can(),
+        task_sample_callback=(
+            (lambda: {"joint_positions_rad": {"door": 0.0}}) if articulated else None
+        ),
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=_PROBE_CLOSED_PAD_SEPARATION_M,
+        gripper_open_width_m=_PROBE_OPEN_PAD_SEPARATION_M,
+        gripper_pad_readback_callback=servo.current_gripper_pad_readback,
+    )
+
+
+@pytest.mark.parametrize(
+    ("body_origin_separation_m", "pad_separation_m", "droid_position", "width_m"),
+    (
+        (0.0, _PROBE_OPEN_PAD_SEPARATION_M, 0.0, GRIPPER_PHYSICAL_FULL_OPENING_M),
+        (_BODY_ORIGIN_SEPARATION_CLOSED_M, _PROBE_CLOSED_PAD_SEPARATION_M, 1.0, 0.0),
+    ),
+    ids=("open", "closed"),
+)
+def test_droid_gripper_state_reads_the_probe_pads_not_the_inverted_body_origins(
+    body_origin_separation_m: float,
+    pad_separation_m: float,
+    droid_position: float,
+    width_m: float,
+) -> None:
+    """Production regression: DROID policies were told open was closed.
+
+    Body origins read against the probe's pad-centre endpoints gave 1.0 with
+    the jaw open and 0.25 with it closed, and the scorer saw 0 m when open.
+    """
+
+    adapter = _robotiq_pad_adapter(body_origin_separation_m)
+
+    assert adapter.read_policy_inputs()["gripper_position"] == pytest.approx(
+        droid_position, abs=1e-6
+    )
+    sample = adapter.read_object_sample()
+    assert sample["gripper_width_m"] == pytest.approx(width_m, abs=1e-6)
+    assert sample["gripper_pad_separation_m"] == pytest.approx(pad_separation_m)
+    assert sample["gripper_width_source"] == (
+        "probe_calibrated_live_pad_center_separation"
+    )
+    assert sample["gripper_width_calibration_clamped"] is False
+    # The inverted body-origin measurement stays in the sample for audit only.
+    assert sample["gripper_body_separation_m"] == pytest.approx(
+        body_origin_separation_m
+    )
+
+
+@pytest.mark.parametrize(
+    ("body_origin_separation_m", "droid_position"),
+    ((0.0, 0.0), (_BODY_ORIGIN_SEPARATION_CLOSED_M, 1.0)),
+    ids=("open", "closed"),
+)
+def test_articulated_droid_gripper_state_reads_the_probe_pads(
+    body_origin_separation_m: float, droid_position: float
+) -> None:
+    """The articulated observation was inverted the same way as the rigid one."""
+
+    adapter = _robotiq_pad_adapter(body_origin_separation_m, articulated=True)
+
+    assert adapter.read_policy_inputs()["gripper_position"] == pytest.approx(
+        droid_position, abs=1e-6
+    )
+
+
+def test_gripper_width_tracks_pad_separation_through_the_whole_stroke() -> None:
+    span = _PROBE_OPEN_PAD_SEPARATION_M - _PROBE_CLOSED_PAD_SEPARATION_M
+    widths = []
+    for closing in (0.0, 0.02, 0.04, 0.06, _BODY_ORIGIN_SEPARATION_CLOSED_M):
+        adapter = _robotiq_pad_adapter(closing)
+        sample = adapter.read_object_sample()
+        assert sample["gripper_pad_separation_m"] == pytest.approx(
+            _PROBE_OPEN_PAD_SEPARATION_M - closing
+        )
+        open_fraction = (
+            sample["gripper_pad_separation_m"] - _PROBE_CLOSED_PAD_SEPARATION_M
+        ) / span
+        assert sample["gripper_width_m"] == pytest.approx(
+            GRIPPER_PHYSICAL_FULL_OPENING_M * open_fraction, abs=1e-9
+        )
+        assert adapter.read_policy_inputs()["gripper_position"] == pytest.approx(
+            1.0 - open_fraction, abs=1e-9
+        )
+        widths.append(sample["gripper_width_m"])
+    # Closing narrows the scored width, the polarity the release check needs.
+    assert widths == sorted(widths, reverse=True) and widths[0] > widths[-1]
+
+
+@pytest.mark.parametrize(
+    "readback",
+    (
+        None,
+        {"measured": {}},
+        {"measured": {"pad_centers_world_m": {"left": [0.0, 0.0, 1.0]}}},
+        {"measured": {"pad_centers_world_m": {
+            "left": [0.0, 0.0, 1.0], "right": [float("nan"), 0.0, 1.0],
+        }}},
+        {"measured": {"pad_centers_world_m": {
+            "left": [0.0, 0.0], "right": [0.1, 0.0, 1.0],
+        }}},
+    ),
+    ids=("none", "unmeasured", "one_pad", "nan", "short"),
+)
+def test_a_bound_pad_readback_never_falls_back_to_body_origins(readback) -> None:
+    adapter = IsaacEpisodeAdapter(
+        env=_Env(),
+        robot=_Robot(),
+        rigid_task_object=_Can(),
+        action_dim=8,
+        reset_seed=20260806,
+        to_torch=_to_torch,
+        gripper_closed_width_m=_PROBE_CLOSED_PAD_SEPARATION_M,
+        gripper_open_width_m=_PROBE_OPEN_PAD_SEPARATION_M,
+        gripper_pad_readback_callback=lambda: readback,
+    )
+
+    for read in (adapter.read_policy_inputs, adapter.read_object_sample):
+        with pytest.raises(
+            IsaacEpisodeAdapterError,
+            match="isaac_episode_gripper_pad_readback_invalid",
+        ):
+            read()
+
+
+def test_a_pad_readback_that_is_not_callable_is_refused_at_construction() -> None:
+    with pytest.raises(
+        IsaacEpisodeAdapterError,
+        match="isaac_episode_gripper_pad_readback_invalid",
+    ):
+        IsaacEpisodeAdapter(
+            env=_Env(),
+            robot=_Robot(),
+            rigid_task_object=_Can(),
+            action_dim=8,
+            reset_seed=20260806,
+            to_torch=_to_torch,
+            gripper_closed_width_m=_PROBE_CLOSED_PAD_SEPARATION_M,
+            gripper_open_width_m=_PROBE_OPEN_PAD_SEPARATION_M,
+            gripper_pad_readback_callback={"measured": {}},
+        )
+
+
 def test_object_sample_matches_the_scorer_schema() -> None:
     from blueprint_pipeline.adp009d_task_scoring import normalize_object_samples
 

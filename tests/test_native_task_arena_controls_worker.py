@@ -3351,3 +3351,17 @@ def test_contact_frontier_walks_from_the_proven_anchor_to_authored_contact() -> 
     assert len(offsets) == len(expected)
     for observed, row in zip(offsets, expected, strict=True):
         assert observed == pytest.approx(row)
+
+
+def test_controls_score_the_gripper_width_from_the_servo_pads() -> None:
+    """The scored width read the inner-finger body origins: 0 m open, 0.064 m closed."""
+
+    from blueprint_pipeline import native_task_arena_controls_worker as worker
+    from tests.test_native_task_episode_environment import pad_binding_wiring
+
+    calls = pad_binding_wiring(worker, "main")
+
+    assert calls["build_native_task_episode_environment"] == [True]
+    # The rigid readback keeps its grasp frame: the control targets are written
+    # in the adapter's finger-midpoint frame and phase arrival is gated on it.
+    assert calls["NativeRigidTaskArenaReadback"] == [False]

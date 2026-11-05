@@ -12,8 +12,9 @@ from jsonschema import Draft202012Validator
 
 from blueprint_pipeline.beta_policy_candidate_catalog import catalog_candidate, load_default_catalog, seal_catalog
 from blueprint_pipeline.beta_policy_screening_plan import (
-    EXECUTION_SCHEMA_VERSION, QUOTE_SCHEMA_VERSION, BetaPolicyScreeningPlanError,
-    build_screening_plan, screening_cells, validate_cost_quote, validate_execution_descriptor, validate_screening_plan,
+    EXECUTION_SCHEMA_VERSION, QUOTE_SCHEMA_VERSION, SCREENING_HARNESS_REVISION, BetaPolicyScreeningPlanError,
+    build_screening_plan, plan_harness_revision, screening_cells, validate_cost_quote, validate_execution_descriptor,
+    validate_screening_plan,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.team_evaluation_plan import scored_cells
@@ -103,6 +104,19 @@ def test_retained_legacy_plan_field_stays_valid_only_as_false(legacy, valid):
     else:
         with pytest.raises(BetaPolicyScreeningPlanError, match="plan_schema_invalid"):
             validate_screening_plan(value)
+
+
+def test_new_plans_carry_the_current_harness_revision_and_plans_made_before_revisions_stay_valid():
+    value = plan()
+    assert value["screening_harness_revision"] == SCREENING_HARNESS_REVISION
+    assert plan_harness_revision(value) == SCREENING_HARNESS_REVISION
+    # A plan retained from before harness revisions existed reads as revision 0.
+    older = reseal({key: item for key, item in deepcopy(value).items() if key != "screening_harness_revision"})
+    assert validate_screening_plan(older) == older and plan_harness_revision(older) == 0
+    for bad in (0, -1, True, "1", 1.0):
+        broken = reseal({**deepcopy(value), "screening_harness_revision": bad})
+        with pytest.raises(BetaPolicyScreeningPlanError, match="plan_schema_invalid"):
+            validate_screening_plan(broken)
 
 
 def test_machine_readable_plan_schema_accepts_mixed_admission_outcomes():

@@ -248,6 +248,10 @@ def test_a_verdict_for_another_preparation_or_collider_is_refused(tmp_path):
 def handoff(tmp_path, monkeypatch):
     """``prepare_rigid_native_inputs`` for an intake-ready job: stage builders stubbed, the verdict recorded."""
     from blueprint_pipeline import website_native_background, website_object_observations
+    from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV
+
+    # No operator team registry unless a test configures one.
+    monkeypatch.delenv(REGISTRY_ENV, raising=False)
 
     for name in ("prepare_collision_stage", "prepare_appearance_stage"):
         monkeypatch.setattr(website_native_background, name, lambda path: {"stage": "stub"})

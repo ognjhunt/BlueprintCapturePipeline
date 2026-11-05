@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
+import inspect
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -541,6 +544,137 @@ def test_rigid_factory_refuses_a_missing_scoring_frame_transform(
             task_readback=None,
             to_tensor=lambda value: value,
         )
+
+
+# The probe's sealed endpoints are fingertip pad-centre separations.
+_PAD_CONVENTION = {
+    "closed_command": 1.0,
+    "open_command": 0.0,
+    "finger_separation_m": {"0.0": 0.10415, "1.0": 0.02098},
+}
+
+
+def test_rigid_policy_binding_hands_the_servo_pads_to_the_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
+    servo = _Servo()
+    binding = module.policy_gripper_pad_binding(servo)
+    adapter, receipt = build_native_task_episode_environment(
+        built=_built("rigid_pick_place"), gripper_convention=_PAD_CONVENTION,
+        servo=servo, task_readback=None, to_tensor=lambda value: value, **binding,
+    )
+
+    assert binding == {
+        "gripper_pad_readback_callback": servo.current_gripper_pad_readback
+    }
+    assert adapter.kwargs["gripper_pad_readback_callback"] == (
+        servo.current_gripper_pad_readback
+    )
+    assert receipt["gripper_state_source"] == (
+        "native_finger_body_pose_plus_probe_sealed_pad_offset_each_sample"
+    )
+    # Every caller that does not bind the pads keeps its unchanged adapter.
+    adapter, receipt = build_native_task_episode_environment(
+        built=_built("rigid_pick_place"), gripper_convention=_PAD_CONVENTION,
+        servo=servo, task_readback=None, to_tensor=lambda value: value,
+    )
+    assert adapter.kwargs["gripper_pad_readback_callback"] is None
+    assert receipt["gripper_state_source"] is None
+
+
+def test_articulated_policy_binding_leaves_the_scored_task_sample_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
+    servo = _Servo()
+    unbound, unbound_receipt = build_native_task_episode_environment(
+        built=_built("articulated_open_close"), gripper_convention=_PAD_CONVENTION,
+        servo=servo, task_readback=_Readback(), to_tensor=lambda value: value,
+    )
+    bound, bound_receipt = build_native_task_episode_environment(
+        built=_built("articulated_open_close"), gripper_convention=_PAD_CONVENTION,
+        servo=servo, task_readback=_Readback(), to_tensor=lambda value: value,
+        **module.policy_gripper_pad_binding(servo),
+    )
+
+    # Only the policy observation gains the pads; the scored articulated width
+    # was already the servo's measured pad separation.
+    assert bound.kwargs["gripper_pad_readback_callback"] == (
+        servo.current_gripper_pad_readback
+    )
+    assert unbound.kwargs["gripper_pad_readback_callback"] is None
+    assert bound.kwargs["task_sample_callback"]() == (
+        unbound.kwargs["task_sample_callback"]()
+    )
+    assert bound.kwargs["task_sample_callback"]()["gripper_width_m"] == 0.06
+    assert bound_receipt["gripper_state_source"] == (
+        unbound_receipt["gripper_state_source"]
+    )
+
+
+@pytest.mark.parametrize(
+    "servo",
+    (SimpleNamespace(), SimpleNamespace(current_gripper_pad_readback=None)),
+    ids=("absent", "not_callable"),
+)
+def test_policy_gripper_pad_binding_refuses_a_servo_without_pads(servo) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    with pytest.raises(
+        NativeTaskEpisodeEnvironmentError,
+        match="native_task_episode_gripper_pad_readback_missing",
+    ):
+        module.policy_gripper_pad_binding(servo)
+
+
+def pad_binding_wiring(module: Any, function_name: str) -> dict[str, list[bool]]:
+    """For one worker function, whether each named call carries the servo's pads.
+
+    The Isaac workers bind the episode seam inside one long simulator function
+    that cannot run off-GPU.  This reads that function's own calls: an entry is
+    True when the call passes ``**policy_gripper_pad_binding(servo)`` (directly
+    or through a name assigned from it).  That helper refuses a servo without a
+    pad readback, so a True entry also means the site fails closed.
+    """
+
+    def is_binding(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "policy_gripper_pad_binding"
+            and [ast.unparse(arg) for arg in node.args] == ["servo"]
+            and not node.keywords
+        )
+
+    function = next(
+        node for node in ast.walk(ast.parse(inspect.getsource(module)))
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    names = {
+        target.id
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign) and is_binding(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    calls: dict[str, list[bool]] = {}
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        calls.setdefault(str(name), []).append(any(
+            keyword.arg is None and (
+                is_binding(keyword.value)
+                or (isinstance(keyword.value, ast.Name) and keyword.value.id in names)
+            )
+            for keyword in node.keywords
+        ))
+    return calls
 
 
 def test_articulated_factory_requires_native_task_readback() -> None:

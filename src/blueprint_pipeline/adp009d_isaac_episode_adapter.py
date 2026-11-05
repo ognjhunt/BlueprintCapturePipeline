@@ -17,7 +17,10 @@ than conventions:
   Robotiq link origins are not jaw tips and can dynamically travel beyond the
   85 mm nameplate stroke, so their separation is affine-calibrated against the
   same run's measured closed/open convention probe.  The raw separation and a
-  clamp flag remain in every object sample for audit.
+  clamp flag remain in every object sample for audit.  That probe seals
+  fingertip pad-centre separations, and the 2F-85 body origins coincide when
+  the jaw is open, so a run that binds the servo's pad readback calibrates the
+  pad separation instead and never falls back to the origins.
 
 Isaac imports happen inside methods, never at module import, so this file stays
 importable -- and testable -- off-GPU.
@@ -139,6 +142,7 @@ ARM_JOINT_COUNT = 7
 # deterministic scorer.  A parity test keeps the flat-bundle duplicate honest.
 GRIPPER_PHYSICAL_FULL_OPENING_M = 0.085
 GRIPPER_WIDTH_SOURCE = "probe_calibrated_finger_body_separation"
+GRIPPER_PAD_WIDTH_SOURCE = "probe_calibrated_live_pad_center_separation"
 
 
 class IsaacEpisodeAdapterError(RuntimeError):
@@ -622,7 +626,13 @@ class IsaacEpisodeAdapter:
         task_object_radius_m: float | None = None,
         task_object_height_m: float | None = None,
         sage_collision_contact_sensors: Mapping[str, Any] | None = None,
+        gripper_pad_readback_callback: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
+        if gripper_pad_readback_callback is not None and not callable(
+            gripper_pad_readback_callback
+        ):
+            raise IsaacEpisodeAdapterError(["isaac_episode_gripper_pad_readback_invalid"])
+        self._gripper_pad_readback_callback = gripper_pad_readback_callback
         self._env = env
         self._robot = robot
         self._rigid_object = rigid_task_object
@@ -1500,8 +1510,11 @@ class IsaacEpisodeAdapter:
         left_pose, right_pose = self._finger_poses()
         left, right = left_pose[:3], right_pose[:3]
         raw_separation = math.dist(left, right)
+        pad_separation = self._pad_center_separation()
         width, unclamped_open_fraction, calibration_clamped = (
-            self._calibrated_gripper_width(raw_separation)
+            self._calibrated_gripper_width(
+                raw_separation if pad_separation is None else pad_separation
+            )
         )
         sample: dict[str, Any] = {
             # The scorer's start/destination contract is in the task scoring
@@ -1529,6 +1542,9 @@ class IsaacEpisodeAdapter:
                 float(value) for value in controlled_body_pose[3:7]
             ],
         }
+        if pad_separation is not None:
+            sample["gripper_pad_separation_m"] = pad_separation
+            sample["gripper_width_source"] = GRIPPER_PAD_WIDTH_SOURCE
         sample["gripper_body_midpoint_world_m"] = [
             (left[axis] + right[axis]) / 2.0 for axis in range(3)
         ]
@@ -1694,11 +1710,41 @@ class IsaacEpisodeAdapter:
             not math.isclose(unbounded, bounded, rel_tol=0.0, abs_tol=1e-12),
         )
 
+    def _pad_center_separation(self) -> float | None:
+        """Live pad-centre separation, the quantity the convention probe seals.
+
+        The 2F-85 inner-finger body origins coincide when the jaw is open and
+        spread to the pad travel as it closes: the opposite sense to the
+        probe's endpoints.  A bound pad readback is therefore the only source;
+        a malformed reading is an error, never a return to those origins.
+        """
+
+        if self._gripper_pad_readback_callback is None:
+            return None
+        try:
+            centers = self._gripper_pad_readback_callback()["measured"][
+                "pad_centers_world_m"
+            ]
+            left, right = (
+                [float(value) for value in centers[side]]
+                for side in ("left", "right")
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise IsaacEpisodeAdapterError(["isaac_episode_gripper_pad_readback_invalid"]) from exc
+        if len(left) != 3 or len(right) != 3 or not all(
+            math.isfinite(value) for value in (*left, *right)
+        ):
+            raise IsaacEpisodeAdapterError(["isaac_episode_gripper_pad_readback_invalid"])
+        return math.dist(left, right)
+
     def _droid_gripper_position(self) -> float:
         """DROID state convention: zero=open and one=closed."""
 
+        pad_separation = self._pad_center_separation()
         _, open_fraction, _ = self._calibrated_gripper_width(
             self._raw_gripper_body_separation()
+            if pad_separation is None
+            else pad_separation
         )
         return min(1.0, max(0.0, 1.0 - open_fraction))
 
@@ -1924,6 +1970,7 @@ __all__ = [
     "DROID_EEF_STATE_SOURCE",
     "END_EFFECTOR_BODY_CANDIDATES",
     "FINGER_BODIES",
+    "GRIPPER_PAD_WIDTH_SOURCE",
     "GRIPPER_PHYSICAL_FULL_OPENING_M",
     "GRIPPER_WIDTH_SOURCE",
     "IsaacEpisodeAdapter",
