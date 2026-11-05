@@ -142,3 +142,27 @@ def definite_create_refusal_without_instance(adapter: Mapping[str, Any]) -> bool
 
 
 __all__ = ["diagnose_empty_create_400", "definite_create_refusal_without_instance"]
+
+
+#: A create that failed after its offer left the market, with nothing created (2026-11-05:
+#: molmoact2's selected ask was gone on a fresh search and Vast answered an empty 400).
+OFFER_GONE_BEFORE_CREATE = "vast_selected_offer_gone_before_create"
+
+
+def offer_gone_codes(adapter: Mapping[str, Any]) -> list[str]:
+    """``[OFFER_GONE_BEFORE_CREATE]`` when the failed create's own evidence shows the offer gone.
+
+    Not a refusal, and never a reason to reselect in this run: the offer was absent from a fresh
+    search and an authenticated listing shows no instance under any attempted label. A caller
+    may search again later under its own no-allocation proof, as it would when no offer qualified;
+    the next run's pre-launch inventory guard still refuses to launch beside an instance of ours.
+    """
+    diagnosis = adapter.get("create_failure_diagnosis")
+    return [OFFER_GONE_BEFORE_CREATE] if (
+        isinstance(diagnosis, Mapping)
+        and diagnosis.get("selected_offer_absent_from_fresh_search") is True
+        and diagnosis.get("create_inventory_verified") is True
+        and diagnosis.get("create_produced_no_instance") is True
+        and diagnosis.get("matching_attempt_instance_ids") == []
+        and bool(diagnosis.get("attempted_labels"))
+        and not adapter.get("vast_instance_ids")) else []

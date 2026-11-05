@@ -661,8 +661,12 @@ def _retry_after_capacity(earlier_retries: int = 0) -> str:
 
 
 def _offer_shortage(observation: Mapping[str, Any]) -> bool:
-    """The allocator's offer search found nothing to rent (its typed codes), before any create."""
-    return any(isinstance(code, str) and (code.startswith("no_vast_offer_") or code == "vast_offer_selection_blocked")
+    """The allocator's offer search found nothing to rent (its typed codes), before any create, or
+    the offer it chose left the market before create and nothing was created."""
+    from .vast_create_failure_diagnosis import OFFER_GONE_BEFORE_CREATE
+
+    return any(isinstance(code, str) and (code.startswith("no_vast_offer_")
+                                          or code in ("vast_offer_selection_blocked", OFFER_GONE_BEFORE_CREATE))
                for code in observation.get("blockers") or [])
 
 

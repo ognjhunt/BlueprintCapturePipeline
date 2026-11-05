@@ -61,3 +61,39 @@ def test_an_allocated_run_or_another_refusal_never_waits_for_capacity(tmp_path):
     rows = publication(tmp_path)["candidates"]
     assert [row["status"] for row in rows] == ["blocked", "blocked"]
     assert coordinator.OFFER_WAIT_BLOCKER not in rows[0]["blockers"] + rows[1]["blockers"]
+
+
+def test_an_offer_taken_before_create_with_nothing_created_waits_like_no_offer(tmp_path):
+    """2026-11-05 13:23Z: molmoact2's chosen Vast ask was gone on a fresh search, Vast answered an
+    empty 400 and an authenticated listing showed no instance. Nothing was spent, but the row
+    closed as blocked and the candidate waited for a deploy."""
+    from blueprint_pipeline.vast_create_failure_diagnosis import OFFER_GONE_BEFORE_CREATE
+
+    gone = {**SHORTAGE, "blockers": ["native_task_arena_policy_canary_session_runtime_not_completed",
+                                     "vast_api_http_error", OFFER_GONE_BEFORE_CREATE]}
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=Backend(gone))
+    row = publication(tmp_path)["candidates"][0]
+    assert (row["status"], row["blockers"]) == (
+        "preparing", [coordinator.CAPACITY_WAIT_BLOCKER, coordinator.OFFER_WAIT_BLOCKER])
+    # An HTTP error without that evidence still closes the row.
+    plain = {**SHORTAGE, "blockers": ["vast_api_http_error"]}
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=Backend(plain))
+    other = publication(tmp_path)["candidates"][1]
+    assert other["status"] == "blocked" and coordinator.OFFER_WAIT_BLOCKER not in other["blockers"]
+
+
+def test_the_offer_gone_code_needs_the_failed_creates_own_evidence():
+    from blueprint_pipeline.vast_create_failure_diagnosis import OFFER_GONE_BEFORE_CREATE, offer_gone_codes
+
+    diagnosis = {"selected_offer_absent_from_fresh_search": True, "create_inventory_verified": True,
+                 "create_produced_no_instance": True, "matching_attempt_instance_ids": [],
+                 "attempted_labels": ["blueprint-native-task-policy-canary-beta-x"]}
+    assert offer_gone_codes({"create_failure_diagnosis": diagnosis, "vast_instance_ids": []}) == [
+        OFFER_GONE_BEFORE_CREATE]
+    for change in ({"selected_offer_absent_from_fresh_search": False}, {"create_inventory_verified": False},
+                   {"create_produced_no_instance": False}, {"matching_attempt_instance_ids": [7]},
+                   {"attempted_labels": []}):
+        assert offer_gone_codes({"create_failure_diagnosis": {**diagnosis, **change}}) == []
+    assert offer_gone_codes({"create_failure_diagnosis": diagnosis, "vast_instance_ids": [7]}) == []
+    assert offer_gone_codes({}) == []

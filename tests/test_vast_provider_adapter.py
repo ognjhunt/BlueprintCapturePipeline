@@ -2815,6 +2815,9 @@ def test_vast_adapter_empty_create_400_stays_ambiguous_after_offer_absence(
     assert retry["selected_offer_absent_from_fresh_search"] is True
     assert retry["catalog_readback_http_status_code"] == 200
     assert retry["catalog_readback_offer_count"] == 0
+    # Still ambiguous here, never reselected in this run; the code tells a caller the offer left
+    # the market and nothing was created, so it may search again later under its own proof.
+    assert result["blockers"] == ["vast_api_http_error", "vast_selected_offer_gone_before_create"]
 
 
 def test_vast_adapter_empty_create_400_stays_ambiguous_after_empty_inventory(
@@ -2924,6 +2927,8 @@ def test_vast_adapter_empty_create_400_stays_ambiguous_after_empty_inventory(
     assert retry["selected_offer_absent_from_fresh_search"] is False
     assert retry["create_produced_no_instance"] is True
     assert retry["create_inventory_http_status_code"] == 200
+    # The offer is still listed: a rejected payload, not a vanished offer.
+    assert result["blockers"] == ["vast_api_http_error"]
     teardown = _read_json(tmp_path / "vast_teardown_manifest.json")
     assert teardown["continuing_spend_from_this_run"] is False
 
