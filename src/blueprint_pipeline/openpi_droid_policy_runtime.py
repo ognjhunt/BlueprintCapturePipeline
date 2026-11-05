@@ -14,6 +14,7 @@ import base64
 import dataclasses
 import hashlib
 import json
+import inspect
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -492,6 +493,16 @@ class _InferenceDeadlineWebsocket:
         return self._connection.recv(timeout=remaining, **kwargs)
 
 
+def _accepts_keyword(function: Callable[..., Any], name: str) -> bool:
+    """Whether ``function`` takes keyword ``name`` (directly or through ``**kwargs``)."""
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+
+
 def _bounded_openpi_client_type(
     vendor_client: type,
     wire_decoder: Callable[[bytes], Any],
@@ -515,11 +526,15 @@ def _bounded_openpi_client_type(
             # The pinned server performs synchronous cold inference on its
             # asyncio loop, so pong latency isn't a valid inference deadline.
             # Retain keepalive traffic, but use the bounded application receive.
-            connection = connect(
-                self._uri, compression=None, max_size=None, additional_headers=headers,
-                open_timeout=startup_timeout_seconds, ping_timeout=None,
-                close_timeout=close_timeout_seconds,
-            )
+            # Only websockets >= 15 has sync keepalive (and so ``ping_timeout``);
+            # older sync clients never ping, which is the same contract, and
+            # reject the keyword (2026-11-05: every pi05 episode void with
+            # "connect() got an unexpected keyword argument 'ping_timeout'").
+            options = {"compression": None, "max_size": None, "additional_headers": headers,
+                       "open_timeout": startup_timeout_seconds, "close_timeout": close_timeout_seconds}
+            if _accepts_keyword(connect, "ping_timeout"):
+                options["ping_timeout"] = None
+            connection = connect(self._uri, **options)
             try:
                 metadata = wire_decoder(connection.recv(
                     timeout=max(0.0, deadline - time.monotonic()),

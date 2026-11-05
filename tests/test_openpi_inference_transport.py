@@ -249,3 +249,34 @@ def test_failure_before_query_is_explicitly_not_attempted(tmp_path):
 def test_unbounded_transport_deadlines_are_refused(seconds):
     with pytest.raises(ValueError, match="openpi_policy_transport_timeout_invalid"):
         runtime._bounded_openpi_client_type(_PinnedWireClient, msgpack.unpackb, inference_timeout_seconds=seconds)
+
+
+def test_a_sync_client_without_keepalive_connects_without_ping_timeout(monkeypatch):
+    """2026-11-05: the GPU image's websockets predates sync keepalive, so passing
+    ``ping_timeout`` voided every pi05 episode before its first observation."""
+    seen = []
+
+    class _Connection:
+        def recv(self, timeout=None):
+            return msgpack.packb({"policy": "fixture"})
+
+        def close(self):
+            pass
+
+    def older_connect(uri, *, compression="deflate", max_size=2**20, additional_headers=None,
+                      open_timeout=10, close_timeout=10):
+        seen.append({"compression": compression, "additional_headers": additional_headers,
+                     "open_timeout": open_timeout, "close_timeout": close_timeout})
+        return _Connection()
+
+    monkeypatch.setattr(websockets.sync.client, "connect", older_connect)
+    client_type = runtime._bounded_openpi_client_type(
+        _PinnedWireClient, msgpack.unpackb, startup_timeout_seconds=0.5,
+        inference_timeout_seconds=0.5, close_timeout_seconds=0.1)
+    client = client_type("127.0.0.1", 1, api_key="k")
+    assert client.get_server_metadata() == {"policy": "fixture"}
+    assert seen == [{"compression": None, "additional_headers": {"Authorization": "Api-Key k"},
+                     "open_timeout": 0.5, "close_timeout": 0.1}]
+    assert runtime._accepts_keyword(older_connect, "ping_timeout") is False
+    assert runtime._accepts_keyword(lambda uri, *, ping_timeout=20: None, "ping_timeout") is True
+    assert runtime._accepts_keyword(lambda uri, **options: None, "ping_timeout") is True
