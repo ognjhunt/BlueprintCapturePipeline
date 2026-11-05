@@ -57,6 +57,42 @@ class TransferBudget:
 RANGE_CHUNK_BYTES = 1024**3
 
 
+# A refusal that arrives before any body byte (an HTTP error status, a DNS failure) moved no
+# data, so it is asked again, at most this many times in all, after these pauses. The transfer
+# budget and the money admission count each file once, so a failure part way through a body is
+# never retried. 2026-11-05: one host refused a GitHub release wheel with an HTTP error status
+# that answered normally minutes later.
+ZERO_BYTE_ATTEMPTS = 3
+ZERO_BYTE_RETRY_PAUSES_SECONDS = (5, 15)
+_ZERO_BYTE_HTTP_CODES = frozenset({403, 408, 425, 429})
+_ZERO_BYTE_SECURITY_REASONS = ("DNS resolution", "remote URL host DNS resolution failed")
+
+
+def _zero_byte_refusal(exc: BaseException) -> bool:
+    import urllib.error
+
+    from .core.security_controls import SecurityValidationError
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _ZERO_BYTE_HTTP_CODES or exc.code >= 500
+    return isinstance(exc, SecurityValidationError) and str(exc).startswith(_ZERO_BYTE_SECURITY_REASONS)
+
+
+def _fetch_zero_byte_retried(fetch, url: str, *, deadline: float, **kwargs):
+    for attempt in range(ZERO_BYTE_ATTEMPTS):
+        try:
+            return fetch(url, allowed_origins=ALLOWED_ORIGINS,
+                         timeout_seconds=max(1, min(600, int(remaining_seconds(deadline)))), **kwargs)
+        except Exception as exc:
+            if attempt + 1 >= ZERO_BYTE_ATTEMPTS or not _zero_byte_refusal(exc):
+                raise
+            pause = ZERO_BYTE_RETRY_PAUSES_SECONDS[min(attempt, len(ZERO_BYTE_RETRY_PAUSES_SECONDS) - 1)]
+            if remaining_seconds(deadline) <= pause:
+                raise
+            time.sleep(pause)
+    raise AssertionError("unreachable")
+
+
 def _fetch_ranges(fetch, url: str, *, size: int, temporary: Path, deadline: float) -> None:
     part = temporary.with_name(temporary.name + ".range")
     if part.exists() or part.is_symlink():
@@ -67,8 +103,7 @@ def _fetch_ranges(fetch, url: str, *, size: int, temporary: Path, deadline: floa
         offset = 0
         while offset < size:
             last = min(size, offset + RANGE_CHUNK_BYTES) - 1
-            response = fetch(url, allowed_origins=ALLOWED_ORIGINS,
-                timeout_seconds=max(1, min(600, int(remaining_seconds(deadline)))), max_bytes=last - offset + 1,
+            response = _fetch_zero_byte_retried(fetch, url, deadline=deadline, max_bytes=last - offset + 1,
                 max_redirects=5, output_path=part, headers={"Range": f"bytes={offset}-{last}"})
             # A server that ignores the range answers 200 with the whole file, which the byte bound
             # refuses; a short or partial answer is refused here.
@@ -110,8 +145,7 @@ def fetch_exact(row: dict, destination: Path, *, deadline: float, fetch=None,
             _fetch_ranges(fetch or fetch_bounded_https, row["url"], size=size, temporary=temporary,
                           deadline=deadline)
         else:
-            (fetch or fetch_bounded_https)(row["url"], allowed_origins=ALLOWED_ORIGINS,
-                timeout_seconds=max(1, min(600, int(remaining_seconds(deadline)))), max_bytes=size,
+            _fetch_zero_byte_retried(fetch or fetch_bounded_https, row["url"], deadline=deadline, max_bytes=size,
                 max_redirects=5, output_path=temporary)
         remaining_seconds(deadline)
         if temporary.stat().st_size != size or _sha256(temporary, deadline=deadline) != expected:
@@ -142,10 +176,13 @@ def provisioning_failure_code(prefix: str, exc: BaseException) -> str:
         return reason
     parts = [f"{prefix}_provisioning_failed", type(exc).__name__]
     if isinstance(exc, SecurityValidationError):
-        parts.append(re.sub(r"[^a-z0-9]+", "_", reason.lower()).strip("_")[:60])
+        parts.append(re.sub(r"[^a-z0-9]+", "_", reason.lower()).strip("_")[:50])
+    code = getattr(exc, "code", None)
+    if type(code) is int and 100 <= code <= 599:  # an HTTP error's status
+        parts.append(f"http_{code}")
     download = getattr(exc, "local_policy_download", None)
     if isinstance(download, str):
-        parts.append(re.sub(r"[^a-z0-9._-]+", "_", download.lower()).strip("_")[:60])
+        parts.append(re.sub(r"[^a-z0-9._-]+", "_", download.lower()).strip("_")[:80])
     return ":".join(part for part in parts if part)
 
 
