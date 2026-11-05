@@ -541,22 +541,30 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             return {"status": "reconciliation_required", "provider_zero_verified": False,
                     "no_allocation_proven": False,
                     "blockers": absence.get("blockers") or ["beta_screening_scoped_closeout_unproven"]}
+        def kept(observation: dict[str, Any]) -> dict[str, Any]:
+            # The provider is torn down and its closeout proven: keep every episode's review videos
+            # beside the capture, whatever the verdict, so the site can be shown any run later.
+            # Never raises; keeping videos is never a verdict.
+            from .beta_screening_review_videos import retain as retain_review_videos
+            return {**observation, "review_videos": retain_review_videos(
+                plan=plan, candidate=candidate, prepared=prepared, adapter=adapter, attempt_dir=root)}
+
         if stopped is not None:
-            return {"status": "blocked", "provider_allocation_performed": True,
-                    "provider_zero_verified": True, "no_allocation_proven": False,
-                    "applicability": "historical_only", "blockers": [stopped["reason"]]}
+            return kept({"status": "blocked", "provider_allocation_performed": True,
+                         "provider_zero_verified": True, "no_allocation_proven": False,
+                         "applicability": "historical_only", "blockers": [stopped["reason"]]})
         if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
             try:
                 from .beta_policy_screening_g1_launch import join_result
                 joined = join_result(plan=plan, candidate=candidate, adapter=adapter, prepared=prepared,
                                      receipt=absence, adapter_path=result_path)
             except (OSError, ValueError, KeyError, TypeError):
-                return {"status": "blocked", "provider_allocation_performed": True,
-                        "provider_zero_verified": True, "no_allocation_proven": False,
-                        "blockers": ["g1_beta_native_result_missing_or_invalid"]}
-            return {"status": "completed", "provider_allocation_performed": True,
-                    "provider_zero_verified": True, "no_allocation_proven": False,
-                    "result": joined, "blockers": joined.get("blockers") or []}
+                return kept({"status": "blocked", "provider_allocation_performed": True,
+                             "provider_zero_verified": True, "no_allocation_proven": False,
+                             "blockers": ["g1_beta_native_result_missing_or_invalid"]})
+            return kept({"status": "completed", "provider_allocation_performed": True,
+                         "provider_zero_verified": True, "no_allocation_proven": False,
+                         "result": joined, "blockers": joined.get("blockers") or []})
         try:
             native_path = Path(str(adapter.get("native_control_result_path") or ""))
             native = _read(native_path)
@@ -570,8 +578,8 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
                 # the policy, and the matrix stopped there: our harness, no score.
                 # With cells measured before it, that prefix is the result instead and
                 # the cells it never reached count unscored (``cell_not_returned``).
-                return {"status": "blocked", "provider_allocation_performed": True,
-                        "provider_zero_verified": True, "no_allocation_proven": False, "blockers": [setup]}
+                return kept({"status": "blocked", "provider_allocation_performed": True,
+                             "provider_zero_verified": True, "no_allocation_proven": False, "blockers": [setup]})
             joined = join_scoped_session_closeout(inner=native, adapter=adapter, prepared=prepared,
                                                   receipt=absence, adapter_path=result_path)
             joined = validate_session_result(joined)
@@ -580,17 +588,12 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
         except (OSError, ValueError, KeyError, TypeError):
             # The provider's lifecycle is resolved even if scientific output is
             # missing or invalid. Debit the full reservation and publish no score.
-            return {"status": "blocked", "provider_allocation_performed": True,
-                    "provider_zero_verified": True, "no_allocation_proven": False,
-                    "blockers": ["beta_screening_native_result_missing_or_invalid"]}
-        # The provider is torn down and its closeout proven: keep the episodes' review
-        # videos for the job's owner. Never raises; a failure is recorded, never a verdict.
-        from .beta_screening_review_videos import retain as retain_review_videos
-        review_videos = retain_review_videos(plan=plan, candidate=candidate, prepared=prepared, adapter=adapter,
-                                             attempt_dir=root)
-        return {"status": "completed", "provider_allocation_performed": True,
-                "provider_zero_verified": True, "no_allocation_proven": False,
-                "result": joined, "review_videos": review_videos, "blockers": joined.get("blockers") or []}
+            return kept({"status": "blocked", "provider_allocation_performed": True,
+                         "provider_zero_verified": True, "no_allocation_proven": False,
+                         "blockers": ["beta_screening_native_result_missing_or_invalid"]})
+        return kept({"status": "completed", "provider_allocation_performed": True,
+                     "provider_zero_verified": True, "no_allocation_proven": False,
+                     "result": joined, "blockers": joined.get("blockers") or []})
     process_path = root / "allocator_process.json"
     if process_path.exists():
         process = _read(process_path)

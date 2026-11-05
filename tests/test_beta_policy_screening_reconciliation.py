@@ -127,3 +127,43 @@ def test_closed_allocation_whose_cell_stopped_before_any_policy_surfaces_the_nam
     assert outcome["provider_zero_verified"] is True and "result" not in outcome
     assert outcome["blockers"] == (["beta_screening_native_result_missing_or_invalid"] if forged
                                    else ["policy_canary_session_setup_failed:runtime_open"])
+
+
+@pytest.mark.parametrize("verdict", ["result_missing", "setup_failed", "completed"])
+def test_a_closed_run_keeps_its_review_videos_whatever_its_verdict(closed, monkeypatch, verdict):
+    from blueprint_pipeline import beta_screening_review_videos as videos
+    from tests.test_beta_policy_screening_closeout import setup_failed
+
+    calls = []
+    monkeypatch.setattr(videos, "retain", lambda **kwargs: calls.append(kwargs) or videos.not_retained("x_kept"))
+    root, adapter = closed
+    value = plan()
+    if verdict != "result_missing":
+        result = native_result(value)
+        if verdict == "setup_failed":
+            result = setup_failed(result, stage="runtime_open")
+        path = root / "native_result.json"
+        path.write_text(json.dumps(result))
+        adapter.update(native_control_result_path=str(path), native_control_result_digest=result["result_digest"])
+        monkeypatch.setattr(closeout, "collect_scoped_closeout", lambda **_: {
+            "schema_version": closeout.SCHEMA, "scope": closeout.SCOPE, "provider_absence_confirmed": True,
+            "global_provider_zero_claimed": False, "receipt_digest": "sha256:" + "a" * 64, "blockers": [],
+            **{key: result[key] for key in ("beta_screening_admission", "candidate_ids")}})
+    outcome = observe(root, adapter, value)
+    assert outcome["status"] == ("completed" if verdict == "completed" else "blocked")
+    assert outcome["review_videos"] == videos.not_retained("x_kept")
+    [call] = calls
+    assert call["attempt_dir"] == root.resolve() and call["candidate"] == value["candidates"][0]
+
+
+def test_a_run_that_never_got_a_machine_keeps_no_videos(closed, monkeypatch):
+    from blueprint_pipeline import beta_screening_review_videos as videos
+
+    monkeypatch.setattr(videos, "retain", lambda **kwargs: pytest.fail("no machine, nothing to keep"))
+    root, adapter = closed
+    monkeypatch.setattr(closeout, "collect_scoped_closeout", lambda **_: {
+        "schema_version": closeout.SCHEMA, "scope": closeout.SCOPE, "provider_absence_confirmed": False,
+        "global_provider_zero_claimed": False, "receipt_digest": "sha256:" + "b" * 64,
+        "blockers": ["provider_unavailable"]})
+    outcome = observe(root, adapter)
+    assert outcome["status"] == "reconciliation_required" and "review_videos" not in outcome

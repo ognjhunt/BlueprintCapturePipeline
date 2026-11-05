@@ -1,7 +1,8 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/beta_screening_review_video_backfill.py
 #   src/blueprint_pipeline/beta_policy_screening_worker.py
-"""A run that completed before its review videos were kept gets one retention pass, once."""
+#   src/blueprint_pipeline/beta_policy_screening_coordinator.py
+"""Every run that used a machine keeps its review videos; one settled before that gets one retention pass."""
 from __future__ import annotations
 
 import json
@@ -164,3 +165,59 @@ def test_the_backfill_never_raises(tmp_path, world, monkeypatch, fault):
         assert result["attempts"][0]["status"] == "not_retained"
         assert _row(root, world)[1]["summary"]["review_videos"] == videos.not_retained(
             "beta_screening_review_videos_failed")
+
+
+def _blocked(root, world, review_videos=None):
+    coordinator.enqueue_screening_campaign(world.plan, queue_root=root)
+    observation = {"status": "blocked", "provider_allocation_performed": True, "provider_zero_verified": True,
+                   "no_allocation_proven": False, "blockers": ["beta_screening_native_result_missing_or_invalid"],
+                   **({"review_videos": review_videos} if review_videos is not None else {})}
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=root,
+                                        executor=_Prepared(observation))
+    return _row(root, world)
+
+
+def test_a_spent_run_without_a_result_keeps_its_videos_on_its_row_and_never_publishes_them(tmp_path, world):
+    reference = videos.retain(plan=world.plan, candidate=world.candidate, prepared={"run_id": RUN},
+                              adapter={"attempt_root": str(world.lane)}, attempt_dir=world.attempt,
+                              capture_root=world.capture, disk_usage=lambda _path: PLENTY)
+    _, plain = _blocked(tmp_path / "plain", world)
+    plain_publication = publication(tmp_path / "plain")
+    state, row = _blocked(tmp_path / "kept", world, reference)
+    assert row["status"] == "blocked" and row["attempt"]["reservation_status"] == "committed"
+    assert row["review_videos"]["manifest_digest"] == reference["manifest_digest"]
+    # The verdict, its blockers and its money are those of the same run without videos.
+    assert (row["status"], row["blockers"]) == (plain["status"], plain["blockers"])
+    assert row["attempt"]["reservation_status"] == plain["attempt"]["reservation_status"]
+    published = publication(tmp_path / "kept")
+    assert "review_videos" not in published and published["candidates"] == plain_publication["candidates"]
+
+
+def test_a_spent_run_without_a_result_settled_earlier_gets_one_pass_without_a_new_revision(tmp_path, world):
+    root = tmp_path / "queue"
+    before_state, row = _blocked(root, world)
+    assert "review_videos" not in row
+    attempt_dir = coordinator._attempt_path(root, row["attempt"])
+    lane = attempt_dir / "allocator/attempts/attempt_001"
+    (lane / videos.LOCAL_ARCHIVE).parent.mkdir(parents=True)
+    shutil.copyfile(world.lane / videos.LOCAL_ARCHIVE, lane / videos.LOCAL_ARCHIVE)
+    (attempt_dir / "allocator_result.json").write_text(json.dumps({"attempt_root": str(lane)}))
+    before = publication(root)
+
+    [outcome] = backfill.backfill_review_videos(queue_root=root, retain=_retain(world))["attempts"]
+
+    assert outcome["status"] == "retained" and outcome["row_status"] == "blocked"
+    state, row = _row(root, world)
+    assert row["review_videos"]["status"] == "retained" and state["revision"] == before_state["revision"]
+    assert publication(root)["publication_digest"] == before["publication_digest"]
+    assert backfill.backfill_review_videos(queue_root=root)["attempts"] == []
+
+
+def test_a_run_that_never_got_a_machine_is_not_due(tmp_path, world):
+    root = tmp_path / "queue"
+    coordinator.enqueue_screening_campaign(world.plan, queue_root=root)
+    refused = {"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
+               "no_allocation_proven": True, "blockers": ["vast_no_offer"]}
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=root, executor=_Prepared(refused))
+    assert _row(root, world)[1]["attempt"]["reservation_status"] != "committed"
+    assert backfill._due(coordinator._ledger(coordinator._root(root)), 5) == []

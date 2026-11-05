@@ -1066,6 +1066,13 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
             else:
                 row.update(status="blocked", blockers=_safe_blockers(observation.get("blockers"),
                                                                     "beta_screening_native_result_missing"))
+            if row["status"] == "blocked":
+                # A run without a result keeps its videos for the site too, beside its capture;
+                # only a completed run's summary references and publishes them.
+                from .beta_screening_review_videos import valid_reference
+
+                if (reference := valid_reference(observation.get("review_videos"))) is not None:
+                    row["review_videos"] = reference
             return
         if observation.get("next_action") == "reconcile_exact_provider_identity":
             row["next_action"] = "reconcile_exact_provider_identity"
