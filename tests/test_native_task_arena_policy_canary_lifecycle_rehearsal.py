@@ -930,6 +930,13 @@ def _real_policy_client(spec: dict[str, Any], *, groot_worker_identity_receipt=N
     )
 
 
+def _rehearsal_open_pad_readback() -> dict[str, Any]:
+    """The servo's live pad readback shape, with the jaw at its probe-open pads."""
+
+    centers = {"left": [3.0, -3.36, 0.9], "right": [3.0, -3.25585, 0.9]}
+    return {"measured": {"pad_centers_world_m": centers, "pad_separation_m": 0.10415}}
+
+
 def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
     def camera_gate(**kwargs: Any) -> dict[str, Any]:
         # Only the native render edge is faked; the real worker selects and
@@ -995,10 +1002,11 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
             "seed": seed,
         },
         make_servo=lambda *, env, robot, gripper_convention: SimpleNamespace(
-            current_grasp_frame_pose_world=lambda: None
+            current_grasp_frame_pose_world=lambda: None,
+            current_gripper_pad_readback=_rehearsal_open_pad_readback,
         ),
         make_task_readback=lambda built, *, grasp_frame_pose_callback: None,
-        build_episode_environment=lambda *, built, gripper_convention, servo, task_readback, to_tensor: (
+        build_episode_environment=lambda *, built, gripper_convention, servo, task_readback, to_tensor, gripper_pad_readback_callback=None: (
             _ParityLifecycleEnvironment(
                 start_position=(
                     list(built.plan["task_spec"]["start_pose_world"][:3])
@@ -1015,7 +1023,7 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
         run_policy_episode=run_policy_episode,
         prepolicy_camera_gate=camera_gate,
         configure_post_gate_renderer=configure_post_gate_renderer,
-        make_rigid_task_readback=lambda built: object(),
+        make_rigid_task_readback=lambda built, *, gripper_pad_readback_callback=None: object(),
         wrap_rigid_scoring_environment=(
             lambda *, environment, task_readback, task_spec: (
                 _RigidSafetyReadbackEnvironment(
@@ -1822,3 +1830,75 @@ def test_close_timeout_preserves_already_sealed_pair_and_never_launches_next_cel
     assert result["interrupted_child_result_digest"] == child["result_digest"]
     assert [row["episode"]["score"] for row in result["episodes"]] == [row["episode"]["score"] for row in child["episodes"]]
     assert not (output / "cell_runs/01").exists()
+
+
+def _pad_bound_cell(tmp_path: Path, *, make_servo_object) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Run one Franka rigid cell, recording what each episode's seams received."""
+
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "00"
+    child_root.mkdir(parents=True)
+    base = _rehearsal_runtime(FakeIsaac(child_root / PROVIDER_RESULT_FILENAME))
+    bindings: list[dict[str, Any]] = []
+
+    def make_servo(**_kwargs: Any) -> Any:
+        bindings.append({"servo": make_servo_object()})
+        return bindings[-1]["servo"]
+
+    def make_rigid_task_readback(built: Any, **kwargs: Any) -> Any:
+        bindings[-1]["readback"] = kwargs
+        return object()
+
+    def build_episode_environment(**kwargs: Any) -> Any:
+        bindings[-1]["environment"] = kwargs
+        return base.build_episode_environment(**kwargs)
+
+    runtime = worker.CellRuntime(**{
+        **base.__dict__, "make_servo": make_servo,
+        "make_rigid_task_readback": make_rigid_task_readback,
+        "build_episode_environment": build_episode_environment,
+    })
+    with pytest.raises(SystemExit) as exited:
+        worker._run_selected_cell(
+            0, runtime_root=runtime_root, output_root=child_root,
+            provider_output_root=provider_output, cell_runtime=runtime,
+        )
+    assert exited.value.code == 0
+    return _sealed_result(child_root / PROVIDER_RESULT_FILENAME), bindings
+
+
+def test_droid_rigid_cell_reads_gripper_state_from_the_servo_pads(tmp_path: Path) -> None:
+    """Production regression: 43-45 of 45 DROID queries per run saw an inverted gripper.
+
+    The probe seals pad-centre separations, but the canary's rigid path read the
+    Robotiq inner-finger body origins, which coincide when the jaw is open.  The
+    rigid task readback and the episode adapter must both get the servo's pads,
+    as the construction worker's readback already does.
+    """
+
+    result, bindings = _pad_bound_cell(tmp_path, make_servo_object=lambda: SimpleNamespace(
+        current_grasp_frame_pose_world=lambda: None,
+        current_gripper_pad_readback=_rehearsal_open_pad_readback,
+    ))
+
+    assert [row["status"] for row in result["episodes"]] == ["completed", "completed"]
+    assert len(bindings) == 2
+    for binding in bindings:
+        pads = binding["servo"].current_gripper_pad_readback
+        assert binding["readback"] == {"gripper_pad_readback_callback": pads}
+        assert binding["environment"]["gripper_pad_readback_callback"] == pads
+
+
+def test_droid_rigid_cell_without_a_pad_readback_fails_closed(tmp_path: Path) -> None:
+    result, bindings = _pad_bound_cell(tmp_path, make_servo_object=lambda: SimpleNamespace(
+        current_grasp_frame_pose_world=lambda: None,
+    ))
+
+    assert len(bindings) == 2
+    # Neither a body-origin task readback nor an episode adapter was built.
+    assert all(set(binding) == {"servo"} for binding in bindings)
+    assert len(result["episodes"]) == 2
+    for row in result["episodes"]:
+        assert row["status"] == "blocked"
+        assert row["typed_harness_failure"] == "NativeTaskEpisodeEnvironmentError"
+        assert row["candidate_policy_queried"] is False

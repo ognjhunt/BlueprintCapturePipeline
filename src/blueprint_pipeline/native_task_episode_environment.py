@@ -9,7 +9,7 @@ task outcome.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
@@ -314,6 +314,26 @@ def _gripper_endpoint(
     return command, separation
 
 
+def policy_gripper_pad_binding(servo: Any) -> dict[str, Any]:
+    """Bind a DROID rigid policy episode to the servo's live pad readback.
+
+    DROID's ``gripper_position`` is the 2F-85 closed fraction, and the
+    convention probe seals its endpoints as fingertip pad-centre separations.
+    The Robotiq inner-finger body origins coincide when the jaw is open and
+    spread as it closes, so read against those endpoints they told every
+    policy open was closed.  The task readback and the episode adapter both
+    take this binding; a servo without the pad readback is refused rather
+    than falling back to the body origins.
+    """
+
+    callback = getattr(servo, "current_gripper_pad_readback", None)
+    if not callable(callback):
+        raise NativeTaskEpisodeEnvironmentError(
+            ["native_task_episode_gripper_pad_readback_missing"]
+        )
+    return {"gripper_pad_readback_callback": callback}
+
+
 def build_native_task_episode_environment(
     *,
     built: Any,
@@ -323,6 +343,7 @@ def build_native_task_episode_environment(
     to_tensor: Any,
     scripted_pose_joint_targets: Sequence[Mapping[str, Any]] | None = None,
     scripted_pose_phase_targets: Sequence[Mapping[str, Any]] | None = None,
+    gripper_pad_readback_callback: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[IsaacEpisodeAdapter, dict[str, Any]]:
     """Create the shared control/policy adapter from native Arena readbacks."""
 
@@ -883,6 +904,7 @@ def build_native_task_episode_environment(
         camera_pose_callback=live_camera_pose,
         joint_wrench_sensor=joint_wrench_sensor,
         rigid_task_scoring_frame_offset=rigid_task_scoring_frame_offset,
+        gripper_pad_readback_callback=gripper_pad_readback_callback,
     )
     receipt = {
         "schema_version": SCHEMA_VERSION,
@@ -1030,6 +1052,7 @@ def build_native_task_episode_environment(
         "gripper_state_source": (
             "native_finger_body_pose_plus_probe_sealed_pad_offset_each_sample"
             if task_kind == "articulated_open_close"
+            or gripper_pad_readback_callback is not None
             else None
         ),
         "gripper_command_mapping": {
@@ -1058,4 +1081,5 @@ __all__ = [
     "NativeTaskEpisodeEnvironmentError",
     "SCHEMA_VERSION",
     "build_native_task_episode_environment",
+    "policy_gripper_pad_binding",
 ]
