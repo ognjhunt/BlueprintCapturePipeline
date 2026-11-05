@@ -2,6 +2,16 @@
 
 You are picking up from a Claude Code cloud session on another account that ran out of usage. Its container and transcript are gone; this document is everything you need. Read it fully before acting. Work autonomously: the owner wants progress without being asked questions, except for the hard stops below.
 
+## URGENT, 16:50Z: merge and deploy PR #3400 before any OpenPI candidate runs
+
+- **pi05 finished at about 16:38Z:** completed, 10 of 10 void (`simulator_failed_before_policy`), $1.39. Site committed is now $12.61 of $30.
+- **Root cause**, from `provider_runtime_diagnostics.v1.json` of attempt `screen-862a9d732f633a0ec59573fa979b55a0`: every cell failed with `TypeError: connect() got an unexpected keyword argument 'ping_timeout'`.
+  - Our OpenPI client passes `ping_timeout=None` to `websockets.sync.client.connect`, and the GPU image's websockets is older than 15 (no sync keepalive).
+- **Fix:** https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3400 (branch `claude/openpi-ping-timeout-compat`, head bac8801e). It passes the keyword only when `connect` accepts it. 171 tests pass.
+- **The same client serves all three pi0 rows**, and `pi0_droid_jointpos_100k_polaris` was already **pending** at 16:38Z. Merge #3400 as soon as CI is green and deploy it, so the next OpenPI run doesn't burn a retry.
+  - pi05 has failures left under the 6 retry limit; after the deploy, a re-plan retries it.
+- cosmos3 and molmoact2, also pending, don't use this client.
+
 ## STATUS AS OF 16:30Z (the old session, written after the handoff; this overrides the older lines below)
 
 The old session kept working after the handoff. It stopped at 16:30Z when it saw #3331 merged by another session, to avoid racing. Here is what it did:
