@@ -1812,3 +1812,287 @@ config in place until that drain ends. Without a provider connection (an
 unusable config or dispatcher credential) the paid unit still hands back every
 hand-off that never dispatched and writes `summary.json`; a started attempt
 keeps its hand-off until a connected run tears it down.
+
+## Remote team-scene compilation (plan 14's lane, second stage, 2026-11-03)
+
+**Why.** The control-plane host has 8.3 GB of RAM and no swap. On website job
+capture-447ae4f4 the robot-team scene half's compile
+(`team_scene_packet_worker` → `team_scene_packet.materialize_team_scene`)
+reached 6.3–6.7 GB of anonymous memory in one python process, on a 292 MB USDA
+room collider and a 2 M-splat, 130 MB appearance, and the global OOM killer
+ended it five times on 2026-11-03 (11:31–15:27Z, each attempt 9 to 23 minutes
+in). The owner kept the input fidelity and chose machines rented per job over
+a bigger host (2026-11-03). The compile now runs on the plan-14 remote CPU
+lane exactly as episode compilation does: the same contract, allocator seam,
+admission, standing authority, worst-case ledger, live cap, leases, staging,
+worker, compute-zero and provider-zero teardown, as stage `team_scene_packet`
+(contract `team_scene_packet_remote.v1`, queue `team-scene-packets`, success
+status `completed`).
+
+**Where it runs.** `BLUEPRINT_TEAM_SCENE_PACKET_EXECUTION` is `host`,
+`cloud_run_shadow` or `cloud_run`. Unset or empty is auto: `cloud_run` once
+`/etc/blueprint/remote-cpu-workers.json` is there and usable exactly as the
+paid unit loads it and names `team_scene_packet`, `host` otherwise, which is
+today's path byte for byte (`prepare_team_scene`, no plan, marker, envelope or
+paid-unit start). The production config names only `episode_compilation`
+today, so this change runs nothing remote until the owner's steps below. An
+invalid value runs as `host`.
+
+**Who owns what.** The no-spend worker (`blueprint-team-scene-packet`) owns
+the team queue in every mode and holds no credential. In a remote mode it
+fetches the revision and its documents into the attempt directory, as the
+host compile does, and asks the planner whether the compile can run remotely:
+
+- every file `materialize_team_scene` reads ships content-addressed at its
+  host path: the configured scene bundle, every fetched document and tray
+  asset under `<attempt>/documents`, the DROID profile, the runtime-source
+  receipt, each registered body's robot model, the owner's sealed success
+  confirmations and robot-access approvals (and `revoked.json`) under the
+  request's own intent, and, for a cached particlefield, the cache entry with
+  its cache-root variable. Each must be a canonical, regular, non-empty file
+  under `/var/lib/blueprint/`;
+- what the compile would read under the intent beyond those files is read on
+  the host and carried in the envelope as data: the intent's movable furniture
+  (`movable_furniture`, as `prepare_team_scene` reads it) and, while that is
+  unmeasured, the offer to measure it (`robot_access_offer`: the intent's
+  registration, preparation, scene review and source video metadata);
+- the appearance closure is `not_applicable` or `shipped`; an inline NuRec
+  conversion (nondeterministic) and a transcode stay on the host, as for
+  episodes;
+- the inputs fit 6 GiB, and the inputs plus three copies of the bundle's
+  assets fit the stage's `ephemeral_bytes` (the in-memory
+  `/var/lib/blueprint`);
+- the probe-recorded worker environment for this stage and image equals the
+  host's on every digested field and on this stage's own distribution row
+  (`stage_distributions.team_scene_packet`: rfc8785, scipy and
+  charset-normalizer, which a team compile loads and the episode census does
+  not measure, each measured in a fresh interpreter; scipy solves the rigid
+  support pad's rest check and charset-normalizer comes in through its numpy
+  shim. The row sits outside the digest, so the episode stage's recorded
+  probe stays valid. The host venv's scipy is not pinned by
+  `deploy/systemd/production-control-plane-requirements.txt`: if it differs
+  from the worker image's locked one, every request stays on the host,
+  `remote_ineligible:environment_mismatch:stage_distributions`, until the
+  host follows the worker lock).
+
+An ineligible request compiles on the host as before, with the reason under
+`remote_compile.host_decision` in its status. In `cloud_run` an eligible one
+gets a hand-off and stays in `processing/` with status `processing`; no
+recovery pass or timer pass touches a request the lane holds. `cloud_run` is
+authoritative without episode compilation's three-shadow gate: the scenes this
+lane exists for cannot compile on the host at all, so their shadows could
+never earn passes. The byte-identical test
+(`tests/test_team_scene_packet_remote.py::test_a_remote_compile_is_byte_identical_to_the_host_compile`)
+is the parity proof. It covers a Franka-only half, one with registered bodies,
+and a rigid task on a scanned, bumpy support, whose half carries
+`task_support_seating` and `task_support_pad` and the derived planarized
+collider under `support-pad/`; the worker derives that collider itself from
+the shipped bundle. The environment census guards drift. In `cloud_run_shadow` the host compiles
+every request and a completed, eligible one also gets a shadow marker.
+
+The paid unit (`blueprint-team-scene-packet-remote`, 60 s timer and a
+`PathChanged=` watch on its hand-off and shadow directories) never compiles.
+Before it stages anything it reads the capture's consent (a withdrawn capture
+is never dispatched; privacy is a hard stop), checks that its own sandbox can
+write the attempt directory it will land into (a registry `output_root`
+outside its `ReadWritePaths` hands the request back as
+`remote_cpu_landing_root_unwritable` before anything is staged or paid for),
+and asks the allocator's admission, read-only, what it would refuse. It
+dispatches only through `paid_resource_allocator remote-cpu-job`. It reads
+consent again on every run while the attempt is dispatched, running or
+collecting: a withdrawal cancels the execution, and its expiry hands the
+request back with nothing landed. Once an attempt is terminal it proves
+compute-zero, promotes the output, validates the worker's sealed result and
+its team scene inputs record against the request, release, revision, packet
+and the host's runtime-source receipt, reads consent once more, lands the
+whole `<attempt>/scene` tree at the host's own path (assembled aside in
+`.scene.landing-<nonce>`, every blob re-hashed, renamed into place, under a
+`team_scene_landing` disk reservation as episode landing holds its own),
+re-reads the record on the host as the team registry will, records the
+decided attempt and the landing on its row, and writes a `collected` marker.
+A marker whose write failed (a full disk, a crash) is written again from the
+kept receipt before the attempt is closed, so a decided attempt is never lost
+or paid for twice. Then it tears down to provider-zero and settles. The no-spend worker,
+woken by that marker, re-runs every gate of the request (capture withdrawal
+included), records the derived row and queues the robot-free probe
+(`record_team_scene`), and republishes the offer exactly as after a host
+compile. A deterministic refusal in the worker (an owner-contract refusal,
+say) comes back as the request's own blocked status, with the host worker's
+blocker; the attempt directory goes, as after a host refusal.
+
+An infrastructure failure (an OOM-killed or timed-out stage child, a lost
+receipt, a `MemoryError` or `OSError` in the compile) gets one fresh attempt
+once the failed one is compute-zero; then, or after a refused dispatch, a
+withdrawn capture or a rolled-back mode, the request comes back as a
+`fallback` marker. The no-spend worker records the hand-back on the request's
+status and removes the marker (and the remote attempt directory) before it
+does anything else, so a host compile the OOM killer or the unit's timeout
+ends is an ordinary interrupted claim: blocked `team_scene_packet_interrupted`
+with its 5 min / 30 min / 2 h backoff and its attempt directory removed, and
+the retry is planned again, remote where it can be, rather than recompiled at
+once. A hand-back for a reason that clears by itself (the daily cap, a full
+slot table, a newer release, a provider or Cloud Run outage) is not compiled
+on the host at all: the request is blocked as the transient
+`team_scene_remote_compile_deferred` and planned again after the same
+backoff; once its automatic retries are spent, the next hand-back compiles on
+the host. Any other hand-back (no or an exhausted authority, attempts
+exhausted, the landing root) compiles on the host from a fresh attempt
+directory. The host never compiles a request while a remote attempt of it may
+still land: a fallback is written only once no further attempt will dispatch.
+Shadow mode compiles on both sides by design and lands only the host's.
+
+Every marker is bound to the attempt the request's claim holds now: the paid
+unit hands nothing back for, and never redelivers to, a request that a newer
+attempt claims; the no-spend worker settles a collected or fallback marker
+only when its attempt directory is the claim's, and binds a collected result to
+that attempt's own `<attempt>/scene` and to the envelope it sealed for the
+request (whose release the result must name). A stale marker, and one that does
+not read as a sealed marker at all, is moved to `quarantine/team_scene_packet/`
+with a typed reason (`team_scene_packet_marker_stale`,
+`team_scene_packet_marker_unreadable`), so the path unit's `PathExistsGlob`
+never restarts on it. A planner that raises (hashing, the census) decides the
+host compile, and a hand-off that cannot be written takes its envelope and
+attempt directory with it.
+
+**Limits.** The config entry sizes the job: vCPU, memory (at most 32 GiB),
+ephemeral bytes and task timeout (at least 1200 s, at most 3600 s). The stage
+keeps plan 14's fetch (300 s) and seal/upload (420 s) phases and gives the
+compile the rest less the 180 s margin: 2700 s of a 3600 s task. A compile
+that needs longer fails as infrastructure and falls back to the host. The
+logical output bound is 4 GiB (the tree holds about three hard-linked logical
+copies of the collider and appearance), so the worst case of a 4 vCPU,
+16 GiB, 3600 s attempt is 3600 × (4 × $0.000018 + 16 × $0.000002) +
+4 × $0.12 = $0.3744 + $0.48 = **$0.8544**, under a $1 attempt cap; a probe of
+this stage runs on its job under the same budget and worst case.
+
+**Cost per compile (estimate, not measured).** No compile of capture-447 has
+finished anywhere, so its runtime is unknown; the host attempts were killed
+9 to 23 minutes in. At 10 to 30 minutes of execution the compute is
+$0.06–$0.19 and the upload (the collider, appearance and packets the tree
+holds once, about 0.5–1 GB) $0.06–$0.12, so roughly **$0.12–$0.31 billed**
+per compile. The ledger is more conservative: an attempt is admitted at
+$0.8544 and settled at its execution runtime plus the full 4 GiB egress
+reservation, $0.54–$0.67 for 10 to 30 minutes, as episode settlements are.
+Under $5 a day that is five unsettled admissions at once (the shared live cap
+allows two executions) and seven to nine settled compiles a day; under $25 in
+total 37 to 46. The ledger is shared: it counts every remote CPU attempt ever
+consumed, episode compilation's included, under whatever authority admits the
+next one (episode spend so far is unverified here: the operator door hides the
+spend-authority root).
+
+**Records** under `/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/`:
+
+| Path | Written by | What |
+|---|---|---|
+| `envelopes/team_scene_packet/<row>` | no-spend unit | the sealed `materialize_team_scene` arguments the worker runs, the attempt's queue envelope |
+| `handoffs/team_scene_packet/<row>`, `shadow/team_scene_packet/<row>` | no-spend unit | a request's plan, created once |
+| `collected/team_scene_packet/<row>` | paid unit | the worker's sealed result, and the tree it landed; the no-spend unit records it and removes it |
+| `fallback/team_scene_packet/<row>` | paid unit | a request handed back; the no-spend unit compiles it on the host and removes it |
+| `rows/team_scene_packet/<row>` | paid unit | promotion and landing retries, the decided attempt and its landing (from which a lost collected marker is written again), and a request given up |
+| `quarantine/team_scene_packet/<kind>-<nonce>-<row>` | no-spend unit | a collected or fallback marker that was stale or unreadable, kept with nothing deleted |
+| `parity/team_scene_packet/<attempt>.json` | paid unit | one shadow outcome: `passed` only when the trees match byte for byte |
+| `environment/team_scene_packet.json`, `drift/team_scene_packet.json` | allocator, paid unit | the probed worker environment and the job template's image |
+| `summary.team_scene_packet.json` (0644) | paid unit | door-readable: the mode and counts |
+
+`descriptors/`, `leases/`, `live/`, `teardowns/` and `receipts/` are shared
+with episode compilation; this stage's job ids start `rcj-tp-`.
+
+**The config descriptor.** One more entry under `stages` of the sealed
+`remote_cpu_workers_config.v1` (exactly these six fields; the config's
+`config_digest` is recomputed over the whole file):
+
+```json
+"team_scene_packet": {
+  "job": "blueprint-remote-cpu-team-scene-packet",
+  "image": "<the episode stage's image, the same digest-pinned pipeline image>",
+  "vcpu": 4,
+  "memory_bytes": 17179869184,
+  "ephemeral_bytes": 8589934592,
+  "task_timeout_seconds": 3600
+}
+```
+
+**One config, two stages.** Each stage judges the shared config for itself:
+an invalid `team_scene_packet` entry turns the team stage off and leaves
+episode compilation's remote lane as it was, and the reverse. Read unscoped,
+`load_remote_cpu_config` names every invalid entry
+(`remote_cpu_config_invalid:stage:<name>`), which is the install-time check
+below.
+
+**Rollback.** Set `BLUEPRINT_TEAM_SCENE_PACKET_EXECUTION=host` in the shared
+environment file (an unset flag is auto, which the config turns back on). The
+no-spend worker compiles everything on the host and still records what has
+landed and compiles what comes back; the paid unit's ExecCondition keeps it
+running only while this stage's leases or markers remain, handing undispatched
+requests back. Leave the config entry in place until that drain ends.
+
+### Owner approvals and install steps (not done; each needs the owner)
+
+Nothing here is deployed, installed, granted or run by this change; every
+step below is a money or infrastructure decision for the owner.
+
+1. **The Cloud Run job.** Build nothing new: the job runs the same
+   digest-pinned pipeline image as `blueprint-remote-cpu-episode-compilation`
+   (Terraform's `var.docker_image`, the exact promoted commit). Add a stage to
+   `remote_cpu_worker_stages`:
+
+   ```hcl
+   team-scene-packet = {
+     cpu                  = "4"
+     memory               = "16Gi"
+     timeout_seconds      = 3600
+     ephemeral_size_limit = "8Gi"
+   }
+   ```
+
+   Terraform then creates `blueprint-remote-cpu-team-scene-packet` with the
+   bootstrap command, one task, zero retries, the worker identity, the
+   in-memory `/var/lib/blueprint` (8 GiB of the 16 GiB, so the compile keeps at
+   least 8 GiB), its dispatcher job IAM policy and its isolation tag binding,
+   through the scoped `deploy/scripts/deploy.sh --remote-cpu-only` from
+   promoted main. `scripts/remote_cpu_deployment_scope.py` admits the job as
+   optional: a plan without it is the reviewed scope unchanged; a plan with it
+   must carry all three of its resources, its definition must be exactly
+   4 CPU, 16Gi, 3600 s and zero retries, and its dispatcher policy must name
+   only the dispatcher. The checker's tests derive the job's planned values
+   from the saved episode plan by renaming the stage; the owner's first scoped
+   plan with the stage is the real one to review (including that `-target` of
+   the job's addresses plans nothing while the stage is absent). The
+   project's $25 monthly GCP budget alert covers both jobs.
+2. **Shadow first.** Before the config names the stage, set
+   `BLUEPRINT_TEAM_SCENE_PACKET_EXECUTION=cloud_run_shadow` in
+   `/etc/blueprint/pipeline-control-plane.env`: an unset flag is auto, which
+   turns the config entry straight into authoritative `cloud_run`. Shadow
+   mode needs a request the host can still compile (a smaller scene than
+   capture-447); once one `parity/team_scene_packet/<attempt>.json` reads
+   `passed`, set `cloud_run` (or remove the line for auto).
+3. **The config descriptor.** Add the entry above to
+   `/etc/blueprint/remote-cpu-workers.json` (mode 0640 at most, readable by
+   the `blueprint` account, as the allocator requires), reseal its
+   `config_digest`, and keep `max_attempts` at 2 and `max_live_executions` as
+   it is (the two stages share the live cap). Then check it unscoped, as the
+   service account:
+   `python -c 'from blueprint_pipeline.remote_cpu_job_allocator import load_remote_cpu_config as l; print(l("/etc/blueprint/remote-cpu-workers.json")[1])'`
+   must print `[]`; anything else names the entry to fix (an invalid team
+   entry never turns episode compilation off, but it keeps the team stage on
+   the host).
+4. **The standing authority.** The allocator reads exactly one
+   `remote_cpu_standing_authorization.v1`
+   (`/var/lib/blueprint/spend-authority/authorizations/remote-cpu-standing-authorization.v1.json`,
+   0600, owner-provisioned; the allocator never mints one). Re-issue it with
+   `stages: ["episode_compilation", "team_scene_packet"]`, proposed at
+   **$1 per attempt, $5 per day and $25 in total**, with `max_executions`, an
+   expiry and the owner's reference. Those caps are then shared by both
+   stages, and the total already includes every earlier episode attempt; the
+   owner may choose larger daily or total caps for two stages, which is a
+   money decision this change does not make.
+5. **The preflight probe.** `python -m blueprint_pipeline.paid_resource_allocator
+   remote-cpu-job --action preflight --stage team_scene_packet --lease
+   /var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs --out <result>
+   --execute`, one paid probe attempt (at most $0.8544), which records
+   `environment/team_scene_packet.json`; until then every request stays on the
+   host (`remote_ineligible:environment_unrecorded`).
+6. **The deploy** of this change, in the D-08 window, installs and arms
+   `blueprint-team-scene-packet-remote.{service,timer,path}` and the marker
+   directories. With the config naming only episode compilation, it changes
+   nothing at run time.

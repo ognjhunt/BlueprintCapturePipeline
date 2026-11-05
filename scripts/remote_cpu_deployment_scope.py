@@ -27,13 +27,10 @@ ALLOWED_ADDRESSES = frozenset({
     'google_project_iam_custom_role.remote_cpu_transport_reader[0]',
     'google_project_iam_custom_role.remote_cpu_transport_writer[0]',
     'google_project_iam_custom_role.remote_cpu_dispatcher[0]',
-    'google_cloud_run_v2_job.remote_cpu_worker["episode-compilation"]',
-    'google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher["episode-compilation"]',
     'google_monitoring_alert_policy.remote_cpu_job_failures[0]',
     'google_monitoring_notification_channel.remote_cpu_owner[0]',
     'google_billing_budget.remote_cpu_workers[0]',
     'google_tags_tag_key.remote_cpu_isolation[0]',
-    'google_tags_location_tag_binding.remote_cpu_job["episode-compilation"]',
     'google_tags_location_tag_binding.remote_cpu_transport[0]',
     *{f'google_tags_tag_value.remote_cpu_isolation["{kind}"]'
       for kind in ("worker", "dispatcher", "job", "transport")},
@@ -44,6 +41,26 @@ ALLOWED_ADDRESSES = frozenset({
     *{f'google_project_service.remote_cpu_apis["{api}.googleapis.com"]'
       for api in ("run", "iam", "iamcredentials", "cloudresourcemanager", "storage", "monitoring", "logging", "billingbudgets")},
 })
+# The reviewed worker jobs, by remote_cpu_worker_stages key: each one's bounded definition.  Episode compilation
+# is required; the team scene packet's job (plan 14's second stage) is optional, so a plan without it is unchanged,
+# and validated exactly when the owner's tfvars add it.  Any other stage key is unreviewed.
+JOB_DEFINITIONS = {
+    "episode-compilation": {"timeout": "1800s", "limits": {"cpu": "4", "memory": "16Gi"}},
+    "team-scene-packet": {"timeout": "3600s", "limits": {"cpu": "4", "memory": "16Gi"}},
+}
+REQUIRED_JOB_STAGES = ("episode-compilation",)
+
+
+def stage_addresses(stage: str) -> frozenset[str]:
+    """One worker job's resources: the job, its dispatcher IAM policy and its isolation tag binding."""
+    return frozenset({f'google_cloud_run_v2_job.remote_cpu_worker["{stage}"]',
+                      f'google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher["{stage}"]',
+                      f'google_tags_location_tag_binding.remote_cpu_job["{stage}"]'})
+
+
+ALLOWED_ADDRESSES = ALLOWED_ADDRESSES | frozenset().union(*map(stage_addresses, REQUIRED_JOB_STAGES))
+OPTIONAL_ADDRESSES = frozenset().union(*(stage_addresses(stage) for stage in JOB_DEFINITIONS
+                                         if stage not in REQUIRED_JOB_STAGES))
 JOB_ADDRESS = 'google_cloud_run_v2_job.remote_cpu_worker["episode-compilation"]'
 WORKER_PROJECT = "blueprint-remote-cpu-8c1ca"
 DISPATCH_PROJECT = "blueprint-cpu-dispatch-8c1ca"
@@ -157,8 +174,9 @@ def _security_blockers(plan: Mapping, resources: Mapping) -> list[str]:
             "roles/storage.legacyBucketOwner": {"projectOwner:" + DISPATCH_PROJECT}},
         'google_storage_bucket_iam_policy.remote_cpu_transport[0]': {
             "roles/storage.legacyBucketOwner": {"projectOwner:" + WORKER_PROJECT}},
-        'google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher["episode-compilation"]': {
-            f"projects/{WORKER_PROJECT}/roles/remoteCpuDispatcher": {"serviceAccount:" + expected_dispatcher}},
+        **{f'google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher["{stage}"]': {
+            f"projects/{WORKER_PROJECT}/roles/remoteCpuDispatcher": {"serviceAccount:" + expected_dispatcher}}
+           for stage in JOB_DEFINITIONS},
     }
     for address, expected in known_policies.items():
         text = resources.get(address, {}).get("policy_data")
@@ -198,7 +216,28 @@ def check_state(state: Mapping, *, full: bool = False) -> list[str]:
         return ["legacy_topology_adoption_required"] if marker else []
     return sorted("unrelated_state:" + row["address"]
                   for row in _resources(values.get("root_module", {}))
-                  if row.get("mode") == "managed" and row["address"] not in ALLOWED_ADDRESSES | MIGRATION_ADDRESSES)
+                  if row.get("mode") == "managed"
+                  and row["address"] not in ALLOWED_ADDRESSES | OPTIONAL_ADDRESSES | MIGRATION_ADDRESSES)
+
+
+def _job_definition_valid(job: Mapping, definition: Mapping) -> bool:
+    """The bootstrap command without args, one task, zero retries, the stage's timeout and exact CPU and memory,
+    a digest-pinned image and a US location."""
+    try:
+        outer = job["template"][0]
+        inner = outer["template"][0]
+        container = inner["containers"][0]
+        return (
+            outer["task_count"] == outer["parallelism"] == 1
+            and inner["max_retries"] == 0 and inner["timeout"] == definition["timeout"]
+            and container["command"] == ["python", "-m", "blueprint_pipeline.remote_cpu_worker", "bootstrap"]
+            and not container.get("args")
+            and container["resources"][0]["limits"] == definition["limits"]
+            and bool(re.fullmatch(r".+@sha256:[0-9a-f]{64}", container["image"]))
+            and job["location"].startswith("us-")
+        )
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return False
 
 
 def check_plan(plan: Mapping) -> list[str]:
@@ -207,7 +246,7 @@ def check_plan(plan: Mapping) -> list[str]:
         if row.get("mode") != "managed":
             continue
         address = row["address"]
-        if address not in ALLOWED_ADDRESSES:
+        if address not in ALLOWED_ADDRESSES | OPTIONAL_ADDRESSES:
             blockers.append("unexpected_change:" + address)
         if "delete" in row.get("change", {}).get("actions", []):
             blockers.append("destructive_change:" + address)
@@ -215,8 +254,13 @@ def check_plan(plan: Mapping) -> list[str]:
                  for row in _resources(plan.get("planned_values", {}).get("root_module", {}))
                  if row.get("mode") == "managed"}
     blockers += ["missing_resource:" + address for address in sorted(ALLOWED_ADDRESSES - resources.keys())]
+    # An optional job comes whole: its dispatcher IAM policy and tag binding with it, or none of the three.
+    for stage in JOB_DEFINITIONS:
+        present = stage_addresses(stage) & resources.keys()
+        if present and present != stage_addresses(stage):
+            blockers += ["missing_resource:" + address for address in sorted(stage_addresses(stage) - present)]
     for address, values in resources.items():
-        if address not in ALLOWED_ADDRESSES:
+        if address not in ALLOWED_ADDRESSES | OPTIONAL_ADDRESSES:
             blockers.append("unexpected_resource:" + address)
         if "project" in values:
             expected = (SOURCE_PROJECT if address.startswith("google_artifact_registry_repository_iam_member.")
@@ -230,24 +274,12 @@ def check_plan(plan: Mapping) -> list[str]:
                 or project.get("billing_account") != APPROVED_BILLING_ACCOUNT):
             blockers.append("project_isolation_drift:" + name)
     blockers.extend(_security_blockers(plan, resources))
-    job = resources.get(JOB_ADDRESS, {})
-    try:
-        outer = job["template"][0]
-        inner = outer["template"][0]
-        container = inner["containers"][0]
-        valid = (
-            outer["task_count"] == outer["parallelism"] == 1
-            and inner["max_retries"] == 0 and inner["timeout"] == "1800s"
-            and container["command"] == ["python", "-m", "blueprint_pipeline.remote_cpu_worker", "bootstrap"]
-            and not container.get("args")
-            and container["resources"][0]["limits"] == {"cpu": "4", "memory": "16Gi"}
-            and bool(re.fullmatch(r".+@sha256:[0-9a-f]{64}", container["image"]))
-            and job["location"].startswith("us-")
-        )
-    except (KeyError, IndexError, TypeError):
-        valid = False
-    if not valid:
-        blockers.append("job_definition_drift")
+    for stage, definition in JOB_DEFINITIONS.items():
+        address = f'google_cloud_run_v2_job.remote_cpu_worker["{stage}"]'
+        if stage not in REQUIRED_JOB_STAGES and address not in resources:
+            continue
+        if not _job_definition_valid(resources.get(address, {}), definition):
+            blockers.append("job_definition_drift" if stage == REQUIRED_JOB_STAGES[0] else "job_definition_drift:" + stage)
     try:
         amount = resources['google_billing_budget.remote_cpu_workers[0]']["amount"][0]["specified_amount"][0]
         if str(amount["units"]) != "25" or amount["currency_code"] != "USD":
@@ -265,7 +297,9 @@ def main() -> int:
     parser.add_argument("--dispatch-project", action="store_true")
     args = parser.parse_args()
     if args.action == "targets":
-        print("\n".join("-target=" + address for address in sorted(ALLOWED_ADDRESSES | {"google_service_account.remote_cpu_dispatcher"})))
+        # An optional job's addresses are targets too: absent from the stages variable, they plan nothing.
+        print("\n".join("-target=" + address for address in sorted(
+            ALLOWED_ADDRESSES | OPTIONAL_ADDRESSES | {"google_service_account.remote_cpu_dispatcher"})))
         return 0
     if args.path is None:
         parser.error("A saved Terraform JSON document is required.")

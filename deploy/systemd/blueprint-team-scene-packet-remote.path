@@ -1,0 +1,15 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-team-scene-packet-remote.path.json
+Description=Watch remote team-scene hand-offs and shadow markers
+
+[Path]
+# PathChanged only: the no-spend team worker owns its queue; this unit is woken by new hand-offs, and its
+# timer carries every attempt forward, so a run that finds nothing to do can never re-trigger itself.
+PathChanged=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/handoffs/team_scene_packet
+PathChanged=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/shadow/team_scene_packet
+Unit=blueprint-team-scene-packet-remote.service
+
+[Install]
+WantedBy=multi-user.target

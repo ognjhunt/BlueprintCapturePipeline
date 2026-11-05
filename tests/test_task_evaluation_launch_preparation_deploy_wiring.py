@@ -174,6 +174,8 @@ def test_every_disk_reservation_worker_has_exact_systemd_write_access() -> None:
         "blueprint-task-evaluation-episode-compilation-remote.service": (
             "src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py"
         ),
+        # The team stage's paid unit reserves disk to land a remote compile's whole scene half.
+        "blueprint-team-scene-packet-remote.service": "src/blueprint_pipeline/team_scene_packet_collector.py",
         "blueprint-task-evaluation-launch-activation.service": (
             "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py"
         ),

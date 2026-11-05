@@ -83,7 +83,8 @@ def test_auto_turns_on_only_for_a_config_the_paid_unit_would_load_for_this_stage
 
     for label, (path, usable) in _config_states(tmp_path).items():
         try:
-            _, blockers = allocator.load_remote_cpu_config(path)
+            # The paid unit judges the config for its own stage (another stage's entry never disables it).
+            _, blockers = allocator.load_remote_cpu_config(path, stage=remote.STAGE)
         except Exception:  # noqa: BLE001 - a config the allocator cannot validate: the paid unit drains (below)
             blockers = ["raised"]
         assert (remote.load_config(path) is not None) == (not blockers), label

@@ -991,7 +991,7 @@ def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tm
     host = census.environment_record()
     assert printed == host and printed["environment_digest"] == census.environment_digest(printed)
     assert set(printed) == {"schema_version", *census.DIGESTED_FIELDS, "cpu_class", "informational",
-                            "environment_digest"}
+                            "stage_distributions", "environment_digest"}
     assert worker.main(["environment", "--extra"]) == worker.EXIT_REFUSED
     assert os.umask(umask) == umask  # a mode other than bootstrap leaves the process's umask alone
 
@@ -1000,7 +1000,8 @@ def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tm
     assert worker.STAGE_HANDLERS == {
         "environment_probe": "blueprint_pipeline.remote_cpu_worker_stage:run_environment_probe",
         "episode_compilation": "blueprint_pipeline.task_evaluation_episode_compilation_remote:"
-                               "run_episode_compilation_in_worker"}
+                               "run_episode_compilation_in_worker",
+        "team_scene_packet": "blueprint_pipeline.team_scene_packet_remote:run_team_scene_packet_in_worker"}
     probe = WorkerWorld(tmp_path / "probe", stage=contract.PROBE_STAGE, environment_digest=host["environment_digest"])
     runtime = probe.runtime(measure=census.environment_record, run_stage=_registered)
     assert worker.bootstrap(["bootstrap"], probe.runtime(
@@ -1112,7 +1113,9 @@ def test_the_allocators_preflight_completes_against_the_real_worker(tmp_path: Pa
 
 # Plan 14 PR 4: a stage whose handler runs the host's compiler, and the test that proves what it loads.
 COMPILER_STAGES = {"episode_compilation": "tests/test_task_evaluation_episode_compilation_remote.py::"
-                                          "test_a_worker_compile_loads_no_allocation_or_staging_authority"}
+                                          "test_a_worker_compile_loads_no_allocation_or_staging_authority",
+                   "team_scene_packet": "tests/test_team_scene_packet_remote.py::"
+                                        "test_parity_set_covers_every_distribution_a_team_compile_loads"}
 
 
 def test_the_worker_holds_no_allocation_authority() -> None:

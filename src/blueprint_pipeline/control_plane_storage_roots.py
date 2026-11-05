@@ -200,6 +200,9 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
                 "content-addressed provider toolchain archives; rebuilt from the published toolchain"),
     StorageRoot(f"{_INPUTS}/sam31-preparations", "cache", "blueprint", "reproducible SAM preparation artifacts"),
     StorageRoot(f"{_INPUTS}/compiled-episodes", "cache", "blueprint", "compiled episodes and adapter member store"),
+    StorageRoot(f"{_INPUTS}/team-scene-halves", "evidence_hot", "blueprint",
+                "compiled robot-team scene halves a derived team-registry row names (on the host or landed from the "
+                "remote CPU lane); a failed attempt is removed by its own worker; never reclaimed"),
     StorageRoot(f"{_INPUTS}/particlefield-runtime-assets", "cache", "blueprint",
                 "content-addressed ParticleField runtime assets converted from NuRec sources"),
     StorageRoot(f"{_INPUTS}/pinned-wheels", "cache", "blueprint",

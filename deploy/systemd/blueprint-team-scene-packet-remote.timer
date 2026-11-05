@@ -1,0 +1,14 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-team-scene-packet-remote.timer.json
+Description=Follow, collect and tear down remote team-scene compilations
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=60s
+AccuracySec=10s
+Unit=blueprint-team-scene-packet-remote.service
+
+[Install]
+WantedBy=timers.target

@@ -1223,7 +1223,7 @@ def main(argv: list[str] | None = None) -> int:
     execution = remote.resolve_execution_mode()
     mode, findings = execution["effective"], execution["findings"]
     try:
-        config, blockers = allocator.load_remote_cpu_config()
+        config, blockers = allocator.load_remote_cpu_config(stage=STAGE)
     except Exception as exc:  # noqa: BLE001 - verdict 7: a config no loader can validate is no provider: drain
         config, blockers = {}, [f"remote_cpu_config_invalid:{type(exc).__name__}"]
     runtime = allocator.RemoteCpuRuntime()

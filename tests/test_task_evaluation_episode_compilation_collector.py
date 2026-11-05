@@ -707,7 +707,7 @@ def test_without_a_provider_connection_undispatched_hand_offs_still_go_back(tmp_
     monkeypatch.setenv(remote.EXECUTION_ENV, "cloud_run")
     monkeypatch.setenv(QUEUE_ROOT_ENV, str(world.host.queue))
     monkeypatch.setenv(OUTPUT_ROOT_ENV, str(world.host.outputs))
-    monkeypatch.setattr(allocator, "load_remote_cpu_config", lambda path=None: (world.remote.config, []))
+    monkeypatch.setattr(allocator, "load_remote_cpu_config", lambda path=None, **_: (world.remote.config, []))
     monkeypatch.setattr(allocator, "_connect", lambda runtime, config: ["remote_cpu_dispatcher_unavailable:KeyError"])
     monkeypatch.setattr(allocator, "RemoteCpuRuntime", functools.partial(allocator.RemoteCpuRuntime, clock=world.clock))
 

@@ -207,7 +207,8 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/.lock",
                 }
             continue
-        if unit.name == "blueprint-task-evaluation-episode-compilation-remote.service":
+        if unit.name in {"blueprint-task-evaluation-episode-compilation-remote.service",
+                         "blueprint-team-scene-packet-remote.service"}:
             # Plan 14 §1: the paid remote-compilation unit.  The no-spend compile unit's hardening, but narrow
             # writes instead of /var/lib/blueprint, the dispatcher key through LoadCredential= and a read-only
             # standing authority; it never compiles, so 2G bounds its readback and landing.
@@ -216,7 +217,8 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                 if not control.startswith("ReadWritePaths="):
                     assert control in text, (unit.name, control)
             assert "ReadWritePaths=/var/lib/blueprint " not in text and "ReadWritePaths=/var/lib/blueprint\n" not in text
-            writable = next(line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+            writable = [path.removeprefix("-") for path in next(
+                line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()]
             assert "/var/lib/blueprint" not in writable and all(path.startswith("/var/lib/blueprint/") for path in writable)
             assert "ReadOnlyPaths=/var/lib/blueprint/spend-authority/authorizations\n" in text
             assert "LoadCredential=remote-cpu-dispatcher:/etc/blueprint/credentials/remote-cpu-dispatcher.json" in text
@@ -406,6 +408,9 @@ HOST_MEMORY = {
     "blueprint-provider-billing-reconciler.service": ("-200", "3G", "4G", "1.7G"),
     "blueprint-pipeline-intake.service": ("-200", "2G", "3G", "1.5G"),
     "blueprint-task-evaluation-episode-compilation-remote.service": ("-200", "1G", "2G", "424M"),
+    # Not yet run on the host: the episode remote unit's host peak, on the same allocator, promotion and landing
+    # code; landing a capture-447-scale half (1.07 GB) in 1 MiB blocks peaked at 69M locally.
+    "blueprint-team-scene-packet-remote.service": ("-200", "1G", "2G", "424M"),
 }
 #: Units that keep the cap main gave them, with no throttle, and only gain an OOM order. Their heavy step at a
 #: full room is not measured on the host (a website capture's preparation in the handoff listener, which
