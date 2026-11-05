@@ -9809,6 +9809,8 @@ def test_uploaded_result_survives_log_failure_before_teardown(tmp_path, monkeypa
         if method == "DELETE" and path == "/instances/888/":
             events.append("teardown")
             assert output.is_file(), "teardown must follow preservation of observed output"
+            assert (tmp_path / "provider_runtime_diagnostics.v1.json").is_file(), \
+                "the run's own failure account is kept before teardown"
             return 200, {"success": True}
         raise AssertionError((method, path))
 
@@ -9850,6 +9852,12 @@ def test_uploaded_result_survives_log_failure_before_teardown(tmp_path, monkeypa
     receipt = _read_json(tmp_path / "vast_provider_output_preclassification_receipt.json")
     assert receipt["transfer"]["status"] == "completed"
     assert receipt["startup_or_scientific_success_claimed"] is False
+    # The full summary lives in its own file; the receipt keeps the compact copy.
+    compact = receipt["transfer"]["runtime_diagnostics"]
+    assert "results" not in compact and "logs" not in compact
+    assert compact["path"] == str(tmp_path / "provider_runtime_diagnostics.v1.json") and compact["written"]
+    assert compact["failing_results"] == [{"member": "native_task_arena_construction_result.v1.json",
+                                           "status": "blocked", "blockers": ["pregrasp"]}]
 
 
 _OUTPUT_GET_URL = "https://storage.example.invalid/private/run.zip?X-Amz-Signature=SECRET_DO_NOT_RECORD"
@@ -9951,6 +9959,10 @@ def test_default_collector_still_downloads_before_teardown(tmp_path: Path, monke
     assert len(list((tmp_path / "vast_provider_runtime_output_videos").glob("*.mp4"))) == 2
     manifest = _read_json(tmp_path / "vast_provider_output_download_manifest.json")
     assert manifest["output_zip_present_after_download"] is True
+    summary = _read_json(tmp_path / "provider_runtime_diagnostics.v1.json")
+    assert (summary["status"], summary["archive_source"]) == ("completed", "local_file")
+    assert summary["unread_member_counts"] == {"not_a_text_member": 2}  # the MP4s are listed, never read
+    assert provider["provider_runtime_diagnostics"]["failing_results"][0]["blockers"] == ["controller_missing"]
 
 
 def test_remote_transfer_replaces_path_inspection_and_records_the_observation(
@@ -9987,6 +9999,12 @@ def test_remote_transfer_replaces_path_inspection_and_records_the_observation(
     assert inspection["mp4_count"] == 2 and inspection["mp4_validation"]["files"] == []
     assert provider["provider_runtime_output_zip_received"] is True
     assert provider["runtime_result_status"] == "blocked_controller_runtime_unavailable"
+    # Read by range in the paid window: the archive itself never lands here.
+    summary = _read_json(tmp_path / "provider_runtime_diagnostics.v1.json")
+    assert (summary["status"], summary["archive_source"]) == ("completed", "remote_range")
+    assert provider["provider_runtime_diagnostics"]["failing_results"] == [
+        {"member": "isaac_runtime_result.json", "status": "blocked_controller_runtime_unavailable",
+         "blockers": ["controller_missing"]}]
     assert provider["structured_policy_canary"]["blockers"] == [
         "structured_policy_canary_member_missing"]
     manifest = _read_json(tmp_path / "vast_provider_output_download_manifest.json")

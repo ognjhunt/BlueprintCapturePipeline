@@ -7,15 +7,29 @@ This projection adds exact campaign/configuration/cell bindings and publishes
 each candidate's sample size and counts as they are. It is an estimate for the
 recorded task and conditions, never certified physical performance or safety,
 and it never enters Arm Decision Proof qualified or physical evidence.
+
+A run that stopped part way (a cell timed out, a later cell could not start, or
+a cell's pre-policy gate refused) still counts the cells it measured. Each
+planned cell it did not return is unscored (void) with the typed reason
+``cell_not_returned:<stop>``; nothing is invented, and the estimate rests on
+the scored episodes alone. A run that returned no cell keeps its blocked,
+harness-failure handling.
+
+A run whose pre-policy observation gate found structurally usable frames but
+did not pass observation integrity ran its episodes anyway (only privacy,
+rights and money stop a run). The summary keeps that gate's typed
+``observation_quality_flags`` with the estimate. The v2 publication has no
+field for them, so they stay in the ledger and are not published.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
 from decimal import Decimal
+import re
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from .team_policy_episode_outcome import episode_outcome
+from .team_policy_episode_outcome import episode_failure_fields, episode_outcome
 from .policy_execution_evidence import (
     candidate_execution_kinds, evidence_kind, SCRIPTED, SCRIPTED_ACTION_SOURCE, scripted_episode_outcome,
 )
@@ -38,6 +52,22 @@ CANDIDATE_STATUSES = frozenset({
 QUEUED_STATUSES = frozenset({"pending", "waitlisted"})
 ACTIVE_STATUSES = frozenset({"preparing", "launching", "running", "reconciliation_required"})
 TERMINAL_STATUSES = frozenset({"completed", "blocked", "unavailable", "deferred"})
+#: A planned cell the run did not return: unscored, never invented. ``:<stop>`` names why.
+CELL_NOT_RETURNED = "cell_not_returned"
+#: A cell left out because its own pre-policy observation gate refused (the matrix continued).
+GATE_REFUSED_STOP = "prepolicy_observation_gate_refused"
+_STOP_CODE = re.compile(r"[a-z][a-z0-9_]{0,127}(?::[a-z0-9_]{1,64})?")
+
+
+def _not_returned_reasons(result: Mapping[str, Any], cells: list[Mapping[str, Any]],
+                          returned: set[str]) -> dict[str, str]:
+    """Why each planned cell without a returned row is missing, as a typed code."""
+    refused = {str(row["cell"].get("cell_id")) for row in result.get("isolated_cell_failures") or []
+               if isinstance(row, Mapping) and isinstance(row.get("cell"), Mapping)}
+    stop = next((code for code in result.get("blockers") or []
+                 if isinstance(code, str) and _STOP_CODE.fullmatch(code)), "run_stopped")
+    return {cell["cell_id"]: f"{CELL_NOT_RETURNED}:{GATE_REFUSED_STOP if cell['cell_id'] in refused else stop}"
+            for cell in cells if cell["cell_id"] not in returned}
 
 
 def candidate_result_summary(
@@ -71,14 +101,19 @@ def candidate_result_summary(
             or not readiness_bound
             or binding.get("scene_revision_digest") != plan["scene_revision_digest"]):
         raise ValueError("beta_screening_result_binding_mismatch")
-    expected = {(cell["cell_id"], cell["seed"]) for cell in candidate["scenario_cells"]}
+    cells = candidate["scenario_cells"]
+    planned = candidate["episode_count"]
+    expected = {(cell["cell_id"], cell["seed"]) for cell in cells}
     episodes = result["episodes"]
-    observed = {(row["cell_id"], row["seed"]) for row in episodes}
-    if (len(episodes) != candidate["episode_count"] or len(expected) != len(episodes)
-            or observed != expected):
+    observed = [(row["cell_id"], row["seed"]) for row in episodes]
+    # Every planned cell once, or a run that stopped part way: a non-empty subset of
+    # the planned cells, each at most once, from a result that names the full plan.
+    expected_cells = {cell["cell_id"]: cell for cell in cells}
+    if (len(cells) != planned or len(expected) != planned or len(expected_cells) != planned or not episodes
+            or len(set(observed)) != len(observed) or not set(observed) <= expected
+            or len(episodes) < planned and result.get("planned_episodes_per_policy") != planned):
         raise ValueError("beta_screening_result_cells_mismatch")
-    outcomes = []
-    expected_cells = {cell["cell_id"]: cell for cell in candidate["scenario_cells"]}
+    returned = {}
     for row in episodes:
         cell = expected_cells[row["cell_id"]]
         if (row["runtime_identity_digest"] != execution["runtime_digest"]
@@ -92,7 +127,13 @@ def candidate_result_summary(
             if row.get("deterministic_score_digest") != canonical_digest({"value": score}):
                 raise ValueError("beta_screening_result_score_binding_mismatch")
         outcome, reason = scripted_episode_outcome(row) if evidence_kind(row) == SCRIPTED else episode_outcome(row)
-        outcomes.append({"cell_id": row["cell_id"], "outcome": outcome, "reason": reason})
+        # An episode that did not complete names its typed failure (ledger only; never its message),
+        # so a run whose output archive is gone still says what stopped it.
+        returned[row["cell_id"]] = {"cell_id": row["cell_id"], "outcome": outcome, "reason": reason,
+                                    **episode_failure_fields(row)}
+    missing = _not_returned_reasons(result, cells, set(returned))
+    outcomes = [returned.get(cell["cell_id"]) or {"cell_id": cell["cell_id"], "outcome": "void",
+                                                  "reason": missing[cell["cell_id"]]} for cell in cells]
     succeeded = sum(row["outcome"] == "success" for row in outcomes)
     failed = sum(row["outcome"] == "failure" for row in outcomes)
     void = sum(row["outcome"] == "void" for row in outcomes)
@@ -107,6 +148,10 @@ def candidate_result_summary(
         "episodes_failed": failed, "episodes_void": void,
         "success_rate": succeeded / scored if scored else None,
         "session_result_digest": result["result_digest"], "episode_outcomes": outcomes,
+        **({"episodes_not_returned": len(missing)} if missing else {}),
+        # Validated as typed codes by ``validate_session_result``; ledger only.
+        **({"observation_quality_flags": list(result["observation_quality_flags"])}
+           if result.get("observation_quality_flags") else {}),
     }
 
 

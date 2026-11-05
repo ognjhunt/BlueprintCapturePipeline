@@ -31,7 +31,7 @@ from blueprint_pipeline.policy_execution_evidence import (
 from blueprint_pipeline.beta_screening_runtime_control import begin_runtime_processing, RuntimeControlStopped
 from blueprint_pipeline.team_evaluation_worker_retention import (
     _compact_team_child_result, _prefix_episode_evidence_paths, _validate_isolated_cell_result,
-    _validate_provider_manifest, seal_scripted_interruption,
+    _validate_provider_manifest, seal_beta_interruption,
     _team_checkpoint as _retention_checkpoint,
     write_team_status_sidecar as _retained_status_sidecar, seal_before_simulation_close as _retained_before_simulation_close,
     seal_team_prefix as _retained_team_prefix, seal_beta_control_stop as _retained_beta_stop,
@@ -59,18 +59,17 @@ from blueprint_pipeline.appearance_render_backend import (
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     BETA_RUN_KIND, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND,
-    execute_paired_session,
+    execute_paired_session, observation_quality_fields, observation_quality_flags,
     validate_runtime_input_manifest,
     validate_session_authority,
+)
+from blueprint_pipeline.policy_canary_cell_setup_failure import (
+    CELL_PROGRESS_STAGES as _CELL_PROGRESS_STAGES, cell_setup_failure, seal_cell_setup_failure,
 )
 
 
 DROID_PARITY_MINIMUM_APPROACH_M = 0.05
 _CELL_PROGRESS_FD_ENV = "BLUEPRINT_POLICY_CANARY_PROGRESS_FD"
-_CELL_PROGRESS_STAGES = frozenset({
-    "static_preflight_passed", "isaac_launch_started", "isaac_launch_completed",
-    "observation_gate_passed", "policy_loaded", "episode_completed",
-})
 # Preserve the existing helper import surface used by retained tooling.
 _write_indexed_telemetry = _write_policy_canary_telemetry
 
@@ -1143,6 +1142,7 @@ def _aggregate_isolated_cell_results(
         "provider_zero_required_after_return": True,
         "construction_lineage_mode": construction_lineage_mode,
         "matrix_digest": inputs.get("matrix_digest") or _digest(inputs["cells"]),
+        **observation_quality_fields(child_results),  # a beta cell's flags stay with the run
         "result_digest": "",
     }
     if inputs.get("run_kind") == BETA_RUN_KIND:
@@ -1231,8 +1231,8 @@ def _team_checkpoint(**kwargs) -> None:
     _retention_checkpoint(**kwargs, seal_result=_seal_result)
 
 
-def _seal_team_prefix(**kwargs) -> None:
-    _retained_team_prefix(**kwargs, aggregate=_aggregate_isolated_cell_results, seal_result=_seal_result)
+def _seal_team_prefix(**kwargs) -> bool:
+    return _retained_team_prefix(**kwargs, aggregate=_aggregate_isolated_cell_results, seal_result=_seal_result)
 
 
 def _seal_beta_control_stop(**kwargs) -> None:
@@ -1319,8 +1319,9 @@ def _run_isolated_cell_processes(
             reason = ("policy_canary_export_deadline_reached"
                       if _HARD_DEADLINE_ENV in os.environ and _isolated_cell_timeout_seconds() <= 0
                       else "policy_canary_isolated_cell_process_timeout")
-            if seal_scripted_interruption(inputs=inputs, authority=authority, children=child_results,
-                    child_root=child_root, output_root=output_root, index=index, reason=reason, seal_result=_seal_result):
+            if seal_beta_interruption(inputs=inputs, authority=authority, children=child_results,
+                    child_root=child_root, output_root=output_root, index=index, reason=reason, seal_result=_seal_result,
+                    seal_prefix=lambda **kw: _seal_team_prefix(**kw, construction_lineage_mode=construction_lineage_mode)):
                 return 1
             try:
                 child_result_path = child_root / PROVIDER_RESULT_FILENAME
@@ -1374,6 +1375,11 @@ def _run_isolated_cell_processes(
         child_results.append(child_result)
         if guard is not None and (stopped := guard.stop_receipt()) is not None:
             _seal_beta_control_stop(output_root=output_root, inputs=inputs, authority=authority, children=child_results, construction_lineage_mode=construction_lineage_mode, receipt=stopped)
+            return 1
+        if (setup := cell_setup_failure(child=child_result, inputs=inputs, index=index, child_root=child_root, output_root=output_root)) is not None:
+            # No policy ran in this cell; the next one would fail the same way at full price.
+            seal_cell_setup_failure(output_root=output_root, inputs=inputs, authority=authority, children=child_results, failure=setup,
+                construction_lineage_mode=construction_lineage_mode, aggregate=_aggregate_isolated_cell_results, seal_result=_seal_result)
             return 1
         if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
             # The scene failed its robot-free check in cell 0: no further team episode runs on it.
@@ -1835,6 +1841,7 @@ def _run_selected_cell(
                         "runtime_gate": current_session.get(
                             "policy_observation_runtime_gate"
                         ),
+                        "run_kind": inputs["run_kind"],
                     },
                     progress=episode_progress,
                     scientific_reset_reader=scientific_reset_reader,
@@ -2155,28 +2162,25 @@ def _run_selected_cell(
                 gate["gate_digest"] = canonical_digest(gate, digest_field="gate_digest")
                 (output_root / "prepolicy_asset_feasibility/combined_observation_gate.json").write_text(
                     json.dumps(gate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            if gate.get("status") != "passed" or gate.get("policy_observation_integrity_passed") is not True:
+            passed = gate.get("status") == "passed" and gate.get("policy_observation_integrity_passed") is True
+            # A beta gate whose frames are structurally usable continues as if passed, keeping its
+            # verdict; its blockers become flags. Frames that are not structurally usable are
+            # unusable, so they (and every other run kind) still stop here, before any policy load.
+            flags = None if passed else observation_quality_flags(gate, run_kind=inputs["run_kind"])
+            if not passed and flags is None:
                 current_session["policy_observation_runtime_gate"] = gate
                 return gate
             if bound_runtime.configure_post_gate_renderer is None:
-                raise RuntimeError(
-                    "policy_canary_post_gate_renderer_guard_unavailable"
-                )
-            renderer_guard = dict(
-                bound_runtime.configure_post_gate_renderer(
-                    observation_gate=gate,
-                    output_path=(
-                        output_root
-                        / "prepolicy_observation_gate"
-                        / "post_gate_rtx_streaming_guard.v1.json"
-                    ),
-                )
-            )
+                raise RuntimeError("policy_canary_post_gate_renderer_guard_unavailable")
+            renderer_guard = dict(bound_runtime.configure_post_gate_renderer(
+                observation_gate=gate, output_path=output_root / "prepolicy_observation_gate" / "post_gate_rtx_streaming_guard.v1.json",
+                **({"accept_observation_quality_flags": True} if flags else {})))
             if renderer_guard.get("status") != "configured":
                 raise RuntimeError("policy_canary_post_gate_renderer_guard_failed")
             current_session["policy_observation_runtime_gate"] = gate
             current_session["post_gate_rtx_streaming_guard"] = renderer_guard
-            report_progress("observation_gate_passed")
+            if passed:  # A flagged gate did not pass; the session only continues past it.
+                report_progress("observation_gate_passed")
             return gate
         gate = preload_observation_integrity_gate(
             observation_integrity_authority,
@@ -2256,7 +2260,7 @@ def _run_selected_cell(
     result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
     result["matrix_digest"] = inputs.get("matrix_digest") or _digest(inputs["cells"])
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    if family_scene:
+    if family_scene or current_session.get("simulation_app") is None:  # Isaac never started: nothing to close.
         _seal_result(result_path=result_path, result=result)
     else:
         _seal_result_before_simulation_close(

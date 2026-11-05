@@ -357,6 +357,9 @@ def _scales() -> list[float]:
 
 
 @pytest.mark.slow
+# An operator's opt-in measurement (several GB per process at 2x): the hermetic full lane, which
+# refuses any skip, deselects it rather than skipping it on every cross-cutting run.
+@pytest.mark.external_runtime
 @pytest.mark.skipif(not _scales(), reason="set BLUEPRINT_SUPPORT_MEMORY_SCALES (for example 1,2) to run")
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads VmHWM from /proc")
 @pytest.mark.parametrize("scale", _scales())

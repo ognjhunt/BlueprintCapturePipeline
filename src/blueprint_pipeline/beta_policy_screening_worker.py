@@ -365,6 +365,43 @@ def deliver_publications(*, queue_root: str | Path, transport=None,
     return {"acknowledged": sent, "pending": failed, **failure}
 
 
+def retained_run_dirs(root: Path):
+    """Each retained attempt's provider run directories, local or on the work volume (via its pointer)."""
+    from .beta_policy_screening_coordinator import ATTEMPT_DIR_FIELD, _attempt_path
+
+    for entry in sorted((root / "attempts").iterdir()):
+        attempt: Path | None = None
+        if entry.is_symlink():
+            continue
+        if entry.is_dir():
+            attempt = entry
+        elif entry.name.endswith(".attempt_dir.json"):
+            try:
+                pointer = json.loads(entry.read_text(encoding="utf-8"))
+                attempt = _attempt_path(root, {"attempt_id": entry.name.removesuffix(".attempt_dir.json"),
+                                               ATTEMPT_DIR_FIELD: pointer[ATTEMPT_DIR_FIELD]})
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        if attempt is not None and attempt.is_dir() and not attempt.is_symlink():
+            yield from sorted(attempt.glob("allocator/attempts/*/vast_provider_run"))
+
+
+def backfill_runtime_diagnostics(root: Path, *, max_writes: int = 5) -> dict[str, Any]:
+    """Summarize retained runs whose output archive is still on disk; bounded, idempotent, never raises.
+
+    A streamed archive never reaches the host, so only a downloaded or
+    SSH-recovered one not yet promoted away can be summarized after the fact.
+    """
+    from .provider_runtime_diagnostics import backfill
+
+    try:
+        return backfill(retained_run_dirs(root), max_writes=max_writes)
+    except (OSError, ValueError) as exc:
+        from .bounded_error import error_description
+
+        return {"status": "failed", "error": error_description(exc)}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from .beta_policy_screening_coordinator import QUEUE_ROOT_ENV, _root, process_screening_queue
     from .beta_policy_screening_status import write_worker_status
@@ -399,9 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         selections = {"status": "failed", "blocker": code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)
                       else "website_candidate_selection_failed"}
     status = write_worker_status(root, publication_before=before, publication_after=after, execution=execution)
+    # Local, unpaid and bounded: a retained run's failure account, read while its archive is still here.
+    diagnostics = backfill_runtime_diagnostics(root)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
                       "publication_after": after, "holds": holds, "selections": selections,
-                      "worker_status": status},
+                      "runtime_diagnostics_backfill": diagnostics, "worker_status": status},
                      sort_keys=True))
     return 0
 

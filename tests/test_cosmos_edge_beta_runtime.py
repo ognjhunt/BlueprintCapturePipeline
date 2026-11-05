@@ -147,8 +147,8 @@ def test_bad_returned_actions_still_record_a_completed_candidate_query(value):
 
 def test_snapshot_inventory_and_execution_are_exact_and_secret_free(tmp_path):
     manifest = runtime.verified_snapshot_manifest(runtime.snapshot_manifest_path())
-    assert len(manifest["required_files"]) == 21
-    assert sum(row["size_bytes"] for row in manifest["required_files"]) == 9_154_401_203
+    assert len(manifest["required_files"]) == 22
+    assert sum(row["size_bytes"] for row in manifest["required_files"]) == 9_154_413_361
     runtime.validate_execution_spec(json.loads(json.dumps(_execution())))
     bad = _execution()
     bad["policy_endpoint"]["host"] = "policy.example"

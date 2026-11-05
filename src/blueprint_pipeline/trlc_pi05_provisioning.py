@@ -9,13 +9,12 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import time
 from urllib.parse import quote
 
 from .local_policy_provisioning import (
-    DEADLINE_ENV, TransferBudget, fetch_exact, remaining_seconds,
+    DEADLINE_ENV, TransferBudget, fetch_exact, provisioning_failure_code, remaining_seconds,
 )
 from .trlc_pi05_assets import MODEL_ID, MODEL_REVISION, verify_checkpoint_directory, verify_tokenizer_directory
 from .trlc_pi05_policy import TRLCPi05PolicyClient
@@ -159,8 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = provision(Path(args.runtime), output, json.loads(Path(args.spec).read_text()))
     except Exception as exc:
-        reason = str(exc)
-        code = reason if re.fullmatch(r"(?:trlc_pi05|local_policy)_[a-z0-9_]{1,120}", reason) else "trlc_pi05_provisioning_failed:" + type(exc).__name__
+        code = provisioning_failure_code("trlc_pi05", exc)
         result = {"status": "blocked", "blockers": [code], "candidate_policy_queried": False}
     (output / "trlc_pi05_provisioning.v1.json").write_text(json.dumps(result, sort_keys=True))
     return 0 if result["status"] == "ready" else 2

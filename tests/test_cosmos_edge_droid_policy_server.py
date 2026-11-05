@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import numpy as np
 import pytest
 
 from blueprint_pipeline.cosmos_edge_droid_policy_runtime import CosmosEdgeDroidPolicySpec
+from blueprint_pipeline import cosmos_droid_source
 from blueprint_pipeline.cosmos_edge_droid_policy_server import (
+    CheckpointRegistryOfflineError,
     NativeActionShapeGuard,
     _disable_policy_guardrails,
+    install_offline_checkpoint_registry,
+    offline_checkpoint_registry,
     serve_identity_bound_policy,
 )
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256, file_sha256
@@ -104,3 +110,66 @@ def test_server_binds_verified_identity_and_native_shape(tmp_path: Path) -> None
     assert startup["blueprint_action_and_abstention_gates_remain_enabled"] is True
     written = json.loads((tmp_path / "out" / "policy_server_startup.json").read_text())
     assert written["raw_credentials_written"] is False
+
+
+_REVISION = "a" * 40
+
+
+def _registry_store(tmp_path: Path) -> tuple[Path, dict[str, Any], Path]:
+    store = tmp_path / "registry"
+    path = store / "org/vae" / _REVISION / "vae.pth"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"vae weights")
+    row = {"repository": "org/vae", "revision": _REVISION, "filename": "vae.pth",
+           "size_bytes": path.stat().st_size, "sha256": file_sha256(path)}
+    return store, row, path.resolve()
+
+
+def _file_args(repository: str = "org/vae", revision: str = _REVISION, filename: str = "vae.pth") -> list[str]:
+    # The argument list the pinned CheckpointFileHf._download passes to _hf_download.
+    return [repository, "--repo-type", "model", "--revision", revision, filename]
+
+
+def test_offline_registry_answers_a_pinned_file_from_the_store(tmp_path: Path) -> None:
+    store, row, path = _registry_store(tmp_path)
+
+    assert offline_checkpoint_registry(store, [row])(_file_args()) == str(path)
+
+
+@pytest.mark.parametrize("cmd_args", [
+    _file_args(revision="main"),
+    _file_args(filename="other.pth"),
+    _file_args(repository="org/other"),
+    ["org/vae", "--repo-type", "dataset", "--revision", _REVISION, "vae.pth"],
+    ["org/vae", "--repo-type", "model", "--revision", _REVISION, "--include", "*"],
+])
+def test_offline_registry_refuses_anything_it_was_not_pinned(tmp_path: Path, cmd_args: list[str]) -> None:
+    store, row, _path = _registry_store(tmp_path)
+
+    with pytest.raises(CheckpointRegistryOfflineError, match="download_unpinned"):
+        offline_checkpoint_registry(store, [row])(cmd_args)
+
+
+def test_offline_registry_refuses_a_store_whose_bytes_changed(tmp_path: Path) -> None:
+    store, row, path = _registry_store(tmp_path)
+    path.write_bytes(b"vae weightz")
+
+    with pytest.raises(CheckpointRegistryOfflineError, match="file_unverified:vae.pth"):
+        offline_checkpoint_registry(store, [row])
+
+
+def test_offline_registry_replaces_the_pinned_download_hook_in_process(tmp_path, monkeypatch) -> None:
+    store, row, path = _registry_store(tmp_path)
+    registry = ModuleType("cosmos_framework.utils.checkpoint_db")
+    registry._hf_download = lambda _cmd_args: pytest.fail("the offline server must not run uvx")
+    monkeypatch.setitem(sys.modules, registry.__name__, registry)
+    monkeypatch.setattr(cosmos_droid_source, "CHECKPOINT_REGISTRY_FILES", (row,))
+
+    install_offline_checkpoint_registry(store)
+
+    assert registry._hf_download(_file_args()) == str(path)
+    with pytest.raises(CheckpointRegistryOfflineError, match="download_unpinned"):
+        registry._hf_download(_file_args(revision="main"))
+    del registry._hf_download
+    with pytest.raises(TypeError, match="download_hook_unavailable"):
+        install_offline_checkpoint_registry(store)

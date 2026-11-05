@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import sys
 from collections.abc import Generator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,9 +28,80 @@ ROBOLAB_ARCHIVE_SHA256 = "sha256:16092baa43c5a2eb78f6dc8a330330e8e8bfc6a8cafce59
 IMAGEIO_WHEEL = "imageio-2.37.2-py3-none-any.whl"
 IMAGEIO_SHA256 = "sha256:ad9adfb20335d718c03de457358ed69f141021a333c40a53e57273d8a5bd0b9b"
 ROBOLAB_MANIFEST_SHA256 = "sha256:b19532cef9431b39e586310cf169ba09145cacb570592ed0c143ce5649a8fd22"
+OPENCV_WHEEL = "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+OPENCV_SHA256 = "sha256:377d08a7e48a1405b5e84afcbe4798464ce7ee17081c1c23619c8b398ff18295"
+
+# Third-party modules RoboLab's run path imports that neither the native
+# dependency contract nor the Isaac Sim launcher promises. Each ships as its
+# unchanged PyPI wheel, is digest-checked when staged and again after load.
+IMAGEIO_DEPENDENCY = {
+    # RoboLab imports its video utility even when recording is disabled.
+    "distribution": "imageio", "version": "2.37.2", "wheel": IMAGEIO_WHEEL, "sha256": IMAGEIO_SHA256,
+    "size_bytes": 317_646, "license_spdx": "BSD-2-Clause", "import_names": ["imageio"], "delivery": "vendored",
+}
+OPENCV_DEPENDENCY = {
+    # robolab.eval.episode imports cv2 at module level; it calls cv2.imshow only
+    # when not headless, and Blueprint always runs headless. This is the exact
+    # owner-approved version in docs/runtime_dependency_license_policy.json.
+    # Its abi3 binary targets the NumPy 2.0 C API, so it loads with the NumPy 2.x
+    # that Isaac Lab 3 requires (2.3.1 in the G1 runtime packet).
+    "distribution": "opencv-python-headless", "version": "4.10.0.84", "wheel": OPENCV_WHEEL,
+    "sha256": OPENCV_SHA256, "size_bytes": 49_858_781, "license_spdx": "Apache-2.0",
+    "import_names": ["cv2"], "delivery": "pinned_download",
+    "url": ("https://files.pythonhosted.org/packages/d1/09/"
+            "248f86a404567303cdf120e4a301f389b68e3b18e5c0cc428de327da609c/" + OPENCV_WHEEL),
+}
+PYTHON_DEPENDENCY_WHEELS = (IMAGEIO_DEPENDENCY, OPENCV_DEPENDENCY)
+
+
+def _dependency_code(row: Mapping[str, Any]) -> str:
+    return str(row["import_names"][0])
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _stage_dependency_wheel(runtime: Path, row: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy one pinned wheel beside RoboLab and extract it unchanged."""
+    code = _dependency_code(row)
+    if row["delivery"] == "vendored":
+        source = Path(__file__).resolve().parent / "_vendor" / row["wheel"]
+    else:
+        # Bundle building runs on the control plane; the worker never fetches.
+        from .pinned_wheel_cache import fetch_pinned_wheel
+
+        source = fetch_pinned_wheel(row, destination_dir=runtime)
+    staged = runtime / row["wheel"]
+    if source.stat().st_size != row["size_bytes"] or _sha256_file(source) != row["sha256"]:
+        raise ValueError(f"beta_robolab_{code}_wheel_digest_mismatch")
+    if source.resolve() != staged.resolve():
+        shutil.copyfile(source, staged)
+    if _sha256_file(staged) != row["sha256"]:
+        raise ValueError(f"beta_robolab_{code}_wheel_digest_mismatch")
+    with zipfile.ZipFile(staged) as wheel:
+        for entry in wheel.infolist():
+            relative = Path(entry.filename)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError(f"beta_robolab_{code}_path_invalid")
+            if not entry.is_dir():
+                target = runtime / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(wheel.read(entry))
+    return {key: row[key] for key in ("distribution", "version", "wheel", "sha256", "size_bytes",
+                                      "license_spdx", "import_names", "delivery")}
+
 
 def stage_robolab_source(runtime: Path) -> dict[str, Any]:
-    """Install exact upstream Python sources from the reviewed, offline archive."""
+    """Install exact upstream Python sources and their pinned wheels into a bundle.
+
+    RoboLab's sources and the small ImageIO wheel are vendored; the OpenCV wheel
+    comes from the control plane's pinned wheel cache. The worker stays offline.
+    """
     vendor = Path(__file__).resolve().parent / "_vendor"
     archive_path = vendor / f"robolab-{ROBOLAB_COMMIT}.zip"
     raw = archive_path.read_bytes()
@@ -51,25 +124,11 @@ def stage_robolab_source(runtime: Path) -> dict[str, Any]:
             target = runtime / (relative if relative.parts[0] == "robolab" else Path("robolab-LICENSE"))
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
-    wheel_bytes = (vendor / IMAGEIO_WHEEL).read_bytes()
-    if "sha256:" + hashlib.sha256(wheel_bytes).hexdigest() != IMAGEIO_SHA256:
-        raise ValueError("beta_robolab_imageio_wheel_digest_mismatch")
-    (runtime / IMAGEIO_WHEEL).write_bytes(wheel_bytes)
-    with zipfile.ZipFile(vendor / IMAGEIO_WHEEL) as wheel:
-        for entry in wheel.infolist():
-            relative = Path(entry.filename)
-            if relative.is_absolute() or ".." in relative.parts:
-                raise ValueError("beta_robolab_imageio_path_invalid")
-            if not entry.is_dir():
-                target = runtime / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(wheel.read(entry))
+    dependencies = [_stage_dependency_wheel(runtime, row) for row in PYTHON_DEPENDENCY_WHEELS]
     (runtime / "robolab-source.v1.json").write_bytes(manifest_bytes)
     return {"distribution": "robolab", "version": manifest["release_version"],
             "source_commit": ROBOLAB_COMMIT, "archive_sha256": ROBOLAB_ARCHIVE_SHA256,
-            "files": manifest["files"],
-            "python_dependencies": [{"distribution": "imageio", "version": "2.37.2",
-                                     "wheel": IMAGEIO_WHEEL, "sha256": IMAGEIO_SHA256}]}
+            "files": manifest["files"], "python_dependencies": dependencies}
 
 
 def verify_loaded_robolab() -> None:
@@ -88,22 +147,139 @@ def verify_loaded_robolab() -> None:
             if "sha256:" + hashlib.sha256(content).hexdigest() != row["sha256"]:
                 raise ValueError("beta_robolab_loaded_source_digest_mismatch")
 
-    wheel_path = runtime / IMAGEIO_WHEEL
-    if "sha256:" + hashlib.sha256(wheel_path.read_bytes()).hexdigest() != IMAGEIO_SHA256:
-        raise ValueError("beta_robolab_loaded_imageio_wheel_digest_mismatch")
-    with zipfile.ZipFile(wheel_path) as wheel:
-        for entry in wheel.infolist():
-            if not entry.is_dir() and (runtime / entry.filename).read_bytes() != wheel.read(entry):
-                raise ValueError("beta_robolab_loaded_imageio_source_digest_mismatch")
+    for row in PYTHON_DEPENDENCY_WHEELS:
+        code = _dependency_code(row)
+        wheel_path = runtime / row["wheel"]
+        if _sha256_file(wheel_path) != row["sha256"]:
+            raise ValueError(f"beta_robolab_loaded_{code}_wheel_digest_mismatch")
+        with zipfile.ZipFile(wheel_path) as wheel:
+            for entry in wheel.infolist():
+                if not entry.is_dir() and (runtime / entry.filename).read_bytes() != wheel.read(entry):
+                    raise ValueError(f"beta_robolab_loaded_{code}_source_digest_mismatch")
+
+
+def _loaded_dependency_origins(runtime: Path) -> dict[str, Any]:
+    """Which copy each pinned dependency actually imported from (recorded, not enforced)."""
+    origins = {}
+    for row in PYTHON_DEPENDENCY_WHEELS:
+        for name in row["import_names"]:
+            module = sys.modules.get(name)
+            source = getattr(module, "__file__", None)
+            path = Path(source).resolve() if source else None
+            origins[name] = {"distribution": row["distribution"], "pinned_version": row["version"],
+                             "loaded": module is not None, "path": str(path) if path else None,
+                             "from_staged_wheel": path is not None and path.is_relative_to(runtime)}
+    return origins
+
+
+#: Every module the upstream episode loop needs once ``robolab.eval`` loads it (its import-time
+#: closure and the two Kit modules ``run_episode`` calls). They are probed together after Isaac
+#: launches, so one paid run names every missing one instead of the first.
+ROBOLAB_RUNTIME_MODULES = (
+    "cv2", "imageio", "numpy", "torch", "tqdm", "h5py", "yaml", "scipy.stats",
+    "omni.usd", "omni.timeline", "omni.kit.app", "pxr.Usd",
+    "isaaclab.sim.utils", "isaaclab.assets", "isaaclab.envs", "isaaclab.utils.math",
+    "isaaclab.sensors.frame_transformer.frame_transformer",
+    "isaacsim.core.prims",
+)
+#: Deprecated in Isaac Sim 6.0.1 and not enabled by the pinned experience. Upstream RoboLab imports
+#: it at module level only to name ``XFormPrim`` in ``isinstance`` checks on scene objects
+#: (``robolab/core/world/world_state.py``), which our native environment never presents.
+_XFORM_PRIM_MODULE = "isaacsim.core.prims"
+_XFORM_PRIM_SUCCESSORS = (("isaacsim.core.experimental.prims", "XformPrim"), ("isaaclab.sim.views", "XformPrimView"))
+
+
+class RobolabRuntimeError(ValueError):
+    """Typed codes the session result keeps (``errors``); never a message."""
+
+    def __init__(self, errors: list[str]):
+        super().__init__(",".join(errors))
+        self.errors = list(errors)
+
+
+def _enable_extension(name: str) -> bool:
+    try:
+        import omni.kit.app
+
+        manager = omni.kit.app.get_app().get_extension_manager()
+        if not manager.is_extension_enabled(name):
+            manager.set_extension_enabled_immediate(name, True)
+        return bool(manager.is_extension_enabled(name))
+    except Exception:  # noqa: BLE001 - an extension Kit cannot enable is reported as missing
+        return False
+
+
+def _xform_prim_compatibility(import_module: Any, enable_extension: Any) -> str | None:
+    """Enable the deprecated extension, else name its successor class under the old import path."""
+    import types
+
+    if enable_extension(_XFORM_PRIM_MODULE):
+        try:
+            import_module(_XFORM_PRIM_MODULE)
+            return "extension_enabled_at_runtime"
+        except Exception:  # noqa: BLE001 - fall through to the successor class
+            pass
+    for module_name, attribute in _XFORM_PRIM_SUCCESSORS:
+        try:
+            successor = getattr(import_module(module_name), attribute)
+        except Exception:  # noqa: BLE001 - try the next successor
+            continue
+        alias = types.ModuleType(_XFORM_PRIM_MODULE)
+        alias.XFormPrim = successor
+        alias.__doc__ = f"Blueprint compatibility alias: XFormPrim is {module_name}.{attribute}."
+        sys.modules[_XFORM_PRIM_MODULE] = alias
+        return f"alias:XFormPrim={module_name}.{attribute}"
+    return None
+
+
+def probe_robolab_runtime_modules(*, import_module: Any = None, enable_extension: Any = None,
+                                  modules: tuple[str, ...] = ROBOLAB_RUNTIME_MODULES) -> dict[str, str]:
+    """Import every module the episode loop needs; raise with every one that is missing."""
+    import importlib
+
+    import_module = import_module or importlib.import_module
+    enable_extension = enable_extension or _enable_extension
+    missing: list[str] = []
+    compatibility: dict[str, str] = {}
+    for name in modules:
+        try:
+            import_module(name)
+            continue
+        except ImportError:
+            pass
+        except Exception:  # noqa: BLE001 - present but broken is its own code
+            missing.append("module_import_failed:" + name)
+            continue
+        if name == _XFORM_PRIM_MODULE and (
+                resolution := _xform_prim_compatibility(import_module, enable_extension)) is not None:
+            compatibility[name] = resolution
+            continue
+        missing.append("module_not_found:" + name)
+    if missing:
+        raise RobolabRuntimeError(missing)
+    return compatibility
 
 
 def preflight_robolab_runtime() -> dict[str, Any]:
     """Resolve real runtime imports after Isaac launch, before policy clients."""
+    import os
+
     verify_loaded_robolab()
+    # RoboLab's progress bar writes one ever-growing line into the cell console, which pushes
+    # the lines that explain a failure out of the retained log tail. tqdm reads this at import.
+    os.environ.setdefault("TQDM_DISABLE", "1")
+    compatibility = probe_robolab_runtime_modules()
     from robolab.eval import InferenceClient, run_episode
     if not isinstance(InferenceClient, type) or not callable(run_episode):
         raise ValueError("beta_robolab_upstream_entrypoints_unavailable")
-    return {"backend": BACKEND, "source_commit": ROBOLAB_COMMIT, "status": "passed"}
+    import robolab
+
+    origins = _loaded_dependency_origins(Path(robolab.__file__).resolve().parent.parent)
+    return {"backend": BACKEND, "source_commit": ROBOLAB_COMMIT, "status": "passed",
+            "python_dependency_origins": origins, "compatibility": compatibility,
+            "warnings": sorted(f"beta_robolab_dependency_not_from_staged_wheel:{name}"
+                               for name, origin in origins.items()
+                               if origin["loaded"] and not origin["from_staged_wheel"])}
 
 
 class NativeEpisodeEnvironment:
@@ -237,6 +413,12 @@ def run_robolab_episode(events: Generator, *, policy: Any, prompt: str, maximum_
     config = SimpleNamespace(instruction=prompt, sim=SimpleNamespace(dt=1.0 / control_hz, render_interval=1))
     try:
         if environment.result is None:
+            import omni.timeline
+
+            # Upstream waits for the timeline with ``while not is_playing(): update()`` and no exit:
+            # a stopped timeline would spin until the paid hard TTL. Refuse it by name instead.
+            if not omni.timeline.get_timeline_interface().is_playing():
+                raise ValueError("beta_robolab_timeline_not_playing")
             results, _subtasks, timing = run_episode(environment, config, 0, client, headless=True,
                                                     save_videos=False, video_mode="none", enable_gt_state=False)
         else:

@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import time
@@ -12,6 +13,7 @@ from typing import Any, Mapping
 from .decision_evidence_contracts import canonical_digest
 from .policy_execution_evidence import evidence_kind, SCRIPTED, scripted_fields
 from .policy_canary_media_integrity import bound_media_artifact as _bound_media_artifact
+from .team_policy_episode_outcome import episode_stop_line, failure_code
 
 # Also shipped in standalone policy bundles, which have no paired-session module.
 PROVIDER_RESULT_FILENAME = "native_task_arena_policy_canary_session_result.v1.json"
@@ -259,6 +261,8 @@ def _write_episode_failure_gap(
         "failure_type": type(failure).__name__,
         "typed_harness_failure": type(failure).__name__,
         "failure_message": safe_message or None,
+        # The message's leading typed code, kept by summaries that never copy the message.
+        "failure_code": failure_code(safe_message),
         "failure_message_digest": _digest(raw_message),
         "candidate_policy_action_queries": raw_queries,
         "commanded_actions": commanded_actions,
@@ -310,7 +314,28 @@ def _write_episode_failure_gap(
     }
     value["gap_digest"] = canonical_digest(value, digest_field="gap_digest")
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _emit_episode_stop(value)
     return path
+
+
+# The worker's console channel and the isolated cell's index, as the parent sets them.
+_PROGRESS_FD_ENV = "BLUEPRINT_POLICY_CANARY_PROGRESS_FD"
+_CELL_INDEX_ENV = "BLUEPRINT_POLICY_CANARY_CELL_INDEX"
+
+
+def _emit_episode_stop(record: Mapping[str, Any]) -> None:
+    """Name a stopped episode's typed failure on the provider console, which the host keeps.
+
+    This record lives in the output archive, which is gone once a run settles;
+    the console line is not. Typed fields only (``episode_stop_line``), never the
+    message. A missing or lost channel never changes execution.
+    """
+    try:
+        fd = int(os.environ[_PROGRESS_FD_ENV])
+        if fd >= 0:
+            os.write(fd, episode_stop_line(os.environ.get(_CELL_INDEX_ENV), record).encode("ascii"))
+    except (KeyError, OSError, ValueError):
+        return
 
 
 def _write_episode_json_artifact(
