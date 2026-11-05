@@ -2,6 +2,16 @@
 
 You are picking up from a Claude Code cloud session on another account that ran out of usage. Its container and transcript are gone; this document is everything you need. Read it fully before acting. Work autonomously: the owner wants progress without being asked questions, except for the hard stops below.
 
+## UPDATE 16:55Z (old session)
+
+- **The worker re-planned at 16:42Z** into campaign `screening-9ae28fc4637ed1…` (pi05 harness-failed, and the commit had changed to c5e03634).
+  - **pi05 relaunched at 16:45:07Z on the UNFIXED client** (attempt `screen-ab4e271171d99cffab48727b64385425`, $4 reserved). Expect it to void the same way: its 7th failure.
+- **PR #3400 now also raises `HARNESS_RETRY_LIMIT` 6 → 7** (head 92d45737) so pi05 gets one run on the fixed client. The owner approved extending retry limits.
+- **#3397 MERGED** at 16:55Z as main 6f07f889; main also has #3331 (merged 16:19Z).
+- **Plan:** when #3400's CI is green, merge it and do ONE deploy of main. That covers #3331, #3397 and #3400.
+  - The old session scheduled itself to do this at 17:20Z. If it doesn't happen, do it.
+- After pi05's current run closes, the re-plan at the new commit should run pi05 (fixed), cosmos3, molmoact2 and the pi0 rows, one at a time until one scores.
+
 ## URGENT, 16:50Z: merge and deploy PR #3400 before any OpenPI candidate runs
 
 - **pi05 finished at about 16:38Z:** completed, 10 of 10 void (`simulator_failed_before_policy`), $1.39. Site committed is now $12.61 of $30.
