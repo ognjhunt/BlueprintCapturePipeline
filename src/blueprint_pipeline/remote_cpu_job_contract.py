@@ -45,13 +45,31 @@ INFRASTRUCTURE_FAILED = "infrastructure_failed:"
 RELEASE_PATH_MISSING = INFRASTRUCTURE_FAILED + "release_path_missing:"
 
 PROBE_STAGE = "environment_probe"
-# Stages the host may describe; an unregistered stage is refused everywhere.
+GIB = 1024**3
+# Stages the host may describe; an unregistered stage is refused everywhere.  A stage may also name its own
+# ``phase_seconds`` (fetch and seal/upload; its stage phase takes what the configured task timeout leaves after
+# them and the margin), a stricter ``max_output_bytes`` and an ``output_leaf``: its output root is then
+# ``…/<row id>/<leaf>`` rather than ``…/<row id>``.
 STAGES: Mapping[str, Mapping[str, Any]] = {
     "episode_compilation": {
         "abbreviation": "ec", "stage_contract": "episode_compilation_remote.v1",
         "queue": "task-evaluation-episode-compilations", "success_status": "compiled_for_production_launch",
         # Resource exhaustion inside the worker is infrastructure, not the row.
         "retryable_blocker_prefixes": ("episode_compilation_failed:OSError:", "episode_compilation_failed:MemoryError"),
+    },
+    # A website scene's robot-team half (``team_scene_packet.materialize_team_scene``): the host fetches the
+    # revision's documents into the attempt directory, and the worker compiles ``<attempt>/scene`` beside them.
+    "team_scene_packet": {
+        "abbreviation": "tp", "stage_contract": "team_scene_packet_remote.v1",
+        "queue": "team-scene-packets", "success_status": "completed",
+        "retryable_blocker_prefixes": ("team_scene_packet_failed:OSError:", "team_scene_packet_failed:MemoryError"),
+        "output_leaf": "scene",
+        # Plan 14's fetch and seal/upload phases; the compile keeps the rest (2700 s of a 3600 s task): the host's
+        # killed attempts of capture-447ae4f4 had run 9 to 23 minutes.
+        "phase_seconds": {"fetch": 300, "seal_upload": 420},
+        # The whole tree lands (about three logical copies of the collider and appearance, hard-linked); 4 GiB
+        # keeps the worst case of a 4 vCPU, 16 GiB, 3600 s attempt at $0.8544 under a $1 attempt cap.
+        "max_output_bytes": 4 * GIB,
     },
     # The allocator's preflight (plan 14 §8): one leased, granted, torn-down attempt on a stage's own
     # job that only reports the worker environment.  Its queue row is the probe request.
@@ -355,11 +373,14 @@ _PROJECT = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
 _JOB = re.compile(r"blueprint-remote-cpu-[a-z0-9-]{0,40}[a-z0-9]")
 
 
-def config_blockers(config: Mapping[str, Any]) -> list[str]:
+def config_blockers(config: Mapping[str, Any], *, stage: str | None = None) -> list[str]:
     """Every way a host's ``remote_cpu_workers_config.v1`` is unusable (plan 14 §15); its region must be a US one.
 
     Each stage names its ``blueprint-remote-cpu-*`` job, digest-pinned image and resources; the probe stage has no
-    entry of its own, because a probe runs on the job of the stage it probes.
+    entry of its own, because a probe runs on the job of the stage it probes.  With ``stage``, the config is judged
+    for that stage alone: another stage's invalid entry disables that stage, never this one (a missing entry is the
+    caller's ``stage_missing``).  Without it every invalid entry is also named, as
+    ``remote_cpu_config_invalid:stage:<name>``, so an install-time check says which one to fix.
     """
     stages = config.get("stages") if isinstance(config.get("stages"), Mapping) else {}
     rates = config.get("rate_table") if isinstance(config.get("rate_table"), Mapping) else {}
@@ -369,8 +390,10 @@ def config_blockers(config: Mapping[str, Any]) -> list[str]:
         return (stage in STAGES and stage != PROBE_STAGE and isinstance(entry, Mapping)
                 and set(entry) == {"job", "image", *_JOB_LIMITS} and _matches(_JOB)(entry["job"])
                 and _matches(_IMAGE)(entry["image"]) and all(_positive(entry[name]) for name in _JOB_LIMITS)
-                and entry["task_timeout_seconds"] <= MAX_TASK_TIMEOUT_SECONDS and entry["memory_bytes"] <= MAX_MEMORY_BYTES)
+                and minimum_task_timeout_seconds(stage) <= entry["task_timeout_seconds"] <= MAX_TASK_TIMEOUT_SECONDS
+                and entry["memory_bytes"] <= MAX_MEMORY_BYTES)
 
+    invalid = sorted(str(name) for name, entry in stages.items() if not stage_valid(name, entry))
     failed = {
         "keys": set(config) != _CONFIG_KEYS,
         "schema_version": config.get("schema_version") != CONFIG_SCHEMA_VERSION,
@@ -378,7 +401,7 @@ def config_blockers(config: Mapping[str, Any]) -> list[str]:
         "project": not _matches(_PROJECT)(config.get("project")),
         "region": region.startswith("us-") and re.fullmatch(r"us-[a-z]+[0-9]+", region) is None,
         "transport_bucket": not _matches(_BUCKET)(config.get("transport_bucket")),
-        "stages": not stages or not all(stage_valid(stage, entry) for stage, entry in stages.items()),
+        "stages": (not stages or bool(invalid)) if stage is None else stage in invalid,
         "rate_table": set(rates) != {"source", "observed_on", *_RATES}
         or not all(_is_amount(rates[name]) and rates[name] > 0 for name in _RATES) or not _text(rates["source"])
         or not _matches(re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}"))(rates["observed_on"]),
@@ -386,6 +409,8 @@ def config_blockers(config: Mapping[str, Any]) -> list[str]:
         "max_attempts": not _positive(config.get("max_attempts")) or config["max_attempts"] > MAX_ATTEMPTS_CAP,
     }
     blockers = [f"remote_cpu_config_invalid:{name}" for name, failure in failed.items() if failure]
+    if stage is None:
+        blockers += [f"remote_cpu_config_invalid:stage:{safe_label(name)}" for name in invalid]
     if not region.startswith("us-"):
         blockers.append("remote_cpu_config_region_not_us")
     return sorted(blockers)
@@ -397,7 +422,9 @@ def _descriptor_path_reasons(descriptor: Mapping[str, Any], reasons: list[str]) 
     output_root = outputs["output_root"]
     output_problems = _path_reasons(output_root, "outputs.output_root", roots)
     reasons.extend(output_problems)
-    if not output_problems and output_root.rsplit("/", 1)[-1] != _row_id(row):
+    leaf = (STAGES.get(descriptor["stage"]) or {}).get("output_leaf")
+    tail = output_root.rsplit("/", 2)[1:] if leaf else output_root.rsplit("/", 1)[-1:]
+    if not output_problems and tail != ([_row_id(row), leaf] if leaf else [_row_id(row)]):
         reasons.append("remote_cpu_descriptor_output_root_unbound")
     for index, path in enumerate(outputs["declared_scratch"]):
         problems = _path_reasons(path, f"outputs.declared_scratch[{index}]", roots, directory=True)
@@ -459,11 +486,33 @@ STAGE_LIMITS: Mapping[str, Any] = {
 }
 
 
-def stage_limits(config: Mapping[str, Any], stage: str, *, allowed_cpu_classes: Sequence[str] = ()) -> dict[str, Any]:
-    """A descriptor's limits: the stage job's resources, plan 14's phase budget and the config's attempts."""
-    entry = config["stages"][stage]
-    return {**{name: entry[name] for name in _JOB_LIMITS}, **json.loads(json.dumps(STAGE_LIMITS)),
-            "max_attempts": config["max_attempts"], "allowed_cpu_classes": sorted(allowed_cpu_classes)}
+# A stage that names its own fetch and seal/upload phases keeps at least this long for its stage phase.
+MIN_STAGE_PHASE_SECONDS = 300
+
+
+def minimum_task_timeout_seconds(stage: str) -> int:
+    """The shortest configured task timeout a stage's own phase budget fits (1 for a stage on plan 14's budget)."""
+    phases = (STAGES.get(stage) or {}).get("phase_seconds")
+    return sum(phases.values()) + PHASE_MARGIN_SECONDS + MIN_STAGE_PHASE_SECONDS if phases else 1
+
+
+def stage_limits(config: Mapping[str, Any], stage: str, *, allowed_cpu_classes: Sequence[str] = (),
+                 profile: str | None = None) -> dict[str, Any]:
+    """A descriptor's limits: the stage job's resources, the phase budget and output bound of ``profile`` (the stage
+    itself unless named: a probe runs on another stage's job under that stage's budget) and the config's attempts.
+
+    A profile that names its own fetch and seal/upload phases gives its stage phase the rest of the configured task
+    timeout, less the margin, so the owner sizes a stage in its config entry alone (within the contract maxima)."""
+    entry, own = config["stages"][stage], STAGES.get(profile or stage) or {}
+    limits = {**{name: entry[name] for name in _JOB_LIMITS}, **json.loads(json.dumps(STAGE_LIMITS)),
+              "max_attempts": config["max_attempts"], "allowed_cpu_classes": sorted(allowed_cpu_classes)}
+    if own.get("phase_seconds"):
+        fetch, seal = own["phase_seconds"]["fetch"], own["phase_seconds"]["seal_upload"]
+        limits["phase_seconds"] = {"fetch": fetch, "seal_upload": seal,
+                                   "stage": entry["task_timeout_seconds"] - fetch - seal - PHASE_MARGIN_SECONDS}
+    if own.get("max_output_bytes"):
+        limits["max_output_bytes"] = min(int(own["max_output_bytes"]), STAGE_LIMITS["max_output_bytes"])
+    return limits
 
 
 def _limit_reasons(descriptor: Mapping[str, Any], entry: Mapping[str, Any], config: Mapping[str, Any]) -> list[str]:

@@ -162,14 +162,14 @@ def _write_result(path: Path, result: Mapping[str, Any]) -> None:
     _write_file(path, record_bytes(result), mode=0o640, exclusive=False)
 
 
-def load_remote_cpu_config(path: str | Path | None = None) -> tuple[dict[str, Any], list[str]]:
-    """The host's ``remote_cpu_workers_config.v1`` (``BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG``, 0640)."""
+def load_remote_cpu_config(path: str | Path | None = None, *, stage: str | None = None) -> tuple[dict[str, Any], list[str]]:
+    """The host's ``remote_cpu_workers_config.v1`` (``BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG``, 0640), for ``stage`` alone."""
     location = Path(path or os.environ.get(CONFIG_ENV) or DEFAULT_CONFIG_PATH)
     try:
         config = _read_private_json(location, forbidden_mode=0o027)
     except RemoteCpuAllocatorError as exc:
         return {}, [f"remote_cpu_config_invalid:{exc.code}"]
-    return config, config_blockers(config)
+    return config, config_blockers(config, stage=stage)
 
 
 def load_standing_authority(*, stage: str, now: float,
@@ -468,7 +468,8 @@ def _config_for(config: Mapping[str, Any], raw: Mapping[str, Any]) -> tuple[dict
     if raw.get("stage") != PROBE_STAGE:
         return dict(config), str(raw.get("stage"))
     execution = raw.get("execution") if isinstance(raw.get("execution"), Mapping) else {}
-    stage = next((name for name, entry in config["stages"].items() if entry["job"] == execution.get("job")), None)
+    jobs = {name: entry.get("job") for name, entry in config["stages"].items() if isinstance(entry, Mapping)}
+    stage = next((name for name, job in jobs.items() if job == execution.get("job")), None)
     if stage is None:
         raise RemoteCpuAllocatorError("remote_cpu_probe_stage_unknown")
     return _probe_config(config, stage), stage
@@ -739,7 +740,7 @@ def _probe_descriptor(action: _Action, stage: str, *, source: Mapping[str, Any],
     staged = publish_configured_scene_stream(
         write_stream=lambda sink: sink.write(request), digest=f"sha256:{digest}", size_bytes=len(request),
         filename=name, artifact_kind="remote-cpu-input", client=client, bucket=bucket)
-    limits = stage_limits(action.config, PROBE_STAGE)
+    limits = stage_limits(action.config, PROBE_STAGE, profile=stage)  # the probed stage's own budget and bound
     return build_descriptor(
         config=action.config, stage=PROBE_STAGE, mode="shadow", attempt=1,
         queue_row={"queue": STAGES[PROBE_STAGE]["queue"], "name": name, "envelope_digest": f"sha256:{digest}"},
@@ -938,7 +939,7 @@ def add_remote_cpu_job_arguments(commands: Any) -> None:
 
 
 def _run_action(args: argparse.Namespace, runtime: RemoteCpuRuntime, now: float) -> dict[str, Any]:
-    config, blockers = load_remote_cpu_config(runtime.config_path)
+    config, blockers = load_remote_cpu_config(runtime.config_path, stage=args.stage)
     if not blockers and args.stage not in config["stages"]:
         blockers = [f"remote_cpu_config_invalid:stage_missing:{args.stage}"]
     blockers = blockers or _connect(runtime, config)

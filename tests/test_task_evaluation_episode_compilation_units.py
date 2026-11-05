@@ -166,7 +166,8 @@ def test_paid_unit_has_no_exists_glob_and_never_compiles() -> None:
 def test_dispatcher_credential_is_loaded_only_by_the_paid_unit() -> None:
     holders = [unit.name for unit in sorted(SYSTEMD.iterdir()) if unit.is_file()
                and "remote-cpu-dispatcher" in unit.read_text(encoding="utf-8")]
-    assert holders == [f"{PAID}.service"]
+    # The team-scene stage's paid unit holds it too (tests/test_team_scene_packet_remote_units.py); no other unit.
+    assert holders == sorted([f"{PAID}.service", "blueprint-team-scene-packet-remote.service"])
     service = _unit(f"{PAID}.service")
     assert service.count(CREDENTIAL) == 1 and service.count("LoadCredential") == 1
     assert "LoadCredential" not in _unit(f"{NO_SPEND}.service")

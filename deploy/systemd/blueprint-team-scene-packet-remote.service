@@ -1,0 +1,76 @@
+[Unit]
+Description=Dispatch and collect remote Blueprint robot-team scene compilations on Cloud Run
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# Plan 14's lane, team_scene_packet stage: the paid unit.  It never compiles: it dispatches through the
+# canonical allocator subcommand (remote-cpu-job), follows, promotes, lands the compiled scene half where the
+# host compile would have written it, and tears down.  Its ExecCondition skips it unless the effective mode is
+# remote (BLUEPRINT_TEAM_SCENE_PACKET_EXECUTION set to a remote mode, or unset beside a config that names
+# team_scene_packet), or one of this stage's leases or markers is left to finish (the rollback drain).
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# The dispatcher's service-account key: root:root 0600 on the host, readable here only as
+# $CREDENTIALS_DIRECTORY/remote-cpu-dispatcher.  The no-spend team worker never loads it.
+LoadCredential=remote-cpu-dispatcher:/etc/blueprint/credentials/remote-cpu-dispatcher.json
+# Narrow writes instead of /var/lib/blueprint: the remote job records, the team scene halves it lands (the
+# registry's derived_profiles.packet_inputs.output_root on the production host), the disk ledger its landing
+# reserves, and the spend ledger's consumption and settlement.  The halves root is optional (-): absent, it is
+# created by the first team request's host compile and nothing lands, and a root the registry names elsewhere
+# is refused before anything is staged (remote_cpu_landing_root_unwritable), never after compute is paid.
+# It reads the queue, the inputs it stages and the capture's consent; the standing authority is read-only.
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs -/var/lib/blueprint/task-evaluation-inputs/team-scene-halves /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/spend-authority/consumed /var/lib/blueprint/spend-authority/remote-cpu-settled
+ReadOnlyPaths=/var/lib/blueprint/spend-authority/authorizations
+ReadOnlyPaths=-/etc/blueprint/remote-cpu-workers.json
+TasksMax=512
+LimitNOFILE=4096
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. It holds paid work and a money ledger:
+# -200, after batch jobs, before the money-safety units. Not yet measured on the
+# host: its dispatch, promotion and teardown are the episode remote unit's code
+# (up to 424M there), and landing a capture-447-scale half (1.07 GB) in 1 MiB
+# blocks peaked at 69M locally.
+MemoryHigh=1G
+MemoryMax=2G
+OOMScoreAdjust=-200
+CPUQuota=200%
+TimeoutStartSec=30min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/team-scene-packets
+Environment=BLUEPRINT_REMOTE_CPU_JOBS_ROOT=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs
+Environment=BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG=/etc/blueprint/remote-cpu-workers.json
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecCondition=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.team_scene_packet_remote_condition'
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && source_commit="$$(git rev-parse --verify HEAD^{commit})" && test -z "$$(git status --porcelain --untracked-files=no)" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.team_scene_packet_collector run --source-commit "$${source_commit}"'

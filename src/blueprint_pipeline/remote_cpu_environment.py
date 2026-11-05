@@ -46,6 +46,16 @@ COMPILE_DISTRIBUTIONS = (
     "typing-inspection", "usd-convert-gsplat", "usd-core", "webcolors",
 )
 DIGESTED_FIELDS = ("python_version_info", "golden_deflate", "golden_simd", "distributions")
+# Distributions only one stage's compile loads, measured the same way for that stage alone and recorded beside the
+# digest, never in it, so that adding one never invalidates another stage's recorded probe.  A stage's planner
+# compares its own row (``stage_distributions[<stage>]``) between the probed worker and the host.  The team
+# scene packet's compile loads rfc8785 (``cross_runtime_canonical_digest``, which ``team_embodiment``'s sealed
+# digests use), measured on 2026-11-03, and on a rigid task's scanned support scipy (``rigid_support_pad``'s
+# rest check solves its contact plane with ``scipy.optimize.linprog``) and charset-normalizer (scipy's array-API
+# shim star-imports numpy, whose ``numpy.f2py`` imports it when installed), measured on 2026-11-04; each from a
+# real fixture compile in a fresh interpreter
+# (``tests/test_team_scene_packet_remote.py::test_parity_set_covers_every_distribution_a_team_compile_loads``).
+STAGE_DISTRIBUTIONS = {"team_scene_packet": ("charset-normalizer", "rfc8785", "scipy")}
 
 
 def _digest(data: bytes) -> str:
@@ -169,6 +179,7 @@ def environment_record(*, cpuinfo_path: Path | None = None,
         "golden_deflate": golden_deflate(),
         "golden_simd": golden_simd(),
         "distributions": distribution_versions(distributions),
+        "stage_distributions": {stage: distribution_versions(names) for stage, names in STAGE_DISTRIBUTIONS.items()},
         "cpu_class": canonical_digest({"machine": platform.machine(), "numpy_simd": simd, "flags": flags})
         if simd is not None and source is not None else None,
         "informational": {

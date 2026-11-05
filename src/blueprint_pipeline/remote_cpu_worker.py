@@ -81,6 +81,7 @@ STAGE_REQUEST_SCHEMA_VERSION = "remote_cpu_worker_stage_request.v1"
 STAGE_HANDLERS: Mapping[str, str] = {
     PROBE_STAGE: "blueprint_pipeline.remote_cpu_worker_stage:run_environment_probe",
     "episode_compilation": "blueprint_pipeline.task_evaluation_episode_compilation_remote:run_episode_compilation_in_worker",
+    "team_scene_packet": "blueprint_pipeline.team_scene_packet_remote:run_team_scene_packet_in_worker",
 }
 EXIT_REFUSED = 2
 TRANSFER_TIMEOUT_SECONDS = 60.0

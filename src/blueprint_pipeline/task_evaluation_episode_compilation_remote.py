@@ -512,7 +512,8 @@ def plan_remote_compilation(
         references = _verified_references(envelope, input_root=Path(inputs).resolve(strict=True))
     except (TaskEvaluationEpisodeCompilationWorkerError, OSError):
         return HostDecision("remote_ineligible:envelope_invalid")
-    if not isinstance(config, Mapping) or config_blockers(config) or STAGE not in config.get("stages", {}):
+    if (not isinstance(config, Mapping) or config_blockers(config, stage=STAGE)
+            or STAGE not in config.get("stages", {})):
         return HostDecision("remote_ineligible:config_invalid")
     entry = config["stages"][STAGE]
     if _worker_path(Path(inputs), root) != PREPARED_REFERENCES:
@@ -644,7 +645,8 @@ def load_config(path: str | Path | None = None, environ: Mapping[str, str] | Non
     location = path or (os.environ if environ is None else environ).get(CONFIG_ENV) or DEFAULT_CONFIG_PATH
     try:
         config = _read_record(Path(location), forbidden_mode=0o027, maximum=CONFIG_MAX_BYTES)
-        return config if config is not None and not config_blockers(config) else None
+        # Judged for this stage alone: another stage's invalid entry never turns this one off.
+        return config if config is not None and not config_blockers(config, stage=STAGE) else None
     except Exception:  # noqa: BLE001 - review M1: deep nesting, a lone surrogate, an I/O error: no config, host
         return None
 

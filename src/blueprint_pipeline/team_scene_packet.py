@@ -692,7 +692,7 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
                            refused: Sequence[Mapping[str, Any]], subject_center: Sequence[float],
                            task_spec: Mapping[str, Any], support_top: float, revision: Mapping[str, Any],
                            collision_sha256: str, task_id: str, support_label: str,
-                           scope: Mapping[str, Any] | None) -> dict[str, Any]:
+                           scope: Mapping[str, Any] | None, offer: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """What the half records when no clear stance has the object in reach: the owner's proposal, a measurement
     due, or why neither.
 
@@ -701,7 +701,9 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
     fewest items (``robot_access_furniture.station_proposal``). Without it, and only when furniture
     plausibly blocks the nearer stances and the scene's review names some, the measurement is due
     (``measurement_due``, with its binding and most): Blueprint's own preparation spend, which the worker
-    runs; the site is never asked about it. Nothing here spends or changes the scene.
+    runs; the site is never asked about it. Nothing here spends or changes the scene. ``offer`` is that
+    measurement offer as the host already read it for ``scope`` (a remote compile, which cannot read the
+    intent's preparation: ``team_scene_packet_remote``); without it the offer is read here.
     """
 
     from .robot_access_furniture import MEASUREMENT_DUE, MODEL, PROPOSAL_SCHEMA, station_proposal
@@ -716,7 +718,8 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
         if not trigger["plausible"]:
             return {**base, "status": "not_proposed", "reason": "nearer_stances_not_blocked_off_the_support",
                     "why": why, "trigger": trigger}
-        offer = measurement_offer(scope, revision_digest=str(revision["revision_digest"]))
+        offer = (dict(offer) if offer is not None
+                 else measurement_offer(scope, revision_digest=str(revision["revision_digest"])))
         if offer["status"] != "available":
             return {**base, "status": "not_proposed", "reason": "measurement_" + str(offer["status"])[:80],
                     "why": why, "trigger": trigger}
@@ -863,7 +866,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            embodiment_models: Mapping[str, str | Path] | None = None,
                            owner_success_confirmation_scope: Mapping[str, Any] | None = None,
                            movable_furniture: Mapping[str, Any] | None = None,
-                           robot_access_scope: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                           robot_access_scope: Mapping[str, Any] | None = None,
+                           robot_access_offer: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Compile the revision's scene half under ``output_root`` and seal its team scene inputs.
 
     Each of ``embodiment_manifests`` (registered team bodies) also gets its own station on the same scene
@@ -879,7 +883,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     pick and place, the record proposes moving the fewest of those items that opens a stance within
     the arm's reach (``robot_access_removal``), and nothing else changes. Only the site owner's sealed
     approval of exactly that proposal, found under ``robot_access_scope`` (the request's own intent),
-    rebuilds the half without them (``_robot_access_applied``).
+    rebuilds the half without them (``_robot_access_applied``). ``robot_access_offer`` is the measurement
+    offer for ``robot_access_scope`` when the host already read it (``team_scene_packet_remote``).
     """
 
     from . import task_evaluation_configured_controls_deferred_inputs as deferred
@@ -1060,7 +1065,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                 subject_center=place["subject_center"], task_spec=task_spec, support_top=support_top,
                 revision=revision, collision_sha256=place["collision_sha256"], task_id=task_id,
                 support_label=str(adapter["source_documents"]["documents"]["support_plane"].get("publisher_label")
-                                  or ""), scope=robot_access_scope)
+                                  or ""), scope=robot_access_scope, offer=robot_access_offer)
             if access["status"] == "proposed" and robot_access_scope is not None:
                 applied = _robot_access_applied(
                     access, scope=robot_access_scope, physics_collision=physics_collision, root=root, place=place,
@@ -1223,48 +1228,84 @@ def recorded_station_search(path: str | Path | None, *, plan_digest: Any) -> dic
     return {"robot_station": dict(value["robot_station"]), "robot_station_search": dict(value["robot_station_search"])}
 
 
-def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenario_id: str,
-                       output_root: str | Path, fetcher: Callable[[Mapping[str, Any]], bytes] | None = None,
-                       **packet_inputs: Any) -> dict[str, Any]:
-    """Compile a completed source launch's published scene and record it where the team registry reads it.
+SCENE_DIRECTORY = "scene"
 
-    The launch's run root is also where its robot-free probe receipt is retained
-    (``robot_free_readiness_retention``), so it is the scene's probe root. A compile given the request's
-    own intent as ``robot_access_scope`` also reads what that intent's current preparation knows of its
-    movable furniture (``robot_access_measurement.furniture_for_scope``: the owner-approved sidecar, if any).
-    """
+
+def fetch_team_scene_sources(*, run_root: str | Path, output_root: str | Path,
+                             fetcher: Callable[[Mapping[str, Any]], bytes] | None = None
+                             ) -> tuple[dict[str, Any], dict[str, Path]]:
+    """A completed source launch's published revision, and its documents fetched under ``output_root``."""
 
     from .robot_free_readiness_retention import _revision
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .task_evaluation_scene_rigid_robot_free_readiness import fetch_revision_documents
-    from .team_candidate_quick10_registry import write_derived_profile
 
     result, _receipt, _zero = _validate_source(Path(run_root))
     revision = _revision(result["configured_scene_revision_reference"],
                          revision_digest=result["configured_scene_revision_digest"], fetcher=fetcher)
-    root = Path(output_root)
-    documents = fetch_revision_documents(revision=revision, output_root=root, fetcher=fetcher)
+    documents = fetch_revision_documents(revision=revision, output_root=Path(output_root), fetcher=fetcher)
+    return revision, documents
+
+
+def with_movable_furniture(packet_inputs: Mapping[str, Any], *, revision: Mapping[str, Any]) -> dict[str, Any]:
+    """``packet_inputs`` with what the request's intent knows of its scene's movable furniture, read on the host.
+
+    A compile given the request's own intent as ``robot_access_scope`` also reads what that intent's current
+    preparation knows of its movable furniture (``robot_access_measurement.furniture_for_scope``: the
+    owner-approved sidecar, if any), unless the caller already passed ``movable_furniture``.
+    """
+
+    packet_inputs = dict(packet_inputs)
     if packet_inputs.get("robot_access_scope") is not None and "movable_furniture" not in packet_inputs:
         from .robot_access_measurement import furniture_for_scope
 
         known = furniture_for_scope(packet_inputs["robot_access_scope"], revision_digest=str(revision["revision_digest"]))
         # The offer to measure is made only when a carry fails, so it is read then (``_robot_access_proposal``).
-        packet_inputs = {**packet_inputs, "movable_furniture": {key: value for key, value in known.items()
-                                                                if key != "offer"}}
-    compiled = materialize_team_scene(revision=revision, documents=documents, output_root=root / "scene",
-                                      **packet_inputs)
+        packet_inputs["movable_furniture"] = {key: value for key, value in known.items() if key != "offer"}
+    return packet_inputs
+
+
+def record_team_scene(compiled: Mapping[str, Any], *, run_root: str | Path, capture_root: str | Path,
+                      scenario_id: str, scene_revision_digest: str) -> dict[str, Any]:
+    """Record a compiled scene half where the team registry reads it, and queue its robot-free probe.
+
+    The launch's run root is also where its robot-free probe receipt is retained
+    (``robot_free_readiness_retention``), so it is the scene's probe root.
+    """
+
+    from .team_candidate_quick10_registry import write_derived_profile
+
     descriptor = _read(Path(capture_root) / "capture_descriptor.json", "team_scene_capture_descriptor_invalid")
     written = write_derived_profile({
         "capture_root": str(Path(capture_root).resolve()), "scene_id": str(descriptor.get("scene_id") or ""),
         "task_id": compiled["task_id"], "scenario_id": scenario_id,
         "robot_free_probe_root": str(Path(run_root).resolve()),
-        "scene_revision_digest": revision["revision_digest"], "team_scene_inputs_path": compiled["path"]})
+        "scene_revision_digest": scene_revision_digest, "team_scene_inputs_path": compiled["path"]})
     probe = {"status": "profile_not_written", "queued": False}
     if written.get("status") == "written":
         from .rigid_robot_free_probe_runner import enqueue_rigid_robot_free_probe
 
         probe = enqueue_rigid_robot_free_probe(capture_root)
     return {**compiled, "registry": written, "robot_free_probe": probe}
+
+
+def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenario_id: str,
+                       output_root: str | Path, fetcher: Callable[[Mapping[str, Any]], bytes] | None = None,
+                       **packet_inputs: Any) -> dict[str, Any]:
+    """Compile a completed source launch's published scene and record it where the team registry reads it.
+
+    Three steps, each its own function so a remote CPU worker can run the middle one
+    (``team_scene_packet_remote``): fetch the revision and its documents under ``output_root`` (and what the
+    intent knows of its movable furniture, ``with_movable_furniture``), compile ``output_root/scene``, record
+    the derived row.
+    """
+
+    root = Path(output_root)
+    revision, documents = fetch_team_scene_sources(run_root=run_root, output_root=root, fetcher=fetcher)
+    compiled = materialize_team_scene(revision=revision, documents=documents, output_root=root / SCENE_DIRECTORY,
+                                      **with_movable_furniture(packet_inputs, revision=revision))
+    return record_team_scene(compiled, run_root=run_root, capture_root=capture_root, scenario_id=scenario_id,
+                             scene_revision_digest=revision["revision_digest"])
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1292,14 +1333,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "CLAIM_CEILING",
     "RECORD_FILENAME",
+    "SCENE_DIRECTORY",
     "SCHEMA",
     "STATION_FOOTPRINT_HALF_EXTENT_M",
     "TeamScenePacketError",
+    "fetch_team_scene_sources",
     "materialize_team_scene",
     "prepare_team_scene",
     "read_team_scene_inputs",
+    "record_team_scene",
     "recorded_embodiment_stations",
     "recorded_station_search",
+    "with_movable_furniture",
 ]
 
 

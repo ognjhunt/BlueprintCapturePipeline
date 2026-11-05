@@ -70,6 +70,7 @@ EVIDENCE_HOT_ON_VOLUME=(
   task-evaluation-inputs/g1-team-campaign-registry.json
   task-evaluation-inputs/g1-sonic-assets                 # retained G1 asset identity; never evicted
   task-evaluation-inputs/g1-team-policy-approvals        # operator approvals read by paid dispatch
+  task-evaluation-inputs/team-scene-halves               # remote team-scene halves awaiting landing
   'pubsub-handoffs/*/scenes/*.retired.v1.json'
 )
 
@@ -112,6 +113,8 @@ WORKER_UNITS=(
   blueprint-completed-replay-cache-gc.timer
   blueprint-scene-object-discovery.path
   blueprint-team-scene-packet.path
+  blueprint-team-scene-packet-remote.path
+  blueprint-team-scene-packet-remote.timer
   blueprint-beta-policy-screening.timer
   blueprint-embodiment-preparation.path
   blueprint-embodiment-preparation.timer
@@ -147,6 +150,7 @@ WORKER_UNITS=(
   blueprint-completed-replay-cache-gc.service
   blueprint-scene-object-discovery.service
   blueprint-team-scene-packet.service
+  blueprint-team-scene-packet-remote.service
   blueprint-beta-policy-screening.service
   blueprint-embodiment-preparation.service
   blueprint-task-evaluation-launch-reconciler.service

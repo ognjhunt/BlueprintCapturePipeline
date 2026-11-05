@@ -624,6 +624,15 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     team_scene_path.write_text(
         "[Path]\nPathExistsGlob=/team-scene-packets/pending/*.json\n", encoding="utf-8"
     )
+    team_remote_units = []
+    for suffix, body in (
+        (".service", "[Service]\nExecStart=/usr/bin/blueprint-collect-remote-team-scenes\n"),
+        (".timer", "[Timer]\nOnUnitInactiveSec=60s\n"),
+        (".path", "[Path]\nPathChanged=/remote-cpu-jobs/handoffs/team_scene_packet\n"),
+    ):
+        team_remote_unit = unit_dir / f"blueprint-team-scene-packet-remote{suffix}"
+        team_remote_unit.write_text(body, encoding="utf-8")
+        team_remote_units.append(team_remote_unit)
     screening_service = unit_dir / "blueprint-beta-policy-screening.service"
     screening_service.write_text(
         "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-beta-policy-screening\n", encoding="utf-8"
@@ -782,6 +791,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         discovery_path,
         team_scene_service,
         team_scene_path,
+        *team_remote_units,
         screening_service,
         screening_timer,
         progression_service,
@@ -871,6 +881,9 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.service",
         "blueprint-team-scene-packet.path",
+        "blueprint-team-scene-packet-remote.service",
+        "blueprint-team-scene-packet-remote.timer",
+        "blueprint-team-scene-packet-remote.path",
         "blueprint-beta-policy-screening.service",
         "blueprint-beta-policy-screening.timer",
         "blueprint-task-evaluation-configured-controls-progression.service",
@@ -935,6 +948,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-episode-compilation.timer",
         "blueprint-task-evaluation-episode-compilation-remote.timer",
+        "blueprint-team-scene-packet-remote.timer",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.timer",
@@ -952,6 +966,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-team-evaluation-runner.path",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-task-evaluation-episode-compilation-remote.path",
+        "blueprint-team-scene-packet-remote.path",
     )
 
 
