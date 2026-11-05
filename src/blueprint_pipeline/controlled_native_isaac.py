@@ -41,7 +41,8 @@ def build_controlled_native_environment(*, runtime_root: Path, configuration: Ma
     from .native_task_arena_device_readback import read_native_task_arena_device_binding
     from .native_franka_pose_servo import NativeFrankaDifferentialIkServo
     from .native_task_arena_readback import NativeRigidTaskArenaReadback
-    from .native_task_episode_environment import build_native_task_episode_environment, NativeRigidScoringEnvironment
+    from .native_task_episode_environment import (
+        build_native_task_episode_environment, NativeRigidScoringEnvironment, policy_gripper_pad_binding)
     from .native_task_nurec_render_setup import prepare_site_appearance_renderer, appearance_render_path_from_plan
 
     packet = runtime_root / "native_task_packet"
@@ -96,14 +97,16 @@ def build_controlled_native_environment(*, runtime_root: Path, configuration: Ma
             raise ValueError("controlled_native_gripper_not_measured")
         env.reset(seed=seed)
         servo = NativeFrankaDifferentialIkServo(env=env, robot=robot, gripper_convention=gripper)
-        readback = NativeRigidTaskArenaReadback(built)
+        # Gripper state, scored width and grasp frame read the probe's pads, never the body origins.
+        pads = policy_gripper_pad_binding(servo)
+        readback = NativeRigidTaskArenaReadback(built, **pads)
         def to_tensor(value):
             if hasattr(value, "detach"):
                 return value
             import warp as wp
             return wp.to_torch(value)
         native, native_receipt = build_native_task_episode_environment(built=built, gripper_convention=gripper,
-            servo=servo, task_readback=readback, to_tensor=to_tensor)
+            servo=servo, task_readback=readback, to_tensor=to_tensor, **pads)
         native = NativeRigidScoringEnvironment(environment=native, task_readback=readback, task_spec=plan["task_spec"])
         native.begin_episode()
         from .adp009d_isaac_episode_adapter import DROID_ARM_JOINT_NAMES

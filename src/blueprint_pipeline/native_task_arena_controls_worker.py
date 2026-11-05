@@ -3381,6 +3381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from blueprint_pipeline.native_task_episode_environment import (
             NativeRigidScoringEnvironment,
             build_native_task_episode_environment,
+            policy_gripper_pad_binding,
         )
 
         _announce("preconstruction_device_binding")
@@ -3437,6 +3438,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         servo = NativeFrankaDifferentialIkServo(
             env=env, robot=robot, gripper_convention=gripper
         )
+        # The scored gripper width reads the pads the probe sealed, never the
+        # inner-finger body origins, which run the opposite way.  The rigid
+        # readback keeps its grasp frame: the control targets are written in
+        # the adapter's finger-midpoint frame and gate phase arrival on it.
+        pads = policy_gripper_pad_binding(servo)
         if task_kind == "articulated_open_close":
             # The task sampler's separation and retreat verdicts must use the
             # same measured physical-pad midpoint that the servo controls.
@@ -3563,6 +3569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ]
                     if isinstance(row, Mapping) and row.get("mode") == "ik_pose"
                 ],
+                **pads,
             )
         )
         if graph_rigid and downstream_diagnostic_request.get("enabled") is True:

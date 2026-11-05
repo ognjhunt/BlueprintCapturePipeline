@@ -759,6 +759,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         from blueprint_pipeline.native_task_episode_environment import (
             build_native_task_episode_environment,
+            policy_gripper_pad_binding,
         )
 
         dependencies = preflight_native_dependency_matrix(
@@ -810,12 +811,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             if scene_plan["task_kind"] == "articulated_open_close"
             else None
         )
+        # DROID's gripper state and the scored width read the probe's pads,
+        # never the inner-finger body origins, which run the opposite way.
         episode_environment, environment_receipt = build_native_task_episode_environment(
             built=built,
             gripper_convention=gripper,
             servo=servo,
             task_readback=task_readback,
             to_tensor=_to_tensor,
+            **policy_gripper_pad_binding(servo),
         )
         result["episode_environment"] = environment_receipt
         groot_worker_identity_receipt = None

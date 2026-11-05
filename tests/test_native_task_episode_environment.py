@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
+import inspect
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -627,6 +630,51 @@ def test_policy_gripper_pad_binding_refuses_a_servo_without_pads(servo) -> None:
         match="native_task_episode_gripper_pad_readback_missing",
     ):
         module.policy_gripper_pad_binding(servo)
+
+
+def pad_binding_wiring(module: Any, function_name: str) -> dict[str, list[bool]]:
+    """For one worker function, whether each named call carries the servo's pads.
+
+    The Isaac workers bind the episode seam inside one long simulator function
+    that cannot run off-GPU.  This reads that function's own calls: an entry is
+    True when the call passes ``**policy_gripper_pad_binding(servo)`` (directly
+    or through a name assigned from it).  That helper refuses a servo without a
+    pad readback, so a True entry also means the site fails closed.
+    """
+
+    def is_binding(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "policy_gripper_pad_binding"
+            and [ast.unparse(arg) for arg in node.args] == ["servo"]
+            and not node.keywords
+        )
+
+    function = next(
+        node for node in ast.walk(ast.parse(inspect.getsource(module)))
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    names = {
+        target.id
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign) and is_binding(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    calls: dict[str, list[bool]] = {}
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        calls.setdefault(str(name), []).append(any(
+            keyword.arg is None and (
+                is_binding(keyword.value)
+                or (isinstance(keyword.value, ast.Name) and keyword.value.id in names)
+            )
+            for keyword in node.keywords
+        ))
+    return calls
 
 
 def test_articulated_factory_requires_native_task_readback() -> None:

@@ -844,3 +844,16 @@ def test_media_gap_reason_falls_back_to_phase_when_blockers_empty(
 
     assert gap is not None
     assert gap["media_gap"]["reason"] == "failed_at_inputs_verified"
+
+
+def test_policy_worker_reads_droid_gripper_state_from_the_servo_pads() -> None:
+    """DROID's gripper_position read the body origins: 1.0 open, 0.25 closed."""
+
+    from blueprint_pipeline import native_task_arena_policy_worker as worker
+    from tests.test_native_task_episode_environment import pad_binding_wiring
+
+    calls = pad_binding_wiring(worker, "main")
+
+    assert calls["build_native_task_episode_environment"] == [True]
+    # No rigid task readback is built on this path, so none can miss the pads.
+    assert "NativeRigidTaskArenaReadback" not in calls
