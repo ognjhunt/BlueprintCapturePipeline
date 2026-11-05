@@ -9,6 +9,20 @@ batched Pipeline deploy) · **not started**.
 
 Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
 
+## Deploys on 2026-11-05 (capture-447 screening)
+
+- Two cloud sessions share the `cloud-scene-runs` door token today. Both merge and deploy on capture-447, so check `door requests` and `deploys.recent_receipts` before deploying.
+- `2f688aa98` (14:48Z request, live 15:22Z): $30 site allowance, harness retries 6, offer-taken retry (#3395); website scene configuration from its own tick (#3196).
+- `c5e03634a` (live about 16:27Z, the other session): screening review videos (#3396). WebApp #1218 had been live since 16:11Z.
+- `63fa4d739` (16:48Z request, live 17:01Z, this session). It shipped as a money fix while pi05 was running: without a door hold on the screening timer (`hold_unit_profile_refused`), the next candidate (cosmos3, same OpenPI client) would have launched on the bug within a tick. It carried:
+  - the OpenPI websocket `ping_timeout` fix (#3399);
+  - withdrawal deletion of screening work (#3397);
+  - every run keeps its review videos, plus the backfill (#3398);
+  - the Cloud Run team-scene lane, inert until configured (#3331).
+
+  The re-plan froze 63fa4d739 for cosmos3, molmoact2 and pi0_droid_jointpos_100k_polaris. WebApp #1220 (practice-run cache privacy fixes) had been live since 16:30Z.
+- Merged after it, not yet deployed: #3401 (harness retry limit 7, the other session).
+
 ## Operating notes (2026-11-02)
 
 - A second operator (the cloud session) uses the shared `cloud-scene-runs` door token. It deployed `b631b23fa` at 14:05:57Z and `ed6d0befb` at 15:18Z. This session makes no Pipeline deploys while it drives capture-447; merged fixes ship with the next deploy. At 15:32Z no paid launch lock was held.
