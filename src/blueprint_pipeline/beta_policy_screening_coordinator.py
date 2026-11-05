@@ -345,8 +345,10 @@ HARNESS_FAILURE_BLOCKERS = frozenset({"beta_screening_native_result_missing_or_i
 #: at a time until a run gets through, and a run stops at its first cell that ran no policy.
 #: Harness failures are ours, not the policy's: 2026-11-04 took three fixes in a row (Pink
 #: startup, the RoboLab import closure), each shown by the run before it. Raised from 4 on
-#: 2026-11-05 (owner approval) so candidates whose earlier fixes landed can be proven out.
-HARNESS_RETRY_LIMIT = 6
+#: 2026-11-05 (owner approval) so candidates whose earlier fixes landed can be proven out, and to
+#: 7 the same day: pi05's sixth and seventh runs both failed on the OpenPI client's ``ping_timeout``
+#: keyword before its fix shipped, so it gets one run on the fixed client.
+HARNESS_RETRY_LIMIT = 7
 #: A campaign freezes one commit, so a harness failure in it would fail its other candidates the
 #: same way: they are held, unspent, and planned again after the next deploy. Matches the WebApp's
 #: "launch" category ("Could not start in our simulator. This is ours to fix.").
