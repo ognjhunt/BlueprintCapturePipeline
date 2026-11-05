@@ -302,7 +302,7 @@ def test_full_ten_cell_runs_reconcile_to_completed_estimates(tmp_path):
     assert [(row["status"], row["episodes_scored"], row["episodes_succeeded"], row["episodes_void"])
             for row in final["candidates"]] == [("completed", 10, 7, 0), ("completed", 10, 10, 0)]
     # Settled at each run's own ledger estimate, not the $4 reservation.
-    assert final["budget"] == {"currency": "USD", "limit_usd": "15", "committed_upper_bound_usd": "0.88",
+    assert final["budget"] == {"currency": "USD", "limit_usd": "30", "committed_upper_bound_usd": "0.88",
                                "spent_upper_bound_usd": "0.88", "reserved_usd": "0"}
     assert all("episodes_not_returned" not in row["summary"] for row in rows.values())
     for publication in delivered:

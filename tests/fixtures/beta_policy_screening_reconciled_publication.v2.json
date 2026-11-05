@@ -2,7 +2,7 @@
   "budget": {
     "committed_upper_bound_usd": "0.88",
     "currency": "USD",
-    "limit_usd": "15",
+    "limit_usd": "30",
     "reserved_usd": "0",
     "spent_upper_bound_usd": "0.88"
   },
@@ -18,7 +18,7 @@
       "episodes_scored": 10,
       "episodes_succeeded": 7,
       "episodes_void": 0,
-      "session_result_digest": "sha256:510270f5c1d070d2c6667fe3862b0ef26e7a4c0c414f2c8ff60b4b32d1acfd35",
+      "session_result_digest": "sha256:b37e78131acdd863cef2d210d54959ed49232190b9194dfe3268f6c06b21ff2f",
       "status": "completed",
       "success_rate": 0.7
     },
@@ -32,7 +32,7 @@
       "episodes_scored": 10,
       "episodes_succeeded": 10,
       "episodes_void": 0,
-      "session_result_digest": "sha256:94ea0dee2afc6d7b5fc73bde6203c26047735869d45043d877e3a45dbdf39443",
+      "session_result_digest": "sha256:ae45345f03adfbaea3b507633d9a1b7cf49d2df2ec1404a5600738d88965988f",
       "status": "completed",
       "success_rate": 1.0
     }
@@ -42,9 +42,9 @@
   "execution_operator": {
     "kind": "blueprint"
   },
-  "generated_at": "2026-11-04T22:51:40.536163+00:00",
-  "plan_digest": "sha256:566749082ff2cc8d203b5c594cff02c7e9cda0b9315c9035ee9326d2e8e92847",
-  "publication_digest": "sha256:84a217a2d64d927690671bbf3a3be8594604aeeeeab8c78c1848c29f18e95cf0",
+  "generated_at": "2026-11-05T13:32:46.763561+00:00",
+  "plan_digest": "sha256:de8b742a4985aed246bd5d33f8713f047914a1f46aed324f8ced01f9cf80c220",
+  "publication_digest": "sha256:3e2363e872dfec3521e5cbca347de23f6ce6d7f1b2ac22638a5cbde2bb458505",
   "purpose": "job_evaluation",
   "revision": 13,
   "scenario_plan_digest": "sha256:a0edfce03c98ac3682c566654054c26aa1b2a1364cb94c2b0386adac7d50d322",

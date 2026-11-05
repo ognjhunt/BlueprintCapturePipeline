@@ -332,7 +332,7 @@ class WebApp:
                                "reserved_usd"}
         limit, committed, spent, reserved = (Decimal(budget[key]) for key in (
             "limit_usd", "committed_upper_bound_usd", "spent_upper_bound_usd", "reserved_usd"))
-        assert limit <= 15 and spent + reserved == committed <= limit, "Screening must retain the $15 ceiling"
+        assert limit <= coordinator.SITE_LIMIT and spent + reserved == committed <= limit, "Screening must retain the site ceiling"
         previous = self.accepted.get(value["campaign_id"])
         if previous is not None and previous["publication_digest"] != value["publication_digest"]:
             assert value["revision"] > previous["revision"], "screening_revision_conflict"
@@ -364,7 +364,7 @@ def test_a_finished_attempt_settles_in_the_same_write_that_commits_it(tmp_path):
     assert site_budget(tmp_path)["spent_upper_bound_usd"] == "0.9"
     # No publication ever showed either run at its $4 cap.
     assert webapp.accepted["campaign-1"]["budget"] == {
-        "currency": "USD", "limit_usd": "15", "committed_upper_bound_usd": "0.9", "spent_upper_bound_usd": "0.9",
+        "currency": "USD", "limit_usd": "30", "committed_upper_bound_usd": "0.9", "spent_upper_bound_usd": "0.9",
         "reserved_usd": "0"}
 
 
@@ -445,7 +445,7 @@ def test_retroactive_settlement_frees_the_site_and_every_publication_stays_accep
     assert site_budget(tmp_path)["reserved_usd"] == "11"
     webapp.deliver(tmp_path)
     assert webapp.accepted["campaign-2"]["budget"] == {
-        "currency": "USD", "limit_usd": "15", "committed_upper_bound_usd": "12.35",
+        "currency": "USD", "limit_usd": "30", "committed_upper_bound_usd": "12.35",
         "spent_upper_bound_usd": "1.35", "reserved_usd": "11"}
     # The newest publication never understates the real $12.35 commitment.
     assert webapp.latest["campaign_id"] == "campaign-2"
@@ -472,10 +472,10 @@ def test_a_campaign_with_a_floor_publishes_the_real_total_above_it():
         return {"campaigns": {"campaign-1": {**state, "candidates": rows}}}
 
     assert coordinator._publication_budget(ledger_with("1.35", None), state) == {
-        "currency": "USD", "limit_usd": "15", "committed_upper_bound_usd": "12", "spent_upper_bound_usd": "12",
+        "currency": "USD", "limit_usd": "30", "committed_upper_bound_usd": "12", "spent_upper_bound_usd": "12",
         "reserved_usd": "0"}
     assert coordinator._publication_budget(ledger_with("1.35", "13"), state) == {
-        "currency": "USD", "limit_usd": "15", "committed_upper_bound_usd": "14.35", "spent_upper_bound_usd": "12",
+        "currency": "USD", "limit_usd": "30", "committed_upper_bound_usd": "14.35", "spent_upper_bound_usd": "12",
         "reserved_usd": "2.35"}
     # Spend past the floor publishes as it is.
     assert coordinator._publication_budget(ledger_with("13", None), state)["spent_upper_bound_usd"] == "13"
