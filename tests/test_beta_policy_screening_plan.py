@@ -123,7 +123,7 @@ def test_aggregate_budget_defers_candidates_instead_of_multiplying_allowance():
     # Unfunded runnable rows wait, frozen, for money a selected row releases before spend.
     assert all(row["status"] == "waitlisted" and row["max_cost_usd"] == "2.00" for row in value["candidates"][7:])
     with pytest.raises(BetaPolicyScreeningPlanError, match="site_budget_exceeded"):
-        plan(budget_usd="15.01")
+        plan(budget_usd="30.01")
     # A smaller plan budget defers what it could never fund and waitlists the rest.
     small = plan(40, "2.00", budget_usd="3.00")
     assert [row["status"] for row in small["candidates"][:3]] == ["selected", "waitlisted", "waitlisted"]

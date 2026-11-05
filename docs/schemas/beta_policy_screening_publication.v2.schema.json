@@ -339,6 +339,104 @@
     "purpose": {
       "const": "job_evaluation"
     },
+    "review_videos": {
+      "description": "Optional. Each completed candidate's practice runs (episodes in plan order) with their outcome and retained review videos, for the job owner to watch. Videos are served view-only through the signed Pipeline read by capture and digest; no path, URL or reason code is published. Absent when no candidate has retained videos.",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "maxLength": 192,
+            "minLength": 1,
+            "type": "string"
+          },
+          "manifest_digest": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "practice_runs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "cell_id": {
+                  "maxLength": 192,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "outcome": {
+                  "enum": [
+                    "success",
+                    "failure",
+                    "void"
+                  ]
+                },
+                "videos": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "camera": {
+                        "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                        "type": "string"
+                      },
+                      "duration_seconds": {
+                        "maximum": 86400,
+                        "minimum": 0,
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "phase": {
+                        "enum": [
+                          "run",
+                          "setup_check"
+                        ]
+                      },
+                      "sha256": {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      "size_bytes": {
+                        "maximum": 67108864,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "sha256",
+                      "camera",
+                      "phase",
+                      "size_bytes",
+                      "duration_seconds"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 80,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "cell_id",
+                "outcome",
+                "videos"
+              ],
+              "type": "object"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "manifest_digest",
+          "practice_runs"
+        ],
+        "type": "object"
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "type": "array"
+    },
     "revision": {
       "minimum": 1,
       "type": "integer"

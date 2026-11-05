@@ -10,7 +10,7 @@ import argparse
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -493,7 +493,10 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
             _require(intent.get('authenticated_issuer') in set(config['trusted_clients']), 'owner_intent_invalid')
             intake.validate_request(intent['request'], now=intent['accepted_at_epoch'])
             if preparation_only(directory=intent_path.parent, intent=intent):
-                rows.append({'status': 'scene_preparation_only', 'intent_id': intent_id})
+                # The digest lets the activation pass leave this Website job to
+                # its own scene progression tick (one writer of its state).
+                rows.append({'status': 'scene_preparation_only', 'intent_id': intent_id,
+                             'intent_digest': intent['intent_digest']})
                 continue
             if catalog is None:
                 catalog = resolve_robot_catalog(_sealed(Path(config['robot_catalog_path']), 'catalog_digest'),
@@ -555,6 +558,9 @@ class ProgressionOwnerScope:
     #: preparations are invisible to activation (A4). None -> legacy: fall back to
     #: the caller's context value.
     owned_preparation_queue_root: str | None = None
+    #: Website (scene-preparation-only) intents. Their scene progression tick stages
+    #: the activation and submits the launch, so this worker must not write them.
+    scene_progression_intent_digests: set[str] = field(default_factory=set)
 
     def blocked_report(self, schema_version: str) -> dict[str, Any]:
         return {"schema_version": schema_version, "status": "blocked", "rows": self.rows,
@@ -575,7 +581,9 @@ class ProgressionOwnerScope:
             activation_queue_root=context["activation_queue_root"], progression_root=context["progression_root"],
             repo_root=context.get("repo_root"), webapp_secret_file=context.get("webapp_secret_file"),
             webapp_endpoint=str(context.get("webapp_endpoint") or activation.DEFAULT_WEBAPP_ENDPOINT),
-            **({"blocked_scene_keys": self.blocked_scene_keys} if self.blocked_scene_keys else {}))
+            **({"blocked_scene_keys": self.blocked_scene_keys} if self.blocked_scene_keys else {}),
+            **({"scene_progression_intent_digests": self.scene_progression_intent_digests}
+               if self.scene_progression_intent_digests else {}))
 
     def run_blocked(self, run_root: Path) -> bool:
         if not self.blocked_scene_keys:
@@ -628,8 +636,11 @@ def progression_owner_scope(expected_production_commit: str) -> ProgressionOwner
     keys = {tuple(row["blocked_scene_key"]) for row in rows if row.get("blocked_scene_key")}
     unresolved = any(row.get("scope_unresolved") or
         (row["status"] == "controls_autoprovision_refused" and not row.get("blocked_scene_key")) for row in rows)
+    website = {str(row["intent_digest"]) for row in rows
+               if row.get("status") == "scene_preparation_only" and row.get("intent_digest")}
     return ProgressionOwnerScope(rows, keys, unresolved,
-                                 owned_preparation_queue_root=owned_preparation_queue_root)
+                                 owned_preparation_queue_root=owned_preparation_queue_root,
+                                 scene_progression_intent_digests=website)
 
 
 def owner_authority_blocker(config_path: str | Path, *, scene_intent_digest: str,

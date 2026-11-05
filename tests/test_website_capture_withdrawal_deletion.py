@@ -326,6 +326,23 @@ def test_deletion_waits_for_a_running_preview_step_and_then_holds_it_off(world, 
     assert not (job_dir / preview.JOB_FILE).exists() and not (job_dir / preview.LOCK_FILE).exists()
 
 
+def test_deletion_waits_for_a_review_video_retention_pass_and_then_deletes_its_videos(world):
+    import fcntl
+    from blueprint_pipeline import beta_screening_review_videos as videos
+    base = world["capture"] / "pipeline" / videos.DIRNAME
+    (base / "screen-0123/videos").mkdir(parents=True)
+    (base / videos.LOCK_NAME).touch()
+    (base / "screen-0123/videos/00-run-external.mp4").write_bytes(b"synthetic render")
+    plan = _plan(world)
+    with (base / videos.LOCK_NAME).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with pytest.raises(deletion.WithdrawalDeletionError, match="review_videos_busy"):
+            _apply(world, plan)
+    assert world["store"].deleted == []
+    _apply(world, plan)
+    assert not (base / "screen-0123/videos/00-run-external.mp4").exists() and not (base / videos.LOCK_NAME).exists()
+
+
 def test_deletion_holds_every_revision_lock_and_releases_earlier_locks_on_busy_refusal(world, monkeypatch):
     import fcntl
     from blueprint_pipeline.website_atlas_preview_store import JOB_FILE, LOCK_FILE

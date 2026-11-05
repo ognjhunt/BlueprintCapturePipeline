@@ -57,7 +57,9 @@ ATTEMPT_DIR_FIELD = "attempt_dir"
 ATTEMPT_POINTER_SCHEMA = "blueprint.beta_policy_screening_attempt_pointer.v1"
 LEDGER_SCHEMA = "blueprint.beta_policy_screening_ledger.v1"
 LEDGER_FILENAME = "screening_ledger.v1.json"
-SITE_LIMIT = Decimal("15")
+#: The site's screening allowance across its campaigns (raised from $15 on 2026-11-05, owner
+#: approval). Each website job's ceiling still bounds what a job spends in all.
+SITE_LIMIT = Decimal("30")
 CAPACITY_RETRY_SECONDS = 60
 CAPACITY_WAIT_BLOCKER = "beta_screening_waiting_for_capacity"
 # No rentable GPU met the run's price, driver and region rules when the allocator searched. Nothing
@@ -342,8 +344,9 @@ HARNESS_FAILURE_BLOCKERS = frozenset({"beta_screening_native_result_missing_or_i
 #: so it is bounded: only after a deploy, inside the site's existing allowance, one candidate
 #: at a time until a run gets through, and a run stops at its first cell that ran no policy.
 #: Harness failures are ours, not the policy's: 2026-11-04 took three fixes in a row (Pink
-#: startup, the RoboLab import closure), each shown by the run before it.
-HARNESS_RETRY_LIMIT = 4
+#: startup, the RoboLab import closure), each shown by the run before it. Raised from 4 on
+#: 2026-11-05 (owner approval) so candidates whose earlier fixes landed can be proven out.
+HARNESS_RETRY_LIMIT = 6
 #: A campaign freezes one commit, so a harness failure in it would fail its other candidates the
 #: same way: they are held, unspent, and planned again after the next deploy. Matches the WebApp's
 #: "launch" category ("Could not start in our simulator. This is ours to fix.").
@@ -377,6 +380,31 @@ def _harness_failures(ledger: Mapping[str, Any], site_id: str, candidate_id: str
 def _harness_retry_allowed(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> bool:
     """Whether this site's candidate may be planned again: at most ``HARNESS_RETRY_LIMIT`` retries."""
     return 0 < _harness_failures(ledger, site_id, candidate_id) <= HARNESS_RETRY_LIMIT
+
+
+def _dropped_harness_retries(ledger: Mapping[str, Any], state: Mapping[str, Any],
+                             plan: Mapping[str, Any]) -> list[str]:
+    """Candidates an earlier plan in this campaign's chain listed, and this plan does not.
+
+    A re-plan keeps only unspent rows and harness failures with a retry left, so a
+    candidate whose retries ran out leaves the chain. When ``HARNESS_RETRY_LIMIT`` is
+    raised (2026-11-05, on the owner's approval) such a candidate may be retried again.
+    It counts here only if the last row the chain holds for it is a harness failure
+    (never a result) and the site's retry bound now allows it.
+    """
+    listed = {candidate["candidate_id"] for candidate in plan["candidates"]}
+    latest: dict[str, Mapping[str, Any]] = {}
+    seen: set[str] = set()
+    previous = state.get("supersedes")
+    while isinstance(previous, str) and previous not in seen and previous in ledger["campaigns"]:
+        seen.add(previous)
+        earlier = ledger["campaigns"][previous]
+        for candidate_id, row in earlier["candidates"].items():
+            latest.setdefault(candidate_id, row)
+        previous = earlier.get("supersedes")
+    return sorted(candidate_id for candidate_id, row in latest.items()
+                  if candidate_id not in listed and _harness_failed(row)
+                  and _harness_retry_allowed(ledger, state["site_id"], candidate_id))
 
 
 def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any], candidate_id: str) -> bool:
@@ -423,6 +451,13 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
                 and frozen not in (None, implementation_commit) and not _spent(row)
                 and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < SITE_LIMIT):
             stale = True
+    # A candidate whose retries ran out left the chain; a raised retry bound admits it again
+    # at the next deploy, once (the plan that re-admits it freezes the new commit).
+    frozen_commits = {(candidate.get("execution_spec") or {}).get("implementation_commit")
+                      for candidate in plan["candidates"]} - {None}
+    dropped = (_dropped_harness_retries(ledger, state, plan)
+               if frozen_commits and implementation_commit not in frozen_commits else [])
+    stale = stale or bool(dropped)
     if not stale and scene_half is not None:
         from .beta_policy_screening_scene_half import planned_half
 
@@ -434,7 +469,7 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
     return [candidate["candidate_id"] for candidate in plan["candidates"]
             if not _spent(rows[candidate["candidate_id"]])
             or _harness_failed(rows[candidate["candidate_id"]])
-            and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] or None
+            and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] + dropped or None
 
 
 def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: str | None = None,
@@ -626,8 +661,12 @@ def _retry_after_capacity(earlier_retries: int = 0) -> str:
 
 
 def _offer_shortage(observation: Mapping[str, Any]) -> bool:
-    """The allocator's offer search found nothing to rent (its typed codes), before any create."""
-    return any(isinstance(code, str) and (code.startswith("no_vast_offer_") or code == "vast_offer_selection_blocked")
+    """The allocator's offer search found nothing to rent (its typed codes), before any create, or
+    the offer it chose left the market before create and nothing was created."""
+    from .vast_create_failure_diagnosis import OFFER_GONE_BEFORE_CREATE
+
+    return any(isinstance(code, str) and (code.startswith("no_vast_offer_")
+                                          or code in ("vast_offer_selection_blocked", OFFER_GONE_BEFORE_CREATE))
                for code in observation.get("blockers") or [])
 
 
@@ -1018,7 +1057,8 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
             _settle(root, attempt, candidate)
             if isinstance(observation.get("result"), Mapping):
                 try:
-                    summary = candidate_result_summary(observation["result"], plan=plan, candidate=candidate)
+                    summary = candidate_result_summary(observation["result"], plan=plan, candidate=candidate,
+                                                       review_videos=observation.get("review_videos"))
                 except (ValueError, TypeError, KeyError):
                     row.update(status="blocked", blockers=["beta_screening_native_result_invalid"])
                 else:
