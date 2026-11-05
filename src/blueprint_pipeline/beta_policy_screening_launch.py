@@ -583,9 +583,14 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             return {"status": "blocked", "provider_allocation_performed": True,
                     "provider_zero_verified": True, "no_allocation_proven": False,
                     "blockers": ["beta_screening_native_result_missing_or_invalid"]}
+        # The provider is torn down and its closeout proven: keep the episodes' review
+        # videos for the job's owner. Never raises; a failure is recorded, never a verdict.
+        from .beta_screening_review_videos import retain as retain_review_videos
+        review_videos = retain_review_videos(plan=plan, candidate=candidate, prepared=prepared, adapter=adapter,
+                                             attempt_dir=root)
         return {"status": "completed", "provider_allocation_performed": True,
                 "provider_zero_verified": True, "no_allocation_proven": False,
-                "result": joined, "blockers": joined.get("blockers") or []}
+                "result": joined, "review_videos": review_videos, "blockers": joined.get("blockers") or []}
     process_path = root / "allocator_process.json"
     if process_path.exists():
         process = _read(process_path)

@@ -162,7 +162,9 @@ def _publication_contract(value: Mapping[str, Any]) -> dict[str, str]:
     schema = value.get("schema_version")
     variant = _PUBLICATION_VARIANTS.get(schema) if isinstance(schema, str) else None
     fields = _PUBLICATION_FIELDS | ({"recommendation_eligible"} if schema == "beta_policy_screening_publication.v1" else set())
-    if (variant is None or set(value) != fields
+    # v2 may carry kept practice-run videos beside the candidates; they are checked below.
+    keys = set(value) - ({"review_videos"} if schema == "beta_policy_screening_publication.v2" else set())
+    if (variant is None or keys != fields
             or (value.get("purpose"), value.get("claim_ceiling")) != variant
             or (schema.endswith(".v1") and value.get("recommendation_eligible") is not False)
             or value.get("execution_operator") != {"kind": "blueprint"}
@@ -221,6 +223,10 @@ def _publication_contract(value: Mapping[str, Any]) -> dict[str, str]:
             raise AcceptanceEvidenceError("publication_contract_invalid")
     if value.get("status") != campaign_status({row["candidate_id"]: row for row in rows}):
         raise AcceptanceEvidenceError("publication_contract_invalid")
+    if "review_videos" in value:
+        from .beta_screening_review_videos import publication_review_videos_valid
+        if not publication_review_videos_valid(value["review_videos"], rows):
+            raise AcceptanceEvidenceError("publication_contract_invalid")
     return {"schema_version": schema, "purpose": variant[0], "claim_ceiling": variant[1]}
 
 
