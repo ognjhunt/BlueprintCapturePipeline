@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
-from functools import partial
+from functools import partial, wraps
 import json
 import queue
 import sys
@@ -58,6 +58,7 @@ def bounded_default_client(monkeypatch):
     calls = []
     connect = websockets.sync.client.connect
 
+    @wraps(connect)
     def short_heartbeat(*args, **kwargs):
         kwargs.setdefault("ping_interval", 0.03)
         kwargs.setdefault("ping_timeout", 0.03)
@@ -249,3 +250,36 @@ def test_failure_before_query_is_explicitly_not_attempted(tmp_path):
 def test_unbounded_transport_deadlines_are_refused(seconds):
     with pytest.raises(ValueError, match="openpi_policy_transport_timeout_invalid"):
         runtime._bounded_openpi_client_type(_PinnedWireClient, msgpack.unpackb, inference_timeout_seconds=seconds)
+
+
+def test_a_sync_client_without_keepalive_connects_without_keepalive_arguments(tmp_path, monkeypatch):
+    """websockets 12.x (in some runtime images) has a sync client that takes no ``ping_*`` arguments.
+
+    2026-11-05: every pi05_droid episode on capture-447 stopped before its first
+    observation on ``connect() got an unexpected keyword argument 'ping_timeout'``.
+    """
+    vendor = types.ModuleType("openpi_client")
+    vendor.websocket_client_policy = types.SimpleNamespace(WebsocketClientPolicy=_PinnedWireClient)
+    vendor.msgpack_numpy = types.SimpleNamespace(unpackb=msgpack.unpackb)
+    monkeypatch.setitem(sys.modules, "openpi_client", vendor)
+    real, calls = websockets.sync.client.connect, []
+
+    def connect(uri, *, sock=None, ssl_context=None, server_hostname=None, origin=None, extensions=None,
+                subprotocols=None, additional_headers=None, user_agent_header=None, compression="deflate",
+                open_timeout=10, close_timeout=10, max_size=2**20, logger=None, create_connection=None,
+                **kwargs):
+        if kwargs:  # 12.x hands any other keyword to the socket, which refuses it
+            raise TypeError(f"connect() got an unexpected keyword argument {next(iter(kwargs))!r}")
+        calls.append({"open_timeout": open_timeout, "close_timeout": close_timeout})
+        return real(uri, compression=compression, max_size=max_size, additional_headers=additional_headers,
+                    open_timeout=open_timeout, close_timeout=close_timeout, ping_interval=None)
+
+    monkeypatch.setattr(websockets.sync.client, "connect", connect)
+    spec = runtime.load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+    with _server(_runtime_metadata(spec)) as (port, requests):
+        client = _client(tmp_path, port)
+        assert client.preflight_readiness()["candidate_inference_performed"] is False
+        observation = {"prompt": "fixture pick", "state": [0.1, 0.2]}
+        assert np.asarray(client.infer(observation)).shape == (10, 8)
+        assert requests == [observation]
+    assert len(calls) == 2

@@ -13,6 +13,7 @@ import argparse
 import base64
 import dataclasses
 import hashlib
+import inspect
 import json
 import math
 import time
@@ -512,14 +513,18 @@ def _bounded_openpi_client_type(
 
             deadline = time.monotonic() + startup_timeout_seconds
             headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
+            options: dict[str, Any] = {
+                "compression": None, "max_size": None, "additional_headers": headers,
+                "open_timeout": startup_timeout_seconds, "close_timeout": close_timeout_seconds,
+            }
             # The pinned server performs synchronous cold inference on its
             # asyncio loop, so pong latency isn't a valid inference deadline.
             # Retain keepalive traffic, but use the bounded application receive.
-            connection = connect(
-                self._uri, compression=None, max_size=None, additional_headers=headers,
-                open_timeout=startup_timeout_seconds, ping_timeout=None,
-                close_timeout=close_timeout_seconds,
-            )
+            # A websockets whose sync client has no keepalive (12.x, shipped in
+            # some runtime images) sends no pings and takes no ``ping_timeout``.
+            if "ping_timeout" in inspect.signature(connect).parameters:
+                options["ping_timeout"] = None
+            connection = connect(self._uri, **options)
             try:
                 metadata = wire_decoder(connection.recv(
                     timeout=max(0.0, deadline - time.monotonic()),
