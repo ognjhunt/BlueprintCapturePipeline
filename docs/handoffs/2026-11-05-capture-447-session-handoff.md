@@ -2,6 +2,34 @@
 
 You are picking up from a Claude Code cloud session on another account that ran out of usage. Its container and transcript are gone; this document is everything you need. Read it fully before acting. Work autonomously: the owner wants progress without being asked questions, except for the hard stops below.
 
+## STATUS AS OF 16:30Z (the old session, written after the handoff; this overrides the older lines below)
+
+The old session kept working after the handoff. It stopped at 16:30Z when it saw #3331 merged by another session, to avoid racing. Here is what it did:
+
+- **Deploys:**
+  - **2f688aa9** went live at 15:22Z: #3395 ($30, 6 retries, offer-gone retry, bundle module fix) plus #3196.
+  - **c5e03634** went live at 16:27Z (`operator_door.py status` → `active_release.commit`). That is #3396, video retention, deployed after WebApp #1218.
+  - **#3331 is NOT deployed yet.** It merged at 16:19Z, after c5e03634. Deploy the newest attested main when convenient. The paid lane stays inert until the owner's host steps.
+- **Screening:**
+  - The re-plan created **`screening-4c69e12d7f2ec01ebb44523e519bb631`** with limit $30.
+  - **pi05_droid has been running since 15:36Z.** It will keep its videos, because retention went live before it reconciles.
+  - cosmos3_edge_policy_droid and molmoact2_droid are pending and run one at a time after pi05. The three pi0 rows are waitlisted (`site_screening_budget_insufficient`) until settled money frees campaign budget.
+  - After pi05 finishes, the commit change triggers a re-plan of the pending rows at the new commit.
+- **WebApp #1218:**
+  - Merged at main 06a60d2b and live at 16:13Z.
+  - Its last CI had only `e2e` and `rules-emulator` red, both from an ffmpeg-static 504 during `npm install`. `test`, `check` and `build` were green, and e2e passed on the previous head.
+  - The merge with main resolved a one-line import conflict in `server/routes/workspace.ts`.
+- **Pipeline #3396:** merged as c5e03634 and deployed (above).
+- **Pipeline #3397:**
+  - Main merged in at **42bb600c**; the only conflict was a docstring. 162 withdrawal, video and governance tests pass locally.
+  - CI was pending at 16:30Z. Next: wait for green, merge, deploy.
+- **Still to do:**
+  - #3397: merge and deploy.
+  - Deploy #3331, then send the owner the Cloud Run host steps.
+  - Build the groot video backfill (design in 3.3).
+  - Watch pi05, cosmos3, molmoact2 and the pi0 rows. Report each "N of 10" to the owner.
+  - All paid runs must start before **2026-11-06T10:16Z**.
+
 ## 0. First 15 minutes, in order
 
 1. Bootstrap the cloud session. Repos: `ognjhunt/BlueprintCapturePipeline` (Pipeline) and `ognjhunt/Blueprint-WebApp` (WebApp). From the WebApp checkout run `bash scripts/cloud/bootstrap.sh`, then `bash scripts/cloud/doctor.sh`. Then `. ~/.blueprint-cloud/env.sh` in every shell, which gives the Pipeline venv, the pinned uv and the operator door URL. Read both repos' `CLAUDE.md` and `AGENTS.md`, and the WebApp's `docs/runbooks/cloud-scene-runs.md`.
