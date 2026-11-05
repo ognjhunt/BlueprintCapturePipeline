@@ -438,9 +438,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     status = write_worker_status(root, publication_before=before, publication_after=after, execution=execution)
     # Local, unpaid and bounded: a retained run's failure account, read while its archive is still here.
     diagnostics = backfill_runtime_diagnostics(root)
+    from .beta_screening_review_video_backfill import backfill_review_videos
+
+    # Unpaid and bounded: a run that completed before its videos were kept gets one retention pass.
+    # Its publication goes out on the next tick, like any other progress.
+    review_videos = backfill_review_videos(queue_root=root)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
                       "publication_after": after, "holds": holds, "selections": selections,
-                      "runtime_diagnostics_backfill": diagnostics, "worker_status": status},
+                      "runtime_diagnostics_backfill": diagnostics, "review_video_backfill": review_videos,
+                      "worker_status": status},
                      sort_keys=True))
     return 0
 
