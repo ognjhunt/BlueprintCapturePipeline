@@ -3908,6 +3908,15 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
     assert result["configured_scene_revision_reference"]["uri"].startswith(
         "s3://blueprint-inputs/"
     )
+    # The reference (uri, sha256 of the revision file's bytes, size) is what a
+    # website intent's status names as ``result_reference``; a screening source
+    # names the revision's self-digest. Two kinds of digest: the website relates
+    # them only through the offering's evaluation_preparation_binding.
+    binding = result["configured_scene_offering"]["evaluation_preparation_binding"]
+    assert binding["configured_scene_revision"] == result["configured_scene_revision_reference"]
+    assert binding["configured_scene_revision_digest"] == result["configured_scene_revision_digest"]
+    assert (result["configured_scene_revision_reference"]["digest"]
+            != result["configured_scene_revision_digest"])
     assert result["provider_runtime_output_remote_reference"][
         "remote_identity_verified"
     ] is True
@@ -5691,3 +5700,28 @@ def test_receipt_reopen_reuses_a_sealed_bundle_digest_and_refuses_a_rewrite(
     os.utime(bundle, ns=(before.st_atime_ns, before.st_mtime_ns))
     with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="bundle_bytes_invalid"):
         load_scene_configuration_provider_bundle_receipt(receipt_path)
+
+
+@pytest.mark.parametrize("suffix", [".usdc", ".usda"])
+def test_provided_mesh_visual_geometry_keeps_its_format_name_in_the_packet(tmp_path, suffix):
+    # The normalized collision layer is crate (.usdc) since 2026-11-03 and text before. Its digest-named
+    # bytes keep a name of their own format: OpenUSD refuses crate bytes named .usda.
+    from pxr import Usd, UsdGeom
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import MESH_INPUT_STATUS
+
+    layer = tmp_path / ("normalized_scene" + suffix)
+    stage = Usd.Stage.CreateNew(str(layer))
+    UsdGeom.Mesh.Define(stage, "/Root/Support")
+    stage.GetRootLayer().Save()
+    stage = None
+    cas = tmp_path / hashlib.sha256(layer.read_bytes()).hexdigest()
+    shutil.copyfile(layer, cas)
+    render = {"status": MESH_INPUT_STATUS, "result_digest": "sha256:" + "0" * 64,
+              "derived_visual_geometry": {"path": str(cas), "digest": file_digest(cas),
+                                          "size_bytes": cas.stat().st_size}}
+    runtime = tmp_path / "runtime"
+    portable = bundle_module._portable_render_inputs(runtime=runtime, render=render)
+    packed = runtime / portable["derived_visual_geometry"]["path"]
+    assert packed.name == "normalized_visual_geometry" + suffix and packed.read_bytes() == cas.read_bytes()
+    assert Usd.Stage.Open(str(packed)).GetPrimAtPath("/Root/Support").IsValid()

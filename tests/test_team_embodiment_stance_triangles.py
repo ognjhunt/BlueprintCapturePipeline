@@ -126,3 +126,30 @@ def test_the_stance_search_is_unchanged_on_a_room(tmp_path) -> None:
                                   subject_maximum=[2.05, 0.05, 0.85], footprint_half_extent_m=[0.15, 0.15],
                                   root_world_z_m=0.75)
     assert math.isclose(chosen["floor_z_m"], 0.0, abs_tol=1e-9) and chosen["clear_stances"] > 0
+
+
+def test_blocks_of_triangles_measure_and_search_exactly_as_the_whole_room_at_once(tmp_path, monkeypatch) -> None:
+    """A scanned room's triangles are read and measured a block at a time; every value is the same."""
+    from blueprint_pipeline import external_scene_robot_placement as placement
+    from tests.test_team_embodiment_stance_room_mesh import _search, write_scanned_room
+
+    room = write_scanned_room(tmp_path / "collision.usda")
+    vertices, faces = stance._world_triangles(room, [0.0, 0.0, 0.0])
+    whole = placement.triangle_measures(vertices, faces, block=len(faces))
+    blocked = placement.triangle_measures(vertices, faces, block=7)
+    assert set(whole) == set(blocked) and all(np.array_equal(whole[key], blocked[key]) for key in whole)
+    # Exactly what the whole-array arithmetic gave before it was blocked.
+    triangles = vertices[faces]
+    cross = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    assert np.array_equal(whole["double_area"], np.linalg.norm(cross, axis=1))
+    assert np.array_equal(whole["centroid_z"], triangles[:, :, 2].mean(axis=1))
+    expected_floor = placement._infer_horizontal_support_surface(stage_vertices=vertices, faces=faces)
+    reference = _search(room, ranked=24)
+    for name, size in (("TRIANGLE_BLOCK", 7), ("POINT_BLOCK", 5)):
+        monkeypatch.setattr(placement if name == "TRIANGLE_BLOCK" else stance, name, size)
+    again = stance._world_triangles(room, [0.0, 0.0, 0.0])
+    assert np.array_equal(again[0], vertices) and np.array_equal(again[1], faces)
+    floor = placement._infer_horizontal_support_surface(stage_vertices=vertices, faces=faces)
+    assert floor[0] == expected_floor[0] and floor[2] == expected_floor[2]
+    assert np.array_equal(floor[1], expected_floor[1])
+    assert _search(room, ranked=24) == reference

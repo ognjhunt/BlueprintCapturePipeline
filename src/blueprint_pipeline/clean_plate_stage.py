@@ -193,6 +193,9 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
                 "rebuild_intent": target.get("rebuild_intent"),
                 "articulated_part": target.get("articulated_part") or "",
                 "articulation_kind": target.get("articulation_kind") or "",
+                # The analysis's rigidity reading, when it gave one; older manifests are unchanged.
+                **({"rigidity": target["rigidity"], "rigidity_reason": target.get("rigidity_reason") or ""}
+                   if target.get("rigidity") in ("rigid", "deformable", "unknown") else {}),
                 "spatial_evidence": target.get("spatial_evidence", []),
                 # Filled by the deferred fill machinery / rebuild chain:
                 "mask_track_ref": None,

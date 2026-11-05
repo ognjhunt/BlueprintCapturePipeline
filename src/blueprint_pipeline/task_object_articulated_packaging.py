@@ -130,8 +130,8 @@ def derived_website_cabinet_depth_hypothesis(configuration: Mapping[str, Any],
                                              opening_fraction: float) -> dict[str, Any] | None:
     """Deterministic no-spend successor from signed visible bounds and retained frames."""
     from .website_drawer_depth_prior import prior_for
-    prior = prior_for(scene_id=configuration.get("scene_id"),
-                      subject_identity=configuration.get("replacement_identity"))
+    prior = prior_for(configuration, original_frame_sha256s=[
+        str(frame.get("sha256") or "") for frame in source_frames if frame.get("role") == "observed_source"])
     if (configuration.get("schema_version") != "articulated_replacement_authoring_configuration.v1"
             or configuration.get("source_observation_kind") != "website_capture_frames"
             or (configuration.get("mechanism") or {}).get("joint_type") != "prismatic"
@@ -199,9 +199,9 @@ def _depth_hypothesis(configuration: Mapping[str, Any], *, source_depth: float,
                       width: float, height: float) -> dict[str, Any] | None:
     """Admit an explicit development estimate while retaining the source box intact."""
     from .website_drawer_depth_prior import prior_for
-    prior = prior_for(scene_id=configuration.get("scene_id"),
-                      subject_identity=configuration.get("replacement_identity"))
     raw = configuration.get("development_geometry_hypothesis")
+    frames = raw.get("evidence_frame_sha256s") if isinstance(raw, Mapping) else None
+    prior = prior_for(configuration, original_frame_sha256s=frames if isinstance(frames, list) else ())
     implausibly_thin = height >= 0.35 and width >= 0.30 and source_depth < 0.25 and source_depth / width < 0.5
     if raw is None:
         if configuration.get("source_observation_kind") == "website_capture_frames" and implausibly_thin:

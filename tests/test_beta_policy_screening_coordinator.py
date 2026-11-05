@@ -553,3 +553,67 @@ def test_capped_candidate_blocks_alone_while_the_others_and_the_campaign_continu
     assert other["status"] == "running" and other["attempt"]["reservation_status"] == "reserved"
     assert publication(tmp_path)["status"] == "running"
     assert publication(tmp_path)["budget"]["reserved_usd"] == "4"
+
+
+class _RecordingBackend(Backend):
+    def __init__(self, observation=None):
+        super().__init__(observation)
+        self.attempt_dirs = []
+
+    def prepare_candidate(self, **kwargs):
+        self.attempt_dirs.append(("prepare", Path(kwargs["attempt_dir"])))
+        return super().prepare_candidate(**kwargs)
+
+    def reconcile_candidate(self, **kwargs):
+        self.attempt_dirs.append(("reconcile", Path(kwargs["attempt_dir"])))
+        return super().reconcile_candidate(**kwargs)
+
+
+def test_with_a_work_root_attempts_live_on_it_and_the_ledger_stays_in_the_queue(tmp_path, monkeypatch):
+    queue, work = tmp_path / "queue", tmp_path / "volume" / "beta-policy-screening-work"
+    work.mkdir(parents=True)
+    monkeypatch.setenv(coordinator.WORK_ROOT_ENV, str(work))
+    coordinator.enqueue_screening_campaign(plan(), queue_root=queue)
+    backend = _RecordingBackend()
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    attempt = _row(queue)["attempt"]
+    expected = work / "attempts" / attempt["attempt_id"]
+    assert attempt[coordinator.ATTEMPT_DIR_FIELD] == str(expected) and expected.is_dir()
+    assert backend.attempt_dirs == [("prepare", expected)] and backend.launches == 1
+    assert (queue / coordinator.LEDGER_FILENAME).is_file() and not (queue / "attempts" / attempt["attempt_id"]).exists()
+    pointer = json.loads((queue / "attempts" / f"{attempt['attempt_id']}.attempt_dir.json").read_text())
+    assert pointer[coordinator.ATTEMPT_DIR_FIELD] == str(expected)
+    # The recorded directory wins over the current setting: unset, the attempt still reconciles there.
+    monkeypatch.delenv(coordinator.WORK_ROOT_ENV)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    assert backend.attempt_dirs[-1] == ("reconcile", expected) and backend.launches == 1
+    # A lost ledger is still detected from the pointer beside it.
+    (queue / coordinator.LEDGER_FILENAME).unlink()
+    with pytest.raises(ValueError, match="ledger_missing_after_attempt"):
+        coordinator.enqueue_screening_campaign(plan(campaign_id="campaign-2"), queue_root=queue)
+
+
+def test_an_attempt_reserved_without_a_work_root_keeps_its_queue_directory(tmp_path, monkeypatch):
+    monkeypatch.delenv(coordinator.WORK_ROOT_ENV, raising=False)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = _RecordingBackend()
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    attempt = _row(tmp_path)["attempt"]
+    legacy = tmp_path / "attempts" / attempt["attempt_id"]
+    assert coordinator.ATTEMPT_DIR_FIELD not in attempt and legacy.is_dir()
+    work = tmp_path / "volume"
+    work.mkdir()
+    monkeypatch.setenv(coordinator.WORK_ROOT_ENV, str(work))
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    assert backend.attempt_dirs[-1] == ("reconcile", legacy) and not (work / "attempts").exists()
+
+
+def test_a_work_root_that_is_not_there_stages_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv(coordinator.WORK_ROOT_ENV, str(tmp_path / "unmounted"))
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path / "queue")
+    backend = _RecordingBackend()
+    with pytest.raises(ValueError, match="beta_screening_work_root_unavailable"):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path / "queue",
+                                            executor=backend)
+    assert backend.attempt_dirs == [] and backend.launches == 0
+    assert not (tmp_path / "unmounted").exists()

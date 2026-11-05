@@ -71,30 +71,59 @@ def test_new_earlier_priority_root_joins_after_previously_unvisited_root(tmp_pat
     assert "stale_cursor_identity_refused" not in second["continuation_status"]
 
 
-def test_inode_and_mount_identity_changes_refuse_old_cursor(tmp_path: Path) -> None:
-    child = tmp_path / "a"
-    child.mkdir()
-    (child / "data").write_bytes(b"x")
-    original = _survey(tmp_path)
-    child.rename(tmp_path / "old-a")
-    child.mkdir()
-    changed = _survey(tmp_path, previous=original["continuation"])
-    assert "stale_cursor_identity_refused" in changed["continuation_status"]
-    mountinfo = tmp_path.parent / "new-mountinfo"
-    mountinfo.write_text("1 0 0:1 / /some-new-mount rw - tmpfs none rw\n")
-    remounted = _survey(tmp_path, previous=changed["continuation"], mountinfo=mountinfo)
-    assert "stale_cursor_identity_refused" in remounted["continuation_status"]
+def test_child_churn_and_mount_table_changes_never_reset_the_cursor(tmp_path: Path) -> None:
+    """2026-11-04: any mount change reset every root to its first partitions each hour."""
+
+    for name in ("a", "b", "c"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "data").write_bytes(b"x" * 4096)
+    mountinfo = tmp_path.parent / f"{tmp_path.name}-mountinfo"
+    previous = None
+    for tick in range(3):
+        # A transient unit's mount appears and disappears between passes.
+        mountinfo.write_text(f"1 0 0:1 / /run/credentials/unit-{tick}.service rw - tmpfs none rw\n")
+        result = _survey(tmp_path, previous=previous, mountinfo=mountinfo)
+        assert "stale_cursor_identity_refused" not in result["continuation_status"]
+        assert result["selected_partitions"] == 1
+        previous = result["continuation"]
+    # Each pass took the next partition, so after three every one is measured.
+    assert result["composite"]["unmeasured"] == 0
+    assert result["status"] == "complete"
+    # A replaced partition is churn: its old measurement is unusable, and nothing is refused.
+    (tmp_path / "a").rename(tmp_path.parent / f"{tmp_path.name}-old-a")
+    (tmp_path / "a").mkdir()
+    replaced = _survey(tmp_path, previous=previous)
+    assert "stale_cursor_identity_refused" not in replaced["continuation_status"]
+    assert replaced["partition_churn"]["replaced"] == 1
+    # A departed partition is churn too.
+    (tmp_path / "b" / "data").unlink()
+    (tmp_path / "b").rmdir()
+    departed = _survey(tmp_path, previous=replaced["continuation"])
+    assert departed["partition_churn"]["departed"] == 1
+    assert "stale_cursor_identity_refused" not in departed["continuation_status"]
 
 
-def test_symlink_partition_is_not_followed_and_inventory_stays_unknown(tmp_path: Path) -> None:
-    target = tmp_path.parent / "outside"
+def test_a_replaced_root_refuses_its_old_position(tmp_path: Path) -> None:
+    root = tmp_path / "volume"
+    (root / "a").mkdir(parents=True)
+    first = _survey(root)
+    root.rename(tmp_path / "old-volume")
+    (root / "a").mkdir(parents=True)
+    second = _survey(root, previous=first["continuation"])
+    assert "stale_cursor_identity_refused" in second["continuation_status"]
+
+
+def test_a_symlink_partition_is_a_leaf_never_followed(tmp_path: Path) -> None:
+    """``/bin -> usr/bin`` on a merged-usr root left every inventory incomplete."""
+
+    target = tmp_path.parent / f"{tmp_path.name}-outside"
     target.mkdir()
     (target / "secret-input").write_bytes(b"z" * 100000)
     (tmp_path / "linked").symlink_to(target)
     result = _survey(tmp_path)
-    assert result["inventory_complete"] is False
-    assert result["unreadable_bytes"] is None
-    assert result["mounts"][0]["surveyed_bytes"] == 0
+    assert result["inventory_complete"] is True
+    assert 0 < result["mounts"][0]["surveyed_bytes"] < 100000
+    assert result["status"] == "complete"
 
 
 def test_hardlinks_across_selected_partitions_count_once_per_snapshot(tmp_path: Path) -> None:

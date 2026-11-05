@@ -1,0 +1,1914 @@
+{
+ "schema_version": "owner_approved_deletion_manifest.v1",
+ "approved_by": "owner",
+ "approved_at": "2026-11-04T15:00:00Z",
+ "expires_at": "2026-11-18T15:00:00Z",
+ "manifest_id": "2026-11-04-arena-scratch",
+ "approval_evidence": "Owner, 2026-11-04 ~15:00Z, verbatim \"yes delete\": permanent deletion of the task-evaluation-inputs/arena-* scratch folders last written 2026-08-18 to 2026-09-01, excluding any a live unit, the code, a pin or the ADP v1 docs reference and anything written after 2026-09-01.",
+ "entries": [
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-construction-c76-surface-tcp-c7dc8461",
+   "newest_mtime_epoch": 1787588117,
+   "apparent_bytes": 120840778,
+   "file_count": 35,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-04a3c507-c14",
+   "newest_mtime_epoch": 1787377868,
+   "apparent_bytes": 121280227,
+   "file_count": 43,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-113adfeb-c19",
+   "newest_mtime_epoch": 1787384735,
+   "apparent_bytes": 121289863,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-12b73159-c1",
+   "newest_mtime_epoch": 1787399861,
+   "apparent_bytes": 1054111,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-25a9984d-c7",
+   "newest_mtime_epoch": 1787354970,
+   "apparent_bytes": 242516677,
+   "file_count": 82,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-344d29ea-c15",
+   "newest_mtime_epoch": 1787378973,
+   "apparent_bytes": 121276802,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-3783b87f-c5",
+   "newest_mtime_epoch": 1787350737,
+   "apparent_bytes": 121265399,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-4265766d-c16",
+   "newest_mtime_epoch": 1787380710,
+   "apparent_bytes": 121291343,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-472ff88a-c3",
+   "newest_mtime_epoch": 1787347074,
+   "apparent_bytes": 121257170,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-50a00a47-c11",
+   "newest_mtime_epoch": 1787366615,
+   "apparent_bytes": 121290300,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-59a88cd7-c13",
+   "newest_mtime_epoch": 1787376982,
+   "apparent_bytes": 121280254,
+   "file_count": 43,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-75d9d730-c26",
+   "newest_mtime_epoch": 1787400457,
+   "apparent_bytes": 121420161,
+   "file_count": 52,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-76561c45-c22",
+   "newest_mtime_epoch": 1787391804,
+   "apparent_bytes": 242758471,
+   "file_count": 89,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-8204091a-c20",
+   "newest_mtime_epoch": 1787387654,
+   "apparent_bytes": 121389259,
+   "file_count": 58,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-95cb87ea-c18",
+   "newest_mtime_epoch": 1787382291,
+   "apparent_bytes": 121344485,
+   "file_count": 50,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-9f686952-c10",
+   "newest_mtime_epoch": 1787362481,
+   "apparent_bytes": 121317717,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-ba62fc3b-c9",
+   "newest_mtime_epoch": 1787361897,
+   "apparent_bytes": 121333036,
+   "file_count": 48,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c1",
+   "newest_mtime_epoch": 1787306163,
+   "apparent_bytes": 1057623,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c10-15hz",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 434930853,
+   "file_count": 54,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c11-15hz",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314753848,
+   "file_count": 53,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c12-15hz",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314758133,
+   "file_count": 53,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c13-15hz",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314762405,
+   "file_count": 53,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c2",
+   "newest_mtime_epoch": 1787283371,
+   "apparent_bytes": 5086,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c2-15hz",
+   "newest_mtime_epoch": 1787306163,
+   "apparent_bytes": 314744522,
+   "file_count": 52,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c27",
+   "newest_mtime_epoch": 1787402913,
+   "apparent_bytes": 121319066,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c28",
+   "newest_mtime_epoch": 1787404628,
+   "apparent_bytes": 121315156,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c29",
+   "newest_mtime_epoch": 1787406028,
+   "apparent_bytes": 121324078,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c3-15hz",
+   "newest_mtime_epoch": 1787306163,
+   "apparent_bytes": 314745728,
+   "file_count": 52,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c30",
+   "newest_mtime_epoch": 1787407057,
+   "apparent_bytes": 121333908,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c31",
+   "newest_mtime_epoch": 1787408410,
+   "apparent_bytes": 121342136,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c32",
+   "newest_mtime_epoch": 1787409211,
+   "apparent_bytes": 121342653,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c33",
+   "newest_mtime_epoch": 1787410796,
+   "apparent_bytes": 121413804,
+   "file_count": 49,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c34",
+   "newest_mtime_epoch": 1787412971,
+   "apparent_bytes": 121356439,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c35",
+   "newest_mtime_epoch": 1787414150,
+   "apparent_bytes": 121374046,
+   "file_count": 43,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c36",
+   "newest_mtime_epoch": 1787415081,
+   "apparent_bytes": 121375163,
+   "file_count": 43,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c37",
+   "newest_mtime_epoch": 1787418316,
+   "apparent_bytes": 121451732,
+   "file_count": 50,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c38",
+   "newest_mtime_epoch": 1787420870,
+   "apparent_bytes": 121401082,
+   "file_count": 43,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c39",
+   "newest_mtime_epoch": 1787422602,
+   "apparent_bytes": 121409931,
+   "file_count": 43,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c4-15hz",
+   "newest_mtime_epoch": 1787306163,
+   "apparent_bytes": 314745728,
+   "file_count": 52,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c40",
+   "newest_mtime_epoch": 1787424205,
+   "apparent_bytes": 121425692,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c41",
+   "newest_mtime_epoch": 1787425782,
+   "apparent_bytes": 121496985,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c42",
+   "newest_mtime_epoch": 1787428231,
+   "apparent_bytes": 121436444,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c43",
+   "newest_mtime_epoch": 1787431092,
+   "apparent_bytes": 121449599,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c44",
+   "newest_mtime_epoch": 1787434019,
+   "apparent_bytes": 121525863,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c45",
+   "newest_mtime_epoch": 1787435098,
+   "apparent_bytes": 121466736,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c46",
+   "newest_mtime_epoch": 1787436343,
+   "apparent_bytes": 121475019,
+   "file_count": 43,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c46-seeded",
+   "newest_mtime_epoch": 1787437329,
+   "apparent_bytes": 121497065,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c47-frontier",
+   "newest_mtime_epoch": 1787440703,
+   "apparent_bytes": 121571366,
+   "file_count": 54,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c48-short-anchor",
+   "newest_mtime_epoch": 1787444614,
+   "apparent_bytes": 121609674,
+   "file_count": 55,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c48b-short-anchor",
+   "newest_mtime_epoch": 1787445101,
+   "apparent_bytes": 121541362,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c49-preserve-contact",
+   "newest_mtime_epoch": 1787447671,
+   "apparent_bytes": 121538792,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c5-15hz",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314746807,
+   "file_count": 52,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c50-budget-valid",
+   "newest_mtime_epoch": 1787449217,
+   "apparent_bytes": 121539490,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c51-contact-frontier",
+   "newest_mtime_epoch": 1787454646,
+   "apparent_bytes": 121718402,
+   "file_count": 67,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c52-measured-standoff",
+   "newest_mtime_epoch": 1787491921,
+   "apparent_bytes": 121651387,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c52-measured-standoff-d721913f",
+   "newest_mtime_epoch": 1787492698,
+   "apparent_bytes": 121614377,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c53-preserve-replay-e5a0ceb1",
+   "newest_mtime_epoch": 1787496977,
+   "apparent_bytes": 121624562,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c54-bilateral-grasp-f39c8afb",
+   "newest_mtime_epoch": 1787502399,
+   "apparent_bytes": 123845921,
+   "file_count": 58,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c55-closed-pad-3d51d922",
+   "newest_mtime_epoch": 1787504809,
+   "apparent_bytes": 123811885,
+   "file_count": 49,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c56-pad-frame-6e1933e4",
+   "newest_mtime_epoch": 1787506821,
+   "apparent_bytes": 121632707,
+   "file_count": 48,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c57-physics-branch-a08f382c",
+   "newest_mtime_epoch": 1787510339,
+   "apparent_bytes": 122901090,
+   "file_count": 48,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c58-resilient-sweep-bd7a07c7",
+   "newest_mtime_epoch": 1787513336,
+   "apparent_bytes": 121662267,
+   "file_count": 50,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c59-preserve-sweep-warm-d24a47d1",
+   "newest_mtime_epoch": 1787513823,
+   "apparent_bytes": 121601073,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c6-15hz",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314746807,
+   "file_count": 52,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c60-task-force-warm-29b69e99",
+   "newest_mtime_epoch": 1787515895,
+   "apparent_bytes": 121598541,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c61-activate-recovery-c904140e",
+   "newest_mtime_epoch": 1787517839,
+   "apparent_bytes": 121599952,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c62-joint-tracking-b7bcba31",
+   "newest_mtime_epoch": 1787520078,
+   "apparent_bytes": 121602891,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c63-joint-tracking-437d2bb3",
+   "newest_mtime_epoch": 1787521363,
+   "apparent_bytes": 121675597,
+   "file_count": 55,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c64-phase5-grid-cf13f9c1",
+   "newest_mtime_epoch": 1787526115,
+   "apparent_bytes": 121693810,
+   "file_count": 53,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c65-phase5-grid-axis-b80d872b05c7d572bdd383153a3c40ea1e29509e",
+   "newest_mtime_epoch": 1787963816,
+   "apparent_bytes": 438950124,
+   "file_count": 96,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c66-phase5-grid-checkpoint-f58709f46",
+   "newest_mtime_epoch": 1787535334,
+   "apparent_bytes": 121757573,
+   "file_count": 57,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c66aa926-c21",
+   "newest_mtime_epoch": 1787390006,
+   "apparent_bytes": 242678930,
+   "file_count": 82,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c67-compensated-acquisition-ed49e0490",
+   "newest_mtime_epoch": 1787545153,
+   "apparent_bytes": 121721067,
+   "file_count": 53,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c68-rebound-74696952",
+   "newest_mtime_epoch": 1787546364,
+   "apparent_bytes": 121741803,
+   "file_count": 54,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c69-fixed-target-vector-0df3a7e6",
+   "newest_mtime_epoch": 1787555751,
+   "apparent_bytes": 121724977,
+   "file_count": 49,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c7-15hz",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314746800,
+   "file_count": 52,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c70-symmetric-approach-9e81eb56",
+   "newest_mtime_epoch": 1787557402,
+   "apparent_bytes": 121673610,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c71-closed-calibration-c2e0f5fa",
+   "newest_mtime_epoch": 1787564814,
+   "apparent_bytes": 121703533,
+   "file_count": 53,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c72-download-progress-498f2f84",
+   "newest_mtime_epoch": 1787567265,
+   "apparent_bytes": 243361864,
+   "file_count": 90,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c73-branch-local-close-8b935166",
+   "newest_mtime_epoch": 1787572612,
+   "apparent_bytes": 121684962,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c74-downstream-matrix-d3cc553f",
+   "newest_mtime_epoch": 1787575718,
+   "apparent_bytes": 121711861,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c75-controller-matrix-f78a2593",
+   "newest_mtime_epoch": 1787581358,
+   "apparent_bytes": 121819583,
+   "file_count": 62,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c76-surface-tcp-12654cf5",
+   "newest_mtime_epoch": 1787591731,
+   "apparent_bytes": 121811041,
+   "file_count": 50,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c76-surface-tcp-c7dc8461",
+   "newest_mtime_epoch": 1787587685,
+   "apparent_bytes": 361,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c77-partial-jaw-a2848c4c",
+   "newest_mtime_epoch": 1787592828,
+   "apparent_bytes": 121829525,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c78-live-close-dls-2bae1b77",
+   "newest_mtime_epoch": 1787594311,
+   "apparent_bytes": 121830013,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c79-live-dls-phase5-first-06e43a21",
+   "newest_mtime_epoch": 1787596892,
+   "apparent_bytes": 121768416,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c79-live-dls-phase5-first-526a8de0",
+   "newest_mtime_epoch": 1787597877,
+   "apparent_bytes": 121787991,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c79-live-dls-phase5-first-e6db3b96",
+   "newest_mtime_epoch": 1787596177,
+   "apparent_bytes": 121882744,
+   "file_count": 50,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c8-15hz",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314747298,
+   "file_count": 52,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c81-contact-open-matrix-c6259107",
+   "newest_mtime_epoch": 1787603295,
+   "apparent_bytes": 121910037,
+   "file_count": 49,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c82-global-near-seeds-0859e9c3",
+   "newest_mtime_epoch": 1787605843,
+   "apparent_bytes": 121807653,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c83-bounded-orientation-befeebc6",
+   "newest_mtime_epoch": 1787611118,
+   "apparent_bytes": 121940998,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c83-bounded-orientation-cold-075b49d0",
+   "newest_mtime_epoch": 1787615559,
+   "apparent_bytes": 122030215,
+   "file_count": 64,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c83-bounded-orientation-cold-befeebc6",
+   "newest_mtime_epoch": 1787612014,
+   "apparent_bytes": 121926813,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c84-null-fallback-6e9b4f5f",
+   "newest_mtime_epoch": 1787635081,
+   "apparent_bytes": 122055094,
+   "file_count": 70,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c85-bounded-null-warm-e1c7a132",
+   "newest_mtime_epoch": 1787620583,
+   "apparent_bytes": 121882073,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c85b-bounded-null-warm-e1c7a132",
+   "newest_mtime_epoch": 1787621712,
+   "apparent_bytes": 121896359,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c86-hold-approach-fast-cold-1e36a0d8",
+   "newest_mtime_epoch": 1787630317,
+   "apparent_bytes": 24656,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c86-hold-approach-fast-warm-1e36a0d8",
+   "newest_mtime_epoch": 1787625574,
+   "apparent_bytes": 121919455,
+   "file_count": 50,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-c9-15hz",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314749529,
+   "file_count": 53,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-d086c96a-c25",
+   "newest_mtime_epoch": 1787398583,
+   "apparent_bytes": 121303918,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-db1ead26-c2",
+   "newest_mtime_epoch": 1787399861,
+   "apparent_bytes": 1062658,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-dfcc1a83-c12",
+   "newest_mtime_epoch": 1787374227,
+   "apparent_bytes": 121290693,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-e7b289da-c8",
+   "newest_mtime_epoch": 1787357918,
+   "apparent_bytes": 242627656,
+   "file_count": 88,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-e83d6431-c23",
+   "newest_mtime_epoch": 1787394137,
+   "apparent_bytes": 121301832,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-edda4ec0-c6",
+   "newest_mtime_epoch": 1787353327,
+   "apparent_bytes": 121377832,
+   "file_count": 49,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-ef6d4a0a-c4",
+   "newest_mtime_epoch": 1787349056,
+   "apparent_bytes": 121265518,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-controls-f81bfa5a-c24",
+   "newest_mtime_epoch": 1787396387,
+   "apparent_bytes": 121383973,
+   "file_count": 53,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r1",
+   "newest_mtime_epoch": 1787096290,
+   "apparent_bytes": 236112577,
+   "file_count": 24,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r10",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 882071867,
+   "file_count": 67,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r11",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400578795,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r12",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400582479,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r13",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400583245,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r14",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400585043,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r15",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400586863,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r16",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400586384,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r17",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400586878,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r18",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400587251,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r19",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400587251,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r2",
+   "newest_mtime_epoch": 1787096290,
+   "apparent_bytes": 62203,
+   "file_count": 17,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r20",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 698376149,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r21",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400607957,
+   "file_count": 41,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r22",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 698411737,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r23",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 698418099,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r24",
+   "newest_mtime_epoch": 1788269297,
+   "apparent_bytes": 400674446,
+   "file_count": 38,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r24a",
+   "newest_mtime_epoch": 1788269298,
+   "apparent_bytes": 698491927,
+   "file_count": 57,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r25-particlefield",
+   "newest_mtime_epoch": 1787963771,
+   "apparent_bytes": 301728422,
+   "file_count": 8,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r26-particlefield",
+   "newest_mtime_epoch": 1787963771,
+   "apparent_bytes": 313728667,
+   "file_count": 8,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r27-696c7a5c",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 313730196,
+   "file_count": 8,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r28",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314380478,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r29",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314388449,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r3",
+   "newest_mtime_epoch": 1787096290,
+   "apparent_bytes": 60286,
+   "file_count": 16,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r30",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314381862,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r31",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314414268,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r32",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314415123,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r33",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314383126,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r34",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314416206,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r35",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314390174,
+   "file_count": 43,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r36",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314393727,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r37",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314394616,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r38",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314394919,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r39",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 314429461,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r4",
+   "newest_mtime_epoch": 1787096290,
+   "apparent_bytes": 50111,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r40",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 434421874,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r41",
+   "newest_mtime_epoch": 1787287006,
+   "apparent_bytes": 434388058,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r42",
+   "newest_mtime_epoch": 1787288690,
+   "apparent_bytes": 434390953,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r43",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 434393220,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r44",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 434391228,
+   "file_count": 44,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r6",
+   "newest_mtime_epoch": 1787096290,
+   "apparent_bytes": 50225,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r7",
+   "newest_mtime_epoch": 1787096290,
+   "apparent_bytes": 50225,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r8",
+   "newest_mtime_epoch": 1787096290,
+   "apparent_bytes": 64313,
+   "file_count": 17,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r9",
+   "newest_mtime_epoch": 1787097562,
+   "apparent_bytes": 64306,
+   "file_count": 17,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-particlefield-840920-696c7a5c",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 248069337,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-particlefield-840920-bccc9e04",
+   "newest_mtime_epoch": 1787963765,
+   "apparent_bytes": 236034062,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-particlefield-840920-d588c80c",
+   "newest_mtime_epoch": 1787963759,
+   "apparent_bytes": 248034828,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-15hz-a1",
+   "newest_mtime_epoch": 1787284490,
+   "apparent_bytes": 313780414,
+   "file_count": 12,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-075b49d098abbd50991722807de10a2804eeef2c-20260824t230100z",
+   "newest_mtime_epoch": 1787664824,
+   "apparent_bytes": 3331557,
+   "file_count": 135,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-077c847629719e7c61f55c3ced5985f3ee17f44c-20260825T072500Z",
+   "newest_mtime_epoch": 1787664824,
+   "apparent_bytes": 3733270,
+   "file_count": 161,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-09cc622606bc61ef3ef5355b7174d90515e37577-20260826T051239Z",
+   "newest_mtime_epoch": 1787721803,
+   "apparent_bytes": 245039368,
+   "file_count": 136,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-1105441e952cc88d0c18e5a47414f6f109ec3047-20260825T134736Z",
+   "newest_mtime_epoch": 1787667862,
+   "apparent_bytes": 244904358,
+   "file_count": 140,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-133768c9c494293deeb27d79d14b85a6ae979fa1-20260826T091047Z-codex-staging",
+   "newest_mtime_epoch": 1787736092,
+   "apparent_bytes": 245196779,
+   "file_count": 144,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-2758f2b95eae360f272955d9161b5ee12c13a7ac-20260825T080500Z",
+   "newest_mtime_epoch": 1787963797,
+   "apparent_bytes": 16223108,
+   "file_count": 249,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-2fe3c01fb1414114b3196bea03e49c16a3c586dc-20260825T112300Z",
+   "newest_mtime_epoch": 1787669165,
+   "apparent_bytes": 3760725,
+   "file_count": 150,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-3007bc1ac6c6107d5ae1aa9772e04bf2cac82cc0-20260826T053230Z",
+   "newest_mtime_epoch": 1787722905,
+   "apparent_bytes": 245043668,
+   "file_count": 139,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-414852dc7f808f5002ac058f58d7ef57c54cd8bd-20260825T161522Z",
+   "newest_mtime_epoch": 1787674784,
+   "apparent_bytes": 244875073,
+   "file_count": 133,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-428a6a5fc7d2330217a2c8ae1988042738680cd9-20260825T155442Z",
+   "newest_mtime_epoch": 1787673543,
+   "apparent_bytes": 244875163,
+   "file_count": 133,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-5938b9caf360d31d17ffbab4359e885912b8b817-20260825T102300Z",
+   "newest_mtime_epoch": 1787664824,
+   "apparent_bytes": 3622735,
+   "file_count": 131,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-67b2d1032965288f5cc61ab4895267a9c74426d9-20260825T165348Z",
+   "newest_mtime_epoch": 1787677068,
+   "apparent_bytes": 244875000,
+   "file_count": 133,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-6e9b4f5fa61c6fa0ca922b0a20273e5203b2a09c-20260824t235400z",
+   "newest_mtime_epoch": 1787664824,
+   "apparent_bytes": 3521552,
+   "file_count": 132,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-74cac0f408c112c4f443c3e07723a03ae94c11b5-20260826T075439Z-codex-staging",
+   "newest_mtime_epoch": 1787732812,
+   "apparent_bytes": 245067408,
+   "file_count": 144,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-750515d0c34c31b98049045a4b80d0330dc679d1-20260825T040304Z",
+   "newest_mtime_epoch": 1787664824,
+   "apparent_bytes": 3656769,
+   "file_count": 132,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-761e4739a81c8f9c8f05bb2c781fd28a4d01f824-20260826T095338Z-codex-staging",
+   "newest_mtime_epoch": 1787738552,
+   "apparent_bytes": 245194592,
+   "file_count": 143,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-761e4739a81c8f9c8f05bb2c781fd28a4d01f824-20260826T101648Z-codex-staging",
+   "newest_mtime_epoch": 1787739982,
+   "apparent_bytes": 245193696,
+   "file_count": 142,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-7704bc29477cb75d9b42cbf6bd829bd4a4531868-20260825T094200Z",
+   "newest_mtime_epoch": 1787963797,
+   "apparent_bytes": 16137378,
+   "file_count": 215,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-78d6d2f93f6fd45555e2b81fb950fdda6e75c892-20260825T214500Z",
+   "newest_mtime_epoch": 1787695378,
+   "apparent_bytes": 245099753,
+   "file_count": 142,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-88180cf2c7c208701a1161d4e9ad789a674b81c0-20260825T104900Z",
+   "newest_mtime_epoch": 1787664825,
+   "apparent_bytes": 3673291,
+   "file_count": 137,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-8b2843c77444de09f9262de475b6475c95582b62-20260825T055000Z",
+   "newest_mtime_epoch": 1787664825,
+   "apparent_bytes": 3678173,
+   "file_count": 140,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-8d79e8113a7a99eafdd82bc4bfc2ab7458b08909-20260825T144455Z",
+   "newest_mtime_epoch": 1787669541,
+   "apparent_bytes": 244880340,
+   "file_count": 135,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-97154263a8f9ecb21d8af93e975af7adf544a83b-20260825T065500Z",
+   "newest_mtime_epoch": 1787664825,
+   "apparent_bytes": 3690576,
+   "file_count": 142,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-a0959ced8c9e14b141d8107f092a6a076c680ec1-20260825T041800Z",
+   "newest_mtime_epoch": 1787664825,
+   "apparent_bytes": 3696458,
+   "file_count": 152,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-a1f5f24a9cc05ca6d90cbf33065ac6aa4896c1ed-20260825T211305Z",
+   "newest_mtime_epoch": 1787694090,
+   "apparent_bytes": 244919135,
+   "file_count": 132,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-a535a667e1ac06d2f5b41a43d516d328d5606075-20260825T222500Z",
+   "newest_mtime_epoch": 1787697468,
+   "apparent_bytes": 245093318,
+   "file_count": 140,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-ad0842db0dc97a5165a2486d1efd022c3e45c28b-20260826T113540Z-codex-staging",
+   "newest_mtime_epoch": 1787744845,
+   "apparent_bytes": 245055629,
+   "file_count": 139,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-befeebc6997fbb178883d3cd5de0b347d8e390ff-20260824t223100z",
+   "newest_mtime_epoch": 1787664825,
+   "apparent_bytes": 3282531,
+   "file_count": 123,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-c16784226e896bb8463b5ad61d5fea92e8d3b313-20260825T061500Z",
+   "newest_mtime_epoch": 1787664825,
+   "apparent_bytes": 3690895,
+   "file_count": 146,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-cd61af226b908af857e4054e0c35939486e91463-20260825T085500Z",
+   "newest_mtime_epoch": 1787664825,
+   "apparent_bytes": 4087616,
+   "file_count": 166,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-cd61af226b908af857e4054e0c35939486e91463-20260825T093000Z",
+   "newest_mtime_epoch": 1787650119,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-d9fbebf1afe558accd12fd85e4bba4634314ff7c-20260826T155112Z-codex-staging",
+   "newest_mtime_epoch": 1787761166,
+   "apparent_bytes": 245062531,
+   "file_count": 139,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-e7fa57f68dd6ea588c9a82737c6f07364c2fe7cd-20260826T025246Z",
+   "newest_mtime_epoch": 1787713972,
+   "apparent_bytes": 245070288,
+   "file_count": 145,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-f17fa63e49df49b9151beb60bec85b296d06b219-20260825T225500Z",
+   "newest_mtime_epoch": 1787699372,
+   "apparent_bytes": 244913808,
+   "file_count": 129,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-f17fa63e49df49b9151beb60bec85b296d06b219-20260825T232100Z",
+   "newest_mtime_epoch": 1787700913,
+   "apparent_bytes": 192490,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-f615232ce4a93ada1742a99361fdefffd364a616-20260825T123539Z",
+   "newest_mtime_epoch": 1787662723,
+   "apparent_bytes": 244966010,
+   "file_count": 151,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-fec521b4ef3c67ec25f73e154d4a8db7681fda55-20260825T151624Z",
+   "newest_mtime_epoch": 1787671335,
+   "apparent_bytes": 244870806,
+   "file_count": 135,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-fec521b4ef3c67ec25f73e154d4a8db7681fda55-20260825T153846Z",
+   "newest_mtime_epoch": 1788269271,
+   "apparent_bytes": 244838934,
+   "file_count": 129,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-c79-fec521b4ef3c67ec25f73e154d4a8db7681fda55-20260825T154150Z",
+   "newest_mtime_epoch": 1787672761,
+   "apparent_bytes": 244860498,
+   "file_count": 133,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-evidence-20260825T1615Z",
+   "newest_mtime_epoch": 1787674516,
+   "apparent_bytes": 8976,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-policy-diagnostic-evidence-20260825T1650Z",
+   "newest_mtime_epoch": 1787676822,
+   "apparent_bytes": 8976,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-edge-f7c973ca-r1",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 375617281,
+   "file_count": 24,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-front-c33dc2df-r1",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 375618500,
+   "file_count": 24,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-construction-59865d4c-r1",
+   "newest_mtime_epoch": 1787324695,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-construction-c3c34cf9-r1",
+   "newest_mtime_epoch": 1787325557,
+   "apparent_bytes": 120680458,
+   "file_count": 35,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-construction-c3c34cf9-r2",
+   "newest_mtime_epoch": 1787326379,
+   "apparent_bytes": 27049,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-droid-reset-5609bfbf-r1",
+   "newest_mtime_epoch": 1787328538,
+   "apparent_bytes": 120684197,
+   "file_count": 36,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-final-entry-154f42b0-r1",
+   "newest_mtime_epoch": 1787338359,
+   "apparent_bytes": 120711351,
+   "file_count": 36,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-jaw-sign-9bef569b-r1",
+   "newest_mtime_epoch": 1787330155,
+   "apparent_bytes": 120684189,
+   "file_count": 36,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-lateral-0a2e03d8-r1",
+   "newest_mtime_epoch": 1787335991,
+   "apparent_bytes": 120711436,
+   "file_count": 36,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-pink-multistart-24gb-9413d7fa-r1",
+   "newest_mtime_epoch": 1787334065,
+   "apparent_bytes": 120702941,
+   "file_count": 34,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-pink-multistart-7adae5a4-r1",
+   "newest_mtime_epoch": 1787332822,
+   "apparent_bytes": 120715083,
+   "file_count": 38,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-rim-grasp-pink-multistart-7adae5a4-r2auth",
+   "newest_mtime_epoch": 1787333130,
+   "apparent_bytes": 18600,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-108d60a1",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 1043268,
+   "file_count": 71,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-134d454c",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 1133167,
+   "file_count": 107,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-1656230c-fullsource",
+   "newest_mtime_epoch": 1787317303,
+   "apparent_bytes": 4645537,
+   "file_count": 79,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-1ffd510d-fullsource",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 1209073,
+   "file_count": 109,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-2b04d4bb",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 1026324,
+   "file_count": 71,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-3dc13d70",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 988742,
+   "file_count": 71,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-41579b2a-fullsource",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 1091005,
+   "file_count": 67,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-45310d16",
+   "newest_mtime_epoch": 1787235957,
+   "apparent_bytes": 273080523,
+   "file_count": 70,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-45310d16-fullsource",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 1054464,
+   "file_count": 71,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-4e2bc04a",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 978027,
+   "file_count": 71,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-696c7a5c",
+   "newest_mtime_epoch": 1787235079,
+   "apparent_bytes": 272977114,
+   "file_count": 69,
+   "door_unlisted_entries": 3
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-7254a647",
+   "newest_mtime_epoch": 1787223441,
+   "apparent_bytes": 1235206,
+   "file_count": 109,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-79ef9a8f",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 995274,
+   "file_count": 76,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-7a3ec291",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 992806,
+   "file_count": 72,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-85b8c94c",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 1021391,
+   "file_count": 71,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-9678f88a",
+   "newest_mtime_epoch": 1787317303,
+   "apparent_bytes": 1147227,
+   "file_count": 75,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-a34a33ef",
+   "newest_mtime_epoch": 1787224543,
+   "apparent_bytes": 1069315,
+   "file_count": 73,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-b1afe92e",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 1137602,
+   "file_count": 106,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-bccc9e04",
+   "newest_mtime_epoch": 1787225634,
+   "apparent_bytes": 1141977,
+   "file_count": 75,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-c29c0966",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 1022570,
+   "file_count": 71,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-ca1a6808",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 1059629,
+   "file_count": 72,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-d053e34b",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 993904,
+   "file_count": 71,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-d588c80c",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 1159754,
+   "file_count": 76,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-d6b8de24-fullsource",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 4609058,
+   "file_count": 78,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-da225f92-fullsource",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 4639338,
+   "file_count": 78,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-e1d46c71",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 799216,
+   "file_count": 64,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-e70f0962",
+   "newest_mtime_epoch": 1787221387,
+   "apparent_bytes": 811279,
+   "file_count": 68,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-f4c47823-fullsource",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 823537,
+   "file_count": 65,
+   "door_unlisted_entries": 0
+  }
+ ]
+}

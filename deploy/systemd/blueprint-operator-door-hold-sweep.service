@@ -36,7 +36,10 @@ SystemCallFilter=@system-service
 SystemCallArchitectures=native
 ReadWritePaths=/var/lib/blueprint-operator-door/requests
 TasksMax=32
+# Host memory: part of the operator door (-500, as the door), under its own
+# MemoryMax.
 MemoryMax=256M
+OOMScoreAdjust=-500
 TimeoutStartSec=5min
 # Also how a parked deploy notices that the running one ended, within about a minute.
 # After a failed sweep too, and it never decides this unit's result.

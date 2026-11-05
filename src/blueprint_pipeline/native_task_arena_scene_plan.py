@@ -47,6 +47,7 @@ from .native_task_robot_contact_topology import (
     NativeTaskRobotContactTopologyError,
     resolve_native_task_robot_contact_topology,
 )
+from .usd_binary_read_cache import readable
 
 
 SCHEMA_VERSION = "native_task_arena_scene_plan.v1"
@@ -140,7 +141,7 @@ def _exact_scene_contact_body_paths(scene_collision_asset_path: Path) -> list[st
     try:
         from pxr import Usd, UsdPhysics
 
-        stage = Usd.Stage.Open(str(scene_collision_asset_path))
+        stage = Usd.Stage.Open(readable(scene_collision_asset_path))
     except (ImportError, RuntimeError) as exc:
         raise NativeTaskArenaScenePlanError(
             ["native_task_arena_scene_collision_topology_unreadable"]
@@ -982,7 +983,7 @@ def _articulation_plan(
                 )
             support_asset_path = scene_collision_asset_path
             support_spawn_role = "scene_collision"
-        support_stage = Usd.Stage.Open(str(support_asset_path))
+        support_stage = Usd.Stage.Open(readable(support_asset_path))
         support_root = (
             support_stage.GetDefaultPrim() if support_stage is not None else None
         )
@@ -1040,7 +1041,7 @@ def _articulation_plan(
         initial_support_body_paths = []
         initial_support = task_spec.get("initial_source_support")
         if initial_support is not None:
-            scene_stage = Usd.Stage.Open(str(scene_collision_asset_path))
+            scene_stage = Usd.Stage.Open(readable(scene_collision_asset_path))
             scene_default = scene_stage.GetDefaultPrim() if scene_stage is not None else None
             if (not destination_support_id or not isinstance(initial_support, Mapping)
                     or initial_support.get("contact_permission") != "initial_pickup_until_first_separation_or_lift"
@@ -1071,7 +1072,7 @@ def _articulation_plan(
             )
         contact_sensors = []
         if destination_support_id:
-            scene_stage = Usd.Stage.Open(str(scene_collision_asset_path))
+            scene_stage = Usd.Stage.Open(readable(scene_collision_asset_path))
             scene_default = (
                 scene_stage.GetDefaultPrim() if scene_stage is not None else None
             )

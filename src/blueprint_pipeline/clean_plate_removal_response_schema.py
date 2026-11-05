@@ -27,6 +27,13 @@ _properties = {
     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
     "spatial_evidence": _evidence,
 }
+#: The analysis's own reading of whether each object keeps its shape when handled, and the
+#: visible evidence it states (``task_profile_contracts.task_object_rigidity``). Added
+#: 2026-11-03; ``_region_properties`` is every target field before it.
+_region_properties = dict(_properties)
+_properties = {**_region_properties,
+               "rigidity": {"type": "string", "enum": ["rigid", "deformable", "unknown"]},
+               "rigidity_reason": {"type": "string"}}
 #: A task that adds a new object absent from the video (a synthetic ball) names
 #: its design and the observed support it starts on; nothing visible stands in.
 SYNTHETIC_SHAPES = ("sphere", "box", "cylinder")
@@ -43,19 +50,28 @@ _region = {
     **{name: {"type": "string"} for name in ("destination_target_id", "region_basis_quote")},
     "spatial_evidence": {**_evidence, "minItems": 1},
 }
-RESPONSE_SCHEMA = {
-    "type": "object", "required": ["targets"], "properties": {
-        "targets": {"type": "array", "items": {
-            "type": "object", "properties": _properties, "required": list(_properties),
-        }},
-        "synthetic_subject": {"type": "object", "properties": _synthetic, "required": list(_synthetic)},
-        "destination_region": {"type": "object", "properties": _region, "required": list(_region)},
-    },
-}
+
+
+def _response_schema(properties: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "object", "required": ["targets"], "properties": {
+            "targets": {"type": "array", "items": {
+                "type": "object", "properties": dict(properties), "required": list(properties),
+            }},
+            "synthetic_subject": {"type": "object", "properties": _synthetic, "required": list(_synthetic)},
+            "destination_region": {"type": "object", "properties": _region, "required": list(_region)},
+        },
+    }
+
+
+RESPONSE_SCHEMA = _response_schema(_properties)
+#: The response schema before ``rigidity`` existed (2026-10-31 to 2026-11-03). A completed
+#: analysis bought under it is still the capture's answer, without a classification.
+REGION_RESPONSE_SCHEMA = _response_schema(_region_properties)
 #: The response schema before ``destination_region`` existed. A completed analysis
 #: bought under it is still the capture's answer (``analyze_removal_targets``).
-PRIOR_RESPONSE_SCHEMA = {**RESPONSE_SCHEMA, "properties": {
-    key: value for key, value in RESPONSE_SCHEMA["properties"].items() if key != "destination_region"}}
+PRIOR_RESPONSE_SCHEMA = {**REGION_RESPONSE_SCHEMA, "properties": {
+    key: value for key, value in REGION_RESPONSE_SCHEMA["properties"].items() if key != "destination_region"}}
 
 
 def _box(value: Any, *, inside_frame: bool = True) -> list[float] | None:

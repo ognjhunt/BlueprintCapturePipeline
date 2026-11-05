@@ -400,6 +400,7 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
                          "disk_unavailable"),
         "capacity": _section(lambda: _capacity(config), "capacity_unavailable"),
         "load": _section(host.load, "load_unavailable"),
+        "memory": _section(host.memory, "memory_unavailable"),
         "door_requests": _section(lambda: _door_requests(config), "door_requests_unavailable"),
         "deploy_activation_hold": _section(lambda: _deploy_activation_hold(config),
                                            "deploy_activation_hold_unavailable"),

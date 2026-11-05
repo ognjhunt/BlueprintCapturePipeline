@@ -227,11 +227,7 @@ def test_plan_places_three_bays_with_one_prismatic_task_joint_and_records_assump
 
 
 def _thin_website_cabinet():
-    from blueprint_pipeline.website_drawer_depth_prior import PRIOR
-
     value = configuration()
-    value["scene_id"] = PRIOR["scene_id"]
-    value["replacement_identity"] = PRIOR["subject_identity"]
     value["source_observation_kind"] = "website_capture_frames"
     value["dimension_authority"] = "estimated"
     value["metric_envelope"] = {"minimum_xyz_m": [-0.21, -0.0815, 0.0],
@@ -268,7 +264,7 @@ def test_thin_website_drawer_requires_explicit_depth_hypothesis_before_authoring
     assert plan["development_geometry_hypothesis"]["estimated_minimum_opening_m"] == 0.2475
 
 
-@pytest.mark.parametrize("change", ["source", "interval", "basis", "nominal", "rationale", "scene"])
+@pytest.mark.parametrize("change", ["source", "interval", "basis", "nominal", "rationale", "unbound"])
 def test_depth_hypothesis_refuses_unbound_or_unbounded_estimates(change):
     value = _thin_website_cabinet()
     hypothesis = _depth_prior(value)
@@ -287,8 +283,8 @@ def test_depth_hypothesis_refuses_unbound_or_unbounded_estimates(change):
     value["mechanism"]["joint_limits"] = [0.0, 0.4125]
     value["required_output"]["mass_kg_bounds"] = [4.0, 30.0]
     value["required_output"]["task_part_mass_kg_bounds"] = [0.5, 9.0]
-    if change == "scene":
-        value["scene_id"] = "another-scene"
+    if change == "unbound":  # No scene identity to bind the cabinet prior to.
+        value["scene_id"] = None
     with pytest.raises(AssetAuthoringError, match="depth_hypothesis"):
         plan_articulated_assembly(value)
 

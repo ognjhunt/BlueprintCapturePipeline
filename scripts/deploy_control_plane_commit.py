@@ -498,6 +498,13 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-scene-project-spend-refresh.service",
     "blueprint-control-plane-storage-gc.service",
     "blueprint-control-plane-storage-gc.timer",
+    # Retires superseded release and runtime trees behind receipts (its own owner switch).
+    "blueprint-control-plane-release-lifecycle.service",
+    "blueprint-control-plane-release-lifecycle.timer",
+    # Owner-approved deletions: oneshots an operator starts by hand (plan, then apply);
+    # no timer or path unit starts them. See src/blueprint_pipeline/owner_approved_deletion.py.
+    "blueprint-owner-approved-deletion-plan.service",
+    "blueprint-owner-approved-deletion.service",
     "blueprint-control-plane-capacity.service",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.service",
@@ -599,6 +606,8 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # website scene workspaces, each behind its own proofs (docs/CONTROL_PLANE_STORAGE.md).
     "blueprint-control-plane-storage-gc.timer",
     "blueprint-completed-replay-cache-gc.timer",
+    # No-spend housekeeping with its own receipts and owner switch; a door hold pauses it.
+    "blueprint-control-plane-release-lifecycle.timer",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.timer",
     # Launch liveness and post-teardown provider-zero bookkeeping. It never
@@ -1674,6 +1683,13 @@ def _finish_release_retirement(
 
 _SANDBOX_DIRECTIVES = ("ReadWritePaths=", "ReadOnlyPaths=")
 _UNIT_PROVISIONABLE_PREFIX = "/var/lib/blueprint/"
+# Service-owned directories a unit writes directly on the work volume; each is created only
+# when the volume's mount point exists, never anywhere else under /mnt.
+_WORK_VOLUME_PROVISIONABLE = frozenset({
+    "/mnt/blueprint-work/embodiment-preparation",
+    "/mnt/blueprint-work/rigid-robot-free-probe-work",
+    "/mnt/blueprint-work/beta-policy-screening-work",
+})
 _UNIT_FILE_SUFFIXES = (".json", ".jsonl", ".lock", ".env", ".sqlite", ".log", ".txt")
 
 
@@ -2000,7 +2016,7 @@ def _install_unit_sandbox_paths(
                 continue
             file_like = Path(path_text).suffix in _UNIT_FILE_SUFFIXES
             if ((path_text.startswith(_UNIT_PROVISIONABLE_PREFIX) and not file_like)
-                    or (path_text == "/mnt/blueprint-work/embodiment-preparation" and host_path.parent.is_dir())):
+                    or (path_text in _WORK_VOLUME_PROVISIONABLE and host_path.parent.is_dir())):
                 pending.append((unit, path_text, host_path))
                 continue
             blockers.append(f"deploy_unit_sandbox_path_missing:{unit}:{path_text}")

@@ -1,0 +1,15 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-control-plane-release-lifecycle.timer.json
+Description=Retire superseded release and runtime trees hourly
+
+[Timer]
+OnBootSec=20min
+OnUnitInactiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=blueprint-control-plane-release-lifecycle.service
+
+[Install]
+WantedBy=timers.target

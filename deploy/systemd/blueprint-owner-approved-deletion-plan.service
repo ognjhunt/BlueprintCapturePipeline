@@ -1,0 +1,42 @@
+[Unit]
+Description=Plan owner-approved deletions: check every listed path, delete nothing
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline/blob/main/docs/CONTROL_PLANE_STORAGE.md#owner-approved-deletions
+# Started by hand only (operator door: unit start), never by a timer or path unit. The manifests
+# ship with the release under deploy/owner-approved-deletions; see owner_approved_deletion.py.
+
+[Service]
+Type=oneshot
+# Root reads root-only pins and every process's descriptors (CAP_SYS_PTRACE) for the reference
+# checks, and writes only its report.
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallFilter=~ptrace process_vm_readv process_vm_writev
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_PTRACE
+AmbientCapabilities=CAP_DAC_OVERRIDE CAP_SYS_PTRACE
+InaccessiblePaths=-/etc/blueprint/provider-secrets
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/storage-gc
+TasksMax=32
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, run by hand: +200.
+MemoryMax=1G
+OOMScoreAdjust=200
+CPUQuota=100%
+TimeoutStartSec=2h
+Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
+# The reclaim timer's queues; a test keeps them equal to blueprint-control-plane-storage-gc.service.
+Environment=BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
+ExecStart=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -m blueprint_pipeline.owner_approved_deletion plan --manifest-dir /opt/blueprint/task-evaluation-control-plane/deploy/owner-approved-deletions --report-root /var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions

@@ -1,0 +1,51 @@
+[Unit]
+Description=Retire superseded per-commit release worktrees and runtime trees behind receipts
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+ConditionPathIsDirectory=/opt/blueprint/task-evaluation-control-plane-releases
+
+[Service]
+Type=oneshot
+# Every deploy adds a release worktree (root disk) and two runtime trees (work volume),
+# about eleven a day on 2026-11-04, and deployment never retires them. Each tick keeps
+# the active release, the newest three, anything younger than a day, in use by a
+# process, leased, configured, or holding files its commit cannot reproduce, and
+# retires the rest behind a receipt (control_plane_release_lifecycle). Root, because
+# release worktrees are root-owned; it writes only the managed roots and its receipts.
+# BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT=0 in the operator environment file opts
+# out; each tick then only plans.
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallFilter=~ptrace process_vm_readv process_vm_writev
+TasksMax=64
+# Host memory (8.3 GB, no swap): batch job, retried: +200, so it goes before the
+# always-on services, paid work and the money-safety units.
+MemoryMax=512M
+OOMScoreAdjust=200
+CPUQuota=100%
+TimeoutStartSec=1h
+# Read every process's cwd, executable and argv so no tree in use is retired;
+# lease sidecars keep the service account's group.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_SYS_PTRACE
+AmbientCapabilities=CAP_DAC_OVERRIDE CAP_CHOWN CAP_SYS_PTRACE
+ReadWritePaths=/opt/blueprint/task-evaluation-control-plane-releases -/var/lib/blueprint/task-evaluation-inputs/system-runtimes/splat-render -/var/lib/blueprint/task-evaluation-inputs/system-runtimes/scene-configuration /var/lib/blueprint/pipeline-control-plane/release-retention -/var/lib/blueprint/pipeline-control-plane/release-leases
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+# Import the active release's code as the other control-plane units do: start inside the
+# release checkout with a relative PYTHONPATH set at exec time. An Environment=PYTHONPATH line
+# imported an older blueprint_pipeline (first tick, 2026-11-04 15:43Z: no module
+# control_plane_release_lifecycle).
+ExecStart=/bin/bash -lc 'cd -P /opt/blueprint/task-evaluation-control-plane && exec env PYTHONPATH=src /opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -m blueprint_pipeline.control_plane_release_lifecycle run --apply --ack retire-superseded-release-trees'

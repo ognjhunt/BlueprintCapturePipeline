@@ -55,7 +55,13 @@ ReadWritePaths=-/var/lib/blueprint/pubsub-handoffs
 ReadOnlyPaths=-/var/lib/blueprint/spend-authority -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs -/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases-state
 TasksMax=512
 LimitNOFILE=4096
-MemoryMax=8G
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 722M on the host.
+MemoryHigh=2G
+MemoryMax=3G
+OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=3h
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane

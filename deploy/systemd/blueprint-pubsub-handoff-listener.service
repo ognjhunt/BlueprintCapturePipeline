@@ -34,7 +34,13 @@ SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint
 TasksMax=512
 LimitNOFILE=65536
+# Host memory (8.3 GB, no swap): website captures prepare in this unit
+# (run_e2e, in-process); a preparation at production density passed 4.8 GB
+# locally and a full room is not measured on the host, so MemoryMax stays at
+# main's, with no throttle, until it is. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
 MemoryMax=8G
+OOMScoreAdjust=200
 CPUQuota=200%
 Type=oneshot
 Environment=BLUEPRINT_PUBSUB_HANDOFF_REPO=/opt/blueprint/task-evaluation-control-plane

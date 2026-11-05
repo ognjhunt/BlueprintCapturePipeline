@@ -53,6 +53,8 @@ RUNTIME_COMPONENTS = ("splat-render", "scene-configuration")
 DEFAULT_KEEP_LAST = 3
 DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 MAX_REPORTED_WARNINGS = 50
+#: Protection for a release worktree holding files its commit cannot reproduce.
+LOCAL_STATE_KIND = "release_worktree_local_state"
 #: Where apply moves a planned tree, inside its own managed root (so the move is
 #: an atomic rename on one filesystem), for deletion after the locks are released.
 RETIRING_DIRECTORY = ".retiring"
@@ -283,6 +285,7 @@ def build_release_retirement_plan(
     now: Callable[[], float] = time.time,
     in_use_commits: Sequence[str] = (),
     measure_sizes: bool = True,
+    local_state_commits: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Decide which superseded commits may be retired; mutate nothing.
 
@@ -291,6 +294,9 @@ def build_release_retirement_plan(
     know what is live.  ``measure_sizes=False`` skips walking the candidate
     trees (their sizes are then ``None``); deploy measures them only after
     the publishers' locks are released, while deleting.
+    ``local_state_commits`` maps a commit to why its release worktree holds
+    bytes the commit cannot reproduce (``control_plane_release_lifecycle``);
+    such a commit is kept, since redeploying it would not bring them back.
     """
 
     if (
@@ -341,6 +347,8 @@ def build_release_retirement_plan(
     # A paid run may outlive the deploy that superseded its release.
     for commit in in_use_commits:
         protect(commit, "in_use_by_live_process", "in_use_by_live_process")
+    for commit, why in sorted((local_state_commits or {}).items()):
+        protect(commit, f"{LOCAL_STATE_KIND}:{why}", LOCAL_STATE_KIND)
     all_commits = set(release_trees) | {
         commit for trees in runtime_trees.values() for commit in trees
     }
@@ -721,6 +729,7 @@ __all__ = [
     "DEFAULT_LOCK_TIMEOUT_SECONDS",
     "DEFAULT_MINIMUM_AGE_SECONDS",
     "EXECUTE_ACK",
+    "LOCAL_STATE_KIND",
     "MAX_REPORTED_WARNINGS",
     "RETIRING_DIRECTORY",
     "RUNTIME_COMPONENTS",

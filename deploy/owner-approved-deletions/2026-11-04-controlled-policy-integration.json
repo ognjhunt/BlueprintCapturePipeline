@@ -1,0 +1,18 @@
+{
+ "schema_version": "owner_approved_deletion_manifest.v1",
+ "approved_by": "owner",
+ "approved_at": "2026-11-04T15:00:00Z",
+ "expires_at": "2026-11-18T15:00:00Z",
+ "manifest_id": "2026-11-04-controlled-policy-integration",
+ "approval_evidence": "Owner, 2026-11-04 ~15:00Z, verbatim \"yes delete\": permanent deletion of task-evaluation-inputs/controlled-policy-integration-20260928 (about 4.96 GiB, last written 2026-09-30, no references found).",
+ "entries": [
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/controlled-policy-integration-20260928",
+   "newest_mtime_epoch": 1790749884,
+   "apparent_bytes": 5320146726,
+   "file_count": 3211,
+   "door_unlisted_entries": 15
+  }
+ ]
+}

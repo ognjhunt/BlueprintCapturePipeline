@@ -103,3 +103,27 @@ def test_failed_scoped_provider_observation_keeps_closed_local_attempt_reserved(
     outcome = observe(root, adapter)
     assert outcome["status"] == "reconciliation_required" and outcome["provider_zero_verified"] is False
     assert outcome["no_allocation_proven"] is False
+
+
+@pytest.mark.parametrize("forged", [False, True])
+def test_closed_allocation_whose_cell_stopped_before_any_policy_surfaces_the_named_blocker(
+        closed, monkeypatch, forged):
+    from tests.test_beta_policy_screening_closeout import setup_failed
+    root, adapter = closed
+    value = plan()
+    result = setup_failed(native_result(value), stage="runtime_open")
+    if forged:
+        result["blockers"] = ["policy_canary_session_setup_failed:<script>"]
+        seal(result, "result_digest")
+    path = root / "native_result.json"
+    path.write_text(json.dumps(result))
+    adapter.update(native_control_result_path=str(path), native_control_result_digest=result["result_digest"])
+    receipt = {"schema_version": closeout.SCHEMA, "scope": closeout.SCOPE, "provider_absence_confirmed": True,
+               "global_provider_zero_claimed": False, "receipt_digest": "sha256:" + "a" * 64, "blockers": [],
+               **{key: result[key] for key in ("beta_screening_admission", "candidate_ids")}}
+    monkeypatch.setattr(closeout, "collect_scoped_closeout", lambda **_: receipt)
+    outcome = observe(root, adapter, value)
+    assert outcome["status"] == "blocked" and outcome["provider_allocation_performed"] is True
+    assert outcome["provider_zero_verified"] is True and "result" not in outcome
+    assert outcome["blockers"] == (["beta_screening_native_result_missing_or_invalid"] if forged
+                                   else ["policy_canary_session_setup_failed:runtime_open"])

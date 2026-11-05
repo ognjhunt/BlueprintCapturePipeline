@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +80,9 @@ COMPLETED_SCENE_SOURCE_SCHEMAS = {
     SOURCE_OBJECT_CONTRACT_PATH: "task_evaluation_completed_scene_object_selection.v1",
 }
 NATIVE_PHYSICS_FREQUENCY_HZ = 120
+# The scorer reads an episode only when its first sample lies this close to ``start_pose_world``.
+RESET_TRANSLATION_TOLERANCE_M = 0.002
+RESET_ORIENTATION_TOLERANCE_RAD = 0.01
 # Closed-hand geometry of the fixed DROID Robotiq 2F-85 embodiment, measured
 # from paid-run readbacks rather than assumed from the vendor model.  Scene
 # 839873 franka-controls attempt 001 (instance 49506537) established both
@@ -289,6 +292,95 @@ def _source_matches_start(source: Mapping[str, Any], start: Sequence[float]) -> 
                for lo, hi, value in zip(lower, upper, start, strict=True))
 
 
+def _collision_bounds(value: Any) -> tuple[list[float], list[float]] | None:
+    try:
+        lower = [float(item) for item in value["minimum"]]
+        upper = [float(item) for item in value["maximum"]]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (len(lower) != 3 or len(upper) != 3 or not all(math.isfinite(item) for item in lower + upper)
+            or any(low >= high for low, high in zip(lower, upper, strict=True))):
+        return None
+    return lower, upper
+
+
+def _support_reading(support_surface: Callable[..., float | None], *, centre_xy: Sequence[float],
+                     bounds: tuple[list[float], list[float]], support_top: float, below_m: float) -> dict[str, Any]:
+    """The collider's highest point under ``bounds`` placed at ``centre_xy`` (``rigid_support_seating``)."""
+
+    from .rigid_support_seating import SEARCH_BELOW_SUPPORT_TOP_M
+
+    lower = [float(centre_xy[axis]) + bounds[0][axis] for axis in (0, 1)]
+    upper = [float(centre_xy[axis]) + bounds[1][axis] for axis in (0, 1)]
+    window = [support_top - max(SEARCH_BELOW_SUPPORT_TOP_M, float(below_m)),
+              support_top + bounds[1][2] - bounds[0][2]]
+    try:
+        top = support_surface(lower, upper, floor_z=window[0], ceiling_z=window[1])
+    except (ArithmeticError, TypeError, ValueError):
+        top = None
+    top = float(top) if isinstance(top, (int, float)) and math.isfinite(top) else None
+    return {"basis": ("scene_collider_highest_point_under_collision_footprint" if top is not None
+                      else "registered_support_top"),
+            "collider_top_z_m": top, "footprint_world_xy_m": {"minimum": lower, "maximum": upper},
+            "search_window_z_m": window, "registered_support_top_z_m": support_top,
+            **({} if top is not None else {"reason": "no_collider_point_under_footprint_in_window"}),
+            "estimate_boundary": "highest collider point; an object on uneven triangles can tilt and rest lower"}
+
+
+def _start_support_reading(support_surface: Callable[..., float | None] | None, *, collision: Any,
+                           center: Sequence[float], start: Sequence[float], support_top: float,
+                           below_m: float) -> dict[str, Any]:
+    if support_surface is None:
+        return {}
+    bounds = _collision_bounds(collision)
+    if bounds is None:
+        return {"basis": "registered_support_top", "collider_top_z_m": None,
+                "reason": "qualified_collision_bounds_missing"}
+    root_xy = [float(start[axis]) - float(center[axis]) for axis in (0, 1)]
+    return _support_reading(support_surface, centre_xy=root_xy, bounds=bounds, support_top=support_top,
+                            below_m=below_m)
+
+
+def _goal_support_reading(support_surface: Callable[..., float | None], *, task_spec: Mapping[str, Any],
+                          collision: Any, center: Sequence[float], support_top: float,
+                          below_m: float) -> dict[str, Any]:
+    """Where a correct placement rests at the goal on the collider, against the sealed success window.
+
+    Recorded, never applied: the goal height is the sealed success contract's
+    (``support_height_interval_m``), which only a new success document and the
+    owner's confirmation of it can change.
+    """
+
+    target = [float(value) for value in task_spec["target_position_world_m"]]
+    orientation = [float(value) for value in task_spec.get("destination_orientation_xyzw") or []]
+    scoring = _collision_bounds(task_spec.get("subject_collision_bounds_scoring_frame_m"))
+    if scoring is None:
+        body = _collision_bounds(collision)
+        scoring = None if body is None else (
+            [body[0][axis] - float(center[axis]) for axis in range(3)],
+            [body[1][axis] - float(center[axis]) for axis in range(3)])
+    if scoring is None:
+        return {"collider_top_z_m": None, "reason": "qualified_collision_bounds_missing"}
+    if len(orientation) != 4 or max(abs(a - b) for a, b in zip(orientation, (0.0, 0.0, 0.0, 1.0))) > 1e-9:
+        return {"collider_top_z_m": None, "reason": "goal_orientation_not_identity"}
+    reading = _support_reading(support_surface, centre_xy=target, bounds=scoring, support_top=support_top,
+                               below_m=below_m)
+    windows = [task_spec.get("support_height_interval_m"),
+               [((task_spec.get("destination_position_bounds_world_m") or {}).get(key) or [None] * 3)[2]
+                for key in ("minimum", "maximum")]]
+    try:
+        low = max(float(window[0]) for window in windows if window is not None)
+        high = min(float(window[1]) for window in windows if window is not None)
+    except (TypeError, ValueError):
+        low = high = None
+    reading["success_window_scoring_z_m"] = [low, high]
+    if reading["collider_top_z_m"] is not None:
+        rest = reading["collider_top_z_m"] - scoring[0][2]
+        reading["rest_scoring_z_m"] = rest
+        reading["within_success_window"] = low is not None and high is not None and low <= rest <= high
+    return reading
+
+
 def _runtime_geometry(
     *,
     replacement_identity: Mapping[str, Any],
@@ -299,6 +391,8 @@ def _runtime_geometry(
     start: Sequence[float],
     target: Sequence[float],
     strategy: str,
+    support_surface: Callable[..., float | None] | None = None,
+    search_below_m: float = 0.0,
 ) -> dict[str, Any]:
     observed = static.get("observed_structure")
     if (
@@ -414,21 +508,54 @@ def _runtime_geometry(
     # replacement geometry can differ by sub-millimetres.  Scene 839873 paid
     # for that distinction: the old center-only conversion placed the
     # replacement 0.18 mm through the support, and PhysX tipped it before the
-    # robot made contact.  Align the replacement's inferred local minimum to
-    # the registered support top instead of allowing any initial penetration.
+    # robot made contact.  Seat the replacement's own qualified collision
+    # bottom on its support instead of allowing any initial penetration; only
+    # a replacement without qualified collision bounds falls back to the
+    # source estimate's bottom (capture-447ae4f4: the estimate's bottom sat
+    # 12.1 mm below the replacement's, so the tray spawned that far above the
+    # support and 14.7 mm above the start the scorer expected).
     source_minimum_scoring_z = source_lower[2] - float(start[2])
-    replacement_minimum_root_z = center[2] + source_minimum_scoring_z
-    support_aligned_root_z = support_top - replacement_minimum_root_z
-    root_position[2] = max(root_position[2], support_aligned_root_z)
+    collision = observed.get("collision_bounds_body_frame_m")
+    qualified_bottom = None
+    if isinstance(collision, Mapping):
+        try:
+            qualified_bottom = float(collision["minimum"][2])
+        except (KeyError, IndexError, TypeError, ValueError):
+            qualified_bottom = None
+        if qualified_bottom is not None and not math.isfinite(qualified_bottom):
+            qualified_bottom = None
+    replacement_minimum_root_z = (center[2] + source_minimum_scoring_z if qualified_bottom is None
+                                  else qualified_bottom)
+    # Where the scene's own collider has been read (the team packet), the bottom
+    # rests on its highest point under the replacement's collision footprint;
+    # otherwise on the registered support top, never below it.
+    measured = _start_support_reading(support_surface, collision=collision, center=center, start=start,
+                                      support_top=support_top, below_m=search_below_m)
+    seat_top = support_top if measured.get("collider_top_z_m") is None else measured["collider_top_z_m"]
+    support_aligned_root_z = seat_top - replacement_minimum_root_z
+    if measured.get("collider_top_z_m") is None:
+        root_position[2] = max(root_position[2], support_aligned_root_z)
+    else:
+        root_position[2] = support_aligned_root_z
+    # The episode starts where the replacement is spawned: the scorer reads the
+    # first sample against this pose within 2 mm, so a moved root moves it too.
+    start_scoring = [float(value) for value in start]
+    if root_position[2] != float(start[2]) - center[2]:
+        start_scoring[2] = root_position[2] + center[2]
     return {
         "center_body_frame_m": center,
         "root_position_world_m": root_position,
+        "start_scoring_position_world_m": start_scoring,
+        "collision_bottom_root_z_m": replacement_minimum_root_z,
         "support_alignment": {
             "support_top_z_m": support_top,
             "source_minimum_scoring_z_m": source_minimum_scoring_z,
             "replacement_minimum_root_z_m": replacement_minimum_root_z,
+            "replacement_minimum_basis": ("source_bounds_estimate" if qualified_bottom is None
+                                          else "qualified_collision_bounds"),
             "support_aligned_root_z_m": support_aligned_root_z,
             "initial_support_penetration_permitted": False,
+            **({"start_support": measured} if measured else {}),
         },
         "contact_point_scoring_frame_m": contact,
         "approach_unit_scoring_frame": [-push[0], -push[1], 0.0],
@@ -580,12 +707,18 @@ def adapt_rigid_relocation_task_template(
     configured_revision: Mapping[str, Any] | None = None,
     materialized_references: Mapping[str, Mapping[str, Any]],
     diagnostic_controls_input: Mapping[str, Any] | None = None,
+    support_surface: Callable[..., float | None] | None = None,
 ) -> dict[str, Any]:
     """Return one digest-bound native view of exact configured task bytes.
 
     The diagnostic authority is deliberately separate from a configured scene
     revision. It can compile construction/controls inputs but cannot be passed
     through the production qualification compiler or acquire a revision digest.
+
+    ``support_surface`` (``rigid_support_seating``) reads the scene's own
+    collider: the replacement is then seated on it at the start, and where a
+    correct placement would rest at the goal is recorded against the success
+    window. Without it the registered support top is used, as before.
     """
 
     diagnostic = diagnostic_controls_input is not None
@@ -681,7 +814,7 @@ def adapt_rigid_relocation_task_template(
     return _adapt_rigid_relocation_documents(
         documents=documents, bindings=bindings, task=task, replacement_identity=replacement_identity,
         authority_digest=authority_digest, diagnostic=diagnostic,
-        configured_revision=configured_revision, request=request,
+        configured_revision=configured_revision, request=request, support_surface=support_surface,
     )
 
 
@@ -690,6 +823,7 @@ def _adapt_rigid_relocation_documents(
     task: Mapping[str, Any], replacement_identity: Mapping[str, Any], authority_digest: str,
     diagnostic: bool, configured_revision: Mapping[str, Any] | None = None,
     request: Mapping[str, Any] | None = None,
+    support_surface: Callable[..., float | None] | None = None,
 ) -> dict[str, Any]:
     """Shared derivation after the caller verifies its exact authority and document bytes.
 
@@ -808,6 +942,8 @@ def _adapt_rigid_relocation_documents(
         start=start,
         target=target,
         strategy=strategy,
+        support_surface=support_surface,
+        search_below_m=_estimated_support_height_tolerance(template),
     )
     source_documents = {
         "bindings": bindings,
@@ -991,7 +1127,7 @@ def _adapt_rigid_relocation_documents(
             if strategy == "pick_and_place"
             else "Move the configured rigid object to the registered target by planar push."
         ),
-        "start_pose_world": [*start, 0.0, 0.0, 0.0, 1.0],
+        "start_pose_world": [*geometry["start_scoring_position_world_m"], 0.0, 0.0, 0.0, 1.0],
         "target_position_world_m": target,
         "destination_position_tolerance_m": target_tolerance,
         "destination_position_bounds_world_m": {
@@ -1021,8 +1157,8 @@ def _adapt_rigid_relocation_documents(
         "task_contact_minimum_force_n": 0.5,
         "collision_failure_minimum_force_n": 1.0,
         "robot_scene_collision_minimum_force_n": ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N,
-        "reset_translation_tolerance_m": 0.002,
-        "reset_orientation_tolerance_rad": 0.01,
+        "reset_translation_tolerance_m": RESET_TRANSLATION_TOLERANCE_M,
+        "reset_orientation_tolerance_rad": RESET_ORIENTATION_TOLERANCE_RAD,
         "settle_position_tolerance_m": 0.005,
         "settle_orientation_tolerance_rad": 0.03,
         "relocation_tracking_tolerance_m": target_tolerance,
@@ -1109,6 +1245,18 @@ def _adapt_rigid_relocation_documents(
         native_task_spec = bind_native_surface_target(task_spec=native_task_spec, target=surface,
             static=documents[STATIC_QUALIFICATION_CONTRACT_PATH], support=support,
             height_tolerance_m=_estimated_support_height_tolerance(template))
+    if support_surface is not None:
+        goal_support = template.get("destination_support_plane") or documents[SUPPORT_PLANE_CONTRACT_PATH]
+        reading = _goal_support_reading(
+            support_surface, task_spec=native_task_spec,
+            collision=(documents[STATIC_QUALIFICATION_CONTRACT_PATH].get("observed_structure") or {}).get(
+                "collision_bounds_body_frame_m"),
+            center=geometry["center_body_frame_m"], support_top=float(goal_support["top_z_m"]),
+            below_m=_estimated_support_height_tolerance(template))
+        affordance = dict(native_task_spec["interaction_affordance"])
+        affordance["support_alignment"] = {**affordance["support_alignment"], "goal_support": reading}
+        affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+        native_task_spec["interaction_affordance"] = affordance
     native_definition = {
         "schema_version": "task_evaluation_native_task_definition.v1",
         "identity": dict(task["identity"]),

@@ -201,19 +201,23 @@ def reconcile_enclosed_fixture_collision(*, source: Path, preparation: Mapping[s
 def derived_stage_three_configuration(*, runtime: Mapping[str, Any],
                                       preparation: Mapping[str, Any],
                                       observation_manifest_path: Path | None = None) -> dict[str, Any]:
-    """Recompile only stage 3 from the retained exact-scene evidence on retry."""
+    """Recompile only stage 3 from this scene's own retained evidence on retry.
+
+    A drawer cabinet in a development drawer fixture whose visible box is too
+    thin takes the cabinet depth prior, bound to this scene's preparation,
+    observation manifest, subject and original frames once each is checked.
+    """
     from .task_object_articulated_packaging import derived_website_cabinet_depth_hypothesis
-    from .website_drawer_depth_prior import prior_for
+    from .website_drawer_depth_prior import is_drawer_cabinet, prior_for
 
     original = runtime["object_authoring"]["configuration"]
     config = dict(original)
     observation_record = runtime["object_authoring"]["observation_manifest"]
-    prior = prior_for(scene_id=original.get("scene_id"),
-                      subject_identity=original.get("replacement_identity"))
-    if (prior is None or preparation.get("digest") != prior["preparation_digest"]
+    if (not is_drawer_cabinet(original)
+            or not isinstance(preparation.get("digest"), str)
             or (preparation.get("development_test") or {}).get("kind") != "development_drawer_fixture"
             or (preparation.get("development_test") or {}).get("captured_scene_evaluation_allowed") is not False
-            or observation_record.get("digest") != prior["observation_manifest_digest"]):
+            or not isinstance(observation_record.get("digest"), str)):
         return config
     manifest_path = observation_manifest_path or Path(observation_record["path"])
     if not manifest_path.is_file():
@@ -229,9 +233,16 @@ def derived_stage_three_configuration(*, runtime: Mapping[str, Any],
     original_frames = observed.get("frames") or []
     hashes = {row.get("image", {}).get("digest") for row in original_frames
               if row.get("image_basis") == "original_capture"}
-    if len(original_frames) != len(hashes) or hashes != set(prior["original_frame_sha256s"]):
+    # Every observed frame is a distinct original capture frame of this video.
+    if (not hashes or len(original_frames) != len(hashes)
+            or any(not isinstance(digest, str) for digest in hashes)):
         return config
-    frames = [{"role": "observed_source", "sha256": digest} for digest in sorted(hashes)]
+    prior = prior_for(original, preparation_digest=preparation["digest"],
+                      observation_manifest_digest=observation_record["digest"],
+                      original_frame_sha256s=hashes)
+    if prior is None:
+        return config
+    frames = [{"role": "observed_source", "sha256": digest} for digest in prior["original_frame_sha256s"]]
     fraction = (preparation.get("intake_request", {}).get("task", {}).get("success") or {}).get(
         "minimum_opening_fraction_of_estimated_stroke")
     hypothesis = derived_website_cabinet_depth_hypothesis(original, frames, fraction)
@@ -520,13 +531,27 @@ def execute_prepared_collision(*, envelope, stage, configuration, configuration_
     candidate = _record(observed_root / observed["candidate"]["path"])
     if any(candidate[key] != authoring["source_candidate"][key] for key in ("digest", "size_bytes")):
         raise ValueError("website_prepared_collision_candidate_mismatch")
-    background = _copy_artifact(collision, output_root / "background_collision.usda")
+    # Named by its format: the transported path has no extension, OpenUSD refuses crate bytes under a
+    # .usda name, and the bundle and publication name the collider by this suffix (``collision.usdc``).
+    # A collider normalized before is text and keeps its name.
+    from .common import usd_payload_suffix
+    suffix = usd_payload_suffix(collision) or ".usda"
+    background = _copy_artifact(collision, output_root / ("background_collision" + suffix))
     receipt = {"schema_version": "website_prepared_background_result.v1", "status": "prepared_background_reused",
                "runtime_inputs_digest": configuration["runtime_inputs_digest"],
                "preparation_digest": value["preparation_digest"], "collision_digest": background["digest"],
                "background_bytes_unchanged": True, "source_prim_excision_performed": False,
                "source_object_candidate_separate": True, "claim_ceiling": "development_only",
                "physical_measurement_proven": False}
+    if "support_pad" in value["collision"]:
+        # Its support was planarized at the success plane where the collider was produced
+        # (``website_support_pad``): the scene revision seals that model with these bytes
+        # (``geometry.object_excision_result``).
+        pad = dict(value["collision"]["support_pad"])
+        if isinstance(pad.get("derived_collider"), Mapping):
+            # Portable: the sealed bytes are this stage's copy, named by digest, not the control plane's path.
+            pad["derived_collider"] = {key: item for key, item in pad["derived_collider"].items() if key != "path"}
+        receipt["support_pad"] = pad
     receipt["digest"] = canonical_digest(receipt, digest_field="digest")
     receipt_path = output_root / "background_reuse.json"
     write_json(receipt_path, receipt)

@@ -432,6 +432,8 @@ def test_the_worker_pass_requeues_a_due_block_recorded_before_automatic_retries(
     os.replace(queue / "pending" / f"{key}.json", queue / "processed" / f"{key}.json")
     (queue / "status" / f"{key}.json").write_text(json.dumps(
         {"status": "blocked", "blockers": ["team_scene_packet_failed:OSError"]}))
+    # The transient path alone: with a known release, a status naming none takes the new-release retry first.
+    monkeypatch.setattr(worker, "current_release_commit", lambda: None)
     _at(monkeypatch, 0)
     run = world["process"]()
     assert run["automatic_requeue"] == [{"request_key": key, "attempt": 1, "reason": "team_scene_packet_failed:OSError"}]
@@ -500,6 +502,96 @@ def test_a_deploy_that_fixes_a_deterministic_refusal_re_drives_it_once_per_relea
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
 
 
+def _spawn_off_start(half: str, offset_m: float) -> None:
+    """Rewrite a compiled half's plan as a release before the seating fix compiled capture-447's (14.7 mm)."""
+
+    plan_path = Path(read_team_scene_inputs(half)["base_native_packet"]["path"]).parent / (
+        "native_task_arena_scene_plan.v1.json")
+    plan = json.loads(plan_path.read_text())
+    (row,) = [row for row in plan["objects"] if row.get("task_subject") is True]
+    row["reset_state"]["root_pose_world"]["position_world_m"][2] += offset_m
+    plan_path.chmod(0o644)
+    plan_path.write_text(json.dumps(plan))
+
+
+def test_a_half_no_episode_can_be_scored_from_is_recompiled_once_per_new_release(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    _release(monkeypatch, RELEASE_1)
+    _at(monkeypatch, 0)
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    first = status["team_scene_inputs_path"]
+    assert worker.unscorable_half(first) is None
+    # As capture-447ae4f4's half was compiled: its tray spawned 14.7 mm from the start the scorer reads.
+    _spawn_off_start(first, 0.0147)
+    assert worker.unscorable_half(first) == "rigid_task_start_pose_not_spawn_pose:14.7mm>2.0mm"
+    # The release that compiled it never recompiles it ...
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    # ... a newly deployed one does, once, on the CPU, recorded before the move.
+    _release(monkeypatch, RELEASE_2)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
+        {"request_key": key, "reason": "unscorable_half",
+         "detail": "rigid_task_start_pose_not_spawn_pose:14.7mm>2.0mm", "release_commit": RELEASE_2}]
+    assert _status(world)[worker.UNSCORABLE_HALF_REQUEUE_FIELD] == [RELEASE_2]
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    assert status["team_scene_inputs_path"] != first and worker.unscorable_half(status["team_scene_inputs_path"]) is None
+    assert profile_for_capture(world["capture"])["team_scene_inputs_path"] == status["team_scene_inputs_path"]
+    assert status[worker.UNSCORABLE_HALF_REQUEUE_FIELD] == [RELEASE_2]
+    # Even were it still unscorable, this release never tries it again: no loop.
+    _spawn_off_start(status["team_scene_inputs_path"], 0.0147)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    assert world["process"]()["automatic_requeue"] == []
+    # A half within the scorer's reset tolerance is reused by every release.
+    _spawn_off_start(status["team_scene_inputs_path"], -0.0147 + 0.0015)
+    _release(monkeypatch, "c" * 40)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+
+
+def _as_compiled_before_the_support_pad(half: str) -> None:
+    """Rewrite a compiled half's record as a release before the support pad wrote capture-447's: no support record."""
+
+    path = Path(half)
+    value = json.loads(path.read_text())
+    value.pop("task_support_pad")
+    value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
+    path.chmod(0o644)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def test_a_rigid_half_compiled_before_its_support_was_checked_is_recompiled_once_per_new_release(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline.rigid_support_pad import UNMODELLED_HALF
+
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    _release(monkeypatch, RELEASE_1)
+    _at(monkeypatch, 0)
+    [status] = world["process"]()["results"]
+    first = status["team_scene_inputs_path"]
+    # This fixture's replacement has no qualified collision bounds: its support is recorded unchecked, by name.
+    assert json.loads(Path(first).read_text())["task_support_pad"]["reason"] == (
+        "rigid_support_qualified_collision_bounds_missing")
+    assert worker.unscorable_half(first) is None
+    # As capture-447ae4f4's half was compiled (release 9f47f0466): its tray rested on the scan, unchecked.
+    _as_compiled_before_the_support_pad(first)
+    assert worker.unscorable_half(first) == UNMODELLED_HALF
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    # The release that models the support recompiles it, once, on the CPU; the new half is reused after.
+    _release(monkeypatch, RELEASE_2)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
+        {"request_key": key, "reason": "unscorable_half", "detail": UNMODELLED_HALF, "release_commit": RELEASE_2}]
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    second = status["team_scene_inputs_path"]
+    assert second != first and "task_support_pad" in json.loads(Path(second).read_text())
+    assert worker.unscorable_half(second) is None
+    assert profile_for_capture(world["capture"])["team_scene_inputs_path"] == second
+    _release(monkeypatch, "c" * 40)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+
+
 def test_a_refusal_recorded_without_a_release_requeues_once_under_a_known_release(tmp_path, monkeypatch):
     world = _world(tmp_path, monkeypatch)
     queue, key = world["queue"], world["key"]
@@ -543,12 +635,25 @@ def test_a_refusal_recorded_without_a_release_requeues_once_under_a_known_releas
     # An owner-contract refusal waits for the owner's confirmation, whatever release is running.
     ({"status": "blocked", "blockers": [worker.OWNER_CONTRACT_BLOCKER_PREFIX + "authority_missing"],
       "release_commit": RELEASE_1}, RELEASE_2, None),
-    # A transient block keeps its own bounded backoff: not before its wait, and once due, as a transient retry.
+    # A new release gets one try at a transient block at once: inside its backoff, after its retries are
+    # spent, or due (capture-447ae4f4, 2026-11-03: killed three times for host memory, then two hours from
+    # its last retry when the memory fix shipped).
     ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1,
-      "automatic_retry": {"attempts": 0, "not_before": "2026-10-31T12:05:00+00:00"}}, RELEASE_2, None),
+      "automatic_retry": {"attempts": 0, "not_before": "2026-10-31T12:05:00+00:00"}}, RELEASE_2, "new_release"),
     ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1,
-      "automatic_retry": {"attempts": 3, "exhausted": True}}, RELEASE_2, None),
+      "automatic_retry": {"attempts": 3, "exhausted": True}}, RELEASE_2, "new_release"),
+    ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"], "release_commit": RELEASE_1,
+      "automatic_retry": {"attempts": 2, "limit": 3, "not_before": "2026-10-31T14:00:00+00:00",
+                          "reason": "team_scene_packet_interrupted"}}, RELEASE_2, "new_release"),
     ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1},
+     RELEASE_2, "new_release"),
+    # Under the same release a transient block keeps its own bounded backoff: not before its wait, never
+    # past its limit, and once due, as a transient retry.
+    ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_2,
+      "automatic_retry": {"attempts": 0, "not_before": "2026-10-31T12:05:00+00:00"}}, RELEASE_2, None),
+    ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"], "release_commit": RELEASE_2,
+      "automatic_retry": {"attempts": 3, "limit": 3}}, RELEASE_2, None),
+    ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_2},
      RELEASE_2, "team_scene_offer_publication_failed"),
 ])
 def test_only_a_deterministic_refusal_is_requeued_by_a_new_release(tmp_path, status, release, reason):
@@ -560,9 +665,10 @@ def test_only_a_deterministic_refusal_is_requeued_by_a_new_release(tmp_path, sta
     assert (queue / ("pending" if reason else "processed") / "k.json").is_file()
     if reason == "new_release":
         assert json.loads((queue / "status" / "k.json").read_text())[worker.RELEASE_REQUEUE_FIELD] == [release]
-        # Back in processed with the same status: never twice for one release.
+        # Back in processed with the same status: never twice for one release (a transient block may
+        # still take its own bounded retry under it).
         os.replace(queue / "pending" / "k.json", queue / "processed" / "k.json")
-        assert worker._requeue_due(queue, T0, release) == []
+        assert "new_release" not in [row["reason"] for row in worker._requeue_due(queue, T0, release)]
 
 
 def test_the_running_release_is_the_release_checkouts_commit_or_unknown(monkeypatch):

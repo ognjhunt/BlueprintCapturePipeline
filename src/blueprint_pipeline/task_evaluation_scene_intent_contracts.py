@@ -14,6 +14,7 @@ from typing import Any
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest as canonical_digest
 from .validation_file_digests import note_consulted
+from .website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
 
 from .task_family_scoring import FAMILY_ALIASES
 
@@ -113,9 +114,12 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
         "accepted_by", "accepted_at_epoch", "rights_reference", "provider_terms_reference",
         "private_processing_authorized", "provider_training_authorized", "task_confirmed",
         "spend_authorized"}, "consent_invalid")
+    # A website intent carries its preparation grant's consent, so the consent
+    # may be as old as the longest window a grant may carry.
     _require(consent["accepted_by"] == owner["user_id"]
              and _number(consent["accepted_at_epoch"])
-             and now - 86400 <= consent["accepted_at_epoch"] <= now, "consent_actor_or_time_invalid")
+             and now - WEBSITE_JOB_WINDOW_MAX_SECONDS <= consent["accepted_at_epoch"] <= now,
+             "consent_actor_or_time_invalid")
     _require(all(isinstance(consent[k], str) and 1 <= len(consent[k]) <= 1000
                  for k in ("rights_reference", "provider_terms_reference")), "consent_references_missing")
     from .website_preparation_contracts import preparation_consent_valid

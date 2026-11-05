@@ -120,3 +120,55 @@ def test_native_source_receipt_is_still_verified_before_sdk_start(tmp_path):
     with pytest.raises(launch.NativeTaskIsaacLabLaunchError):
         launch.launch_native_task_isaaclab(receipt, device="cuda:0", appearance_render_path="usd_geometry",
             app_launcher_factory=lambda **_kw: pytest.fail("changed source must not reach Kit"))
+
+
+def _launch(tmp_path, *, cameras=True, identity=None):
+    calls = []
+    _, value = launch.launch_native_task_isaaclab(
+        _receipt(tmp_path), device="cuda:0", appearance_render_path="usd_geometry", enable_cameras=cameras,
+        controller_backend="pink_franka", app_launcher_factory=lambda **kw: calls.append(kw) or SimpleNamespace(app=object()),
+        runtime_probe_factory=lambda *_a, **_kw: identity if identity is not None else {
+            **development_runtime_identity(), "pink": {"activation": "sdk_extension_enable", "sdk_extension_enabled": True}},
+        nurec_renderer_probe_factory=lambda: {"extension_enabled": False, "multi_gpu_enabled": False,
+                                              "nurec_utils_extension_enabled": False})
+    return calls[0], value
+
+
+@pytest.mark.parametrize("cameras", [True, False])
+def test_franka_launch_enables_sdk_pink_on_the_base_experience_as_it_ran_aug_to_oct(tmp_path, cameras):
+    """2026-11-04: the Pink overlay's pinned bytes (GitHub source) never matched the 6.0.1 image, so
+    every Franka cell stopped before Isaac started. The launch that ran Franka policy episodes on GPU
+    from 2026-08-20 to 2026-10-30 enabled the SDK extension directly on the base experience."""
+    call, value = _launch(tmp_path, cameras=cameras)
+    assert launch.PINK_SDK_ENABLE_ARG in call["kit_args"] and "--ext-path" not in call["kit_args"]
+    assert "nurec_utils" not in call["kit_args"]
+    # The receipt's pinned experience, whatever the camera setting: the Aug-Oct launch.
+    assert Path(call["experience"]).name == "isaaclab.python.headless.rendering.kit"
+    assert value["pink_compatibility"]["overlay_used"] is False
+    assert value["post_start_identity_flags"] == []
+
+
+def test_franka_post_start_identity_misses_are_recorded_not_a_stop(tmp_path):
+    readback = development_runtime_identity()
+    readback["excluded_extensions"]["omni.warp.core"] = True
+    readback["pink"] = {"activation": "sdk_extension_enable", "sdk_extension_enabled": True}
+    _, value = _launch(tmp_path, identity=readback)
+    assert [flag["code"] for flag in value["post_start_identity_flags"]] == [
+        "native_task_isaaclab_post_start_identity_flagged"]
+    assert "conflicting_extension_loaded" in value["post_start_identity_flags"][0]["reason"]
+    # Other controllers keep the post-start identity as a stop.
+    with pytest.raises(launch.NativeTaskIsaacLabLaunchError):
+        launch.launch_native_task_isaaclab(
+            _receipt(tmp_path / "joint"), device="cuda:0", appearance_render_path="usd_geometry",
+            controller_backend="joint", app_launcher_factory=lambda **kw: SimpleNamespace(app=object()),
+            runtime_probe_factory=lambda *_a, **_kw: readback,
+            nurec_renderer_probe_factory=lambda: {"extension_enabled": False, "multi_gpu_enabled": False})
+
+
+def test_the_franka_launch_never_reads_the_unmatched_pink_overlay(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_task_pink_compatibility as pink
+
+    def refuse(*_a, **_kw):
+        raise AssertionError("overlay used")
+    monkeypatch.setattr(pink, "prepare_pink_runtime", refuse)
+    _launch(tmp_path)

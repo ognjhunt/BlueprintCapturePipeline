@@ -22,6 +22,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_beta_authority import SOURCE_FIELDS
+from .usd_binary_read_cache import read_scoped
 
 SCHEMA = "native_g1_beta_scene_preparation.v1"
 FILENAME = SCHEMA + ".json"
@@ -121,15 +122,40 @@ def _namespace_lock(path: Path):
         os.close(descriptor)  # Process exit releases this lock, including SIGKILL.
 
 
+def g1_stance_search(*, collision_path: Path, collision_sha256: str, offset: list[float], start: Any,
+                     target: Any, bounds: Mapping[str, Any]) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
+    """The G1's clear floor stances around the task, closest first, and the one its arm span picks.
+
+    Its own footprint and pelvis height on the scene's floor (``ground_stance``, keeping long collision
+    fixtures). The chosen one is the closest from which its nominal arm span covers the pick and the
+    place; with none, the closest, flagged. Advisory: reach refuses nothing here. With no clear stance
+    the search raises by name (``TeamEmbodimentError``). The website robot fit precheck searches the
+    same way before any spend (``website_robot_fit_precheck``).
+    """
+    from .native_g1_scene_reach_probe import STANCE_RULE, g1_stance_static_reach
+    from .scene_placement.robot_profile import UNITREE_G1_PROFILE
+    from .team_embodiment_stance import GRID_STEP_M, SEARCH_RADIUS_M, ground_stance
+
+    stances = ground_stance(collision_path=collision_path, collision_sha256=collision_sha256, offset=offset,
+        subject_center=list(start[:3]), subject_minimum=bounds["minimum"], subject_maximum=bounds["maximum"],
+        footprint_half_extent_m=list(UNITREE_G1_PROFILE.footprint_half_extent_xyz[:2]), root_height_m=UNITREE_G1_PROFILE.pelvis_height_m,
+        retain_large_collision_bounds=True, ranked=(2 * math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9) + 1) ** 2)
+    try:
+        chosen, stance_reach = g1_stance_static_reach(stances, start=start[:3], target=target, task_hand=TASK_HAND)
+    except (KeyError, TypeError, ValueError):
+        chosen, stance_reach = 0, {"rule": STANCE_RULE, "status": "unassessed",
+                                   "reason": "g1_stance_reach_inputs_invalid"}
+    return stances, chosen, stance_reach
+
+
 def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: Path,
              evidence_root: Path, source: Mapping[str, Any], site_id: str,
              task_success_contract: Mapping[str, Any]) -> tuple[dict, dict]:
     from .adp_task_scoring import validate_rigid_task_success_contract
     from .native_g1_arena_robot_configuration import build_pinned_g1_arena_robot_configuration
     from .native_task_robot_contact_topology import _asset_rigid_body_paths
-    from .native_g1_scene_reach_probe import STANCE_RULE, g1_stance_static_reach
     from .scene_placement.robot_profile import UNITREE_G1_PROFILE
-    from .team_embodiment_stance import GRID_STEP_M, SEARCH_RADIUS_M, _scene_collision, ground_stance
+    from .team_embodiment_stance import _scene_collision
 
     original = _read(base_root / "native_task_arena_packet_request.v1.json")
     plan = _read(base_root / "native_task_arena_scene_plan.v1.json")
@@ -154,18 +180,9 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
         bounds = {key: [float(start[i]) + float(local[key][i]) for i in range(3)] for key in ("minimum", "maximum")}
         bounds_basis = "retained_unrotated_task_scoring_bounds"
     collision, collision_digest, offset = _scene_collision(plan, base_root)
-    # The closest clear stance from which the G1's own nominal arm span covers the pick and the place;
-    # with none, the closest, flagged. Advisory: reach refuses nothing here.
-    stances = ground_stance(collision_path=collision, collision_sha256=collision_digest, offset=offset,
-        subject_center=list(task["start_pose_world"][:3]), subject_minimum=bounds["minimum"], subject_maximum=bounds["maximum"],
-        footprint_half_extent_m=list(UNITREE_G1_PROFILE.footprint_half_extent_xyz[:2]), root_height_m=UNITREE_G1_PROFILE.pelvis_height_m,
-        retain_large_collision_bounds=True, ranked=(2 * math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9) + 1) ** 2)
-    try:
-        chosen, stance_reach = g1_stance_static_reach(stances, start=task["start_pose_world"][:3],
-                                                      target=task["target_position_world_m"], task_hand=TASK_HAND)
-    except (KeyError, TypeError, ValueError):
-        chosen, stance_reach = 0, {"rule": STANCE_RULE, "status": "unassessed",
-                                   "reason": "g1_stance_reach_inputs_invalid"}
+    stances, chosen, stance_reach = g1_stance_search(
+        collision_path=collision, collision_sha256=collision_digest, offset=offset,
+        start=task["start_pose_world"][:3], target=task["target_position_world_m"], bounds=bounds)
     stance = stances[chosen]
     pose = {"position_world_m": stance["position_world_m"], "orientation_xyzw": stance["orientation_xyzw"]}
     robot = build_pinned_g1_arena_robot_configuration(asset=robot_asset, evidence_root=evidence_root,
@@ -228,10 +245,15 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
     return request, assumptions
 
 
+@read_scoped
 def prepare_native_g1_beta_packet(*, base_packet_record: Mapping[str, Any], source: Mapping[str, Any],
                                   site_id: str, output_root: Path, robot_asset_record: Mapping[str, Any],
                                   task_success_contract: Mapping[str, Any]) -> dict:
-    """Prepare under `<output_root>/native-g1/<base-digest>/<source-digest>/`."""
+    """Prepare under `<output_root>/native-g1/<base-digest>/<source-digest>/`.
+
+    The stance search and the packet read the base packet's scene collider through one read scope: a USDA
+    text room is read into a binary copy each reader opens (``usd_binary_read_cache``), not parsed per open.
+    """
     from .native_g1_arena_robot_configuration import G1_USD_SHA256, G1_USD_SIZE_BYTES
     from .native_task_arena_bundle import verify_native_task_arena_packet
     from .native_task_arena_packet import materialize_native_task_arena_packet

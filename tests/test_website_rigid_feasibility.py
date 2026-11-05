@@ -34,15 +34,21 @@ def _preparation(destination, *, support=FLOOR, subject=([0.2675, -0.0325, 0.0],
 DESK = {"relation": "on", "position_world_m": [0.9, 0.0, 0.74], "support": DESK_TOP}
 
 
-def test_a_ball_on_the_floor_cannot_be_carried_onto_a_desk_from_a_floor_mount(tmp_path):
+def test_a_ball_the_scripted_carry_cannot_lift_onto_a_desk_is_flagged_never_refused(tmp_path):
     verdict = rigid_task_verdict(preparation=_preparation(DESK), collision_path=_room(tmp_path),
                                  robot_profiles=[DROID])
-    assert verdict["status"] == "abstained" and verdict["mount_rule"] == "level_with_lower_support"
-    # Several stations and every grasp were tried; none lifts it to the desk: the robot's verdict.
-    assert len(verdict["blockers"]) == 1 and verdict["blockers"][0].endswith(":lift"), verdict["blockers"]
+    assert verdict["status"] == "flagged" and verdict["mount_rule"] == "level_with_lower_support"
+    # Several stations and every grasp were tried; none lifts it to the desk. The ball and the desk are within
+    # the arm's reach, so a learned policy may still: the miss is a flag, and the job goes on.
+    assert verdict["blockers"] == [] and verdict["flags"] == ["scripted_carry_path_not_found"]
+    assert len(verdict["scripted_carry_blockers"]) == 1 and verdict["scripted_carry_blockers"][0].endswith(":lift")
     assert verdict["stations_tried"] > 1 and verdict["grasps_tried"] == 9
+    assert verdict["object_reach"]["status"] == "within_bound" and verdict["stances_in_reach"] > 0
     assert verdict["embodiments"] == [{"robot_id": "franka_panda", "status": "blocked",
-                                       "blockers": verdict["blockers"], "grasp": verdict["reach"]["grasp"]}]
+                                       "blockers": verdict["scripted_carry_blockers"],
+                                       "grasp": verdict["reach"]["grasp"], "object_reach": "within_bound",
+                                       "stances_in_reach": verdict["stances_in_reach"],
+                                       "flags": ["scripted_carry_path_not_found"]}]
     # The mount stands on the floor: level with the lower of the two surfaces.
     assert verdict["station"]["position_world_m"][2] == pytest.approx(0.0, abs=1e-6)
     assert verdict["verdict_digest"].startswith("sha256:")
@@ -82,23 +88,57 @@ def test_a_lip_over_the_object_refuses_top_down_and_a_tilted_grasp_carries_it(tm
                                  subject=([0.52, -0.28, 0.40], [0.58, -0.22, 0.56])),
         collision_path=tmp_path / "collision.usda", robot_profiles=[DROID])
     assert verdict["status"] == "clear" and verdict["reach"]["grasp"] not in (None, "top_down")
+    # Top-down clears from no station: the lip strikes the hand on the way down; the stations a footprint
+    # apart on the table's far side are out of the arm's reach for it.
     top_down = [row for row in verdict["station_results"] if row["grasp"] == "top_down"]
-    assert top_down and {tuple(row["blockers"]) for row in top_down} == {
-        ("robot_rigid_pick_place_scene_strike:robotiq_2f85_body:approach",)}
+    assert top_down and all(row["status"] == "blocked" for row in top_down)
+    assert ("robot_rigid_pick_place_scene_strike:robotiq_2f85_body:approach",) in {
+        tuple(row["blockers"]) for row in top_down}
 
 
 def test_an_embodiment_the_gate_cannot_model_is_unassessed_never_refused(tmp_path):
     collision = _room(tmp_path)
     mixed = rigid_task_verdict(preparation=_preparation(DESK), collision_path=collision,
                                robot_profiles=[DROID, "team_mobile_manipulator_v1"])
-    # The Franka cannot do it; the other robot was never measured, so nothing is refused.
-    assert mixed["status"] == "unassessed" and mixed["unassessed_robot_profiles"] == ["team_mobile_manipulator_v1"]
-    assert mixed["blockers"][-1] == "robot_profile_unmodeled:team_mobile_manipulator_v1"
+    # The Franka's scripted carry misses it (a flag); the other robot was never measured: nothing is refused.
+    assert mixed["status"] == "flagged" and mixed["unassessed_robot_profiles"] == ["team_mobile_manipulator_v1"]
+    assert mixed["blockers"] == []
+    far = rigid_task_verdict(preparation=_far_preparation(), collision_path=_wide_table(tmp_path / "wide"),
+                             robot_profiles=[DROID, "team_mobile_manipulator_v1"])
+    # Out of the Franka's reach from every clear stance; the other robot was never measured: unassessed.
+    assert far["status"] == "unassessed"
+    assert far["blockers"][-1] == "robot_profile_unmodeled:team_mobile_manipulator_v1"
     only = rigid_task_verdict(preparation=_preparation(DESK), collision_path=collision,
                               robot_profiles=["team_mobile_manipulator_v1"])
     assert only["status"] == "unassessed" and only["station"] is None and only["robot_id"] is None
     none = rigid_task_verdict(preparation=_preparation(DESK), collision_path=collision, robot_profiles=[])
     assert none["status"] == "abstained" and none["blockers"] == ["robot_profile_none_enabled"]
+
+
+def _wide_table(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    room = _stage(tmp_path / "collision.usda", "/Root")
+    _box(room, "/Root/Floor", (-3.0, -3.0, 0.0), (3.0, 3.0, 0.0))
+    _box(room, "/Root/Table", (-1.2, -1.2, 0.0), (1.2, 1.2, 0.74))
+    room.GetRootLayer().Save()
+    return tmp_path / "collision.usda"
+
+
+def _far_preparation():
+    # A box in the middle of a 2.4 m table, moved 20 cm along it: no point of it is ever within the arm's reach
+    # from a pedestal beside the table.
+    wide = {"description": "wide table top", "aabb_min_xyz": [-1.2, -1.2, 0.74], "aabb_max_xyz": [1.2, 1.2, 0.74]}
+    return _preparation({"relation": "on", "position_world_m": [0.2, 0.0, 0.74]}, support=wide,
+                        subject=([-0.05, -0.05, 0.74], [0.05, 0.05, 0.80]))
+
+
+def test_an_object_out_of_reach_from_every_clear_stance_abstains_by_the_hard_reach_rule(tmp_path):
+    verdict = rigid_task_verdict(preparation=_far_preparation(), collision_path=_wide_table(tmp_path),
+                                 robot_profiles=[DROID])
+    assert verdict["status"] == "abstained" and verdict["stances_in_reach"] == 0
+    assert verdict["object_reach"]["status"] == "out_of_reach" and verdict["object_reach"]["grasp_independent"]
+    assert len(verdict["blockers"]) == 1 and verdict["blockers"][0].startswith("robot_reach_insufficient:")
+    assert verdict["blockers"][0].endswith("m_vs_0.990m") and "flags" not in verdict
 
 
 def test_the_default_embodiments_are_the_enabled_screening_candidates():

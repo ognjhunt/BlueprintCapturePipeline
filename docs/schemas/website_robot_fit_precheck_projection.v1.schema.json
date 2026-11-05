@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/website-robot-fit-precheck-projection.v1.schema.json",
+  "title": "Whether a robot Blueprint runs can do the job in its room, decided before any spend: the website_preparation_status.v6 'robot_fit_precheck' field",
+  "description": "robot_fit_precheck is null until the scene handoff wrote a precheck for the current task context. It is computed at the handoff, after Atlas registered the room and preparation measured the task, before the job is registered for ARTISAN authoring or any GPU work. Every candidate of the screening catalog is read with the late checks' own rules: 'fit' means at least one candidate's embodiment passed its early check (an estimate from the reconstructed room, not a promise or a physical test); 'unknown' means none fit and at least one could not be decided before the scene is built, so the job goes on; 'no_fit' means every candidate is refused by a refusal the late checks also make (a catalog refusal, an unrentable GPU floor, or a task beyond the arm's own reach from any station), and the job holds before spend with hold_reason 'website_robot_fit_none:<cause>'. counts are per catalog candidate. embodiments lists the robot bodies measured, with the reasons a body stayed unknown or was refused; a registered team body is named only as registered_team_embodiment. When the projection would exceed 1536 bytes the last embodiment rows are dropped and embodiments_truncated is true.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "hold_reason",
+    "task_kind",
+    "counts",
+    "embodiments",
+    "embodiments_truncated",
+    "evidence_label",
+    "precheck_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "website_robot_fit_precheck_projection.v1"
+    },
+    "status": {
+      "enum": [
+        "fit",
+        "no_fit",
+        "unknown"
+      ]
+    },
+    "hold_reason": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^website_robot_fit_none:[a-z][a-z0-9_]{0,99}$"
+        }
+      ]
+    },
+    "task_kind": {
+      "enum": [
+        null,
+        "rigid_pick_place",
+        "articulated_open_close"
+      ]
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fit",
+        "no_fit",
+        "unknown",
+        "unavailable"
+      ],
+      "properties": {
+        "fit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "no_fit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unavailable": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "embodiments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "embodiment",
+          "verdict",
+          "reasons",
+          "fit_candidates"
+        ],
+        "properties": {
+          "embodiment": {
+            "enum": [
+              "droid_franka_panda_robotiq_2f85_v1",
+              "unitree_g1_dex3_sonic_v1",
+              "registered_team_embodiment"
+            ]
+          },
+          "verdict": {
+            "enum": [
+              "fit",
+              "no_fit",
+              "unknown"
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,79}$"
+            }
+          },
+          "fit_candidates": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "embodiments_truncated": {
+      "type": "boolean"
+    },
+    "evidence_label": {
+      "const": "pre_spend_estimate"
+    },
+    "precheck_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

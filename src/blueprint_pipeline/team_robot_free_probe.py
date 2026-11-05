@@ -68,7 +68,12 @@ def probe_request(*, task_spec: Mapping[str, Any], scene_revision_digest: str) -
 
 def retain_recorded_probe(*, profile: Mapping[str, Any], facts: Mapping[str, Any],
                           trace: Mapping[str, Any]) -> dict[str, Any]:
-    """Score the recorded trace, retain the receipt beside the source launch, and republish the offer."""
+    """Score the recorded trace, retain the receipt beside the source launch, and republish the offer.
+
+    The trace is the capture's current probe request's (the runner ingests no other), so a receipt
+    beside the launch bound to another request is set aside into its history rather than shadowing
+    this one; a decided receipt of this request is never replaced.
+    """
 
     from .agent_execution_offer import publish_agent_execution_offer
     from .rigid_robot_free_readiness_score import score_rigid_robot_free_readiness
@@ -77,7 +82,7 @@ def retain_recorded_probe(*, profile: Mapping[str, Any], facts: Mapping[str, Any
     scene = facts["scene"]
     receipt = score_rigid_robot_free_readiness(task_spec=scene["task_spec"], physics_probe=trace,
                                                configured_scene_revision_digest=scene["scene_revision_digest"])
-    write = retain_receipt(Path(profile["robot_free_probe_root"]), receipt)
+    write = retain_receipt(Path(profile["robot_free_probe_root"]), receipt, supersede_other_request=True)
     offer = publish_agent_execution_offer(Path(profile["capture_root"]))
     return {"receipt_status": receipt["status"], "receipt_digest": receipt["receipt_digest"],
             "probe_error": receipt.get("probe_error"), "write": write, "offer_status": offer.get("status")}

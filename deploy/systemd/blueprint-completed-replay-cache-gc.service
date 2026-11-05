@@ -24,7 +24,12 @@ RestrictAddressFamilies=AF_UNIX
 SystemCallFilter=@system-service
 SystemCallFilter=~ptrace process_vm_readv process_vm_writev
 TasksMax=32
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 4M on the host.
 MemoryMax=512M
+OOMScoreAdjust=200
 CPUQuota=100%
 TimeoutStartSec=180
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_PTRACE

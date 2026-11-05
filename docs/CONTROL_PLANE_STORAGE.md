@@ -454,6 +454,28 @@ at risk. Unreadable entries are counted. Paths the unit's sandbox hides
 mounts skipped by the mountinfo rule, and deleted files still held open by a
 process cannot be attributed. These gaps lower `attributed_fraction`.
 
+**A cycle across passes.** The controller's hourly survey is partitioned
+(`control_plane_disk_usage_cursor`). Each pass inventories every root's
+partitions (its entries; a split directory's subdirectories plus a shallow
+partition for its own entries), then walks them in cursor order, alternating
+between roots, each partition with at most a quarter of the time and entry
+budget, until three quarters are spent. Each walked partition's measurement
+(exact class and device totals, its roots, its largest owners) replaces its row
+in a ledger carried by the cursor, and the published mount, class, root and owner
+rows are the composite of every current partition's latest usable row
+(`scope: rolling_partition_composite`). A row is usable while the partition has
+the identity it was measured with. `status` is `complete` only while every
+partition has a complete measurement no older than a day and every inventory is
+complete; otherwise the totals are lower bounds
+(`byte_accounting: rolling_partition_composite_lower_bound`). A partition whose
+walk truncates is split one level on a later pass (at most 8 levels). An inode
+linked from two partitions measured in different passes can count twice;
+`composite.multiply_linked_bytes` bounds that. A root's position depends only on
+that root's identity: an unrelated mount, a departed or replaced partition
+(`partition_churn`) or a symlink (a leaf, never followed) no longer resets or
+stalls it. Before 2026-11-04 any mount-table change reset every root to its
+first four partitions each hour, and the root disk stayed 0.11% surveyed.
+
 **Class and root.** A path takes the storage class and root of its
 `control_plane_storage_roots` row; a row with `*` segments reports the concrete
 directory it matched. A path under a `container`, or under `/var/lib/blueprint`,
@@ -1093,6 +1115,72 @@ the tick exits non-zero after writing the report.
 files from ordinary completed captures go to the existing private artifact store
 (B2). Authority-ended captures stay local (`authority_ended_capture_kept_local`)
 until the owner approves a revocation and deletion lifecycle for those derivatives.
+An owner can approve deleting such a scene through an owner-approved deletion
+(next section); retirement itself never archives them.
+
+## Owner-approved deletions
+
+`blueprint_pipeline.owner_approved_deletion` deletes exactly the paths an owner
+approved, for scratch no other phase may reap and for scene workspaces held only
+because their capture's authority ended. The owner's approval is a manifest,
+`deploy/owner-approved-deletions/<manifest_id>.json`, merged and deployed like
+code, so a session that reaches the host only through the operator door can
+carry it there. A manifest names the owner (`approved_by`), the owner's words
+(`approval_evidence`), when they approved, and an expiry at most 14 days later,
+and lists each path with what was recorded about it at approval time:
+
+- `task_evaluation_inputs_folder`: a direct child directory of
+  `/var/lib/blueprint/task-evaluation-inputs`, with its newest mtime in whole
+  seconds (over the folder and everything in it), its regular-file bytes and its
+  file count. A folder whose listing the door partly refused records how many
+  names it could not see (`door_unlisted_entries`); its bytes and count may then
+  only be larger.
+- `authority_ended_scene_workspace`: a website scene working copy under
+  `/var/lib/blueprint/pubsub-handoffs/<bucket>/scenes/`, with each capture's
+  `terminal_code`, `terminal_at` and `terminal_payload_sha256` from its ledger.
+  Every capture must still be `terminal_authority_ended` exactly so, more than
+  seven days ago (Pub/Sub can no longer redeliver its message), and the scene
+  retention checks above may hold the scene only for
+  `authority_ended_capture_kept_local` or `recently_active` (the preparation
+  status wake-up rewrites a delivery file in it). Leases, missing locks, pins,
+  queues, processes and open intents still keep it. Only the local working copy
+  goes: the raw upload in Firebase Storage and copies elsewhere stay.
+
+Nothing runs it on a timer. An operator starts two oneshot units by hand:
+
+1. `blueprint-owner-approved-deletion-plan.service` checks every path of every
+   manifest and writes
+   `/var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions/<manifest_id>/plan.json`.
+   It deletes nothing. A path is `eligible` only when it is the recorded
+   identity and no live storage pin names it, lies inside it or contains it, no
+   pending or processing queue message (the reclaim timer's queues and the scene
+   queues) names it, no process uses it, no systemd unit or drop-in file under
+   `/etc/systemd/system`, `/run/systemd/system` or `/run/systemd/transient` names
+   it (a failed transient unit counts until `reset-failed`), and no sibling
+   symlink points into it. Paths are opened one component at a time without
+   following a link, and a folder holding another mount is refused.
+2. `blueprint-owner-approved-deletion.service` deletes what a plan of the same
+   manifest bytes, at most 24 hours old, found eligible, while the approval has
+   not expired. It re-runs every check and requires the same device, inode and
+   (for a folder) tree measurements as the plan. For a scene it takes the
+   listener's capture ledger locks without waiting and checks again under them.
+   It writes `receipts/<sha256(path)[:32]>.json` with status `deleting`, renames
+   the path aside (`.owner-approved-deletion-*`, ignored by the scene and lane
+   scans), removes it without following links, and rewrites the receipt as
+   `deleted`. A run that stopped after the rename is finished by the next apply;
+   one that stopped before it starts over. Each run also writes
+   `apply-<epoch>.json` with every path's outcome.
+
+Receipts and plans are root `0644` under `0755`, so the door can read them.
+Run it again and a deleted path reports `already_deleted`.
+
+```bash
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion-plan.service   # plan only
+python3 scripts/operator_door.py show blueprint-owner-approved-deletion-plan.service                  # Result=success once done
+python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions/<manifest_id>/plan.json
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion.service        # deletes
+python3 scripts/operator_door.py ls /var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions/<manifest_id> --sort mtime
+```
 
 ## Release retirement as a separate action
 
@@ -1108,8 +1196,17 @@ temporary directory and `.<commit>.<random>` publication staging beside the
 runtime trees. That scratch is never a published tree or receipt; the receipt lists
 it under `disk_reservation_estimate.swept_stale_staging`.
 
-Retirement remains a separate explicit operation. The existing plan/apply tools
-and their protection checks are unchanged. A commit's trees (release,
+Retirement is separate from deployment. It runs hourly on its own unit,
+`blueprint-control-plane-release-lifecycle.service`
+(`blueprint_pipeline.control_plane_release_lifecycle`), sandboxed to the release
+and runtime roots, `release-retention` and `release-leases`, under its own owner
+switch, `BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT`: on by default like every
+storage GC switch, and `0` in the operator environment file keeps it planning. A
+door hold on its timer pauses it. Without it nothing retired these trees after 2026-10-01: on
+2026-11-04 the host held 93 release worktrees (root disk) and 88 runtime pairs
+(work volume), about eleven new ones a day, and every step of the root disk's
+~3 GB/day growth landed at a deploy. The explicit plan/apply tools below remain
+for review by hand. A commit's trees (release,
 `splat-render`, `scene-configuration` and their publication receipts) are kept
 while the commit is:
 
@@ -1118,9 +1215,22 @@ while the commit is:
 - in use by a live process (its cwd, executable or an argv path lies in the
   commit's release or runtime tree), checked when planning and again just before
   each commit's paths are removed;
-- younger than a day; or
+- younger than a day;
 - held by a typed protection row: a lease (`live_queue`, `standing_authorization`,
-  `retention_binding`) or current configuration (`configured_runtime`).
+  `retention_binding`) or current configuration (`configured_runtime`); or, on the
+  scheduled unit,
+- holding bytes its commit cannot reproduce (`release_worktree_local_state`):
+  modified or untracked files, ignored files other than Python bytecode, a
+  `HEAD` that is not the commit, or a worktree `git status` cannot read.
+
+Every tick that retires anything writes an immutable 0644 receipt,
+`release-retention/release-lifecycle-<UTC>-<hex>.json`, naming each commit, its
+paths, the measured freed bytes and its restore step: staging the commit again
+(`scripts/stage_task_evaluation_control_plane_release.py`, which every deploy
+runs) prunes the stale worktree registration and checks the exact commit out,
+and deploying it re-provisions its runtime trees. Each applying tick rewrites
+`release-retention/latest-deploy-retirement.json`, whose status and alerts the
+capacity controller turns into `release_retirement_attention`.
 
 Protection comes from typed leases and configuration, rather than searching
 all JSON files for commit-like tokens. Every lease has an owner, a reason, the

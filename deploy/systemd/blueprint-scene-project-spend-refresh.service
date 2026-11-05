@@ -21,7 +21,12 @@ RestrictAddressFamilies=AF_UNIX
 SystemCallFilter=@system-service
 SystemCallFilter=~ptrace process_vm_readv process_vm_writev
 TasksMax=32
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. It holds paid work, a money ledger or
+# the WebApp's intake: -200, after batch jobs, before the money-safety units.
+# Measured: reaches its cap: page cache of the receipts.
 MemoryMax=512M
+OOMScoreAdjust=-200
 CPUQuota=100%
 # Retained cancellation closure took 174 seconds on the four-vCPU host after
 # scoped digest reuse. Leave bounded headroom for evidence growth and I/O jitter.

@@ -775,12 +775,14 @@ def test_usage_prints_the_capacity_usage_as_tables(door: dict[str, Any]) -> None
             "orphan_scratch_roots": [{"root": "/mnt/blueprint-work/loose-run",
                                       "allocated_bytes": 4 * 1024**3,
                                       "newest_mtime_epoch": 1_700_000_000}],
+            "composite": {"partitions": 140, "measured": 139, "oldest_age_seconds": 5_400.0},
         },
     }), encoding="utf-8")
     code, out = _run("usage")
     assert code == 0
     lines = out.splitlines()
     assert lines[0] == "usage survey: complete, 1200 s old"
+    assert "partitions measured: 139 of 140, oldest 1.5 h" in lines
     assert any(line.split() == ["/", "150.0", "GiB", "145.0", "GiB", "130.0", "GiB", "96.7%"] for line in lines)
     assert any(line.split()[:3] == ["scene:site-capture-1", "work", "12.0"] for line in lines)
     assert any(line.split() == ["/var/lib/blueprint/something-new", "2.0", "MiB"] for line in lines)

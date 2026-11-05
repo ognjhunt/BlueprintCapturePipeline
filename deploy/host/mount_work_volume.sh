@@ -102,6 +102,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-configured-controls-progression.path
   blueprint-task-evaluation-terminal-resource-release.path
   blueprint-control-plane-storage-gc.timer
+  blueprint-control-plane-release-lifecycle.timer
   blueprint-pubsub-handoff-listener.timer
   blueprint-task-evaluation-scene-progression.timer
   blueprint-capture-reconstruction-dispatcher.path
@@ -136,6 +137,9 @@ WORKER_UNITS=(
   blueprint-task-evaluation-configured-controls-progression.service
   blueprint-task-evaluation-terminal-resource-release.service
   blueprint-control-plane-storage-gc.service
+  blueprint-control-plane-release-lifecycle.service
+  blueprint-owner-approved-deletion.service
+  blueprint-owner-approved-deletion-plan.service
   blueprint-pubsub-handoff-listener.service
   blueprint-task-evaluation-scene-progression.service
   blueprint-capture-reconstruction-dispatcher.service

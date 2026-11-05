@@ -180,16 +180,19 @@ def _probe_args(tmp_path: Path) -> object:
 
 def test_scoped_probe_keeps_unused_templates_visible_without_write_probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     args = _probe_args(tmp_path)
-    queue, inputs = tmp_path / "queue", tmp_path / "inputs"
+    queue, work, inputs = tmp_path / "queue", tmp_path / "work", tmp_path / "inputs"
     queue.mkdir()
+    work.mkdir()
     inputs.mkdir()
     monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", str(queue))
+    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", str(work))
     monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
     writes = []
     monkeypatch.setattr(preflight, "write_probe", lambda path: writes.append(path) or {"status": "writable"})
     report = preflight.run_probe(args)
-    # The screening pass also returns transient team-half blocks to the packet queue, so both are written.
-    assert writes == [queue, inputs]
+    # The screening pass writes its ledger queue and its attempts' work-volume root, and also returns
+    # transient team-half blocks to the packet queue, so all three are written.
+    assert writes == [queue, work, inputs]
     assert report["paths"][str(inputs)]["status"] == "writable"
     assert report["paths"]["/var/lib/blueprint/{root}"]["code"] == "path_template_unresolved"
     assert report["paths"]["/var/lib/blueprint/unselected-legacy"]["requirement"] == "static_candidate"
@@ -198,29 +201,33 @@ def test_scoped_probe_keeps_unused_templates_visible_without_write_probes(tmp_pa
 
 def test_required_output_denied_is_still_a_blocker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     args = _probe_args(tmp_path)
-    queue, inputs = tmp_path / "queue", tmp_path / "inputs"
+    queue, work, inputs = tmp_path / "queue", tmp_path / "work", tmp_path / "inputs"
     queue.mkdir()
+    work.mkdir()
     inputs.mkdir()
     monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", str(queue))
+    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", str(work))
     monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
     monkeypatch.setattr(preflight, "write_probe", lambda _path: {"status": "read_only", "errno": 30})
     report = preflight.run_probe(args)
     blockers = [row for row in report["findings"] if row["severity"] == "blocker"]
-    assert [row["code"] for row in blockers] == ["required_path_access_refused"] * 2
+    assert [row["code"] for row in blockers] == ["required_path_access_refused"] * 3
 
 
 def test_required_queue_template_refuses_before_any_path_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     args = _probe_args(tmp_path)
-    inputs = tmp_path / "inputs"
+    inputs, work = tmp_path / "inputs", tmp_path / "work"
     inputs.mkdir()
+    work.mkdir()
     template = "/var/lib/blueprint/{root}"
     monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", template)
+    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", str(work))
     monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
     writes = []
     monkeypatch.setattr(preflight, "write_probe", lambda path: writes.append(path) or {"status": "read_only"})
     report = preflight.run_probe(args)
-    # The unresolved template is never probed; only the resolved packet queue is.
-    assert writes == [inputs]
+    # The unresolved template is never probed; only the resolved work root and packet queue are.
+    assert writes == [work, inputs]
     assert report["coverage"]["status"] == "unknown"
     assert report["coverage"]["reason"] == "required_path_binding_unresolved"
     row = report["paths"][template]

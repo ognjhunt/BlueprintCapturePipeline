@@ -15,6 +15,13 @@ articulated or rigid readiness scorer, and written beside the launch:
 
 - a sealed decided receipt (``passed`` or ``failed``) is never replaced;
 - a ``probe_unavailable`` receipt is replaced once evidence makes it decided;
+- a receipt or trace bound to another probe request (another scene revision or
+  task specification: a request since superseded) is never what is read for
+  the current one; whoever retains the current request's evidence first moves
+  it, byte for byte, into ``robot_free_probe_history/`` beside the launch,
+  under its content digest and beside a marker naming what superseded it
+  (``set_aside``). Every replaced receipt is kept there the same way, so
+  nothing retained here is overwritten or deleted;
 - a deterministic refusal (the revision's task cannot be adapted or scored)
   is reported and retains nothing, so the gate keeps refusing by name;
 - a transient failure (fetch, storage) raises, so the caller retries.
@@ -22,6 +29,7 @@ articulated or rigid readiness scorer, and written beside the launch:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -29,12 +37,18 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from .common import utc_now_iso
+from .decision_evidence_contracts import canonical_digest
 from .robot_free_probe_gate import RECEIPT_FILENAME
 
 TRACE_FILENAME = "rigid_robot_free_probe_trace.v1.json"
 WORK_DIRECTORY = "robot-free-readiness"
+HISTORY_DIRNAME = "robot_free_probe_history"
+SUPERSESSION_SCHEMA = "blueprint.robot_free_probe_evidence_supersession.v1"
 DECIDED_STATUSES = frozenset({"passed", "failed"})
 RIGID_STRATEGIES = frozenset({"pick_and_place", "planar_push"})
+# What a receipt binds of the probe request it scored (``team_robot_free_probe.probe_request``'s binding).
+RECEIPT_BINDING_FIELDS = ("configured_scene_revision_digest", "task_spec_digest", "replacement_asset_digest")
 Fetcher = Callable[[Mapping[str, Any]], bytes]
 
 
@@ -58,13 +72,93 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _write(path: Path, receipt: Mapping[str, Any]) -> str:
+def trace_bound_to_request(trace: Any, request: Any) -> bool:
+    """The trace recorded this probe request: its binding and plan are the request's own.
+
+    Both are sealed into the request's digest (with the task specification the binding's
+    ``task_spec_digest`` names), so a trace of any other request differs in one of them.
+    """
+
+    return (isinstance(trace, Mapping) and isinstance(request, Mapping) and isinstance(request.get("binding"), Mapping)
+            and trace.get("binding") == request["binding"] and trace.get("plan") == request.get("plan"))
+
+
+def receipt_bound_to_request(receipt: Any, request: Any) -> bool:
+    """The receipt scored this probe request's scene revision and task specification."""
+
+    binding = request.get("binding") if isinstance(request, Mapping) else None
+    return (isinstance(receipt, Mapping) and isinstance(binding, Mapping)
+            and all(receipt.get(field) == binding.get(field) for field in RECEIPT_BINDING_FIELDS))
+
+
+def _same_binding(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    return all(left.get(field) == right.get(field) for field in RECEIPT_BINDING_FIELDS)
+
+
+def set_aside(root: str | Path, name: str, *, superseded_by: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Move ``root/name`` into the launch's append-only history; return the marker, or None when absent.
+
+    The file keeps its bytes under ``robot_free_probe_history/<sha256>.<name>``, beside a marker
+    naming what it held and what superseded it. The marker is written first, so a pass interrupted
+    before the move leaves a marker that only describes; the file is still where it was. History is
+    content-addressed, so a second set-aside of the same bytes keeps one copy and loses nothing.
+    """
+
+    path = _safe(Path(root) / name)
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    history = _safe(Path(root) / HISTORY_DIRNAME)
+    history.mkdir(exist_ok=True, mode=0o750)
+    kept = _safe(history / f"{digest}.{name}")
+    marker_path = _safe(history / f"{digest}.{name}.supersession.json")
+    try:
+        value = json.loads(data)
+    except ValueError:
+        value = None
+    value = value if isinstance(value, dict) else {}
+    marker = {"schema_version": SUPERSESSION_SCHEMA, "file": name, "history_file": kept.name,
+              "sha256": "sha256:" + digest, "superseded_status": value.get("status"),
+              "superseded_digest": value.get("trace_digest") or value.get("receipt_digest"),
+              "superseded_binding": (value.get("binding") if isinstance(value.get("binding"), Mapping)
+                                     else {field: value.get(field) for field in RECEIPT_BINDING_FIELDS}),
+              "superseded_by": dict(superseded_by), "superseded_at_iso": utc_now_iso(), "marker_digest": ""}
+    marker["marker_digest"] = canonical_digest(marker, digest_field="marker_digest")
+    if not marker_path.exists():
+        with tempfile.NamedTemporaryFile("w", dir=history, prefix=".marker-", delete=False,
+                                         encoding="utf-8") as stream:
+            stream.write(json.dumps(marker, sort_keys=True, indent=1) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.chmod(stream.name, 0o440)
+            os.link(stream.name, marker_path)
+        except FileExistsError:
+            pass
+        finally:
+            os.unlink(stream.name)
+    if kept.exists() and kept.read_bytes() != data:
+        raise RobotFreeReadinessRetentionError("robot_free_probe_history_conflict")
+    os.replace(path, kept)  # same bytes as any copy already there: nothing is lost
+    return _read_json(marker_path)
+
+
+def _write(path: Path, receipt: Mapping[str, Any], *, supersede_other_request: bool = False) -> str:
     existing = _read_json(path)
     if existing == receipt:
         return "unchanged"
-    if existing is not None and existing.get("status") in DECIDED_STATUSES:
-        # Sealed evidence is never replaced, even by a newer scorer.
+    other = existing is not None and not _same_binding(existing, receipt)
+    if existing is not None and existing.get("status") in DECIDED_STATUSES and not (other and supersede_other_request):
+        # Sealed evidence is never replaced, even by a newer scorer. Only a writer that holds the
+        # current request's own receipt sets aside a decided one bound to another request.
         return "kept_existing_decided"
+    if path.is_file():
+        # Whatever is replaced is kept, byte for byte, in the launch's history.
+        set_aside(path.parent, path.name, superseded_by={"receipt_digest": receipt.get("receipt_digest"),
+                                                         "status": receipt.get("status"),
+                                                         **{field: receipt.get(field)
+                                                            for field in RECEIPT_BINDING_FIELDS}})
     text = json.dumps(receipt, sort_keys=True, indent=1) + "\n"
     with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=".robot-free-", delete=False,
                                      encoding="utf-8") as stream:
@@ -73,7 +167,9 @@ def _write(path: Path, receipt: Mapping[str, Any]) -> str:
         os.fsync(stream.fileno())
     os.chmod(stream.name, 0o440)
     os.replace(stream.name, path)
-    return "replaced_unavailable" if existing is not None else "written"
+    if existing is None:
+        return "written"
+    return "superseded_other_request" if other else "replaced_unavailable"
 
 
 def _revision(reference: Mapping[str, Any], *, revision_digest: str, fetcher: Fetcher | None) -> dict[str, Any]:
@@ -122,10 +218,15 @@ def retain_robot_free_readiness(*, run_root: str | Path, revision_reference: Map
             "retained": True, "write": outcome}
 
 
-def retain_receipt(run_root: str | Path, receipt: Mapping[str, Any]) -> str:
-    """Retain a receipt scored elsewhere (a team evaluation's recorded probe) where the gate reads it."""
+def retain_receipt(run_root: str | Path, receipt: Mapping[str, Any], *, supersede_other_request: bool = False) -> str:
+    """Retain a receipt scored elsewhere (a team evaluation's recorded probe) where the gate reads it.
 
-    return _write(_safe(Path(run_root) / RECEIPT_FILENAME), receipt)
+    ``supersede_other_request`` is for a caller that scored the capture's current probe request: a
+    decided receipt bound to another request (superseded) is then set aside into the history instead
+    of shadowing it. A decided receipt bound to the same request is never replaced.
+    """
+
+    return _write(_safe(Path(run_root) / RECEIPT_FILENAME), receipt, supersede_other_request=supersede_other_request)
 
 
 def retain_for_source_launch(run_root: str | Path, *, fetcher: Fetcher | None = None) -> dict[str, Any]:
@@ -141,9 +242,15 @@ def retain_for_source_launch(run_root: str | Path, *, fetcher: Fetcher | None = 
 
 __all__ = [
     "DECIDED_STATUSES",
+    "HISTORY_DIRNAME",
+    "RECEIPT_BINDING_FIELDS",
     "RobotFreeReadinessRetentionError",
+    "SUPERSESSION_SCHEMA",
     "TRACE_FILENAME",
+    "receipt_bound_to_request",
     "retain_for_source_launch",
     "retain_receipt",
     "retain_robot_free_readiness",
+    "set_aside",
+    "trace_bound_to_request",
 ]

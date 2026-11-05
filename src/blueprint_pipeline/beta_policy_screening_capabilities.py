@@ -143,10 +143,18 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     each naming a byte-sealed native execution spec and optional inventory.
     No catalog declaration alone grants a runtime capability. ``priority`` is
     the job's retained intake ranking; it orders the plan and removes nothing.
-    A candidate is infeasible only when its registered fixed reach measurably
-    misses this reconstructed scene's station (``website_candidate_feasibility``),
-    or when no GPU the screening lane may rent meets its declared memory floor
-    (``beta_policy_screening_gpu``); a disabled candidate keeps its own reason.
+    Reach evidence orders it too (``website_candidate_feasibility.reach_rank``):
+    a candidate whose own-arm solve searched and did not reach is funded after
+    every unflagged one; without an intake ranking, learned policies then go
+    before scripted baselines and a solve that reached the task before an
+    unmeasured one (``beta_policy_screening_plan.build_screening_plan``).
+    A candidate is infeasible only when its reach measurably misses this
+    reconstructed scene's station (``website_candidate_feasibility``: the
+    packet arm's chain reach bound, a registered body's own arm in its model,
+    or its declared fixed reach), or when no GPU the screening lane may rent
+    meets its declared memory floor (``beta_policy_screening_gpu``); a disabled
+    candidate keeps its own reason. Infeasible candidates are never prepared or
+    quoted, so nothing is reserved for a run that cannot reach the task.
     A rigid contract that requires per-cell controls screens under the standing
     control-trial pause (``beta_policy_screening_control_omission``): the
     candidates run the contract without its ``controls`` criterion, and the scene
@@ -260,15 +268,13 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     credentials = []
     # Credential presence is intentionally not guessed from a public endpoint.
     # Hosted policies need a separately configured private delivery lane.
-    from .beta_policy_screening_g1 import CANDIDATES as G1_LANE_CANDIDATES
-    from .beta_policy_screening_gpu import gpu_infeasible_blockers
+    from .beta_policy_screening_gpu import candidate_gpu_blockers
     for configured in catalog["candidates"]:
         key = configured["candidate_id"]
         if key in infeasible:
             continue  # The plan shows its measured reason; nothing is prepared or quoted.
         # Every candidate but G1's (its own lane, fixed floor) rents on the policy canary session lane.
-        unrentable = ([] if key in G1_LANE_CANDIDATES or configured["eligibility"]["enabled"] is not True
-                      else gpu_infeasible_blockers(configured["runtime"]))
+        unrentable = candidate_gpu_blockers(configured)
         if unrentable:
             infeasible[key] = unrentable  # Listed with its reason, never funded: the budget goes on in plan order.
             continue
@@ -296,17 +302,13 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                     from .beta_policy_screening_team import build_registered_team_spec
                     if family:
                         raise ValueError("beta_screening_team_robot_requires_rigid_scene")
-                    from .website_candidate_feasibility import (
-                        own_stance,
-                        own_station,
-                        own_station_reached_by_own_arm,
-                    )
+                    from .website_candidate_feasibility import bound_station, own_stance
                     measured = feasibility["candidates"].get(key) or {}
+                    station, reached = bound_station(measured, scene_plan)
                     spec, model = build_registered_team_spec(candidate_id=key, registration=override["robot_policy"],
                         scene_plan=scene_plan, contract=contract, prompt=facts["prompt"],
                         scene_revision_digest=inputs["scene_revision_digest"],
-                        station=own_station(measured), stance=own_stance(measured),
-                        station_reached_by_own_arm=own_station_reached_by_own_arm(measured))
+                        station=station, stance=own_stance(measured), station_reached_by_own_arm=reached)
                     inventory = None
                 else:
                     spec = _read(_bound_path(override["policy_execution_spec"]))
@@ -402,8 +404,11 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             candidate_blockers[key] = [code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
                                        else "beta_screening_candidate_configuration_invalid"]
     known = {row["candidate_id"] for row in catalog["candidates"]}
+    from .website_candidate_feasibility import reach_ranks
     return {"scene": scene,
             "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials,
-                             "candidate_blockers": candidate_blockers, "candidate_infeasible": infeasible},
+                             "candidate_blockers": candidate_blockers, "candidate_infeasible": infeasible,
+                             # Orders the budget: a flagged own-arm solve after every unflagged one.
+                             "candidate_reach_rank": reach_ranks(feasibility)},
             "cost_quotes": quotes, "candidate_feasibility": feasibility,
             "candidate_priority": [key for key in dict.fromkeys(priority) if key in known]}

@@ -357,7 +357,9 @@ class _Harness:
 
     def _snapshot(self, operation: str) -> tuple[dict[str, Any], str]:
         retained = {"task-context": "pipeline/website_task_context.json",
-                    "atlas-configuration": "pipeline/atlas/configuration.json"}[operation]
+                    "atlas-configuration": "pipeline/atlas/configuration.json",
+                    # The grant copy written when preparation started; --webapp-snapshots gives the current one.
+                    "scene-sponsorship": "pipeline/website_scene_sponsorship.json"}[operation]
         candidates = [*([self.snapshots / f"{operation}.json"] if self.snapshots else []),
                       *([self.capture / retained] if self.capture else [])]
         for path in candidates:
@@ -373,7 +375,8 @@ class _Harness:
                source_kind: str = "website") -> dict[str, Any]:
         if operation == "agent-execution-offer":
             return self.offer(capture_id=capture_id, operation=operation, payload=payload)
-        if operation == "task-context" or (operation == "atlas-configuration" and payload.get("create") is False):
+        if operation == "task-context" or (operation in {"atlas-configuration", "scene-sponsorship"}
+                                           and payload.get("create") is False):
             value, source = self._snapshot(operation)
             self.webapp_answers.append({"operation": operation, "capture_id": capture_id, "stage": self.stage,
                                         "answered_from": source, "call_site": self.call_site()})
@@ -770,8 +773,10 @@ def _environment(staged: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
     """What the deployed units set, with every root pointed at the replay; and what is left unset."""
     from .beta_policy_candidate_catalog import CATALOG_ENV
     from .beta_policy_screening_coordinator import QUEUE_ROOT_ENV as SCREENING_ENV
+    from .beta_policy_screening_coordinator import WORK_ROOT_ENV as SCREENING_WORK_ENV
     from .rigid_robot_free_probe_lane import ENABLE_ENV
     from .rigid_robot_free_probe_runner import QUEUE_ENV as PROBE_ENV
+    from .rigid_robot_free_probe_runner import WORK_ENV as PROBE_WORK_ENV
     from .task_evaluation_scene_intent_contracts import ROOT_ENV as INTENT_ROOT_ENV
     from .team_candidate_registry_reader import REGISTRY_ENV
     from .team_scene_packet_worker import CAPTURE_PARTITION_ENV, QUEUE_ROOT_ENV as PACKET_ENV
@@ -784,8 +789,10 @@ def _environment(staged: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
         values[CAPTURE_PARTITION_ENV] = str(staged["partition"])
     if staged["registry_copy"] is not None:
         values[REGISTRY_ENV] = str(staged["registry_copy"])
-    # The reviewed catalog in this tree, as a deploy of it would install.
-    unset = [CATALOG_ENV, *(name for name in (CAPTURE_PARTITION_ENV, REGISTRY_ENV) if name not in values)]
+    # The reviewed catalog in this tree, as a deploy of it would install. The lanes' work-volume
+    # roots are unset, so every attempt the replay stages stays inside its own queue copy.
+    unset = [CATALOG_ENV, SCREENING_WORK_ENV, PROBE_WORK_ENV,
+             *(name for name in (CAPTURE_PARTITION_ENV, REGISTRY_ENV) if name not in values)]
     return values, unset
 
 

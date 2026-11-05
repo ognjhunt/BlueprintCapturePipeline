@@ -109,7 +109,7 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 |---|---|---|
 | `GET /healthz` | none | `{"ok": true, "version": …}` |
 | `GET /whoami` | read | token name and scopes |
-| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, `capacity` (the capacity controller's `summary.json`: level, alerts, per-mount admission and the usage survey by storage class, root and owner), load, door queue, owned timer holds (including overdue ones), and unreported break-glass note count/latest summary |
+| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, `capacity` (the capacity controller's `summary.json`: level, alerts, per-mount admission and the usage survey by storage class, root and owner), load, `memory` (see below), door queue, owned timer holds (including overdue ones), and unreported break-glass note count/latest summary |
 | `GET /fs/list?path=&sort=name\|mtime&match=` | read | directory entries (capped) or a file's metadata |
 | `GET /fs/read?path=&offset=&length=` | read | bytes; `X-Door-Size`, `X-Door-Offset`, `X-Door-Length`, `X-Door-Eof` headers for paging |
 | `GET /fs/archive?path=` | read | tar.gz of a directory (512 MiB cap, two at a time) |
@@ -117,6 +117,24 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 | `GET /units?pattern=&state=` · `GET /units/show?unit=a,b` | read | `blueprint-*` unit rows or properties (never `Environment`) |
 | `POST /requests` | per kind | `202 {"id": …}` |
 | `GET /requests` · `GET /requests/<id>` | read | queue, or one request with result, outcome, redacted log tail and live unit state |
+
+`status.memory` answers "what holds host RAM?" read-only. `meminfo` gives
+`MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` and `Shmem` in bytes from
+`/proc/meminfo`; `slices` gives cgroup v2 `memory.current`/`memory.peak` for
+`system.slice`, `user.slice` and `init.scope`; `system_units.top` lists the 20
+largest direct children of `system.slice` by `memory.current` (every unit, not
+only `blueprint-*`; a `system-*.slice` row sums its template instances), with
+`count` and `scan_truncated`; `tmpfs` gives total and used bytes (statvfs) for
+`/dev/shm`, `/run` and `/tmp` when each is a tmpfs in the door's view;
+`oom_reports` parses the last 4 kernel OOM-killer reports of the past 24 h from
+`journalctl -k` (newest 20000 lines, 8 MiB, 10 s; `count` and `log_truncated`
+say what the window held) into each event's UTC time, invoking task, constraint
+and unit-name cgroups, the killed task (pid, uid, `anon/file/shmem-rss` kB,
+`oom_score_adj`) and the task table's 15 largest rows by rss (pages, with
+`page_size_bytes`) plus per-uid totals, or only row counts when the table's
+header is not recognised. Only numbers, uids and unit or task names are
+returned, every read is capped, and anything missing or unreadable is `null`
+rather than an error.
 
 `status.notifier_binding` is a fixed-target view of the live control-plane
 postcheck binding. It reports safe unit/drop-in paths, an opaque command hash,
@@ -562,6 +580,8 @@ python3 scripts/operator_door.py deploy <sha on main> --wait
 python3 scripts/operator_door.py retire-scene-workspace <scene_id> --wait           # plan only
 python3 scripts/operator_door.py retire-scene-workspace <scene_id> --apply --wait   # retire behind a receipt
 python3 scripts/operator_door.py restore-scene-workspace <scene_id> --bucket <bucket> --wait
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion-plan.service  # plan the deployed owner-approved deletions
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion.service       # delete what that plan found eligible
 python3 scripts/operator_door.py provider-output-resume <run> <attempt> --ingest --wait
 python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
     --expires-at <UTC instant> --authorization-reference "<owner approval>" --wait                    # plan only
@@ -600,6 +620,29 @@ screening timer's (`requeue_transient_blocked`); to run it now,
 `python3 scripts/operator_door.py unit start blueprint-team-scene-packet.service`.
 Screening then reads the contract the team packet sealed.
 
+The owner can also confirm on the website job page, with no operator
+(`website_owner_success_confirmation`). On the screening timer's pass,
+`requeue_transient_blocked` sends each request blocked only on that refusal
+(at most four a pass, rotating) to the WebApp over the signed Pipeline sync
+transport: `POST /api/internal/pipeline/task-evaluation-scene-intents/<intent>/owner-success-proposal`
+carries the published thresholds, their revision and a `proposal_digest`
+sealing the whole binding. The WebApp shows them to the job's owner link only,
+in plain words, with Confirm and "this is wrong" (a typed reason, no numbers),
+and answers with the owner's decision on exactly that proposal. A confirmation
+is written by the door's own writer and validators, with `issuer_channel`
+`website`, and the same pass returns the request to `pending/`. A "wrong"
+answer writes nothing under the intent and leaves the request blocked; its
+status keeps the reason under `website_owner_success`, as it keeps `pending`
+or a `failed` exchange. Each request is asked again only at its kept
+`next_check_at`, or at once when its intent's progression changes and builds a
+new proposal; the wait doubles while the answer repeats, from 2 min (pending,
+up to 1 h), 30 min (held, up to 1 day), 15 min (a WebApp 4xx, up to 1 day) or
+2 min (a transport failure, up to 6 h). Any error in one job's exchange is that
+job's `failed` exchange and never stops the screening pass. A republished job
+has a new proposal digest and needs a new decision. The door path above is
+unchanged. The WebApp alerts ops (Slack, then ops email) when an owner holds a
+job's thresholds.
+
 Every team-packet status names the release that wrote it (`release_commit`,
 the commit of the release checkout the worker or timer runs from). Any other
 deterministic refusal (neither transient nor owner-contract) returns to
@@ -610,7 +653,19 @@ already tried under `release_requeued` (written before the move), so a refusal
 the new release does not fix stays blocked until the next deploy. The pass
 reports it as `{"reason": "new_release", ...}`. When the running release cannot
 be read, nothing is requeued on that basis. Completed and skipped requests never
-move.
+move, except as follows.
+
+A completed rigid half whose recorded carry search found no stance the Franka
+carries from (`robot_station_search.cleared` false, or `reach_shortfall`
+`out_of_reach`: capture-447ae4f4's eight stances, all `unreachable:approach`)
+is compiled again once per stance-search version, on the same two passes and
+the CPU, when its station was chosen by an older stance search than the running
+release's (`team_embodiment_stance.STANCE_SEARCH_VERSION`, recorded in every
+stance as `search.stance_search_version`; a station without one is version 1).
+The status keeps the versions tried under `stance_search_version_requeued`
+(written before the move); the pass reports `{"reason": "stance_search_version", ...}`.
+A release that leaves the stance search unchanged recompiles nothing, and a
+half the new search still cannot carry from is kept until the next version.
 
 A provider-output resume unit may write only the canary dispatch root, the disk
 reservation ledger and its result (`ProtectSystem=strict` and the retirement
