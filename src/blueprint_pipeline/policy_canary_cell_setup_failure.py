@@ -9,7 +9,9 @@ seals a blocked session result that says so, and starts no further cell.
 
 A gate refusal in the retained pre-policy shape keeps its existing handling:
 it is per cell, and the matrix continues. The diagnostic continuation's
-first-cell gate keeps cell 0 of its own runs.
+first-cell gate keeps cell 0 of its own runs. A beta gate that the session
+continued past with observation-quality flags did not stop the cell: it is
+never named as the observation-gate stage, and its verdict reads ``flagged``.
 """
 from __future__ import annotations
 
@@ -83,11 +85,23 @@ def _source_trace(value: Any) -> list[dict[str, Any]]:
     return frames[:_MAX_FRAMES]
 
 
+def _gate_flags(child: Mapping[str, Any]) -> list[str] | None:
+    """The flags a session continued with past its gate, re-derived from the retained gate; else ``None``."""
+    from blueprint_pipeline.native_task_arena_policy_canary_session import observation_quality_flags
+
+    flags = observation_quality_flags(child.get("preload_observation_gate"), run_kind=child.get("run_kind"))
+    return flags if (flags and child.get("observation_integrity_flagged") is True
+                     and child.get("observation_quality_flags") == flags) else None
+
+
 def _stage(child: Mapping[str, Any], reached: list[str], functions: set[str]) -> str:
     gate = child.get("preload_observation_gate")
     if "isaac_launch_started" in reached and "isaac_launch_completed" not in reached:
         return "runtime_open"
     if "load_policy" in functions or "policy_loaded" in reached:
+        return "policy_load"
+    # The session continued past a flagged gate, so whatever stopped it came after the gate.
+    if _gate_flags(child) is not None:
         return "policy_load"
     # The gate returned a refusal, raised, or its site qualification was refused.
     if gate is not None or "prepolicy_observation_gate" in functions:
@@ -133,6 +147,7 @@ def cell_setup_failure(*, child: Any, inputs: Mapping[str, Any], index: int, chi
     trace = _source_trace(child.get("session_failure_source_trace"))
     stage = _stage(child, reached, {frame["function"] for frame in trace})
     gate = child.get("preload_observation_gate")
+    flags = _gate_flags(child)
     codes = child.get("session_failure_codes")
     cell = inputs["cells"][index]
     record: dict[str, Any] = {
@@ -145,7 +160,8 @@ def cell_setup_failure(*, child: Any, inputs: Mapping[str, Any], index: int, chi
         "progress_stages": reached,
         "observation_gate_verdict": None if gate is None else (
             "passed" if isinstance(gate, Mapping) and gate.get("policy_observation_integrity_passed") is True
-            else "refused"),
+            else "flagged" if flags else "refused"),
+        **({"observation_quality_flags": flags} if flags else {}),
         "observation_gate_blockers": sorted({
             item for item in (gate.get("blockers") if isinstance(gate, Mapping) else None) or []
             if isinstance(item, str) and _GATE_REASON.fullmatch(item)})[:_MAX_CODES],

@@ -441,3 +441,170 @@ def test_beta_cell_that_cannot_open_isaac_seals_a_named_blocker_and_stops(tmp_pa
     assert result["beta_screening_admission"] == inputs["beta_screening_admission"]
     assert result["planned_episodes_per_policy"] == len(inputs["cells"])
     assert setup_failure.sealed_setup_failure_blocker(result) == "policy_canary_session_setup_failed:runtime_open"
+
+
+# Website beta screening, capture GPU runs of 2026-11-04/05: every cell reached the
+# pre-policy runtime observation gate and stopped there with these exact blockers,
+# while its frames were structurally usable. None protects privacy, rights or money.
+REAL_GATE_BLOCKERS = (
+    "droid_wrist_task_pixels_below_threshold",
+    *(f"{role}:{target}:composition_support_background_occlusion_requires_review"
+      for role in ("external", "overview") for target in ("task_object", "task_target_marker")),
+    "policy_canary_task_semantic_visibility_failed",
+)
+
+
+def runtime_observation_gate(*, backend_digest, frame_structure_passed=True, blockers=REAL_GATE_BLOCKERS):
+    """The sealed runtime camera gate in the shape the native worker writes it."""
+    value = {"schema_version": "policy_canary_runtime_observation_integrity_gate.v1", "status": "blocked",
+             "run_kind": "internal_policy_canary", "claim_ceiling": "diagnostic_policy_execution",
+             "appearance_render_backend_receipt_digest": backend_digest,
+             "wrist_camera_mount_selection_digest": "sha256:" + "4" * 64,
+             "frame_structure_passed": frame_structure_passed, "target_semantic_visibility_passed": False,
+             # Recorded, as on the real gate, but never in its blocker list.
+             "visual_gate": {"frame_structure_passed": frame_structure_passed,
+                             "policy_observation_integrity_blockers": [
+                                 "native_task_appearance_reference_parity_missing",
+                                 "native_task_human_visual_review_not_approved"]},
+             "human_visual_review_status": "not_required_for_internal_diagnostic_policy_execution",
+             "candidate_policy_loaded": False, "candidate_policy_queried": False,
+             "official_ranking_permitted": False, "scene_promotion_permitted": False,
+             "blockers": sorted(blockers), "policy_observation_integrity_passed": False, "gate_digest": ""}
+    value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
+    return value
+
+
+def _beta_cell_runtime(child_root, *, frame_structure_passed=True, policy_client=None):
+    """The rehearsal runtime with the real gate shape, the real renderer guard and a beta-bound client.
+
+    Only Isaac, the policy server and RoboLab's outer loop are faked: the native
+    episode runner (and its prestart readiness) and the post-gate guard are real.
+    """
+    from blueprint_pipeline.adp009d_policy_episode import run_policy_episode
+    from blueprint_pipeline.native_task_rtx_streaming_guard import configure_post_gate_rtx_streaming_wait
+    from blueprint_pipeline.openpi_droid_policy_runtime import OpenPIDroidPolicySpec, OpenPIWebsocketDroidPolicyClient
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import FakeIsaac, _OpenPIVendor, _rehearsal_runtime
+
+    def gate(**kwargs):
+        backend = worker.appearance_render_backend_from_plan(kwargs["plan"], packet_request=kwargs["packet_request"] or None)
+        return runtime_observation_gate(backend_digest=backend["receipt_digest"],
+                                        frame_structure_passed=frame_structure_passed)
+
+    def client(spec, **_kwargs):
+        policy_spec = OpenPIDroidPolicySpec(**spec["policy_spec"])
+
+        class Vendor(_OpenPIVendor):
+            def get_server_metadata(self):
+                return {**super().get_server_metadata(),
+                        "local_checkpoint_object_count": policy_spec.checkpoint_object_count,
+                        "local_checkpoint_size_bytes": policy_spec.checkpoint_size_bytes}
+        return OpenPIWebsocketDroidPolicyClient(spec=policy_spec, host=str(spec["policy_endpoint"]["host"]),
+            port=int(spec["policy_endpoint"]["port"]), client_factory=lambda **_: Vendor(policy_spec))
+
+    renderer = SimpleNamespace(_STREAMING_WAIT_TIMEOUT_S=30.0, _get_stage_streaming_busy=lambda: False)
+    return replace(_rehearsal_runtime(FakeIsaac(child_root / worker.PROVIDER_RESULT_FILENAME)),
+        prepolicy_camera_gate=gate, policy_client=policy_client or client,
+        configure_post_gate_renderer=lambda **kw: configure_post_gate_rtx_streaming_wait(**kw, renderer_utils=renderer),
+        # RoboLab's upstream loop only drives the same native episode events; it is not installed here.
+        run_policy_episode=lambda **kw: run_policy_episode(**{k: v for k, v in kw.items() if k != "evaluation_backend"}))
+
+
+def _run_beta_cell(runtime, output, index, **runtime_kwargs):
+    child_root = output / "cell_runs" / f"{index:02d}"
+    child_root.mkdir(parents=True, exist_ok=True)
+    try:
+        worker._run_selected_cell(index, runtime_root=runtime, output_root=child_root, provider_output_root=output,
+                                  cell_runtime=_beta_cell_runtime(child_root, **runtime_kwargs))
+    except SystemExit:  # The fake Isaac's close ends the interpreter, as Isaac does.
+        pass
+    return json.loads((child_root / worker.PROVIDER_RESULT_FILENAME).read_text()), child_root
+
+
+@pytest.fixture
+def _no_robolab_install(monkeypatch):
+    from blueprint_pipeline import beta_robolab_runtime
+    monkeypatch.setattr(beta_robolab_runtime, "preflight_robolab_runtime", lambda: {"status": "passed"})
+
+
+@pytest.mark.usefixtures("_no_robolab_install")
+def test_beta_cell_runs_past_a_usable_frame_gate_and_carries_its_blockers_as_flags(tmp_path, monkeypatch):
+    runtime, output, inputs, *_ = stage_beta_bundle(tmp_path, monkeypatch)
+    flags = sorted(REAL_GATE_BLOCKERS)
+    child, child_root = _run_beta_cell(runtime, output, 0)
+
+    assert child["status"] == "runtime_selected_cell_completed_pending_aggregation"
+    assert child["preload_observation_gate"]["policy_observation_integrity_passed"] is False  # verdict kept
+    assert child["observation_quality_flags"] == flags and child["observation_integrity_flagged"] is True
+    assert child["candidate_policy_queried"] is True and child["policy_loads"] == [
+        {"candidate_id": inputs["candidate_ids"][0], "loaded_once": True}]
+    episode, = child["episodes"]
+    assert episode["status"] == "completed" and episode["candidate_policy_queried"] is True
+    quality = episode["episode"]["prestart_readiness"]["prepolicy_visual_quality"]
+    assert quality["observation_integrity_flagged"] is True and quality["observation_quality_flags"] == flags
+    # The measured integrity verdict is never rewritten into a pass.
+    assert quality["policy_observation_integrity_passed"] is False
+    assert quality["runtime_observation_gate"]["gate_digest"] == child["preload_observation_gate"]["gate_digest"]
+    guard = json.loads((child_root / "prepolicy_observation_gate/post_gate_rtx_streaming_guard.v1.json").read_text())
+    assert guard["status"] == "configured" and guard["observation_quality_flagged"] is True
+    assert guard["observation_gate_digest"] == child["preload_observation_gate"]["gate_digest"]
+    # The gate did not pass, so no cell milestone says it did.
+    assert "observation_gate_passed" not in (child_root / "cell_progress.log").read_text()
+
+    # The parent aggregates the run: the flags stay with the provider session result.
+    def spawn(**kwargs):
+        if kwargs["index"] == 0:
+            (kwargs["child_root"] / worker.PROVIDER_RESULT_FILENAME).write_text(json.dumps(child))
+        else:
+            (kwargs["child_root"] / worker.PROVIDER_RESULT_FILENAME).write_text(
+                json.dumps(_completed_parent_fixture_child(inputs, kwargs["index"])))
+        return 0
+
+    parent = tmp_path / "parent_output"
+    assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=parent, run_cell_process=spawn) == 0
+    retained = json.loads((parent / worker.PROVIDER_RESULT_FILENAME).read_text())
+    assert retained["status"] == "runtime_completed_unqualified_pending_closeout"
+    assert retained["observation_quality_flags"] == flags and retained["observation_integrity_flagged"] is True
+    assert "cell_setup_failure" not in retained
+    assert retained["result_digest"] == canonical_digest(retained, digest_field="result_digest")
+
+
+@pytest.mark.usefixtures("_no_robolab_install")
+def test_beta_cell_whose_frames_are_not_structurally_usable_still_stops(tmp_path, monkeypatch):
+    from blueprint_pipeline import policy_canary_cell_setup_failure as setup_failure
+    runtime, output, inputs, *_ = stage_beta_bundle(tmp_path, monkeypatch)
+
+    def spawn(**kwargs):
+        _run_beta_cell(runtime, output, kwargs["index"], frame_structure_passed=False)
+        return 1
+
+    assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=spawn) == 1
+    child = json.loads((output / "cell_runs/00" / worker.PROVIDER_RESULT_FILENAME).read_text())
+    assert child["status"] == "blocked" and child["policy_loads"] == [] and child["episodes"] == []
+    assert child["candidate_policy_queried"] is False
+    assert "observation_quality_flags" not in child and "observation_integrity_flagged" not in child
+    assert not (output / "cell_runs/00/prepolicy_observation_gate/post_gate_rtx_streaming_guard.v1.json").exists()
+    result = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
+    assert result["blockers"] == ["policy_canary_session_setup_failed:observation_gate"]
+    assert result["cell_setup_failure"]["observation_gate_verdict"] == "refused"
+    assert setup_failure.sealed_setup_failure_blocker(result) == "policy_canary_session_setup_failed:observation_gate"
+
+
+@pytest.mark.usefixtures("_no_robolab_install")
+def test_a_flagged_gate_the_session_continued_past_is_not_a_setup_failure_of_the_gate(tmp_path, monkeypatch):
+    from blueprint_pipeline import policy_canary_cell_setup_failure as setup_failure
+    runtime, output, *_ = stage_beta_bundle(tmp_path, monkeypatch)
+
+    def unreachable_server(*_args, **_kwargs):
+        raise ConnectionError("policy server did not answer")
+
+    def spawn(**kwargs):
+        _run_beta_cell(runtime, output, kwargs["index"], policy_client=unreachable_server)
+        return 1
+
+    assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=spawn) == 1
+    result = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
+    failure = result["cell_setup_failure"]
+    assert result["blockers"] == ["policy_canary_session_setup_failed:policy_load"]
+    assert failure["stage"] == "policy_load" and failure["observation_gate_verdict"] == "flagged"
+    assert failure["observation_quality_flags"] == sorted(REAL_GATE_BLOCKERS)
+    assert setup_failure.sealed_setup_failure_blocker(result) == "policy_canary_session_setup_failed:policy_load"

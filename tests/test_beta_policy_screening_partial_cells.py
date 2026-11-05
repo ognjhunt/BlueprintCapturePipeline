@@ -78,7 +78,18 @@ def _inputs(value, candidate):
             "configuration_digest": candidate["configuration_digest"], "runtime_inputs_digest": "sha256:" + "c" * 64}
 
 
-def _children(value, candidate, inputs, successes):
+def _flags(flagged):
+    """What a cell's session records when its usable-frame gate did not pass integrity."""
+    if not flagged:
+        return {}
+    from blueprint_pipeline.native_task_arena_policy_canary_session import observation_quality_flags
+    from tests.test_beta_screening_worker_control import runtime_observation_gate
+    gate = runtime_observation_gate(backend_digest="sha256:" + "b" * 64)
+    return {"preload_observation_gate": gate, "observation_integrity_flagged": True,
+            "observation_quality_flags": observation_quality_flags(gate, run_kind=BETA_RUN_KIND)}
+
+
+def _children(value, candidate, inputs, successes, flagged=False):
     """One sealed child per cell, as each fresh-interpreter cell returns it."""
     children = []
     for index, row in enumerate(native_result(value, candidate)["episodes"]):
@@ -89,7 +100,8 @@ def _children(value, candidate, inputs, successes):
                               "selected_cell_index": index,
                               "status": "runtime_selected_cell_completed_pending_aggregation", "episodes": [row],
                               "task_success_contract": inputs["task_success_contract"],
-                              "task_success_contract_digest": inputs["task_success_contract_digest"]}, "result_digest"))
+                              "task_success_contract_digest": inputs["task_success_contract_digest"],
+                              **_flags(flagged)}, "result_digest"))
     return children
 
 
@@ -110,10 +122,11 @@ def _seal_prefix(**kwargs):
                                       aggregate=worker._aggregate_isolated_cell_results, seal_result=worker._seal_result)
 
 
-def provider_result(value, candidate, output_root: Path, *, successes: int, stop: str = "none", at: int = 10) -> dict:
+def provider_result(value, candidate, output_root: Path, *, successes: int, stop: str = "none", at: int = 10,
+                    flagged: bool = False) -> dict:
     """The sealed provider session result, written by the real worker sealing code."""
     inputs = _inputs(value, candidate)
-    children = _children(value, candidate, inputs, successes)
+    children = _children(value, candidate, inputs, successes, flagged)
     output_root.mkdir(parents=True, exist_ok=True)
     authority = {"run_id": inputs["run_id"], "authority_digest": "sha256:" + "d" * 64}
     if stop == "none":
@@ -332,6 +345,35 @@ def test_run_stopped_part_way_counts_its_measured_cells_and_voids_the_rest(tmp_p
         _webapp_contract(publication)
     if stop == "timeout":
         _retained_fixture("partial", final)
+
+
+@pytest.mark.parametrize("stop, at", [("none", 10), ("timeout", 6)])
+def test_flagged_observation_gate_reaches_the_ledger_summary_and_stays_out_of_the_publication(tmp_path, stop, at):
+    from tests.test_beta_screening_worker_control import REAL_GATE_BLOCKERS
+    value = make_plan(count=1)
+    candidate = value["candidates"][0]
+    delivered, rows, executor = run_campaign(tmp_path / "queue", value, {
+        candidate["candidate_id"]: {"successes": 4, "stop": stop, "at": at, "flagged": True}})
+    observed = executor.observations[candidate["candidate_id"]]
+    flags = sorted(REAL_GATE_BLOCKERS)
+    # Reconciled through the real scoped closeout join and session validation.
+    assert observed["status"] == "completed" and observed["result"]["observation_quality_flags"] == flags
+    row = rows[candidate["candidate_id"]]
+    assert row["status"] == "completed" and row["blockers"] == []
+    summary = row["summary"]
+    assert summary["observation_quality_flags"] == flags
+    assert (summary["episodes_scored"], summary["episodes_succeeded"]) == (at, 4)  # The estimate is unchanged.
+    # The v2 publication has no field for the flags: it carries the estimate as before, schema-valid.
+    for publication in delivered:
+        _webapp_contract(publication)
+        assert "observation_quality_flags" not in json.dumps(publication)
+    plain, plain_rows, _ = run_campaign(tmp_path / "plain", value, {
+        candidate["candidate_id"]: {"successes": 4, "stop": stop, "at": at}})
+    unflagged = plain[-1]
+    assert "observation_quality_flags" not in plain_rows[candidate["candidate_id"]]["summary"]
+    facts = ("status", "episodes_scored", "episodes_succeeded", "episodes_failed", "episodes_void", "success_rate")
+    assert [{key: item[key] for key in facts} for item in delivered[-1]["candidates"]] == [
+        {key: item[key] for key in facts} for item in unflagged["candidates"]]
 
 
 @pytest.mark.parametrize("stop", ["timeout", "setup"])

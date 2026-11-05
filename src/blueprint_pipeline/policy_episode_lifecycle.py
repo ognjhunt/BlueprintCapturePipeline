@@ -15,6 +15,7 @@ remains a blocker requiring a durable repair.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any
 
 try:  # flat provider-bundle layout
@@ -52,6 +53,37 @@ REQUIRED_READINESS_CHECKS = (
     "environment_step_readback",
     "canonical_reset_restored",
 )
+
+
+# A typed observation-quality flag: a lowercase code with at most three typed
+# qualifiers, e.g. ``external:task_object:composition_support_...``.
+OBSERVATION_QUALITY_FLAG = re.compile(r"[a-z][a-z0-9_]{0,95}(?::[a-z0-9_]{1,96}){0,3}")
+OBSERVATION_QUALITY_FLAG_UNTYPED = "observation_gate_blocker_untyped"
+
+
+def observation_quality_flag_codes(blockers: Any) -> list[str]:
+    """The typed observation-quality flags of a gate's blocker list, sorted and unique.
+
+    Doctrine stops a run only for privacy, rights and money, so a beta run
+    carries an observation gate's blockers as flags instead of stopping.  A
+    blocker that is not already a typed code keeps its leading code
+    (``composition_gate_capture_failed:RuntimeError:<message>`` becomes
+    ``composition_gate_capture_failed``), and one with no typed code at all is
+    kept as ``observation_gate_blocker_untyped``.  No blocker is dropped and no
+    message, path or other free text is carried.
+    """
+    codes: set[str] = set()
+    for item in blockers if isinstance(blockers, (list, tuple)) else ():
+        text, head = str(item), str(item).split(":", 1)[0]
+        codes.add(text if OBSERVATION_QUALITY_FLAG.fullmatch(text)
+                  else head if OBSERVATION_QUALITY_FLAG.fullmatch(head) else OBSERVATION_QUALITY_FLAG_UNTYPED)
+    return sorted(codes)
+
+
+def observation_quality_flags_valid(value: Any) -> bool:
+    """A non-empty, sorted, unique list of typed observation-quality flags."""
+    return (isinstance(value, list) and bool(value) and value == sorted(set(value))
+            and all(isinstance(code, str) and OBSERVATION_QUALITY_FLAG.fullmatch(code) for code in value))
 
 
 class PolicyEpisodeLifecycleError(ValueError):
@@ -312,6 +344,8 @@ def validate_policy_episode_lifecycle(receipt: Mapping[str, Any]) -> dict[str, A
 __all__ = [
     "ALLOWED_TERMINAL_CLASSES",
     "LIFECYCLE_SCHEMA_VERSION",
+    "OBSERVATION_QUALITY_FLAG",
+    "OBSERVATION_QUALITY_FLAG_UNTYPED",
     "PolicyEpisodeLifecycleError",
     "READINESS_SCHEMA_VERSION",
     "REQUIRED_READINESS_CHECKS",
@@ -319,6 +353,8 @@ __all__ = [
     "TERMINAL_POLICY_SAFETY",
     "TERMINAL_SCIENTIFIC",
     "build_lifecycle",
+    "observation_quality_flag_codes",
+    "observation_quality_flags_valid",
     "seal_prestart_readiness",
     "validate_policy_episode_lifecycle",
 ]
