@@ -2,6 +2,15 @@
 
 You are picking up from a Claude Code cloud session on another account that ran out of usage. Its container and transcript are gone; this document is everything you need. Read it fully before acting. Work autonomously: the owner wants progress without being asked questions, except for the hard stops below.
 
+## UPDATE 17:00Z (old session): read this first
+
+- **#3400 is CLOSED** as a duplicate. The other session's **#3399** (merged) already fixes the OpenPI `ping_timeout` bug.
+- **The retry bump is now its own PR, #3401** (`HARNESS_RETRY_LIMIT` 6 → 7, head 6a46c223). Merge it when CI is green.
+  - Without it, pi05 (7 harness failures once its 16:45Z run voids) never runs on the fixed client.
+- **Deploys:** a door deploy launched at **16:48Z** (`20261105T164814Z-deploy-067ec515`), probably main with #3399, #3398 (backfill), #3397 and #3331. Active was still c5e03634 at 17:00Z.
+  - After #3401 merges, deploy the newest attested main once more.
+- **#3398's backfill** covers groot's `screen-cea30f50…` (60 videos, 77 MB). It is 10th in its one-per-tick order after deploy; the other 14 due rows have no MP4s.
+
 ## UPDATE 16:55Z (old session)
 
 - **The worker re-planned at 16:42Z** into campaign `screening-9ae28fc4637ed1…` (pi05 harness-failed, and the commit had changed to c5e03634).
