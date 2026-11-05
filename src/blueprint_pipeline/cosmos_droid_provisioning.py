@@ -14,7 +14,8 @@ from urllib.parse import quote
 
 from .cosmos_droid_bundle import CHECKPOINT_BYTES, profile, runtime_contract
 from .cosmos_droid_dependencies import DEPENDENCY_MANIFEST_FILENAME, verified_dependency_manifest
-from .cosmos_droid_source import SOURCE_ARCHIVE, SOURCE_MANIFEST, extract_source
+from .cosmos_droid_source import (CHECKPOINT_REGISTRY_BYTES, CHECKPOINT_REGISTRY_STORE, SOURCE_ARCHIVE, SOURCE_MANIFEST,
+    checkpoint_registry_downloads, extract_source)
 from .local_policy_provisioning import (
     DEADLINE_ENV, TransferBudget, fetch_exact, remaining_seconds, _sha256,
     _command, _extract_interpreter, _install_wheels,
@@ -49,6 +50,7 @@ def _start_server(*, python: Path, runtime: Path, output: Path, root: Path, spec
         "--candidate-id", spec["candidate_id"], "--checkpoint-path", str(root / "checkpoint"),
         "--snapshot-manifest", str(runtime / selected.SNAPSHOT_STAGED_NAME),
         "--source-root", str(root / "source"), "--source-manifest", str(runtime / SOURCE_MANIFEST),
+        "--checkpoint-registry-store", str(root / CHECKPOINT_REGISTRY_STORE),
         "--host", "127.0.0.1", "--port", "8000", "--output-dir", str(output / "cosmos_policy")]
     log = output / f"adp009d_policy_server.{spec['candidate_id']}.log"
     receipt_path = output / f"adp009d_policy_server_receipt.{spec['candidate_id']}.json"
@@ -103,7 +105,8 @@ def provision(runtime: Path, output: Path, spec: dict, *, root: Path = Path("/op
     remaining_seconds(deadline)
     dependencies = verified_dependency_manifest(runtime / DEPENDENCY_MANIFEST_FILENAME)
     manifest = selected.verified_snapshot_manifest(runtime / selected.SNAPSHOT_STAGED_NAME)
-    if sum(row["size_bytes"] for row in manifest["required_files"]) != CHECKPOINT_BYTES[spec["candidate_id"]]:
+    if (sum(row["size_bytes"] for row in manifest["required_files"]) + CHECKPOINT_REGISTRY_BYTES
+            != CHECKPOINT_BYTES[spec["candidate_id"]]):
         raise ValueError("cosmos_checkpoint_download_bound_invalid")
     budget = TransferBudget(dependencies["total_download_bytes"] + CHECKPOINT_BYTES[spec["candidate_id"]])
     root.mkdir(parents=True, exist_ok=True)
@@ -136,6 +139,10 @@ def provision(runtime: Path, output: Path, spec: dict, *, root: Path = Path("/op
     for row in manifest["required_files"]:
         download = {**row, "url": f"https://huggingface.co/{selected.MODEL_ID}/resolve/{selected.MODEL_REVISION}/{quote(row['path'])}?download=true"}
         downloads.append(fetch_exact(download, root / "checkpoint" / row["path"], deadline=deadline, budget=budget))
+    # The pinned source's checkpoint registry fetches these during model load;
+    # the offline server answers it from this store (cosmos_edge_droid_policy_server).
+    for row, destination in checkpoint_registry_downloads(root / CHECKPOINT_REGISTRY_STORE):
+        downloads.append(fetch_exact(row, destination, deadline=deadline, budget=budget))
     # The server repeats full-byte verification immediately before model load.
     expected = {row["path"] for row in manifest["required_files"]}
     actual = {path.relative_to(root / "checkpoint").as_posix() for path in (root / "checkpoint").rglob("*") if not path.is_dir()}
