@@ -10,7 +10,6 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.website_native_background import (
     construction_rights_admission, derived_stage_three_configuration, prepare_construction_stages,
 )
-from blueprint_pipeline.website_drawer_depth_prior import PRIOR as DRAWER_DEPTH_PRIOR
 from blueprint_pipeline.website_native_inputs import INPUT_STATUS, validate_website_native_inputs
 from blueprint_pipeline.website_object_observations import _record
 from blueprint_pipeline.website_scene_runtime_inputs import prepare_website_runtime_inputs
@@ -23,16 +22,44 @@ from blueprint_pipeline.task_evaluation_scene_construction_recipe import validat
 from tests.test_website_native_appearance import inputs
 
 
-def test_cc48_drawer_depth_prior_is_bound_to_its_own_source_evidence_and_uses_no_site_readings():
-    from blueprint_pipeline.website_drawer_depth_prior import CC48_PRIOR, prior_for
-    from blueprint_pipeline.task_object_articulated_packaging import (
-        derived_website_cabinet_depth_hypothesis, plan_articulated_assembly)
-    from blueprint_pipeline.task_object_authoring_contracts import AssetAuthoringError
-    from tests.test_task_object_articulated_packaging import _thin_website_cabinet
+# The three development drawer fixtures that held exact-scene prior records before
+# the prior became a cabinet category prior. Their sealed hypotheses carry
+# ``website_drawer_depth_prior.v1`` and the category values; both stay unchanged.
+_RETAINED_FRAMES = [
+    "sha256:0205303c4faa9892114349af39bc5908b07c145dcc58eaeedd9b5fb74e4336af",
+    "sha256:7c711762f672a41fd90803b4c5c658a81ee23e9dc3b0fcc71dd57ed243bfcc4a",
+    "sha256:aba7b9e216a351510bf07b16bc8362ec0a68306c94306bbf705f60a0e8874157",
+    "sha256:afba0d20718721e00312255a4be823a42af42f36e6640598008eee2e2bbe01f9",
+    "sha256:b6f03d21cf7d274c7cc4228fca289e242e9eeb347f97986c4af39d2e00812a25",
+]
+# (scene, preparation, observation manifest, subject) and the canonical digest of the
+# exact-scene record it held (frames in sorted order), computed before the change.
+_RETAINED_BINDINGS = [
+    ("site-capture-7d655e25-34f2-4961-ae9c-6da11621ce8f-development",
+     "sha256:cfec5e38e056748c73d2d93660aae81c1f703e81f6bf8041dd88a3914d64cdb6",
+     "sha256:028cc3a1ff6c0093d13850859e3220bede6b2ef919a0a985570d858b56e91681",
+     "website-subject-0300250645e1def96386",
+     "sha256:0ac1a1092a0216f499154b1ae4d71bccd79015b020db934d41940cd59a826fae"),
+    ("site-capture-bc15f409-09b7-438c-9891-519ba24d728f-development",
+     "sha256:2e1254a642a9a3a77de7f4ae421cc59e68ca8ef8b75da6d14617207afaba1f59",
+     "sha256:5d780038e8d92460645b15bccf2146a3dcc2436dd230ea1b236dfdb07a494e73",
+     "website-subject-cc9b93603a73eb7cbace",
+     "sha256:7763d75a9dc568041402c473ef3729a3a2e4fed56dc111d93238812dc536f898"),
+    ("site-capture-cc484026-f6ba-4b9e-9a16-aca0a0163b8d-development",
+     "sha256:6943e1f45cab6f7764a52a60e00ad4e24c8d974ab40c1161e0b878f7a2caabf7",
+     "sha256:4d3d7498376ca741fe0a11dcf1b80a0a9fe4d1a39a0f6fa788892d34a45475c2",
+     "website-subject-aa9aaf64b6fe08ffe2bd",
+     "sha256:b5379aafeecd559b2a00e324cf6808a5637aecc0400f763fb643121a66959a28"),
+]
+# The cc48 fixture's re-derived hypothesis, computed before the change.
+_RETAINED_CC48_HYPOTHESIS_DIGEST = "sha256:6777df5c671f4416f3d65bdbdc653b905df30124a6dccbb85c6d612dd665dc9d"
 
-    configuration = {
+
+def _cc48_configuration():
+    scene_id, _, _, subject, _ = _RETAINED_BINDINGS[2]
+    return {
         "schema_version": "articulated_replacement_authoring_configuration.v1",
-        "scene_id": CC48_PRIOR["scene_id"], "replacement_identity": CC48_PRIOR["subject_identity"],
+        "scene_id": scene_id, "replacement_identity": {"id": subject, "version": "v1"},
         "source_observation_kind": "website_capture_frames",
         "metric_envelope": {"minimum_xyz_m": [-0.8676723447340478, -0.04660110532186394, 0.75],
                             "maximum_xyz_m": [-0.28922411491134925, 0.04660110532186394, 1.531543853290867]},
@@ -40,19 +67,69 @@ def test_cc48_drawer_depth_prior_is_bound_to_its_own_source_evidence_and_uses_no
                       [0.11635973738420832, -0.9932071342453588, 0.0],
                       "estimated_usable_stroke_m": 0.1199},
     }
-    frames = [{"role": "observed_source", "sha256": digest}
-              for digest in CC48_PRIOR["original_frame_sha256s"]]
-    assert prior_for(scene_id=configuration["scene_id"],
-                     subject_identity=configuration["replacement_identity"]) is CC48_PRIOR
+
+
+@pytest.mark.parametrize("binding", _RETAINED_BINDINGS, ids=["7d65", "bc15", "cc48"])
+def test_retained_drawer_fixture_records_are_unchanged_by_the_category_prior(binding):
+    from blueprint_pipeline.website_drawer_depth_prior import prior_for
+
+    scene_id, preparation_digest, observation_digest, subject, record_digest = binding
+    record = prior_for({"scene_id": scene_id, "replacement_identity": {"id": subject, "version": "v1"},
+                        "mechanism": {"joint_type": "prismatic"}},
+                       preparation_digest=preparation_digest, observation_manifest_digest=observation_digest,
+                       original_frame_sha256s=reversed(_RETAINED_FRAMES))
+    assert record["schema_version"] == "website_drawer_depth_prior.v1"
+    assert canonical_digest(record) == record_digest
+
+
+def test_cabinet_prior_binds_each_scene_and_uses_no_site_readings():
+    from blueprint_pipeline.website_drawer_depth_prior import prior_for
+    from blueprint_pipeline.task_object_articulated_packaging import (
+        derived_website_cabinet_depth_hypothesis, plan_articulated_assembly)
+    from blueprint_pipeline.task_object_authoring_contracts import AssetAuthoringError
+    from tests.test_task_object_articulated_packaging import _thin_website_cabinet
+
+    configuration = _cc48_configuration()
+    frames = [{"role": "observed_source", "sha256": digest} for digest in _RETAINED_FRAMES]
     hypothesis = derived_website_cabinet_depth_hypothesis(configuration, frames, 0.6)
+    # A retained fixture re-derives byte for byte the hypothesis its stage 3 sealed.
+    assert canonical_digest(hypothesis) == _RETAINED_CC48_HYPOTHESIS_DIGEST
     # The single video and public cabinet specifications only: no site-reported size enters.
     assert hypothesis["estimated_depth_m"] == 0.55
     assert hypothesis["estimated_usable_stroke_m"] == 0.4125
     assert hypothesis["estimated_minimum_opening_m"] == 0.2475
     assert "owner_reported_dimensions_m" not in hypothesis["prior_comparison"]
     assert hypothesis["prior_comparison"]["reference_models_are_exact_match"] is False
-    assert prior_for(scene_id=configuration["scene_id"],
-                     subject_identity=DRAWER_DEPTH_PRIOR["subject_identity"]) is None
+    # The same cabinet in any other scene gets the same prior, bound to that scene.
+    elsewhere = {**configuration, "scene_id": "site-capture-elsewhere-development",
+                 "replacement_identity": {"id": "website-subject-elsewhere", "version": "v1"}}
+    record = prior_for(elsewhere, preparation_digest="sha256:" + "c" * 64,
+                       observation_manifest_digest="sha256:" + "d" * 64,
+                       original_frame_sha256s=["sha256:" + "f" * 64, "sha256:" + "e" * 64])
+    assert {key: record[key] for key in ("scene_id", "preparation_digest", "observation_manifest_digest",
+                                         "subject_identity", "original_frame_sha256s")} == {
+        "scene_id": "site-capture-elsewhere-development", "preparation_digest": "sha256:" + "c" * 64,
+        "observation_manifest_digest": "sha256:" + "d" * 64,
+        "subject_identity": {"id": "website-subject-elsewhere", "version": "v1"},
+        "original_frame_sha256s": ["sha256:" + "e" * 64, "sha256:" + "f" * 64]}
+    assert record["claim_ceiling"] == "development_only" and record["nominal_depth_m"] == 0.55
+    assert record["limitations"] == ("Comparison models differ from the filmed cabinet; rear geometry and"
+                                     " physical mass remain unmeasured.")
+    assert derived_website_cabinet_depth_hypothesis(elsewhere, frames, 0.6) == hypothesis
+    # Unknown binding stays unknown, and a caller's edit never reaches the next record.
+    unbound = prior_for(elsewhere)
+    assert unbound["preparation_digest"] is None and unbound["original_frame_sha256s"] == []
+    unbound["manufacturer_examples"].clear()
+    assert len(prior_for(elsewhere)["manufacturer_examples"]) == 4
+    # Not a drawer cabinet, or nothing to bind to: no prior.
+    hinged = {**elsewhere, "assembly_family": "hinged_door_appliance",
+              "mechanism": {**elsewhere["mechanism"], "joint_type": "revolute"}}
+    rigid = {key: value for key, value in elsewhere.items() if key != "mechanism"}
+    assert prior_for(hinged) is None and prior_for(rigid) is None
+    assert prior_for({**elsewhere, "assembly_family": "sliding_tray"}) is None
+    assert prior_for({**elsewhere, "scene_id": ""}) is None
+    assert prior_for({**elsewhere, "replacement_identity": None}) is None
+    assert derived_website_cabinet_depth_hypothesis(hinged, frames, 0.6) is None
     authored = _thin_website_cabinet()
     authored.update(scene_id=configuration["scene_id"], replacement_identity=configuration["replacement_identity"],
                     metric_envelope=configuration["metric_envelope"])
@@ -73,42 +150,41 @@ def test_cc48_drawer_depth_prior_is_bound_to_its_own_source_evidence_and_uses_no
         plan_articulated_assembly({**authored, "development_geometry_hypothesis": stale})
 
 
-def test_exact_drawer_successor_changes_only_stage_three_and_freezes_stroke(tmp_path, monkeypatch):
+def _drawer_fixture(tmp_path, *, scene_id, preparation_digest, frames):
     from tests.test_task_object_articulated_packaging import _thin_website_cabinet
-    from blueprint_pipeline import website_drawer_depth_prior
 
-    original = _thin_website_cabinet()
-    original["scene_id"] = DRAWER_DEPTH_PRIOR["scene_id"]
-    original["replacement_identity"] = DRAWER_DEPTH_PRIOR["subject_identity"]
     observed = {"schema_version": "website_object_observations.v1",
-                "preparation_digest": DRAWER_DEPTH_PRIOR["preparation_digest"],
-                "frames": [{"frame_id": str(i), "image_basis": "original_capture",
-                            "image": {"digest": digest}}
-                           for i, digest in enumerate(DRAWER_DEPTH_PRIOR["original_frame_sha256s"])],
+                "preparation_digest": preparation_digest,
+                "frames": [{"frame_id": str(i), "image_basis": "original_capture", "image": {"digest": digest}}
+                           for i, digest in enumerate(frames)],
                 "digest": ""}
     observed["digest"] = canonical_digest(observed, digest_field="digest")
     manifest_path = tmp_path / "observations.json"
-    manifest_path.write_text(json.dumps(observed))
-    record = _record(manifest_path)
-    prior = copy.deepcopy(DRAWER_DEPTH_PRIOR)
-    prior["observation_manifest_digest"] = record["digest"]
-    monkeypatch.setattr(website_drawer_depth_prior, "PRIOR", prior)
-    runtime = {"object_authoring": {"configuration": original, "observation_manifest": record},
+    write_json(manifest_path, observed)
+    original = _thin_website_cabinet()
+    original.update(scene_id=scene_id,
+                    replacement_identity={"id": "website-subject-" + scene_id, "version": "v1"})
+    runtime = {"object_authoring": {"configuration": original, "observation_manifest": _record(manifest_path)},
                "stage_one_marker": "completed", "stage_two_marker": "completed"}
-    preparation = {"digest": DRAWER_DEPTH_PRIOR["preparation_digest"],
+    preparation = {"digest": preparation_digest,
                    "development_test": {"kind": "development_drawer_fixture",
                                         "captured_scene_evaluation_allowed": False},
-                   "authoring_inputs": {"source_frames": [
-                       {"role": "observed_source", "sha256": digest}
-                       for digest in DRAWER_DEPTH_PRIOR["original_frame_sha256s"]]},
                    "intake_request": {"task": {"success": {
                        "minimum_opening_fraction_of_estimated_stroke": 0.6}}}}
+    return original, runtime, preparation, observed, manifest_path
+
+
+def test_drawer_successor_changes_only_stage_three_and_freezes_stroke(tmp_path):
+    original, runtime, preparation, observed, manifest_path = _drawer_fixture(
+        tmp_path, scene_id="site-capture-first-development", preparation_digest="sha256:" + "a" * 64,
+        frames=_RETAINED_FRAMES)
     before = json.dumps(runtime, sort_keys=True)
     successor = derived_stage_three_configuration(runtime=runtime, preparation=preparation)
     assert derived_stage_three_configuration(runtime=runtime, preparation=preparation) == successor
     assert json.dumps(runtime, sort_keys=True) == before
     assert successor["metric_envelope"] == original["metric_envelope"]
     assert successor["development_geometry_hypothesis"]["estimated_depth_m"] == 0.55
+    assert successor["development_geometry_hypothesis"]["evidence_frame_sha256s"] == _RETAINED_FRAMES
     assert successor["mechanism"]["joint_limits"] == [0.0, 0.4125]
     assert successor["development_geometry_hypothesis"]["estimated_minimum_opening_m"] == 0.2475
     assert successor["required_output"]["mass_kg_bounds"] == [4.0, 30.0]
@@ -118,48 +194,41 @@ def test_exact_drawer_successor_changes_only_stage_three_and_freezes_stroke(tmp_
     assert derived_stage_three_configuration(runtime=runtime, preparation=preparation) == original
 
 
-def test_second_scene_requires_its_own_preparation_observation_and_identity(tmp_path, monkeypatch):
-    from tests.test_task_object_articulated_packaging import _thin_website_cabinet
-    from blueprint_pipeline import website_drawer_depth_prior
+def test_any_scene_drawer_fixture_derives_only_from_its_own_evidence(tmp_path):
     from blueprint_pipeline.task_object_articulated_packaging import plan_articulated_assembly
 
-    second = copy.deepcopy(DRAWER_DEPTH_PRIOR)
-    second.update(scene_id="site-capture-second-development",
-                  preparation_digest="sha256:" + "b" * 64,
-                  subject_identity={"id": "website-subject-second", "version": "v1"})
-    observed = {"schema_version": "website_object_observations.v1",
-                "preparation_digest": second["preparation_digest"],
-                "frames": [{"frame_id": str(i), "image_basis": "original_capture",
-                            "image": {"digest": digest}}
-                           for i, digest in enumerate(second["original_frame_sha256s"])],
-                "digest": ""}
-    observed["digest"] = canonical_digest(observed, digest_field="digest")
-    manifest_path = tmp_path / "observations.json"
-    write_json(manifest_path, observed)
-    record = _record(manifest_path)
-    second["observation_manifest_digest"] = record["digest"]
-    monkeypatch.setattr(website_drawer_depth_prior, "ADDITIONAL_PRIORS", (second,))
-
-    original = _thin_website_cabinet()
-    original.update(scene_id=second["scene_id"], replacement_identity=second["subject_identity"])
-    runtime = {"object_authoring": {"configuration": original, "observation_manifest": record}}
-    preparation = {"digest": second["preparation_digest"],
-                   "development_test": {"kind": "development_drawer_fixture",
-                                        "captured_scene_evaluation_allowed": False},
-                   "intake_request": {"task": {"success": {
-                       "minimum_opening_fraction_of_estimated_stroke": 0.6}}}}
+    frames = ["sha256:" + "e" * 64, "sha256:" + "f" * 64]
+    original, runtime, preparation, observed, manifest_path = _drawer_fixture(
+        tmp_path, scene_id="site-capture-second-development", preparation_digest="sha256:" + "b" * 64,
+        frames=frames)
     successor = derived_stage_three_configuration(runtime=runtime, preparation=preparation)
     assert successor["development_geometry_hypothesis"]["estimated_depth_m"] == 0.55
+    assert successor["development_geometry_hypothesis"]["evidence_frame_sha256s"] == frames
     assert plan_articulated_assembly(successor)["task_joint"]["limits_m"] == [0.0, 0.4125]
+    record = runtime["object_authoring"]["observation_manifest"]
+    # Another preparation's observations, a changed manifest, a frame that is not an
+    # original capture, a captured-scene run or a subject that is not a drawer cabinet
+    # each keep the original configuration.
     assert derived_stage_three_configuration(
-        runtime=runtime, preparation={**preparation, "digest": DRAWER_DEPTH_PRIOR["preparation_digest"]}) == original
+        runtime=runtime, preparation={**preparation, "digest": "sha256:" + "c" * 64}) == original
     assert derived_stage_three_configuration(
         runtime={"object_authoring": {"configuration": original,
                                       "observation_manifest": {**record, "digest": "sha256:" + "0" * 64}}},
         preparation=preparation) == original
-    assert website_drawer_depth_prior.prior_for(
-        scene_id=DRAWER_DEPTH_PRIOR["scene_id"],
-        subject_identity=DRAWER_DEPTH_PRIOR["subject_identity"]) is website_drawer_depth_prior.PRIOR
+    assert derived_stage_three_configuration(
+        runtime=runtime, preparation={**preparation, "development_test": {
+            "kind": "development_drawer_fixture", "captured_scene_evaluation_allowed": True}}) == original
+    hinged = {**original, "assembly_family": "hinged_door_appliance",
+              "mechanism": {**original["mechanism"], "joint_type": "revolute"}}
+    assert derived_stage_three_configuration(
+        runtime={"object_authoring": {"configuration": hinged, "observation_manifest": record}},
+        preparation=preparation) == hinged
+    observed["frames"][0]["image_basis"] = "generated_view"
+    observed["digest"] = canonical_digest(observed, digest_field="digest")
+    write_json(manifest_path, observed)
+    assert derived_stage_three_configuration(
+        runtime={"object_authoring": {"configuration": original, "observation_manifest": _record(manifest_path)}},
+        preparation=preparation) == original
 
 
 def packet(tmp_path, *, authoring_backend=None, freezing=contextlib.nullcontext):

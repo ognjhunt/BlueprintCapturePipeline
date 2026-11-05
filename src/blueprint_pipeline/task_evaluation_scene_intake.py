@@ -138,6 +138,19 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
                   "provider_mutation_performed_inside_http_request": False}, "receipt_digest")
 
 
+def _settled_hold(cancellation: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The hold a row settled after a terminal attempt keeps against the cap.
+
+    ``None`` for a live row and for a never-started cancellation, which
+    releases everything. Reservation and the status read share this, so the
+    status reports the same figure ``committed_spend_usd`` counts.
+    """
+    if cancellation is None or cancellation.get("schema_version") != TERMINAL_SETTLEMENT_SCHEMA:
+        return None
+    from .task_evaluation_terminal_scene_attempt_settlement import budget_retained_hold
+    return budget_retained_hold(cancellation)
+
+
 def _committed_holds(root: Path, directory: Path, intent: Mapping[str, Any],
                      rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Decimal, int]:
     """Live attempt rows, then the settled exposure and attempt count the caps already carry.
@@ -148,16 +161,15 @@ def _committed_holds(root: Path, directory: Path, intent: Mapping[str, Any],
     release everything.
     """
     from .task_evaluation_retained_controls_evidence import validated_cancellation
-    from .task_evaluation_terminal_scene_attempt_settlement import budget_retained_hold
     from .website_preparation_revision import shared_reserved_budget
     settled_exposure, settled_attempts = shared_reserved_budget(root, directory, intent)
     live_rows = []
     for row in rows:
         cancellation = validated_cancellation(directory, row)
+        hold = _settled_hold(cancellation)
         if cancellation is None:
             live_rows.append(row)
-        elif cancellation.get("schema_version") == TERMINAL_SETTLEMENT_SCHEMA:
-            hold = budget_retained_hold(cancellation)
+        elif hold is not None:
             settled_exposure += Decimal(str(hold["retained_spend_usd"]))
             settled_attempts += 1 if hold["counts_as_attempt"] else 0
     return live_rows, settled_exposure, settled_attempts
@@ -397,8 +409,16 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
             "attempt_id", "source_commit", "runtime_digest", "input_digest", "provider",
             "maximum_spend_usd", "status")})
         from .task_evaluation_retained_controls_evidence import validated_cancellation
-        if validated_cancellation(directory, row) is not None:
+        cancellation = validated_cancellation(directory, row)
+        if cancellation is not None:
             attempts[-1]["status"] = "cancelled_before_execution"
+        hold = _settled_hold(cancellation)
+        if hold is not None:
+            # A settlement is not a refund: the row keeps the hold its evidence
+            # cannot prove unspent, the figure reservation counts. The WebApp's
+            # job ceiling reads it; without it a settled row counted as nothing.
+            attempts[-1]["retained_spend_usd"] = hold["retained_spend_usd"]
+            attempts[-1]["retained_spend_basis"] = hold["basis"]
     # Expiry and revocation close the authority to admit *new* execution. They
     # do not erase the status of an attempt that was already reserved while the
     # authority was valid. Keep that attempt's running or terminal failure

@@ -9,7 +9,10 @@ turned the second Quick-10 cell into a 15-minute timeout.
 This guard is deliberately applied only *after* the lossless external, wrist,
 and overview frames pass the native observation-integrity gate.  It preserves a
 small bounded wait and the renderer's final app update; it does not skip camera
-qualification or suppress later evidence.
+qualification or suppress later evidence.  A beta screening session whose
+frames rendered with a usable structure but whose integrity carries flags
+continues too (only privacy, rights and money stop a run); its caller says so
+with ``accept_observation_quality_flags`` and the receipt records it.
 """
 
 from __future__ import annotations
@@ -37,13 +40,32 @@ def configure_post_gate_rtx_streaming_wait(
     output_path: str | Path,
     renderer_utils: Any | None = None,
     maximum_wait_seconds: float = MAXIMUM_POST_GATE_WAIT_SECONDS,
+    accept_observation_quality_flags: bool = False,
 ) -> dict[str, Any]:
-    """Bound later streaming waits after the exact camera gate has passed."""
+    """Bound later streaming waits after the exact camera gate has passed.
+
+    With ``accept_observation_quality_flags`` the gate may instead be one whose
+    frames are structurally usable and whose integrity blockers continue as
+    flags; frames that are not structurally usable are still refused.
+    """
 
     gate = dict(observation_gate) if isinstance(observation_gate, Mapping) else {}
+    flagged = (
+        accept_observation_quality_flags is True
+        and gate.get("status") == "blocked"
+        and gate.get("frame_structure_passed") is True
+        and gate.get("policy_observation_integrity_passed") is False
+        and isinstance(gate.get("blockers"), list)
+        and bool(gate.get("blockers"))
+    )
     if (
-        gate.get("status") != "passed"
-        or gate.get("policy_observation_integrity_passed") is not True
+        (
+            not flagged
+            and (
+                gate.get("status") != "passed"
+                or gate.get("policy_observation_integrity_passed") is not True
+            )
+        )
         or gate.get("candidate_policy_loaded") is not False
         or gate.get("candidate_policy_queried") is not False
         or gate.get("gate_digest")
@@ -86,6 +108,7 @@ def configure_post_gate_rtx_streaming_wait(
         "camera_qualification_skipped": False,
         "later_frames_remain_required": True,
         "claim_ceiling": "diagnostic_policy_execution",
+        **({"observation_quality_flagged": True} if flagged else {}),
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(

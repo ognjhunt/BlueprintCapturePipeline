@@ -62,6 +62,11 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
     being re-planned (``superseding``) is skipped for those unreserved rows:
     the re-plan closes them in the same write that enqueues the new plan, so
     counting them would charge the job twice. What it committed still counts.
+
+    Commitments count as funding does (``_budget``): a settled attempt at its
+    settled cost. The WebApp's figure may still carry it at its whole cap (a
+    campaign never publishes a lower spent bound); that only makes the
+    difference here zero, never negative, so a hold is never credited back.
     """
     from .beta_policy_screening_coordinator import _amount, _budget, _ledger, _lock, _plan, _root
     from .beta_policy_screening_plan import money
@@ -109,7 +114,19 @@ def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any]
         record = job_ceiling_record(summary, local_holds_usd=holds, read_at=read_at)
     except BetaPolicyScreeningPlanError:
         raise ValueError(UNAVAILABLE) from None
+    options.setdefault("site_remaining_usd", site_screening_remaining(queue_root, site_id=scene["site_id"]))
     return build_job_ceiling_screening_plan(catalog, scene, job_ceiling=record, **options)
 
 
-__all__ = ["UNAVAILABLE", "local_screening_holds", "plan_within_job_ceiling", "read_job_ceiling_summary"]
+def site_screening_remaining(queue_root: str | Path, *, site_id: str) -> str:
+    """What the site's screening allowance has left after every commitment, as funding counts it."""
+    from .beta_policy_screening_coordinator import SITE_LIMIT, _amount, _budget, _ledger, _lock, _root
+
+    root = _root(queue_root)
+    with _lock(root):
+        committed = _amount(_budget(_ledger(root), site_id)["committed_upper_bound_usd"])
+    return f"{max(Decimal(0), SITE_LIMIT - committed):.2f}"
+
+
+__all__ = ["UNAVAILABLE", "local_screening_holds", "plan_within_job_ceiling", "read_job_ceiling_summary",
+           "site_screening_remaining"]

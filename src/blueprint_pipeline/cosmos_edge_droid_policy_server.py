@@ -8,6 +8,7 @@ verified source/model/snapshot identity required by scientific evidence.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -19,6 +20,7 @@ from .common import write_json
 from .cosmos_edge_droid_policy_runtime import (
     NATIVE_ACTION_CHUNK_ROWS,
     CosmosEdgeDroidPolicySpec,
+    file_sha256,
     verify_local_policy_snapshot,
 )
 from .droid_policy_bridge import validate_droid_action_chunk
@@ -67,6 +69,51 @@ def _disable_policy_guardrails(setup_args: Any) -> Any:
     return updated
 
 
+class CheckpointRegistryOfflineError(RuntimeError):
+    """The pinned checkpoint registry asked for a file the offline server cannot answer."""
+
+
+def offline_checkpoint_registry(
+    store: str | Path, files: Sequence[Mapping[str, Any]] | None = None,
+) -> Callable[[list[str]], str]:
+    """Build a stand-in for the pinned source's ``checkpoint_db._hf_download``.
+
+    The pinned registry shells out to ``uvx hf download`` for each file a model
+    load needs, which the GPU image lacks and the offline server must not run.
+    The stand-in answers only the exact pinned files, from the store provisioning
+    filled, after verifying their bytes again; anything else raises.
+    """
+
+    from .cosmos_droid_source import CHECKPOINT_REGISTRY_FILES, checkpoint_registry_path
+
+    answers = {}
+    for row in CHECKPOINT_REGISTRY_FILES if files is None else files:
+        path = checkpoint_registry_path(Path(store).expanduser().resolve(), row)
+        if (path.is_symlink() or not path.is_file() or path.stat().st_size != row["size_bytes"]
+                or file_sha256(path) != row["sha256"]):
+            raise CheckpointRegistryOfflineError("cosmos_checkpoint_registry_file_unverified:" + row["filename"])
+        # The argument list the pinned CheckpointFileHf._download passes.
+        answers[(row["repository"], "--repo-type", "model", "--revision", row["revision"], row["filename"])] = str(path)
+
+    def hf_download(cmd_args: list[str]) -> str:
+        path = answers.get(tuple(str(arg) for arg in cmd_args))
+        if path is None:
+            raise CheckpointRegistryOfflineError(
+                "cosmos_checkpoint_registry_download_unpinned:" + " ".join(map(str, cmd_args)))
+        return path
+
+    return hf_download
+
+
+def install_offline_checkpoint_registry(store: str | Path) -> None:
+    """Answer the pinned registry in-process; HF_HUB_OFFLINE stays set."""
+
+    registry = importlib.import_module("cosmos_framework.utils.checkpoint_db")
+    if not callable(getattr(registry, "_hf_download", None)):
+        raise TypeError("cosmos_checkpoint_registry_download_hook_unavailable")
+    registry._hf_download = offline_checkpoint_registry(store)
+
+
 def serve_identity_bound_policy(
     *,
     checkpoint_path: str | Path,
@@ -77,6 +124,7 @@ def serve_identity_bound_policy(
     candidate_id: str = "cosmos3_edge_policy_droid",
     source_root: str | Path | None = None,
     source_manifest: str | Path | None = None,
+    checkpoint_registry_store: str | Path | None = None,
     service_factory: Callable[..., Any] | None = None,
     server_factory: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
@@ -116,6 +164,8 @@ def serve_identity_bound_policy(
             )
         except ImportError as exc:  # pragma: no cover - GPU runtime dependency
             raise RuntimeError("pinned_cosmos_framework_policy_server_unavailable") from exc
+        if checkpoint_registry_store is not None:
+            install_offline_checkpoint_registry(checkpoint_registry_store)
         args = RobolabServerArgs(
             checkpoint_path=str(checkpoint),
             hf_revision=spec.model_revision,
@@ -185,6 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--candidate-id", default="cosmos3_edge_policy_droid")
     parser.add_argument("--source-root")
     parser.add_argument("--source-manifest")
+    parser.add_argument("--checkpoint-registry-store")
     args = parser.parse_args(argv)
     serve_identity_bound_policy(
         checkpoint_path=args.checkpoint_path,
@@ -193,6 +244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         port=args.port,
         output_dir=args.output_dir, candidate_id=args.candidate_id,
         source_root=args.source_root, source_manifest=args.source_manifest,
+        checkpoint_registry_store=args.checkpoint_registry_store,
     )
     return 0
 
@@ -201,4 +253,10 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["NativeActionShapeGuard", "serve_identity_bound_policy"]
+__all__ = [
+    "CheckpointRegistryOfflineError",
+    "NativeActionShapeGuard",
+    "install_offline_checkpoint_registry",
+    "offline_checkpoint_registry",
+    "serve_identity_bound_policy",
+]

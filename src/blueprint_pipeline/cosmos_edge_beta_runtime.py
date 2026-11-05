@@ -22,14 +22,16 @@ from .decision_evidence_contracts import canonical_digest
 CANDIDATE_ID = "cosmos3_edge_policy_droid"
 INTERFACE_ID = "cosmos_edge_droid.v1"
 CHECKPOINT_DIGEST = "sha256:f1da4f2c70e31b7c80c0069abdebf5d46d9a45a2e588b3aa84984a862f18568f"
-SNAPSHOT_MANIFEST_SHA256 = "766c33e99945394406986495d3263596953ed8d696db29a63e91e41fae5d4c64"
+SNAPSHOT_MANIFEST_SHA256 = "d6d8d61c2a7651e18c9ecf35075282475f50c3a4811aa06d981d350e6dea042a"
 SNAPSHOT_STAGED_NAME = "cosmos_edge_policy_snapshot_manifest.json"
 MINIMUM_GPU_MEMORY_GB = 48  # Conservative policy+Isaac allocation floor, not a measured model minimum.
 
 
 def snapshot_manifest_path() -> Path:
-    return (Path(__file__).resolve().parents[2] / "docs/experiments/"
-            "policy_ranking_cosmos3_edge_closed_loop_20260729/policy_snapshot_manifest_v1.json")
+    # Provisioning downloads exactly these files, so the list includes every file
+    # the pinned source's processor opens. The 2026-07-29 experiment inventory it
+    # supersedes stays frozen as that experiment's record.
+    return Path(__file__).parent / "_vendor" / "cosmos-edge-droid-snapshot.v1.json"
 
 
 def verified_snapshot_manifest(path: str | Path) -> dict[str, Any]:

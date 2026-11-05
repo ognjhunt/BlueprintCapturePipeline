@@ -6,15 +6,19 @@ is reserved, from evidence already computed for the packet, and each row says
 which source decided it (``reach_source``):
 
 - ``franka_chain_reach_bound``: a candidate on Blueprint's DROID Franka runs
-  that arm at the packet's station. When the task's grasp contact at the
-  object's start or at its target lies beyond the arm's chain reach bound from
-  that station (``robot_arm_path_clearance.rigid_reach_shortfall``), no grasp
-  orientation or policy reaches it there: the candidate is infeasible with
-  ``robot_reach_insufficient:<phase>:<distance>m_vs_<bound>m``. Otherwise the
-  packet's recorded station search (``robot_station_search``, the arm-path
-  gate's own carry check) is kept as evidence: a station it cleared is
-  ``packet_station_search`` feasible; one it could not clear is unassessed,
-  since a search miss is not a proof.
+  that arm at the packet's station. When every point of the object, at its
+  start or wherever the task accepts it at its place, lies beyond the arm's
+  chain reach bound from that station (the hard reach rule,
+  ``robot_arm_path_clearance.rigid_reach_shortfall``), no grasp or policy
+  reaches it there: the candidate is infeasible with
+  ``robot_reach_insufficient:<phase>:<distance>m_vs_<bound>m``, the object's
+  nearest point. The team half chose that station as one with the object in
+  reach whenever any clear stance has it (``team_scene_packet``). Otherwise the
+  candidate is feasible, and the packet's recorded station search
+  (``robot_station_search``, the scripted carry) is kept as evidence: a station
+  it cleared is ``packet_station_search``; one it could not clear carries the
+  ``scripted_carry_path_not_found`` flag, since a learned policy chooses its own
+  grasp, and is funded after unflagged rows (``reach_rank``).
 - ``own_arm_model``: a registered fixed body with its robot model is solved
   through the task's authored phases at the station its run is bound to
   (``team_arm_reach``). ``out_of_reach`` (every arm has a phase beyond its
@@ -69,7 +73,13 @@ def _pose(value: Mapping[str, Any]) -> dict[str, list[float]]:
 
 def _packet_arm_reach(scene_plan: Mapping[str, Any], search: Mapping[str, Any]) -> dict[str, Any]:
     """Blueprint's DROID Franka at the packet's station: the reach proof, else the station search's verdict."""
-    from .robot_arm_path_clearance import RobotArmPathClearanceError, reach_insufficient_code, rigid_reach_shortfall
+    from .robot_arm_path_clearance import (
+        SCRIPTED_CARRY_FLAG,
+        RobotArmPathClearanceError,
+        object_reach_inputs,
+        reach_shortfall_code,
+        rigid_reach_shortfall,
+    )
 
     robot, task = scene_plan.get("robot") or {}, scene_plan.get("task_spec") or {}
     row: dict[str, Any] = {"robot_id": robot.get("robot_id"), "station_basis": PACKET_STATION}
@@ -80,26 +90,33 @@ def _packet_arm_reach(scene_plan: Mapping[str, Any], search: Mapping[str, Any]) 
         return {**row, "status": "unassessed", "blockers": ["packet_arm_reach_task_unmodeled"], "reach_source": None}
     try:
         reach = rigid_reach_shortfall(robot_id=str(robot["robot_id"]), base_pose_world=_pose(robot["base_pose_world"]),
-            start_pose_world=task["start_pose_world"], target_position_world=task["target_position_world_m"],
-            contact_point_m=task["interaction_affordance"]["contact_point_scoring_frame_m"],
-            subject_bounds_m=task.get("subject_collision_bounds_scoring_frame_m"))
+                                      **object_reach_inputs(task))
     except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
         return {**row, "status": "unassessed", "blockers": ["packet_arm_reach_inputs_invalid"], "reach_source": None}
     row["reach"] = reach
     if reach["beyond"]:
-        far = next(phase for phase in reach["phases"] if phase["phase"] == reach["beyond"][0])
+        # No point of the object is in reach at its start or its place: no grasp or policy reaches it.
         return {**row, "status": "infeasible", "reach_source": "franka_chain_reach_bound",
-                "blockers": [reach_insufficient_code(far["phase"], far["distance_m"], reach["reach_bound_m"])]}
+                "blockers": [reach_shortfall_code(reach)]}
     station = search.get("robot_station") or {}
     recorded = search.get("robot_station_search") or {}
     result = next((item for item in recorded.get("results") or []
                    if item.get("stance_digest") == station.get("stance_digest")), None)
+    within = reach["status"] == "within_bound"
     if result is None or _pose(station) != _pose(robot["base_pose_world"]):
+        if within:
+            return {**row, "status": "feasible", "blockers": [], "reach_source": "franka_chain_reach_bound",
+                    "flags": ["packet_station_search_not_recorded"]}
         return {**row, "status": "unassessed", "blockers": ["packet_station_search_not_recorded"], "reach_source": None}
     row["station_search"] = {"status": result["status"], "blockers": list(result["blockers"]),
                              "cleared": recorded.get("cleared")}
     if result["status"] == "clear":
         return {**row, "status": "feasible", "blockers": [], "reach_source": "packet_station_search"}
+    if within:
+        # The object is in reach; the scripted carry found no path. A learned policy chooses its own grasp:
+        # planned and screened, with the miss recorded as a flag (and funded after unflagged rows, ``reach_rank``).
+        return {**row, "status": "feasible", "blockers": [], "reach_source": "franka_chain_reach_bound",
+                "flags": [SCRIPTED_CARRY_FLAG]}
     # The gate's search found no carry, but nothing proves there is none: unknown, never a refusal.
     return {**row, "status": "unassessed", "reach_source": None,
             "blockers": ["packet_station_search_blocked:" + code for code in result["blockers"]]}

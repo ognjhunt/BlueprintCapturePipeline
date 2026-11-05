@@ -205,6 +205,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
                 "remote CPU lane); a failed attempt is removed by its own worker; never reclaimed"),
     StorageRoot(f"{_INPUTS}/particlefield-runtime-assets", "cache", "blueprint",
                 "content-addressed ParticleField runtime assets converted from NuRec sources"),
+    StorageRoot(f"{_INPUTS}/pinned-wheels", "cache", "blueprint",
+                "exact PyPI wheels by SHA-256 that bundle builds stage for provider workers; fetched again on a miss"),
     StorageRoot(f"{_INPUTS}/launch-activations", "cache", "blueprint", "activation launch sets"),
     StorageRoot(f"{_INPUTS}/scene-object-discoveries", "cache", "blueprint", "scene object discovery inputs"),
     StorageRoot(f"{_INPUTS}/scene-object-discovery-outputs", "cache", "blueprint", "scene object discovery outputs"),

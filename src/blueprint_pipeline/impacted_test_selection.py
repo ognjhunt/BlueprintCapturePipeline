@@ -62,6 +62,8 @@ SENTINEL_TESTS = (
     "tests/test_release_engineering_contracts.py::test_risk_based_verification_workflows_are_bounded",
     "tests/test_lane_writer_governance.py::test_reviewed_lane_writer_manifest_is_satisfied",
     "tests/test_materializer_reachability.py::test_unreachable_materializers_only_ever_decrease",
+    # Doctrine: no executable code names one customer's scene, capture or task.
+    "tests/test_no_scene_specific_code.py::test_executable_code_names_no_customer_scene",
 )
 
 # A change to code that calls Isaac Lab or Arena, or to a test faking them, runs

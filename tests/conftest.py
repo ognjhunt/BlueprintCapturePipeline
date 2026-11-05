@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -169,3 +171,47 @@ def _isolated_control_plane_disk_reservation_root(tmp_path_factory, monkeypatch)
         monkeypatch.setattr(common, 'download_disk_usage', lambda _path: SimpleNamespace(
             total=2 * 1024**4, free=1024**4, used=1024**4))
     return root
+
+
+@pytest.fixture(scope="session")
+def _pinned_wheel_stand_ins(tmp_path_factory):
+    """Small wheels with each pinned download's filename and top-level packages.
+
+    The real bytes come from PyPI on the control plane; the identity tests in
+    tests/test_pinned_wheel_cache.py check the pinned rows themselves.
+    """
+    from blueprint_pipeline import beta_robolab_runtime
+
+    cache = tmp_path_factory.mktemp("pinned-wheel-cache")
+    rows = []
+    for row in beta_robolab_runtime.PYTHON_DEPENDENCY_WHEELS:
+        if row["delivery"] != "pinned_download":
+            rows.append(row)
+            continue
+        source = tmp_path_factory.mktemp("pinned-wheel-stand-in") / row["wheel"]
+        dist_info = f"{row['distribution'].replace('-', '_')}-{row['version']}.dist-info"
+        with zipfile.ZipFile(source, "w") as wheel:
+            for name in row["import_names"]:
+                wheel.writestr(f"{name}/__init__.py", "# test stand-in for the pinned PyPI wheel\n")
+            wheel.writestr(f"{dist_info}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: false\n")
+        data = source.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        (cache / digest).mkdir()
+        (cache / digest / row["wheel"]).write_bytes(data)
+        rows.append({**row, "sha256": "sha256:" + digest, "size_bytes": len(data)})
+    return tuple(rows), cache
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_pinned_wheels(monkeypatch, _pinned_wheel_stand_ins):
+    """Bundle builds stage pinned PyPI wheels; a test never downloads one."""
+    from blueprint_pipeline import beta_robolab_runtime, pinned_wheel_cache
+
+    rows, cache = _pinned_wheel_stand_ins
+    monkeypatch.setattr(beta_robolab_runtime, "PYTHON_DEPENDENCY_WHEELS", rows)
+    monkeypatch.setenv(pinned_wheel_cache.CACHE_ROOT_ENV, str(cache))
+
+    def refuse(url, **_kwargs):
+        raise AssertionError(f"tests_must_not_download:{url}")
+
+    monkeypatch.setattr(pinned_wheel_cache, "_download", refuse)

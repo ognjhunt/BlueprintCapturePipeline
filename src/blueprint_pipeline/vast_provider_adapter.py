@@ -160,6 +160,7 @@ from .vast_cuda_runtime_probe import (
     build_gpu_sanity_report,
     cuda_runtime_probe_shell_fragment,
 )
+from .provider_runtime_diagnostics import receipt_transfer, retain_for_transfer
 from .wam_provider_output import (
     inspect_provider_runtime_output_zip,
     probe_mp4_video,
@@ -9042,7 +9043,7 @@ def run_vast_provider_adapter(
         # Result and log transport are independent. Preserve an observed upload
         # before any startup classification can raise and trigger teardown.
         # A missing log marker must never erase the worker's diagnostic result.
-        preclassification_transfer = None
+        preclassification_transfer = preclassification_diagnostics = None
         if enable_blueprint_bundle and onstart_logs.get("output_probe_observed"):
             transfer = (provider_output_collector or _download_provider_output_with_capacity_guard)(
                 url=_string(provider_output_get_url),
@@ -9050,17 +9051,13 @@ def run_vast_provider_adapter(
                 minimum_free_bytes=provider_output_minimum_free_bytes,
             )
             preclassification_transfer = transfer
-            write_json(
-                resolved_job_dir / "vast_provider_output_preclassification_receipt.json",
-                {
-                    "schema_version": "vast_provider_output_preclassification.v1",
-                    "generated_at": utc_now_iso(),
-                    "output_probe_observed": True,
-                    "output_zip_path": str(output_zip_path),
-                    "transfer": transfer,
-                    "startup_or_scientific_success_claimed": False,
-                },
-            )
+            # The run's own failure account, kept now: a streamed archive never lands here.
+            preclassification_diagnostics = retain_for_transfer(resolved_job_dir, transfer, output_zip_path)
+            write_json(resolved_job_dir / "vast_provider_output_preclassification_receipt.json", {
+                "schema_version": "vast_provider_output_preclassification.v1", "generated_at": utc_now_iso(),
+                "output_probe_observed": True, "output_zip_path": str(output_zip_path),
+                "transfer": receipt_transfer(transfer, preclassification_diagnostics),
+                "startup_or_scientific_success_claimed": False})
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         observed_marker_text = "\n".join(
             _string_list(onstart_logs.get("observed_blueprint_marker_lines"))
@@ -9589,6 +9586,8 @@ def run_vast_provider_adapter(
                 expected_video_count=_provider_expected_video_count(provider_bundle_kind),
             )
             output_zip_received = output_zip_inspection.get("zip_present") is True
+            runtime_diagnostics = preclassification_diagnostics or retain_for_transfer(
+                resolved_job_dir, remote_transfer, output_zip_path) if output_zip_received else None
             # The object arriving is what proves the workload produced output.
             # Requiring the log marker as well meant a readable object and an
             # unreadable log channel added up to "no output".
@@ -9719,6 +9718,7 @@ def run_vast_provider_adapter(
                     "provider_output_get_url_present": bool(_string(provider_output_get_url)),
                     "provider_output_download_manifest": output_download_manifest,
                     "provider_runtime_output_zip_inspection": output_zip_inspection,
+                    **({"provider_runtime_diagnostics": runtime_diagnostics} if runtime_diagnostics else {}),
                     **({"provider_output_remote_observation": dict(remote_transfer["remote_object"])} if remote_transfer else {}),
                     "runtime_result_status": runtime_result_status or None,
                     "runtime_result_blockers": _string_list(runtime_result.get("blockers")),

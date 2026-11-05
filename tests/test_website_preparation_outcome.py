@@ -86,6 +86,17 @@ def test_current_evidence_binding_cannot_be_forged(prepared_source, change):
         status.read_preparation_status(capture_root=root, selectors=selectors, schema_version=status.STATUS_V3)
 
 
+def test_an_object_out_of_reach_from_every_station_is_the_robot_configuration_rejection(prepared_source):
+    # The capability verdict abstains only by the hard reach rule (website_rigid_feasibility).
+    root, _, context, *_ = prepared_source
+    _, verdict, _ = _evidence(root, context["context_digest"], "robot_reach_insufficient:pick:1.342m_vs_0.990m")
+    result = read_preparation_outcome(capture_root=root, task_context_digest=context["context_digest"],
+                                      state="awaiting_inputs")
+    assert (result["category"], result["reason"], result["robot_id"]) == (
+        "robot_incompatibility", "robot_carry_path_rejected", "franka_panda")
+    assert result["evidence_digest"] == verdict["verdict_digest"]
+
+
 def test_missing_station_is_not_a_robot_reach_verdict(prepared_source):
     root, _, context, *_ = prepared_source
     _evidence(root, context["context_digest"], "robot_station_floor_unobserved")

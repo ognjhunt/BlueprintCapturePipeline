@@ -526,12 +526,17 @@ def test_ranking_by_reach_makes_nothing_infeasible_or_unfunded_that_was_not():
     # A job ceiling that defers the waitlist keeps each row's rank, and so does a deferral for no money left.
     from tests.test_beta_policy_screening_job_ceiling import READ_AT, ceiling_summary
 
-    for remaining, statuses in ((5, {"selected", "waitlisted", "infeasible"}), (0, {"deferred", "infeasible"})):
-        bounded = capture_447(ceiling=job_ceiling_record(ceiling_summary(remaining), local_holds_usd=Decimal(0),
-                                                         read_at=READ_AT))
+    # A website job's plan lists its scripted baselines switched off (owner 2026-11-04), rank kept.
+    for remaining, statuses in ((5, {"selected", "waitlisted", "infeasible", "unavailable"}),
+                                (0, {"deferred", "infeasible", "unavailable"})):
+        bounded = capture_447(learned=learned, ceiling=job_ceiling_record(
+            ceiling_summary(remaining), local_holds_usd=Decimal(0), read_at=READ_AT))
         assert {row["status"] for row in bounded["candidates"]} == statuses
+        assert {row["candidate_id"] for row in bounded["candidates"] if row["status"] == "unavailable"} == {
+            row["candidate_id"] for row in bounded["candidates"]
+            if row.get("execution_evidence_kind") == "scripted_simulator_state_baseline"}
         assert [row.get("reach_rank") for row in bounded["candidates"]] == [
-            row.get("reach_rank") for row in capture_447()["candidates"]]
+            row.get("reach_rank") for row in capture_447(learned=learned)["candidates"]]
         assert validate_screening_plan(bounded) == bounded
 
 

@@ -73,6 +73,7 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "scripted_robot_kuka_robotiq_runtime.py",
     "scripted_robot_public_arm_robotiq_runtime.py",
     "team_policy_episode_outcome.py", "team_evaluation_worker_retention.py",
+    "policy_canary_cell_setup_failure.py",
     "native_task_arena_execution_contract.py",
     "team_embodiment.py", "team_embodiment_runtime.py", "native_task_robot_contact_topology.py",
     # The first session on an undecided rigid scene records and scores its robot-free probe.
@@ -337,6 +338,22 @@ teardown_servers() {{
   exit $original_rc
 }}
 trap teardown_servers EXIT INT TERM HUP
+
+# This entrypoint replaces the base arena entrypoint, including its media
+# bootstrap. Only the pi05/GR00T provisioning installed ffmpeg, incidentally, so
+# on 2026-11-05 every molmoact2 cell refused at its dependency gate
+# (native_task_dependency_missing:ffmpeg). Both tools must exist before any
+# checkpoint is fetched or any isolated simulator cell starts.
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:started"
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >>"$OUT_DIR/media_toolchain_install.log" 2>&1
+fi
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:blocked"
+  write_fallback_result policy_canary_media_toolchain_unavailable 86
+  exit 86
+fi
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:completed"
 
 {credential_check}
 {control_check}

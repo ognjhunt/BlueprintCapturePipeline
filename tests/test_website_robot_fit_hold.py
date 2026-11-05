@@ -76,6 +76,9 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
     from blueprint_pipeline.website_scene_handoff import prepare_rigid_native_inputs
 
     root, owner, context, _, _, _ = prepared_source
+    # No operator team registry here: a registry another test left in the environment would be
+    # read as one, and the hold's recheck inputs would name it.
+    monkeypatch.delenv("BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY", raising=False)
     raw = _delivery(root, owner, monkeypatch)
     job, collision = shelf_scene(tmp_path)
     work = root / "pipeline" / "website_scene_preparation"

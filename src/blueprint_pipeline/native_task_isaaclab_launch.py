@@ -84,6 +84,7 @@ NATIVE_TASK_ARENA_KIT_ARGS = (
 
 SCHEMA_VERSION = "native_task_isaaclab_launch.v1"
 PROVISIONING_SCHEMA_VERSION = "native_task_runtime_source_provisioning.v1"
+PINK_SDK_ENABLE_ARG = "--enable isaacsim.robot_motion.pink"
 REQUIRED_EXPERIENCE_FILES = (
     "isaaclab.python.kit",
     "isaaclab.python.headless.kit",
@@ -355,17 +356,21 @@ def launch_native_task_isaaclab(
     }
     kit_args = NATIVE_TASK_ARENA_KIT_ARGS if render_required else "--/renderer/multiGpu/enabled=false"
     experience_path = receipt["experience"]["path"]
-    if not enable_cameras:
+    if not enable_cameras and controller_backend != "pink_franka":
         experience_path = str(Path(experience_path).with_name("isaaclab.python.headless.kit"))
     pink_profile = None
     if controller_backend == "g1_joint":
         from .native_task_runtime_capabilities import prepare_g1_python_dependencies
         prepare_g1_python_dependencies()
     if controller_backend == "pink_franka":
-        from .native_task_pink_compatibility import prepare_pink_runtime
-        pink_profile = prepare_pink_runtime(Path(provisioning_receipt_path), enable_cameras=enable_cameras)
-        experience_path = pink_profile["experience_path"]
-        kit_args += " " + pink_profile["kit_args"]
+        # The launch that ran Blueprint-Franka policy episodes on GPU from 2026-08-20 to
+        # 2026-10-30: the pinned base experience with the SDK Pink extension enabled directly.
+        # The compatibility overlay (``native_task_pink_compatibility``) that replaced it pins
+        # extension bytes taken from GitHub source; the 6.0.1 image's differ, so every Franka
+        # cell stopped at ``pink_sdk_extension_config_changed`` (GPU run 2026-11-04).
+        kit_args += " " + PINK_SDK_ENABLE_ARG
+        pink_profile = {"activation": "sdk_extension_enable", "kit_arg": PINK_SDK_ENABLE_ARG,
+                        "experience_path": experience_path, "overlay_used": False}
     helper_provenance = None
     if render_required:
         from .native_task_official_nurec import verified_helper
@@ -386,15 +391,21 @@ def launch_native_task_isaaclab(
     )
     app = getattr(launcher, "app", launcher)
     identity = None
+    identity_flags: list[dict[str, Any]] = []
     try:
         identity = dict((runtime_probe_factory or post_start_identity)(
             Path(provisioning_receipt_path), controller_backend=controller_backend))
         validate_post_start_identity(identity, controller_backend=controller_backend)
     except Exception as exc:
-        raise NativeTaskIsaacLabLaunchError(
-            ["native_task_isaaclab_post_start_identity_failed"],
-            diagnostics={"reason": str(exc), "error_type": type(exc).__name__, "runtime_readback": identity},
-        ) from exc
+        if controller_backend != "pink_franka":
+            raise NativeTaskIsaacLabLaunchError(
+                ["native_task_isaaclab_post_start_identity_failed"],
+                diagnostics={"reason": str(exc), "error_type": type(exc).__name__, "runtime_readback": identity},
+            ) from exc
+        # The Aug-Oct Franka launch ran its episodes before these post-start checks existed, and
+        # enabling SDK Pink can load what they refuse. Recorded on the receipt, not a stop.
+        identity_flags.append({"code": "native_task_isaaclab_post_start_identity_flagged",
+                               "reason": str(exc)[:500], "error_type": type(exc).__name__})
     if nurec_renderer_probe_factory is None:
 
         def nurec_renderer_probe_factory() -> Mapping[str, Any]:
@@ -522,6 +533,7 @@ def launch_native_task_isaaclab(
     }
     receipt["nurec_renderer"] = nurec
     receipt["post_start_identity"] = identity
+    receipt["post_start_identity_flags"] = identity_flags
     receipt["pink_compatibility"] = pink_profile
     return app, receipt
 

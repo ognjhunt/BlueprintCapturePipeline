@@ -176,6 +176,23 @@ campaign for the same source. One ledger write enqueues it and closes the old
 campaign's queued rows as `beta_screening_replanned_for_new_implementation`.
 The site budget is shared, so the new campaign sees what the old one spent.
 
+A plan also freezes the scene's team half it was built from. A completed half
+can be compiled again later with the same source: a newer stance search finds
+another station, or the site owner approves moving chairs. On each pass,
+source adoption compares the half the profile names now with the one the plan
+froze (`beta_policy_screening_scene_half`: the scene revision, configuration
+digest, scene plan digest and packet receipt bytes, read from the half record
+and from the plan's sealed scene inputs, with no planning rebuild). When they
+differ, the half's request is `completed`, and the campaign holds no
+reservation and no active row, every candidate that never ran or allocated is
+planned again from the new half, as a new campaign. This applies to a finished
+campaign too. The new campaign id names the campaign it supersedes and the new
+half. Admission rereads both plans' sealed inputs, so a re-plan for a half
+the new plan did not change is refused. The new plan binds the robot-free probe
+receipt that is retained now. If that receipt does not bind the new half's task,
+the probe is queued and the re-plan waits for it. The WebApp records the
+successor as a new run of the same job.
+
 Closing a beta attempt checks its exact allocated instance and authority's
 resource name against a fresh, complete account inventory, plus its own
 teardown and staged-object absence receipts. Unrelated running sites remain

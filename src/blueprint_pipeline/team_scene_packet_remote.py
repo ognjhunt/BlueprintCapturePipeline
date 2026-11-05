@@ -15,9 +15,13 @@ credential. In a remote mode it fetches the revision and its documents into the 
 host compile would, then asks ``plan_remote_team_scene``, with no credential, whether the compile can run
 remotely: every file the compile reads ships content-addressed at its host path (the configured bundle,
 the documents and tray assets, the DROID profile, the runtime-source receipt, each registered body's model,
-the owner's sealed success confirmations and, for a cached particlefield, the cache entry), the appearance
-closure is one the worker reproduces, the worker's in-memory disk fits, and the probe-recorded worker
-environment equals the host's. An ineligible request compiles on the host, as before.
+the owner's sealed success confirmations and robot-access approvals and, for a cached particlefield, the
+cache entry), the appearance closure is one the worker reproduces, the worker's in-memory disk fits, and the
+probe-recorded worker environment equals the host's. What the compile would read beyond those files is read
+on the host and carried in the envelope: the intent's movable furniture (``movable_furniture``, as
+``prepare_team_scene`` reads it) and, while that is unmeasured, the offer to measure it
+(``robot_access_offer``: the intent's registration, preparation, scene review and source video, none of
+which ships). An ineligible request compiles on the host, as before.
 
 In ``cloud_run`` an eligible request gets a hand-off and stays in ``processing/``; the paid unit
 (``team_scene_packet_collector``) dispatches it through the paid-resource allocator, lands the whole
@@ -34,7 +38,8 @@ exists for cannot compile on the host at all, so shadows could never earn passes
 marker: the paid unit compiles it remotely at the same paths, records byte parity and lands nothing.
 
 Inside the worker, ``run_team_scene_packet_in_worker`` calls the host's own ``materialize_team_scene`` with
-the same arguments (the request's ``owner_success_confirmation_scope`` included) at the host's paths. This
+the same arguments (the request's ``owner_success_confirmation_scope`` and ``robot_access_scope`` included)
+at the host's paths. This
 module imports no allocation or staging authority: the worker's stage child imports it from the release.
 """
 
@@ -96,6 +101,10 @@ _MAX_RECORD_BYTES = 4 * 1024 * 1024
 _ATTEMPT = re.compile(r"[0-9a-f]{16}-[0-9a-f]{8}")
 _CHUNK = 1024 * 1024
 PATH_ARGUMENTS = ("configured_scene_bundle_path", "droid_profile_path", "runtime_source_receipt_path", "output_root")
+# The request's intent, under which the compile reads the owner's sealed confirmations and approvals.
+SCOPE_ARGUMENTS = ("owner_success_confirmation_scope", "robot_access_scope")
+# Read on the host and carried as data: ``movable_furniture`` by the host worker, ``robot_access_offer`` here.
+DATA_ARGUMENTS = ("movable_furniture", "robot_access_offer")
 
 
 class TeamScenePacketRemoteError(RuntimeError):
@@ -309,20 +318,17 @@ def _closure(bundle: Path, cache_root: Path) -> tuple[dict[str, Any], list[Path]
     return HostDecision("remote_ineligible:particlefield_transcode_required")
 
 
-def _confirmation_files(scope: Mapping[str, Any] | None) -> list[tuple[str, Path]]:
-    """Every file ``confirmed_owner_authority`` may read under the request's intent directory."""
+def _confirmation_files(scope: Mapping[str, Any] | None, *, store_name: str, label: str) -> list[tuple[str, Path]]:
+    """Every file a sealed-confirmation reader may read under the request's intent directory: its revocation
+    and the ``store_name`` store's records (``confirmed_owner_authority``, ``robot_access_furniture.confirmations``)."""
 
     if scope is None:
         return []
-    from .task_evaluation_owner_success_confirmation import DIRECTORY
-
     directory = Path(scope["directory"])
-    files = [("owner_success_confirmation.revoked", directory / "revoked.json")] if (
-        os.path.lexists(directory / "revoked.json")) else []
-    store = directory / DIRECTORY
+    files = [(f"{label}.revoked", directory / "revoked.json")] if os.path.lexists(directory / "revoked.json") else []
+    store = directory / store_name
     if store.is_dir() and not store.is_symlink():
-        files += [(f"owner_success_confirmation.{path.name}", path) for path in sorted(store.iterdir())
-                  if path.suffix == ".json"]
+        files += [(f"{label}.{path.name}", path) for path in sorted(store.iterdir()) if path.suffix == ".json"]
     return files
 
 
@@ -341,9 +347,32 @@ def _plan_files(arguments: Mapping[str, Any], attempt: Path) -> list[tuple[str, 
               for path in fetched]
     files += [("materialized_reference", f"embodiment_model.{digest}", Path(path))
               for digest, path in sorted(dict(arguments.get("embodiment_models") or {}).items())]
-    files += [("materialized_reference", label, path)
-              for label, path in _confirmation_files(arguments.get("owner_success_confirmation_scope"))]
+    from .robot_access_furniture import CONFIRMATION_DIRECTORY
+    from .task_evaluation_owner_success_confirmation import DIRECTORY
+
+    files += [("materialized_reference", label, path) for label, path in _confirmation_files(
+        arguments.get("owner_success_confirmation_scope"), store_name=DIRECTORY, label="owner_success_confirmation")]
+    files += [("materialized_reference", label, path) for label, path in _confirmation_files(
+        arguments.get("robot_access_scope"), store_name=CONFIRMATION_DIRECTORY, label="robot_access_confirmation")]
     return files
+
+
+def _robot_access_offer(arguments: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The movable furniture measurement offer the compile may read for the request's intent, read on the host.
+
+    The compile reads it only when no clear stance has the object in reach and the furniture is unmeasured
+    (``team_scene_packet._robot_access_proposal``), from the intent's registration and preparation, the scene
+    review and the source video's metadata, none of which ships. So it is read here, for the same revision,
+    whenever the compile could reach it; ``None`` when it cannot.
+    """
+
+    scope, furniture = arguments.get("robot_access_scope"), arguments.get("movable_furniture")
+    if scope is None or furniture is None or furniture.get("status") == "measured":
+        return None
+    from .robot_access_measurement import measurement_offer
+
+    offer = measurement_offer(scope, revision_digest=str(arguments["revision"]["revision_digest"]))
+    return json.loads(json.dumps(offer, allow_nan=False))
 
 
 def worker_environment(jobs_root: str | Path) -> dict[str, Any] | None:
@@ -413,13 +442,15 @@ def _worker_arguments(arguments: Mapping[str, Any], filesystem_root: Path) -> di
     if "embodiment_models" in arguments:
         converted["embodiment_models"] = {digest: worker_path(path, filesystem_root)
                                           for digest, path in sorted(dict(arguments["embodiment_models"]).items())}
-    scope = arguments.get("owner_success_confirmation_scope")
-    if scope is not None:
-        converted["owner_success_confirmation_scope"] = {"intent": scope["intent"],
-                                                          "directory": worker_path(scope["directory"], filesystem_root)}
+    scopes = [name for name in SCOPE_ARGUMENTS if arguments.get(name) is not None]
+    for name in scopes:
+        converted[name] = {"intent": arguments[name]["intent"],
+                           "directory": worker_path(arguments[name]["directory"], filesystem_root)}
+    for name in DATA_ARGUMENTS:
+        if arguments.get(name) is not None:
+            converted[name] = json.loads(json.dumps(arguments[name], allow_nan=False))
     paths = [converted[name] for name in PATH_ARGUMENTS] + list(converted["documents"].values()) + list(
-        (converted.get("embodiment_models") or {}).values()) + (
-        [converted["owner_success_confirmation_scope"]["directory"]] if scope is not None else [])
+        (converted.get("embodiment_models") or {}).values()) + [converted[name]["directory"] for name in scopes]
     return None if any(path is None for path in paths) else converted
 
 
@@ -502,6 +533,9 @@ def plan_remote_team_scene(
     recorded, refusal = _environment_refusal(jobs, entry["image"], host)
     if recorded is None:
         return HostDecision(refusal)
+    offer = _robot_access_offer(arguments)
+    if offer is not None:
+        converted["robot_access_offer"] = offer
     envelope = {"schema_version": ENVELOPE_SCHEMA_VERSION, "request_id": str(request["request_id"]),
                 "request_digest": str(request["request_digest"]),
                 "scene_revision_digest": str(request["scene_revision_digest"]),
@@ -707,10 +741,12 @@ def _local_arguments(arguments: Mapping[str, Any], roots: Any) -> dict[str, Any]
         local["embodiment_manifests"] = list(arguments["embodiment_manifests"])
     if "embodiment_models" in arguments:
         local["embodiment_models"] = {digest: roots.local(path) for digest, path in arguments["embodiment_models"].items()}
-    scope = arguments.get("owner_success_confirmation_scope")
-    if scope is not None:
-        local["owner_success_confirmation_scope"] = {"intent": scope["intent"],
-                                                      "directory": roots.local(scope["directory"])}
+    for name in SCOPE_ARGUMENTS:
+        if arguments.get(name) is not None:
+            local[name] = {"intent": arguments[name]["intent"], "directory": roots.local(arguments[name]["directory"])}
+    for name in DATA_ARGUMENTS:
+        if arguments.get(name) is not None:
+            local[name] = arguments[name]
     return local
 
 
@@ -737,7 +773,9 @@ def run_team_scene_packet_in_worker(descriptor: Mapping[str, Any], roots: Any) -
         compiled = {"path": _worker_view(made["path"], roots), "inputs_digest": made["inputs_digest"],
                     "scene_id": made["scene_id"], "task_id": made["task_id"],
                     **({"owner_success_confirmation": made["owner_success_confirmation"]}
-                       if made.get("owner_success_confirmation") else {})}
+                       if made.get("owner_success_confirmation") else {}),
+                    **({"robot_access_removal": made["robot_access_removal"]}
+                       if made.get("robot_access_removal") else {})}
     except Exception as exc:  # noqa: BLE001 - every refusal is a typed result, as the host worker types it
         blockers, error_type = [_remote_blocker(exc)], type(exc).__name__
     result = {"schema_version": RESULT_SCHEMA_VERSION, "status": "blocked" if blockers else COMPLETED,

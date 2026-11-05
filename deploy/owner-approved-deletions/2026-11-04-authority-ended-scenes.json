@@ -1,0 +1,94 @@
+{
+ "schema_version": "owner_approved_deletion_manifest.v1",
+ "manifest_id": "2026-11-04-authority-ended-scenes",
+ "approved_by": "owner",
+ "approval_evidence": "Owner, 2026-11-04 ~15:00Z, verbatim \"yes delete\": privacy deletion of the 7 website scene workspaces held because their capture authority ended (storage GC retained_counts authority_ended_capture_kept_local: 7), never capture-447ae4f4.",
+ "approved_at": "2026-11-04T15:00:00Z",
+ "expires_at": "2026-11-18T15:00:00Z",
+ "entries": [
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-1eccb098-d39c-4bc9-b7d0-9ff59a18c153",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-1eccb098-d39c-4bc9-b7d0-9ff59a18c153",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-09-27T03:53:03.198036+00:00",
+     "terminal_payload_sha256": "b6b493c2fbc7bce77af6e0a5d06f740205cc9da47d0912b7b38e5e5333a53e0d"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-36ad8b1d-87ac-4f2c-88a4-05183e18d5c8",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-36ad8b1d-87ac-4f2c-88a4-05183e18d5c8",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-10-13T18:47:57.524267+00:00",
+     "terminal_payload_sha256": "8864816d48a37391e8502242f47f9bf5c89dfdbd239a216c45bd6db35421baee"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-6940ee82-b774-4c0b-8a38-0d26505743af",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-6940ee82-b774-4c0b-8a38-0d26505743af",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-10-25T18:42:23.119306+00:00",
+     "terminal_payload_sha256": "d100c89303114674a69818b2aa487c396b200e8e01093d63b3302cc3a20c326d"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-70454ab0-ea91-4926-bc45-60d8c50ec0f5",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-70454ab0-ea91-4926-bc45-60d8c50ec0f5",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-10-13T20:53:24.735109+00:00",
+     "terminal_payload_sha256": "19c4fa1ca382592684f46e59e77606de2046c2d6281fb425268484cd6c720d08"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-8656e744-7f6c-472c-a0ec-21d21615cb4a",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-8656e744-7f6c-472c-a0ec-21d21615cb4a",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-10-13T20:25:10.696946+00:00",
+     "terminal_payload_sha256": "7e9fb22db0f45ad41f6e7e47a7fcb8aee1931e7219df4db015896702047d2e6c"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-cd43cdc3-b3f1-435c-b789-80484f304dbd",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-cd43cdc3-b3f1-435c-b789-80484f304dbd",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-10-12T19:29:44.201948+00:00",
+     "terminal_payload_sha256": "ea34ff31ccf99860cb835cb946d4b3026ad9dc8f8e7652cd6e986ba34859adba"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-e41a08cd-d37f-4329-8e69-b5901d5ee5d3",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-e41a08cd-d37f-4329-8e69-b5901d5ee5d3",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-09-27T03:52:50.215070+00:00",
+     "terminal_payload_sha256": "2993673f1ab5d6bc67e3d1b4946ece693bd53f6c5751b7c0cd49f368b1ca0a16"
+    }
+   ]
+  }
+ ]
+}

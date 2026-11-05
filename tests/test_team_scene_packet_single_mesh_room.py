@@ -20,6 +20,7 @@ pytest.importorskip("pxr")
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest  # noqa: E402
 from blueprint_pipeline.native_task_runtime_contract import DROID_FRANKA_RESET_JOINT_NAMES  # noqa: E402
+from blueprint_pipeline.team_embodiment_stance import PEDESTAL_CLEARANCE_M  # noqa: E402
 from tests.test_native_task_arena_packet import _camera  # noqa: E402
 from tests.test_task_evaluation_owner_success_confirmation import OWNER, confirm, publish  # noqa: E402
 from tests.test_task_evaluation_rigid_relocation_native_adapter import (  # noqa: E402
@@ -207,16 +208,20 @@ def _compile(tmp_path: Path, monkeypatch: Any, **extra: Any) -> dict[str, Any]:
 def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_path, monkeypatch) -> None:
     record = _compile(tmp_path, monkeypatch)
     station = record["robot_station"]
-    # The mount is level with the support, on floor clear of the table by the validator's clearance.
+    # The mount is level with the support, on floor clear of the table by the pedestal's clearance.
     assert station["position_world_m"][2] == pytest.approx(SUPPORT_TOP)
-    assert not _in_oval(footprint_samples(station)).any(), station["position_world_m"]
+    assert not _in_oval(footprint_samples(station, grow_m=PEDESTAL_CLEARANCE_M)).any(), station["position_world_m"]
+    assert station["search"]["obstacle_clearance_m"] == PEDESTAL_CLEARANCE_M
     assert station["room_mesh_clearance"]["room_mesh_prims"] == ["/Root/mesh_0000_GLTF"]
     assert station["room_mesh_clearance"]["occupied_stances"] > 0
     x, y, _ = station["position_world_m"]
     assert ROOM[0][0] < x < ROOM[1][0] and ROOM[0][1] < y < ROOM[1][1]
     assert math.hypot(x - START[0], y - START[1]) <= 1.6
-    # The carry search ranked the room-clear stances (it measures the arm, not the footprint).
-    assert record["robot_station_search"]["rule"] == "first_ranked_stance_that_carries"
+    # The carry search measured the room-clear stances (it measures the arm, not the footprint).
+    from blueprint_pipeline.team_scene_packet import STATION_RULE
+
+    assert record["robot_station_search"]["rule"] == STATION_RULE
+    assert record["robot_station_search"]["stances_measured"] >= record["robot_station_search"]["stances_in_reach"]
     # The packet the team runs places the robot where the record says.
     request = json.loads((Path(record["base_native_packet"]["path"]).parent
                           / "native_task_arena_packet_request.v1.json").read_text())

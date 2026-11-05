@@ -463,6 +463,7 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
     from .team_candidate_quick10_closeout import validate_native_result_binding
     from .beta_policy_screening_closeout import (
         collect_scoped_closeout, scoped_closeout_verified, join_scoped_session_closeout,
+        scoped_setup_failure_blocker,
     )
     root = Path(attempt_dir).resolve()
     _validate_prepared(plan, candidate, root, prepared)
@@ -558,6 +559,17 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             native_path = Path(str(adapter.get("native_control_result_path") or ""))
             native = _read(native_path)
             validate_native_result_binding(native, expected_digest=adapter.get("native_control_result_digest"))
+            setup = scoped_setup_failure_blocker(inner=native, adapter=adapter, prepared=prepared,
+                                                 receipt=absence, adapter_path=result_path)
+            admission = native.get("beta_screening_admission")
+            if (setup is not None and isinstance(admission, Mapping) and admission.get("plan_digest") == plan["plan_digest"]
+                    and not native.get("episodes")):
+                # A cell could not open the runtime, pass the pre-policy gate or load
+                # the policy, and the matrix stopped there: our harness, no score.
+                # With cells measured before it, that prefix is the result instead and
+                # the cells it never reached count unscored (``cell_not_returned``).
+                return {"status": "blocked", "provider_allocation_performed": True,
+                        "provider_zero_verified": True, "no_allocation_proven": False, "blockers": [setup]}
             joined = join_scoped_session_closeout(inner=native, adapter=adapter, prepared=prepared,
                                                   receipt=absence, adapter_path=result_path)
             joined = validate_session_result(joined)

@@ -446,3 +446,24 @@ def test_definite_start_refusal_is_not_fenced_as_a_retry(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="unproven_before_start"):
         jobs.run_invocation(path, allocator=lambda argv: pytest.fail("started without a current answer"))
     assert not (path.parent / "no_create_fence.json").exists()
+
+
+def test_the_detached_allocator_gets_its_own_temporary_directory(tmp_path, monkeypatch):
+    """A PrivateTmp unit's /tmp is removed when its pass ends; the detached allocator must not depend on it."""
+    path, _, _ = retained(tmp_path)
+    seen = {}
+
+    class Process:
+        pid = 4242
+
+    def popen(argv, **kwargs):
+        seen.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(jobs, "handoff_lease_checkpoint", lambda *a, **k: None)
+    monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    assert jobs.start_invocation(path, log_path=tmp_path / "allocator.log") == 4242
+    temp = path.parent / "tmp"
+    assert temp.is_dir() and (temp.stat().st_mode & 0o777) == 0o700
+    assert seen["env"]["TMPDIR"] == seen["env"]["TMP"] == seen["env"]["TEMP"] == str(temp)
+    assert seen["start_new_session"] is True

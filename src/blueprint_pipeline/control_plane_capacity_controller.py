@@ -74,6 +74,10 @@ SUMMARY_FILENAME = "summary.json"
 # The door's status reader refuses files over 256 KiB; the summary keeps half that.
 SUMMARY_MAX_BYTES = 128 * 1024
 DEFAULT_SURVEY_INTERVAL_SECONDS = 60 * 60
+#: At most this many partitions of one mount per hourly pass; the pass's time and
+#: entry budget is what normally stops it (2026-11-04: four a pass, with a cursor
+#: reset every hour, left 99.9% of the root disk unvisited).
+USAGE_PARTITIONS_PER_MOUNT = 256
 USAGE_UNCLASSIFIED_ALERT_BYTES = 1024**3
 USAGE_CONTAINER_RUNTIME_ALERT_BYTES = 20 * 1024**3
 ORPHAN_SCRATCH_AGGREGATE_PAGE_BYTES = 5 * 1024**3
@@ -613,10 +617,11 @@ def _refresh_usage(
     try:
         kwargs: dict[str, Any] = {"mounts": survey_mounts(mounts)}
         if survey is survey_usage:
-            # Each hourly observation gets a bounded, identity-checked next
-            # partition. Historical first trees cannot consume every pass.
-            # These are partial snapshots, never cumulative reclaimable bytes.
-            kwargs.update(continuation=(latest or {}).get("continuation"), partitions_per_mount=4)
+            # Each hourly pass walks the next identity-checked partitions until
+            # its budget is spent, and publishes the composite of every
+            # partition's latest measurement: attribution, never reclaimable bytes.
+            kwargs.update(continuation=(latest or {}).get("continuation"),
+                          partitions_per_mount=USAGE_PARTITIONS_PER_MOUNT)
         result = survey(**kwargs)
     except Exception as exc:  # noqa: BLE001 - a failed survey must never stop the capacity tick
         error = f"usage_survey_failed:{type(exc).__name__}"
@@ -685,6 +690,9 @@ def usage_projection(
             "candidate_partitions": survey.get("candidate_partitions"),
             "partition_entries_examined": survey.get("partition_entries_examined"),
             "continuation_status": list(survey.get("continuation_status") or []),
+            "partition_churn": survey.get("partition_churn"),
+            # How much of the partitioned cycle the composite rows cover, and how old they are.
+            "composite": survey.get("composite"),
         }
     if error:
         projection["error"] = error

@@ -62,6 +62,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     )
     from .beta_policy_screening_holds import RELEASE, packet_hold, probe_hold, settle_hold
     from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
+    from .beta_policy_screening_scene_half import current_half
     from .beta_policy_screening_team import catalog_for_profile
     from .rigid_robot_free_probe_runner import _running_release, source_commit
     from .task_evaluation_configured_controls_progression_worker import _validate_source
@@ -141,7 +142,11 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     # a commit preparation refuses: plan them again at this one.
                     current = latest_campaign(campaign_id, queue_root=root)
                     commit = implementation_commit()
-                    replan = replan_scope(current, implementation_commit=commit, queue_root=root)
+                    # A completed team half compiled again since planning (a new station, chairs moved on the
+                    # owner's approval) is planned again too, finished campaign or not.
+                    half = (current_half(profile, scene_revision_digest=source["scene_revision_digest"])
+                            if packet_status.get("status") == "completed" else None)
+                    replan = replan_scope(current, implementation_commit=commit, scene_half=half, queue_root=root)
                     if replan is None:
                         outcome.update(enqueue_screening_campaign(_read(root / "plans" / f"{current}.json"),
                                                                   queue_root=root))
@@ -149,7 +154,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                         superseded = current
                         campaign_id = "screening-" + canonical_digest({"source": source,
                             "catalog_digest": catalog["catalog_digest"], "protocol": "beta_policy_screening.v1",
-                            "supersedes": current, "implementation_commit": commit})[7:39]
+                            "supersedes": current, "implementation_commit": commit,
+                            **({"scene_half": half} if half is not None else {})})[7:39]
                 if not existing.exists() or replan is not None:
                     context = require_current_source(source, site_id=retained["scene_id"])
                     result, receipt, _zero = _validate_source(Path(request["source_launch_root"]))
@@ -359,6 +365,43 @@ def deliver_publications(*, queue_root: str | Path, transport=None,
     return {"acknowledged": sent, "pending": failed, **failure}
 
 
+def retained_run_dirs(root: Path):
+    """Each retained attempt's provider run directories, local or on the work volume (via its pointer)."""
+    from .beta_policy_screening_coordinator import ATTEMPT_DIR_FIELD, _attempt_path
+
+    for entry in sorted((root / "attempts").iterdir()):
+        attempt: Path | None = None
+        if entry.is_symlink():
+            continue
+        if entry.is_dir():
+            attempt = entry
+        elif entry.name.endswith(".attempt_dir.json"):
+            try:
+                pointer = json.loads(entry.read_text(encoding="utf-8"))
+                attempt = _attempt_path(root, {"attempt_id": entry.name.removesuffix(".attempt_dir.json"),
+                                               ATTEMPT_DIR_FIELD: pointer[ATTEMPT_DIR_FIELD]})
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        if attempt is not None and attempt.is_dir() and not attempt.is_symlink():
+            yield from sorted(attempt.glob("allocator/attempts/*/vast_provider_run"))
+
+
+def backfill_runtime_diagnostics(root: Path, *, max_writes: int = 5) -> dict[str, Any]:
+    """Summarize retained runs whose output archive is still on disk; bounded, idempotent, never raises.
+
+    A streamed archive never reaches the host, so only a downloaded or
+    SSH-recovered one not yet promoted away can be summarized after the fact.
+    """
+    from .provider_runtime_diagnostics import backfill
+
+    try:
+        return backfill(retained_run_dirs(root), max_writes=max_writes)
+    except (OSError, ValueError) as exc:
+        from .bounded_error import error_description
+
+        return {"status": "failed", "error": error_description(exc)}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from .beta_policy_screening_coordinator import QUEUE_ROOT_ENV, _root, process_screening_queue
     from .beta_policy_screening_status import write_worker_status
@@ -393,9 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         selections = {"status": "failed", "blocker": code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)
                       else "website_candidate_selection_failed"}
     status = write_worker_status(root, publication_before=before, publication_after=after, execution=execution)
+    # Local, unpaid and bounded: a retained run's failure account, read while its archive is still here.
+    diagnostics = backfill_runtime_diagnostics(root)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
                       "publication_after": after, "holds": holds, "selections": selections,
-                      "worker_status": status},
+                      "runtime_diagnostics_backfill": diagnostics, "worker_status": status},
                      sort_keys=True))
     return 0
 

@@ -675,6 +675,16 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Timer]\nOnUnitInactiveSec=6h\n",
         encoding="utf-8",
     )
+    release_lifecycle_units = []
+    for suffix in ("service", "timer"):
+        source = unit_dir / f"blueprint-control-plane-release-lifecycle.{suffix}"
+        source.write_text("[Unit]\nDescription=Exact release lifecycle fixture\n", encoding="utf-8")
+        release_lifecycle_units.append(source)
+    owner_deletion_units = []
+    for name in ("blueprint-owner-approved-deletion-plan.service", "blueprint-owner-approved-deletion.service"):
+        source = unit_dir / name
+        source.write_text("[Service]\nExecStart=/usr/bin/blueprint-owner-approved-deletion\n", encoding="utf-8")
+        owner_deletion_units.append(source)
     capacity_service = unit_dir / "blueprint-control-plane-capacity.service"
     capacity_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-measure-capacity\n",
@@ -790,6 +800,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         *additional_sources[8:],
         storage_gc_service,
         storage_gc_timer,
+        *release_lifecycle_units,
+        *owner_deletion_units,
         capacity_service,
         capacity_timer,
         preflight_service,
@@ -894,6 +906,10 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-project-spend-refresh.service",
         "blueprint-control-plane-storage-gc.service",
         "blueprint-control-plane-storage-gc.timer",
+        "blueprint-control-plane-release-lifecycle.service",
+        "blueprint-control-plane-release-lifecycle.timer",
+        "blueprint-owner-approved-deletion-plan.service",
+        "blueprint-owner-approved-deletion.service",
         "blueprint-control-plane-capacity.service",
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.service",
@@ -937,6 +953,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.timer",
         "blueprint-completed-replay-cache-gc.timer",
+        "blueprint-control-plane-release-lifecycle.timer",
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.timer",
         "blueprint-task-evaluation-launch-reconciler.timer",

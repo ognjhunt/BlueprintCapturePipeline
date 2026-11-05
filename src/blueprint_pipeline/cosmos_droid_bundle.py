@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Mapping
 
 from .cosmos_droid_dependencies import DEPENDENCY_MANIFEST_FILENAME, DEPENDENCY_MANIFEST_DIGEST, TOTAL_DOWNLOAD_BYTES
-from .cosmos_droid_source import SOURCE_ARCHIVE, SOURCE_ARCHIVE_SHA256, SOURCE_MANIFEST, SOURCE_MANIFEST_SHA256
+from .cosmos_droid_source import (CHECKPOINT_REGISTRY_BYTES, CHECKPOINT_REGISTRY_FILES, SOURCE_ARCHIVE,
+    SOURCE_ARCHIVE_SHA256, SOURCE_MANIFEST, SOURCE_MANIFEST_SHA256)
 from .decision_evidence_contracts import canonical_digest
 
 CANDIDATES = ("cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid")
@@ -16,7 +17,9 @@ RUNTIME_MODULES = (
 )
 IMAGE_DOWNLOAD_ALLOWANCE_BYTES = 64 * 1024**3
 MAXIMUM_OUTPUT_BYTES = 8_000_000_000
-CHECKPOINT_BYTES = {"cosmos3_edge_policy_droid": 9154401203, "cosmos3_nano_policy_droid": 32_936_198_308}
+# Model bytes each candidate downloads: its snapshot manifest's required_files
+# plus the source's checkpoint-registry files (2,818,839,170 bytes).
+CHECKPOINT_BYTES = {"cosmos3_edge_policy_droid": 11_973_252_531, "cosmos3_nano_policy_droid": 35_755_037_478}
 
 
 def profile(candidate: str):
@@ -36,6 +39,7 @@ def runtime_contract(candidate: str) -> dict:
         "source_archive_sha256": SOURCE_ARCHIVE_SHA256, "source_manifest_sha256": "sha256:" + SOURCE_MANIFEST_SHA256,
         "checkpoint_inventory_sha256": "sha256:" + selected.SNAPSHOT_MANIFEST_SHA256,
         "checkpoint_download_bytes": CHECKPOINT_BYTES[candidate], "format_prompt_as_json": candidate == CANDIDATES[0],
+        "checkpoint_registry_files": [dict(row) for row in CHECKPOINT_REGISTRY_FILES],
         "dependency_manifest_digest": DEPENDENCY_MANIFEST_DIGEST, "dependency_download_bytes": TOTAL_DOWNLOAD_BYTES,
         "server_python_version": "3.13.9", "minimum_gpu_memory_gb": selected.MINIMUM_GPU_MEMORY_GB,
         "cold_image_download_allowance_bytes": IMAGE_DOWNLOAD_ALLOWANCE_BYTES,
@@ -52,7 +56,8 @@ def stage_runtime(runtime: Path, candidate: str) -> dict:
     selected = profile(candidate)
     snapshot = selected.snapshot_manifest_path()
     manifest = selected.verified_snapshot_manifest(snapshot)
-    if sum(row["size_bytes"] for row in manifest["required_files"]) != CHECKPOINT_BYTES[candidate]:
+    if (sum(row["size_bytes"] for row in manifest["required_files"]) + CHECKPOINT_REGISTRY_BYTES
+            != CHECKPOINT_BYTES[candidate]):
         raise ValueError("cosmos_checkpoint_transfer_identity_invalid")
     runtime.mkdir(parents=True, exist_ok=True)
     (runtime / selected.SNAPSHOT_STAGED_NAME).write_bytes(snapshot.read_bytes())

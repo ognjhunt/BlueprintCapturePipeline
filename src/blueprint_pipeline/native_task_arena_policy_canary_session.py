@@ -40,6 +40,10 @@ except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
     from .policy_execution_evidence import (candidate_execution_kinds, evidence_kind, execution_evidence_valid,
         execution_invoked, retained_rollout_counts, rollout_counts, rollout_counts_valid, rollout_total, SCRIPTED, scripted_fields)
+try:  # flat provider-bundle layout
+    from policy_episode_lifecycle import observation_quality_flag_codes, observation_quality_flags_valid
+except ModuleNotFoundError:  # repository package
+    from .policy_episode_lifecycle import observation_quality_flag_codes, observation_quality_flags_valid
 
 
 SCHEMA_VERSION = "native_task_arena_policy_canary_session.v1"
@@ -81,6 +85,45 @@ CANONICAL_ALLOCATOR = (
 )
 CONTROL_MODES = frozenset({"nonblocking_diagnostic_pending", "nonblocking_diagnostic_bound", "nonblocking_omitted_by_user", "required_before_policy", "native_family_prepolicy_required"})
 _REGISTRY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+RUNTIME_OBSERVATION_GATE_SCHEMA_VERSION = "policy_canary_runtime_observation_integrity_gate.v1"
+
+
+def observation_quality_flags(gate: Any, *, run_kind: Any) -> list[str] | None:
+    """The typed flags a beta session continues with past its pre-policy gate, else ``None``.
+
+    Doctrine stops a run only for privacy, rights and money.  A beta
+    (website screening) runtime observation gate whose frames are structurally
+    usable (``frame_structure_passed``) but whose observation integrity did not
+    pass is therefore a flag, not a stop: the session continues and carries the
+    gate's blockers as typed observation-quality flags.  ``None`` keeps the
+    existing stop for every other case: frames that are not structurally usable
+    (there is nothing to run a policy on), a gate that is not the sealed runtime
+    gate or whose digest does not verify, and every other run kind (the internal
+    canary and team lanes are unchanged here).
+    """
+    if run_kind != BETA_RUN_KIND or not isinstance(gate, Mapping):
+        return None
+    blockers = gate.get("blockers")
+    if (gate.get("schema_version") != RUNTIME_OBSERVATION_GATE_SCHEMA_VERSION
+            or gate.get("status") != "blocked"
+            or gate.get("frame_structure_passed") is not True
+            or gate.get("policy_observation_integrity_passed") is not False
+            or gate.get("candidate_policy_loaded") is not False
+            or gate.get("candidate_policy_queried") is not False
+            or not isinstance(blockers, list) or not blockers
+            or gate.get("gate_digest") != canonical_digest(gate, digest_field="gate_digest")):
+        return None
+    return observation_quality_flag_codes(blockers)
+
+
+def observation_quality_fields(results: Any) -> dict[str, Any]:
+    """The flags a set of cell results carried, merged for their aggregate; ``{}`` when none."""
+    flags = sorted({code for result in results
+                    if isinstance(result, Mapping) and observation_quality_flags_valid(result.get("observation_quality_flags"))
+                    for code in result["observation_quality_flags"]})
+    return {"observation_quality_flags": flags, "observation_integrity_flagged": True} if flags else {}
 
 
 class PolicyCanarySessionError(ValueError):
@@ -803,6 +846,10 @@ def validate_session_result(
     ):
         raise PolicyCanarySessionError("policy_canary_session_result_identity_invalid")
     _beta_admission_binding(payload)
+    if ("observation_quality_flags" in payload or "observation_integrity_flagged" in payload) and (
+            payload.get("run_kind") != BETA_RUN_KIND or payload.get("observation_integrity_flagged") is not True
+            or not observation_quality_flags_valid(payload.get("observation_quality_flags"))):
+        raise PolicyCanarySessionError("policy_canary_session_observation_quality_flags_invalid")
     raw_success_contract = payload.get("task_success_contract")
     raw_success_contract_digest = payload.get("task_success_contract_digest")
     if raw_success_contract is None and raw_success_contract_digest is None:
@@ -907,6 +954,23 @@ def validate_session_result(
     return payload
 
 
+def _source_trace(failure: BaseException, *, limit: int = 24, outer: int = 4) -> list[dict[str, Any]]:
+    """Safe frames of ``failure``: its outermost, which name the session boundary
+    (``open_session``, ``prepolicy_observation_gate``, ``load_policy``), and its innermost.
+
+    Frames are filtered before the list is bounded, so a deep simulator stack
+    cannot push the boundary frame out of the record.
+    """
+    frames = [
+        {"file": Path(frame.filename).name, "function": frame.name, "line": frame.lineno}
+        for frame in traceback.extract_tb(failure.__traceback__)
+        if re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", Path(frame.filename).name)
+        # ``<module>`` frames name the file whose import failed (a module-level import).
+        and (frame.name == "<module>" or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,159}", frame.name))
+    ]
+    return frames if len(frames) <= limit else frames[:outer] + frames[outer - limit:]
+
+
 def execute_paired_session(
     *,
     authority: Mapping[str, Any],
@@ -929,7 +993,10 @@ def execute_paired_session(
     ``policy_observation_integrity_passed`` is ``True``; anything else ends the
     session with zero policies loaded and zero queries, so 19 GB of candidate
     weights are never pulled onto a runtime whose observations are not yet
-    proven usable (Scene 839873, 2026-09-02).
+    proven usable (Scene 839873, 2026-09-02).  The one exception is a beta
+    screening gate whose frames are structurally usable: it continues, and its
+    blockers are recorded as ``observation_quality_flags`` on the result (see
+    :func:`observation_quality_flags`).
     """
 
     bound_authority = validate_session_authority(authority)
@@ -964,6 +1031,7 @@ def execute_paired_session(
     }
     open_failure: Exception | None = None
     preload_observation_gate: dict[str, Any] | None = None
+    observation_flags: list[str] | None = None
     family_pending = inputs.get("pre_policy_site_qualification_required") is True
     try:
         if family_pending and prepolicy_observation_gate is None:
@@ -980,9 +1048,15 @@ def execute_paired_session(
                 dict(gate) if isinstance(gate, Mapping) else {"invalid": repr(gate)}
             )
             if preload_observation_gate.get("policy_observation_integrity_passed") is not True:
-                raise PolicyCanarySessionError(
-                    "policy_canary_session_observation_integrity_blocked"
+                # A beta gate with structurally usable frames is a flag carried
+                # with the result; unusable frames and other run kinds still stop.
+                observation_flags = observation_quality_flags(
+                    preload_observation_gate, run_kind=inputs["run_kind"]
                 )
+                if observation_flags is None:
+                    raise PolicyCanarySessionError(
+                        "policy_canary_session_observation_integrity_blocked"
+                    )
             if family_pending:
                 from blueprint_pipeline.task_family_result_admission import family_site_qualification_valid
                 if not family_site_qualification_valid(inputs["task_success_contract"], preload_observation_gate.get("site_qualification")):
@@ -1110,6 +1184,9 @@ def execute_paired_session(
     raw_failure_codes = getattr(open_failure, "errors", ())
     if not isinstance(raw_failure_codes, (list, tuple)):
         raw_failure_codes = ()
+    if isinstance(open_failure, ImportError) and isinstance(getattr(open_failure, "name", None), str):
+        # A module's dotted name is not a message: it names the missing dependency, never data.
+        raw_failure_codes = (*raw_failure_codes, "module_not_found:" + open_failure.name)
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "blocked",
@@ -1134,18 +1211,15 @@ def execute_paired_session(
         "retry_cap": 0,
         "warm_session_open_count": 1,
         "preload_observation_gate": preload_observation_gate,
+        **({"observation_quality_flags": observation_flags, "observation_integrity_flagged": True}
+           if observation_flags else {}),
         "policy_loads": policy_loads,
         "episodes": episodes,
         "session_closeout": closeout,
         "session_failure_type": type(open_failure).__name__ if open_failure else None,
         # Source locations diagnose runtime-boundary failures without retaining
         # exception messages, local variables, credentials, or absolute paths.
-        "session_failure_source_trace": [
-            {"file": Path(frame.filename).name, "function": frame.name, "line": frame.lineno}
-            for frame in traceback.extract_tb(open_failure.__traceback__)[-24:]
-            if re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", Path(frame.filename).name)
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,159}", frame.name)
-        ] if open_failure else [],
+        "session_failure_source_trace": _source_trace(open_failure) if open_failure else [],
         "session_failure_codes": sorted({
             code for code in raw_failure_codes
             if isinstance(code, str)
@@ -1199,6 +1273,7 @@ __all__ = [
     "PROVIDER_BUNDLE_SCHEMA_VERSION",
     "PROVIDER_RESULT_FILENAME",
     "RESULT_SCHEMA_VERSION",
+    "RUNTIME_OBSERVATION_GATE_SCHEMA_VERSION",
     "RUN_KIND",
     "RUN_KINDS",
     "SCHEMA_VERSION",
@@ -1209,6 +1284,8 @@ __all__ = [
     "consume_session_authority_once",
     "episodes_per_policy_for",
     "execute_paired_session",
+    "observation_quality_fields",
+    "observation_quality_flags",
     "validate_runtime_input_manifest",
     "validate_provider_bundle",
     "validate_session_authority",

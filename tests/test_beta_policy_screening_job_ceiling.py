@@ -266,3 +266,97 @@ def test_worker_holds_until_the_ceiling_is_readable_then_plans_within_it_once(tm
     # A built plan is never resized or re-read, whatever the ceiling says later.
     assert tick({"job_ceiling": ceiling_summary(40)})["status"] == "already_enqueued"
     assert len(calls) == 4 and json.loads(path.read_text()) == value
+
+
+def scripted_catalog(count=8, scripted=4, maximum="2.00"):
+    """``inputs`` with its first ``scripted`` rows made scripted simulator-state baselines."""
+    from copy import deepcopy
+
+    from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
+
+    from tests.test_beta_policy_screening_plan import admitted
+
+    catalog, _, _ = inputs(count, maximum)
+    rows = deepcopy(catalog["candidates"])
+    for row in rows[:scripted]:
+        row["policy"]["kind"] = "scripted"
+    catalog = seal_catalog({**catalog, "candidates": rows})
+    bindings, quotes = {}, {}
+    for candidate in catalog["candidates"]:
+        bindings[candidate["candidate_id"]], quotes[candidate["candidate_id"]] = admitted(candidate, maximum=maximum)
+    return catalog, {"candidate_bindings": bindings}, quotes, sorted(row["candidate_id"] for row in rows[:scripted])
+
+
+def test_a_website_plan_never_funds_a_scripted_baseline():
+    """Owner 2026-11-04: controls removed; a scripted run never says which policy can do the site's task."""
+    catalog, capabilities, quotes, scripted = scripted_catalog()
+    record = job_ceiling_record(ceiling_summary(40), local_holds_usd=Decimal(0), read_at=READ_AT)
+    value = build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=record, campaign_id="campaign1",
+                                             capabilities=capabilities, cost_quotes=quotes, now=NOW)
+    rows = {row["candidate_id"]: row for row in value["candidates"]}
+    for key in scripted:
+        assert rows[key] == {"candidate_id": key, "display_name": rows[key]["display_name"],
+                             "configuration_digest": rows[key]["configuration_digest"],
+                             "execution_evidence_kind": "scripted_simulator_state_baseline",
+                             "status": "unavailable", "blockers": ["candidate_disabled"]}
+    # The site's money goes only to the learned policies.
+    assert {rows[key]["status"] for key in set(rows) - set(scripted)} == {"selected"}
+    assert value["maximum_planned_cost_usd"] == "8.00"
+    schema = json.loads((Path(__file__).resolve().parents[1]
+                         / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
+    Draft202012Validator(schema).validate(value)
+    # A plan that is not a website job's still lists them, after the learned policies.
+    internal = build_screening_plan(catalog, scene(), campaign_id="campaign1", capabilities=capabilities,
+                                    cost_quotes=quotes, now=NOW)
+    assert [row["status"] for row in internal["candidates"] if row["candidate_id"] in scripted] == [
+        "selected", "selected", "selected", "waitlisted"]
+
+
+def test_only_scripted_baselines_left_plans_nothing_and_still_publishes(tmp_path):
+    """capture-447 2026-11-04: every learned policy out of reach left three scripted arms funded."""
+    catalog, capabilities, quotes, scripted = scripted_catalog(count=6)
+    learned = sorted({row["candidate_id"] for row in catalog["candidates"]} - set(scripted))
+    capabilities["candidate_infeasible"] = {key: ["robot_reach_insufficient:place:1.107m_vs_0.990m"] for key in learned}
+    record = job_ceiling_record(ceiling_summary(40), local_holds_usd=Decimal(0), read_at=READ_AT)
+    value = build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=record, campaign_id="campaign1",
+                                             capabilities=capabilities, cost_quotes=quotes, now=NOW)
+    assert value["maximum_planned_cost_usd"] == "0.00"
+    assert {row["status"] for row in value["candidates"]} == {"infeasible", "unavailable"}
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+    [publication] = coordinator.pending_publications(queue_root=tmp_path)
+    assert publication["status"] == "blocked" and publication["budget"]["committed_upper_bound_usd"] == "0"
+
+
+def test_a_frozen_website_plan_closes_its_queued_scripted_baselines_before_spend(tmp_path, monkeypatch):
+    """A plan frozen before 2026-11-04 lists scripted rows as funded; one already launched runs to its end."""
+    from blueprint_pipeline import beta_policy_screening_plan as planner
+    from tests.test_beta_policy_screening_coordinator import Backend
+
+    monkeypatch.setattr(coordinator, "_quote_current", lambda candidate: True)
+    catalog, capabilities, quotes, scripted = scripted_catalog()
+    record = job_ceiling_record(ceiling_summary(40), local_holds_usd=Decimal(0), read_at=READ_AT)
+    backend = Backend()
+    with monkeypatch.context() as before:
+        before.setattr(planner, "website_switched_off", lambda candidate: False)
+        before.setattr(coordinator, "_switch_off_website_scripted", lambda root: 0)
+        value = build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=record, campaign_id="campaign1",
+                                                 capabilities=capabilities, cost_quotes=quotes, now=NOW,
+                                                 priority=[scripted[0]])
+        coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+        coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
+    [publication] = coordinator.pending_publications(queue_root=tmp_path)
+    rows = {row["candidate_id"]: row for row in publication["candidates"]}
+    assert rows[scripted[0]]["status"] == "running" and backend.launches == 1
+    assert [rows[key]["status"] for key in scripted[1:]] == ["pending", "pending", "waitlisted"]
+
+    coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False,
+                                        max_launches=10)
+    [after] = coordinator.pending_publications(queue_root=tmp_path)
+    rows = {row["candidate_id"]: row for row in after["candidates"]}
+    assert rows[scripted[0]]["status"] == "running"
+    for key in scripted[1:]:
+        assert rows[key]["status"] == "unavailable" and rows[key]["blockers"] == ["candidate_disabled"]
+    # Only the learned policies launched after it: the site's money never reached another scripted row.
+    assert backend.launches == 5
+    assert {rows[key]["status"] for key in set(rows) - set(scripted)} == {"running"}
+    assert after["revision"] > publication["revision"]
