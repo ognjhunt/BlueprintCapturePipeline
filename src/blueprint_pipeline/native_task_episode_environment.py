@@ -315,15 +315,16 @@ def _gripper_endpoint(
 
 
 def policy_gripper_pad_binding(servo: Any) -> dict[str, Any]:
-    """Bind a DROID rigid policy episode to the servo's live pad readback.
+    """Bind a DROID policy episode to the servo's live pad readback.
 
     DROID's ``gripper_position`` is the 2F-85 closed fraction, and the
     convention probe seals its endpoints as fingertip pad-centre separations.
     The Robotiq inner-finger body origins coincide when the jaw is open and
     spread as it closes, so read against those endpoints they told every
-    policy open was closed.  The task readback and the episode adapter both
-    take this binding; a servo without the pad readback is refused rather
-    than falling back to the body origins.
+    policy open was closed.  The episode adapter takes this binding for rigid
+    and articulated tasks, and the rigid task readback takes it too; a servo
+    without the pad readback is refused rather than falling back to the body
+    origins.
     """
 
     callback = getattr(servo, "current_gripper_pad_readback", None)

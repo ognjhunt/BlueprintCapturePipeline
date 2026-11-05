@@ -582,6 +582,38 @@ def test_rigid_policy_binding_hands_the_servo_pads_to_the_adapter(
     assert receipt["gripper_state_source"] is None
 
 
+def test_articulated_policy_binding_leaves_the_scored_task_sample_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
+    servo = _Servo()
+    unbound, unbound_receipt = build_native_task_episode_environment(
+        built=_built("articulated_open_close"), gripper_convention=_PAD_CONVENTION,
+        servo=servo, task_readback=_Readback(), to_tensor=lambda value: value,
+    )
+    bound, bound_receipt = build_native_task_episode_environment(
+        built=_built("articulated_open_close"), gripper_convention=_PAD_CONVENTION,
+        servo=servo, task_readback=_Readback(), to_tensor=lambda value: value,
+        **module.policy_gripper_pad_binding(servo),
+    )
+
+    # Only the policy observation gains the pads; the scored articulated width
+    # was already the servo's measured pad separation.
+    assert bound.kwargs["gripper_pad_readback_callback"] == (
+        servo.current_gripper_pad_readback
+    )
+    assert unbound.kwargs["gripper_pad_readback_callback"] is None
+    assert bound.kwargs["task_sample_callback"]() == (
+        unbound.kwargs["task_sample_callback"]()
+    )
+    assert bound.kwargs["task_sample_callback"]()["gripper_width_m"] == 0.06
+    assert bound_receipt["gripper_state_source"] == (
+        unbound_receipt["gripper_state_source"]
+    )
+
+
 @pytest.mark.parametrize(
     "servo",
     (SimpleNamespace(), SimpleNamespace(current_gripper_pad_readback=None)),

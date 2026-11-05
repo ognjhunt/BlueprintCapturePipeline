@@ -1832,14 +1832,30 @@ def test_close_timeout_preserves_already_sealed_pair_and_never_launches_next_cel
     assert not (output / "cell_runs/01").exists()
 
 
-def _pad_bound_cell(tmp_path: Path, *, make_servo_object) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Run one Franka rigid cell, recording what each episode's seams received."""
+def _pad_bound_cell(
+    tmp_path: Path, *, make_servo_object, articulated_monkeypatch: pytest.MonkeyPatch | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Run one Franka cell, recording what each episode's seams received.
+
+    With ``articulated_monkeypatch`` the episode's resolved plan is an
+    articulated task; its episode seam records the binding and then stops,
+    since this rehearsal only fakes a rigid environment.
+    """
 
     runtime_root, provider_output = _stage_runtime_root(tmp_path)
     child_root = provider_output / "cell_runs" / "00"
     child_root.mkdir(parents=True)
     base = _rehearsal_runtime(FakeIsaac(child_root / PROVIDER_RESULT_FILENAME))
     bindings: list[dict[str, Any]] = []
+    if articulated_monkeypatch is not None:
+        resolve = worker._resolved_scene_plan
+
+        def resolve_articulated(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            plan = resolve(*args, **kwargs)
+            # Only the episode resolves its plan without keyword arguments.
+            return plan if kwargs else {**plan, "task_kind": "articulated_open_close"}
+
+        articulated_monkeypatch.setattr(worker, "_resolved_scene_plan", resolve_articulated)
 
     def make_servo(**_kwargs: Any) -> Any:
         bindings.append({"servo": make_servo_object()})
@@ -1849,13 +1865,20 @@ def _pad_bound_cell(tmp_path: Path, *, make_servo_object) -> tuple[dict[str, Any
         bindings[-1]["readback"] = kwargs
         return object()
 
+    def make_task_readback(built: Any, **kwargs: Any) -> Any:
+        bindings[-1]["articulated_readback"] = kwargs
+        return object()
+
     def build_episode_environment(**kwargs: Any) -> Any:
         bindings[-1]["environment"] = kwargs
+        if articulated_monkeypatch is not None:
+            raise RuntimeError("rehearsal_stops_after_articulated_binding")
         return base.build_episode_environment(**kwargs)
 
     runtime = worker.CellRuntime(**{
         **base.__dict__, "make_servo": make_servo,
         "make_rigid_task_readback": make_rigid_task_readback,
+        "make_task_readback": make_task_readback,
         "build_episode_environment": build_episode_environment,
     })
     with pytest.raises(SystemExit) as exited:
@@ -1898,6 +1921,49 @@ def test_droid_rigid_cell_without_a_pad_readback_fails_closed(tmp_path: Path) ->
     # Neither a body-origin task readback nor an episode adapter was built.
     assert all(set(binding) == {"servo"} for binding in bindings)
     assert len(result["episodes"]) == 2
+    for row in result["episodes"]:
+        assert row["status"] == "blocked"
+        assert row["typed_harness_failure"] == "NativeTaskEpisodeEnvironmentError"
+        assert row["candidate_policy_queried"] is False
+
+
+def test_droid_articulated_cell_gives_the_policy_adapter_the_servo_pads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The articulated observation must not keep the inverted body-origin state."""
+
+    result, bindings = _pad_bound_cell(
+        tmp_path, articulated_monkeypatch=monkeypatch,
+        make_servo_object=lambda: SimpleNamespace(
+            current_grasp_frame_pose_world=lambda: None,
+            current_gripper_pad_readback=_rehearsal_open_pad_readback,
+        ),
+    )
+
+    assert len(bindings) == 2
+    for binding in bindings:
+        servo = binding["servo"]
+        # The articulated task readback keeps exactly its grasp-frame binding.
+        assert binding["articulated_readback"] == {
+            "grasp_frame_pose_callback": servo.current_grasp_frame_pose_world
+        }
+        assert "readback" not in binding
+        assert binding["environment"]["gripper_pad_readback_callback"] == (
+            servo.current_gripper_pad_readback
+        )
+    assert [row["typed_harness_failure"] for row in result["episodes"]] == ["RuntimeError"] * 2
+
+
+def test_droid_articulated_cell_without_a_pad_readback_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, bindings = _pad_bound_cell(
+        tmp_path, articulated_monkeypatch=monkeypatch,
+        make_servo_object=lambda: SimpleNamespace(current_grasp_frame_pose_world=lambda: None),
+    )
+
+    assert len(bindings) == 2
+    assert all(set(binding) == {"servo"} for binding in bindings)
     for row in result["episodes"]:
         assert row["status"] == "blocked"
         assert row["typed_harness_failure"] == "NativeTaskEpisodeEnvironmentError"

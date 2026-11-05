@@ -1754,9 +1754,9 @@ def _run_selected_cell(
                 env=env, robot=robot, gripper_convention=gripper
             )
             task_kind = str(scene_plan["task_kind"])
-            # DROID's gripper state and the release evidence read the pads the probe sealed.
+            # DROID's gripper state (and rigid release evidence) read the pads the probe sealed.
             from blueprint_pipeline.native_task_episode_environment import policy_gripper_pad_binding
-            pads = policy_gripper_pad_binding(servo) if task_kind == "rigid_pick_place" else {}
+            pads = policy_gripper_pad_binding(servo)
             if task_kind == "articulated_open_close":
                 task_readback = bound_runtime.make_task_readback(
                     built,

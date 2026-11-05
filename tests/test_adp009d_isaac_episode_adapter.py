@@ -909,7 +909,9 @@ _PROBE_OPEN_PAD_SEPARATION_M = 0.10415
 _BODY_ORIGIN_SEPARATION_CLOSED_M = 0.08317
 
 
-def _robotiq_pad_adapter(body_origin_separation_m: float) -> IsaacEpisodeAdapter:
+def _robotiq_pad_adapter(
+    body_origin_separation_m: float, *, articulated: bool = False
+) -> IsaacEpisodeAdapter:
     """Adapter over the live asset geometry, read through the real servo seam."""
 
     from blueprint_pipeline.native_franka_pose_servo import (
@@ -938,7 +940,10 @@ def _robotiq_pad_adapter(body_origin_separation_m: float) -> IsaacEpisodeAdapter
     return IsaacEpisodeAdapter(
         env=_Env(),
         robot=robot,
-        rigid_task_object=_Can(),
+        rigid_task_object=None if articulated else _Can(),
+        task_sample_callback=(
+            (lambda: {"joint_positions_rad": {"door": 0.0}}) if articulated else None
+        ),
         action_dim=8,
         reset_seed=20260806,
         to_torch=_to_torch,
@@ -983,6 +988,23 @@ def test_droid_gripper_state_reads_the_probe_pads_not_the_inverted_body_origins(
     # The inverted body-origin measurement stays in the sample for audit only.
     assert sample["gripper_body_separation_m"] == pytest.approx(
         body_origin_separation_m
+    )
+
+
+@pytest.mark.parametrize(
+    ("body_origin_separation_m", "droid_position"),
+    ((0.0, 0.0), (_BODY_ORIGIN_SEPARATION_CLOSED_M, 1.0)),
+    ids=("open", "closed"),
+)
+def test_articulated_droid_gripper_state_reads_the_probe_pads(
+    body_origin_separation_m: float, droid_position: float
+) -> None:
+    """The articulated observation was inverted the same way as the rigid one."""
+
+    adapter = _robotiq_pad_adapter(body_origin_separation_m, articulated=True)
+
+    assert adapter.read_policy_inputs()["gripper_position"] == pytest.approx(
+        droid_position, abs=1e-6
     )
 
 
