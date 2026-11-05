@@ -306,6 +306,45 @@ def test_one_unreadable_owner_store_cannot_starve_the_whole_catalog(
     assert "scene_execution_owner_store_missing" in demoted["blockers"]
 
 
+def test_the_projection_checks_a_website_grant_without_reading_the_webapp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E-02, 2026-11-03: every start of every guarded unit read the WebApp.
+
+    While capture-447's website job was live, each pass reopened its grant with two
+    signed WebApp reads. The runtime env guard never caches a pass that makes a network
+    request, so the Pub/Sub listener alone kept costing about 900 CPU-s an hour. A failed
+    read or a job its site edited would also have failed the whole catalog, in the
+    ExecStartPre of every guarded unit.
+    """
+    from blueprint_pipeline import task_evaluation_launch_catalog as catalog_module
+    from blueprint_pipeline import website_preparation_authority as authority
+    from blueprint_pipeline import website_task_context
+
+    _profile(tmp_path, "website-profile")
+    context = {"request_id": "request-1", "scene_id": "scene-1", "capture_id": "capture-1"}
+    monkeypatch.setattr(authority, "_retained_sources", lambda **_: (context, {}, None))
+
+    def unreachable(**_):
+        raise OSError("webapp unreachable")
+
+    monkeypatch.setattr(website_task_context, "load_current_website_task_context", unreachable)
+    real_validate = catalog_module.validate_launch_profile
+    checked: list[float] = []
+
+    def validate(profile):
+        # What scene_execution_authority_blockers runs for a live website job.
+        checked.append(authority.require_retained_preparation_authority(request={}, queue_root="/x", now=7.0))
+        return real_validate(profile)
+
+    monkeypatch.setattr(catalog_module, "validate_launch_profile", validate)
+    rows = {row["profile_id"]: row for row in json.loads(build_catalog_payload(tmp_path / "profiles"))}
+    assert checked == [7.0] and set(rows) == {"website-profile"}
+    # A paid path, outside the projection, still needs the WebApp and refuses without it.
+    with pytest.raises(OSError, match="webapp unreachable"):
+        authority.require_retained_preparation_authority(request={}, queue_root="/x", now=7.0)
+
+
 def test_a_profile_whose_inputs_are_missing_is_demoted_not_fatal(tmp_path):
     import sys
 
@@ -572,3 +611,18 @@ def test_an_invalid_served_row_is_never_carried_forward(
     assert admission["live_enabled"] is False
     assert "scene_execution_owner_store_missing" in admission["blockers"]
 
+
+
+def test_receipt_reports_where_the_pass_spent_its_time(tmp_path: Path) -> None:
+    """The guard logs this so the next slow catalog pass names its phase."""
+    for index in range(3):
+        _profile(tmp_path, f"profile-{index}")
+    receipt = reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=tmp_path / "catalog.json")
+    timing = receipt["pass_timing_seconds"]
+    assert set(timing) == {"profile_parse", "immutable_inputs", "profile_validation", "input_residency",
+                           "profiles", "distinct_inputs"}
+    assert timing["profiles"] == 3
+    assert all(isinstance(timing[name], float) and timing[name] >= 0 for name in
+               ("profile_parse", "immutable_inputs", "profile_validation", "input_residency"))
+    second = reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=tmp_path / "catalog.json")
+    assert second["status"] == "consistent" and "pass_timing_seconds" in second

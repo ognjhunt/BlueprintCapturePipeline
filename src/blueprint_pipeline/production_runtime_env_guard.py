@@ -15,15 +15,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import production_runtime_catalog_verdict as catalog_verdict
 from .common import parse_bool
 from .launch_proof_policy import PRODUCTION_MODE, launch_proof_mode
 from .spend_authority_ledger_migration import (
     SpendAuthorityLedgerError,
     reconcile_spend_authority_ledger,
 )
-from .host_resident_launch_inputs import published_profile_residency_report
 from .production_runtime_import_verdict import checked_entrypoint_imports
-from .task_evaluation_launch_catalog import LaunchCatalogError, reconcile_public_catalog
+
+# The catalog projection (``task_evaluation_launch_catalog``) and the residency
+# report (``host_resident_launch_inputs``) are imported only when a phase runs:
+# they pull in the dispatcher's module graph, about 1-2 s of CPU per start when
+# compiled from source, which a reused catalog-phase verdict never needs.
 
 LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
 RUNTIME_SOURCE_REPO_ENV = "BLUEPRINT_PIPELINE_REPO"
@@ -62,6 +66,8 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.operator_policy_canary_continuation",
     "blueprint_pipeline.task_evaluation_scene_progression",
     "blueprint_pipeline.control_plane_storage_gc",
+    "blueprint_pipeline.control_plane_release_lifecycle",
+    "blueprint_pipeline.owner_approved_deletion",
     "blueprint_pipeline.control_plane_capacity_controller",
     "blueprint_pipeline.task_evaluation_production_chain_preflight",
     "blueprint_pipeline.paid_resource_allocator",
@@ -74,6 +80,10 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.production_runtime_env_guard",
     "blueprint_pipeline.provider_billing_reconciler",
     "blueprint_pipeline.pubsub_handoff_listener",
+    # The listener imports the pipeline entrypoint only when a handoff needs it,
+    # so an idle tick does not load it; proving it here keeps a broken install
+    # from reaching the first handoff.
+    "blueprint_pipeline.run_e2e",
     "blueprint_pipeline.capture_reconstruction_launch_dispatcher",
     "blueprint_pipeline.capture_reconstruction_postshot_allocator",
     "blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup",
@@ -274,11 +284,38 @@ def _default_catalog_reconciler(
             # A host that publishes no launch profiles has no catalog to keep
             # consistent; the intake reports the missing configuration itself.
             return {"status": "not_configured"}
+        from .task_evaluation_launch_catalog import reconcile_public_catalog
+
         return reconcile_public_catalog(
             profile_dir=profile_dir, catalog_path=catalog_path
         )
 
     return _reconcile
+
+
+def _catalog_phase_scope(source: Mapping[str, str]) -> catalog_verdict.PhaseScope | None:
+    """The configured catalog to reuse a verdict for; ``None`` when nothing is published."""
+    profile_dir = str(source.get(LAUNCH_PROFILE_DIR_ENV) or "").strip()
+    catalog_path = str(source.get(LAUNCH_PUBLIC_CATALOG_PATH_ENV) or "").strip()
+    if not profile_dir or not catalog_path:
+        return None
+    try:
+        return catalog_verdict.scope(profile_dir, catalog_path, SCHEMA_VERSION)
+    except Exception:  # noqa: BLE001 - an unusable cache only means the full pass runs
+        return None
+
+
+def _import_catalog_phases() -> None:
+    """Load the projection before a recorded pass, so its import-time reads are not pass inputs."""
+    try:
+        importlib.import_module(f"{__package__}.task_evaluation_launch_catalog")
+        importlib.import_module(f"{__package__}.host_resident_launch_inputs")
+    except ImportError:
+        return  # the phase itself imports again and reports the failure
+
+
+def _without_verdict_flags(detail: Mapping[str, Any]) -> dict[str, Any]:
+    return {name: value for name, value in detail.items() if not name.startswith("verdict_")}
 
 
 def _check_launch_profile_catalog(
@@ -293,6 +330,8 @@ def _check_launch_profile_catalog(
     launch. Repairing it here makes the drift self-correcting instead of a
     manual publish someone has to remember after a host rebuild.
     """
+    from .task_evaluation_launch_catalog import LaunchCatalogError
+
     try:
         receipt = reconcile()
     except LaunchCatalogError as exc:
@@ -333,12 +372,11 @@ def _check_launch_input_residency(
     profile_dir = str(source.get(LAUNCH_PROFILE_DIR_ENV) or "").strip()
     if not profile_dir:
         return {"status": "not_configured"}, []
-    report = (
-        published_profile_residency_report(profile_dir)
-        if residency_report is None
-        else residency_report(profile_dir)
-    )
-    return report, []
+    if residency_report is None:
+        from .host_resident_launch_inputs import published_profile_residency_report
+
+        residency_report = published_profile_residency_report
+    return residency_report(profile_dir), []
 
 
 def _check_runtime_source_identity(
@@ -428,6 +466,15 @@ def build_production_runtime_env_guard(
         blockers.extend(check_blockers)
         return detail
 
+    # The unit's own start reuses the catalog and residency phases while nothing
+    # they read moved; an injected environment or check is a test of the check.
+    # Scoped before the import pass, which can edit the process environment.
+    scope = (
+        _catalog_phase_scope(source)
+        if env is None and reconcile_launch_catalog is None and residency_report is None
+        else None
+    )
+
     if env is None and import_module is None:
         # The unit's own start: reuse the import pass while nothing deciding it moved.
         entrypoints = timed(
@@ -454,19 +501,44 @@ def build_production_runtime_env_guard(
         ),
     )
 
-    catalog = timed(
-        "launch_profile_catalog",
-        lambda: _check_launch_profile_catalog(
-            _default_catalog_reconciler(source)
-            if reconcile_launch_catalog is None
-            else reconcile_launch_catalog
-        ),
-    )
-
-    residency = timed(
-        "launch_input_residency",
-        lambda: _check_launch_input_residency(source, residency_report),
-    )
+    phase_verdict: dict[str, Any] | None = None
+    reused: dict[str, Any] | None = None
+    if scope is not None:
+        started = time.monotonic()
+        reused, miss = catalog_verdict.reused_phases(scope)
+        durations["catalog_phase_verdict"] = round(time.monotonic() - started, 3)
+        phase_verdict = {
+            "reused": reused is not None,
+            "miss_reason": miss or None,
+            "recorded": False,
+            "not_recorded_reason": None,
+            "max_age_seconds": catalog_verdict.MAX_VERDICT_AGE_SECONDS,
+        }
+    capture = None
+    if reused is not None:
+        catalog = {**reused["launch_profile_catalog"], "verdict_reused": True}
+        residency = {**reused["launch_input_residency"], "verdict_reused": True}
+        durations["launch_profile_catalog"] = 0.0
+        durations["launch_input_residency"] = 0.0
+    else:
+        if scope is not None:
+            _import_catalog_phases()
+        with catalog_verdict.capturing(scope) as capture:
+            catalog = timed(
+                "launch_profile_catalog",
+                lambda: _check_launch_profile_catalog(
+                    _default_catalog_reconciler(source)
+                    if reconcile_launch_catalog is None
+                    else reconcile_launch_catalog
+                ),
+            )
+            residency = timed(
+                "launch_input_residency",
+                lambda: _check_launch_input_residency(source, residency_report),
+            )
+        if phase_verdict is not None:
+            catalog = {**catalog, "verdict_reused": False}
+            residency = {**residency, "verdict_reused": False}
 
     lock_slots = timed("paid_launch_lock_slots", lambda: _check_paid_launch_lock_slots(source))
 
@@ -479,7 +551,28 @@ def build_production_runtime_env_guard(
         lambda: _check_capture_reconstruction_runtime(source),
     )
 
-    return {
+    if phase_verdict is not None and reused is None:
+        # Only a ready guard whose catalog pass wrote nothing is worth skipping
+        # next time; a refusal is never stored.
+        if blockers:
+            reason = "guard_blocked"
+        elif catalog.get("status") != "consistent":
+            reason = f"catalog_{catalog.get('status') or 'unknown'}"
+        else:
+            started = time.monotonic()
+            phase_verdict["recorded"], reason = catalog_verdict.record(
+                capture,
+                {
+                    "launch_profile_catalog": _without_verdict_flags(catalog),
+                    "launch_input_residency": _without_verdict_flags(residency),
+                },
+            )
+            durations["catalog_phase_verdict"] = round(
+                durations.get("catalog_phase_verdict", 0.0) + time.monotonic() - started, 3
+            )
+        phase_verdict["not_recorded_reason"] = reason or None
+
+    report = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _now_iso(),
         "status": "ready" if not blockers else "blocked",
@@ -501,11 +594,39 @@ def build_production_runtime_env_guard(
             "catalog matches the published profile directory. It also reports, "
             "without blocking, which published profiles bind inputs outside "
             "this host's own directories; those are demoted in the served "
-            "catalog and refused by the dispatcher. It is not proof of deployed "
+            "catalog and refused by the dispatcher. The catalog and residency "
+            "results may come from a ready pass at most "
+            f"{catalog_verdict.MAX_VERDICT_AGE_SECONDS // 60} minutes old while "
+            "nothing that pass read has changed. It is not proof of deployed "
             "health, Pub/Sub message consumption, WebApp forwarding, buyer "
             "delivery, simulator execution, or live provider success."
         ),
     }
+    if phase_verdict is not None:
+        report["catalog_phase_verdict"] = phase_verdict
+    return report
+
+
+def _token(value: Any) -> str:
+    return re.sub(r"\s+", "_", str(value))
+
+
+def _phase_verdict_detail(report: Mapping[str, Any]) -> str:
+    """Which phases this start reused, or why it ran them and whether it stored them."""
+    reused = [
+        name
+        for name in catalog_verdict.PHASES
+        if isinstance(report.get(name), Mapping) and report[name].get("verdict_reused") is True
+    ]
+    detail = f" reused_phases={','.join(reused) or 'none'}"
+    verdict = report.get("catalog_phase_verdict")
+    if not reused and isinstance(verdict, Mapping):
+        stored = "yes" if verdict.get("recorded") else f"no:{verdict.get('not_recorded_reason')}"
+        detail += (
+            f" phase_verdict_miss={_token(verdict.get('miss_reason'))}"
+            f" phase_verdict_stored={_token(stored)}"
+        )
+    return detail
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -520,9 +641,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{name}={seconds}s" for name, seconds in report["check_durations_seconds"].items()
         )
         reused = report["control_plane_entrypoints"].get("verdict_reused", False)
+        catalog_report = report["launch_profile_catalog"]
+        # A reused verdict carries the timings of the pass that produced it, not this start's.
+        catalog_timing = (
+            {}
+            if catalog_report.get("verdict_reused") is True
+            else catalog_report.get("pass_timing_seconds") or {}
+        )
+        catalog_detail = "".join(
+            f" catalog_{name}={value}{'s' if isinstance(value, float) else ''}"
+            for name, value in catalog_timing.items()
+        )
         print(
             "[production-runtime-env-guard] status=ready "
-            f"import_verdict_reused={str(reused).lower()} {durations}"
+            f"import_verdict_reused={str(reused).lower()}{_phase_verdict_detail(report)} "
+            f"{durations}{catalog_detail}"
         )
     return 0 if report["status"] == "ready" else 1
 

@@ -451,9 +451,13 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
     return None
 
 
-def validate_transport(value, descriptor):
-    """Validate the independent owner-record chain sealed by the bundle creator."""
-    _require(value.get("schema_version") == SCHEMA and value.get("transport_digest") ==
+def validate_transport(value, descriptor, *, schema=SCHEMA):
+    """Validate the independent owner-record chain sealed by the bundle creator.
+
+    ``schema`` lets the ARTISAN continuation reuse this chain under its own
+    transport schema; the partial Astra default is unchanged.
+    """
+    _require(value.get("schema_version") == schema and value.get("transport_digest") ==
              canonical_digest(value, digest_field="transport_digest") and value.get("new_spend_authorized") is False,
              "selection_invalid")
     proof = value["authority_evidence"]

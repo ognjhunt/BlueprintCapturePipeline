@@ -15,11 +15,11 @@
   "blocks": {
     "SHARED_PLATFORM_CONTEXT": {
       "file": "PLATFORM_CONTEXT.md",
-      "canonical_sha256": "541b496652875f1267219967823bd04ad058ae07841e4d619c5c3248bf669611"
+      "canonical_sha256": "35097b66052fe6758fa4305c0502df41dd38aa18da30bd1d9be0a83693c74625"
     },
     "SHARED_VISION": {
       "file": "VISION.md",
-      "canonical_sha256": "33e1716f1f4fad2b4b96b213f9749dcb88fe9c77a4f13315141ad2e4c6f0e07f"
+      "canonical_sha256": "3bea749d568cf94284226b594429cc72cff095aaf822d0b686c04cd17fc2d534"
     },
     "SHARED_WORLD_MODEL_STRATEGY": {
       "file": "WORLD_MODEL_STRATEGY_CONTEXT.md",

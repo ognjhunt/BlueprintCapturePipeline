@@ -30,7 +30,9 @@ FIXTURES = Path(__file__).parent / "fixtures" / "body_kinematics"
 BODIES = ("universal_robots_ur5e_robotiq_2f85_sim", "franka_research_3_robotiq_2f85_sim", "franka_research_3_bimanual",
           "kinova_gen3", "ufactory_xarm7_bimanual", "kuka_lbr_iiwa_14_robotiq_2f85_sim",
           "fanuc_crx_10ia_robotiq_2f85_sim", "fanuc_m710ic_45m_robotiq_2f85_sim", "yaskawa_gp12_robotiq_2f85_sim",
-          "abb_gofa_crb15000_5_95_robotiq_2f85_sim", "trlc_dk1_bimanual", "i2rt_yam_bimanual", "agilex_piper_bimanual")
+          "abb_gofa_crb15000_5_95_robotiq_2f85_sim", "trlc_dk1_bimanual", "i2rt_yam_bimanual", "agilex_piper_bimanual",
+          "universal_robots_ur10e_robotiq_2f85_sim", "fanuc_crx_10ia_l_robotiq_2f85_sim", "yaskawa_gp20_robotiq_2f85_sim",
+          "abb_gofa_crb15000_12_127_robotiq_2f85_sim")
 BIMANUAL = ("franka_research_3_bimanual", "ufactory_xarm7_bimanual", "trlc_dk1_bimanual", "i2rt_yam_bimanual",
             "agilex_piper_bimanual")
 

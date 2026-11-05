@@ -33,6 +33,7 @@ from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
+from .website_task_context_contracts import GEOMETRY_ONLY_BLOCKER
 from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
 from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start,
                                        farthest_supported_destination, footprint_at, ground_on_observed_floor,
@@ -145,6 +146,105 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
         **({"inferred_profile_id": inferred_profile_id} if mismatch else {}),
         **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
            if resolved is not None and mismatch else {}),
+        "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",
+    }
+
+
+#: Two typed holds for a job whose profile is rigid pick/place or articulated open/close but
+#: whose task object that profile cannot represent. Both are held before assembly coverage,
+#: spec research, registration and authoring, and so before anything is bought for the object.
+MULTI_OBJECT_GAP = "website_multi_object_task_preparation_required"
+DEFORMABLE_OBJECT_GAP = "website_deformable_task_object_preparation_required"
+
+
+def _subject_label(entry: Mapping[str, Any], targets: Mapping[str, Mapping[str, Any]]) -> str | None:
+    target = targets.get(str(entry.get("target_id"))) or {}
+    label = entry.get("semantic_label") or target.get("semantic_label")
+    return label if isinstance(label, str) and label.strip() else None
+
+
+def _subject_profile(task_context: Mapping[str, Any], task_semantics: Mapping[str, Any] | None,
+                     source_video_digest: str | None):
+    from .task_profile_contracts import task_profile_for
+    from .website_task_semantics import effective_task_profile
+    profile = task_profile_for(effective_task_profile(task_context=task_context, task_semantics=task_semantics,
+                                                      source_video_digest=source_video_digest))
+    return profile if profile is not None and profile.profile_id in {"rigid_pick_place",
+                                                                     "articulated_open_close"} else None
+
+
+def subject_rigidity(task_context: Mapping[str, Any], *, subjects: Sequence[Mapping[str, Any]],
+                     targets: Mapping[str, Mapping[str, Any]], task_semantics: Mapping[str, Any] | None = None,
+                     source_video_digest: str | None = None) -> dict[str, Any] | None:
+    """The one captured task object's rigidity reading under the rigid pick/place profile, or None.
+
+    ``task_profile_contracts.task_object_rigidity``: the object analysis's class and stated
+    reason, or the label word backstop for an analysis that carries none.
+    """
+    if "task_family" not in task_context or len(subjects) != 1:
+        return None
+    profile = _subject_profile(task_context, task_semantics, source_video_digest)
+    if profile is None or profile.profile_id != "rigid_pick_place":
+        return None
+    from .task_profile_contracts import task_object_rigidity
+    return task_object_rigidity({**subjects[0], "semantic_label": _subject_label(subjects[0], targets)})
+
+
+def native_task_subject_gap(task_context: Mapping[str, Any], *, subjects: Sequence[Mapping[str, Any]],
+                            targets: Mapping[str, Mapping[str, Any]],
+                            task_semantics: Mapping[str, Any] | None = None,
+                            source_video_digest: str | None = None) -> dict[str, Any] | None:
+    """Hold a rigid or articulated job whose task object that profile cannot represent.
+
+    Several manipulated objects ("put both mugs on the shelf") are not one rigid
+    relocation or one opening, and a soft object (a towel, a bag, a cable) is not a
+    rigid body. Both previously compiled on, or failed late as an untyped
+    ``website_single_manipulated_subject_required``. Older contexts without an analysis
+    family keep their compatibility path; a family task and an authored synthetic
+    subject never reach this. The hold reports Blueprint's implementation gap only.
+    The object analysis's ``deformable`` holds; ``rigid`` and ``unknown`` go on
+    (``subject_rigidity``). The label word list decides only without a classification.
+    """
+    if "task_family" not in task_context or len(subjects) < 1:
+        return None
+    family = task_context["task_family"]
+    profile = _subject_profile(task_context, task_semantics, source_video_digest)
+    if profile is None:
+        return None
+    ids = [str(row.get("target_id")) for row in subjects]
+    label = _subject_label(subjects[0], targets) if len(subjects) == 1 else None
+    rigidity = None
+    if len(subjects) > 1:
+        code = MULTI_OBJECT_GAP
+        reason = (f"The task moves {len(subjects)} objects. Blueprint's {profile.profile_id} evaluation represents "
+                  "one task object; the job is held while an evaluation for several objects is prepared. The task "
+                  "is not narrowed to one of them.")
+        missing = ["multi_object_task_profile", "independent_task_scorer", "reset_contract"]
+    else:
+        rigidity = subject_rigidity(task_context, subjects=subjects, targets=targets, task_semantics=task_semantics,
+                                    source_video_digest=source_video_digest)
+        if rigidity is None or rigidity["rigidity"] != "deformable":
+            return None
+        code = DEFORMABLE_OBJECT_GAP
+        noun = rigidity["label_word_screen"]
+        named = f"a {noun}" if noun else (f"'{label}'" if label else "the manipulated object")
+        basis = ("the object analysis classified it as deformable" if rigidity["source"] == "object_analysis"
+                 else "its label names a soft object")
+        reason = (f"The task object is {named}, a soft or flexible object ({basis}). Blueprint's rigid "
+                  "pick-and-place evaluation models a rigid body; the job is held while a deformable-object "
+                  "evaluation is prepared. The object is not authored as a rigid stand-in.")
+        missing = ["deformable_object_asset_authoring", "deformable_native_physics", "independent_task_scorer"]
+    from .task_profile_contracts import RIGIDITY_BASIS
+    return {
+        "code": code, "task_family": family, "task_context_digest": task_context.get("context_digest"),
+        "job_disposition": "held_for_preparation", "description": task_context.get("description"),
+        "reason": reason, "missing": missing, "inferred_profile_id": profile.profile_id,
+        "subject_target_ids": ids,
+        **({"subject_label": label, "subject_basis": RIGIDITY_BASIS[rigidity["source"]],
+            "deformable_noun": rigidity["label_word_screen"], "task_object_rigidity": rigidity}
+           if rigidity is not None else {}),
+        **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
+           if family == "general_task" and task_semantics is not None else {}),
         "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",
     }
 
@@ -896,7 +996,15 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       base_scene: Mapping[str, Any], output_root: Path, spend: Mapping[str, Any],
                                       now: float, task_semantics: Mapping[str, Any] | None = None,
                                       evaluation_inputs: Mapping[str, Any] | None = None,
-                                      synthetic_authoring_backend: str = "pinned_cad_primitive_v1") -> dict[str, Any]:
+                                      synthetic_authoring_backend: str = "pinned_cad_primitive_v1",
+                                      atlas_route: str = "full") -> dict[str, Any]:
+    """``atlas_route="geometry_only"``: the Atlas job kept the scene as filmed
+    (``website_atlas_pipeline.ROUTE_ENV``). The preparation is for the robot fit check
+    only and never an intake (``GEOMETRY_ONLY_BLOCKER``); a captured rigid subject's box
+    is cut out of the collider before any lookup.
+    """
+    if atlas_route not in ("full", "geometry_only"):
+        raise ValueError("atlas_route_invalid")
     output_root.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
     semantics_options = {"task_semantics": task_semantics,
@@ -955,6 +1063,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         subject_target = targets[synthetic["start_support_target_id"]]
         subject_entry = {"target_id": "synthetic-" + re.sub(r"[^a-z0-9]+", "-", synthetic["semantic_label"].lower()).strip("-"),
                          "semantic_label": synthetic["semantic_label"], "support_label": subject_target.get("semantic_label")}
+    elif len(removed) > 1:
+        # Several task objects are a held job, not a failed one; the subject is never narrowed to one.
+        gap = native_task_subject_gap(task_context, subjects=removed, targets=targets, **semantics_options)
+        if gap is None:
+            raise ValueError("website_single_manipulated_subject_required")
+        return retain_gap(gap)
     elif len(removed) != 1 or removed[0]["target_id"] not in targets:
         raise ValueError("website_single_manipulated_subject_required")
     else:
@@ -963,6 +1077,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         subject_entry, subject_target, synthetic_subject=synthetic)
     articulated = inferred_profile_id == "articulated_open_close"
     gap = native_task_preparation_gap(task_context, inferred_profile_id=inferred_profile_id, **semantics_options)
+    if gap is None and synthetic is None:
+        # A designed primitive is rigid by construction; an observed object may not be.
+        gap = native_task_subject_gap(task_context, subjects=removed, targets=targets, **semantics_options)
     if gap is not None:
         return retain_gap(gap)
     declared_mpu = base_scene.get("meters_per_unit")
@@ -1057,6 +1174,21 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                             matrix=matrix, runtime_to_sim=runtime_to_sim, up=up, up_sign=up_sign)
                    if len(destination_rows) == 1 and not independent_object and not articulated
                    and destination_rows[0].get("placement_relation") == "on" else None)
+    subject_excision = None
+    if atlas_route == "geometry_only":
+        if synthetic is None and not articulated and not independent_object:
+            # A captured rigid subject is still in the reconstruction: cut its box out before
+            # anything rests on the collider, so no lookup or robot check meets it. An
+            # articulated subject is part of its fixture and stays.
+            from .website_subject_excision import excise_subject
+            excised = excise_subject(base_scene=base_scene, collider=collider, subject_min=subject_min,
+                                     subject_max=subject_max, up=up, up_sign=up_sign, meters_per_unit=mpu,
+                                     placement_residual_m=residual, output_root=output_root)
+            subject_excision = excised["record"]
+            if excised["status"] == "excised":
+                base_scene, collider = excised["base_scene"], excised["collider"]
+                write_json(output_root / "base_scene.json", base_scene)
+        blockers.append(GEOMETRY_ONLY_BLOCKER)
     support = collider_conditioning = None
     if not independent_object:
         # The surfaces the subject starts and ends on are flattened before anything rests
@@ -1559,6 +1691,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "aabb_min_xyz": sim_min, "aabb_max_xyz": sim_max,
                              "coordinate_frame": "Z_up_estimated_meters",
                              "geometry_origin": "synthetic_design" if synthetic is not None
+                             else "retained_in_captured_reconstruction" if atlas_route == "geometry_only"
                              else "removed_before_reconstruction",
                              "complete_object_dimensions": body is not None or synthetic is not None},
                  "support": {"description": subject_entry.get("support_label") or "support surface under subject",
@@ -1625,6 +1758,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         **({"surface_target_admission": surface_target_admission} if surface_target_admission is not None else {}),
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
         **({"collider_conditioning": collider_conditioning} if collider_conditioning is not None else {}),
+        **({"subject_excision": subject_excision} if subject_excision is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
                              else "provided_mesh_rigid_authoring" if synthetic is not None
                              else "content_agents_rigid_replacement",
@@ -1649,7 +1783,13 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                         # A designed subject was never captured: nothing to erase, its mesh is supplied.
                         **({"observed_appearance_object_removal": "not_required_subject_never_captured",
                             "rigid_replacement_authoring": "provided_mesh_rigid_authoring"}
-                           if synthetic is not None else {})},
+                           if synthetic is not None else {}),
+                        # Geometry only: nothing was erased; a rigid subject's box is cut from the
+                        # collider, or ``subject_excision`` says why not.
+                        **({"observed_appearance_object_removal": "not_performed_geometry_only",
+                            "collision_object_excision": "subject_box_excised_from_captured_reconstruction"
+                            if (subject_excision or {}).get("status") == "excised" else "not_performed_geometry_only"}
+                           if atlas_route == "geometry_only" else {})},
         "provider_mutation_performed": False,
     }
     value["digest"] = canonical_digest(value, digest_field="digest")

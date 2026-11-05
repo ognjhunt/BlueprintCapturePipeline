@@ -117,11 +117,81 @@ on an operator launching the probe or copying its trace separately.
 
 The stable site key is `site-<website_request_id>` across recaptures and scene
 revisions. A catalog change, restart or new campaign never resets its budget.
+
+Each new plan also fits the website job's one dollar ceiling (owner decision
+2026-10-30, $40 by default, WebApp #1168), which counts Atlas, upstream, native
+construction and screening together. Before planning, the worker reads the
+job's `job_ceiling` from the non-creating `atlas-configuration` read and
+subtracts this queue's own screening the WebApp has not seen yet (reservations
+since its last accepted publication and other campaigns' unreserved
+selections). The plan's `budget_usd` is the smaller of $15 and what is left; the
+plan records `budget_basis: "website_job_ceiling"` and the read. Candidates that
+no longer fit are deferred with `website_job_ceiling_insufficient`; with less
+left than any quote, every candidate is deferred and the plan still publishes.
+If the ceiling cannot be read (no retained Atlas configuration, a WebApp
+without the summary, a refusal, the network), planning holds with
+`website_job_ceiling_unavailable` and retries on the next pass; an earlier
+read is never reused. Plans already built are never resized.
 Reservations with uncertain outcomes remain reserved and are reconciled;
 they are never blindly launched again. A proven pre-allocation refusal can
 release its reservation. An allocated, closed attempt consumes its full cost
 ceiling conservatively. Different sites are visited fairly even when an older
 campaign needs reconciliation.
+
+Runnable candidates the budget cannot fund yet are `waitlisted`, frozen in the
+plan like selected ones. When a funded candidate is refused before spend (no
+offer, preparation or static preflight, credit guard, disk admission), each
+worker pass funds the next waitlisted candidate in plan order whose whole cap
+fits under the site allowance and the plan's budget, after every reservation,
+commitment and pending row. A funded row is `pending` and still needs the
+website's acknowledgment before it is reserved. Once the site holds no
+reservation and no pending row, rows that still do not fit close as `deferred`
+(`beta_screening_site_budget_exhausted`). Plans from before the waitlist keep
+their `deferred` rows and are never funded.
+
+Plan order, which is also the waitlist's funding order, uses each candidate's
+reach evidence (`website_candidate_feasibility.reach_rank`). Its tier is 1
+(`own_arm_solve_passed`) when its own arm was solved through the task in its
+model on this scene and reached it (`team_arm_reach` `passed`, or the packet
+Franka's recorded station search cleared), 3 (`own_arm_solve_flagged`) when a
+fixed arm's solve searched and did not reach, with no proof that it cannot
+(`flagged`), and its declared reach did not refuse it, and 2
+(`reach_unmeasured`) otherwise. Tier 3 candidates go after every unflagged
+one, so a flagged body never spends first. When the job has an intake ranking
+(`website_candidate_ranking`), that is the only change: the ranking's order
+stands, with unranked candidates after it as before. On the default-priority
+path (no intake ranking) learned policies then go before scripted baselines,
+ranked or not, and tier 1 before tier 2, each group in the default priority and
+identifier order. Flagged candidates are never excluded.
+Each row but an infeasible one records its `reach_rank`: the tier, the solve's
+source, status, report digest and reasons, and the digest of the retained
+`candidate_feasibility.json`.
+
+A plan freezes the commit it was prepared against, and preparation refuses
+another (`beta_screening_implementation_commit_changed`). When a deploy lands
+while a campaign has a queued candidate at the old commit, or one refused for
+it, and the campaign holds no reservation, source adoption plans every
+candidate that never ran or allocated again at the new commit, as a new
+campaign for the same source. One ledger write enqueues it and closes the old
+campaign's queued rows as `beta_screening_replanned_for_new_implementation`.
+The site budget is shared, so the new campaign sees what the old one spent.
+
+A plan also freezes the scene's team half it was built from. A completed half
+can be compiled again later with the same source: a newer stance search finds
+another station, or the site owner approves moving chairs. On each pass,
+source adoption compares the half the profile names now with the one the plan
+froze (`beta_policy_screening_scene_half`: the scene revision, configuration
+digest, scene plan digest and packet receipt bytes, read from the half record
+and from the plan's sealed scene inputs, with no planning rebuild). When they
+differ, the half's request is `completed`, and the campaign holds no
+reservation and no active row, every candidate that never ran or allocated is
+planned again from the new half, as a new campaign. This applies to a finished
+campaign too. The new campaign id names the campaign it supersedes and the new
+half. Admission rereads both plans' sealed inputs, so a re-plan for a half
+the new plan did not change is refused. The new plan binds the robot-free probe
+receipt that is retained now. If that receipt does not bind the new half's task,
+the probe is queued and the re-plan waits for it. The WebApp records the
+successor as a new run of the same job.
 
 Closing a beta attempt checks its exact allocated instance and authority's
 resource name against a fresh, complete account inventory, plus its own

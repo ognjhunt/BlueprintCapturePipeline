@@ -12,6 +12,10 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 
+#: A geometry-only job's preparation (``website_atlas_pipeline.ROUTE_ENV``) ends at the
+#: robot fit check: never an intake.
+GEOMETRY_ONLY_BLOCKER = "website_geometry_only_fit_check"
+
 
 def admits_scene_preparation(value: Mapping[str, Any] | None) -> bool:
     """A site-confirmed task, or the assessment-proposed task of a preparation run.
@@ -29,6 +33,28 @@ def admits_scene_preparation(value: Mapping[str, Any] | None) -> bool:
 def sponsors_scene_preparation(metadata: Mapping[str, Any] | None) -> bool:
     """A loaded scene_preparation sponsorship requests the scene preview and geometry it funds."""
     return ((metadata or {}).get("website_scene_execution_authority") or {}).get("purpose") == "scene_preparation"
+
+
+def _deformable_subject_rederived(gap: Mapping[str, Any], target_id: str) -> bool:
+    """The soft-object hold follows from the reading it records, by the rule that decides it.
+
+    A hold written before the object analysis classified rigidity carries no reading;
+    its label's head noun alone decided it, and still must.
+    """
+    from .task_profile_contracts import RIGIDITY_BASIS, deformable_subject_noun, task_object_rigidity
+    reading = gap.get("task_object_rigidity")
+    if "task_object_rigidity" not in gap:
+        noun = deformable_subject_noun(gap.get("subject_label"))
+        return noun is not None and gap.get("deformable_noun") == noun
+    if not isinstance(reading, Mapping) or reading.get("source") not in RIGIDITY_BASIS:
+        return False
+    entry = {"target_id": target_id, "semantic_label": gap.get("subject_label"),
+             **({"rigidity": reading.get("rigidity"), "rigidity_reason": reading.get("reason")}
+                if reading["source"] == "object_analysis" else {})}
+    expected = task_object_rigidity(entry)
+    return (dict(reading) == expected and expected["rigidity"] == "deformable"
+            and gap.get("deformable_noun") == expected["label_word_screen"]
+            and gap.get("subject_basis") == RIGIDITY_BASIS[expected["source"]])
 
 
 def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
@@ -83,8 +109,62 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
                 or ("provider_mutation_performed" in handoff and
                     type(handoff["provider_mutation_performed"]) is not bool)):
             return False
+    elif code in {"website_multi_object_task_preparation_required",
+                  "website_deformable_task_object_preparation_required"}:
+        # ``website_task_preparation.native_task_subject_gap``: the job's own profile, and a
+        # subject that profile cannot represent, re-derived here rather than trusted.
+        if declared is None and family == "general_task" and isinstance(gap.get("task_semantics"), Mapping):
+            from .website_task_semantics import resolved_task_profile
+            try:
+                declared = task_profile_for(resolved_task_profile(gap["task_semantics"], task_context=task_context,
+                    source_video_digest=gap.get("source_video_digest")))
+            except (ValueError, TypeError, KeyError):
+                return False
+        ids = gap.get("subject_target_ids")
+        multi = code == "website_multi_object_task_preparation_required"
+        if (declared is None or gap.get("inferred_profile_id") != declared.profile_id
+                or declared.profile_id not in {"rigid_pick_place", "articulated_open_close"}
+                or not isinstance(ids, list) or not all(isinstance(item, str) and item for item in ids)
+                or len(set(ids)) != len(ids) or (len(ids) < 2 if multi else len(ids) != 1)
+                or (not multi and (declared.profile_id != "rigid_pick_place"
+                                   or not _deformable_subject_rederived(gap, ids[0])))
+                or ("provider_mutation_performed" in handoff and
+                    type(handoff["provider_mutation_performed"]) is not bool)):
+            return False
+    elif code == "website_task_family_runtime_preparation_required":
+        # ``website_early_task_hold.task_family_runtime_gap``: the job's own family, from its
+        # source-bound reading, re-derived here; the catalog is the one recorded at the hold.
+        from .task_family_scoring import canonical_task_family
+        from .task_profile_contracts import required_task_families
+        from .website_task_semantics import effective_task_profile
+        semantics = gap.get("task_semantics") if family == "general_task" else None
+        runtime = gap.get("runtime_catalog")
+        try:
+            profile = canonical_task_family(effective_task_profile(task_context=task_context,
+                task_semantics=semantics, source_video_digest=gap.get("source_video_digest")))
+            required = required_task_families(profile, semantics) if profile is not None else None
+        except (ValueError, TypeError, KeyError):
+            return False
+        if (profile is None or gap.get("task_family_profile") != profile
+                or gap.get("required_task_families") != required
+                or (family == "general_task" and not isinstance(semantics, Mapping))
+                or not isinstance(runtime, Mapping) or type(runtime.get("configured")) is not bool
+                or not isinstance(runtime.get("task_families"), list)
+                or set(required) <= set(runtime["task_families"])
+                or ("provider_mutation_performed" in handoff and
+                    type(handoff["provider_mutation_performed"]) is not bool)):
+            return False
     else:
         return False
+    # Held right after the Atlas review (``website_early_task_hold``): no scene was bought.
+    early = (handoff.get("visual_reconstruction_ready") is False
+             and isinstance(handoff.get("task_preparation_hold"), Mapping)
+             and handoff["task_preparation_hold"].get("hold_point") == "after_atlas_review"
+             and code in {"website_native_task_profile_preparation_required",
+                          "website_task_operation_coverage_unresolved",
+                          "website_task_family_runtime_preparation_required"})
+    if code == "website_task_family_runtime_preparation_required" and not early:
+        return False  # Only ever decided before the scene; a bought scene compiles its family.
     return (
         task_context.get("schema_version") == "website_site_task_context.v1"
         and digest == canonical_digest(task_context, digest_field="context_digest")
@@ -94,7 +174,7 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
         and handoff.get("status") == "needs_input"
         and handoff.get("blockers") == [code]
         and handoff.get("simulator_ready") is False
-        and handoff.get("visual_reconstruction_ready") is True
+        and (handoff.get("visual_reconstruction_ready") is True or early)
         and not handoff.get("website_intake_outbox")
         and "runtime_inputs" not in handoff
         and gap.get("code") == code
@@ -253,3 +333,54 @@ def validate_website_task_context(
     return dict(value)
 
 
+def retains_geometry_only_fit(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
+    """A geometry-only job's completed stage, which ends at the robot fit check.
+
+    Its scene keeps the captured subject, so the handoff never registers or enqueues
+    it and nothing paid follows: the stage is accepted rather than retried. This
+    admits no execution and claims nothing beyond the check
+    (``website_scene_handoff.geometry_only_fit_check``).
+    """
+    fit = handoff.get("fit_check") if isinstance(handoff, Mapping) else None
+    return (isinstance(fit, Mapping) and isinstance(task_context, Mapping)
+            and fit.get("status") in {"completed", "not_run"}
+            and handoff.get("schema_version") == "website_scene_handoff.v1"
+            and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+            and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
+            and handoff.get("atlas_route") == "geometry_only" and handoff.get("status") == "needs_input"
+            and GEOMETRY_ONLY_BLOCKER in (handoff.get("blockers") or [])
+            and handoff.get("visual_reconstruction_ready") is True and handoff.get("simulator_ready") is False
+            and not any(key in handoff for key in ("source_registration", "website_intake_outbox", "runtime_inputs")))
+
+
+#: A website job no robot the screening catalog runs can do in its room (``website_robot_fit_precheck``).
+ROBOT_FIT_HOLD_PREFIX = "website_robot_fit_none:"
+_ROBOT_FIT_HOLD = re.compile(re.escape(ROBOT_FIT_HOLD_PREFIX) + r"[a-z][a-z0-9_]{0,99}")
+
+
+def retains_robot_fit_hold(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
+    """A completed scene-preparation stage held before any spend because no catalog robot fits the task.
+
+    The robot fit precheck refused every candidate by a refusal the late checks also make, so the
+    handoff registered and enqueued nothing: no ARTISAN authoring and no GPU follow. The stage is
+    accepted, as a hold rather than a failure, and is never retried by redelivery; a change of the
+    screening catalog or the team registry runs it again (``website_robot_fit_hold``). An abstained
+    capability verdict beside it keeps its own blockers, ahead of the hold's.
+    """
+    if not isinstance(handoff, Mapping) or not isinstance(task_context, Mapping):
+        return False
+    precheck = handoff.get("robot_fit_precheck")
+    verdict = handoff.get("capability_verdict")
+    hold = precheck.get("hold_reason") if isinstance(precheck, Mapping) else None
+    earlier = (list(verdict.get("blockers") or []) if isinstance(verdict, Mapping)
+               and verdict.get("status") == "abstained" else [])
+    return (isinstance(hold, str) and _ROBOT_FIT_HOLD.fullmatch(hold) is not None
+            and precheck.get("status") == "no_fit"
+            and isinstance(precheck.get("digest"), str) and isinstance(precheck.get("path"), str)
+            and handoff.get("schema_version") == "website_scene_handoff.v1"
+            and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+            and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
+            and handoff.get("status") == "needs_input" and handoff.get("blockers") == earlier + [hold]
+            and handoff.get("visual_reconstruction_ready") is True and handoff.get("simulator_ready") is False
+            and isinstance(handoff.get("runtime_inputs"), Mapping)
+            and not any(key in handoff for key in ("source_registration", "website_intake_outbox")))

@@ -27,11 +27,18 @@ SystemCallFilter=@system-service
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/agent-execution
 ReadWritePaths=/var/lib/blueprint/scene-retirement/journals/processes
 ReadOnlyPaths=/etc/blueprint
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 202M on the host.
+MemoryHigh=1G
 MemoryMax=2G
+OOMScoreAdjust=200
 TasksMax=128
 CPUQuota=100%
 Environment=BLUEPRINT_AGENT_EXECUTION_CONFIG=/etc/blueprint/agent-execution.json
 Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=1
+Environment=BLUEPRINT_AGENT_STAGE_REPLAY_WAKE=/var/lib/blueprint/pipeline-control-plane/agent-execution/stage-replay.wake
 Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
 WorkingDirectory=/opt/blueprint/task-evaluation-control-plane
 ExecStart=!/usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py --continuous-module blueprint_pipeline.agent_execution.production --

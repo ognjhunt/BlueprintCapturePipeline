@@ -143,10 +143,25 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     each naming a byte-sealed native execution spec and optional inventory.
     No catalog declaration alone grants a runtime capability. ``priority`` is
     the job's retained intake ranking; it orders the plan and removes nothing.
-    A candidate is infeasible only when its registered fixed reach measurably
-    misses this reconstructed scene's station (``website_candidate_feasibility``).
+    Reach evidence orders it too (``website_candidate_feasibility.reach_rank``):
+    a candidate whose own-arm solve searched and did not reach is funded after
+    every unflagged one; without an intake ranking, learned policies then go
+    before scripted baselines and a solve that reached the task before an
+    unmeasured one (``beta_policy_screening_plan.build_screening_plan``).
+    A candidate is infeasible only when its reach measurably misses this
+    reconstructed scene's station (``website_candidate_feasibility``: the
+    packet arm's chain reach bound, a registered body's own arm in its model,
+    or its declared fixed reach), or when no GPU the screening lane may rent
+    meets its declared memory floor (``beta_policy_screening_gpu``); a disabled
+    candidate keeps its own reason. Infeasible candidates are never prepared or
+    quoted, so nothing is reserved for a run that cannot reach the task.
+    A rigid contract that requires per-cell controls screens under the standing
+    control-trial pause (``beta_policy_screening_control_omission``): the
+    candidates run the contract without its ``controls`` criterion, and the scene
+    inputs keep the probed source contract and the typed omission authority.
     """
     from .beta_policy_candidate_catalog import validate_catalog, load_catalog
+    from .beta_policy_screening_control_omission import omit_paused_controls
     from .beta_policy_screening_plan import validate_execution_descriptor
     from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .robot_free_probe_gate import require_robot_free_probe, retained_probe_receipt, task_success_contract_binding
@@ -175,9 +190,16 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             or Path(capture_root).resolve() != Path(profile["capture_root"]).resolve()):
         raise ValueError("beta_screening_source_scene_mismatch")
     root = Path(inputs_dir).resolve()
+    contract, omission = ((inputs["task_success_contract"], None) if family
+                          else omit_paused_controls(inputs["task_success_contract"]))
     normalized_inputs = ({**inputs, **family_fields} if family else
         {**inputs, "beta_robot_free_probe_receipt": receipt,
          "beta_probe_task_spec_digest": canonical_digest(task), "beta_task_kind": task["task_kind"]})
+    if omission is not None:
+        # The probe was scored with the source contract; the candidates run the result under the omission.
+        normalized_inputs.update(task_success_contract=contract, task_success_contract_digest=contract["contract_digest"],
+                                 source_task_success_contract=inputs["task_success_contract"],
+                                 diagnostic_control_omission_authority=omission)
     normalized_inputs["screening_capture_root"] = str(Path(capture_root).resolve())
     if family:
         normalized_inputs.update(schema_version="blueprint.beta_family_screening_scene_inputs.v1",
@@ -186,7 +208,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     normalized = _retain(root / (canonical_digest(normalized_inputs)[7:] + ".scene_inputs.json"), normalized_inputs)
     scene = {**dict(source), "site_id": str(profile["scene_id"]), "scene_id": str(profile["scene_id"]),
              "task_kind": task["task_kind"], "task_spec": task,
-             "task_success_contract_digest": inputs["task_success_contract_digest"],
+             "task_success_contract_digest": normalized_inputs["task_success_contract_digest"],
              **(family_fields if family else {"robot_free_probe_status": "passed", "robot_free_probe_digest": probe["receipt_digest"]}),
              "scene_inputs": _record(normalized)}
     if profile.get("nominal_dynamic_friction") is not None:
@@ -208,7 +230,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         try:
             templates = _native_templates(repo=repo, scene_plan={**scene_plan,
                 "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
-                contract=inputs["task_success_contract"], commit=commit)
+                contract=contract, commit=commit)
         except (ValueError, OSError, KeyError, TypeError):
             template_failures.update({key: "beta_screening_baseline_runtime_template_unavailable"
                                       for key in ("pi05_droid", "groot_n17_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS)})
@@ -219,7 +241,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         try:
             templates[candidate] = (cosmos_profile(candidate).candidate_execution_spec(scene_plan={**scene_plan,
                 "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
-                contract=inputs["task_success_contract"], source_commit=commit), None)
+                contract=contract, source_commit=commit), None)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             code = str(exc).split(":", 1)[0]
             template_failures[candidate] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
@@ -229,7 +251,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         try:
             templates["molmoact2_droid"] = (candidate_execution_spec(scene_plan={**scene_plan,
                 "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
-                contract=inputs["task_success_contract"], source_commit=commit), None)
+                contract=contract, source_commit=commit), None)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             code = str(exc).split(":", 1)[0]
             template_failures["molmoact2_droid"] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
@@ -246,10 +268,16 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     credentials = []
     # Credential presence is intentionally not guessed from a public endpoint.
     # Hosted policies need a separately configured private delivery lane.
+    from .beta_policy_screening_gpu import candidate_gpu_blockers
     for configured in catalog["candidates"]:
         key = configured["candidate_id"]
         if key in infeasible:
             continue  # The plan shows its measured reason; nothing is prepared or quoted.
+        # Every candidate but G1's (its own lane, fixed floor) rents on the policy canary session lane.
+        unrentable = candidate_gpu_blockers(configured)
+        if unrentable:
+            infeasible[key] = unrentable  # Listed with its reason, never funded: the budget goes on in plan order.
+            continue
         try:
             from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES
             g1 = key in G1_CANDIDATES
@@ -267,24 +295,20 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                 resolve_selected_tokenizer([key])
                 spec = candidate_execution_spec(candidate_id=key, registration=override["native_g1"],
                     scene_plan=scene_plan, base_packet=inputs["base_native_packet"], source=source,
-                    contract=inputs["task_success_contract"], site_id=scene["site_id"])
+                    contract=contract, site_id=scene["site_id"])
                 inventory = repo / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
             elif override:
                 if override.get("robot_policy") is not None:
                     from .beta_policy_screening_team import build_registered_team_spec
                     if family:
                         raise ValueError("beta_screening_team_robot_requires_rigid_scene")
-                    from .website_candidate_feasibility import (
-                        own_stance,
-                        own_station,
-                        own_station_reached_by_own_arm,
-                    )
+                    from .website_candidate_feasibility import bound_station, own_stance
                     measured = feasibility["candidates"].get(key) or {}
+                    station, reached = bound_station(measured, scene_plan)
                     spec, model = build_registered_team_spec(candidate_id=key, registration=override["robot_policy"],
-                        scene_plan=scene_plan, contract=inputs["task_success_contract"], prompt=facts["prompt"],
+                        scene_plan=scene_plan, contract=contract, prompt=facts["prompt"],
                         scene_revision_digest=inputs["scene_revision_digest"],
-                        station=own_station(measured), stance=own_stance(measured),
-                        station_reached_by_own_arm=own_station_reached_by_own_arm(measured))
+                        station=station, stance=own_stance(measured), station_reached_by_own_arm=reached)
                     inventory = None
                 else:
                     spec = _read(_bound_path(override["policy_execution_spec"]))
@@ -308,7 +332,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             else:
                 interface_matches = _interface_matches(configured, spec)
             if (spec["checkpoint_digest"] != configured["policy"]["digest"]
-                    or spec["task_success_contract_digest"] != inputs["task_success_contract_digest"]
+                    or spec["task_success_contract_digest"] != normalized_inputs["task_success_contract_digest"]
                     or not interface_matches):
                 raise ValueError("beta_screening_policy_interface_or_scene_mismatch")
             if spec.get("team_embodiment") is not None:
@@ -380,8 +404,11 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             candidate_blockers[key] = [code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
                                        else "beta_screening_candidate_configuration_invalid"]
     known = {row["candidate_id"] for row in catalog["candidates"]}
+    from .website_candidate_feasibility import reach_ranks
     return {"scene": scene,
             "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials,
-                             "candidate_blockers": candidate_blockers, "candidate_infeasible": infeasible},
+                             "candidate_blockers": candidate_blockers, "candidate_infeasible": infeasible,
+                             # Orders the budget: a flagged own-arm solve after every unflagged one.
+                             "candidate_reach_rank": reach_ranks(feasibility)},
             "cost_quotes": quotes, "candidate_feasibility": feasibility,
             "candidate_priority": [key for key in dict.fromkeys(priority) if key in known]}

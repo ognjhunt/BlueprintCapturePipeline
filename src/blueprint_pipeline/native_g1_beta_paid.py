@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from decimal import Decimal
+import http.client
 import json
 import os
 from pathlib import Path
@@ -144,7 +145,21 @@ def dispatch_session(args, *, control_identity, control_blockers, control_rechec
                             raise ValueError("g1_beta_paid_inputs_changed")
                         from .beta_policy_screening_worker import require_current_source
                         admission_binding = authority["beta_screening_admission"]
-                        require_current_source(admission_binding["source"], site_id=admission_binding["site_id"])
+                        try:
+                            require_current_source(admission_binding["source"], site_id=admission_binding["site_id"])
+                        except (OSError, ValueError, http.client.HTTPException) as exc:
+                            from .beta_policy_screening_control import transport_failure
+                            if transport_failure(exc):
+                                # No answer about the site's rights and nothing spent:
+                                # fence this job so recovery retries the candidate.
+                                from .allocator_invocation import fence_before_create
+                                fence_before_create()
+                            raise ValueError("g1_beta_paid_current_source_unproven") from None
+                        # Under a screening invocation, retain its create intent behind the
+                        # signed current control, so recovery never fences a created G1 as unspent.
+                        # A control read that got no answer fences the job there instead.
+                        from .allocator_invocation import before_provider_create
+                        before_provider_create(authority=authority, bundle=bundle)
                     except (OSError, ValueError, TypeError, KeyError, ControlPlaneDiskBudgetError):
                         return {"status": "blocked", "blockers": ["g1_beta_paid_precreate_recheck_failed"]}
                     if gate is not None:

@@ -32,7 +32,6 @@ from .pubsub_handoff_disk_admission import (  # noqa: F401 - native bodies resol
     staging_manifest_row as _staging_manifest_row,
 )
 from .decision_evidence_contracts import canonical_digest
-from .run_e2e import run_end_to_end
 from .handoff_job_state import (  # noqa: F401 - compatibility exports and shared durability primitives
     JOB_LEDGER_FILENAME,
     JOB_LEDGER_SCHEMA_VERSION,
@@ -54,6 +53,21 @@ from .core.security_controls import (
 from .website_capture_entry import is_website_capture_manifest
 
 logger = logging.getLogger(__name__)
+
+
+def run_end_to_end(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Run the pipeline entrypoint, importing it on first use.
+
+    The listener starts every minute and almost always acknowledges nothing,
+    yet importing ``run_e2e`` at module load (the capture orchestrator, trimesh
+    and scipy: about 2.5 s of CPU, compiled from source, per start) was most of
+    an idle tick's own cost. The runtime env guard imports
+    ``blueprint_pipeline.run_e2e`` at unit start, so a broken install still
+    stops the unit before any handoff is pulled.
+    """
+    from .run_e2e import run_end_to_end as run
+
+    return run(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -693,6 +707,7 @@ def _claim_job_lease(
     expected_reconstruction_resume: Mapping[str, Any] | None = None,
     require_unattempted_delivery: bool = False,
     expected_target_choice_correction: Mapping[str, Any] | None = None,
+    expected_robot_fit_recheck: Mapping[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if producer_delivery_key is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", producer_delivery_key) is None:
         raise PipelineError('capture_delivery_key_invalid')
@@ -726,6 +741,11 @@ def _claim_job_lease(
             if not correction_matches(ledger, expected_target_choice_correction, payload_sha256=payload_sha256,
                                       producer_delivery_key=producer_delivery_key):
                 return "target_choice_correction_changed", dict(ledger)
+        if expected_robot_fit_recheck is not None:
+            from .website_robot_fit_hold import claim_matches as recheck_matches
+            if not recheck_matches(ledger, expected_robot_fit_recheck, payload_sha256=payload_sha256,
+                                   producer_delivery_key=producer_delivery_key):
+                return "robot_fit_recheck_changed", dict(ledger)
         if status == "corrupt":
             return "corrupt", dict(ledger)
         if producer_delivery_key is not None and ledger and ledger.get('producer_delivery_key') != producer_delivery_key:
@@ -778,9 +798,11 @@ def _claim_job_lease(
             if live_receipt.exists() or live_receipt.is_symlink():
                 _set_aside(live_receipt, "superseded")
         if status == "completed":
-            # The site corrected the object the robot moves: the same job runs
-            # again from its retained stage outputs; its old commit is kept.
-            if expected_target_choice_correction is None and not _retained_required_stage_blockers(capture_root):
+            # The site corrected the object the robot moves, or a robot fit hold's catalog or team
+            # registry changed: the same job runs again from its retained stage outputs; its old
+            # commit is kept.
+            if (expected_target_choice_correction is None and expected_robot_fit_recheck is None
+                    and not _retained_required_stage_blockers(capture_root)):
                 retained = _output_commit(capture_root, scene_id=scene_id, capture_id=capture_id)
                 if retained and _read_optional_json_object(capture_root / JOB_OUTPUT_COMMIT_FILENAME) != retained:
                     write_json(capture_root / JOB_OUTPUT_COMMIT_FILENAME, retained)
@@ -790,8 +812,10 @@ def _claim_job_lease(
             old_commit = _read_optional_json_object(capture_root / JOB_OUTPUT_COMMIT_FILENAME)
             if old_commit:
                 write_json(capture_root / JOB_OUTPUT_COMMIT_FILENAME, {
-                    **old_commit, "status": "superseded_failed_lanes" if expected_target_choice_correction is None
-                    else "superseded_target_choice_correction", "superseded_at": _iso_at(current_time)})
+                    **old_commit, "status": "superseded_target_choice_correction"
+                    if expected_target_choice_correction is not None else "superseded_robot_fit_recheck"
+                    if expected_robot_fit_recheck is not None else "superseded_failed_lanes",
+                    "superseded_at": _iso_at(current_time)})
         expires_at = _parse_utc_timestamp(ledger.get("lease_expires_at"))
         if (
             status == "processing"
@@ -1640,7 +1664,7 @@ def _finish_terminal_authority_ending(
 
 
 @scene_participant('storage_root')
-def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None, expected_assessment_resume: Mapping[str, Any] | None=None, require_unattempted_delivery: bool=False, expected_preparation_purpose: str | None=None, expected_reconstruction_resume: Mapping[str, Any] | None=None, expected_target_choice_correction: Mapping[str, Any] | None=None) -> dict[str, Any]:
+def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None, expected_assessment_resume: Mapping[str, Any] | None=None, require_unattempted_delivery: bool=False, expected_preparation_purpose: str | None=None, expected_reconstruction_resume: Mapping[str, Any] | None=None, expected_target_choice_correction: Mapping[str, Any] | None=None, expected_robot_fit_recheck: Mapping[str, Any] | None=None) -> dict[str, Any]:
     import sys
     from contextlib import ExitStack
     from .pubsub_handoff_scene_operations import _process_handoff_payload_body
@@ -1670,7 +1694,7 @@ def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage
                         'capture_root': str(root), 'staging_reason': reason, 'staging_error': described,
                         'blockers': ['capture_source_membership_unavailable']}
         try:
-            return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest, expected_assessment_resume=expected_assessment_resume, **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}), **({"expected_preparation_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}), **({"expected_reconstruction_resume": expected_reconstruction_resume} if expected_reconstruction_resume is not None else {}), **({"expected_target_choice_correction": expected_target_choice_correction} if expected_target_choice_correction is not None else {}))
+            return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest, expected_assessment_resume=expected_assessment_resume, **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}), **({"expected_preparation_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}), **({"expected_reconstruction_resume": expected_reconstruction_resume} if expected_reconstruction_resume is not None else {}), **({"expected_target_choice_correction": expected_target_choice_correction} if expected_target_choice_correction is not None else {}), **({"expected_robot_fit_recheck": expected_robot_fit_recheck} if expected_robot_fit_recheck is not None else {}))
         finally:
             # Separate durable wake-up only; never let delivery reopen or fail processing.
             try:

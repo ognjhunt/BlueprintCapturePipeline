@@ -347,6 +347,102 @@ def test_completed_observed_room_is_an_honest_task_limit_in_signed_status(prepar
     assert _post(prepared_source).json()["state"] == "awaiting_inputs"
 
 
+def _complete_geometry_only_fit(source, **change):
+    from blueprint_pipeline.website_task_context_contracts import GEOMETRY_ONLY_BLOCKER
+
+    root, owner, _, _, ledger, _ = source
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+               **{key: owner[key] for key in ("scene_id", "capture_id")},
+               "blockers": [GEOMETRY_ONLY_BLOCKER], "atlas_route": "geometry_only",
+               "simulator_ready": False, "visual_reconstruction_ready": True,
+               "fit_check": {"status": "completed"}, **change}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(root / "pipeline/website_scene_preparation/handoff.json", handoff)
+    listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
+        attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
+            "website_scene_preparation": handoff}, owner="synthetic-worker", token=ledger["lease_token"],
+        ledger_update={"status": "completed"})
+    return handoff
+
+
+@pytest.mark.parametrize("schema", [status_reader.STATUS_V1, status_reader.STATUS_V2, status_reader.STATUS_V3])
+def test_a_completed_geometry_only_fit_check_is_held_and_never_handed_off(prepared_source, schema):
+    _complete_geometry_only_fit(prepared_source)
+    result = status_reader.read_preparation_status(capture_root=prepared_source[0], selectors=prepared_source[3],
+                                                  schema_version=schema)
+    assert result["state"] == "awaiting_inputs" and result["code"] == "preparation_inputs_pending"
+    assert result.get("terminal_reason") is None
+    if schema == status_reader.STATUS_V3:
+        assert result["outcome"] is None  # A fit check is not a stopped attempt; v5 carries the table.
+    assert _post(prepared_source).json()["state"] == "awaiting_inputs"
+
+
+@pytest.mark.parametrize("change", [{"source_registration": {"path": "registered.json"}},
+                                    {"website_intake_outbox": {"state": "delivered"}}, {"atlas_route": "full"}])
+def test_a_geometry_only_stage_that_registered_or_left_its_route_is_not_completed(prepared_source, change):
+    _complete_geometry_only_fit(prepared_source, **change)
+    assert _post(prepared_source).status_code == 503
+
+
+def test_status_v5_carries_the_jobs_robot_fit_table_and_older_versions_do_not(prepared_source):
+    from tests.test_website_robot_fit_projection import write_fit_table
+
+    root, owner, context, selected, ledger, _ = prepared_source
+    handoff = write_fit_table(root, context=context["context_digest"],
+                              handoff={"website_intake_outbox": {"state": "forward_pending"}, "simulator_ready": False})
+    listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
+        attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
+            "website_scene_preparation": handoff}, owner="synthetic-worker", token=ledger["lease_token"],
+        ledger_update={"status": "completed"})
+    v5 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                              schema_version=status_reader.STATUS_V5)
+    assert v5["state"] == "handed_off" and v5["robot_fit"]["status"] == "completed"
+    assert [row["verdict"] for row in v5["robot_fit"]["models"]] == ["fits", "fits_spec", "doesnt_fit", "unknown"]
+    assert v5["status_digest"] == cross_runtime_canonical_digest(
+        {key: value for key, value in v5.items() if key != "status_digest"})
+    assert len(json.dumps(v5)) < 8192
+    v4 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                              schema_version=status_reader.STATUS_V4)
+    assert "robot_fit" not in v4 and v4["state"] == "handed_off"
+    # The WebApp's acceptance names v5, so the postflight re-reads v5.
+    acceptance = {"schema_version": "website_preparation_status_acceptance.v5", **selected, "accepted": True,
+                  "state": v5["state"], "status_digest": v5["status_digest"], "native_execution_complete": False,
+                  "correlation_id": "bp-prep-" + v5["status_digest"][7:23]}
+    assert status_reader.accepted_status_version(status_reader.validate_acceptance(acceptance, selected)) \
+        == status_reader.STATUS_V5
+
+
+def test_status_v6_carries_the_robot_fit_precheck_and_its_hold_and_v5_does_not(prepared_source):
+    from blueprint_pipeline.website_robot_fit_precheck import HOLD_PREFIX
+    from tests.test_website_robot_fit_precheck import write_precheck
+
+    root, owner, context, selected, ledger, _ = prepared_source
+    value = {"schema_version": "website_robot_fit_precheck.v1", "status": "no_fit",
+             "hold_reason": HOLD_PREFIX + "reach", "task_kind": "rigid_pick_place",
+             "counts": {"fit": 0, "no_fit": 8, "unknown": 0, "unavailable": 128},
+             "embodiments": {"droid_franka_panda_robotiq_2f85_v1": {
+                 "embodiment": "droid_franka_panda_robotiq_2f85_v1", "verdict": "no_fit", "reasons": ["reach"]}},
+             "candidates": [{"candidate_id": "pi05_droid", "embodiment": "droid_franka_panda_robotiq_2f85_v1",
+                             "verdict": "no_fit", "causes": ["reach"], "blockers": ["reach"]}],
+             "physical_world_truth_claimed": False}
+    write_precheck(root, value, context=context["context_digest"])
+    v6 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                              schema_version=status_reader.STATUS_V6)
+    assert v6["robot_fit_precheck"]["status"] == "no_fit"
+    assert v6["robot_fit_precheck"]["hold_reason"] == HOLD_PREFIX + "reach"
+    assert v6["status_digest"] == cross_runtime_canonical_digest(
+        {key: item for key, item in v6.items() if key != "status_digest"})
+    assert len(json.dumps(v6)) < 8192 and "robot_fit" in v6
+    v5 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                              schema_version=status_reader.STATUS_V5)
+    assert "robot_fit_precheck" not in v5 and v5["state"] == v6["state"]
+    acceptance = {"schema_version": "website_preparation_status_acceptance.v6", **selected, "accepted": True,
+                  "state": v6["state"], "status_digest": v6["status_digest"], "native_execution_complete": False,
+                  "correlation_id": "bp-prep-" + v6["status_digest"][7:23]}
+    assert status_reader.accepted_status_version(status_reader.validate_acceptance(acceptance, selected)) \
+        == status_reader.STATUS_V6
+
+
 @pytest.mark.parametrize("fault", ["digest", "source", "context", "family", "description", "code",
                                   "disposition", "simulator_ready", "runtime_inputs", "missing_output_commit"])
 def test_completed_native_gap_requires_exact_current_binding_and_output_commit(prepared_source, fault):

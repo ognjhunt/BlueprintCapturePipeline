@@ -462,3 +462,64 @@ def test_a_translation_only_transform_is_not_spurious(tmp_path):
     assert receipt["layer_transform_is_spurious"] is False
     assert receipt["status"] == "aligned"
     assert receipt["blockers"] == []
+
+
+# capture-447ae4f4's website room (2026-11-03): a standard 3DGS PLY authored as a
+# ParticleField with Blueprint's sealed registration, Y-up to Z-up at metric scale.
+WEBSITE_SPLAT_REGISTRATION = [
+    [1.103344777840341, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 1.103344777840341, 0.0],
+    [0.0, -1.103344777840341, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+]
+
+
+def test_a_website_splat_registration_is_not_called_spurious(tmp_path) -> None:
+    from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+
+    asset = tmp_path / "background_appearance.usdc"
+    stage = Usd.Stage.CreateNew(str(asset))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    world = UsdGeom.Xform.Define(stage, "/World")
+    stage.SetDefaultPrim(world.GetPrim())
+    registered = UsdGeom.Xform.Define(stage, "/World/gauss")
+    registered.AddTransformOp().Set(Gf.Matrix4d(WEBSITE_SPLAT_REGISTRATION))
+    field = stage.DefinePrim("/World/gauss/gauss", "ParticleField3DGaussianSplat")
+    # Symmetric about the origin, so dropping the registration would still
+    # "contain" the task: the case the NuRec rule refuses.
+    field.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(
+        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(symmetric_room_positions(), dtype=np.float32))
+    )
+    stage.GetRootLayer().Save()
+    required = {"task_object": [1.0, 2.0, 0.5], "robot_base": [1.0, 1.5, 0.09]}
+
+    receipt = require_native_task_appearance_frame_alignment(asset, required_world_positions_m=required)
+
+    assert receipt["representation"] == "particlefield_3d_gaussian_splat"
+    assert receipt["layer_transform_linear_is_identity"] is False
+    assert all(receipt["layer_transform_omitted_frame_contains"].values())
+    assert receipt["layer_transform_is_spurious"] is False
+    assert receipt["status"] == "aligned" and receipt["blockers"] == []
+
+
+def test_a_registered_splat_that_misses_the_task_is_still_refused(tmp_path) -> None:
+    from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+
+    asset = tmp_path / "background_appearance.usdc"
+    stage = Usd.Stage.CreateNew(str(asset))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    world = UsdGeom.Xform.Define(stage, "/World")
+    stage.SetDefaultPrim(world.GetPrim())
+    registered = UsdGeom.Xform.Define(stage, "/World/gauss")
+    registered.AddTransformOp().Set(Gf.Matrix4d(WEBSITE_SPLAT_REGISTRATION))
+    field = stage.DefinePrim("/World/gauss/gauss", "ParticleField3DGaussianSplat")
+    field.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(
+        Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(symmetric_room_positions(), dtype=np.float32))
+    )
+    stage.GetRootLayer().Save()
+
+    with pytest.raises(NativeTaskAppearanceFrameAlignmentError) as excinfo:
+        require_native_task_appearance_frame_alignment(
+            asset, required_world_positions_m={"task_object": [40.0, 0.0, 0.5]})
+    assert "native_task_appearance_frame_excludes_scene_position:task_object" in excinfo.value.errors

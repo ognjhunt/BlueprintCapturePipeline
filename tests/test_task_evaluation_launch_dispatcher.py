@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 import types
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
@@ -3695,16 +3696,29 @@ def test_a_small_immutable_input_is_hashed_without_a_stored_verdict(tmp_path, mo
     assert not root.exists()
 
 
-def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypatch):
-    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+def _real_launch_admission():
     from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
-    clock = [0.0]
-    budgets = []
+    return ReferenceCollectionBudget._for_launch_admission
+
+
+_REAL_LAUNCH_ADMISSION = _real_launch_admission()
+
+
+def _launch_admission_clock(monkeypatch, clock, budgets):
+    """Give the dispatcher's own admission budget a test clock."""
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    original = _REAL_LAUNCH_ADMISSION
     def create(**kw):
-        budget = ReferenceCollectionBudget(monotonic=lambda: clock[0], **kw)
+        budget = original(monotonic=lambda: clock[0], **kw)
         budgets.append(budget)
         return budget
-    monkeypatch.setattr(gate, 'ReferenceCollectionBudget', create)
+    monkeypatch.setattr(ReferenceCollectionBudget, '_for_launch_admission', staticmethod(create))
+
+
+def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypatch):
+    clock = [0.0]
+    budgets = []
+    _launch_admission_clock(monkeypatch, clock, budgets)
     profile_dir, request_path = _write_profile_and_request(tmp_path, _profile(tmp_path))
     def runner(_argv):
         assert len(budgets) == 1 and budgets[0].closed
@@ -3717,7 +3731,36 @@ def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypat
     assert json.loads((run/'launch_receipt.json').read_text()) == receipt
     assert 'retained fake allocator terminal output' in (run/'allocator.stdout.log').read_text()
     assert len(budgets) == 1 and budgets[0].closed
-    assert budgets[0].deadline == 5.0 and budgets[0].failure is None
+    assert budgets[0].deadline == 30.0 and budgets[0].failure is None
+
+
+def test_launch_admission_holds_a_slow_hosts_verification_and_still_ends(tmp_path, monkeypatch):
+    # capture-447ae4f4, 2026-10-31: on the CPU-throttled control plane the
+    # dispatcher's catalog and input verification outran the publishers' five
+    # seconds, and the launch died at its first write with OwnerTargetVersionError.
+    import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher
+    original_verify = dispatcher.verify_profile_immutable_inputs
+    for elapsed, admitted in ((6.0, True), (31.0, False)):
+        root = tmp_path / str(int(elapsed))
+        root.mkdir()
+        clock, budgets, calls = [0.0], [], []
+        _launch_admission_clock(monkeypatch, clock, budgets)
+        def slow_verify(profile, *, observed=None, _elapsed=elapsed):
+            clock[0] = _elapsed
+            return original_verify(profile, observed=observed)
+        monkeypatch.setattr(dispatcher, 'verify_profile_immutable_inputs', slow_verify)
+        profile_dir, request_path = _write_profile_and_request(root, _profile(root))
+        def dispatch(request_path=request_path, profile_dir=profile_dir, root=root, calls=calls):
+            return dispatch_launch_request(
+                request_path=request_path, profile_dir=profile_dir, state_root=root / 'state',
+                allocator_runner=lambda argv: calls.append(argv) or 0)
+        if admitted:
+            assert dispatch()['status'] == 'dry_run_completed' and len(calls) == 1
+        else:
+            with pytest.raises(ValueError, match='experiment_publisher_input_limit'):
+                dispatch()
+            assert calls == [] and not (root / 'state').exists()
+        assert len(budgets) == 1 and budgets[0].closed
 
 
 def test_nested_dispatch_cannot_end_parent_publisher_allowance(tmp_path):
@@ -3730,3 +3773,165 @@ def test_nested_dispatch_cannot_end_parent_publisher_allowance(tmp_path):
     with pytest.raises(ValueError, match='experiment_publisher_input_limit'):
         finite_metadata_publisher()
     assert calls == []
+
+
+def test_refill_claims_a_request_that_arrives_while_another_paid_run_holds_a_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second website job must not wait for the first job's whole paid run.
+
+    Without refill the oneshot claims only at start, so the late request would
+    sit in pending/ until the first run returns; here the first run cannot
+    return until the late one has started, so the test fails without refill.
+    """
+
+    profile = _profile(tmp_path)
+    queue_root = tmp_path / "queue"
+    requests = _stage_distinct_queue_requests(queue_root=queue_root, profile=profile, count=2)
+    late_source = sorted((queue_root / "pending").glob("*.json"))[1]
+    held = tmp_path / "held" / late_source.name
+    held.parent.mkdir()
+    os.replace(late_source, held)
+    late_started = threading.Event()
+    seen: list[str] = []
+
+    def fake_dispatch(**kwargs) -> dict:
+        request = json.loads(Path(kwargs["request_path"]).read_text(encoding="utf-8"))
+        seen.append(request["launch_id"])
+        if len(seen) == 1:
+            os.replace(held, late_source)  # arrives mid-run
+            assert late_started.wait(timeout=5), "late request was not refilled"
+        else:
+            late_started.set()
+        return {"status": "dry_run_completed", "launch_id": request["launch_id"]}
+
+    monkeypatch.setattr(dispatcher_module, "dispatch_launch_request", fake_dispatch)
+    report = process_launch_queue(
+        queue_root=queue_root, profile_dir=tmp_path / "profiles", state_root=tmp_path / "state",
+        max_messages=10, max_concurrency=2, refill_poll_seconds=0.05,
+    )
+    assert report["status"] == "completed"
+    assert report["processed_count"] == 2
+    assert set(seen) == {request["launch_id"] for request in requests}
+    assert not list((queue_root / "pending").glob("*.json"))
+    assert len(list((queue_root / "completed").glob("*.json"))) == 2
+
+
+def test_refill_never_exceeds_concurrency_or_the_message_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile(tmp_path)
+    queue_root = tmp_path / "queue"
+    _stage_distinct_queue_requests(queue_root=queue_root, profile=profile, count=4)
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_dispatch(**kwargs) -> dict:
+        nonlocal active, peak
+        request = json.loads(Path(kwargs["request_path"]).read_text(encoding="utf-8"))
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return {"status": "dry_run_completed", "launch_id": request["launch_id"]}
+
+    monkeypatch.setattr(dispatcher_module, "dispatch_launch_request", fake_dispatch)
+    report = process_launch_queue(
+        queue_root=queue_root, profile_dir=tmp_path / "profiles", state_root=tmp_path / "state",
+        max_messages=3, max_concurrency=2, refill_poll_seconds=0.01,
+    )
+    assert report["processed_count"] == 3
+    assert peak <= 2
+    assert len(list((queue_root / "pending").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("poll", [0, -1, True, 7200, "5"])
+def test_refill_poll_must_be_a_bounded_positive_interval(tmp_path: Path, poll: object) -> None:
+    with pytest.raises(TaskEvaluationLaunchError, match="refill_poll_invalid"):
+        process_launch_queue(
+            queue_root=tmp_path / "queue", profile_dir=tmp_path / "profiles",
+            state_root=tmp_path / "state", max_concurrency=2,
+            refill_poll_seconds=poll,  # type: ignore[arg-type]
+        )
+
+
+def _job_terminal_fixture(tmp_path: Path, *, other_protected: bool = True,
+                          own_still_live: bool = False) -> tuple[Path, Path, datetime]:
+    profile = _profile(tmp_path)
+    request = _request(profile)
+    run_root = tmp_path / "state" / request["launch_id"]
+    teardown_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    teardown_path = run_root / "vast_teardown_manifest.json"
+    _write(teardown_path, {
+        "schema_version": "vast_teardown_manifest.v1",
+        "generated_at": teardown_at.isoformat(), "status": "completed",
+        "vast_instance_ids": [47482504], "continuing_spend_from_this_run": False,
+    })
+    receipt = _paid_terminal_receipt(request=request, profile=profile, teardown_path=teardown_path)
+    _write(run_root / "launch_profile.json", profile)
+    _write(run_root / "launch_receipt.json", receipt)
+    _write(run_root / "webapp_sync_succeeded.json", _webapp_sync_succeeded(receipt))
+    guard = _zero_guard(generated_at=teardown_at + timedelta(seconds=2), live_instance_count=1)
+    other = {"id": "50000001", "name": "blueprint-task-evaluation-scene-config-other-",
+             "live": True, "protected": other_protected}
+    guard["instances"] = [other]
+    if own_still_live:
+        guard["instances"].append({"id": "47482504", "name": "blueprint-x-", "live": True,
+                                   "protected": True})
+        guard["live_instance_count"] = 2
+    guard_path = tmp_path / "gpu-spend-guard.json"
+    _write(guard_path, guard)
+    return run_root, guard_path, teardown_at + timedelta(seconds=3)
+
+
+def test_reconciler_keeps_the_account_wide_rule_unless_job_scope_is_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE", raising=False)
+    run_root, guard_path, now = _job_terminal_fixture(tmp_path)
+    result = reconcile_launches(queue_root=tmp_path / "queue", state_root=tmp_path / "state",
+                                guard_report_path=guard_path, now=now)
+    assert result["terminal_provider_zero"][0]["status"] == "provider_zero_pending"
+    assert "gpu_provider_nonzero" in result["terminal_provider_zero"][0]["blockers"]
+    assert not (run_root / "post_teardown_provider_zero_receipt.json").exists()
+
+
+def test_reconciler_closes_a_torn_down_run_beside_another_jobs_owned_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE", "job")
+    run_root, guard_path, now = _job_terminal_fixture(tmp_path)
+    result = reconcile_launches(queue_root=tmp_path / "queue", state_root=tmp_path / "state",
+                                guard_report_path=guard_path, now=now)
+    assert result["terminal_provider_zero"][0]["status"] == "provider_zero_confirmed"
+    closure = json.loads((run_root / "post_teardown_provider_zero_receipt.json").read_text())
+    assert closure["provider_zero_scope"] == "job"
+    assert closure["global_provider_zero_claimed"] is False
+    assert closure["job_scope"]["mode"] == "closure"
+    assert closure["job_scope"]["own_instance_ids"] == ["47482504"]
+    assert closure["provider_zero_receipt_digest"] == canonical_digest(
+        closure, digest_field="provider_zero_receipt_digest")
+    retained = reconcile_launches(queue_root=tmp_path / "queue", state_root=tmp_path / "state",
+                                  guard_report_path=guard_path, now=now)
+    assert retained["terminal_provider_zero"][0]["status"] == "provider_zero_receipt_retained"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "blocker"),
+    [({"own_still_live": True}, "job_scope_own_resource_live:47482504"),
+     ({"other_protected": False}, "job_scope_unowned_live_resource:50000001")],
+)
+def test_job_scoped_closure_still_refuses_own_or_unowned_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict, blocker: str
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE", "job")
+    run_root, guard_path, now = _job_terminal_fixture(tmp_path, **kwargs)
+    result = reconcile_launches(queue_root=tmp_path / "queue", state_root=tmp_path / "state",
+                                guard_report_path=guard_path, now=now)
+    row = result["terminal_provider_zero"][0]
+    assert row["status"] == "provider_zero_pending"
+    assert blocker in row["blockers"]
+    assert not (run_root / "post_teardown_provider_zero_receipt.json").exists()

@@ -88,6 +88,46 @@ def test_a_phase_beyond_every_arms_reach_is_reported_as_proven_never_as_a_refusa
     assert report["status"] == "out_of_reach" and report["blockers"] == []
     assert "robot_arm_task_beyond_reach:carry" in report["advisories"]
     assert [row["reached"] for row in report["arms"][name]["phases"]] == [True, True, False]
+    # The proof carries its numbers: the phase's distance from the chain's first joint against its bound.
+    beyond = report["beyond_reach"]
+    assert (beyond["arm"], beyond["phase_id"]) == (name, "carry")
+    assert beyond["distance_m"] > beyond["reach_bound_m"] == pytest.approx(chain.reach_bound_m, abs=1e-4)
+
+
+def test_a_task_start_off_its_spawned_object_is_measured_where_the_object_spawns_and_says_so(ur5e, monkeypatch):
+    usd, manifest, chains = ur5e
+    (name, chain), = chains.items()
+    _phases(monkeypatch, chain, _joint_sets(chain, 3))
+    _identity_grasp(monkeypatch, chains)
+    authored = native_task_construction_plan.materialize_native_task_construction_phase_plan
+    seen = []
+
+    def strict(plan):
+        # The support alignment raised the root 14.7 mm after the start pose was fixed (capture-447).
+        seen.append(plan["task_spec"]["start_pose_world"])
+        if plan["task_spec"]["start_pose_world"][2] == pytest.approx(0.8244):
+            from blueprint_pipeline.native_task_construction_validation import NativeTaskConstructionPlanError
+            raise NativeTaskConstructionPlanError(["native_rigid_construction_scoring_frame_reset_mismatch"])
+        return authored(plan)
+    monkeypatch.setattr(native_task_construction_plan, "materialize_native_task_construction_phase_plan", strict)
+    root = {"position_world_m": [-0.4326, -0.3031, 0.8287], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    plan = {**_plan(usd, manifest),
+            "objects": [{"task_subject": True, "reset_state": {"root_pose_world": root}}],
+            "task_spec": {"start_pose_world": [-0.4326, -0.3031, 0.8244, 0.0, 0.0, 0.0, 1.0],
+                          "interaction_affordance": {"asset_root_from_scoring_frame": {
+                              "position_m": [0.0, 0.0, 0.0104], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}}}}
+    report = team_arm_reach(plan, model_path=usd, manifest=manifest)
+    assert report["status"] == "passed" and "task_start_reseated_on_spawned_root:0.0147m" in report["advisories"]
+    assert seen[-1][:3] == pytest.approx([-0.4326, -0.3031, 0.8391]) and seen[-1][3:] == pytest.approx([0, 0, 0, 1])
+    # Any other refusal of the phase plan stays unassessed, with its code.
+
+    def refused(plan):
+        from blueprint_pipeline.native_task_construction_validation import NativeTaskConstructionPlanError
+        raise NativeTaskConstructionPlanError(["native_rigid_construction_lift_invalid"])
+    monkeypatch.setattr(native_task_construction_plan, "materialize_native_task_construction_phase_plan", refused)
+    report = team_arm_reach(plan, model_path=usd, manifest=manifest)
+    assert (report["status"], report["reason"], report["detail"]) == (
+        "unassessed", "task_phases_unavailable", "native_rigid_construction_lift_invalid")
 
 
 def test_an_unreached_but_spannable_pose_is_flagged_and_the_run_goes_on(ur5e, monkeypatch):

@@ -133,6 +133,43 @@ def resolve_website_source(*, intent, config):
                             materializer=materialize_website_attempt)
 
 
+#: Earlier attempts whose staged inputs a new attempt may share, newest first.
+REUSE_ATTEMPT_LIMIT = 3
+
+
+def earlier_attempt_submissions(output, attempt_id):
+    """Submission roots of this intent's other attempts, newest first, or none.
+
+    Progression lays an attempt out as ``<factory>/<intent>/<attempt>/materialized``.
+    Anything else (a link, another layout) shares nothing, so a new attempt
+    simply copies as before. Only roots inside the same intent directory are
+    offered: a withdrawal or retirement that removes the intent removes every
+    name of a shared inode.
+    """
+    output = Path(output)
+    attempt = output.parent
+    intent = attempt.parent
+    if (output.name != "materialized" or attempt.name != attempt_id
+            or any(path.is_symlink() for path in (output, attempt, intent))):
+        return ()
+    roots = []
+    try:
+        children = list(intent.iterdir())
+    except OSError:
+        return ()
+    for child in children:
+        if child.name == attempt_id or not child.name.startswith("source-"):
+            continue
+        root = child / "materialized" / "submission"
+        try:
+            if any(path.is_symlink() for path in (child, root.parent, root)) or not root.is_dir():
+                continue
+            roots.append((root.stat().st_mtime_ns, root))
+        except OSError:
+            continue
+    return tuple(root for _, root in sorted(roots, key=lambda row: row[0], reverse=True)[:REUSE_ATTEMPT_LIMIT])
+
+
 @scene_participant('intent_path', 'source_binding_path', 'output_root')
 def materialize_website_attempt(*, intent_path, source_binding_path, machinery_path,
                                release_binding_path, output_root, attempt_id, now=None):
@@ -219,7 +256,8 @@ def materialize_website_attempt(*, intent_path, source_binding_path, machinery_p
         **{key + "_path": checked_file(release[key]["path"], release[key])
            for key in ("deploy_receipt", "release_provenance", "release_environment")},
         runtime_publication_root=release["runtime_publication_root"], namespace_timestamp=release["namespace_timestamp"],
-        release_admission_mode=release["release_admission_mode"], staging_root=submission)
+        release_admission_mode=release["release_admission_mode"], staging_root=submission, attempt_id=attempt_id,
+        reuse_staging_roots=earlier_attempt_submissions(output, attempt_id))
     result = {"schema_version": "website_scene_attempt_factory.v1", "status": "publication_ready",
         "intent_digest": intent["intent_digest"], "attempt_digest": attempt["attempt_digest"],
         "source_commit": release["source_commit"], "submission_manifest": record(submission / "bundle_manifest.v1.json"),

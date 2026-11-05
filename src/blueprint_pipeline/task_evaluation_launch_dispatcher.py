@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from .task_evaluation_scene_retirement_access import scene_participant
 from .task_evaluation_scene_retirement_launch_births import create_launch_output
+from .task_evaluation_launch_dispatcher_ownership import holds_dispatcher_lock
 import argparse
 import contextlib
 import hashlib
@@ -19,7 +20,6 @@ import os
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,7 +39,7 @@ from .control_plane_disk_budget import (
     reserve_control_plane_disk,
 )
 from .control_plane_registered_reference_gate import (
-    _finish_publisher_admission,
+    _finish_publisher_admission, _launch_admission_observation,
     _profile_refusal,
     _publisher_checkpoint,
     _publisher_observation,
@@ -49,6 +49,8 @@ from .episode_interpretation_batch_authority import validate_episode_interpretat
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .launch_immutable_input_writer import (
     TaskEvaluationLaunchError,
+    copy_and_read_back as _copy_and_read_back,
+    file_sha256_and_size as _file_sha256_and_size,
     stage_directory_projections,
     write_immutable_launch_record,
     write_exclusive_private_bytes as _write_exclusive_private_bytes,
@@ -58,11 +60,9 @@ from .paid_attempt_authority import (
     JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
     validate_bound_lane_prior_spend,
 )
-from .task_evaluation_immutable_input_resolver import (
-    STAGING_RECEIPT_ENV,
-    STAGING_SCHEMA_VERSION,
-)
+from .task_evaluation_immutable_input_resolver import STAGING_RECEIPT_ENV, STAGING_SCHEMA_VERSION
 from .task_evaluation_launch_context import is_identifier as _is_identifier
+from .task_evaluation_launch_dispatch_refill import require_refill_poll, run_claimed_launches
 from .task_evaluation_launch_context import validate_task_evaluation_run_context
 from .task_evaluation_launch_evidence_contracts import LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
 from .task_evaluation_launch_terminal_evidence import (terminal_evidence as _build_terminal_evidence)
@@ -1044,7 +1044,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _file_digest(path: Path) -> str:
-    return _DIGEST_PREFIX + hashlib.sha256(path.read_bytes()).hexdigest()
+    return _DIGEST_PREFIX + _file_sha256_and_size(path)[0]
 
 
 def _artifact(path: Path) -> dict[str, Any]:
@@ -1163,8 +1163,7 @@ def _stage_profile_immutable_inputs_reserved(
         source = source.resolve()
         if source != planned_sources.get(declared_source):
             raise TaskEvaluationLaunchError(f"immutable_input_staging_source_changed:{name}")
-        payload = source.read_bytes()
-        observed_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
+        observed_digest = _DIGEST_PREFIX + _file_sha256_and_size(source)[0]  # in blocks, as every pass
         if observed_digest != expected_digest:
             raise TaskEvaluationLaunchError(
                 f"immutable_input_staging_source_digest_mismatch:{name}"
@@ -1177,9 +1176,9 @@ def _stage_profile_immutable_inputs_reserved(
             # digest checks above already proved this row matches the bytes
             # on disk, so the source keeps its single staged copy instead of
             # colliding with it.
-            readback = already_staged.read_bytes()
-            staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
-            if readback != payload or staged_digest != expected_digest:
+            readback, readback_size = _file_sha256_and_size(already_staged)
+            staged_digest = _DIGEST_PREFIX + readback
+            if staged_digest != observed_digest or staged_digest != expected_digest:
                 raise TaskEvaluationLaunchError(f"immutable_input_staging_duplicate_source:{name}")
             rows.append(
                 {
@@ -1187,18 +1186,15 @@ def _stage_profile_immutable_inputs_reserved(
                     "source_path": str(source),
                     "expected_digest": expected_digest,
                     "staged_path": str(already_staged),
-                    "staged_size_bytes": len(readback),
+                    "staged_size_bytes": readback_size,
                     "staged_digest": staged_digest,
                 }
             )
             continue
         destination = stage_root / f"{index:03d}-{expected_digest[len(_DIGEST_PREFIX) :]}.input"
         _publisher_checkpoint()
-        _write_exclusive_private_bytes(destination, payload)
-        readback = destination.read_bytes()
-        staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
-        if readback != payload or staged_digest != expected_digest:
-            raise TaskEvaluationLaunchError(f"immutable_input_staging_readback_mismatch:{name}")
+        staged_digest, readback_size = _copy_and_read_back(
+            destination, source, expected_digest, f"immutable_input_staging_readback_mismatch:{name}")
         prior = replacements.get(str(source))
         if prior is not None and prior != str(destination):
             raise TaskEvaluationLaunchError(f"immutable_input_staging_duplicate_source:{name}")
@@ -1217,7 +1213,7 @@ def _stage_profile_immutable_inputs_reserved(
                 "source_path": str(source),
                 "expected_digest": expected_digest,
                 "staged_path": str(destination),
-                "staged_size_bytes": len(readback),
+                "staged_size_bytes": readback_size,
                 "staged_digest": staged_digest,
             }
         )
@@ -1461,7 +1457,7 @@ def _native_policy_terminal_visual_evidence(
 
 
 @scene_participant('request_path', 'profile_dir', 'state_root')
-@_publisher_observation
+@_launch_admission_observation
 def dispatch_launch_request(
     *,
     request_path: str | Path,
@@ -1913,6 +1909,7 @@ def dispatch_launch_request(
 
 
 @scene_participant('queue_root', 'profile_dir', 'state_root')
+@holds_dispatcher_lock('queue_root')  # Whole batch: claims sit queued for serial dispatch.
 def process_launch_queue(
     *,
     queue_root: str | Path,
@@ -1924,11 +1921,13 @@ def process_launch_queue(
     max_messages: int = 1,
     max_concurrency: int = 1,
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
+    refill_poll_seconds: float | None = None,
 ) -> dict[str, Any]:
     if not isinstance(max_concurrency, int) or isinstance(max_concurrency, bool):
         raise TaskEvaluationLaunchError("launch_dispatch_concurrency_invalid")
     if max_concurrency < 1 or max_concurrency > MAX_DISPATCH_CONCURRENCY:
         raise TaskEvaluationLaunchError("launch_dispatch_concurrency_out_of_bounds")
+    require_refill_poll(refill_poll_seconds)
     queue = Path(queue_root).expanduser().resolve()
     pending = queue / "pending"
     processing = queue / "processing"
@@ -2057,13 +2056,10 @@ def process_launch_queue(
         os.replace(claimed, destination_dir / claimed.name)
         return receipt
 
-    if max_concurrency == 1:
-        processed = [dispatch_claimed(claimed) for claimed in claimed_requests]
-    else:
-        with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
-            # executor.map preserves the stable pending-file order in the
-            # queue receipt while the independently claimed launches overlap.
-            processed = list(executor.map(dispatch_claimed, claimed_requests))
+    processed = run_claimed_launches(  # an armed one-launch window never refills
+        initial=claimed_requests, dispatch=dispatch_claimed, claim=claim, max_concurrency=max_concurrency,
+        pending_sources=list if execute and armed else (lambda: owner_launch_sources(sorted(pending.glob(
+            "*.json")), Path(profile_dir).expanduser().resolve())), max_messages=max(0, max_messages), refill_poll_seconds=refill_poll_seconds)
     return {
         "schema_version": QUEUE_RUN_SCHEMA_VERSION,
         "status": "completed"
@@ -2086,6 +2082,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--max-messages", type=int, default=1)
     parser.add_argument("--max-concurrency", type=int, default=1)
+    parser.add_argument("--refill-poll-seconds", type=float, default=None)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--execute-launch-id")
     parser.add_argument("--public-catalog")
@@ -2098,7 +2095,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         execute_launch_id=args.execute_launch_id,
         public_catalog_path=args.public_catalog,
         max_messages=args.max_messages,
-        max_concurrency=args.max_concurrency,
+        max_concurrency=args.max_concurrency, refill_poll_seconds=args.refill_poll_seconds,
     )
     print(json.dumps(result, sort_keys=True))
     # Blocked launches are normal queue outcomes; nonzero means dispatch failed.

@@ -20,6 +20,7 @@ from .validation_progress import FILENAME as PROGRESS_FILENAME, progress_sink
 from .task_evaluation_scene_progression_state import (
     advance, atomic_json, intent_lock, load_progression, require, safe_path,
 )
+from .task_evaluation_scene_outcome import settle_outcome, terminal_outcome
 from .task_evaluation_scene_progression_transport import submit_preparation, read_preparation_status
 
 CONFIG_SCHEMA = "task_evaluation_scene_progression_config.v1"
@@ -365,6 +366,32 @@ def _settle_retired_rows(*, directory, state, config, retired=None, evidence=Non
     state["terminal_settlements"] = summary
 
 
+def _settle_ended_authority(*, directory, intent, state, config, now):
+    """Settle the current attempt's holds once authority ended; accounting only, never a gate.
+
+    The authority gate and a terminal outcome both stop progression before any
+    successor retires the current attempt, so its rows would stay held for good.
+    Settles only a terminal launch that proves it never allocated anything.
+    """
+    try:
+        if not ((directory / "revoked.json").exists() or now >= intake.effective_execution_expiry(directory, intent)):
+            return
+        from .task_evaluation_ended_authority_settlement import settle_ended_authority_attempt
+        outcome = settle_ended_authority_attempt(directory=directory, intent=intent, state=state, config=config, now=now)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # Recorded as its stable code only, so an unchanged refusal does not rewrite progression.
+        outcome = {"status": "not_settled", "reason": str(exc).split(":", 1)[0][:120]}
+    if outcome is None or outcome.get("status") == "waiting_for_ownership_reconciliation":
+        return
+    summary = dict(state.get("terminal_settlements") or {})
+    if outcome.get("status") == "not_settled":
+        summary["ended_authority"] = outcome
+    else:
+        summary["ended_authority"] = {"status": outcome["status"], "retired_attempt_id": outcome["retired_attempt_id"],
+                                      "settled_rows": sum(row["status"] == "settled" for row in outcome["rows"])}
+    state["terminal_settlements"] = summary
+
+
 def _release_successor(*, directory, intent, state, config, release, now):
     from .task_evaluation_scene_progression_recovery import reconcile_ownership
     previous_id = state["attempt_id"]
@@ -471,13 +498,16 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
         credit = admission.get("authoring_authentication_admission") or admission.get("provider_credit_admission") or {}
         return {"status": "blocked", "phase": "configuration_capacity",
                 "blockers": credit.get("blockers") or ["preallocation_capacity_not_recovered"]}
-    # Funding/authentication refusals did not execute the model or simulator.
-    # Retain the first rejected request allowance and bound administrative recovery.
-    from .task_evaluation_scene_capacity_recovery import CREDIT_KIND
+    # Funding/authentication refusals, and disk refusals whose result proves
+    # nothing started, did not execute the model or simulator; max_retries
+    # counts executed work. Retain the first rejected request allowance and
+    # bound administrative recovery.
+    from .task_evaluation_scene_capacity_recovery import CREDIT_KIND, nothing_started
     from .task_evaluation_authoring_auth_recovery import KIND as AUTH_KIND
-    unstarted_credit = (attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
-                        and observed.get("kind") in {CREDIT_KIND, AUTH_KIND})
-    require(intent["request"]["execution"]["max_retries"] > 0 or unstarted_credit, "retry_cap_exhausted")
+    unstarted = (attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+                 and (observed.get("kind") in {CREDIT_KIND, AUTH_KIND}
+                      or observed.get("kind") == KIND and nothing_started(observed["values"]["result"])))
+    require(intent["request"]["execution"]["max_retries"] > 0 or unstarted, "retry_cap_exhausted")
     successor_id = "source-" + canonical_digest({"prior_attempt_digest": attempt["attempt_digest"],
         "source_commit": release["source_commit"], "intent_digest": intent["intent_digest"],
         "failure_result_digest": observed["values"]["result"]["result_digest"], "kind": KIND})[7:31]
@@ -570,11 +600,14 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         nonlocal progress
         progress = advance(directory, intent, progress, status=status, phase=phase, state=deepcopy(state),
                            blockers=blockers, result_reference=result_reference, now=now)
+        settle_outcome(directory, intent, progress, now=now)
         return progress
     if progress and progress["status"] == "completed":
         return progress
     if state.get("release_predecessors") or state.get("recovery_predecessors"):
         _settle_retired_rows(directory=directory, state=state, config=config)
+    # Before the read-only joins, the outcome return and the authority gate, all of which end the pass.
+    _settle_ended_authority(directory=directory, intent=intent, state=state, config=config, now=now)
     # Spec E: once activation has been issued, join any retained downstream
     # terminal receipts (policy result, authenticated Website readback,
     # provider-zero closure) back into the persistent owner status. This is a
@@ -601,6 +634,12 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             state.update(terminal.get("state", {}))
             return emit(terminal["status"], terminal["phase"], terminal.get("blockers", ()),
                         terminal.get("result_reference"))
+    # C-04: a terminal outcome ends the job. The read-only joins above still close
+    # out runs authorized before it (and a completed one supersedes the outcome);
+    # nothing below them -- no source, attempt, retry or successor -- runs again.
+    if terminal_outcome(directory, intent) is not None:
+        require(progress is not None, "outcome_without_progression")
+        return progress
     if (directory / "revoked.json").exists() or now >= intake.effective_execution_expiry(directory, intent):
         return emit("blocked", "authority", ["scene_intake_authority_revoked" if (directory / "revoked.json").exists()
                                               else "scene_intake_authority_expired"])
@@ -865,6 +904,23 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     return emit("awaiting_execution", "preparation_complete")
 
 
+def _blocker_detail(exc):
+    """The reason codes after a refusal's stable code, for the run result only.
+
+    The recorded blocker keeps just the stable code, so an unchanged refusal
+    never rewrites progression and the website sees the same blocker. The run
+    result the service prints to its journal also carries the reasons: on
+    2026-11-02 a recovery refused while a deploy paused the spend guard showed
+    only ``recovery_provider_zero_required``, not ``gpu_spend_guard_stale``.
+    Only identifier-like reasons are kept, so a path or free text never
+    reaches the journal.
+    """
+    _, _, rest = str(exc).partition(":")
+    reasons = [part for part in rest.split(";") if part]
+    return [part for part in reasons
+            if len(part) <= 120 and all(c.islower() or c.isdigit() or c in "_:.-" for c in part)][:16]
+
+
 @scene_participant('config_path')
 def process_scene_intents(*, config_path, source_resolver=None, publisher=None, submitter=None,
                           status_reader=None, activation_provisioner=None, now=None, only_intent_id=None,
@@ -929,6 +985,7 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                 from .agent_execution.supervision_producer import best_effort_register_run_supervision
                 best_effort_register_run_supervision(intent=intent, directory=directory,
                     source_commit=release["source_commit"])
+                detail = []
                 try:
                     # Operational heartbeat only: the factory and prefix selector report
                     # step, elapsed time and bytes hashed here; no gate reads this file.
@@ -947,10 +1004,13 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                     code = str(exc).split(":", 1)[0] if isinstance(exc, ValueError) else "scene_progression_dependency_unavailable"
                     if not code or not all(c.islower() or c.isdigit() or c == "_" for c in code):
                         code = "scene_progression_dependency_unavailable"
+                    detail = _blocker_detail(exc) if isinstance(exc, ValueError) else []
                     progress = advance(directory, intent, progress, status="blocked", phase="preparation",
                         state=failure_state, blockers=[code], now=moment)
+                    settle_outcome(directory, intent, progress, now=moment)
                 rows.append({"intent_id": directory.name, "status": progress["status"], "phase": progress["phase"],
                              "blockers": progress.get("blockers", []),
+                             **({"blocker_detail": detail} if detail else {}),
                              **({"source_binding": progress["state"]["source_binding"]}
                                 if (progress.get("state") or {}).get("source_binding") else {}),
                              "progression_digest": progress["progression_digest"]})

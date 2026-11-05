@@ -44,17 +44,37 @@ def require_current_source(source: Mapping[str, Any], *, site_id: str) -> dict[s
     return current
 
 
+def implementation_commit() -> str:
+    """The deployed commit, as planning binds it (``build_planning_inputs``)."""
+    import subprocess
+
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
 def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | Path,
                            max_sources: int = 32) -> dict[str, Any]:
     """Adopt completed packet requests; blocked sources remain visible and retryable."""
     from .beta_policy_candidate_catalog import load_default_catalog
     from .beta_policy_screening_capabilities import build_planning_inputs
-    from .beta_policy_screening_coordinator import _lock, _read, _root, _write, enqueue_screening_campaign
-    from .beta_policy_screening_plan import build_screening_plan
+    from .beta_policy_screening_coordinator import (
+        _lock, _read, _root, _write, enqueue_screening_campaign, latest_campaign, replan_scope, supersede_campaign,
+    )
+    from .beta_policy_screening_holds import RELEASE, packet_hold, probe_hold, settle_hold
+    from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
+    from .beta_policy_screening_scene_half import current_half
     from .beta_policy_screening_team import catalog_for_profile
+    from .rigid_robot_free_probe_runner import _running_release, source_commit
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
-    from .team_scene_packet_worker import _read_json, request_key, resolve_capture_root, validated_request
+    from .team_scene_packet_worker import (
+        _read_json,
+        current_release_commit,
+        request_key,
+        requeue_transient_blocked,
+        resolve_capture_root,
+        validated_request,
+    )
     from .website_candidate_ranking import retained_priority
     from .website_candidate_selection import retain_campaign_catalog
 
@@ -63,8 +83,22 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     if (not packet_root.is_absolute() or any(p.is_symlink() for p in (packet_root, *packet_root.parents))
             or not 1 <= max_sources <= 100):
         raise ValueError("beta_screening_source_queue_invalid")
+    try:
+        # The packet worker runs only when something is pending: this timer's pass returns a timed-out
+        # compile or a failed offer post to it, bounded and after a wait; a deterministic refusal goes back once
+        # per newly deployed release (the release this pass runs from), so a deploy that fixes it re-drives it.
+        packet_requeue = requeue_transient_blocked(queue_root=packet_root)
+    except (OSError, ValueError) as exc:
+        from .bounded_error import error_description
+
+        packet_requeue = {"status": "failed", "error": error_description(exc)}
     base_catalog = load_default_catalog()
+    # The releases the two lanes retry their refusals under: an evaluation is held only once nothing will.
+    packet_release = current_release_commit()
+    probe_release = _running_release({"source_commit": source_commit})
     outcomes = []
+    # Only the newest request of each scene intent speaks for its hold: an older revision never flips it.
+    newest = newest_intent_requests(packet_root)
     with _lock(root, ".source.lock"):
         states = root / "sources"
         states.mkdir(exist_ok=True, mode=0o700)
@@ -74,12 +108,19 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
         paths = [p for p in paths if p.name > last] + [p for p in paths if p.name <= last]
         for path in paths[:max_sources]:
             outcome: dict[str, Any] = {"request_key": path.stem, "status": "blocked"}
+            request: dict[str, Any] | None = None
+            # A hold, RELEASE on positive progress, or None: nothing decided, so a hold is kept.
+            hold: tuple[str, str | None] | str | None = None
             try:
                 request = validated_request(_read_json(path))
                 if request_key(request) != path.stem:
                     raise ValueError("beta_screening_source_request_key_invalid")
                 packet_status = _read_json(packet_root / "status" / path.name) or {}
                 if packet_status.get("status") not in {"completed", "skipped"}:
+                    # Say why the scene half is not ready, and whether it is still being retried.
+                    outcome["scene_packet"] = {key: packet_status[key] for key in
+                                               ("status", "blockers", "automatic_retry") if key in packet_status}
+                    hold = packet_hold(packet_status, release=packet_release)
                     raise ValueError("beta_screening_scene_packet_not_ready")
                 capture = resolve_capture_root(request)
                 retained = _read_json(capture / "pipeline" / "website_task_context.json") or {}
@@ -94,9 +135,28 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                 campaign_id = "screening-" + canonical_digest({"source": source,
                     "catalog_digest": catalog["catalog_digest"], "protocol": "beta_policy_screening.v1"})[7:39]
                 existing = root / "plans" / f"{campaign_id}.json"
+                replan: list[str] | None = None
+                superseded = None
                 if existing.exists():
-                    outcome.update(enqueue_screening_campaign(_read(existing), queue_root=root))
-                else:
+                    # A deploy since planning leaves unprepared candidates bound to
+                    # a commit preparation refuses: plan them again at this one.
+                    current = latest_campaign(campaign_id, queue_root=root)
+                    commit = implementation_commit()
+                    # A completed team half compiled again since planning (a new station, chairs moved on the
+                    # owner's approval) is planned again too, finished campaign or not.
+                    half = (current_half(profile, scene_revision_digest=source["scene_revision_digest"])
+                            if packet_status.get("status") == "completed" else None)
+                    replan = replan_scope(current, implementation_commit=commit, scene_half=half, queue_root=root)
+                    if replan is None:
+                        outcome.update(enqueue_screening_campaign(_read(root / "plans" / f"{current}.json"),
+                                                                  queue_root=root))
+                    else:
+                        superseded = current
+                        campaign_id = "screening-" + canonical_digest({"source": source,
+                            "catalog_digest": catalog["catalog_digest"], "protocol": "beta_policy_screening.v1",
+                            "supersedes": current, "implementation_commit": commit,
+                            **({"scene_half": half} if half is not None else {})})[7:39]
+                if not existing.exists() or replan is not None:
                     context = require_current_source(source, site_id=retained["scene_id"])
                     result, receipt, _zero = _validate_source(Path(request["source_launch_root"]))
                     if (result.get("configured_scene_revision_digest") != source["scene_revision_digest"]
@@ -113,14 +173,27 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     outcome["robot_free_probe_status"] = probe["status"]
                     # The intake ranking orders the plan; the site budget decides how far it runs.
                     priority = retained_priority(capture / "pipeline", task_context_digest=source["task_context_digest"])
-                    outcome["candidate_order"] = "intake_ranking" if priority else "identifier"
+                    outcome["candidate_order"] = "intake_ranking" if priority else "beta_default_priority"
+                    if not priority:
+                        from .beta_policy_screening_default_priority import default_screening_priority
+
+                        priority = default_screening_priority()
                     inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
                         source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
-                    plan = build_screening_plan(catalog, inputs["scene"], campaign_id=campaign_id,
+                    # The job's one dollar ceiling sizes the plan; unreadable, it holds and retries.
+                    plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id,
+                        queue_root=root, context=context, capture_root=capture,
                         capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
-                        priority=inputs.get("candidate_priority"))
+                        priority=inputs.get("candidate_priority"), candidate_ids=replan, superseding=superseded,
+                        intake_ranking=outcome["candidate_order"] == "intake_ranking")
                     retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
-                    outcome.update(enqueue_screening_campaign(plan, queue_root=root))
+                    if superseded is None:
+                        outcome.update(enqueue_screening_campaign(plan, queue_root=root))
+                    else:
+                        outcome.update(supersede_campaign(superseded, plan, implementation_commit=commit,
+                                                          queue_root=root))
+                # A campaign is planned (now or before): the evaluation started.
+                hold = RELEASE
             except (OSError, ValueError, RuntimeError, KeyError) as exc:
                 # No raw remote response, URL, credentials or customer content in operational logs.
                 code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else ""
@@ -132,12 +205,108 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     # The generic code covers a full disk, a missing retained
                     # file and an unreadable record alike; keep which it was.
                     outcome["error"] = error_description(exc)
+                if hold is None and request is not None and code.startswith("team_evaluation_robot_free_probe_"):
+                    try:
+                        # A probe refusal read as not final (queued, waiting, due a new release's try) is progress.
+                        hold = probe_hold(code, resolve_capture_root(request), release=probe_release) or RELEASE
+                    except (OSError, ValueError, KeyError, TypeError):
+                        hold = None  # unreadable now: the hold is kept and the next pass decides again
+            if request is not None and newest.get(request["intent_id"]) == ("processed", path.name):
+                # The website job hears by name when its evaluation cannot start, and again when it moves.
+                settled = settle_hold(root, request, hold)
+                if settled is not None:
+                    outcome["evaluation_hold"] = settled
             _write(states / path.name, outcome)
             _write(cursor_path, {"last": path.name})
             outcomes.append(outcome)
+        # A team half a new release (or a due retry) returned to its queue is moving again: release its hold.
+        for state in ("pending", "processing"):
+            for path in sorted((packet_root / state).glob("*.json")):
+                try:
+                    request = validated_request(_read_json(path))
+                except ValueError:
+                    continue
+                if newest.get(request["intent_id"]) == (state, path.name):
+                    settle_hold(root, request, RELEASE)
+    outcomes.extend(_scene_preparation_holds(root, packet_root, max_sources=max_sources, newest=newest))
     from .beta_policy_screening_family_sources import enqueue_registered_family_scenes
     family = enqueue_registered_family_scenes(queue_root=root, max_sources=max_sources)
-    return {"sources": outcomes + family["sources"]}
+    return {"sources": outcomes + family["sources"], "team_scene_packet_requeue": packet_requeue}
+
+
+_REQUEST_STATES = ("pending", "processing", "processed")
+
+
+def newest_intent_requests(packet_root: Path) -> dict[str, tuple[str, str]]:
+    """Each scene intent's newest request (its latest scene revision): ``(where, file name)``, by when it was queued.
+
+    A request is written once and moved by rename, so its modification time is when it was queued. The newest
+    of a team half's request and a held request of the same intent speaks for the intent's hold.
+    """
+    from .team_scene_packet_worker import HOLDS_DIRNAME, _read_json
+
+    newest: dict[str, tuple[int, str, str, str]] = {}
+    for where in (*_REQUEST_STATES, HOLDS_DIRNAME):
+        for path in (packet_root / where).glob("*.json"):
+            try:
+                if path.is_symlink():
+                    continue
+                stamp = path.stat().st_mtime_ns
+            except OSError:
+                continue
+            intent = str((_read_json(path) or {}).get("intent_id") or "")
+            if intent and (intent not in newest or (stamp, path.name) > newest[intent][:2]):
+                newest[intent] = (stamp, path.name, where, path.name)
+    return {intent: (row[2], row[3]) for intent, row in newest.items()}
+
+
+def _scene_preparation_holds(root: Path, packet_root: Path, *, max_sources: int,
+                             newest: Mapping[str, tuple[str, str]]) -> list[dict[str, Any]]:
+    """Hold each website job whose scene preparation retained a decided failed probe receipt.
+
+    Its team half is never compiled (``team_scene_packet_worker.enqueue_team_scene_request``), so no source
+    ever reaches the pass above. The receipt is re-read, never trusted from the request. The entries rotate
+    under their own cursor, so none waits behind the first ``max_sources``. An entry is set aside under
+    ``holds/settled/`` once the website acknowledged its hold, or under ``holds/superseded/`` once a newer
+    request of its intent exists; nothing is deleted.
+    """
+    from .beta_policy_screening_coordinator import _read, _write
+    from .beta_policy_screening_holds import scene_preparation_probe_failed, settle_hold
+    from .team_scene_packet_worker import HOLDS_DIRNAME, _read_json, request_key, validated_request
+
+    directory = packet_root / HOLDS_DIRNAME
+    cursor_path = root / "hold_request_cursor.json"
+    last = _read(cursor_path).get("last", "") if cursor_path.exists() else ""
+    paths = sorted(directory.glob("*.json"))
+    paths = [p for p in paths if p.name > last] + [p for p in paths if p.name <= last]
+
+    def set_aside(path: Path, where: str) -> None:
+        (directory / where).mkdir(exist_ok=True, mode=0o750)
+        os.replace(path, directory / where / path.name)
+
+    outcomes = []
+    for path in paths[:max_sources]:
+        outcome: dict[str, Any] = {"request_key": path.stem, "status": "held"}
+        try:
+            request = validated_request(_read_json(path))
+            if request_key(request) != path.stem or not scene_preparation_probe_failed(request):
+                raise ValueError("beta_screening_hold_request_invalid")
+            if newest.get(request["intent_id"]) != (HOLDS_DIRNAME, path.name):
+                # A newer scene revision of the intent speaks for its hold.
+                set_aside(path, "superseded")
+                outcome["status"] = "superseded"
+            else:
+                held = settle_hold(root, request, ("robot_free_probe_failed", "scene_preparation_receipt_failed"))
+                outcome["evaluation_hold"] = held
+                if held is not None and held.get("acknowledged") is True:
+                    set_aside(path, "settled")  # the website keeps it; nothing more to send
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            code = str(exc) if isinstance(exc, ValueError) else ""
+            outcome.update(status="blocked", blockers=[code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)
+                                                       else "beta_screening_hold_request_unavailable"])
+        _write(cursor_path, {"last": path.name})
+        outcomes.append(outcome)
+    return outcomes
 
 
 def publish_screening(publication: Mapping[str, Any]) -> dict[str, Any]:
@@ -196,6 +365,43 @@ def deliver_publications(*, queue_root: str | Path, transport=None,
     return {"acknowledged": sent, "pending": failed, **failure}
 
 
+def retained_run_dirs(root: Path):
+    """Each retained attempt's provider run directories, local or on the work volume (via its pointer)."""
+    from .beta_policy_screening_coordinator import ATTEMPT_DIR_FIELD, _attempt_path
+
+    for entry in sorted((root / "attempts").iterdir()):
+        attempt: Path | None = None
+        if entry.is_symlink():
+            continue
+        if entry.is_dir():
+            attempt = entry
+        elif entry.name.endswith(".attempt_dir.json"):
+            try:
+                pointer = json.loads(entry.read_text(encoding="utf-8"))
+                attempt = _attempt_path(root, {"attempt_id": entry.name.removesuffix(".attempt_dir.json"),
+                                               ATTEMPT_DIR_FIELD: pointer[ATTEMPT_DIR_FIELD]})
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        if attempt is not None and attempt.is_dir() and not attempt.is_symlink():
+            yield from sorted(attempt.glob("allocator/attempts/*/vast_provider_run"))
+
+
+def backfill_runtime_diagnostics(root: Path, *, max_writes: int = 5) -> dict[str, Any]:
+    """Summarize retained runs whose output archive is still on disk; bounded, idempotent, never raises.
+
+    A streamed archive never reaches the host, so only a downloaded or
+    SSH-recovered one not yet promoted away can be summarized after the fact.
+    """
+    from .provider_runtime_diagnostics import backfill
+
+    try:
+        return backfill(retained_run_dirs(root), max_writes=max_writes)
+    except (OSError, ValueError) as exc:
+        from .bounded_error import error_description
+
+        return {"status": "failed", "error": error_description(exc)}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from .beta_policy_screening_coordinator import QUEUE_ROOT_ENV, _root, process_screening_queue
     from .beta_policy_screening_status import write_worker_status
@@ -216,6 +422,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
         max_launches=args.max_launches)
     after = deliver_publications(queue_root=root)
+    from .beta_policy_screening_holds import deliver_holds
+
+    # A held evaluation (no campaign could start) reaches the website by name, like a campaign.
+    holds = deliver_holds(queue_root=root)
     from .website_candidate_selection import deliver_selections, retain_selections
     try:
         # After a terminal result is published, choose from it; local and unpaid.
@@ -226,8 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         selections = {"status": "failed", "blocker": code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)
                       else "website_candidate_selection_failed"}
     status = write_worker_status(root, publication_before=before, publication_after=after, execution=execution)
+    # Local, unpaid and bounded: a retained run's failure account, read while its archive is still here.
+    diagnostics = backfill_runtime_diagnostics(root)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
-                      "publication_after": after, "selections": selections, "worker_status": status},
+                      "publication_after": after, "holds": holds, "selections": selections,
+                      "runtime_diagnostics_backfill": diagnostics, "worker_status": status},
                      sort_keys=True))
     return 0
 

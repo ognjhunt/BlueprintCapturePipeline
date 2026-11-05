@@ -35,6 +35,7 @@ from .native_task_arena_bundle import (
 from .native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
 from .provider_runtime_import_closure import assert_provider_runtime_import_closure
 from .native_task_arena_policy_canary_session import (
+    BETA_RUN_KIND,
     CLAIM_CEILING,
     EXECUTION_MODES,
     PROVIDER_BUNDLE_SCHEMA_VERSION,
@@ -61,6 +62,7 @@ from .task_evaluation_canary_hotfix_overlay import (
 CANARY_SHIPPED_PACKAGE_FILES = ("core/__init__.py", "core/common.py", "core/security_controls.py")
 # The team path the shared worker imports: the team's HTTPS clients and its own robot.
 TEAM_RUNTIME_MODULE_NAMES = (
+    "beta_screening_runtime_control.py", "beta_policy_screening_control_contracts.py",
     "team_candidate_policy_client.py", "droid_https_policy_client.py", "team_policy_https_client.py",
     "task_family_policy_https_client.py",
     "dreamlabs_policy_client.py", "team_arm_kinematics.py",
@@ -71,6 +73,7 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "scripted_robot_kuka_robotiq_runtime.py",
     "scripted_robot_public_arm_robotiq_runtime.py",
     "team_policy_episode_outcome.py", "team_evaluation_worker_retention.py",
+    "policy_canary_cell_setup_failure.py",
     "native_task_arena_execution_contract.py",
     "team_embodiment.py", "team_embodiment_runtime.py", "native_task_robot_contact_topology.py",
     # The first session on an undecided rigid scene records and scores its robot-free probe.
@@ -284,6 +287,12 @@ fi
                       if family_runtime_catalog_staged else "")
     local_client_config = ('export PYTHONDONTWRITEBYTECODE=1\nexport PYTHONPATH="$RUNTIME_DIR/openwam_client:$RUNTIME_DIR${PYTHONPATH:+:$PYTHONPATH}"'
                            if openwam_local else "")
+    control_check = ('''/isaac-sim/python.sh -m blueprint_pipeline.beta_screening_runtime_control --runtime-root "$RUNTIME_DIR"
+control_rc=$?
+if [ $control_rc -ne 0 ]; then
+  write_fallback_result beta_screening_runtime_control_refused "$control_rc"
+  exit "$control_rc"
+fi''' if run_kind == BETA_RUN_KIND else "")
     return f'''#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -330,7 +339,24 @@ teardown_servers() {{
 }}
 trap teardown_servers EXIT INT TERM HUP
 
+# This entrypoint replaces the base arena entrypoint, including its media
+# bootstrap. Only the pi05/GR00T provisioning installed ffmpeg, incidentally, so
+# on 2026-11-05 every molmoact2 cell refused at its dependency gate
+# (native_task_dependency_missing:ffmpeg). Both tools must exist before any
+# checkpoint is fetched or any isolated simulator cell starts.
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:started"
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >>"$OUT_DIR/media_toolchain_install.log" 2>&1
+fi
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:blocked"
+  write_fallback_result policy_canary_media_toolchain_unavailable 86
+  exit 86
+fi
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:completed"
+
 {credential_check}
+{control_check}
 /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \
   --source-receipt "$SOURCE_RECEIPT" --source-packet "$SOURCE_PACKET" \
   --extraction-dir "$RUNTIME_DIR/provisioned_runtime_sources" \
@@ -382,6 +408,7 @@ fi
 {provisioning}
 {local_client_config}
 
+{control_check}
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
 write_fallback_result policy_canary_worker_failed_without_result "$runner_rc"

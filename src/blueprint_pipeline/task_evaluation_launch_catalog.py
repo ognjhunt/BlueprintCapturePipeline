@@ -29,6 +29,7 @@ import json
 import os
 import stat
 import tempfile
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -47,6 +48,7 @@ from .task_evaluation_launch_dispatcher import (
     validate_public_launch_profile_descriptor,
     verify_profile_immutable_inputs,
 )
+from .website_preparation_authority import retained_sources_only
 
 SCHEMA_VERSION = "task_evaluation_launch_catalog_reconciliation.v1"
 
@@ -96,6 +98,7 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
 
 def _project_published_profiles(
     profile_dir: str | Path,
+    timings: dict[str, float] | None = None,
 ) -> tuple[list[dict[str, Any]], set[tuple[str, str]]]:
     """Every published profile's descriptor, and the ones whose owner state this
     process could not judge: ``scene_execution_owner_store_missing`` means its
@@ -114,7 +117,17 @@ def _project_published_profiles(
     observed: dict[str, str | None] = {}
     resolved: dict[tuple[str, tuple[Path, ...]], bool] = {}
     roots = tuple(configured_launch_input_roots())
+    # Where a pass spends its time, reported by the runtime env guard: the
+    # catalog is reconciled in the ExecStartPre of units that start every minute.
+    spent = {"profile_parse": 0.0, "immutable_inputs": 0.0, "profile_validation": 0.0, "input_residency": 0.0}
+
+    def lap(name: str, started: float) -> float:
+        now = time.monotonic()
+        spent[name] += now - started
+        return now
+
     for path in sorted(root.glob("*.json")):
+        started = time.monotonic()
         if path.is_symlink():
             # Published profiles are immutable; a symlink lets the bytes behind
             # a published id change without the id changing.
@@ -138,13 +151,19 @@ def _project_published_profiles(
             descriptor = catalog_launch_profile_descriptor(profile)
         except TaskEvaluationLaunchError as exc:
             raise LaunchCatalogError(f"published_profile_invalid:{path.name}:{exc}") from exc
+        started = lap("profile_parse", started)
         unavailable = verify_profile_immutable_inputs(profile, observed=observed)
+        started = lap("immutable_inputs", started)
         inactive_authority: list[str] = []
         if not unavailable:
             # Once all declared bytes are present and digest-bound, retain the
             # existing fail-closed cross-document validation. An inconsistent
             # or tampered lineage is malformed evidence, not host unavailability.
-            blockers = validate_launch_profile(profile)
+            # A website job's grant is checked from what this host retains: a
+            # WebApp read here made every guarded unit depend on the WebApp, and
+            # every paid path re-reads the grant before it spends.
+            with retained_sources_only():
+                blockers = validate_launch_profile(profile)
             inactive_owner_states = {
                 "scene_execution_owner_revoked",
                 "scene_execution_owner_expired",
@@ -178,11 +197,13 @@ def _project_published_profiles(
         # evidence, and one stale profile must not make every other profile
         # unreachable -- the catalog reconciler is an ExecStartPre for intake,
         # so raising here would take the website path down with it.
+        started = lap("profile_validation", started)
         unrunnable = [
             *unavailable,
             *inactive_authority,
             *launch_profile_residency_blockers(profile, roots=roots, resolved=resolved),
         ]
+        lap("input_residency", started)
         if unrunnable:
             admission = dict(descriptor.get("execution_admission") or {})
             admission["live_enabled"] = False
@@ -191,6 +212,10 @@ def _project_published_profiles(
             )
             descriptor["execution_admission"] = admission
         descriptors.append(descriptor)
+    if timings is not None:
+        timings.update({name: round(value, 3) for name, value in spent.items()})
+        timings["profiles"] = len(descriptors)
+        timings["distinct_inputs"] = len(observed)
     return descriptors, unjudged
 
 
@@ -242,7 +267,8 @@ def reconcile_public_catalog(
     nothing has judged yet, is still written from this pass.
     """
     catalog = Path(catalog_path).expanduser().resolve()
-    descriptors, unjudged = _project_published_profiles(profile_dir)
+    timings: dict[str, float] = {}
+    descriptors, unjudged = _project_published_profiles(profile_dir, timings)
 
     try:
         current = catalog.read_bytes()
@@ -260,7 +286,8 @@ def reconcile_public_catalog(
                 descriptors[index] = served[key]
                 carried += 1
     expected = _catalog_bytes(descriptors)
-    owner_state = {"owner_state_unjudged": len(unjudged), "owner_state_carried_forward": carried}
+    owner_state = {"owner_state_unjudged": len(unjudged), "owner_state_carried_forward": carried,
+                   "pass_timing_seconds": timings}
 
     if current == expected:
         return {

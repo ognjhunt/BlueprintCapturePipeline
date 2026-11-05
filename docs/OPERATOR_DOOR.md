@@ -109,7 +109,7 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 |---|---|---|
 | `GET /healthz` | none | `{"ok": true, "version": …}` |
 | `GET /whoami` | read | token name and scopes |
-| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, `capacity` (the capacity controller's `summary.json`: level, alerts, per-mount admission and the usage survey by storage class, root and owner), load, door queue, owned timer holds (including overdue ones), and unreported break-glass note count/latest summary |
+| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, `capacity` (the capacity controller's `summary.json`: level, alerts, per-mount admission and the usage survey by storage class, root and owner), load, `memory` (see below), door queue, owned timer holds (including overdue ones), and unreported break-glass note count/latest summary |
 | `GET /fs/list?path=&sort=name\|mtime&match=` | read | directory entries (capped) or a file's metadata |
 | `GET /fs/read?path=&offset=&length=` | read | bytes; `X-Door-Size`, `X-Door-Offset`, `X-Door-Length`, `X-Door-Eof` headers for paging |
 | `GET /fs/archive?path=` | read | tar.gz of a directory (512 MiB cap, two at a time) |
@@ -117,6 +117,24 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 | `GET /units?pattern=&state=` · `GET /units/show?unit=a,b` | read | `blueprint-*` unit rows or properties (never `Environment`) |
 | `POST /requests` | per kind | `202 {"id": …}` |
 | `GET /requests` · `GET /requests/<id>` | read | queue, or one request with result, outcome, redacted log tail and live unit state |
+
+`status.memory` answers "what holds host RAM?" read-only. `meminfo` gives
+`MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` and `Shmem` in bytes from
+`/proc/meminfo`; `slices` gives cgroup v2 `memory.current`/`memory.peak` for
+`system.slice`, `user.slice` and `init.scope`; `system_units.top` lists the 20
+largest direct children of `system.slice` by `memory.current` (every unit, not
+only `blueprint-*`; a `system-*.slice` row sums its template instances), with
+`count` and `scan_truncated`; `tmpfs` gives total and used bytes (statvfs) for
+`/dev/shm`, `/run` and `/tmp` when each is a tmpfs in the door's view;
+`oom_reports` parses the last 4 kernel OOM-killer reports of the past 24 h from
+`journalctl -k` (newest 20000 lines, 8 MiB, 10 s; `count` and `log_truncated`
+say what the window held) into each event's UTC time, invoking task, constraint
+and unit-name cgroups, the killed task (pid, uid, `anon/file/shmem-rss` kB,
+`oom_score_adj`) and the task table's 15 largest rows by rss (pages, with
+`page_size_bytes`) plus per-uid totals, or only row counts when the table's
+header is not recognised. Only numbers, uids and unit or task names are
+returned, every read is capped, and anything missing or unreadable is `null`
+rather than an error.
 
 `status.notifier_binding` is a fixed-target view of the live control-plane
 postcheck binding. It reports safe unit/drop-in paths, an opaque command hash,
@@ -230,6 +248,31 @@ as `blueprint`; retry can write only the selected capture's `pipeline/atlas`
 directory and the door's result directory. This recovery supports the beta scene
 journey and the ADP-009D development rehearsal without raising evidence claims.
 
+`--reissue-preparation --atlas-status-digest sha256:...` (mode
+`preparation-reissue`) re-issues a completed native preparation as a new job
+after its sponsor renewed the expired grant in the WebApp. It takes the same
+review, Atlas lock and ignored blockers as `--resume-preparation`, but requires
+the native job to be `completed`. It never invokes the native handler or buys
+anything. `website_preparation_renewal` refuses unless the old intent was revoked or
+expired with every attempt cancelled or settled, no sibling of the capture is
+live, the current task equals the stored one and the fresh grant renews exactly
+the old one. It then writes the renewed preparation under
+`renewals/<authority hex>/`, recomputes its CPU native inputs, registers it and
+enqueues it at the WebApp. The intake then charges every sibling's holds against the
+capture's original caps. A WebApp refusal (for example
+`website_scene_preparation_budget_exhausted`) is a typed `blocked` outcome
+recorded in `reissue.json`. It runs as `blueprint` under the production runtime guard
+and writes under `/var/lib/blueprint`. The owner approved it for the
+dispatcher-hold-only profile on 2026-11-02 ("approve adding preparation-reissue
+to the operator door's restricted profile"): it acts only on a grant the owner
+renewed and buys nothing.
+
+The same profile admits `confirm-owner-success-contract` (below) as it admits
+the budget grant: a preview, then an apply bound to the preview's digest, that
+writes one sealed record naming the owner as approver. It changes no
+threshold, starts no compute and moves no money. It was added to the profile
+in its own commit for the owner's explicit sign-off.
+
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |
@@ -241,6 +284,8 @@ journey and the ADP-009D development rehearsal without raising evidence claims.
 | `restore-scene-workspace` | operate | `scene_id`, required `bucket` | `door-restore-scene-workspace.sh`: replays the retired receipt to the canonical workspace path, checks every byte and moves the historical receipt aside. Outcome `restored` or `failed`; the module's full result is `results/<id>.restore.json` |
 | `provider-output-resume` | operate | `run` (a canary dispatch directory), `attempt` (1–999), `ingest` (default `false`) | `door-provider-output-resume.sh`: the active release's `provider_output_promotion resume --attempt-root <run>/allocator/attempts/attempt_NNN [--ingest]` for one streamed policy-canary attempt, run as `blueprint` with umask 0077 (the attempt tree is the service user's): promotion to B2, the gated cleanup, the staged-object absence proof and, with `ingest`, the needed members' ingestion, which short-circuits once materialized. It refuses, touching nothing, until the attempt's teardown manifest records `continuing_spend_from_this_run: false` (`provider_output_resume_attempt_not_torn_down`). Outcome `completed`, or `blocked` with the first blocker as its code; the module's summary is `results/<id>.provider-output-resume.json` |
 | `extend-scene-execution-window` | operate | `intent_id` (`scene-<64 hex>`), `intent_digest`, `expires_at` (UTC `YYYY-MM-DDTHH:MM:SSZ`), `authorization_reference` (names the owner's approval, ≤ 500 printable chars), `ack` = `extend-scene-execution-window`, `apply` | `door-extend-scene-execution-window.sh`: the active release's `task_evaluation_scene_execution_window_door`, as `blueprint`. It reads the capture's current rights from the WebApp and refuses a revoked intent, a digest mismatch, a withdrawn capture or revoked consent, and any expiry not after now, more than 7 days ahead, or more than 7 days past the intent's original expiry. Without `apply` it only plans. With `apply` it writes one sealed `authorized_via: operator_door` extension (door caller, door request id, the owner's reference, every execution bound unchanged) and sends it to the WebApp's signed internal endpoint, retrying a transport failure twice. An equal or earlier expiry is `already_covered`; with `apply` it re-sends the covering extension, and a plan never writes or POSTs. Outcome `planned`, `extended`, `already_covered`, `refused` (code) or `failed` (`webapp_notice_failed`); the full result is `results/<id>.scene-window.json` |
+| `extend-scene-execution-budget` | operate | `intent_id` (`scene-<64 hex>`), `owner_user_id`, `owner_organization_id`, `approved_by` (must be the owner user), `approval_evidence` (≤ 500 printable chars), `max_total_spend_usd` (0 < x ≤ 1000), `max_paid_attempts`, `apply`, `apply_ack` (the preview's `apply_ack` digest with `apply`, else empty), `ack` = `extend-scene-execution-budget` | `door-extend-scene-execution-budget.sh`: the active release's `task_evaluation_scene_execution_budget_door`, as `blueprint`, with no network and every secret hidden. Without `apply` it only previews the current and requested ceilings and their `apply_ack` digest. With `apply` and that digest it appends one owner grant through `extend_scene_execution_budget` (monotonic, bound to the intent's issuer and owner; the reference names the approving owner, the evidence, `channel=operator_door`, the door caller and request id). It refunds, settles and rewrites no hold. Outcome `planned`, `extended`, `refused` (code) or `failed`; the full result is `results/<id>.scene-budget.json` |
+| `confirm-owner-success-contract` | operate | `intent_id` (`scene-<64 hex>`), `owner_user_id`, `owner_organization_id`, `approved_by` (must be the owner user), `approval_evidence` (≤ 500 printable chars), `apply`, `apply_ack` (the preview's `apply_ack` digest with `apply`, else empty), `ack` = `confirm-owner-success-contract`; no threshold is a field | `door-confirm-owner-success-contract.sh`: the active release's `task_evaluation_owner_success_confirmation_door`, as `blueprint`, with no network and every secret hidden (the budget grant's sandbox). It finds the intent's published job from retained host records only: the progression's completion names the launch, the launch's validated result names the revision (its bytes must be the progression's published result), and the success criteria and task template are the copies the completion join retained under the launch's `robot-free-readiness/documents/`, each checked against the revision. Without `apply` it only previews: the revision digest, the success document, the thresholds exactly as built, the `proposal_only` authority they carry, any existing confirmation, and an `apply_ack` digest of the binding, owner, approver and evidence. With `apply` and that digest it writes one sealed `task_evaluation_owner_success_contract_confirmation.v1` record under `<intent>/owner-success-confirmations/<digest>.json` (exclusive; a matching record already there is returned as `already_confirmed` and nothing is written). It refuses another owner, an approver who is not the owner, a revoked intent, a job not yet published, missing or changed retained documents and an authority that is not `proposal_only`. It changes no threshold, starts no compute and moves no money. Outcome `planned`, `confirmed`, `already_confirmed`, `refused` (code) or `failed`; the full result is `results/<id>.owner-success.json` |
 
 **`deploy` is root-equivalent.** Whoever holds it can get code that is on
 `origin/main` running as root, which is what a deploy is. Give it only to
@@ -535,13 +580,92 @@ python3 scripts/operator_door.py deploy <sha on main> --wait
 python3 scripts/operator_door.py retire-scene-workspace <scene_id> --wait           # plan only
 python3 scripts/operator_door.py retire-scene-workspace <scene_id> --apply --wait   # retire behind a receipt
 python3 scripts/operator_door.py restore-scene-workspace <scene_id> --bucket <bucket> --wait
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion-plan.service  # plan the deployed owner-approved deletions
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion.service       # delete what that plan found eligible
 python3 scripts/operator_door.py provider-output-resume <run> <attempt> --ingest --wait
 python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
     --expires-at <UTC instant> --authorization-reference "<owner approval>" --wait                    # plan only
 python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
     --expires-at <UTC instant> --authorization-reference "<owner approval>" \
     --apply --ack extend-scene-execution-window --wait                                             # record + tell WebApp
+python3 scripts/operator_door.py confirm-owner-success-contract <intent_id> --owner-user-id <uid> \
+    --owner-organization-id <org> --approved-by <uid> --approval-evidence "<owner approval>" --wait   # preview only
+python3 scripts/operator_door.py confirm-owner-success-contract <intent_id> --owner-user-id <uid> \
+    --owner-organization-id <org> --approved-by <uid> --approval-evidence "<owner approval>" \
+    --apply --apply-ack sha256:<preview apply_ack> --ack confirm-owner-success-contract --wait     # record
 ```
+
+### Owner confirmation of a website job's success thresholds
+
+A website job is built with Blueprint's fixed development controls as its
+success thresholds, marked `proposal_only` (`website_native_submission`), so
+the team packet refuses it with
+`team_scene_owner_contract_invalid:configured_owner_success_contract_authority_missing`
+and screening refuses an unconfirmed owner contract. Once the job is published,
+the owner can accept those exact thresholds: run the preview, show the owner
+the `preview.configured_success_criteria` it returns, and apply with its
+`apply_ack` and the owner's verbatim approval as `--approval-evidence`. The
+confirmation changes no threshold.
+
+The team packet worker reads the record from the request's own intent
+(`team_scene_packet_worker.owner_success_confirmation_scope`: the intent must be
+the request's, by id and digest, and its progression must have queued that
+exact request). It recomputes the binding (revision digest, success document
+reference, thresholds digest, proposal digest, owner) from what it compiled,
+and only an exact match makes the owner contract `task_owner`/`confirmed` with
+author `owner-success-confirmation:<confirmation_digest>`; anything else refuses
+as before. A request blocked on an owner-contract refusal returns to `pending/`
+once per new confirmation of its intent, on the worker's own pass or the
+screening timer's (`requeue_transient_blocked`); to run it now,
+`python3 scripts/operator_door.py unit start blueprint-team-scene-packet.service`.
+Screening then reads the contract the team packet sealed.
+
+The owner can also confirm on the website job page, with no operator
+(`website_owner_success_confirmation`). On the screening timer's pass,
+`requeue_transient_blocked` sends each request blocked only on that refusal
+(at most four a pass, rotating) to the WebApp over the signed Pipeline sync
+transport: `POST /api/internal/pipeline/task-evaluation-scene-intents/<intent>/owner-success-proposal`
+carries the published thresholds, their revision and a `proposal_digest`
+sealing the whole binding. The WebApp shows them to the job's owner link only,
+in plain words, with Confirm and "this is wrong" (a typed reason, no numbers),
+and answers with the owner's decision on exactly that proposal. A confirmation
+is written by the door's own writer and validators, with `issuer_channel`
+`website`, and the same pass returns the request to `pending/`. A "wrong"
+answer writes nothing under the intent and leaves the request blocked; its
+status keeps the reason under `website_owner_success`, as it keeps `pending`
+or a `failed` exchange. Each request is asked again only at its kept
+`next_check_at`, or at once when its intent's progression changes and builds a
+new proposal; the wait doubles while the answer repeats, from 2 min (pending,
+up to 1 h), 30 min (held, up to 1 day), 15 min (a WebApp 4xx, up to 1 day) or
+2 min (a transport failure, up to 6 h). Any error in one job's exchange is that
+job's `failed` exchange and never stops the screening pass. A republished job
+has a new proposal digest and needs a new decision. The door path above is
+unchanged. The WebApp alerts ops (Slack, then ops email) when an owner holds a
+job's thresholds.
+
+Every team-packet status names the release that wrote it (`release_commit`,
+the commit of the release checkout the worker or timer runs from). Any other
+deterministic refusal (neither transient nor owner-contract) returns to
+`pending/` once per newly deployed release, on the same two passes, so a deploy
+that fixes its cause re-drives it with no operator step; a status without
+`release_commit` counts as an older release. The status keeps the releases
+already tried under `release_requeued` (written before the move), so a refusal
+the new release does not fix stays blocked until the next deploy. The pass
+reports it as `{"reason": "new_release", ...}`. When the running release cannot
+be read, nothing is requeued on that basis. Completed and skipped requests never
+move, except as follows.
+
+A completed rigid half whose recorded carry search found no stance the Franka
+carries from (`robot_station_search.cleared` false, or `reach_shortfall`
+`out_of_reach`: capture-447ae4f4's eight stances, all `unreachable:approach`)
+is compiled again once per stance-search version, on the same two passes and
+the CPU, when its station was chosen by an older stance search than the running
+release's (`team_embodiment_stance.STANCE_SEARCH_VERSION`, recorded in every
+stance as `search.stance_search_version`; a station without one is version 1).
+The status keeps the versions tried under `stance_search_version_requeued`
+(written before the move); the pass reports `{"reason": "stance_search_version", ...}`.
+A release that leaves the stance search unchanged recompiles nothing, and a
+half the new search still cannot carry from is kept until the next version.
 
 A provider-output resume unit may write only the canary dispatch root, the disk
 reservation ledger and its result (`ProtectSystem=strict` and the retirement
@@ -570,6 +694,63 @@ on a scratch copy until its first stop and reports what it would buy there; a
 `missing_input` names the next file to pull, and `unpulled_before` lists records
 the code looked for just before stopping, which a partial pull can turn into a
 false purchase or refusal. The pulled files are never written.
+
+### Replay the post-completion chain before deploy
+
+A website scene's post-completion chain (completion join, robot-free readiness,
+team scene packet, rigid probe enqueue, screening plan) replays the same way,
+with `task_evaluation_downstream_replay`. Pull these to their own absolute paths,
+because the launch receipt, its result and the registry name files by absolute
+path (`<bucket>` is the capture partition under `pubsub-handoffs`):
+
+```bash
+L=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/<launch>
+I=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/<intent>
+C=/var/lib/blueprint/pubsub-handoffs/<bucket>/scenes/<scene>/captures/<capture>
+R=/etc/blueprint/team-evaluation-registry.json
+door() { python3 scripts/operator_door.py pull "$1" "$1"; }
+for f in launch_profile.json launch_receipt.json webapp_sync_succeeded.json \
+         post_teardown_provider_zero_receipt.json allocator/result.json; do door "$L/$f"; done
+# Present only once the probe or an earlier join ran; a refused pull just means it is absent.
+for f in rigid_robot_free_probe_trace.v1.json robot_free_readiness.v1.json robot-free-readiness; do door "$L/$f"; done
+# The published revision and the configured bundle the result names (the bundle can be large).
+REV=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["configured_scene_revision_path"])' \
+      "$L/allocator/result.json")
+door "$REV"; door "$(dirname "$REV")/configured_scene_bundle.v1.zip"
+door "$I"                                   # intent.json, attempts/, progression
+for f in capture_descriptor.json pipeline/website_task_context.json pipeline/website_scene_sponsorship.json \
+         pipeline/atlas/configuration.json pipeline/website_candidate_ranking.json; do door "$C/$f"; done
+door "$R"
+```
+
+Pull only these: the replay copies and digests everything under each input, so
+a whole launch run with its provider output costs minutes. Also pull, to their
+own paths, the DROID profile and runtime-source receipt the registry's
+`derived_profiles.packet_inputs` names, and for a scene whose probe has not passed
+the packet that receipt names. The scored-matrix salt key is never pulled: the
+replay uses a placeholder. Save the WebApp's current answers for the capture as
+`webapp/task-context.json` and the non-creating `webapp/atlas-configuration.json`
+(the one carrying `job_ceiling`); without them the replay answers from the
+capture's retained copies and `webapp_answers` says so. Then, on the fix branch:
+
+```bash
+python -m blueprint_pipeline.task_evaluation_downstream_replay --launch-run "$L" --intent-dir "$I" \
+    --capture-dir "$C" --registry "$R" --webapp-snapshots ./webapp --mirror ./mirror \
+    --until screening_plan --replay-root ./replays
+```
+
+It runs this tree's join, readiness scorer, team compile, probe lane and
+screening planner on scratch copies and prints `downstream_replay_report.v1.json`
+(also written under `./replays`). `first_stop.kind` is `completed` (`--until`
+reached), `would_buy` (the probe's paid allocator, named, never started),
+`external_effect` (a WebApp write other than the recorded job offer, the network,
+a subprocess or a write outside the replay root), `missing_input` (`code` is the
+next file to pull, or a published object to add at `./mirror/<bucket>/<key>`;
+objects the launch retained byte for byte are found without it), `refusal` (the
+code's typed blocker, with `fired_predicates` and `unpulled_before`) or `error`.
+`evidence.unchanged` confirms the pulled files' digests did not change; nothing
+is sent, bought or written outside `./replays`. Exit codes: 0 completed,
+would_buy or external_effect; 2 error; 3 refusal; 4 missing_input.
 
 `usage` answers "what uses the disk?" in one call. It prints `capacity.usage` from
 `status` as tables: each surveyed filesystem's used, surveyed and classified bytes

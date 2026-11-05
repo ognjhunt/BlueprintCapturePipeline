@@ -34,6 +34,26 @@ BRIDGE_MODULES = ("asset_authoring_sandbox", "asset_landlock", "task_object_arti
 
 PREFLIGHT_TIMEOUT_SECONDS = 300
 
+#: Applied in this order to the pinned upstream archive. 0001 confines
+#: generated code; 0002 prices and admits gpt-6.1-sol and its max reasoning
+#: effort (owner direction 2026-11-02). The sealed manifest records each digest.
+UPSTREAM_PATCHES = ("0001-confine-generated-code.patch", "0002-gpt-6-1-sol.patch")
+PATCH_DIRECTORY = "upstream_patches"
+
+
+def apply_upstream_patches(repository: Path, source: Path, staging: Path) -> list[dict]:
+    """Apply ``UPSTREAM_PATCHES`` in order; copy each beside the source and return its record."""
+    applied = []
+    (staging / PATCH_DIRECTORY).mkdir()
+    for name in UPSTREAM_PATCHES:
+        patch = repository / "patches/artisan" / name
+        record = file_record(patch)
+        subprocess.run(["git", "apply", "--check", str(patch)], cwd=source, check=True)
+        subprocess.run(["git", "apply", str(patch)], cwd=source, check=True)
+        shutil.copyfile(patch, staging / PATCH_DIRECTORY / name)
+        applied.append({"name": name, "sha256": record["sha256"], "size_bytes": record["size_bytes"]})
+    return applied
+
 
 def _runtime_preflight(staging: Path) -> None:
     code = '''import importlib,json,pathlib,platform,sys
@@ -164,11 +184,7 @@ def build_artisan_scene_configuration_component(*, repository_root, expected_blu
                         "artisan_source_archive_path_invalid")
             zipped.extractall(source)
         archive.unlink()
-        patch = repository / "patches/artisan/0001-confine-generated-code.patch"
-        patch_hash = file_record(patch)["sha256"]
-        subprocess.run(["git", "apply", "--check", str(patch)], cwd=source, check=True)
-        subprocess.run(["git", "apply", str(patch)], cwd=source, check=True)
-        shutil.copyfile(patch, staging / "upstream.patch")
+        patches = apply_upstream_patches(repository, source, staging)
         mark_phase("artisan_source_unpacked")
         site_copy = vendor_copy_function(reuse, kind="site_packages", source_root=libraries) if reuse else None
         shutil.copytree(libraries, staging / "runtime/site_packages", ignore=SITE_IGNORE,
@@ -199,7 +215,9 @@ def build_artisan_scene_configuration_component(*, repository_root, expected_blu
         value = {"schema_version": SCHEMA, "backend": ARTISAN_BACKEND,
                  "upstream_revision": ARTISAN_REVISION, "upstream_tree": ARTISAN_TREE,
                  "lock_sha256": file_record(source / "uv.lock")["sha256"],
-                 "patch_sha256": patch_hash, "python": ">=3.12,<3.13",
+                 # ``patch_sha256`` keeps its meaning (the 0001 confinement
+                 # patch); ``patches`` lists every applied patch in order.
+                 "patch_sha256": patches[0]["sha256"], "patches": patches, "python": ">=3.12,<3.13",
                  "blender_version": "5.0.0", "installed_dependencies": installed,
                  "files": files, "network_install_required": False,
                  "controller_and_generated_execution_separate": True,

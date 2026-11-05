@@ -65,6 +65,51 @@ def _finish(plan: Mapping[str, Any], status: str, *, reason: str | None = None, 
     return result
 
 
+#: The authored phase plan refuses a packet whose task start pose and spawned task-object root disagree by
+#: more than the reset tolerance (a support alignment raised the root after the start was fixed).
+RESET_MISMATCH = "native_rigid_construction_scoring_frame_reset_mismatch"
+
+
+def _detail(exc: Exception) -> str:
+    errors = getattr(exc, "errors", None)
+    return ",".join(errors) if errors else type(exc).__name__
+
+
+def _start_on_spawned_root(plan: Mapping[str, Any]) -> tuple[dict[str, Any], float]:
+    """The plan with the task's start pose where its object spawns: the subject root and its scoring frame."""
+    from .team_arm_kinematics import pose_matrix, quaternion_xyzw
+
+    (subject,) = [row for row in plan.get("objects") or [] if isinstance(row, Mapping) and row.get("task_subject") is True]
+    root = (subject.get("reset_state") or {}).get("root_pose_world") or subject["pose_world"]
+    task = plan["task_spec"]
+    scoring = task["interaction_affordance"]["asset_root_from_scoring_frame"]
+    start = (pose_matrix(root["position_world_m"], root["orientation_xyzw"])
+             @ pose_matrix(scoring["position_m"], scoring["orientation_xyzw"]))
+    position = [float(v) for v in start[:3, 3]]
+    offset = float(np.linalg.norm(np.asarray(position) - np.asarray(task["start_pose_world"][:3], dtype=float)))
+    return {**plan, "task_spec": {**task, "start_pose_world": [*position, *quaternion_xyzw(start[:3, :3])]}}, offset
+
+
+def _authored_phases(plan: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """The task's authored phases, and advisories on how they were derived.
+
+    When the phase plan refuses only because the start pose and the spawned object disagree
+    (``RESET_MISMATCH``), the phases are derived with the start where the object spawns, which is where an
+    arm has to grasp it, and the advisory names the offset. Reach is measured either way; the run's own
+    phase plan is unchanged.
+    """
+    from .native_task_construction_plan import materialize_native_task_construction_phase_plan
+
+    try:
+        return materialize_native_task_construction_phase_plan(plan), []
+    except ValueError as exc:
+        if tuple(getattr(exc, "errors", ()) or ()) != (RESET_MISMATCH,):
+            raise
+    reseated, offset = _start_on_spawned_root(plan)
+    return (materialize_native_task_construction_phase_plan(reseated),
+            [f"task_start_reseated_on_spawned_root:{offset:.4f}m"])
+
+
 def _prepare(plan: Mapping[str, Any], model_path: str | Path, manifest: Mapping[str, Any], *,
              free_base: bool = False) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """The body's arms, grasp bindings and the task's phases, read once; or the unassessed report.
@@ -82,15 +127,13 @@ def _prepare(plan: Mapping[str, Any], model_path: str | Path, manifest: Mapping[
     if not model.is_file() or _sha256(model) != robot.get("usd_sha256"):
         return _finish(plan, "unassessed", reason="team_model_unbound"), None
     try:
-        from .native_task_construction_plan import materialize_native_task_construction_phase_plan
-
-        authored = materialize_native_task_construction_phase_plan(plan)
+        authored, advisories = _authored_phases(plan)
         if authored.get("manipulation_strategy") != "pick_and_place":
             return _finish(plan, "unassessed", reason="manipulation_strategy_unmodeled"), None
         phases = [(str(row["phase_id"]), pose_matrix(row["position_world_m"], row["orientation_world_xyzw"]))
                   for row in authored["phases"] if row.get("phase_id") != "recovery"]
     except (KeyError, TypeError, ValueError) as exc:
-        return _finish(plan, "unassessed", reason="task_phases_unavailable", detail=type(exc).__name__), None
+        return _finish(plan, "unassessed", reason="task_phases_unavailable", detail=_detail(exc)), None
     if not phases:
         return _finish(plan, "unassessed", reason="task_phases_unavailable"), None
 
@@ -99,7 +142,7 @@ def _prepare(plan: Mapping[str, Any], model_path: str | Path, manifest: Mapping[
     found = body_arm_chains(model, manifest)
     if not found["chains"]:
         return _finish(plan, "unassessed", reason="robot_arm_unmodeled", unassessed_arms=dict(found["unassessed"])), None
-    advisories = [f"robot_arm_unmodeled:{arm}:{code}" for arm, code in sorted(found["unassessed"].items())]
+    advisories += [f"robot_arm_unmodeled:{arm}:{code}" for arm, code in sorted(found["unassessed"].items())]
     try:
         from .scripted_robot_runtime_dispatch import build_policy_spec
 
@@ -133,11 +176,16 @@ def _evaluate(plan: Mapping[str, Any], prepared: Mapping[str, Any], base_pose_wo
         weight = IK_ORIENTATION_WEIGHT_M if grasp else 0.0
         rows, previous = [], None
         for phase_id, world_from_grasp in phases:
-            result = solve(chain, base_from_world @ world_from_grasp @ grasp_from_tcp, classify=classify,
+            target = base_from_world @ world_from_grasp @ grasp_from_tcp
+            result = solve(chain, target, classify=classify,
                            seeds=None if previous is None else [previous], orientation_weight_m=weight)
             rows.append({"phase_id": phase_id, "reached": bool(result.ok), "failure": result.failure,
                          "detail": result.detail, "position_error_m": (float(result.position_error_m)
                                                                        if np.isfinite(result.position_error_m) else None)})
+            if result.detail == "beyond_reach_bound":
+                # The proof's numbers: the TCP target's distance from the chain's first joint, and its bound.
+                rows[-1].update(distance_m=round(float(np.linalg.norm(target[:3, 3] - chain.before[0][:3, 3])), 4),
+                                reach_bound_m=round(float(chain.reach_bound_m), 4))
             if not result.ok:
                 break
             previous = result.joints
@@ -152,7 +200,9 @@ def _evaluate(plan: Mapping[str, Any], prepared: Mapping[str, Any], base_pose_wo
         # Furthest phase first: the one the best arm got to.
         name, miss = max(misses.items(), key=lambda item: len(arms[item[0]]["phases"]))
         return _finish(plan, "out_of_reach", advisories=[*advisories, "robot_arm_task_beyond_reach:" + miss["phase_id"]],
-                       arms=arms, phase_ids=phase_ids)
+                       arms=arms, phase_ids=phase_ids,
+                       beyond_reach={"arm": name, "phase_id": miss["phase_id"],
+                                     "distance_m": miss.get("distance_m"), "reach_bound_m": miss.get("reach_bound_m")})
     advisories += [f"robot_arm_task_unreached:{name}:{miss['phase_id']}:{miss['failure']}:{miss['detail']}"
                    for name, miss in sorted(misses.items())]
     return _finish(plan, "flagged", advisories=advisories, arms=arms, phase_ids=phase_ids)

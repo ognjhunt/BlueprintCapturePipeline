@@ -1346,11 +1346,12 @@ def test_canonical_provenance_cannot_replace_existing_results_symlink(config: Do
 _PRIOR_SELECTED = "20261009T154718Z-selected-handoff-9ef60661"
 
 
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume", "discover-selector"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume", "preparation-reissue",
+                                  "discover-selector"])
 def test_selected_atlas_runner_keeps_service_user_and_only_exact_job_write_path(config, mode):
     from tests.test_operator_door_requests import _selected_request
     body = {**_selected_request(), "mode": mode}
-    if mode in {"atlas-retry", "preparation-resume"}:
+    if mode in {"atlas-retry", "preparation-resume", "preparation-reissue"}:
         body["atlas_status_digest"] = "sha256:" + "c" * 64
     if mode == "discover-selector":
         fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation"}
@@ -1367,7 +1368,7 @@ def test_selected_atlas_runner_keeps_service_user_and_only_exact_job_write_path(
     if mode == "atlas-retry":
         writable += (f" /var/lib/blueprint/pubsub-handoffs/{body['bucket']}/scenes/{body['scene_id']}"
                      f"/captures/{body['capture_id']}/pipeline/atlas")
-    if mode == "preparation-resume":
+    if mode in {"preparation-resume", "preparation-reissue"}:
         writable += " /var/lib/blueprint"
     assert f"--property=ReadWritePaths={writable}" in launch
     assert "--property=ReadWritePaths=/var/lib/blueprint" not in launch
@@ -1560,3 +1561,158 @@ def test_scene_window_caller_name_is_rechecked_before_launch(config: DoorConfig)
     process_spool(config, runner=runner)
     assert not [row for row in runner.calls if row[0] == "systemd-run"]
     assert _result(config, request_id)["code"] == "scene_window_caller_invalid"
+
+
+# ------------------------------------------------- scene-configuration activation hold
+
+def test_a_deploy_tells_its_script_where_to_park_and_what_runs(config: DoorConfig) -> None:
+    _spooled(config, {"kind": "deploy", "commit": SHA})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    env = _launch_env(_deploy_launches(runner)[0])
+    # activation_hold.py parks a direct deploy itself when an activation is live.
+    assert env["DOOR_ACTIVATION_HOLD_PARKED_DIR"] == str(Path(config.spool_root) / "parked")
+    assert env["DOOR_ACTIVE_RELEASE_LINK"] == config.active_release_link
+    assert "DOOR_PARKED" not in env and "DOOR_ACTIVATION_HOLD_OVERRIDE" not in env
+
+
+def test_an_override_reaches_the_script_and_survives_parking(config: DoorConfig) -> None:
+    request_id = _spooled(config, {"kind": "deploy", "commit": SHA, "activation_hold_override": "rights"})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+    assert _parked_record(config, request_id)["activation_hold_override"] == "rights"
+
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    env = _launch_env(_deploy_launches(runner)[0])
+    assert env["DOOR_ACTIVATION_HOLD_OVERRIDE"] == "rights" and env["DOOR_PARKED"] == "1"
+
+
+@pytest.mark.parametrize("value", ["fixes_live_activation", "money", "privacy", "rights", "pr-3206:hotfix.v2"])
+def test_an_override_takes_any_short_logged_reason(value) -> None:
+    assert validate_request({"kind": "deploy", "commit": SHA,
+                             "activation_hold_override": value})["activation_hold_override"] == value
+
+
+@pytest.mark.parametrize("value", ["", "Urgent", "two words", "-lead", "x" * 65, "a;rm -rf /", True, 1, ["money"]])
+def test_an_override_reason_is_a_short_token(value) -> None:
+    from operator_door.requests import RequestRefused
+
+    with pytest.raises(RequestRefused, match="activation_hold_override_invalid"):
+        validate_request({"kind": "deploy", "commit": SHA, "activation_hold_override": value})
+
+
+def _write_hold(config: DoorConfig, recheck: float) -> None:
+    from operator_door import activation_hold
+
+    parked = Path(config.spool_root) / "parked"
+    parked.mkdir(parents=True, exist_ok=True)
+    (parked / activation_hold.HOLD_FILE).write_text(json.dumps(
+        {"schema": activation_hold.HOLD_SCHEMA, "recheck_after_epoch": recheck}), encoding="utf-8")
+
+
+def test_a_held_parked_deploy_is_not_relaunched_before_its_recheck(config: DoorConfig) -> None:
+    request_id = _spooled(config, {"kind": "deploy", "commit": SHA})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+    _write_hold(config, time.time() + 120)
+
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert _deploy_launches(runner) == [] and _parked(config) == [request_id]
+
+    _write_hold(config, time.time() - 1)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert len(_deploy_launches(runner)) == 1
+
+
+def test_a_recheck_too_far_ahead_is_not_trusted(config: DoorConfig) -> None:
+    _spooled(config, {"kind": "deploy", "commit": SHA})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+    _write_hold(config, time.time() + 24 * 3600)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert len(_deploy_launches(runner)) == 1
+
+
+def test_a_parked_override_skips_the_recheck_wait(config: DoorConfig) -> None:
+    _spooled(config, {"kind": "deploy", "commit": SHA})
+    _spooled(config, {"kind": "deploy", "commit": NEWER, "activation_hold_override": "money"})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+    _write_hold(config, time.time() + 120)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert _launch_env(_deploy_launches(runner)[0])["DOOR_ACTIVATION_HOLD_OVERRIDE"] == "money"
+
+
+def test_scene_budget_grant_runs_the_release_module_without_network_or_secrets(config: DoorConfig) -> None:
+    body = {"kind": "extend-scene-execution-budget", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner chose +$5 $(touch x)", "max_total_spend_usd": 25,
+            "max_paid_attempts": 16, "apply": True, "apply_ack": "sha256:" + "c" * 64,
+            "ack": "extend-scene-execution-budget"}
+    request_id = _spooled(config, body)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    label = hashlib.sha256(body["intent_id"].encode()).hexdigest()[:12]
+    unit = f"blueprint-operator-door-scene-budget-{label}-{request_id[-8:]}.service"
+    assert call[1] == f"--unit={unit}" and "--property=RuntimeMaxSec=5min" in call
+    for sandbox in ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "ProtectHome=yes",
+                    "UMask=0077", "PrivateNetwork=yes"):
+        assert f"--property={sandbox}" in call, sandbox
+    hidden = next(value for value in call if value.startswith("--property=InaccessiblePaths="))
+    assert "-/etc/blueprint/provider-secrets" in hidden and "-/etc/blueprint-operator-door" in hidden
+    assert "--setenv=DOOR_REQUESTED_BY=cloud" in call and "--setenv=DOOR_SERVICE_USER=blueprint" in call
+    assert f"--setenv=DOOR_SCENE_BUDGET_REQUEST={json.dumps(body, sort_keys=True)}" in call
+    assert call[-1] == "/opt/blueprint/operator-door/door-extend-scene-execution-budget.sh"
+    assert not any(row[:2] == ["systemctl", "list-units"] for row in runner.calls)
+
+
+def test_owner_success_confirmation_runs_the_release_module_without_network_or_secrets(config: DoorConfig) -> None:
+    body = {"kind": "confirm-owner-success-contract", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner accepted $(touch x)", "apply": True, "apply_ack": "sha256:" + "c" * 64,
+            "ack": "confirm-owner-success-contract"}
+    request_id = _spooled(config, body)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    label = hashlib.sha256(body["intent_id"].encode()).hexdigest()[:12]
+    unit = f"blueprint-operator-door-owner-success-{label}-{request_id[-8:]}.service"
+    assert call[1] == f"--unit={unit}" and "--property=RuntimeMaxSec=5min" in call
+    for sandbox in ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "ProtectHome=yes",
+                    "UMask=0077", "PrivateNetwork=yes"):
+        assert f"--property={sandbox}" in call, sandbox
+    hidden = next(value for value in call if value.startswith("--property=InaccessiblePaths="))
+    assert "-/etc/blueprint/provider-secrets" in hidden and "-/etc/blueprint-operator-door" in hidden
+    writable = next(value for value in call if value.startswith("--property=ReadWritePaths="))
+    assert writable.split("=", 2)[2].split() == ["/var/lib/blueprint/pipeline-control-plane",
+                                                str(Path(config.spool_root) / "results")]
+    assert "--setenv=DOOR_REQUESTED_BY=cloud" in call and "--setenv=DOOR_SERVICE_USER=blueprint" in call
+    assert f"--setenv=DOOR_OWNER_SUCCESS_REQUEST={json.dumps(body, sort_keys=True)}" in call
+    assert call[-1] == "/opt/blueprint/operator-door/door-confirm-owner-success-contract.sh"
+    assert not any(row[:2] == ["systemctl", "list-units"] for row in runner.calls)
+
+
+def test_owner_success_caller_name_is_rechecked_before_launch(config: DoorConfig) -> None:
+    body = {"kind": "confirm-owner-success-contract", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner approval", "apply": False, "apply_ack": "",
+            "ack": "confirm-owner-success-contract"}
+    request_id = enqueue(config, validate_request(body), requested_by="bad caller")
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert not [row for row in runner.calls if row[0] == "systemd-run"]
+    assert _result(config, request_id)["code"] == "owner_success_caller_invalid"
+
+
+def test_scene_budget_caller_name_is_rechecked_before_launch(config: DoorConfig) -> None:
+    body = {"kind": "extend-scene-execution-budget", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner approval", "max_total_spend_usd": 25, "max_paid_attempts": 16,
+            "apply": False, "apply_ack": "", "ack": "extend-scene-execution-budget"}
+    request_id = enqueue(config, validate_request(body), requested_by="bad caller")
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert not [row for row in runner.calls if row[0] == "systemd-run"]
+    assert _result(config, request_id)["code"] == "scene_budget_caller_invalid"

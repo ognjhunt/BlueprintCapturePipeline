@@ -39,6 +39,11 @@ STATUS_V3 = "website_preparation_status.v3"
 # v4 adds the one optional question the site can answer inside this job: which
 # object the robot moves, when preparation went on with its best guess.
 STATUS_V4 = "website_preparation_status.v4"
+# v5 adds the job's robot fit table, a spec-bounded estimate (website_robot_fit_projection).
+STATUS_V5 = "website_preparation_status.v5"
+# v6 adds the job's robot fit precheck: whether a robot the screening catalog runs can do the task in
+# this room, decided before any spend, and the hold it names when none can (website_robot_fit_precheck).
+STATUS_V6 = "website_preparation_status.v6"
 # The WebApp opts in per read; an absent or unknown value is answered with v1.
 VERSION_HEADER = "x-blueprint-preparation-status-version"
 _STATES_V1 = frozenset({"preparing", "awaiting_inputs", "failed_retryable", "authority_ended", "handed_off"})
@@ -46,7 +51,9 @@ _STATES_V2 = _STATES_V1 | {"capacity_delayed", "failed_terminal"}
 _ACCEPTANCE = {"website_preparation_status_acceptance.v1": (STATUS_V1, _STATES_V1),
                "website_preparation_status_acceptance.v2": (STATUS_V2, _STATES_V2),
                "website_preparation_status_acceptance.v3": (STATUS_V3, _STATES_V2),
-               "website_preparation_status_acceptance.v4": (STATUS_V4, _STATES_V2)}
+               "website_preparation_status_acceptance.v4": (STATUS_V4, _STATES_V2),
+               "website_preparation_status_acceptance.v5": (STATUS_V5, _STATES_V2),
+               "website_preparation_status_acceptance.v6": (STATUS_V6, _STATES_V2)}
 _CODES = {"preparing": "preparation_in_progress", "awaiting_inputs": "preparation_inputs_pending",
           "capacity_delayed": "preparation_capacity_delayed", "failed_retryable": "preparation_retryable_failure",
           "failed_terminal": "preparation_failed_terminal", "authority_ended": "preparation_authority_ended",
@@ -63,17 +70,52 @@ def requested_status_version(value: Any) -> str:
     text = value.strip() if type(value) is str else ""
     if re.fullmatch(r"[1-9][0-9]{0,2}", text):
         number = int(text)
-        return STATUS_V4 if number >= 4 else STATUS_V3 if number == 3 else STATUS_V2 if number == 2 else STATUS_V1
+        return (STATUS_V6 if number >= 6 else STATUS_V5 if number == 5 else STATUS_V4 if number == 4
+                else STATUS_V3 if number == 3 else STATUS_V2 if number == 2 else STATUS_V1)
     return STATUS_V1
 
 
 class PreparationStatusUnavailable(ValueError):
-    """Fixed public refusal; internal paths/errors never cross this boundary."""
+    """Fixed public refusal; internal paths/errors never cross this boundary.
+
+    ``reason`` names the failed check with a fixed code for the private delivery
+    record only (``unavailable_reason``). The message stays the public refusal.
+    """
+
+    def __init__(self, message: str = _UNAVAILABLE, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
-def _require(condition: bool) -> None:
+def _require(condition: bool, reason: str | None = None) -> None:
     if not condition:
-        raise PreparationStatusUnavailable(_UNAVAILABLE)
+        raise PreparationStatusUnavailable(_UNAVAILABLE, reason=reason)
+
+
+_REASON_CODE = re.compile(r"[a-z][a-z0-9_.:-]{0,159}")
+
+
+def unavailable_reason(exc: BaseException) -> str | None:
+    """The fixed code behind a refused status read, for the delivery record.
+
+    A named check's ``reason``, else the first fixed-code message of a
+    ``ValueError`` or ``RuntimeError`` in the cause chain, such as
+    ``website_control_scene-sponsorship_http_409:website_scene_sponsorship_missing``.
+    Free text, paths and response bodies never match, so they are never kept.
+    """
+    current: BaseException | None = exc
+    for _ in range(8):
+        if current is None:
+            return None
+        reason = getattr(current, "reason", None)
+        if isinstance(current, PreparationStatusUnavailable) and type(reason) is str and _REASON_CODE.fullmatch(reason):
+            return reason
+        message = current.args[0] if len(current.args) == 1 else None
+        if (isinstance(current, (ValueError, RuntimeError)) and type(message) is str
+                and message != _UNAVAILABLE and _REASON_CODE.fullmatch(message)):
+            return message
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def validate_selectors(value: Any) -> dict[str, str]:
@@ -107,10 +149,52 @@ def _read_delivery(path: Path) -> dict[str, Any]:
     for field in ("delivery_attempt_count", "delivery_failure_count"):
         counter = value.get(field, 0)
         _require(type(counter) is int and counter >= 0)
-    for field in ("pending_since_epoch", "next_attempt_at_epoch"):
+    for field in ("pending_since_epoch", "next_attempt_at_epoch", "status_unavailable_since_epoch", "parked_at_epoch"):
         timestamp = value.get(field, 0.0)
         _require(type(timestamp) in (int, float) and math.isfinite(timestamp) and timestamp >= 0)
     return value
+
+
+# D-05 (2026-11-02): seven callbacks whose status read failed on every attempt
+# held the due backlog for 4.6 days. A delivery whose status read has failed on
+# every attempt for a day is parked, not dropped: it stays pending with all its
+# fields, is retried every six hours, and is counted apart from the due backlog.
+# One successful read, or a newer revision from the producer, makes it live.
+PARK_AFTER_SECONDS = 24 * 3600
+PARKED_RETRY_SECONDS = 6 * 3600
+PARKED_REASON = "preparation_status_persistently_unavailable"
+_READ_STREAK_FIELDS = ("status_unavailable_since_epoch", "last_unavailable_reason", "parked_reason",
+                       "parked_at_epoch")
+
+
+def _instant(value: Any, *, now: float) -> float | None:
+    return float(value) if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= now else None
+
+
+def _status_read_outcome(updated: Mapping[str, Any], previous: Mapping[str, Any], *, now: float,
+                         failure: BaseException | None) -> dict[str, Any]:
+    """Failed-read bookkeeping for the status read that precedes each callback.
+
+    A read that succeeds ends the streak and any parking. A failed read extends
+    it; a streak a day long parks the delivery until its six-hour retry.
+    """
+    record = {key: value for key, value in updated.items() if key not in _READ_STREAK_FIELDS}
+    if failure is None:
+        return record
+    since = _instant(previous.get("status_unavailable_since_epoch"), now=now)
+    if (since is None and "last_attempt_at_epoch" not in previous
+            and previous.get("delivery_failure_count", 0) > 0):
+        # Recorded before streaks were kept: every failure the index counted on
+        # this record came before any callback, so the streak began when it
+        # became pending.
+        since = _instant(previous.get("pending_since_epoch"), now=now)
+    since = now if since is None else since
+    record.update(status_unavailable_since_epoch=since, last_unavailable_reason=unavailable_reason(failure))
+    if now - since >= PARK_AFTER_SECONDS:
+        parked_at = _instant(previous.get("parked_at_epoch"), now=now)
+        record.update(parked_reason=PARKED_REASON, parked_at_epoch=now if parked_at is None else parked_at,
+                      next_attempt_at_epoch=now + PARKED_RETRY_SECONDS)
+    return record
 
 
 def _root(root: Path) -> Path:
@@ -180,7 +264,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
     from .website_task_context import validate_website_task_context
 
     try:
-        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4})
+        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6})
         selected = validate_selectors(dict(selectors))
         root = _root(capture_root)
         _require(root.name == selected["capture_id"] and root.parent.name == "captures"
@@ -193,7 +277,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         _require(all(before.get(key) == selected[key] for key in
                      ("scene_id", "capture_id", "producer_delivery_key", "source_payload_sha256")))
         birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
-        _require(type(birth) is dict)
+        _require(type(birth) is dict, "capture_birth_missing")
         _require(all(birth.get(key) == selected[key] for key in ("request_id", "scene_id", "capture_id")))
         _require(birth.get("delivery_key") == selected["producer_delivery_key"])
         delivery = _read(Path(birth["birth_delivery_raw_ref"]["path"]))
@@ -204,14 +288,18 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         owner = load_original_owner_observation(bucket=delivery["source_finalize"]["bucket"], scene_id=selected["scene_id"],
             capture_id=selected["capture_id"], marker_generation=selected["completion_marker_generation"],
             **({"expected_purpose": purpose} if purpose else {}))
-        _require((owner["capture_owner"] or {}).get("user_id") == birth["capture_owner_user_id"])
-        _require(owner["producer_delivery"] == delivery["producer_delivery"])
-        _require(owner["producer_delivery"]["delivery_key"] == selected["producer_delivery_key"])
-        _require(owner["producer_delivery"]["raw_video"]["generation"] == birth["raw_video"]["generation"])
-        _require(owner["producer_delivery"]["raw_video"]["object_name"] == birth["raw_video"]["object_name"])
+        _require((owner["capture_owner"] or {}).get("user_id") == birth["capture_owner_user_id"],
+                 "capture_owner_changed")
+        _require(owner["producer_delivery"] == delivery["producer_delivery"], "capture_source_changed")
+        _require(owner["producer_delivery"]["delivery_key"] == selected["producer_delivery_key"],
+                 "capture_source_changed")
+        _require(owner["producer_delivery"]["raw_video"]["generation"] == birth["raw_video"]["generation"],
+                 "capture_source_changed")
+        _require(owner["producer_delivery"]["raw_video"]["object_name"] == birth["raw_video"]["object_name"],
+                 "capture_source_changed")
         # Current fresh owner transport validates rights and complete generation
         # authority; historical birth alone grants no current consent.
-        _require(read_consent_state(root)["state"] != "revoked")
+        _require(read_consent_state(root)["state"] != "revoked", "consent_revoked")
         raw_retained = _retained_context_or_none(root)
         # Birth scope authenticates the original owner. Task preparation has
         # its own scope and may remain unconfirmed under that same capture.
@@ -223,7 +311,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                         scene_id=selected["scene_id"], capture_id=selected["capture_id"],
                         purpose=context_purpose, allow_unconfirmed_preparation=raw_retained is None)
         _require(current["context_digest"] == selected["task_context_digest"]
-                 and (retained is None or retained["context_digest"] == current["context_digest"]))
+                 and (retained is None or retained["context_digest"] == current["context_digest"]),
+                 "task_context_changed")
         # A completed job always retained its context; never hand off without it.
         _require(retained is not None or before.get("status") != "completed")
         if current.get("confirmed") is False:
@@ -240,13 +329,18 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                                                allow_missing=waits_on_assessment)
         terminal_reason = None
         if before.get("status") == "completed":
-            from .website_task_context_contracts import holds_native_task_preparation, retains_task_family_preparation
+            from .website_task_context_contracts import (
+                holds_native_task_preparation, retains_geometry_only_fit, retains_robot_fit_hold,
+                retains_task_family_preparation,
+            )
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
             from .website_target_background_correction import retains_rejected_selection
             from .observed_room_contracts import retains_observed_room_limit
             native_profile_held = (holds_native_task_preparation(handoff, current)
                                    or retains_rejected_selection(handoff, current)
-                                   or retains_observed_room_limit(handoff, current))
+                                   or retains_observed_room_limit(handoff, current)
+                                   or retains_geometry_only_fit(handoff, current)
+                                   or retains_robot_fit_hold(handoff, current))
             family_prepared = retains_task_family_preparation(handoff, current)
             _require(handoff.get("schema_version") == "website_scene_handoff.v1"
                      and handoff.get("scene_id") == selected["scene_id"]
@@ -257,29 +351,38 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             _require(bool(_output_commit(root, scene_id=selected["scene_id"], capture_id=selected["capture_id"])))
             state = ("awaiting_inputs" if native_profile_held or (family_prepared and handoff["status"] == "needs_input")
                      else "handed_off")
-        elif schema_version in {STATUS_V2, STATUS_V3, STATUS_V4}:
+        elif schema_version in {STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6}:
             state, terminal_reason = _v2_state(before)
         else:
             _require(before.get("status") in _LEDGER_STATES)
             state = _LEDGER_STATES[before["status"]]
-        outcome = question = None
-        if schema_version in {STATUS_V3, STATUS_V4}:
+        outcome = question = robot_fit = precheck = None
+        if schema_version in {STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6}:
             from .website_preparation_outcome import read_preparation_outcome
             outcome = read_preparation_outcome(capture_root=root,
-                task_context_digest=selected["task_context_digest"], state=state)
-        if schema_version == STATUS_V4 and state != "authority_ended":
+                task_context_digest=selected["task_context_digest"], state=state,
+                robot_fit_hold=schema_version == STATUS_V6)
+        if schema_version in {STATUS_V4, STATUS_V5, STATUS_V6} and state != "authority_ended":
             # Optional: the job continues on its guess whether or not this is answered.
             from .website_task_target_choice import public_question
             question = public_question(root)
+        if schema_version in {STATUS_V5, STATUS_V6}:
+            from .website_robot_fit_projection import read_robot_fit
+            robot_fit = read_robot_fit(capture_root=root, task_context_digest=selected["task_context_digest"])
+        if schema_version == STATUS_V6:
+            from .website_robot_fit_precheck_projection import read_robot_fit_precheck
+            precheck = read_robot_fit_precheck(capture_root=root, task_context_digest=selected["task_context_digest"])
         after = _read_job_ledger(root)
-        _require(before == after)
-        _require(read_consent_state(root)["state"] != "revoked")
+        _require(before == after, "ledger_changed")
+        _require(read_consent_state(root)["state"] != "revoked", "consent_revoked")
         result = {"schema_version": schema_version, **selected,
                   "attempt_count": before["attempt_count"], "revision": before["revision"],
                   "state": state, "code": _CODES[state],
                   **({"terminal_reason": terminal_reason} if schema_version != STATUS_V1 else {}),
-                  **({"outcome": outcome} if schema_version in {STATUS_V3, STATUS_V4} else {}),
-                  **({"question": question} if schema_version == STATUS_V4 else {}),
+                  **({"outcome": outcome} if schema_version in {STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6} else {}),
+                  **({"question": question} if schema_version in {STATUS_V4, STATUS_V5, STATUS_V6} else {}),
+                  **({"robot_fit": robot_fit} if schema_version in {STATUS_V5, STATUS_V6} else {}),
+                  **({"robot_fit_precheck": precheck} if schema_version == STATUS_V6 else {}),
                   "correlation_id": cross_runtime_canonical_digest({**selected,
                       "attempt_count": before["attempt_count"], "revision": before["revision"]})}
         result["status_digest"] = cross_runtime_canonical_digest(result)
@@ -460,6 +563,8 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
                                   "last_attempt_at_epoch": now,
                                   "delivered_at_epoch": now if error is None else None,
                                   "last_error_type": error, "acceptance": acceptance}
+                # The status read succeeded before this callback: unparked and live.
+                updated = _status_read_outcome(updated, delivery, now=now, failure=None)
                 write_json(path, updated)
                 update_index(root, updated)
             counts["delivered"] += int(error is None)
@@ -479,6 +584,9 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
                                 "delivery_failure_count": failures,
                                 "next_attempt_at_epoch": now + min(1800, 60 * 2 ** min(failures - 1, 5)),
                                 "last_error_type": type(exc).__name__}
+                            # Before the callback this is a failed status read; a day of them parks.
+                            updated = _status_read_outcome(updated, delivery, now=now,
+                                                           failure=None if attempted else exc)
                             write_json(path, updated)
                             update_index(root, updated)
                 except Exception:

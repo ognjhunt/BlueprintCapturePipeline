@@ -25,6 +25,13 @@ the scene's 200 hidden cells (the only evidence a recommendation may rest on;
   task specification (``robot_free_probe_gate``) before a paid team allocation;
   missing, unavailable, and failed probes are refused; and
 - the scene's success contract and embodiment are the ones the run scores.
+  A contract that requires per-cell controls is refused
+  (``team_candidate_strict_controls_runtime_unavailable``) unless the platform
+  owner's control-trial pause stands; then the run's contract is the scene's
+  less only ``controls``, the probe stays bound to the source contract, and the
+  admission seals the typed diagnostic omission authority (both contract
+  digests, ``diagnostic_policy_execution``, no qualified comparison), which the
+  runtime inputs and the terminal carry.
 
 Every refusal is collected and raised together with typed reasons. A sealed
 admission is evidence of permission only; it is never a result, and its
@@ -207,6 +214,29 @@ def _founder_blockers(founder: Mapping[str, Any], candidate: Mapping[str, Any], 
     return []
 
 
+def _control_omission(scene: Mapping[str, Any], contract: Mapping[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+    """The scene's paused-controls omission, re-validated against its source contract, or why not.
+
+    ``team_candidate_quick10_registry.offer_eligibility`` derives it while the platform owner's
+    control-trial pause stands: the run's contract is the source less only ``controls``. Without
+    the pause, a contract that requires per-cell controls is refused exactly as before.
+    """
+
+    if "diagnostic_control_omission_authority" not in scene:
+        return None, []
+    from . import task_evaluation_control_stage_policy as policy
+    from .beta_policy_screening_control_omission import validate_paused_controls_omission
+
+    if not policy.CONTROLS_PAUSED:
+        return None, ["team_candidate_strict_controls_runtime_unavailable"]
+    try:
+        return validate_paused_controls_omission(_m(scene["diagnostic_control_omission_authority"]),
+                                                 source=_m(scene.get("source_task_success_contract")),
+                                                 contract=contract), []
+    except (ValueError, KeyError, TypeError):
+        return None, ["team_candidate_control_omission_invalid"]
+
+
 def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, Any],
                          credential_lease: Mapping[str, Any], budget: Mapping[str, Any],
                          founder_admission: Mapping[str, Any], scene: Mapping[str, Any],
@@ -240,6 +270,11 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
         blockers.append("team_candidate_scene_success_contract_invalid")
     if (contract.get("criteria") or {}).get("controls", {}).get("mode") == "required_per_cell":
         blockers.append("team_candidate_strict_controls_runtime_unavailable")
+    omission, omission_blockers = _control_omission(scene, contract)
+    blockers += omission_blockers
+    # Under an omission the probe stays bound to the source contract it scored.
+    probed = (scene.get("source_task_success_contract") if "diagnostic_control_omission_authority" in scene
+              else scene.get("task_success_contract"))
     # A team's own robot stands at the scene's robot station; staging checks its reach from there.
     if (candidate.get("embodiment_preset_id") != TEAM_ROBOT_ID
             and scene.get("embodiment_preset_id") != candidate.get("embodiment_preset_id")):
@@ -253,12 +288,15 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
                                          task_spec_digest=canonical_digest(task_spec),
                                          task_kind=task_spec.get("task_kind"),
                                          task_success_contract_digest=task_success_contract_binding(
-                                             task_spec.get("task_kind"), scene.get("task_success_contract")))
+                                             task_spec.get("task_kind"), probed))
     except RobotFreeProbeGateError as exc:
         blockers.append(str(exc))
     if blockers:
         raise TeamCandidateAdmissionError(blockers)
     qualification = None
+    if site_task_qualification_receipt is not None and omission is not None:
+        # The omission's ceiling is diagnostic_policy_execution and permits no qualified comparison.
+        raise TeamCandidateAdmissionError(["team_candidate_control_omission_diagnostic_only"])
     if site_task_qualification_receipt is not None:
         from .site_task_simulation_qualification import validate_receipt
         qualification = validate_receipt(site_task_qualification_receipt, now=moment)
@@ -283,6 +321,8 @@ def admit_team_candidate(*, candidate: Mapping[str, Any], rights: Mapping[str, A
         "scene_revision_digest": revision, "task_spec_digest": canonical_digest(task_spec),
         "task_success_contract_digest": contract["contract_digest"],
         "robot_free_probe_receipt_digest": probe.get("receipt_digest"),
+        # Controls are never dropped silently: the run's inputs and its terminal carry the omission.
+        **({"diagnostic_control_omission_authority": omission} if omission is not None else {}),
         "rights_digest": rights["rights_digest"], "founder_approval_digest": founder_admission["approval_digest"],
         "budget": {key: budget[key] for key in ("cap_usd", "hard_ttl_seconds", "max_attempts", "episodes")},
         "execution_deadline_at_iso": founder_admission["expires_at_iso"],
@@ -330,6 +370,16 @@ def validate_admission(admission: Mapping[str, Any]) -> dict[str, Any]:
     elif (value.get("claim_ceiling") != CLAIM_CEILING or value.get("evidence_scope") != "development_only"
           or value.get("site_task_qualification") is not None or value.get("site_task_qualification_receipt") is not None):
         raise TeamCandidateAdmissionError(["team_candidate_qualification_unexpected"])
+    if "diagnostic_control_omission_authority" in value:
+        # Sealed against its source contract at admission; here: the run's contract and the diagnostic ceiling.
+        from .native_task_arena_policy_canary_session import validate_control_omission_authority
+        try:
+            validate_control_omission_authority(_m(value["diagnostic_control_omission_authority"]),
+                                                contract_digest=str(value.get("task_success_contract_digest")))
+        except (ValueError, TypeError):
+            raise TeamCandidateAdmissionError(["team_candidate_control_omission_invalid"]) from None
+        if value.get("evidence_scope") != "development_only":
+            raise TeamCandidateAdmissionError(["team_candidate_control_omission_diagnostic_only"])
     return value
 
 
@@ -341,7 +391,9 @@ def runtime_binding(admission: Mapping[str, Any]) -> dict[str, Any]:
             "candidate_id": value["candidate_id"], "evaluation_purpose": value["evaluation_purpose"],
             "robot_free_probe_receipt_digest": value["robot_free_probe_receipt_digest"],
             "scene_revision_digest": value["scene_revision_digest"],
-            "task_success_contract_digest": value["task_success_contract_digest"]}
+            "task_success_contract_digest": value["task_success_contract_digest"],
+            **({"diagnostic_control_omission_authority": value["diagnostic_control_omission_authority"]}
+               if "diagnostic_control_omission_authority" in value else {})}
 
 
 def execution_spec(admission: Mapping[str, Any], *, task_success_contract: Mapping[str, Any], prompt: str,

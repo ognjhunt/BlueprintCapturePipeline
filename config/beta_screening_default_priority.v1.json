@@ -1,0 +1,18 @@
+{
+  "schema_version": "beta_screening_default_priority.v1",
+  "decision": "Owner decision D-20 (2026-11-02): when a job has no intake ranking, screen three strong learned DROID policies first; every other candidate keeps its identifier order after them, and the site budget decides how far the order runs.",
+  "priority": [
+    {
+      "candidate_id": "pi05_droid",
+      "basis": "RoboLab-120 28.0% (NVlabs/RoboLab, read 2026-10-26); ran in production on 2026-10-26"
+    },
+    {
+      "candidate_id": "cosmos3_edge_policy_droid",
+      "basis": "RoboLab-120 22.9% (NVlabs/RoboLab, read 2026-10-26); fits the screening GPU memory floor"
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "basis": "RoboLab-120 8.6% (NVlabs/RoboLab, read 2026-10-26); ran in production on 2026-10-26"
+    }
+  ]
+}

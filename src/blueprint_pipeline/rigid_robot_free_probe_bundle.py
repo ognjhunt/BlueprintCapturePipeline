@@ -74,12 +74,16 @@ def current_probe_state(capture_root: str | Path) -> dict[str, Any]:
 
     ``status`` is ``probe_required`` (with the planned request), or why no run is
     wanted: no profile, no probe for this task, an unbound revision, or a
-    retained receipt that is already decided (never replaced, so a run cannot
-    change it).
+    retained receipt of this request that is already decided (never replaced, so
+    a run cannot change it). A receipt beside the launch bound to another request
+    (another scene revision or task specification, since superseded) is not this
+    request's: it is named under ``superseded_receipt`` and never decides it
+    (capture-447ae4f4: request bdfe6a51's receipt beside the launch that request
+    9319f26e's probe shares).
     """
 
     from .robot_free_probe_gate import RobotFreeProbeGateError, retained_probe_receipt
-    from .robot_free_readiness_retention import DECIDED_STATUSES
+    from .robot_free_readiness_retention import DECIDED_STATUSES, receipt_bound_to_request
     from .team_candidate_quick10_registry import profile_for_capture, scene_facts
     from .team_robot_free_probe import probe_request
 
@@ -110,10 +114,16 @@ def current_probe_state(capture_root: str | Path) -> dict[str, Any]:
         receipt = retained_probe_receipt(probe_root)
     except (OSError, RobotFreeProbeGateError) as exc:
         return {"status": "receipt_unreadable", "capture_root": str(root), "reason": str(exc)[:200]}
+    current = receipt_bound_to_request(receipt, request)
     state = {"capture_root": str(root), "robot_free_probe_root": str(probe_root.resolve()), "profile": profile,
-             "facts": facts, "request": request, "receipt": receipt,
-             "receipt_status": receipt.get("status") if isinstance(receipt, Mapping) else None}
-    decided = isinstance(receipt, Mapping) and receipt.get("status") in DECIDED_STATUSES
+             "facts": facts, "request": request, "receipt": receipt if current else None,
+             "receipt_status": receipt.get("status") if current and isinstance(receipt, Mapping) else None}
+    if isinstance(receipt, Mapping) and receipt and not current:
+        state["superseded_receipt"] = {"receipt_digest": receipt.get("receipt_digest"), "status": receipt.get("status"),
+                                       "task_spec_digest": receipt.get("task_spec_digest"),
+                                       "configured_scene_revision_digest": receipt.get(
+                                           "configured_scene_revision_digest")}
+    decided = current and isinstance(receipt, Mapping) and receipt.get("status") in DECIDED_STATUSES
     return {**state, "status": "receipt_decided" if decided else "probe_required"}
 
 
@@ -136,6 +146,21 @@ def probe_inputs(*, state: Mapping[str, Any]) -> dict[str, Any]:
     nominal = resolved_scene_plan(
         plan, {**NOMINAL_CELL, "control_diagnostic": facts["inputs"]["control_diagnostic"]},
         task_success_contract=contract)
+    from .rigid_support_seating import start_spawn_mismatch
+
+    mismatch = start_spawn_mismatch(nominal)
+    if mismatch is not None:
+        # The scene spawns the object farther from the task's start than the scorer's reset
+        # tolerance: no episode of it can be scored, so no paid run is staged for it. A packet
+        # compiled by a release that seats the object where it starts carries a new request.
+        raise RigidRobotFreeProbeBundleError("rigid_robot_free_probe_" + mismatch)
+    from .rigid_support_pad import half_support_hold
+
+    held = half_support_hold((state.get("profile") or {}).get("team_scene_inputs_path"))
+    if held is not None:
+        # The compile predicted on the CPU that the object cannot rest where the scorer reads it, at its
+        # start or inside the sealed window at its goal: no paid run is staged for it.
+        raise RigidRobotFreeProbeBundleError("rigid_robot_free_probe_" + held)
     value = {"schema_version": INPUTS_SCHEMA, "capture_root": str(state["capture_root"]),
              "robot_free_probe_root": str(state["robot_free_probe_root"]),
              "scene_revision_digest": facts["scene"]["scene_revision_digest"], "probe_request": dict(request),

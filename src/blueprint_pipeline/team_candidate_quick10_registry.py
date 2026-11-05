@@ -29,7 +29,13 @@ launch apply (``team_evaluation_plan``): the scene's packet resolves its
 nominal cell, strict per-cell controls are not required, the scene's secret matrix
 salt is present, and the robot-free probe passed at the inputs' current
 scene revision for the scene's task before any paid team allocation. Missing,
-unavailable, or failed probes keep the evaluation unlisted.
+unavailable, or failed probes keep the evaluation unlisted. While the platform
+owner's control-trial pause stands (``task_evaluation_control_stage_policy``),
+a contract that requires per-cell controls runs without that criterion under
+the typed diagnostic omission (``beta_policy_screening_control_omission``), as
+beta screening does: the probe stays bound to the source contract, and the
+scene facts carry the source contract and the omission authority, which the
+admission seals into the run.
 
 Anything else fails closed with a typed reason, and that offer is not listed.
 
@@ -252,8 +258,15 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
 
 def offer_eligibility(profile: Mapping[str, Any] | None,
                       purpose: str = SCORED) -> tuple[dict[str, Any] | None, list[str]]:
-    """The scene facts when this evaluation purpose may be listed and launched, else every reason."""
+    """The scene facts when this evaluation purpose may be listed and launched, else every reason.
 
+    Under the standing control-trial pause, a per-cell-controls contract is listed with the
+    result contract in ``inputs`` and ``scene``, and ``scene`` keeps ``source_task_success_contract``
+    and ``diagnostic_control_omission_authority``. Without the pause it is refused, as before,
+    with ``team_candidate_strict_controls_runtime_unavailable``.
+    """
+
+    from .beta_policy_screening_control_omission import omit_paused_controls
     from .native_policy_canary_control_gate import controls_required
     from .robot_free_probe_gate import (
         RobotFreeProbeGateError,
@@ -272,15 +285,19 @@ def offer_eligibility(profile: Mapping[str, Any] | None,
     except (KeyError, OSError, ValueError) as exc:
         return None, [str(exc) or "team_candidate_scene_facts_unavailable"]
     blockers = []
-    if controls_required(facts["inputs"]["task_success_contract"]):
+    source = facts["inputs"]["task_success_contract"]
+    # Under the platform owner's standing pause, a contract that requires per-cell controls runs
+    # without that criterion under the typed diagnostic omission; otherwise it is unchanged.
+    contract, omission = omit_paused_controls(source)
+    if controls_required(contract):
         blockers.append("team_candidate_strict_controls_runtime_unavailable")
     task_spec = facts["scene"]["task_spec"] if isinstance(facts["scene"]["task_spec"], Mapping) else {}
     try:
+        # The probe scored the scene's own (source) contract; it stays bound to it.
         facts["probe"] = require_robot_free_probe(
             receipt, scene_revision_digest=facts["scene"]["scene_revision_digest"],
             task_spec_digest=canonical_digest(dict(task_spec)), task_kind=task_spec.get("task_kind"),
-            task_success_contract_digest=task_success_contract_binding(
-                task_spec.get("task_kind"), facts["inputs"]["task_success_contract"]))
+            task_success_contract_digest=task_success_contract_binding(task_spec.get("task_kind"), source))
         facts["probe_receipt"] = receipt
     except RobotFreeProbeGateError as exc:
         facts["probe"], facts["probe_receipt"] = None, receipt
@@ -288,7 +305,18 @@ def offer_eligibility(profile: Mapping[str, Any] | None,
     salt = profile.get("scored_matrix_salt")
     if purpose == SCORED and (not isinstance(salt, str) or len(salt) < 32):
         blockers.append("team_scored_matrix_salt_missing")
-    return (None, blockers) if blockers else (facts, [])
+    if blockers:
+        return None, blockers
+    if omission is not None:
+        # The run is staged, admitted and scored with the result contract; the scene keeps the
+        # source it was probed with and the authority, which the admission carries into the run.
+        facts["inputs"] = {**facts["inputs"], "task_success_contract": contract,
+                           "task_success_contract_digest": contract["contract_digest"]}
+        facts["scene"] = {**facts["scene"], "task_success_contract": contract,
+                          "source_task_success_contract": source,
+                          "diagnostic_control_omission_authority": omission}
+        facts["episode_specs_sha256"] = canonical_digest(facts["inputs"])
+    return facts, []
 
 
 __all__ = [

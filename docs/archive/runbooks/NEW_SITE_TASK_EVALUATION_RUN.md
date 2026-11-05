@@ -1,8 +1,15 @@
 # Provider-Neutral New-Site Task Evaluation Run
 
+> **Archived 2026-11-02 (tracker H-01). Moved from
+> `docs/NEW_SITE_TASK_EVALUATION_RUN.md`.** This file describes the
+> provider-neutral new-site compiler, `blueprint_pipeline.new_site_task_evaluation_run`.
+> The module still exists. This is not the procedure for a beta website job:
+> use the WebApp's `docs/runbooks/cloud-scene-runs.md`. Beta status:
+> [`../../launch-readiness/2026-11-beta-launch-tracker.md`](../../launch-readiness/2026-11-beta-launch-tracker.md).
+
 Production of the compiler prerequisites is owned by
 `blueprint_pipeline.post_capture_evidence_spine`; see
-[`runbooks/post-capture-evidence-spine.md`](runbooks/post-capture-evidence-spine.md).
+[`runbooks/post-capture-evidence-spine.md`](../../runbooks/post-capture-evidence-spine.md).
 The final compiler remains a strict verifier. Callers no longer need to reshape
 site-specific source, reconstruction, geometry, target, placement, composition,
 routing, or authorization JSON by hand.

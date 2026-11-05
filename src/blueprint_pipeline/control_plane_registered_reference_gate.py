@@ -31,14 +31,42 @@ def _publisher_observation(function):
     Context-local state prevents independent synchronous/thread calls sharing
     counters. Only the outer existing publisher closes its own original budget.
     """
+    return _observed(function, lambda: ReferenceCollectionBudget(values_limit=10000))
+
+
+def _launch_admission_observation(function):
+    """The launch dispatcher's scope: the same accounting under the launch-admission
+    allowance, which covers its catalog and input verification. A dispatch nested
+    in another publisher still spends that publisher's original budget."""
+    return _observed(
+        function, lambda: ReferenceCollectionBudget._for_launch_admission(values_limit=10000))
+
+
+def _owner_identity(function):
+    """The observed function's importable module and qualified name.
+
+    A production worker is started by the scene retirement supervisor with
+    ``runpy.run_module(worker, run_name="__main__")``, so its functions carry
+    ``__module__ == "__main__"`` and the dispatcher's own admission check
+    refused every supervised launch (capture-447ae4f4, 2026-11-01). The
+    defining module's ``__spec__`` still names the real module; for an
+    ordinary import the two names are the same.
+    """
+    spec = getattr(function, "__globals__", {}).get("__spec__")
+    name = getattr(spec, "name", None)
+    module = name if isinstance(name, str) and name else function.__module__
+    return (module, function.__qualname__)
+
+
+def _observed(function, new_budget):
     @wraps(function)
     def observed(*args, **kwargs):
         budget = _PUBLISHER_BUDGET.get()
         owned = budget is None
         if owned:
-            budget = ReferenceCollectionBudget(values_limit=10000)
+            budget = new_budget()
             token = _PUBLISHER_BUDGET.set(budget)
-            owner_token = _PUBLISHER_OWNER.set((function.__module__, function.__qualname__))
+            owner_token = _PUBLISHER_OWNER.set(_owner_identity(function))
         try:
             budget.tick()
             return function(*args, **kwargs)

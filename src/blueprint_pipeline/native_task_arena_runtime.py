@@ -1155,7 +1155,7 @@ def _bbox_aspect_ratio(mesh: Any) -> float:
 
 
 def author_gpu_compatible_scene_collision(
-    source_usd: str | Path, destination: str | Path
+    source_usd: str | Path, destination: str | Path, *, opened: Any = None
 ) -> dict[str, Any] | None:
     """Author static scene collision as the source triangle mesh.
 
@@ -1167,12 +1167,12 @@ def author_gpu_compatible_scene_collision(
     absent from the cooked convex approximation. Convert every convex-authored
     static collision mesh in a derived copy. Sealed bytes remain untouched and
     provenance is recorded. Returns ``None`` when nothing needs converting.
+    ``opened``, when given, is read in place of the file: a private in-memory copy.
     """
 
     from pxr import Usd, UsdGeom, UsdPhysics
-
     source = Path(source_usd).expanduser().resolve()
-    stage = Usd.Stage.Open(str(source))
+    stage = Usd.Stage.Open(str(source) if opened is None else opened)
     converted: list[str] = []
     for prim, mesh, approximation in _collision_mesh_rows(stage, UsdPhysics, UsdGeom):
         value = approximation.Get() if approximation else None

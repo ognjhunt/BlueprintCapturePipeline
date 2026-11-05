@@ -13,7 +13,10 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 
 _DIGEST = re.compile(r"sha256:[a-f0-9]{64}\Z")
-_PATH_REFUSAL = re.compile(r"robot_rigid_pick_place_(?:unreachable|scene_strike):[a-z_]+\Z")
+# The capability verdict abstains only by the hard reach rule (``website_rigid_feasibility``); the scripted
+# carry codes are kept for verdicts written before it.
+_PATH_REFUSAL = re.compile(r"robot_rigid_pick_place_(?:unreachable|scene_strike):[a-z_]+\Z"
+                           r"|robot_reach_insufficient:(?:pick|place):\d+\.\d{3}m_vs_\d+\.\d{3}m\Z")
 _MISSING = frozenset({
     "website_registration_scale_conflicts_declared", "support_surface_not_found_under_subject",
     "task_destination_pose_required", "task_destination_relation_required",
@@ -36,9 +39,39 @@ def _load(path: Path, root: Path, digest_field: str) -> dict[str, Any]:
     return value
 
 
+def _robot_fit_hold(root: Path, handoff: dict[str, Any], task_context_digest: str) -> dict[str, Any] | None:
+    """A verified robot fit hold (``website_robot_fit_precheck``), as status v6 reads it; else None.
+
+    v3 to v5 readers never see it: their outcome vocabulary is closed (the WebApp parses it strictly),
+    and a hold is not the carry refusal or the missing evidence those name.
+    """
+    from .website_robot_fit_precheck_projection import SCHEMA
+    from .website_task_context_contracts import retains_robot_fit_hold
+
+    if not retains_robot_fit_hold(handoff, {"capture_id": root.name, "scene_id": root.parent.parent.name}):
+        return None
+    reference = handoff["robot_fit_precheck"]
+    preparation = _load(Path(handoff["preparation_path"]), root, "digest")
+    precheck = _load(Path(reference["path"]), root, "precheck_digest")
+    if (preparation.get("binding", {}).get("task_context_digest") != task_context_digest
+            or handoff.get("preparation_digest") != preparation["digest"]
+            or precheck.get("schema_version") != SCHEMA or precheck.get("preparation_digest") != preparation["digest"]
+            or precheck["precheck_digest"] != reference["digest"] or precheck.get("status") != "no_fit"
+            or precheck.get("hold_reason") != reference["hold_reason"]
+            or precheck.get("physical_world_truth_claimed") is not False):
+        raise ValueError("preparation_outcome_robot_fit_binding_invalid")
+    return {"category": "robot_incompatibility", "reason": "robot_fit_none",
+            "basis": "conservative_pre_spend_fit_check", "robot_id": None,
+            "evidence_digest": precheck["precheck_digest"]}
+
+
 def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
-                             state: str) -> dict[str, Any] | None:
-    """Only a current stopped attempt may project a verified retained finding."""
+                             state: str, robot_fit_hold: bool = False) -> dict[str, Any] | None:
+    """Only a current stopped attempt may project a verified retained finding.
+
+    ``robot_fit_hold`` (status v6) also projects a job held before spend because no robot the
+    screening catalog runs fits its task (``_robot_fit_hold``).
+    """
     if state not in {"awaiting_inputs", "failed_retryable", "failed_terminal"}:
         return None
     root = capture_root.absolute()
@@ -56,6 +89,10 @@ def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
     if retains_rejected_selection(handoff, context) or retains_observed_room_limit(handoff, context):
         return {"category": "insufficient_evidence", "reason": "task_evidence_incomplete",
                 "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
+    if robot_fit_hold:
+        held = _robot_fit_hold(root, handoff, task_context_digest)
+        if held is not None:
+            return held
     ref = handoff.get("capability_verdict")
     if isinstance(ref, dict) and ref.get("status") == "abstained":
         from .robot_arm_path_clearance import ROBOT_PROFILE_ARMS

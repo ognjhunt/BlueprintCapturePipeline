@@ -1,5 +1,6 @@
 """ADP-009/day 28: admit real temporary bytes without copying the SDK again."""
 import json
+import math
 import shutil
 import time
 
@@ -222,7 +223,52 @@ def test_deployment_reserves_unshared_bytes_and_binds_required_copy_plan(tmp_pat
     assert estimate["full_copy_bytes"] == full
     assert estimate["vendor_reuse"]["digest"] == plan["digest"]
     assert estimate["target_root"] == str(prior.parent)
-    assert estimate["bytes"] == 1050 + 3 * 4096 + deploy.RELEASE_ESTIMATE_OVERHEAD_BYTES
+    # Only other/new-source.py is written; linked names cost directory entries,
+    # one block per directory of the tree (7 here), not one per linked file.
+    assert estimate["bytes"] == 1050 + (1 + 7) * 4096 + deploy.RELEASE_ESTIMATE_OVERHEAD_BYTES
+    assert estimate["vendor_reuse"]["written_file_count"] == 1
+    assert estimate["vendor_reuse"]["written_bytes"] == 1000
+    assert estimate["vendor_reuse"]["cache_linked_bytes"] == 0
+    assert estimate["vendor_reuse"]["directory_count"] == 7
+
+
+def _with_cached_weights(tmp_path, *, mode=0o444, size=None):
+    """The fixture toolchain plus the ArtiFixer weights row and the governed cache copy."""
+    from blueprint_pipeline.public_scene_artifixer3d_bundle import (
+        RUNTIME_VGG16_WEIGHTS, VGG16_WEIGHTS_FILENAME, VGG16_WEIGHTS_SIZE_BYTES,
+    )
+    runtime, source, prior, args = setup_vendor(tmp_path)
+    manifest_path = prior / "task_evaluation_scene_configuration_toolchain.v1.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"].append({"relative_path": "components/artifixer3d_observed_object_removal/package/"
+                              "blueprint_runtime/" + RUNTIME_VGG16_WEIGHTS,
+                              "size_bytes": VGG16_WEIGHTS_SIZE_BYTES, "sha256": "unused"})
+    manifest["toolchain_digest"] = canonical_digest(manifest, digest_field="toolchain_digest")
+    manifest_path.write_text(json.dumps(manifest))
+    cached = runtime / "public-model-cache" / VGG16_WEIGHTS_FILENAME
+    cached.parent.mkdir(parents=True)
+    with cached.open("wb") as stream:  # sparse: the size is what admission reads
+        stream.truncate(VGG16_WEIGHTS_SIZE_BYTES if size is None else size)
+    cached.chmod(mode)
+    return runtime, source, VGG16_WEIGHTS_SIZE_BYTES
+
+
+@pytest.mark.parametrize("mode,size,linked", [(0o444, None, True), (0o644, None, False), (0o444, 7, False)])
+def test_cache_linked_model_weights_are_not_reserved_as_written(tmp_path, mode, size, linked):
+    from scripts import deploy_control_plane_commit as deploy
+    runtime, source, weights = _with_cached_weights(tmp_path, mode=mode, size=size)
+    estimate = deploy._scene_configuration_staging_estimate(runtime, "b" * 40)
+    deploy._bind_artisan_vendor_reuse(estimate, runtime_root=runtime, state_root=tmp_path / "state",
+                                      site_packages_root=source / "site_packages",
+                                      blender_root=source / "blender")
+    reuse = estimate["vendor_reuse"]
+    # The builder links sealed 0444 weights on this filesystem; anything else may be copied.
+    assert reuse["cache_linked_bytes"] == (weights if linked else 0)
+    assert reuse["written_bytes"] == 1000 + (0 if linked else weights)
+    directories = reuse["directory_count"]
+    assert estimate["bytes"] == (math.ceil(reuse["written_bytes"] * deploy.SCENE_CONFIGURATION_STAGING_HEADROOM)
+                                 + (reuse["written_file_count"] + directories) * 4096
+                                 + deploy.RELEASE_ESTIMATE_OVERHEAD_BYTES)
 
 
 def test_second_deploy_plans_from_the_first_deploys_plan_and_reports_it(tmp_path, settled):

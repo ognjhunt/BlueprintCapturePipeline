@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +124,26 @@ def _policy_provider_transfer_byte_budget(
 # pool, so the paired policy lane shares that evidence-backed floor while the
 # generic Vast transport keeps its compatibility default of no floor.
 POLICY_MIN_COMPUTE_CAP = 800
+POLICY_CANARY_SESSION_PROVIDER_BUNDLE_KIND = "native_task_arena_policy_canary_session"
+
+
+def policy_canary_session_offer_hardware(min_gpu_ram_mb: int) -> dict[str, Any]:
+    """The hardware filters the policy canary session lane rents under.
+
+    The lane passes exactly these to ``run_arena_native_control_vast``; screening
+    planning reads the same values (``beta_policy_screening_gpu``) to tell
+    whether any part the lane may rent can meet a candidate's memory floor.
+    ``None`` keeps the transport's own default: the Isaac rendering policy and
+    the TensorRT-buildable compute-capability ceiling.
+    """
+
+    return {
+        "provider_bundle_kind": POLICY_CANARY_SESSION_PROVIDER_BUNDLE_KIND,
+        "min_gpu_ram_mb": min_gpu_ram_mb,
+        "min_compute_cap": POLICY_MIN_COMPUTE_CAP,
+        "max_compute_cap": None,
+        "gpu_selection_policy": None,
+    }
 
 
 def _run_native_task_arena_bounded_vast(
@@ -560,14 +580,20 @@ def run_native_task_arena_policy_canary_session_vast(
     session_authority: Mapping[str, Any] | None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
+    execution_deadline_epoch: float | None = None,
     machine_avoidlist_path: str | Path | None = None,
     max_hourly_rate_usd: float = 0.80,
     hard_cap_usd: float = 4.00,
     hard_ttl_seconds: int = 14_400,
     allowed_active_instance_ids: Sequence[int] = (),
     provider_runtime_environment: Mapping[str, str] | None = None,
+    pre_provider_create: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the paired Quick-10 bundle through one canonical Vast allocation."""
+    """Run the paired Quick-10 bundle through one canonical Vast allocation.
+
+    ``pre_provider_create`` runs inside the adapter's pre-create hook, after
+    every other check and immediately before the create request.
+    """
 
     if session_authority is None:
         if execute:
@@ -585,7 +611,11 @@ def run_native_task_arena_policy_canary_session_vast(
         raise ValueError("policy_canary_session_authority_missing")
     from .policy_canary_session_bundle_identity import minimum_gpu_ram_mb
     memory_floor = minimum_gpu_ram_mb(prepared_bundle)
+    # Screening planning reads these same filters to refuse a floor this lane cannot rent.
+    hardware = policy_canary_session_offer_hardware(memory_floor)
     validated_environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
+    from .beta_screening_control_delivery import runtime_control_ready_for_authority
+    runtime_control_ready = runtime_control_ready_for_authority(authority=authority, execute=execute)
     from .native_task_arena_paired_witness_staging import build_paired_witness_binding
     # A beta attempt contains one candidate. The paired intermediate-delivery
     # slot reads both frozen specs and is only meaningful for the ADP pair.
@@ -651,6 +681,13 @@ def run_native_task_arena_policy_canary_session_vast(
             return {"status": "consumed", "authority_digest": authority["authority_digest"],
                     "scene_attempt_id": owner["scene_attempt_id"]}
 
+        def pre_create() -> dict[str, Any]:
+            consumed = (owner_pre_create() if "scene_execution_owner" in authority
+                        else {"status": "consumed", "authority_digest": authority["authority_digest"]})
+            if pre_provider_create is not None:
+                pre_provider_create()  # Last: a refused owner check leaves no create intent behind.
+            return consumed
+
         pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
         groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
         cosmos = prepared_bundle.get("cosmos_runtime") is not None
@@ -675,7 +712,9 @@ def run_native_task_arena_policy_canary_session_vast(
             from .cosmos_droid_bundle import transfer_byte_budget
             download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
         result = run_arena_native_control_vast(
-            pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
+            **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
+            pre_provider_mutation_hook=(pre_create if pre_provider_create is not None or "scene_execution_owner" in authority
+                                        else None),
             approval_path=".",
             job_dir=job_dir,
             paid_resource_admission_grant=paid_resource_admission_grant,
@@ -685,16 +724,19 @@ def run_native_task_arena_policy_canary_session_vast(
             max_hourly_rate_usd=max_hourly_rate_usd,
             hard_cap_usd=hard_cap_usd,
             hard_ttl_seconds=hard_ttl_seconds,
+            **({"hard_deadline_epoch": execution_deadline_epoch} if execution_deadline_epoch is not None else {}),
             expected_output_filename=POLICY_CANARY_RESULT_FILENAME,
             container_image=str(prepared_bundle["container_image"]),
-            provider_bundle_kind="native_task_arena_policy_canary_session",
+            provider_bundle_kind=hardware["provider_bundle_kind"],
+            min_gpu_ram_mb=hardware["min_gpu_ram_mb"],
+            min_compute_cap=hardware["min_compute_cap"],
+            max_compute_cap=hardware["max_compute_cap"],
+            gpu_selection_policy=hardware["gpu_selection_policy"],
             result_schema_version=POLICY_CANARY_RESULT_SCHEMA_VERSION,
             object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/policy-canary-session",
             instance_label_prefix="blueprint-native-task-policy-canary-",
             instance_label_exact=str(authority["resource_name"]),
             blocker_prefix="native_task_arena_policy_canary_session",
-            min_gpu_ram_mb=memory_floor,
-            min_compute_cap=POLICY_MIN_COMPUTE_CAP,
             allowed_active_instance_ids=tuple(
                 sorted({int(value) for value in allowed_active_instance_ids})
             ),

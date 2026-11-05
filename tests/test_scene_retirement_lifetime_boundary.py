@@ -1,6 +1,7 @@
 """One admission state and unchanged producer birth through the public facade."""
 
 import importlib
+import inspect
 
 import pytest
 
@@ -29,6 +30,25 @@ def test_facade_and_pin_lifetime_share_policy_and_acquisition_hooks(monkeypatch)
     assert not hasattr(lifetime, '_open_owned')
     monkeypatch.setattr(access, '_open_owned', refuse, raising=False)
     assert lifetime._open_owned is refuse
+
+
+def test_a_facade_override_is_undone_to_the_lifetime_value():
+    from blueprint_pipeline import task_evaluation_scene_retirement_access as access
+    lifetime = importlib.import_module('blueprint_pipeline.task_evaluation_scene_retirement_lifetime')
+    # pytest 9.2's monkeypatch records an old value from the target's own __dict__ unless the target's
+    # type holds a data descriptor for the name; finding none here, its undo deleted the leaf's value
+    # (every later access fixture then failed: no attribute '_POLICY_UID').
+    for name in sorted(access._LIFETIME_NAMES - set(vars(access))):
+        descriptor = inspect.getattr_static(type(access), name, None)
+        assert hasattr(type(descriptor), '__set__') and hasattr(type(descriptor), '__delete__'), name
+    originals = {name: getattr(lifetime, name) for name in ('_POLICY_UID', '_INSTALLED_POLICY', '_open_owned')}
+    with pytest.MonkeyPatch.context() as patch:
+        for name in originals:
+            patch.setattr(access, name, object())
+        patch.delattr(access, '_open_owned')
+        assert not hasattr(lifetime, '_open_owned')
+    assert {name: getattr(lifetime, name) for name in originals} == originals
+    assert access._POLICY_UID is lifetime._POLICY_UID and '_POLICY_UID' not in vars(access)
 
 
 def test_facade_preserves_actual_producer_birth_and_own_source_identity(monkeypatch):

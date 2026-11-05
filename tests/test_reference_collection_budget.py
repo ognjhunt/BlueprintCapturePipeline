@@ -241,3 +241,17 @@ def test_shared_raw_boundary_never_allocates_unbudgeted_growth_or_eof_sentinel(
     assert sum(received for _, _, received in calls) == shared.counts["raw_bytes"] == 4
     assert not result.complete and not result.rows
     assert "reference_raw_bytes_limit" in result.blockers
+
+
+def test_launch_admission_budget_is_finite_and_fresh():
+    budget = budgets.ReferenceCollectionBudget._for_launch_admission(monotonic=lambda: 0.0)
+    assert budget.duration == 30.0 and budget.limits["values"] == 10_000
+    budget.tick()
+    assert budget.deadline == 30.0
+    class Subclass(budgets.ReferenceCollectionBudget):
+        pass
+    for call in (lambda: Subclass._for_launch_admission(),
+                 lambda: budgets.ReferenceCollectionBudget._for_launch_admission(monotonic=None),
+                 lambda: budgets.ReferenceCollectionBudget._for_launch_admission(values_limit=0)):
+        with pytest.raises(budgets.ReferenceCollectionBudgetError, match="reference_budget_parameters_invalid"):
+            call()

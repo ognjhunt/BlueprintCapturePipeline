@@ -4,9 +4,11 @@ Profiles describe existing adapter/scorer contracts, never an intake allowlist.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from typing import Any, Mapping
 
-from .task_family_scoring import FAMILY_ALIASES
+from .task_family_scoring import FAMILY_ALIASES, canonical_task_family
 
 
 @dataclass(frozen=True)
@@ -58,3 +60,95 @@ TASK_PROFILES: tuple[TaskProfile, ...] = (
 def task_profile_for(task_family: str | None) -> TaskProfile | None:
     value = (task_family or "").strip().lower()
     return next((row for row in TASK_PROFILES if value in row.aliases), None)
+
+
+def required_task_families(family: str, task_semantics: Mapping[str, Any] | None) -> list[str]:
+    """The families one runtime must register: a multi-step job's stages too.
+
+    Here, not in ``website_early_task_hold``, so the hold contract that re-derives it
+    (``website_task_context_contracts``) stays off the scene-preparation import graph.
+    """
+    families = {family}
+    if family == "multi_step" and task_semantics is not None:
+        clarification = task_semantics.get("operation_coverage_clarification")
+        reading = clarification["operation_coverage"] if clarification else task_semantics["semantics"]
+        for step in reading["steps"]:
+            profile = task_profile_for(step["operation"])
+            stage = canonical_task_family(profile.profile_id) if profile is not None else None
+            if stage is not None:
+                families.add(stage)
+    return sorted(families)
+
+
+#: Soft objects a rigid body cannot stand in for: the backstop when a task object carries no
+#: rigidity classification (``task_object_rigidity``). Matched only as the head noun of the
+#: manipulated object's own label ("folded bath towel", "stack of towels"), never anywhere
+#: in the task text: "put the mug on the towel" moves a mug, and a "towel rack" is a rack.
+DEFORMABLE_SUBJECT_NOUNS = frozenset({
+    "towel", "cloth", "clothes", "clothing", "garment", "shirt", "t-shirt", "tshirt", "blouse", "sweater",
+    "hoodie", "jacket", "coat", "pants", "trousers", "jeans", "shorts", "skirt", "dress", "sock", "scarf",
+    "glove", "apron", "uniform", "napkin", "rag", "washcloth", "dishcloth", "blanket", "duvet", "comforter",
+    "quilt", "bedsheet", "pillowcase", "linen", "linens", "fabric", "textile", "pillow", "cushion", "curtain",
+    "tarp", "tarpaulin", "bag", "sack", "pouch", "rope", "cord", "cable", "wire", "hose", "string", "twine",
+    "yarn", "ribbon", "strap", "belt", "sponge", "dough", "laundry",
+})
+#: A label stops naming its object at the first relation ("towel on the rack", "bag of rice").
+_LABEL_RELATION = frozenset({"on", "in", "into", "inside", "onto", "at", "from", "near", "under", "beside", "by",
+                             "next", "with", "behind", "above", "below", "against", "over", "to", "for", "that",
+                             "which", "of", "and", "or"})
+#: "A stack of towels" names the towels.
+_COLLECTIVE = frozenset({"stack", "pile", "heap", "bundle", "armful", "load", "handful", "bunch"})
+
+
+def _deformable_noun(word: str) -> str | None:
+    for candidate in (word, word[:-2] if word.endswith("es") else None, word[:-1] if word.endswith("s") else None):
+        if candidate in DEFORMABLE_SUBJECT_NOUNS:
+            return candidate
+    return None
+
+
+def deformable_subject_noun(label: object) -> str | None:
+    """The soft-object head noun of a task object's label, or None. A text screen, never a measurement."""
+    if not isinstance(label, str):
+        return None
+    words = re.findall(r"[a-z]+(?:-[a-z]+)*", re.split(r"[,;:(]", label.lower(), maxsplit=1)[0])
+    end = next((index for index, word in enumerate(words) if word in _LABEL_RELATION), len(words))
+    head = words[end - 1] if end else None
+    if head in _COLLECTIVE and end < len(words) and words[end] == "of":
+        rest = words[end + 1:]
+        stop = next((index for index, word in enumerate(rest) if word in _LABEL_RELATION), len(rest))
+        head = rest[stop - 1] if stop else None
+    return _deformable_noun(head) if head else None
+
+
+#: The clean-plate object analysis's own reading of each target
+#: (``clean_plate_removal_response_schema``): whether it keeps its shape when handled.
+RIGIDITY_CLASSES = ("rigid", "deformable", "unknown")
+RIGIDITY_UNKNOWN_FLAG = "task_object_rigidity_unknown"
+#: Which source decided, as the deformable hold records it.
+RIGIDITY_BASIS = {"object_analysis": "manipulated_target_rigidity_classification",
+                  "label_word_backstop": "manipulated_target_label_text_screen"}
+
+
+def task_object_rigidity(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Whether a manipulated object is rigid, deformable or unknown, and which source decided.
+
+    The object analysis decides: its ``rigidity`` class and its stated ``rigidity_reason``.
+    An analysis bought before it was asked carries neither, and only then does the label's
+    head noun decide (``deformable_subject_noun``): a soft noun reads deformable, anything
+    else unknown. Unknown never holds a job; it is flagged. The word screen is recorded
+    either way. A model's reading, never a measurement.
+    """
+    label = entry.get("semantic_label")
+    label = label if isinstance(label, str) and label.strip() else None
+    noun = deformable_subject_noun(label)
+    stated = entry.get("rigidity")
+    if stated in RIGIDITY_CLASSES:
+        reason = entry.get("rigidity_reason")
+        reading = {"rigidity": stated, "source": "object_analysis", "field": "rigidity",
+                   "reason": reason.strip() if isinstance(reason, str) and reason.strip() else None}
+    else:
+        reading = {"rigidity": "deformable" if noun else "unknown", "source": "label_word_backstop",
+                   "field": "semantic_label", "reason": None}
+    return {"target_id": str(entry.get("target_id")), "label": label, **reading, "label_word_screen": noun,
+            **({"flag": RIGIDITY_UNKNOWN_FLAG} if reading["rigidity"] == "unknown" else {})}

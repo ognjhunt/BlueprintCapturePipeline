@@ -175,3 +175,33 @@ def test_absent_staging_with_lost_output_closes_billing_but_cannot_publish_score
     assert closeout.scoped_closeout_verified(receipt, **args)
     with pytest.raises(ValueError, match="scientific_output_not_durable"):
         closeout.join_scoped_session_closeout(inner=inner, receipt=receipt, **args)
+
+
+def setup_failed(inner, *, stage="observation_gate"):
+    """A sealed native result whose first cell stopped before any policy ran."""
+    from blueprint_pipeline import policy_canary_cell_setup_failure as setup_failure
+    failure = seal({"schema_version": setup_failure.SCHEMA_VERSION, "stage": stage,
+                    "blocker": f"{setup_failure.BLOCKER_PREFIX}:{stage}", "cell_index": 0,
+                    "candidate_policy_loaded": False, "candidate_policy_queried": False}, "record_digest")
+    value = {**deepcopy(inner), "status": "blocked", "episodes": [], "learned_policy_rollout_count": 0,
+             "candidate_policy_queried": False, "blockers": [failure["blocker"]], "cell_setup_failure": failure,
+             "planned_episodes_per_policy": 10, "execution_stopped_after_cell": 1, "stopped_before_next_cell": True}
+    return seal(value, "result_digest")
+
+
+def test_attempt_bound_setup_failure_names_its_blocker_without_a_score(attempt, monkeypatch):
+    args, inner, _authority = attempt
+    failed = setup_failed(inner)
+    args["adapter"]["native_control_result_digest"] = failed["result_digest"]
+    receipt = closeout.collect_scoped_closeout(**args, provider=Provider())
+    assert closeout.scoped_setup_failure_blocker(inner=failed, receipt=receipt, **args) == (
+        "policy_canary_session_setup_failed:observation_gate")
+    with pytest.raises(ValueError):  # No score: the joined session result cannot validate.
+        closeout.join_scoped_session_closeout(inner=failed, receipt=receipt, **args)
+    other = seal({**deepcopy(failed), "candidate_ids": ["another-policy"]}, "result_digest")
+    args["adapter"]["native_control_result_digest"] = other["result_digest"]
+    assert closeout.scoped_setup_failure_blocker(inner=other, receipt=receipt, **args) is None
+    args["adapter"]["native_control_result_digest"] = failed["result_digest"]
+    monkeypatch.setattr(closeout, "closeout_staged_objects", lambda _: {
+        "absent": True, "blockers": ["policy_canary_provider_output_not_durable"]})
+    assert closeout.scoped_setup_failure_blocker(inner=failed, receipt=receipt, **args) is None

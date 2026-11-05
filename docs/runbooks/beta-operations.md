@@ -1,0 +1,471 @@
+# Beta operations runbooks
+
+Short runbooks for the invited beta (tracker items D-07 and B-05 in
+[`../launch-readiness/2026-11-beta-launch-tracker.md`](../launch-readiness/2026-11-beta-launch-tracker.md)).
+Each section names the alarm, what it means and what to do. Every fact cites a
+file. "Unknown" means that the repo does not record it.
+
+In this file, `door` means `python3 scripts/operator_door.py`
+([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)). Host paths are on the
+control-plane host.
+
+Before you act:
+
+- Run `door status`. Read `active_release`, `deploys`, `door_requests`,
+  `deploy_activation_hold`, `holds`, `failed_units` and `capacity`.
+- Ask the owner before you spend money, delete retained data or contact an
+  outside company ([`../../AGENTS.md`](../../AGENTS.md)).
+- Owners and escalation:
+  [`beta-ops-incident-response.md`](beta-ops-incident-response.md#owners-and-escalation).
+
+| Section | Use it when |
+|---|---|
+| [1. A job stops moving](#1-a-job-stops-moving) | A stall page arrives, or a job shows the same state for hours. |
+| [2. Vast credit runs out](#2-vast-credit-runs-out) | `provider_credit_insufficient` pages, or a launch is refused for credit. |
+| [2a. Provider funding](#2a-provider-funding) | An OpenAI, World Labs or Google Cloud spend page arrives (`*_spend_*_high`). |
+| [3. The work volume is full](#3-the-work-volume-is-full) | A launch is refused for disk, or a capacity page arrives. |
+| [4. The operator door or the host is down](#4-the-operator-door-or-the-host-is-down) | The uptime probe pages, or `door` calls fail. |
+| [5. Roll back a bad deploy](#5-roll-back-a-bad-deploy) | A deploy broke production. |
+| [6. Deploy policy (D-08)](#6-deploy-policy-d-08) | You are about to deploy the Pipeline. |
+| [7. Triggers that are off on purpose (D-06)](#7-triggers-that-are-off-on-purpose-d-06) | `door units` shows an enabled timer or path watcher as `inactive`. |
+
+## 1. A job stops moving
+
+The capacity controller runs every 10 minutes
+(`deploy/systemd/blueprint-control-plane-capacity.timer`). Each tick also runs
+three read-only stall checks (PR #3226,
+`src/blueprint_pipeline/control_plane_stall_alarm.py`). A stall pages on the
+capacity alert route, `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`. A new stall posts
+at once. A stall that continues posts again each hour.
+
+| Code | Meaning | Default limit | Do this |
+|---|---|---|---|
+| `scene_progression_stalled` | The `status`, `phase` and `blockers` of a scene intent did not change. | 90 min while the row names blockers. 8 h while it is handed off (`awaiting_execution` or `running`, no blockers). | Read the progression and the journal (commands below). |
+| `launch_lease_stuck` | A request in `task-evaluation-launches/processing/` has no live dispatcher. | 30 min after the launch reconciler's own limit: 15 min before the allocator starts, otherwise the run's `hard_ttl_seconds`. | Make sure that `blueprint-task-evaluation-launch-reconciler.timer` is active. Read its journal. |
+| `trigger_inactive_unheld` | A `.timer` or `.path` that the deploy tool always arms is inactive, with no door hold. | 60 min | Start it: `door unit start <unit>`. If it is off on purpose, put an owned hold on it with `door hold`. |
+| `stall_check_incomplete` (warn) | A check could not read what it needs. | none | Read the `stall` section: `door cat /var/lib/blueprint/pipeline-control-plane/capacity/summary.json`. |
+
+These never page: completed rows, `needs_input` rows, revoked or expired
+execution windows, and intended holds. Intended holds are pauses, privacy,
+consent, rights and money approvals, for example
+`scene_intake_spend_cap_exhausted` and `scene_intake_attempt_cap_exhausted`.
+
+The limits are minutes in the environment file:
+`BLUEPRINT_STALL_PROGRESSION_MINUTES`, `BLUEPRINT_STALL_HANDOFF_MINUTES`,
+`BLUEPRINT_STALL_LAUNCH_GRACE_MINUTES` and `BLUEPRINT_STALL_TRIGGER_MINUTES`.
+`BLUEPRINT_STALL_ALARM=0` turns the alarm off. More detail is in
+[`control-plane-capacity.md`](control-plane-capacity.md#stalled-jobs).
+
+Read the job:
+
+```bash
+I=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/<intent>
+door status
+door cat "$I/progression.json"
+door ls "$I/progression-events" --sort mtime
+door journal blueprint-task-evaluation-scene-progression.service -n 200 --since -1h
+door journal blueprint-task-evaluation-launch-reconciler.service -n 200 --since -2h
+```
+
+What frequent states mean:
+
+| `progression.json` shows | Meaning | Do this |
+|---|---|---|
+| `running` / `previous_release`, blocker `previous_release_attempt_not_terminal` | A deploy moved the release. The old attempt must end first. Then scene progression starts a successor on the new release (`_release_successor` in `src/blueprint_pipeline/task_evaluation_scene_progression.py`). | Wait. See section 5. |
+| `blocked` / `configuration_capacity` | A $0 refusal before allocation waits for credit or disk. | Section 2 or 3. |
+| blocker `scene_intake_spend_cap_exhausted` or `scene_intake_attempt_cap_exhausted` | The scene's own budget is used up. This is a money hold, so it does not page. | Owner decision. Preview, then apply, `door extend-scene-execution-budget` ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)). |
+| blocker `scene_intake_authority_expired` | The execution window expired. | Owner decision. Plan, then apply, `door extend-scene-execution-window`. |
+
+## 2. Vast credit runs out
+
+What breaks: Vast stops every instance when the account balance runs out
+(`PAGE_ALERT_CODES` in `src/blueprint_pipeline/control_plane_capacity_controller.py`).
+Every unit that can allocate Vast runs with `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true`
+(`PAID_ALLOCATION_UNITS` in
+`src/blueprint_pipeline/task_evaluation_production_chain_preflight.py`; the chain
+preflight refuses one without it). That includes the rigid robot-free probe runner
+and beta policy screening. A Vast launch then needs a fresh balance that covers
+its cap plus a reserve before it allocates (`record_vast_credit_admission` in
+`src/blueprint_pipeline/vast_provider_adapter.py`). If not, the launch stops
+before allocation, at $0, with `provider_credit_insufficient`. Each launch is
+checked alone: up to 3 launches can hold slots at once, and their caps are not
+added up against the balance.
+
+The alarm (PR #3257, `src/blueprint_pipeline/provider_credit_admission.py`):
+
+- `provider_credit_insufficient` pages when the balance is below
+  `PAGE_CREDIT_USD` ($10, two launches' compute allowance) plus the $1 reserve.
+  That is, below $11. It repeats each hour while it lasts.
+- The alert row in `door status` (`capacity.alerts`) carries `credit_usd` and
+  `required_usd`.
+- `BLUEPRINT_VAST_CREDIT_WARNING_USD` changes the $10 line.
+  `BLUEPRINT_VAST_CREDIT_RESERVE_USD` changes the $1 reserve.
+- `provider_credit_credentials_missing`, `provider_credit_unverifiable` and
+  `provider_credit_transport_failed` are warnings only. They raise the
+  capacity level to `warning` at most. Only `provider_credit_insufficient`
+  makes it `critical`. A release without PR #3279 shows any of them as
+  `critical`.
+- Disk pages such as `reclaim_ineffective` follow the disks' own level, not
+  a level that a credit or spend alert raised.
+- PR #3257 merged as `882d3bd59` on 2026-11-02. A release without it warns
+  once at $5 + $1 and does not repeat. Check that the active release contains
+  `882d3bd59`.
+
+Recover:
+
+1. Ask the owner to add credit in the Vast account. This is a money action.
+   The owner controls automatic recharge in the Vast account (tracker D-09).
+   The code only reads the balance. It never adds credit.
+2. A website scene that was refused at $0 recovers by itself. Scene progression
+   reads the refusal as `preallocation_credit` (`CREDIT_KIND` in
+   `src/blueprint_pipeline/task_evaluation_scene_capacity_recovery.py`).
+3. Each tick reads the balance again (`capacity_admission`). While the balance
+   is short, the scene shows `blocked` / `configuration_capacity` with
+   `provider_credit_insufficient`.
+4. When the balance covers the attempt's compute cap plus the reserve, scene
+   progression makes a $0 preparation successor. The scene shows `preparing` /
+   `capacity_recovery_reserved`. This works with `max_retries: 0`, because
+   nothing ran.
+5. The limit is 6 capacity recoveries for each intent
+   (`MAX_PREALLOCATION_CAPACITY_RECOVERIES` in
+   `src/blueprint_pipeline/task_evaluation_scene_recovery.py`). After that, the
+   blocker is `preallocation_capacity_recovery_cap_exhausted`.
+
+This recovery covers only a refusal before allocation. A run that started and
+then lost its machine is a different case. On a website scene
+(`max_retries: 0`) it stops at `scene_configuration_failed` or
+`retry_cap_exhausted` (`_recover_configuration_capacity` in
+`src/blueprint_pipeline/task_evaluation_scene_progression.py`).
+
+## 2a. Provider funding
+
+Only Vast gives this host a balance to read (section 2). For OpenAI, World
+Labs and Google Cloud, each capacity tick (every 10 min) reads what Blueprint
+spent and pages when the spend crosses a line (beta tracker B-08,
+`src/blueprint_pipeline/provider_spend_alerts.py`). The alarm only reads. It
+never adds credit, and no launch waits on it. A page goes to the capacity alert
+route, `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`, and repeats each hour while it
+lasts. As for Vast, a page makes the capacity level `critical`, and a warning
+raises it to `warning` at most. Neither raises a disk page.
+
+| Provider | How it is funded | What pages | Default line | Override in `/etc/blueprint/pipeline-control-plane.env` |
+|---|---|---|---|---|
+| Vast | Prepaid credit. Automatic recharge: owner to confirm (tracker D-09). | `provider_credit_insufficient`: the balance (section 2). | Below $11 | `BLUEPRINT_VAST_CREDIT_WARNING_USD`, `BLUEPRINT_VAST_CREDIT_RESERVE_USD` |
+| OpenAI | Owner to confirm: prepaid credit (with or without automatic recharge) or a monthly invoice. | `openai_spend_24h_high`: organization spend in one UTC day, today so far or yesterday. `openai_spend_month_high`: the UTC month to date. | $75 a day. $560 a month. | `BLUEPRINT_OPENAI_SPEND_24H_PAGE_USD`, `BLUEPRINT_OPENAI_SPEND_MONTH_PAGE_USD` |
+| World Labs (Atlas) | Prepaid credit: tasks draw from the account balance, 1,000 credits per US dollar in the beta. Automatic recharge and the account's monthly spend limit: owner to confirm. | `world_labs_spend_24h_high`: Blueprint's recorded Atlas purchases in the last 24 h. `world_labs_spend_month_high`: the UTC month to date. | $60 a day. $450 a month. | `BLUEPRINT_WORLD_LABS_SPEND_24H_PAGE_USD`, `BLUEPRINT_WORLD_LABS_SPEND_MONTH_PAGE_USD` |
+| Google Cloud project `blueprint-8c1ca` (Gemini) | A Cloud Billing account that Google charges after use. Payment setup: owner to confirm. | `gcp_spend_month_high`: the budget guard's cost for the month. | 80% of the month's limit: $80 of $100. | `BLUEPRINT_GCP_SPEND_PAGE_FRACTION`, more than 0 and at most 1 |
+
+The lines come from the B-03 cost model
+([`../launch-readiness/2026-11-cost-model.md`](../launch-readiness/2026-11-cost-model.md)):
+
+- One website job at its caps costs $30.91 of OpenAI: ARTISAN's $25
+  cumulative cap, $0.91 of Atlas planner and review calls (measured on
+  capture-447), and the $5 upstream ledger. It costs $25 of World Labs: the
+  default Atlas allowance. capture-447 measured $17.93 of OpenAI. Its World
+  Labs cost was about $8.60 at rate-card prices, part of it estimated.
+- The plan is 2 jobs a day and 15 a month. B-03 found 15 website jobs in the
+  30 days to 2026-11-02. The WebApp admits at most 5 new jobs a day.
+- Each line is jobs × cost per job × 1.2, rounded up to $5. The 20% is for
+  spend outside website jobs. Raise the lines when the job rate goes up.
+
+These are alert lines, not ceilings. A bad override (not a positive number,
+or a fraction above 1) keeps the default and warns
+`provider_spend_config_invalid`. `BLUEPRINT_PROVIDER_SPEND_ALERTS=0` turns the
+alarm off.
+
+**OpenAI.** OpenAI has no balance API. The alarm reads the organization Costs
+API (`src/blueprint_pipeline/openai_organization_costs.py`) with the Admin key
+in `OPENAI_ADMIN_API_KEY_FILE`. The capacity unit sets it to
+`/etc/blueprint/provider-secrets/openai_admin_api_key`, the file that the
+launch dispatcher uses. Every project in the organization counts.
+
+- Cost data lags. OpenAI reports costs by UTC day, and a day's figure keeps
+  growing for hours after the spend. The alarm sees a cost only when OpenAI
+  reports it, so a page can come hours after the spend. The alarm also checks
+  yesterday, because late costs land in yesterday's figure after midnight. A
+  page therefore lasts until the day that crossed the line is older than
+  yesterday: about 48 h at most.
+- The balance and the recharge settings are on the OpenAI platform's billing
+  page (owner login).
+- Whether the WebApp's OpenAI key is in the same organization: owner to
+  confirm. If it is not, the WebApp's OpenAI spend is not counted.
+
+**World Labs.** The Atlas API has no balance, usage or billing endpoint (its
+API reference, read 2026-11-02). The alarm counts Blueprint's own record of
+each Atlas attempt under
+`/var/lib/blueprint/pubsub-handoffs/*/scenes/*/captures/*/pipeline/atlas`
+(`BLUEPRINT_WEBSITE_ATLAS_PREVIEW_STORAGE_ROOT`):
+
+- A completed operation counts at its reviewed price. An operation that may
+  still be charged counts in full. A failed operation or a refused send counts
+  $0, the same rule as `src/blueprint_pipeline/atlas_spend_settlement.py`.
+- A purchase is dated by its last send.
+- World Labs use outside website jobs is not counted.
+- Check the balance itself on the World Labs dashboard: Settings → Billing
+  (`https://atlas-beta.worldlabs.ai/settings/billing?tab=developer`). Daily
+  spend is at `https://atlas-beta.worldlabs.ai/usage?tab=developer`. With no
+  credit left, Atlas refuses tasks with HTTP 402 `CREDITS_UNAVAILABLE`. At the
+  account's monthly limit it refuses them with `SPEND_LIMIT_EXCEEDED` (World
+  Labs billing documentation, read 2026-11-02).
+
+**Google Cloud (Gemini).** The WebApp and the Pipeline call the Gemini API
+with `GEMINI_API_KEY` or `GOOGLE_GENAI_API_KEY`. The Google Cloud project that
+owns the key pays. That this project is `blueprint-8c1ca`: owner to confirm.
+The Gemini lanes already handle the error "prepayment credits are depleted"
+(`src/blueprint_pipeline/wam_generated_video_success_label_gemini.py`).
+Whether the key uses Gemini API prepayment: owner to confirm. This alarm
+cannot see a prepaid Gemini balance.
+
+- The alarm reads the monthly budget guard's report. That is the
+  `report_path` in the policy that `BLUEPRINT_GCP_BUDGET_GUARD_CONFIG` names,
+  `/var/lib/blueprint/pipeline-control-plane/gcp-monthly-budget/latest.json`
+  on the host. `blueprint-gpu-spend-guard.timer` writes it every few minutes
+  ([`development-cloud-cost-controls.md`](development-cloud-cost-controls.md#monthly-admission-and-automatic-stop)).
+- The line is a share of the month's effective limit, so a dated owner
+  exception moves it too. The alarm never changes the limit. At 100%, the
+  guard itself refuses paid work.
+- Google's cost reports are hours late, so the 80% line leaves room.
+
+These codes warn and never page:
+
+| Code | Meaning |
+|---|---|
+| `openai_spend_credentials_missing` | The Admin key file is not set, is missing, or is not owner-only (`reason`). |
+| `openai_spend_transport_failed` | The request failed. `http_status` 401 or 403 means OpenAI refused the key. |
+| `openai_spend_unverifiable` | OpenAI's answer was malformed (`reason`). |
+| `world_labs_spend_unverifiable` | The job root is missing, an attempt record is unreadable, or the walk stopped early. A walk that stopped early is a lower bound, and it still pages on what it counted. |
+| `gcp_spend_unverifiable` | No guard policy, a report that is unreadable, stale or for another month, or no cost reported yet this month (`reason`). |
+| `provider_spend_config_invalid` | An override is bad (`reason` names it). The default line applies. |
+| `provider_spend_check_failed` | The check stopped with an error. The tick went on. |
+
+When a spend page arrives:
+
+1. Read the alert in `door status` (`capacity.alerts`: `spend_usd`,
+   `threshold_usd`, `window`). For the current figures of all three
+   providers, read `provider_spend` in
+   `door cat /var/lib/blueprint/pipeline-control-plane/capacity/summary.json`.
+2. Ask the owner to check the provider's balance on its own dashboard, and to
+   add credit if it is low. This is a money action. Recharge settings are the
+   owner's account settings.
+3. If the spend is not expected, find what spent it: OpenAI usage by project,
+   World Labs usage by API key or project, or the Google Cloud billing report.
+   For World Labs, also look at the Atlas folders of recent jobs.
+4. A page for an expected busy day stops by itself when that day leaves the
+   window. To move a line, the owner edits the environment file over SSH
+   (section 4) and records a break-glass note ([`break-glass.md`](break-glass.md)).
+
+## 3. The work volume is full
+
+What breaks: a scene-configuration launch stops before allocation, at $0, with
+`scene_configuration_provider_output_disk_budget_exceeded`. The disk
+reservation ledger could not hold the output's upload ceiling plus 512 MiB
+(`MEASURED_BLOCKER` in
+`src/blueprint_pipeline/task_evaluation_scene_capacity_recovery.py`). Ceiling
+mode uses `scene_configuration_provider_output_disk_capacity_insufficient`.
+
+Beta screening and the rigid robot-free probe stage new attempts on the work
+volume: `/mnt/blueprint-work/beta-policy-screening-work` and
+`/mnt/blueprint-work/rigid-robot-free-probe-work` (each unit's `*_WORK_ROOT`
+setting). Their `policy_canary_output` disk hold therefore draws on this
+volume, not on `/`. Their queues and the screening budget ledger stay on `/`.
+An attempt staged before that setting keeps its queue paths. A screening
+candidate refused with `policy_canary_output_disk_admission_refused` is out
+of room on the disk its attempt directory is on.
+
+The capacity controller pages for disk with these codes: `floor_within_three_days`,
+`floor_within_hours`, `admission_refused`, `critical_admission_refused`,
+`reclaim_ineffective`, `volume_growth_blocked` and `orphan_scratch_large`. See
+[`control-plane-capacity.md`](control-plane-capacity.md).
+
+Automatic recovery (PR #3251):
+
+- The launch result must prove that nothing started (`nothing_started`): no
+  instance, no allocation, no API pretraining, and
+  `provider_mutations_performed` 0.
+- Then scene progression treats the refusal like a credit refusal. The scene
+  shows `blocked` / `configuration_capacity` with
+  `preallocation_capacity_not_recovered`.
+- Each tick measures free space for the CPU chain, the output and the next
+  bundle (`capacity_admission`). When the space is there, it makes a $0
+  preparation successor.
+- The same limit of 6 recoveries for each intent applies.
+- A refusal after paid API pretraining does not retry. Its blockers gain
+  `preallocation_capacity_recovery_withheld:<reason>`.
+
+Make space:
+
+1. Run `door status`, then `door usage`. Find the full mount and what holds it.
+2. Run storage GC: `door unit start blueprint-control-plane-storage-gc.service`.
+   Read its plan and receipt.
+3. If GC frees too little, the volume must grow. Growth costs money, so it is
+   an owner decision (tracker D-10: +200 GiB is about +$20 a month).
+
+Automatic growth is opt-in for each host
+(`deploy/systemd/blueprint-control-plane-capacity.service`). When the volume's
+mount is `critical`, the controller grows the volume one step, up to the
+maximum. It calls the DigitalOcean API, then runs `resize2fs`
+(`plan_volume_resize` and `resize_volume` in
+`src/blueprint_pipeline/control_plane_capacity_controller.py`). These lines go
+in `/etc/blueprint/pipeline-control-plane.env`:
+
+```bash
+BLUEPRINT_CAPACITY_VOLUME_ID=<DigitalOcean volume id>
+BLUEPRINT_CAPACITY_VOLUME_MOUNT=<mount of the work volume>
+BLUEPRINT_CAPACITY_VOLUME_DEVICE=<block device under /dev>
+BLUEPRINT_CAPACITY_VOLUME_MAX_GIB=<owner-approved maximum>
+BLUEPRINT_CAPACITY_AUTORESIZE_ACK=grow-control-plane-volume
+# Optional. The default step is 50 GiB.
+BLUEPRINT_CAPACITY_VOLUME_STEP_GIB=50
+```
+
+- The controller also reads the DigitalOcean token from
+  `DIGITALOCEAN_API_TOKEN_FILE`, which the unit sets.
+- Whether the host has these lines today is unknown. `door status` shows
+  `capacity.volume_resize` only when they are set.
+- `volume_at_maximum` needs a provider limit increase first.
+- Only SSH from the owner's Mac can edit the file (section 4). Record a
+  break-glass note for the edit ([`break-glass.md`](break-glass.md)).
+
+## 4. The operator door or the host is down
+
+The alarm is the WebApp's external uptime probe (WebApp PR #1176,
+`scripts/ops/uptime-probe.mjs` in the WebApp checkout):
+
+- It checks
+  `https://paperclip.tryblueprint.io/api/live-pipeline/operator/v1/healthz`.
+  The check needs no token.
+- It runs every 10 min as the Render cron job `blueprint-uptime-probe`. The
+  WebApp's `.github/workflows/uptime.yml` is the backstop.
+- A failure posts to the ops Slack webhook as
+  `control-plane=HTTP_<status> (Pipeline control-plane host or operator door down)`.
+- At 2026-11-02 14:45Z, two steps were still open (tracker D-02): the WebApp
+  deploy, and a manual deploy of the cron job, which has `autoDeploy: false`.
+
+First check, from any machine:
+
+```bash
+curl -fsS https://paperclip.tryblueprint.io/api/live-pipeline/operator/v1/healthz   # expect {"ok": true}
+```
+
+If the check fails, a cloud session cannot help: the door is its only path to
+the host. The door runs apart from the pipeline release, from
+`/opt/blueprint/operator-door` ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)).
+
+Only the owner, with SSH from the owner's Mac, can do these (WebApp
+`docs/runbooks/cloud-scene-runs.md`, "What still needs the Mac"):
+
+- Look at the door units and Caddy:
+  `systemctl status blueprint-operator-door.service blueprint-operator-door-runner.path caddy`.
+- Probe the door on the host:
+  `curl -fsS http://127.0.0.1:8767/api/live-pipeline/operator/v1/healthz`.
+- Repair the door: run `install.sh --upgrade` as root, from a commit on `main`
+  ([`../OPERATOR_DOOR.md#install-tokens-upgrade-removal`](../OPERATOR_DOOR.md#install-tokens-upgrade-removal)).
+  If the health check fails, the installer restores the previous door.
+- Edit `/etc/blueprint` config or env files, and rotate provider keys.
+- Debug a process (py-spy, gdb), or SSH into a GPU machine.
+- Record a break-glass note for each change ([`break-glass.md`](break-glass.md)).
+
+If SSH also fails, the host itself is down. Host recovery is the owner's
+action. This repo has no runbook to restart or rebuild the host (unknown).
+
+## 5. Roll back a bad deploy
+
+Deploy an earlier commit through the door:
+
+```bash
+python3 scripts/operator_door.py deploy <previous sha on main> --wait
+```
+
+Before you deploy:
+
+1. Find the last good commit. Use `door status` (`deploys.recent_receipts`, the
+   five most recent), or
+   `door ls /var/lib/blueprint/pipeline-control-plane/deploy-receipts --sort mtime`.
+   The commit must be on `origin/main`.
+2. List what the rollback removes: `git log --oneline <previous>..<active>`.
+   Every commit in that range leaves production. Fixes from other sessions in
+   that range also leave.
+3. Do not redeploy an older commit before you read that list. If it removes
+   work of another session, ask the owner first.
+4. A revert merged on `main` is a newer commit. It removes only what it names.
+5. Read `door status` (`deploy_activation_hold`). While a scene-configuration
+   activation is live, the door holds the deploy. The hold ends when the
+   activation ends, or after at most 285 min (`CAP_SECONDS` in
+   `deploy/operator-door/operator_door/activation_hold.py`).
+6. `--activation-hold-override <reason>` deploys at once. Use it only for
+   money, privacy, rights or a fix to that activation.
+7. Request the rollback when no other deploy runs. A rollback that waits behind
+   another deploy ends `parked_rollback_refused`
+   ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md#what-a-door-deploy-does)).
+
+After the deploy:
+
+- Every deploy, a rollback too, retires each in-flight website attempt and
+  rebuilds it on the new release. That is about 15 min of preparation, then
+  about an hour of activation (`activation_hold.py`). Later stages refuse work
+  that is bound to an older release.
+- Until the old attempt ends, the scene shows `running` / `previous_release`
+  with `previous_release_attempt_not_terminal`.
+- Read the receipt `deploy-receipts/iteration_<sha12>_door.json` and
+  `door status` (`active_release`).
+
+## 6. Deploy policy (D-08)
+
+Why: every deploy retires each in-flight website attempt and rebuilds it on the
+new release (section 5), and it pauses paid launches for about 7 minutes. So
+deploys are batched once a day and held while an external job is in a paid
+stage. The rule is in `AGENTS.md` ("Beta Deploy Policy").
+
+The window opens at 15:00 UTC (09:00 CST). Deploy what `main` holds then.
+
+Before you deploy:
+
+1. Read `door status`. Do not deploy while any of these hold:
+   - a `paid_launch_locks` entry with `held: true`;
+   - `deploy_activation_hold` is not null (the door holds the deploy itself
+     while a scene-configuration activation is live, section 5);
+   - `beta_screening.candidate_counts.launching` or `.running` is above 0.
+   Wait for them to clear, then deploy.
+2. Read `door requests` and `deploys.recent_receipts`. If another operator has a
+   deploy pending, processing, or finished in the last hour, do not stack a
+   second one: use theirs, or wait for it.
+3. List what ships: `git log --oneline <active release>..origin/main`. A fix for
+   a stopped production job needs its replay first (`AGENTS.md`, "Commands").
+4. Request it:
+
+   ```bash
+   python3 scripts/operator_door.py deploy <sha on origin/main> --wait
+   ```
+
+5. Record the deploy in
+   [`../launch-readiness/2026-11-beta-launch-tracker.md`](../launch-readiness/2026-11-beta-launch-tracker.md):
+   the commit, the time, and what it carried.
+
+Outside the window:
+
+- Deploy only a fix for money, privacy, rights, or a paid stage that is stuck.
+  Say which in the request.
+- `--activation-hold-override <reason>` is for the same cases only.
+- A rollback follows section 5.
+
+WebApp merges are separate. A WebApp merge to `main` deploys to Render through
+its CI-gated workflow, so treat every WebApp merge as a deploy, but it does not
+retire Pipeline attempts.
+
+## 7. Triggers that are off on purpose (D-06)
+
+`door units` shows these timers and path watchers as enabled but `inactive`.
+They are off on purpose. A deploy restores each unit's earlier state unless the
+unit is in `DEFAULT_ALWAYS_ARM_TIMER_UNITS`
+(`scripts/deploy_control_plane_commit.py`), so they stay off. Checked
+2026-11-03 at 01:58Z.
+
+| Unit | What it does | Why it is off | To turn it on |
+|---|---|---|---|
+| `blueprint-provider-billing-reconciler.timer` | Refreshes provider billing evidence every 10 minutes. | Not needed. `blueprint-gpu-spend-guard.service` `Wants=` the reconciler, so the reconciler runs with every guard start. Since #3278 (E-02), it refreshes at most every 10 minutes, and only while a live provider needs it. | Nothing to do. |
+| `blueprint-task-evaluation-launch-supervisor.timer` | Supervises launches with the OpenAI Agents SDK. This is optional. | It spends OpenAI money on every launch. | The owner decides the money first. |
+| `blueprint-task-evaluation-terminal-resource-release.path` | Watches the terminal resource release queue. It releases one terminal Vast record through the canonical allocator. | The queue has been empty since 2026-08-12 (one completed record). When `BLUEPRINT_ALLOW_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER` is set, the intake starts the release unit directly (`live_pipeline_intake_runtime_controls.py`). Teardown runs in the paid lane. The launch reconciler files the provider-zero receipt. | Add it to `DEFAULT_ALWAYS_ARM_TIMER_UNITS` if anything writes to its `pending/` folder again. |
+| `blueprint-capture-reconstruction-dispatcher.timer` and `.path` | Advances the legacy capture reconstruction queue. | The website beta reconstructs through Atlas. The queue (`capture-reconstruction-queue/{pending,processing,completed}`) is empty, and no door hold is set. | Retire them in the host cleanup (H-03). |
+
+Not done: `reset-failed` on the transient failed units (O-24). It needs a door
+unit action, and another operator uses the host, so do it in a deploy window.

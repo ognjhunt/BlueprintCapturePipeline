@@ -474,7 +474,10 @@ def test_missing_destination_is_a_typed_blocker_not_a_default(tmp_path):
 
 
 def test_stale_execution_authority_holds_intake(tmp_path):
-    value = _compile(tmp_path, spend={**SPEND, "consent": {**SPEND["consent"], "accepted_at_epoch": NOW - 2 * 86400}})
+    # Stale means older than the longest window a website grant may carry.
+    from blueprint_pipeline.website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
+    stale = NOW - WEBSITE_JOB_WINDOW_MAX_SECONDS - 1
+    value = _compile(tmp_path, spend={**SPEND, "consent": {**SPEND["consent"], "accepted_at_epoch": stale}})
     assert value["status"] == "needs_input"
     assert value["blockers"] == ["scene_intake_consent_actor_or_time_invalid"]
 

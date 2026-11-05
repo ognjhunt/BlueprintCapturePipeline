@@ -120,8 +120,15 @@ def test_aggregate_budget_defers_candidates_instead_of_multiplying_allowance():
     assert sum(row["status"] == "selected" for row in value["candidates"]) == 7
     assert value["maximum_planned_cost_usd"] == "14.00"
     assert all(row["blockers"] == ["site_screening_budget_insufficient"] for row in value["candidates"][7:])
+    # Unfunded runnable rows wait, frozen, for money a selected row releases before spend.
+    assert all(row["status"] == "waitlisted" and row["max_cost_usd"] == "2.00" for row in value["candidates"][7:])
     with pytest.raises(BetaPolicyScreeningPlanError, match="site_budget_exceeded"):
         plan(budget_usd="15.01")
+    # A smaller plan budget defers what it could never fund and waitlists the rest.
+    small = plan(40, "2.00", budget_usd="3.00")
+    assert [row["status"] for row in small["candidates"][:3]] == ["selected", "waitlisted", "waitlisted"]
+    tight = plan(40, "2.00", budget_usd="1.50")
+    assert {row["status"] for row in tight["candidates"] if row["blockers"] == ["site_screening_budget_insufficient"]} == {"deferred"}
 
 
 def test_full_length_native_candidate_id_can_have_a_bound_quote_identifier():
@@ -338,3 +345,57 @@ def test_failed_robot_free_probe_blocks_planning_and_keeps_site_budget_identity(
     value = plan()
     assert value["site_id"] == "site-request1"
     assert value["source"]["capture_id"] == "capture1"
+
+
+def test_the_last_money_a_site_holds_funds_one_candidate_at_exactly_what_is_left():
+    """2026-11-05: the site had $3.78 of $15 left and every $4 candidate was deferred. The first
+    local candidate is quoted again at $3.78, sealed; the next keeps its quote (nothing is left)."""
+    from blueprint_pipeline.beta_policy_screening_launch import _check_quote
+
+    catalog, capabilities, quotes = inputs(maximum="4.00")
+    for binding in capabilities["candidate_bindings"].values():
+        # The production bounds: $0.80/h for four hours is a $3.20 run bound under a $4 cap.
+        binding["execution_spec"].update(max_hourly_rate_usd="0.80", hard_ttl_seconds=14400)
+        binding["admission_digest"] = canonical_digest(binding["execution_spec"])
+    value = build_screening_plan(catalog, scene(), campaign_id="campaign1", capabilities=capabilities,
+                                 cost_quotes=quotes, now=NOW, site_remaining_usd="3.78")
+    assert validate_screening_plan(value)
+    first, second = (row for row in value["candidates"] if row["status"] == "selected")
+    assert first["max_cost_usd"] == first["cost_quote"]["maximum_cost_usd"] == "3.78"
+    quote = first["cost_quote"]
+    assert quote["quote_id"].endswith("-site-fit") and "fitted_to_site_remaining" in quote["price_source"]
+    assert quote["quote_digest"] == canonical_digest(quote, digest_field="quote_digest")
+    assert second["max_cost_usd"] == "4.00"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("blueprint_pipeline.beta_policy_screening_launch.datetime",
+                      type("Now", (dt.datetime,), {"now": staticmethod(lambda tz=None: NOW)}))
+        _check_quote(value, first)  # the launch's own quote check accepts the fitted quote
+    # Below half the headroom above that $3.20 bound ($3.60), nothing is fitted.
+    value = build_screening_plan(catalog, scene(), campaign_id="campaign1", capabilities=capabilities,
+                                 cost_quotes=quotes, now=NOW, site_remaining_usd="3.59")
+    assert all(row["max_cost_usd"] == "4.00" for row in value["candidates"] if row["status"] == "selected")
+
+
+@pytest.mark.parametrize("remaining", ["1.00", "0.00", "4.00", "9.99"])
+def test_a_fit_only_ever_lowers_and_never_below_the_run_bound(remaining):
+    """Too little left to keep half the original headroom above the resource bound, or enough
+    for the whole quote: the quote stands, and the coordinator's site limit decides."""
+    value = plan(maximum="4.00", site_remaining_usd=remaining)
+    assert all(row["max_cost_usd"] == "4.00" and not row["cost_quote"]["quote_id"].endswith("-site-fit")
+               for row in value["candidates"] if row["status"] == "selected")
+
+
+def test_without_a_site_figure_and_for_hosted_candidates_quotes_are_unchanged():
+    assert all(row["max_cost_usd"] == "4.00" for row in plan(maximum="4.00")["candidates"]
+               if row["status"] == "selected")
+    catalog, capabilities, quotes = inputs(maximum="4.00")
+    spec = capabilities["candidate_bindings"]["pi05_droid"]["execution_spec"]
+    spec.update(credential_file="/private/operator.env", credential_origin="https://policy.example.com",
+                provider_hard_cap_usd="1.00", hosted_inference_payment="blueprint", hosted_inference_maximum_usd="2.00",
+                hosted_max_cost_per_request_usd="0.001", hosted_http_request_limit=2000)
+    capabilities["candidate_bindings"]["pi05_droid"]["admission_digest"] = canonical_digest(spec)
+    value = build_screening_plan(catalog, scene(), campaign_id="campaign1", capabilities=capabilities,
+                                 cost_quotes=quotes, now=NOW, site_remaining_usd="3.78")
+    hosted = next(row for row in value["candidates"] if row["candidate_id"] == "pi05_droid")
+    # Its provider cap is set by the hosted delivery, so its quote is never fitted.
+    assert hosted["max_cost_usd"] == "4.00"

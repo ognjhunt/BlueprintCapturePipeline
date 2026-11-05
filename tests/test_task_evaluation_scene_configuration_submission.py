@@ -390,8 +390,8 @@ def _staged_references(staging: Path, request: dict, namespace: str) -> dict[str
     # Switched off (unset): the Astra profile's sanctioned cap. Scene 840938 object 219
     # (2026-09-15) lost a GPU rental projecting $11.47 against a $5.00 shared quote.
     ("astra_cad_blender_v1", 36.76, 25.0),
-    # Switched on: a new request freezes the editable ARTISAN pool.
-    ("artisan_v1", 26.76, 15.0),
+    # Switched on: a new request freezes the editable ARTISAN pool ($12 for gpt-6.1-sol).
+    ("artisan_v1", 23.76, 12.0),
 ])
 def test_scene_and_task_objects_become_one_validated_production_submission(
         tmp_path: Path, monkeypatch, backend, hard_cap, authoring_cap) -> None:

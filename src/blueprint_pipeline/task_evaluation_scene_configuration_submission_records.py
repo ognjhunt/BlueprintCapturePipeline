@@ -9,7 +9,7 @@ records are shaped exactly as the deployed validators require.
 
 from __future__ import annotations
 
-from .task_object_authoring_backend import AUTHORING_BACKENDS, backend_configuration, default_backend
+from .task_object_authoring_backend import ARTISAN_BACKEND, AUTHORING_BACKENDS, backend_configuration, default_backend
 
 import math
 from decimal import Decimal
@@ -21,9 +21,11 @@ from .task_evaluation_scene_configuration_adapters import (
     ADMITTED_STAGE_ADAPTER_IDENTITIES,
 )
 from .task_evaluation_scene_configuration_runtime_budget import (
+    DEFAULT_OPENAI_REQUESTS,
     MAX_ATTEMPT_SPEND_USD,
     MAX_EXTERNAL_SERVICE_SPEND_USD,
     MAX_HOURLY_RATE_USD,
+    MAX_OPENAI_REQUESTS,
     MAX_PROVIDER_COMPUTE_SPEND_USD,
     MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
@@ -238,7 +240,9 @@ def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost
         "external_service_caps": {
             "openai": {
                 "maximum_cost_usd": openai_cap,
-                "maximum_requests": 32 if openai_cap else 0,
+                # ARTISAN: the dollar cap binds, not an arbitrary call count.
+                "maximum_requests": ((MAX_OPENAI_REQUESTS if authoring_backend == ARTISAN_BACKEND
+                                      else DEFAULT_OPENAI_REQUESTS) if openai_cap else 0),
                 "stage_max_cost_usd": caps,
             },
             **({"anthropic": {"maximum_cost_usd": anthropic_cap,

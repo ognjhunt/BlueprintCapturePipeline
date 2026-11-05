@@ -493,8 +493,13 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
 
 
 def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output_root: Path,
-                         maximum_frames: int | None = None, minimum_frames: int = 0) -> dict[str, Any]:
-    """Build the existing pose producer's pending input from a reviewed survey."""
+                         maximum_frames: int | None = None, minimum_frames: int = 0,
+                         exclude_transients: bool = False) -> dict[str, Any]:
+    """Build the existing pose producer's pending input from a reviewed survey.
+
+    ``exclude_transients`` is for a job no editor works on (geometry only): it
+    leaves out every frame showing a transient, as the direct path does.
+    """
     from .website_worldlabs import prepare_atlas_pose_inputs
     from .website_scene_geometry import INPUT_SCHEMA
     survey = json.loads(survey_path.read_text())
@@ -529,7 +534,7 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     # the view, another door state) never become candidates. The direct path
     # poses every input as captured, so no frame showing a transient joins it.
     excluded = set(review.get("excluded_frame_ids", []))
-    if not takes_reviewed_background(review):
+    if exclude_transients or not takes_reviewed_background(review):
         excluded |= set(review.get("transient_frame_ids", []))
     frames = [r for r in survey["frames"] if any(a <= r["timestamp_seconds"] <= b for a, b in intervals)
               and r["frame_id"] not in excluded]

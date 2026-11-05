@@ -775,12 +775,14 @@ def test_usage_prints_the_capacity_usage_as_tables(door: dict[str, Any]) -> None
             "orphan_scratch_roots": [{"root": "/mnt/blueprint-work/loose-run",
                                       "allocated_bytes": 4 * 1024**3,
                                       "newest_mtime_epoch": 1_700_000_000}],
+            "composite": {"partitions": 140, "measured": 139, "oldest_age_seconds": 5_400.0},
         },
     }), encoding="utf-8")
     code, out = _run("usage")
     assert code == 0
     lines = out.splitlines()
     assert lines[0] == "usage survey: complete, 1200 s old"
+    assert "partitions measured: 139 of 140, oldest 1.5 h" in lines
     assert any(line.split() == ["/", "150.0", "GiB", "145.0", "GiB", "130.0", "GiB", "96.7%"] for line in lines)
     assert any(line.split()[:3] == ["scene:site-capture-1", "work", "12.0"] for line in lines)
     assert any(line.split() == ["/var/lib/blueprint/something-new", "2.0", "MiB"] for line in lines)
@@ -950,14 +952,15 @@ def test_selected_handoff_cli_links_explicit_recovery_and_keeps_selector_plain(d
     assert _run(*args, "--dispatch")[0] == 2
 
 
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume", "preparation-reissue"])
 def test_selected_atlas_cli_requires_explicit_snapshot_review_and_excludes_native_dispatch(door, mode):
     from tests.test_operator_door_requests import _selected_request
     body = {key: value for key, value in _selected_request().items() if key not in {"kind", "mode"}}
     selector = door["base"] / "selected-atlas.json"
     selector.write_text(json.dumps(body))
     args = ["selected-handoff", "--selector-file", str(selector),
-            "--resume-preparation" if mode == "preparation-resume" else "--" + mode]
+            {"preparation-resume": "--resume-preparation",
+             "preparation-reissue": "--reissue-preparation"}.get(mode, "--" + mode)]
     retry = mode != "atlas-status"
     digest = "sha256:" + "c" * 64
     if retry:
@@ -1089,6 +1092,45 @@ def test_scene_window_client_plans_by_default_and_applies_only_with_ack(door: di
 def test_scene_window_client_refuses_out_of_bounds_expiry_before_http(expires: str, monkeypatch) -> None:
     monkeypatch.setattr(client, "_json", lambda *a, **k: pytest.fail("no request may be sent"))
     assert _run(*_scene_window_args(expires=expires))[0] == 2
+
+
+def _owner_success_args(*extra: str) -> list[str]:
+    return ["confirm-owner-success-contract", "scene-" + "a" * 64, "--owner-user-id", "owner-uid",
+            "--owner-organization-id", "user:owner-uid", "--approved-by", "owner-uid",
+            "--approval-evidence", "owner accepted the built thresholds 2026-11-03", *extra]
+
+
+def test_owner_success_client_previews_by_default_and_applies_only_with_both_acknowledgements(
+        door: dict[str, Any]) -> None:
+    code, out = _run(*_owner_success_args())
+    assert code == 0
+    spooled = json.loads((door["state"] / "requests" / "pending" / f"{json.loads(out)['id']}.json").read_text())
+    assert spooled["request"] == {"kind": "confirm-owner-success-contract", "intent_id": "scene-" + "a" * 64,
+                                  "owner_user_id": "owner-uid", "owner_organization_id": "user:owner-uid",
+                                  "approved_by": "owner-uid",
+                                  "approval_evidence": "owner accepted the built thresholds 2026-11-03",
+                                  "apply": False, "apply_ack": "", "ack": "confirm-owner-success-contract"}
+    ack = "sha256:" + "c" * 64
+    assert _run(*_owner_success_args("--apply"))[0] == 2
+    assert _run(*_owner_success_args("--apply", "--apply-ack", ack))[0] == 2
+    assert _run(*_owner_success_args("--apply", "--ack", "confirm-owner-success-contract"))[0] == 2
+    assert _run(*_owner_success_args("--apply-ack", ack))[0] == 2
+    code, out = _run(*_owner_success_args("--apply", "--apply-ack", ack, "--ack", "confirm-owner-success-contract"))
+    applied = json.loads((door["state"] / "requests" / "pending" / f"{json.loads(out)['id']}.json").read_text())
+    assert code == 0 and applied["request"]["apply"] is True and applied["request"]["apply_ack"] == ack
+
+
+@pytest.mark.parametrize("extra", [("--owner-user-id", "a b"), ("--approval-evidence", " padded ")])
+def test_owner_success_client_refuses_malformed_fields_before_http(extra: tuple[str, str], monkeypatch) -> None:
+    monkeypatch.setattr(client, "_json", lambda *a, **k: pytest.fail("no request may be sent"))
+    assert _run(*_owner_success_args(*extra))[0] == 2
+
+
+def test_owner_success_outcomes_finish_a_wait() -> None:
+    for status, verdict in (("planned", True), ("confirmed", True), ("already_confirmed", True),
+                            ("failed", False), ("refused", False)):
+        state = {"request": {"kind": "confirm-owner-success-contract"}, "outcome": {"status": status}}
+        assert client._terminal(state) is verdict
 
 
 def test_scene_window_outcomes_finish_a_wait() -> None:

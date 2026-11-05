@@ -40,6 +40,18 @@ and its exact matching delay. Invalid or future-anchored hint metadata is ignore
 for selection and removed by canonical repair; oversized numbers cannot abort
 selection of unrelated healthy callbacks.
 
+A delivery whose status read (everything before the callback) has failed on
+every attempt for 24 hours is parked (D-05, 2026-11-02). It stays `pending` with
+all its fields and gains `parked_reason`
+(`preparation_status_persistently_unavailable`), `parked_at_epoch`,
+`status_unavailable_since_epoch` and `last_unavailable_reason`, a fixed code for
+the failed check. It is retried every 6 hours, after live work that is due, and
+counts in `parked_count` and `oldest_parked_age_seconds` instead of the due
+backlog. One successful read, or a newer revision, makes it live again. The
+metrics also report `live_count` and `oldest_live_age_seconds` for every
+unparked callback, including those waiting out a retry; the capacity tick pages
+when that age passes an hour.
+
 The existing listener writes `.website_preparation_delivery_metrics.json` with
 due backlog/age, measured successful delivery lag, actual attempts and failures,
 repair work and explicit overload or hint-scan truncation. The hint scan is

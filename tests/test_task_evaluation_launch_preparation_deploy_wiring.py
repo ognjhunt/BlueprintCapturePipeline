@@ -249,6 +249,7 @@ def test_exact_sha_deployer_installs_and_arms_all_no_spend_intake_paths() -> Non
         "blueprint-task-evaluation-launch-preparation.path",
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.path",
+        "blueprint-task-evaluation-launch-activation.timer",
         "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.path",
     )

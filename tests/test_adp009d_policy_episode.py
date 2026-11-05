@@ -2399,3 +2399,72 @@ def test_internal_canary_accepts_digest_bound_runtime_camera_gate_without_human_
     assert gate["runtime_observation_gate"]["gate_digest"] == runtime_gate[
         "gate_digest"
     ]
+
+
+def _flagged_runtime_gate(**changes) -> dict:
+    """The real beta runtime gate: usable frame structure, integrity not passed."""
+    from tests.test_beta_screening_worker_control import REAL_GATE_BLOCKERS
+
+    value = {**_runtime_observation_gate(), "status": "blocked", "target_semantic_visibility_passed": False,
+             "blockers": sorted(REAL_GATE_BLOCKERS), "policy_observation_integrity_passed": False, **changes}
+    value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
+    return value
+
+
+def test_beta_episode_proceeds_past_a_bound_usable_frame_gate_and_records_its_flags(tmp_path) -> None:
+    from blueprint_pipeline.adp009d_policy_episode_evidence import BETA_SCREENING_RUN_KIND
+    from blueprint_pipeline.native_task_arena_policy_canary_session import BETA_RUN_KIND
+
+    assert BETA_SCREENING_RUN_KIND == BETA_RUN_KIND
+    runtime_gate, policy = _flagged_runtime_gate(), _LifecyclePolicy()
+    receipt = _run(
+        environment=_LifecycleEnvironment(), policy=policy, max_policy_queries=1, settle_window_samples=1,
+        media_output_dir=tmp_path, episode_id="lifecycle-beta-flagged-gate",
+        require_complete_multicamera_media=True, require_prestart_readiness=True,
+        observation_integrity={"authority": None, "appearance_render_backend_receipt_digest": _BACKEND_RECEIPT_DIGEST,
+                               "runtime_gate": runtime_gate, "run_kind": BETA_RUN_KIND},
+    )
+    assert policy.observations  # The episode ran.
+    gate = receipt["prestart_readiness"]["prepolicy_visual_quality"]
+    assert gate["observation_integrity_flagged"] is True
+    assert gate["observation_quality_flags"] == runtime_gate["blockers"]
+    # What was measured stays as measured: no integrity pass and no human approval is claimed.
+    assert gate["policy_observation_integrity_passed"] is False
+    assert gate["human_visual_review_status"] == "pending"
+    assert gate["policy_observation_integrity_blockers"] == [
+        "native_task_appearance_reference_parity_missing", "native_task_human_visual_review_not_approved"]
+    assert gate["runtime_observation_gate"]["gate_digest"] == runtime_gate["gate_digest"]
+    assert gate["runtime_observation_gate"]["status"] == "blocked"
+
+
+@pytest.mark.parametrize("case", ["internal_canary", "team", "no_run_kind", "forged", "unbound", "unusable_frames",
+                                  "no_blockers"])
+def test_flagged_gate_is_accepted_only_bound_sealed_and_for_beta(tmp_path, case: str) -> None:
+    from blueprint_pipeline.native_task_arena_policy_canary_session import BETA_RUN_KIND, RUN_KIND, TEAM_RUN_KIND
+
+    runtime_gate, run_kind = _flagged_runtime_gate(), BETA_RUN_KIND
+    if case == "internal_canary":
+        run_kind = RUN_KIND
+    elif case == "team":
+        run_kind = TEAM_RUN_KIND
+    elif case == "no_run_kind":
+        run_kind = None
+    elif case == "forged":  # Edited after it was sealed.
+        runtime_gate["blockers"] = runtime_gate["blockers"][:1]
+    elif case == "unbound":  # Sealed against another session's appearance backend.
+        runtime_gate = _flagged_runtime_gate(appearance_render_backend_receipt_digest="sha256:" + "0" * 64)
+    elif case == "unusable_frames":
+        runtime_gate = _flagged_runtime_gate(frame_structure_passed=False)
+    else:
+        runtime_gate = _flagged_runtime_gate(blockers=[])
+    policy = _LifecyclePolicy()
+    with pytest.raises(PolicyEpisodeError, match="native_task_human_visual_review_not_approved"):
+        _run(
+            environment=_LifecycleEnvironment(), policy=policy, max_policy_queries=1, settle_window_samples=1,
+            media_output_dir=tmp_path, episode_id="lifecycle-flagged-gate-" + case,
+            require_complete_multicamera_media=True, require_prestart_readiness=True,
+            observation_integrity={"authority": None, "appearance_render_backend_receipt_digest": _BACKEND_RECEIPT_DIGEST,
+                                   "runtime_gate": runtime_gate,
+                                   **({"run_kind": run_kind} if run_kind is not None else {})},
+        )
+    assert policy.observations == []

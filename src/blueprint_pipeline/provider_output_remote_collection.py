@@ -16,11 +16,21 @@ Nothing is written: no archive copy and no ``.mp4`` copy (the inspection runs
 with ``video_extract_dir=None``). ``output_path`` is only the name the
 inspection reports as ``zip_path``; no file exists there.
 
+When the inspection does not show a clean completion, the collector also reads
+the archive's bounded diagnostics (``provider_runtime_diagnostics``: cell
+results, worker and policy-server log tails) over the same pinned reader. It
+starts no new member read once they have added ``diagnostics_transfer_bytes``
+of transfer (the member in progress may finish past it). This is the only
+moment the host can read them, since the archive never lands here. A transport
+failure while reading them is recorded in the diagnostics and never refuses the
+observation already made.
+
 A completed collection returns the download transfer's keys, so the adapter
 needs no new branch, plus ``delivery: "remote_only"``, ``remote_object``
 {``size_bytes``, ``etag``}, ``inspection``, ``structured_policy_canary``,
-``transferred_bytes`` and ``http_request_count``. The same observation stays on
-``collector.observation`` for the promotion that follows.
+``runtime_diagnostics``, ``transferred_bytes`` and ``http_request_count``. The
+same observation stays on ``collector.observation`` for the promotion that
+follows.
 
 Download-manifest zeros. Because nothing is downloaded, the adapter's download
 manifest records ``output_zip_present_after_download: false`` and
@@ -53,6 +63,7 @@ from .provider_output_range_transport import (
     ProviderOutputRangeReader,
     ProviderOutputTransportError,
 )
+from .provider_runtime_diagnostics import diagnostics_wanted, not_collected, summarize_archive
 from .safe_outbound_http import SafeOutboundHttpError
 from .vast_structured_policy_canary_inspection import (
     STRUCTURED_POLICY_CANARY_MEMBER,
@@ -72,6 +83,8 @@ BLOCK_BYTES = 8 * 1024**2
 # The Quick-10 packer's own cap on its required terminal result.
 MAXIMUM_INSPECTED_MEMBER_BYTES = 512 * 1024**2
 DEADLINE_SECONDS = 1800
+# Extra transfer the failure diagnostics may add inside the paid window: eight 8 MiB blocks.
+DIAGNOSTICS_TRANSFER_BYTES = 64 * 1024**2
 OVER_READ_CAP = "provider_output_inspected_member_over_read_cap"
 
 
@@ -144,10 +157,12 @@ class RemoteProviderOutputCollector:
                  opener: Callable | None = None, maximum_read_bytes: int = READ_CAP_BYTES,
                  block_bytes: int = BLOCK_BYTES,
                  maximum_inspected_member_bytes: int = MAXIMUM_INSPECTED_MEMBER_BYTES,
-                 deadline_seconds: float = DEADLINE_SECONDS):
+                 deadline_seconds: float = DEADLINE_SECONDS,
+                 diagnostics_transfer_bytes: int = DIAGNOSTICS_TRANSFER_BYTES):
         if (not _count(maximum_archive_bytes) or not _count(maximum_read_bytes)
                 or not _count(block_bytes) or block_bytes > maximum_read_bytes
                 or not _count(maximum_inspected_member_bytes)
+                or not _count(diagnostics_transfer_bytes, 0)
                 or not 0 < deadline_seconds <= 86400):
             raise ValueError("provider_output_remote_collection_limits_invalid")
         self._maximum_archive_bytes = maximum_archive_bytes
@@ -157,6 +172,7 @@ class RemoteProviderOutputCollector:
         self._block_bytes = block_bytes
         self._maximum_inspected_member_bytes = maximum_inspected_member_bytes
         self._deadline_seconds = deadline_seconds
+        self._diagnostics_transfer_bytes = diagnostics_transfer_bytes
         self.observation: dict[str, Any] | None = None
 
     def __call__(self, *, url: str, output_path: str | Path,
@@ -173,7 +189,7 @@ class RemoteProviderOutputCollector:
                 maximum_read_bytes=self._maximum_read_bytes, opener=self._opener)
             if not reader.identity.get("etag"):
                 raise ProviderOutputTransportError("provider_output_remote_etag_missing")
-            inspection, structured = self._inspect(reader, output_path)
+            inspection, structured, diagnostics = self._inspect(reader, output_path)
         except (ProviderOutputTransportError, _RemoteCollectionRefusal) as exc:
             return self._blocked(str(exc), type(exc).__name__, reader, output_path)
         except SafeOutboundHttpError:
@@ -190,6 +206,7 @@ class RemoteProviderOutputCollector:
             "remote_object": dict(self.observation),
             "inspection": inspection,
             "structured_policy_canary": structured,
+            "runtime_diagnostics": diagnostics,
             "transferred_bytes": reader.transferred_bytes,
             "http_request_count": reader.request_count,
             "disk_capacity": _capacity_not_required(output_path),
@@ -208,7 +225,8 @@ class RemoteProviderOutputCollector:
                     raise
                 # Not a readable ZIP: the path inspections' own verdicts.
                 return (_invalid_archive(str(output_path), size, exc),
-                        structured_policy_canary_summary({}, ["structured_policy_canary_member_invalid"]))
+                        structured_policy_canary_summary({}, ["structured_policy_canary_member_invalid"]),
+                        not_collected("provider_runtime_output_zip_unreadable"))
             with archive:
                 if any(not info.is_dir() and _inspected(info.filename)
                        and (info.file_size > self._maximum_inspected_member_bytes
@@ -219,12 +237,36 @@ class RemoteProviderOutputCollector:
                     archive, zip_path=str(output_path), zip_size_bytes=size,
                     video_extract_dir=None, expected_video_count=self._expected_video_count)
                 structured = inspect_structured_policy_canary_archive(archive)
+                diagnostics = self._diagnose(archive, source, reader, inspection)
         except ProviderOutputTransportError:
             if source.failure is None:
                 raise
         if source.failure is not None:
             raise ProviderOutputTransportError(source.failure)
-        return inspection, structured
+        return inspection, structured, diagnostics
+
+    def _diagnose(self, archive, source, reader, inspection):
+        """Bounded failure diagnostics, read after the verdicts; never refuses the collection."""
+        if source.failure is not None:
+            return not_collected("provider_output_transport_failed")
+        if not diagnostics_wanted(inspection, archive.namelist()):
+            return not_collected("runtime_result_completed_without_blockers")
+        if not self._diagnostics_transfer_bytes:
+            return not_collected("diagnostics_transfer_budget_zero")
+        start = reader.transferred_bytes
+        diagnostics = summarize_archive(
+            archive, archive_source="remote_range",
+            stop_reading=lambda: (source.failure is not None
+                                  or reader.transferred_bytes - start >= self._diagnostics_transfer_bytes))
+        if source.failure is not None:
+            # The inspection and structured verdicts above were complete before
+            # this read began; a diagnostics read failure only marks itself.
+            diagnostics = {**diagnostics, "status": "partial",
+                           "blockers": sorted({*diagnostics.get("blockers", []),
+                                               "provider_runtime_diagnostics_transport_failed"})}
+            source.failure = None
+        diagnostics["transferred_bytes"] = reader.transferred_bytes - start
+        return diagnostics
 
     @staticmethod
     def _blocked(code, error_type, reader, output_path) -> dict[str, Any]:

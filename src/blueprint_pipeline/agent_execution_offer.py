@@ -129,6 +129,9 @@ def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -
         "schema_version": "blueprint.team_evaluation_contract.v1",
         "task_kind": task_spec.get("task_kind"), "instruction": facts["prompt"],
         "task_success_contract": scene["task_success_contract"],
+        # Paused per-cell controls are disclosed, never dropped silently (team_candidate_quick10_registry).
+        **({"diagnostic_control_omission_authority": scene["diagnostic_control_omission_authority"]}
+           if scene.get("diagnostic_control_omission_authority") is not None else {}),
         "scored": {"episodes": EPISODES["scored"], "cells_published": False,
                    "families": [name for name, _ in SCORED_FAMILY_SHARES],
                    "parameter_bounds": {name: list(value) for name, value in sorted(bounds.items())}},

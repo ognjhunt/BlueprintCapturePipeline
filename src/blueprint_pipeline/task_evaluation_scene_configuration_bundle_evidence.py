@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .sealed_file_digest import sealed_sha256
 from .task_evaluation_scene_configuration_diagnostic_mode import (
     CHECKPOINT_RESUME_DIAGNOSTIC_BOOTSTRAP_MODE,
     FRESH_DIAGNOSTIC_BOOTSTRAP_MODE,
@@ -365,7 +366,9 @@ def load_scene_configuration_provider_bundle_receipt(
         bundle.is_symlink()
         or not bundle.is_file()
         or bundle.stat().st_size != receipt.get("bundle_size_bytes")
-        or _sha256(bundle) != receipt.get("bundle_sha256")
+        # Each activation step reopens this ~6 GB bundle; a seal from an
+        # earlier full read is reused only while its inode identity is exact.
+        or sealed_sha256(bundle) != receipt.get("bundle_sha256")
     ):
         errors.append("bundle_bytes_invalid")
     else:

@@ -118,14 +118,20 @@ def choose_start(*, collider: Any, region: Sequence[Sequence[float]], attractor:
     height = float(design["dimensions_m"][2]) * unit
     low, high = np.asarray(region[0], dtype=float), np.asarray(region[1], dtype=float)
     # Heights along the scene's up direction, whichever way its axis points.
-    triangles = np.asarray(collider.triangles, dtype=float)
-    span_low, span_high = triangles.min(axis=1), triangles.max(axis=1)
     lift = lambda value: up_sign * value  # noqa: E731
     region_top, region_bottom = max(lift(low[up]), lift(high[up])), min(lift(low[up]), lift(high[up]))
     margin = half[0] + half[1] + START_CLEARANCE_M * unit
-    near = np.all([(span_high[:, a] >= low[a] - margin) & (span_low[:, a] <= high[a] + margin) for a in horizontal],
-                  axis=0)
-    nearby_low, nearby_high = span_low[near], span_high[near]
+    # Only triangles near the region can block a spot: read a block of faces at a time, never whole.
+    from .website_support_geometry import triangle_blocks
+
+    nearby_low, nearby_high = [np.zeros((0, 3))], [np.zeros((0, 3))]
+    for _, triangles in triangle_blocks(collider):
+        span_low, span_high = triangles.min(axis=1), triangles.max(axis=1)
+        near = np.all([(span_high[:, a] >= low[a] - margin) & (span_low[:, a] <= high[a] + margin)
+                       for a in horizontal], axis=0)
+        nearby_low.append(span_low[near])
+        nearby_high.append(span_high[near])
+    nearby_low, nearby_high = np.concatenate(nearby_low), np.concatenate(nearby_high)
     step = START_SEARCH_STEP_M * unit
     axes = [np.arange(low[a] + half[i], high[a] - half[i] + 1e-9, step) if high[a] - low[a] > 2 * half[i]
             else np.array([(low[a] + high[a]) / 2.0]) for i, a in enumerate(horizontal)]

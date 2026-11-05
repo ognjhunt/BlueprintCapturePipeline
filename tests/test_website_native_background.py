@@ -142,7 +142,7 @@ def test_fixture_void_uses_same_bounded_scene_pose_without_rewriting_capture_bou
         reconcile_enclosed_fixture_collision(source=source, preparation=preparation, output_root=tmp_path / "other")
 
 
-def staged(tmp_path, *, appearance=False):
+def staged(tmp_path, *, appearance=False, text_collider=False):
     control = tmp_path / "control"
     control.mkdir()
     if appearance:
@@ -151,6 +151,12 @@ def staged(tmp_path, *, appearance=False):
     else:
         args = _arguments(control)
         preparation = compile_website_scene_preparation(**args)
+    if text_collider:
+        # A collider normalized before 2026-11-03: USDA text, its receipt reused.
+        from blueprint_pipeline.website_scene_runtime_inputs import normalize_runtime_collision
+        from tests.test_completed_scene_normalization import as_text_normalization
+        as_text_normalization(normalize_runtime_collision(preparation=preparation, base_scene=args["base_scene"],
+                                                          output_root=control / "native")[0])
     runtime = prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
         source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=control / "native")
     inputs = prepare_collision_stage(control / "native/runtime_inputs.json")
@@ -184,14 +190,22 @@ def execute(tmp_path, inputs, envelope, config_path):
         configuration_path=config_path, dependency_results=(), output_root=tmp_path / "result")
 
 
-def test_native_collision_stage_preserves_background_and_transports_original_references(tmp_path):
-    runtime, inputs, envelope, config_path = staged(tmp_path)
+@pytest.mark.parametrize("text_collider", [False, True])
+def test_native_collision_stage_preserves_background_and_transports_original_references(tmp_path, text_collider):
+    from pxr import Usd
+
+    runtime, inputs, envelope, config_path = staged(tmp_path, text_collider=text_collider)
     result = execute(tmp_path, inputs, envelope, config_path)
     assert result["status"] == "completed"
     assert result["provider_mutations_performed"] == 0
     artifacts = {row["role"]: row for row in result["output_artifacts"]}
     collision = artifacts["configured_collision_without_source_object"]
     assert _sha256_file(Path(collision["path"])) == runtime["collision"]["digest"]
+    # Its transported path has no extension; it is named by its format, which the bundle and publication
+    # keep (``collision.usdc``): binary for a new scene, text for one normalized before. OpenUSD opens it.
+    assert Path(collision["path"]).name == ("background_collision.usda" if text_collider
+                                            else "background_collision.usdc")
+    assert Usd.Stage.Open(collision["path"]).GetPseudoRoot().GetChildren()
     config = runtime["object_authoring"]["configuration"]
     frames = _reference_frames({"configuration": config}, [result])
     assert frames and all(frame.is_relative_to(tmp_path / "result") for frame in frames)

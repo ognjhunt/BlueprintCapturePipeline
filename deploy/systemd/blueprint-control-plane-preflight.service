@@ -35,10 +35,19 @@ ReadOnlyPaths=/etc/blueprint/provider-secrets
 # Blockers are the report's content, not a failure of the unit that found them.
 SuccessExitStatus=2
 TasksMax=128
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 101M on the host.
 MemoryMax=1G
+OOMScoreAdjust=200
 TimeoutStartSec=20min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
+# The private report directory must be root's and not group/other writable before the
+# summary is published from it (production_preflight_summary refuses otherwise); an older
+# tool created it as another account, so the public summary was never written.
+ExecStartPre=+/bin/bash -c 'install -d -m 0711 /var/lib/blueprint/pipeline-control-plane/preflight && chown root:root /var/lib/blueprint/pipeline-control-plane/preflight && chmod 0711 /var/lib/blueprint/pipeline-control-plane/preflight'
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_production_chain_preflight run --json-out /var/lib/blueprint/pipeline-control-plane/preflight/latest.json --history-out /var/lib/blueprint/pipeline-control-plane/preflight/history.jsonl'

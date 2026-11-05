@@ -55,7 +55,13 @@ ReadWritePaths=-/var/lib/blueprint/pubsub-handoffs
 ReadOnlyPaths=-/var/lib/blueprint/spend-authority -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs -/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases-state
 TasksMax=512
 LimitNOFILE=4096
-MemoryMax=8G
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 722M on the host.
+MemoryHigh=2G
+MemoryMax=3G
+OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=3h
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
@@ -90,6 +96,9 @@ Environment=BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200
 Environment=BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS=3600
 Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_ROOTS=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining
 Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS=21600
+# Owner decision 2026-11-01: a settled scene attempt's ~6 GB provider bundle zip
+# is reclaimed; its receipts and the rest of the pinned activation stay.
+Environment=BLUEPRINT_CONTROL_PLANE_GC_SETTLED_ACTIVATION_BUNDLE_ROOTS=/var/lib/blueprint/task-evaluation-inputs/launch-activations
 # Website scene working copies are retired once every file verifies in Firebase Storage or is
 # archived to the artifact store behind a replayable receipt, and no ledger lease, pin, queue,
 # live process or open scene intent can still read them. Retirement is its own owner decision,

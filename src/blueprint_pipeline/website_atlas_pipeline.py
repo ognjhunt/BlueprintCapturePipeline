@@ -41,6 +41,38 @@ REVIEW_CAPS = "review_caps_usd"
 _RAISABLE_LIMITS = ("maximum_cost_usd", "maximum_requests")
 _AMENDMENT_RECORD = ("approval_reference", "expires_at_epoch", "authorization_digest")
 
+#: The host's route for a new job, set on the worker unit and unset by default (``full``).
+#: ``geometry_only`` keeps the scene as filmed for the robot fit check: no object removal,
+#: image editing, generated completion or refined splat, only the pose, the scale review and
+#: the mesh.
+ROUTE_ENV = "BLUEPRINT_WEBSITE_ATLAS_ROUTE"
+ROUTES = ("full", "geometry_only")
+
+
+def _job_route(output_root: Path, *, purchased: bool) -> str:
+    """The job's route, chosen once: a geometry-only job records it before its first purchase.
+
+    A job that has bought anything without that record is on the full route, so a
+    full-route job writes nothing and keeps its directory as it was.
+    """
+    path = output_root / "route.json"
+    if path.is_file():
+        route = json.loads(path.read_text()).get("route")
+    else:
+        route = "full" if purchased else (os.getenv(ROUTE_ENV, "").strip() or "full")
+    if route not in ROUTES:
+        raise ValueError("atlas_route_invalid")
+    if route != "full" and not path.is_file():
+        write_json(path, {"schema_version": "website_atlas_route.v1", "route": route})
+    return route
+
+
+def _route_policy(policy, route: str):
+    """The rate card a route can buy from: geometry only never buys the refined splat, so never holds it back."""
+    if route == "geometry_only":
+        return {key: value for key, value in policy.items() if key != "refined_splat_cost_usd"}
+    return policy
+
 
 def _same_authority(stored, current):
     amendable = (*_RAISABLE_LIMITS, *_AMENDMENT_RECORD)
@@ -283,12 +315,17 @@ def _splat_input_options(pose_root, *, review, policy, edit_scope):
 
 def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
                      source_digest, configuration, check, experimental, max_polls, model,
-                     source_survey_path=None, reconstruction_only=False, task_evidence_limitation=None):
+                     source_survey_path=None, reconstruction_only=False, task_evidence_limitation=None,
+                     geometry_only=False):
     """Reconstruct an environment-preserving task from full-view observations.
 
     Selection and scale still use the production agents and validators. Missing
     surfaces enter the existing source-first bounded completion/recovery seams.
     Original observations and the first incomplete export remain retained.
+
+    ``geometry_only`` keeps any task's scene as filmed, a captured subject
+    included, and buys only the pose, the scale review and the mesh: no
+    completion. Its inputs already left out every frame showing a transient.
     """
     from .atlas_source_pose_inputs import prepare_source_pose
     from .atlas_depth_splat import write_depth_splat, load_posed_rgbd, splats2mesh_attempt
@@ -296,7 +333,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     from .atlas_result_bundle import export_pose_bundle
     from .paid_resource_allocator import run_sponsored_website_atlas_task, run_sponsored_website_atlas_automation
 
-    if ((not reconstruction_only and review.get("subject_origin") not in PRESERVED_SCENE_ORIGINS)
+    if not geometry_only and ((not reconstruction_only and review.get("subject_origin") not in PRESERVED_SCENE_ORIGINS)
             or not review.get("automation")
             or any(row.get("disposition") != "keep" for row in review["automation"]["objects"])
             or review["automation"].get("removal_instruction", "").strip()
@@ -331,7 +368,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         blockers.append(source_pose.get("reason", "atlas_source_pose_unavailable"))
     elif not reconstruction_only and "mesh_export_cost_usd" not in policy:
         blockers.append("atlas_mesh_export_price_unreviewed")
-    elif 'rgbd_view_cost_usd' in policy and not reconstruction_only:
+    elif 'rgbd_view_cost_usd' in policy and not reconstruction_only and not geometry_only:
         if source_survey_path is None:
             completion_stopped = True
             blockers.append('atlas_original_capture_survey_required')
@@ -414,6 +451,10 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             **({'admission_digest': completion['admission']['digest'],
                 'admission_relative_path': str(Path(completion['admission_path']).relative_to(output_root))}
                if admitted_completion else {})}
+    if geometry_only:
+        # A captured subject stays where it was filmed; a robot check reading this must cut it out first.
+        result.update(atlas_route="geometry_only",
+                      subject_in_reconstruction=review.get("subject_origin") not in PRESERVED_SCENE_ORIGINS)
     if reconstruction_only:
         result.update(observed_scene_only=True, native_preparation_eligible=False, execution_authority_granted=False)
     result["digest"] = canonical_digest(result, digest_field="digest")
@@ -495,7 +536,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         config = current
         write_json(saved, config)
     policy = config["policy"]
-    default_scope = ("all_selected_views" if "refined_splat_cost_usd" in policy
+    route = _job_route(output_root, purchased=reviews.exists() or selection_path.exists())
+    held = _route_policy(policy, route)
+    default_scope = ("all_selected_views" if "refined_splat_cost_usd" in held
                      and not selection_path.exists() and not reviews.exists() else "required_and_additional")
     edit_scope = _job_edit_scope(output_root, edit_scope, default=default_scope)
     os.environ[ATLAS_PROVIDER_RETENTION_ENV] = current["authority"]["provider_retention"]
@@ -540,7 +583,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # The saved configuration preserves the original authority and prices;
     # completed purchases and held unknown calls consume today's allowance.
     budget = (current["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
-              - final_output_cost(policy, admitted_final_outputs(output_root)))
+              - final_output_cost(held, admitted_final_outputs(output_root)))
     # Size a new selection only; a retained one already spent its reviews, and
     # holding them back again would stop a resumed job on money it already paid.
     if not selection_path.exists() and budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
@@ -602,7 +645,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     pose_root = output_root / "pose"
     pose_root.mkdir(exist_ok=True)
     inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root,
-        **_splat_input_options(pose_root, review=review, policy=policy, edit_scope=edit_scope))
+        exclude_transients=route == "geometry_only",
+        **_splat_input_options(pose_root, review=review, policy=held, edit_scope=edit_scope))
     if not selection_path.exists():
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})
@@ -610,6 +654,21 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     retain_task_semantics(job_dir=output_root, receipt=receipt, task_context=task_context,
                           source_video_digest=source_digest)
     write_json(output_root / "atlas_scene_review.json", review)
+    if feedback is None:
+        # A task with no native profile, or no installed runtime, holds here, before any
+        # World Labs stage: the review has read the whole job (website_early_task_hold).
+        from .website_early_task_hold import hold_after_review
+        held = hold_after_review(output_root=output_root, task_context=task_context,
+                                 source_video_digest=source_digest)
+        if held is not None:
+            return held
+    if route == "geometry_only":
+        # The scene stays as filmed, subject included: nothing is removed or edited,
+        # and no generated completion or refined splat is bought.
+        return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,
+            policy=policy, task_context=task_context, source_digest=source_digest,
+            configuration=_current_configuration(task_context, source_digest, config), check=check,
+            experimental=experimental, max_polls=max_polls, model=receipt["model"], geometry_only=True)
     if review.get("subject_origin") in PRESERVED_SCENE_ORIGINS:
         from .atlas_source_gap_evidence import combine_source_surveys
         source_survey = combine_source_surveys(survey_paths=[

@@ -35,12 +35,21 @@ SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/team-scene-packets /var/lib/blueprint/pipeline-control-plane/team-scene-packets/pending
 TasksMax=512
 LimitNOFILE=4096
-MemoryMax=8G
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: 1.6G on the host after #3330; 1.9 GB locally at capture-447 scale.
+MemoryHigh=4G
+MemoryMax=5G
+OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=1h
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/team-scene-packets
+# Where a request's own intent is read: an owner's success confirmation lives
+# under it (read only; an env file below may name another root).
+Environment=BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
 # The same registry, capture partition, object store and WebApp bindings the
 # scene progression and handoff listener read.
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env

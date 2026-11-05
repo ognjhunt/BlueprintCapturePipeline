@@ -30,13 +30,16 @@ MAX_MEDIAN_RESIDUAL_VOXELS = 3.0
 SUPPORT_VOXELS = 4.0
 SUPPORT_MESH_EDGES = 2.0
 REGISTRATION_SAMPLES = 200_000
+#: Faces gathered into (faces, 3, 3) at once. A room's mesh has millions of faces (capture-447's: 6.5 M), and
+#: the whole array is 470 MB of float64 per copy; registration held two and its area temporaries (2.8 GB).
+FACE_BLOCK = 1 << 20
 _COMPONENTS = {5121: np.uint8, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
 _WIDTH = {"SCALAR": 1, "VEC3": 3, "VEC4": 4}
 
 
 def mesh_depth_free_space_filter(
     triangles: np.ndarray, *, frames: Sequence[Mapping[str, Any]],
-    absolute_tolerance: float, relative_tolerance: float = 0.02,
+    absolute_tolerance: float, relative_tolerance: float = 0.02, faces: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Keep surfaces unless multiple saved views contradict the entire face.
 
@@ -44,12 +47,24 @@ def mesh_depth_free_space_filter(
     in two views. Any agreeing sample protects the face. Occluded, unseen and
     invalid-depth samples never vote for deletion. This is a derived geometry
     screen, not native contact or captured metric truth.
+
+    With ``faces``, ``triangles`` is the (finite) vertex array they index, and
+    each batch of faces is gathered on its own instead of all of them at once.
     """
     import hashlib
     from .atlas_depth_splat import _rotation_matrix, _seen_ratio
 
     triangles = np.asarray(triangles, dtype=np.float64)
-    if (triangles.ndim != 3 or triangles.shape[1:] != (3, 3)
+    if faces is None:
+        shape_valid = triangles.ndim == 3 and triangles.shape[1:] == (3, 3)
+        count = len(triangles)
+    else:
+        faces = np.asarray(faces)
+        shape_valid = (triangles.ndim == 2 and triangles.shape[1:] == (3,) and faces.ndim == 2
+                       and faces.shape[1:] == (3,) and np.issubdtype(faces.dtype, np.integer)
+                       and (not len(faces) or (faces.min() >= 0 and faces.max() < len(triangles))))
+        count = len(faces) if shape_valid else 0
+    if (not shape_valid
             or not np.isfinite(triangles).all()
             or not np.isfinite(absolute_tolerance) or absolute_tolerance <= 0
             or not np.isfinite(relative_tolerance) or not 0 <= relative_tolerance < 1):
@@ -78,9 +93,9 @@ def mesh_depth_free_space_filter(
         if identity not in seen_references:
             voting_frames.append(frame)
             seen_references.add(identity)
-    keep = np.ones(len(triangles), dtype=bool)
-    for start in range(0, len(triangles), 4096):
-        batch = triangles[start:start + 4096]
+    keep = np.ones(count, dtype=bool)
+    for start in range(0, count, 4096):
+        batch = triangles[start:start + 4096] if faces is None else triangles[faces[start:start + 4096]]
         samples = np.concatenate([batch, batch.mean(axis=1)[:, None]], axis=1).reshape(-1, 3)
         clear = np.zeros(len(samples), dtype=np.uint32)
         agreement = np.zeros(len(samples), dtype=bool)
@@ -101,7 +116,7 @@ def mesh_depth_free_space_filter(
               "absolute_tolerance_provider_units": float(absolute_tolerance),
               "relative_depth_tolerance": float(relative_tolerance),
               "references": references, "distinct_reference_count": len(voting_frames),
-              "faces_in": len(triangles),
+              "faces_in": count,
               "faces_kept": int(keep.sum()), "faces_removed": int((~keep).sum()),
               "native_collision_qualified": False, "metric_measurement_proven": False}
     report["digest"] = canonical_digest(report, digest_field="digest")
@@ -149,11 +164,12 @@ def write_glb_triangles(path: Path, vertices: np.ndarray, faces: np.ndarray, col
     position = np.ascontiguousarray(vertices, dtype="<f4")
     rgba = np.concatenate([colors.astype(np.uint8), np.full((len(colors), 1), 255, np.uint8)], axis=1)
     index = np.ascontiguousarray(faces, dtype="<u4")
+    # Each array is written as it is, never joined into one buffer: a room's mesh is hundreds of MB of GLB.
     chunks, views, offset = [], [], 0
-    for payload, target in ((position.tobytes(), 34962), (rgba.tobytes(), 34962), (index.tobytes(), 34963)):
-        views.append({"buffer": 0, "byteOffset": offset, "byteLength": len(payload), "target": target})
-        chunks.append(payload + b"\0" * (-len(payload) % 4))
-        offset += len(chunks[-1])
+    for payload, target in ((position, 34962), (rgba, 34962), (index, 34963)):
+        views.append({"buffer": 0, "byteOffset": offset, "byteLength": payload.nbytes, "target": target})
+        chunks.append((payload, -payload.nbytes % 4))
+        offset += payload.nbytes + chunks[-1][1]
     gltf = {"asset": {"version": "2.0", "generator": "blueprint atlas_mesh_registration"}, "scene": 0,
             "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}], "buffers": [{"byteLength": offset}],
             "bufferViews": views, "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "COLOR_0": 1},
@@ -165,11 +181,13 @@ def write_glb_triangles(path: Path, vertices: np.ndarray, faces: np.ndarray, col
                           {"bufferView": 2, "componentType": 5125, "count": index.size, "type": "SCALAR"}]}
     text = json.dumps(gltf, separators=(",", ":")).encode()
     text += b" " * (-len(text) % 4)
-    binary = b"".join(chunks)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(struct.pack("<4sII", b"glTF", 2, 28 + len(text) + len(binary))
-                     + struct.pack("<I4s", len(text), b"JSON") + text
-                     + struct.pack("<I4s", len(binary), b"BIN\0") + binary)
+    with path.open("wb") as stream:
+        stream.write(struct.pack("<4sII", b"glTF", 2, 28 + len(text) + offset)
+                     + struct.pack("<I4s", len(text), b"JSON") + text + struct.pack("<I4s", offset, b"BIN\0"))
+        for payload, padding in chunks:
+            stream.write(memoryview(np.ascontiguousarray(payload)).cast("B"))
+            stream.write(b"\0" * padding)
     return path
 
 
@@ -224,17 +242,24 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
     if len(candidates) != 1:
         raise ValueError("atlas_mesh_frame_ambiguous")
     frame = candidates[0]
+    del mesh_tree  # only the frame search reads it
     vertices = vertices * np.array(GLB_FRAMES[frame])
-    triangles = vertices[faces]
-    edge = float(np.median(np.linalg.norm(triangles[:, 1] - triangles[:, 0], axis=1)))
+
+    def per_face(rows: np.ndarray, value) -> np.ndarray:
+        """``value`` of ``vertices[rows]``, gathered ``FACE_BLOCK`` faces at a time: each face's own arithmetic."""
+        return np.concatenate([value(vertices[rows[start:start + FACE_BLOCK]])
+                               for start in range(0, len(rows), FACE_BLOCK)] or [value(vertices[rows[:0]])])
+
+    edge = float(np.median(per_face(faces, lambda tri: np.linalg.norm(tri[:, 1] - tri[:, 0], axis=1))))
     support = max(SUPPORT_VOXELS * voxel, SUPPORT_MESH_EDGES * edge)
     vertex_distance, vertex_nearest = tree.query(vertices, distance_upper_bound=np.nextafter(support, np.inf))
-    centroid_distance = tree.query(triangles.mean(axis=1), distance_upper_bound=np.nextafter(support, np.inf))[0]
+    centroid_distance = per_face(faces, lambda tri: tree.query(
+        tri.mean(axis=1), distance_upper_bound=np.nextafter(support, np.inf))[0])
     kept = faces[np.all(vertex_distance[faces] <= support, axis=1) & (centroid_distance <= support)]
     depth_filter = None
     if reference_frames is not None:
         mask, depth_filter = mesh_depth_free_space_filter(
-            vertices[kept], frames=reference_frames, absolute_tolerance=support)
+            vertices, faces=kept, frames=reference_frames, absolute_tolerance=support)
         depth_filter["reference_pose_digest"] = reference_pose_digest
         depth_filter["digest"] = canonical_digest(depth_filter, digest_field="digest")
         kept = kept[mask]
@@ -245,8 +270,10 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
     colors = np.clip((0.5 + SH_C0 * splat.f_dc[nearest]) * 255.0, 0, 255).round()
     out = write_glb_triangles(output_root / "atlas_mesh_supported.glb", vertices[used], remapped.reshape(-1, 3), colors)
 
-    def area(tri: np.ndarray) -> float:
-        return float(0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1).sum())
+    def area(rows: np.ndarray) -> float:
+        # One sum over every face's own area, as over the whole (faces, 3, 3) array.
+        return float(0.5 * per_face(rows, lambda tri: np.linalg.norm(
+            np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)).sum())
 
     record = {"schema_version": SCHEMA_VERSION, "source_glb_sha256": _sha256_file(glb),
               "splat_manifest_digest": splat_manifest["digest"], "glb_frame": frame,
@@ -254,7 +281,7 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
               "registration_distance_limit": limit, "registration_basis": "majority_overlap_in_either_direction",
               "support_basis": "all_vertices_and_centroid", "voxel_size": voxel, "median_mesh_edge": edge,
               "support_distance": support, "faces_in": int(len(faces)), "faces_kept": int(len(kept)),
-              "area_kept_fraction": area(vertices[kept]) / area(triangles),
+              "area_kept_fraction": area(kept) / area(faces),
               "outputs": [{"role": "supported_mesh_glb", "path": out.name, "bytes": out.stat().st_size,
                            "sha256": _sha256_file(out)}],
               "world_frame": "atlas_world_rub_y_up", "colour_source": "nearest_observed_gaussian",

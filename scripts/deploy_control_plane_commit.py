@@ -433,6 +433,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.service",
     "blueprint-agent-stage-replay.timer",
+    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-dispatcher.path",
     "blueprint-task-evaluation-launch-preparation.service",
@@ -451,6 +452,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-episode-compilation-remote.path",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-activation.path",
+    "blueprint-task-evaluation-launch-activation.timer",
     "blueprint-task-evaluation-policy-canary-dispatcher.service",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
     "blueprint-team-evaluation-runner.service",
@@ -496,6 +498,13 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-scene-project-spend-refresh.service",
     "blueprint-control-plane-storage-gc.service",
     "blueprint-control-plane-storage-gc.timer",
+    # Retires superseded release and runtime trees behind receipts (its own owner switch).
+    "blueprint-control-plane-release-lifecycle.service",
+    "blueprint-control-plane-release-lifecycle.timer",
+    # Owner-approved deletions: oneshots an operator starts by hand (plan, then apply);
+    # no timer or path unit starts them. See src/blueprint_pipeline/owner_approved_deletion.py.
+    "blueprint-owner-approved-deletion-plan.service",
+    "blueprint-owner-approved-deletion.service",
     "blueprint-control-plane-capacity.service",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.service",
@@ -528,6 +537,9 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
     "blueprint-task-evaluation-launch-preparation.path",
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.path",
+    # Starts the same no-spend activation oneshot hourly, so a claim a killed
+    # worker left is retired on an idle queue too; a hold on the path stops it.
+    "blueprint-task-evaluation-launch-activation.timer",
     "blueprint-scene-object-discovery.path",
     # CPU compile of a prepared scene's team half, its derived registry row and a
     # signed offer republish (facts, never authority); it holds no provider path.
@@ -579,6 +591,9 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # its timer makes admitted website runs progress after deployment/reboot.
     "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.timer",
+    # Wakes the same no-network offline replay oneshot as its timer, so it
+    # carries the timer's authority rather than the no-spend watcher category.
+    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-episode-compilation.timer",
@@ -591,8 +606,16 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # website scene workspaces, each behind its own proofs (docs/CONTROL_PLANE_STORAGE.md).
     "blueprint-control-plane-storage-gc.timer",
     "blueprint-completed-replay-cache-gc.timer",
+    # No-spend housekeeping with its own receipts and owner switch; a door hold pauses it.
+    "blueprint-control-plane-release-lifecycle.timer",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.timer",
+    # Launch liveness and post-teardown provider-zero bookkeeping. It never
+    # launches, retries or tears down a provider; it moves leases a dispatcher
+    # no longer owns, files the provider-zero receipt that completion and
+    # release succession join on, and projects launch progress to the WebApp.
+    # Left to "prior state", one stop kept it off across every later deploy.
+    "blueprint-task-evaluation-launch-reconciler.timer",
     # Advances only preview jobs that intake recorded for routed uploads
     # (BLUEPRINT_WEBSITE_ATLAS_ROUTING, off by default): with routing off there
     # are none. Every paid call still needs that upload's WebApp grant and cap.
@@ -1660,6 +1683,13 @@ def _finish_release_retirement(
 
 _SANDBOX_DIRECTIVES = ("ReadWritePaths=", "ReadOnlyPaths=")
 _UNIT_PROVISIONABLE_PREFIX = "/var/lib/blueprint/"
+# Service-owned directories a unit writes directly on the work volume; each is created only
+# when the volume's mount point exists, never anywhere else under /mnt.
+_WORK_VOLUME_PROVISIONABLE = frozenset({
+    "/mnt/blueprint-work/embodiment-preparation",
+    "/mnt/blueprint-work/rigid-robot-free-probe-work",
+    "/mnt/blueprint-work/beta-policy-screening-work",
+})
 _UNIT_FILE_SUFFIXES = (".json", ".jsonl", ".lock", ".env", ".sqlite", ".log", ".txt")
 
 
@@ -1986,7 +2016,7 @@ def _install_unit_sandbox_paths(
                 continue
             file_like = Path(path_text).suffix in _UNIT_FILE_SUFFIXES
             if ((path_text.startswith(_UNIT_PROVISIONABLE_PREFIX) and not file_like)
-                    or (path_text == "/mnt/blueprint-work/embodiment-preparation" and host_path.parent.is_dir())):
+                    or (path_text in _WORK_VOLUME_PROVISIONABLE and host_path.parent.is_dir())):
                 pending.append((unit, path_text, host_path))
                 continue
             blockers.append(f"deploy_unit_sandbox_path_missing:{unit}:{path_text}")
@@ -2826,9 +2856,54 @@ def _scene_configuration_staging_estimate(runtime_root: str | Path, commit: str)
     }
 
 
+def _cache_linked_toolchain_bytes(files, *, runtime_root, staging_root) -> dict[str, int]:
+    """Toolchain files the ArtiFixer builder hard-links from the governed model cache.
+
+    The builder links the sealed VGG16 weights (0444) into its component and
+    copies only on ``EXDEV``; any other link failure stops the deploy. So when
+    the cached weights are a sealed regular file on the staging filesystem,
+    their bytes are never written by this deploy. ``{}`` when anything differs.
+    """
+    from blueprint_pipeline.public_scene_artifixer3d_bundle import (
+        RUNTIME_VGG16_WEIGHTS, VGG16_WEIGHTS_FILENAME, VGG16_WEIGHTS_SIZE_BYTES,
+    )
+
+    relative = ("components/artifixer3d_observed_object_removal/package/blueprint_runtime/"
+                + RUNTIME_VGG16_WEIGHTS)
+    cached = Path(runtime_root) / "public-model-cache" / VGG16_WEIGHTS_FILENAME
+    try:
+        info, staging = cached.lstat(), Path(staging_root).stat()
+    except OSError:
+        return {}
+    row = next((row for row in files if row.get("relative_path") == relative), None)
+    if (row is None or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o444
+            or info.st_size != VGG16_WEIGHTS_SIZE_BYTES or int(row["size_bytes"]) != info.st_size
+            or info.st_dev != staging.st_dev):
+        return {}
+    return {relative: info.st_size}
+
+
+def _toolchain_directory_count(files) -> int:
+    directories = set()
+    for row in files:
+        parent = Path(str(row["relative_path"])).parent
+        while parent != Path(".") and parent not in directories:
+            directories.add(parent)
+            parent = parent.parent
+    return len(directories)
+
+
 def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
                              site_packages_root, blender_root):
-    """Only discount bytes the target builder is required to hard-link."""
+    """Only discount bytes the target builder is required to hard-link.
+
+    The vendor plan's files and the cache-linked model weights are links, not
+    writes; a link costs a directory entry, not a block. So the reservation is
+    the bytes still written (with the same headroom), a block for each written
+    file and each directory of the tree, and the usual overhead. On 2026-11-02
+    the full-file-count estimate held 1.16 GB per deploy for about 30 MiB
+    actually written (13.7 MB of new file bytes plus directories).
+    """
     from blueprint_pipeline.artisan_vendor_reuse import prepare_vendor_reuse
 
     prefix = "published_toolchain:"
@@ -2848,6 +2923,15 @@ def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
     unshared = sum(int(row["size_bytes"]) for row in files) - plan["shared_bytes"]
     if unshared < 0:
         raise ControlPlaneDeployError("deploy_vendor_reuse_size_invalid")
+    shared_paths = {row["published_path"] for row in plan["files"]}
+    cache_linked = _cache_linked_toolchain_bytes(files, runtime_root=runtime_root,
+                                                 staging_root=plan["staging_root"])
+    written = [row for row in files
+               if row["relative_path"] not in shared_paths and row["relative_path"] not in cache_linked]
+    written_bytes = sum(int(row["size_bytes"]) for row in written)
+    if written_bytes > unshared:
+        raise ControlPlaneDeployError("deploy_vendor_reuse_size_invalid")
+    directory_count = _toolchain_directory_count(files)
     directory.mkdir(parents=True, exist_ok=True, mode=0o750)
     path = directory / (plan["digest"][7:] + ".json")
     payload = (json.dumps(plan, sort_keys=True) + "\n").encode()
@@ -2862,13 +2946,17 @@ def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
             raise ControlPlaneDeployError("deploy_vendor_reuse_plan_changed") from None
     estimate["full_copy_bytes"] = estimate["bytes"]
     estimate["target_root"] = plan["staging_root"]
-    estimate["bytes"] = (math.ceil(unshared * SCENE_CONFIGURATION_STAGING_HEADROOM)
-                         + RELEASE_ESTIMATE_BLOCK_BYTES * len(files) + RELEASE_ESTIMATE_OVERHEAD_BYTES)
+    estimate["bytes"] = (math.ceil(written_bytes * SCENE_CONFIGURATION_STAGING_HEADROOM)
+                         + RELEASE_ESTIMATE_BLOCK_BYTES * (len(written) + directory_count)
+                         + RELEASE_ESTIMATE_OVERHEAD_BYTES)
     estimate["vendor_reuse"] = {"path": str(path), "digest": plan["digest"],
                                "shared_bytes": plan["shared_bytes"], "file_count": len(plan["files"]),
                                "source_files_hashed": plan["source_files_hashed"],
                                "source_bytes_hashed": plan["source_bytes_hashed"],
-                               "planning_seconds": planning_seconds}
+                               "planning_seconds": planning_seconds,
+                               "cache_linked_bytes": sum(cache_linked.values()),
+                               "written_bytes": written_bytes, "written_file_count": len(written),
+                               "directory_count": directory_count}
     return path
 
 
@@ -3859,6 +3947,7 @@ def _install_scene_configuration_environment(
         "BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT",
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_RELEASE_WINDOW_PREFIX",
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX",
+        "BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD",
     }
     if (
         set(environment) != expected_names

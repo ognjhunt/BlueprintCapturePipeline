@@ -38,6 +38,7 @@ from .vast_api_transport import (
 )
 
 from .vast_instance_inventory import instance_inventory_valid, active_instance_rows
+from .vast_bundle_member_policy import vendored_toolchain_runtime_member as _vendored_toolchain_runtime_member
 from .vast_provider_log_observations import (
     _log_result_saw_container_missing,
     _log_result_container_vanished_after_output,
@@ -159,6 +160,7 @@ from .vast_cuda_runtime_probe import (
     build_gpu_sanity_report,
     cuda_runtime_probe_shell_fragment,
 )
+from .provider_runtime_diagnostics import receipt_transfer, retain_for_transfer
 from .wam_provider_output import (
     inspect_provider_runtime_output_zip,
     probe_mp4_video,
@@ -192,7 +194,9 @@ from .vast_provider_output_recovery import (
     MAX_RECOVERY_SECONDS,
     recover_provider_output_before_teardown,
 )
-from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress
+from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress, remote_progress_probe_for_bundle
+from .beta_screening_control_delivery import RuntimeControlRelay, runtime_control_probe
+from .vast_signal_guard import OneStopSignal
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script, VAST_ARGS_STR_SAFE_MAX_BYTES
 from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
@@ -1756,6 +1760,8 @@ SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "libpango-1.0-0": (),
     "libcairo2": (),
     "libasound2t64": (),
+    # The packaged Blender 5.0's system X libraries (its ELF NEEDED; it ships the rest).
+    "libx11-6": (), "libxrender1": (), "libxi6": (),
 }
 #: Provided by the ``/isaac-sim/python.sh`` shim the onstart writes onto PATH,
 #: not by apt, so it is named separately rather than assumed.
@@ -1886,6 +1892,8 @@ def _machine_avoidlist_reason(blockers: Sequence[str]) -> str | None:
         return "vast_provider_bootstrap_input_download_transport_timeout"
     if "provider_instance_exited_before_bundle_terminal_marker" in observed:
         return "vast_provider_bundle_instance_exited_before_terminal_marker"
+    if "provider_remote_blocker:asset_sandbox_unavailable" in observed:
+        return "vast_host_asset_sandbox_unavailable"
     startup_blockers = {
         "vast_heartbeat_blocked",
         "vast_heartbeat_instance_exited",
@@ -2949,7 +2957,7 @@ def _blueprint_bundle_preflight(
                                 blockers.append("articulated_native_bundle_asset_format_ambiguous")
                     zip_testzip_result = archive.testzip()
                     for member in zip_entries:
-                        if member.endswith(".json"):
+                        if member.endswith(".json") and not _vendored_toolchain_runtime_member(member):
                             try:
                                 json.loads(archive.read(member).decode("utf-8", errors="replace"))
                             except Exception as exc:
@@ -5940,6 +5948,8 @@ def _instance_liveness_from_payload(
                 # a human to a host that is not there.
                 "ssh_host": connection["ssh_host"],
                 "ssh_port": connection["ssh_port"],
+                "instance_id": instance_id,
+                "resource_name": row.get("label") or None,
             }
             terminal_startup_error = _terminal_startup_error(row)
             if terminal_startup_error:
@@ -6376,18 +6386,11 @@ def _provider_output_probe(get_url: str) -> Callable[[], bool] | None:
     return _probe
 
 
-def _remote_progress_probe_for_bundle(
-    provider_bundle_kind: str, job_dir: Path, *, cell_count: int = 10
-) -> Callable[[Mapping[str, Any]], Mapping[str, Any]] | None:
-    """Only the policy canary has an SSH milestone probe."""
+_runtime_control_probe = runtime_control_probe  # Preserve the retained helper import surface.
 
-    if (provider_bundle_kind != "native_task_arena_policy_canary_session"
-            or type(cell_count) is not int or not 1 <= cell_count <= 200):
-        return None
-    return lambda connection: probe_policy_canary_remote_progress(
-        connection, attempt_dir=job_dir / "policy_remote_progress_ssh",
-        **({"maximum_cell_count": cell_count} if cell_count != 10 else {}),
-    )
+
+def _remote_progress_probe_for_bundle(provider_bundle_kind: str, job_dir: Path, *, cell_count: int = 10):
+    return remote_progress_probe_for_bundle(provider_bundle_kind, job_dir, cell_count=cell_count, probe=probe_policy_canary_remote_progress)
 
 
 def _request_logs_and_fetch(
@@ -7159,9 +7162,11 @@ def run_vast_provider_adapter(
     provider_output_collector: Callable[..., Mapping[str, Any]] | None = None,
     runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     provider_runtime_environment: Mapping[str, str] | None = None,
+    runtime_control_ready: Callable[[Mapping[str, Any]], Callable[[], None]] | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
+    runtime_control_relay = RuntimeControlRelay(ready=runtime_control_ready, provider_bundle_kind=provider_bundle_kind, resource_name=instance_label_exact)
     if retain_native_task_arena_warm_session and provider_bundle_kind != "native_task_arena":
         raise ValueError("native_task_arena_warm_retention_bundle_kind_invalid")
     if (
@@ -8357,8 +8362,9 @@ def run_vast_provider_adapter(
 
     ignore_local_probe_signals = _env_truthy(
         "BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN"
-    )
+    ) and runtime_control_ready is None
     ignored_signal_counts: dict[str, int] = {}
+    one_stop = OneStopSignal(resolved_job_dir)  # The first signal unwinds into teardown; later ones never interrupt it.
 
     def _raise_probe_interrupt(signum: int, _frame: Any) -> None:
         if signum in {signal.SIGINT, signal.SIGTERM} and ignore_local_probe_signals:
@@ -8373,14 +8379,14 @@ def run_vast_provider_adapter(
                     "ignored_signal_counts": ignored_signal_counts,
                     "ignore_local_sigterm_during_provider_run": True,
                     "ignored_signal": signum,
-                    "reason": (
-                        "Local Codex runner may send SIGINT/SIGTERM to long-running local "
-                        "provider orchestration; adapter keeps running so Vast can "
-                        "reach its own timeout/teardown path."
-                    ),
+                    "reason": ("Local Codex runner may send SIGINT/SIGTERM to long-running local "
+                               "provider orchestration; adapter keeps running so Vast can "
+                               "reach its own timeout/teardown path."),
                     "raw_secret_values_recorded": False,
                 },
             )
+            return
+        if one_stop.absorbs(signum):
             return
         # Name the delivery before unwinding.  Three paid GR00T launches on
         # 2026-08-25 ended `vast_probe_interrupted_before_completion` with a
@@ -9010,6 +9016,9 @@ def run_vast_provider_adapter(
             startup_timeout_seconds=startup_timeout_seconds,
             max_live_minutes=max_live_minutes,
         )
+        progress_probe = _remote_progress_probe_for_bundle(provider_bundle_kind, resolved_job_dir,
+            cell_count=bundle_preflight.get("policy_cell_count") or 10)
+        progress_probe = runtime_control_relay.wrap(progress_probe, job_dir=resolved_job_dir, instance_id=instance_id)
         onstart_logs = _request_logs_and_fetch(
             instance_id=instance_id,
             api_key=api_key,
@@ -9029,15 +9038,12 @@ def run_vast_provider_adapter(
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
-            remote_progress_probe=_remote_progress_probe_for_bundle(
-                provider_bundle_kind, resolved_job_dir,
-                cell_count=bundle_preflight.get("policy_cell_count") or 10,
-            ),
+            remote_progress_probe=progress_probe,
         )
         # Result and log transport are independent. Preserve an observed upload
         # before any startup classification can raise and trigger teardown.
         # A missing log marker must never erase the worker's diagnostic result.
-        preclassification_transfer = None
+        preclassification_transfer = preclassification_diagnostics = None
         if enable_blueprint_bundle and onstart_logs.get("output_probe_observed"):
             transfer = (provider_output_collector or _download_provider_output_with_capacity_guard)(
                 url=_string(provider_output_get_url),
@@ -9045,17 +9051,13 @@ def run_vast_provider_adapter(
                 minimum_free_bytes=provider_output_minimum_free_bytes,
             )
             preclassification_transfer = transfer
-            write_json(
-                resolved_job_dir / "vast_provider_output_preclassification_receipt.json",
-                {
-                    "schema_version": "vast_provider_output_preclassification.v1",
-                    "generated_at": utc_now_iso(),
-                    "output_probe_observed": True,
-                    "output_zip_path": str(output_zip_path),
-                    "transfer": transfer,
-                    "startup_or_scientific_success_claimed": False,
-                },
-            )
+            # The run's own failure account, kept now: a streamed archive never lands here.
+            preclassification_diagnostics = retain_for_transfer(resolved_job_dir, transfer, output_zip_path)
+            write_json(resolved_job_dir / "vast_provider_output_preclassification_receipt.json", {
+                "schema_version": "vast_provider_output_preclassification.v1", "generated_at": utc_now_iso(),
+                "output_probe_observed": True, "output_zip_path": str(output_zip_path),
+                "transfer": receipt_transfer(transfer, preclassification_diagnostics),
+                "startup_or_scientific_success_claimed": False})
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         observed_marker_text = "\n".join(
             _string_list(onstart_logs.get("observed_blueprint_marker_lines"))
@@ -9584,6 +9586,8 @@ def run_vast_provider_adapter(
                 expected_video_count=_provider_expected_video_count(provider_bundle_kind),
             )
             output_zip_received = output_zip_inspection.get("zip_present") is True
+            runtime_diagnostics = preclassification_diagnostics or retain_for_transfer(
+                resolved_job_dir, remote_transfer, output_zip_path) if output_zip_received else None
             # The object arriving is what proves the workload produced output.
             # Requiring the log marker as well meant a readable object and an
             # unreadable log channel added up to "no output".
@@ -9714,6 +9718,7 @@ def run_vast_provider_adapter(
                     "provider_output_get_url_present": bool(_string(provider_output_get_url)),
                     "provider_output_download_manifest": output_download_manifest,
                     "provider_runtime_output_zip_inspection": output_zip_inspection,
+                    **({"provider_runtime_diagnostics": runtime_diagnostics} if runtime_diagnostics else {}),
                     **({"provider_output_remote_observation": dict(remote_transfer["remote_object"])} if remote_transfer else {}),
                     "runtime_result_status": runtime_result_status or None,
                     "runtime_result_blockers": _string_list(runtime_result.get("blockers")),
@@ -9873,6 +9878,8 @@ def run_vast_provider_adapter(
             provider_reason=exception_blockers[0],
         )
     finally:
+        one_stop.teardown()
+        runtime_control_relay.close()  # Unsubscribe before exact owned provider teardown, including interrupted sinks.
         if provider_bundle_kind in {"native_task_arena", "native_task_arena_policy_canary_session"}:
             try:
                 from .company_policy_network_lease import close_policy_network  # noqa: PLC0415

@@ -10,9 +10,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from decimal import Decimal
+import http.client
 import json
 import os
 import subprocess
+import time
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -109,6 +111,7 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     identity = _identity(plan, candidate)
     _check_quote(plan, candidate)
     family = candidate["execution_spec"].get("backend") == FAMILY_BACKEND
+    omission = None
     previous = root / "prepared.json"
     if previous.exists():
         prepared = _read(previous)
@@ -139,10 +142,17 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
             raise ValueError("beta_screening_family_plan_binding_invalid")
     else:
         from .robot_free_probe_gate import require_robot_free_probe, task_success_contract_binding
+        probed = scene["task_success_contract"]
+        if "diagnostic_control_omission_authority" in scene:
+            # Paused controls: the probe scored the source contract this run omits only controls from.
+            from .beta_policy_screening_control_omission import validate_paused_controls_omission
+            omission = validate_paused_controls_omission(scene["diagnostic_control_omission_authority"],
+                source=scene["source_task_success_contract"], contract=scene["task_success_contract"])
+            probed = scene["source_task_success_contract"]
         probe = require_robot_free_probe(scene.get("beta_robot_free_probe_receipt"),
             scene_revision_digest=scene["scene_revision_digest"], task_kind=scene.get("beta_task_kind"),
             task_spec_digest=scene.get("beta_probe_task_spec_digest"),
-            task_success_contract_digest=task_success_contract_binding(scene.get("beta_task_kind"), scene["task_success_contract"]))
+            task_success_contract_digest=task_success_contract_binding(scene.get("beta_task_kind"), probed))
         if probe["receipt_digest"] != plan["robot_free_probe_digest"]:
             raise ValueError("beta_screening_robot_free_probe_changed")
     for key in (("base_native_packet", "runtime_source") if family else ("base_native_packet", "runtime_source", "construction_result")):
@@ -189,7 +199,9 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
                "task_success_contract_digest": scene["task_success_contract_digest"],
                **({"pre_policy_site_qualification_required": True,
                    "family_static_readiness_digest": scene["family_static_readiness_digest"]} if family else
-                  {"robot_free_probe_receipt_digest": plan["robot_free_probe_digest"]})}
+                  {"robot_free_probe_receipt_digest": plan["robot_free_probe_digest"]}),
+               # Controls are never dropped silently: the run and its result carry the omission.
+               **({"diagnostic_control_omission_authority": omission} if omission is not None else {})}
     activation = {"schema_version": "task_evaluation_policy_campaign_activation.v1", "run_id": run_id,
                   "run_kind": BETA_RUN_KIND, "claim_ceiling": CLAIM_CEILING,
                   "candidate_ids": [candidate["candidate_id"]],
@@ -292,10 +304,11 @@ def preflight_candidate_capacity(*, plan: Mapping[str, Any], candidate: Mapping[
 def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,
                      prepared: Mapping[str, Any]) -> dict[str, Any]:
     """Consume a durable local launch intent exactly once before spawning."""
-    from .team_candidate_quick10_launch import _process_start_ticks, _start_allocator
+    from .team_candidate_quick10_launch import _process_start_ticks
+    from .allocator_invocation import retain_invocation, start_invocation
     root = Path(attempt_dir).resolve()
     _validate_prepared(plan, candidate, root, prepared)
-    if (root / "allocator_launch_intent.json").exists():
+    if (root / "allocator_launch_intent.json").exists() or (root / "invocation/manifest.json").exists():
         return reconcile_candidate(plan=plan, candidate=candidate, attempt_dir=root, prepared=prepared)
     try:
         _check_quote(plan, candidate)
@@ -324,8 +337,38 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
                 from .beta_policy_screening_team import validate_team_candidate_catalog
                 validate_team_candidate_catalog(plan, candidate, native_spec, _read(_bound_path(plan["scene_inputs"])))
         from .beta_policy_screening_worker import require_current_source
-        require_current_source(plan["source"], site_id=plan["site_id"])
-    except (ValueError, OSError, RuntimeError) as exc:
+        current_source = require_current_source(plan["source"], site_id=plan["site_id"])
+        authority = _read(_bound_path(prepared["authority"]))
+        bundle = _read(_bound_path(prepared["bundle_receipt"]))
+        invocation_binding = {
+            "prepared_digest": prepared["prepared_digest"], "plan_digest": plan["plan_digest"],
+            "candidate_id": candidate["candidate_id"], "configuration_digest": candidate["configuration_digest"],
+            "authority_digest": authority["authority_digest"], "resource_name": authority["resource_name"],
+            "bundle_sha256": bundle["bundle_sha256"], "provider": "vast", "attempt_id": root.name}
+        source_control_binding = {key: invocation_binding[key] for key in (
+            "prepared_digest", "plan_digest", "candidate_id", "configuration_digest", "authority_digest",
+            "resource_name", "attempt_id")}
+        source_control_binding.update(campaign_id=plan["campaign_id"], site_id=plan["site_id"],
+            source=dict(plan["source"]), invocation_id=canonical_digest(invocation_binding))
+        from .beta_policy_screening_control import _deadline
+        from .beta_policy_screening_control_transport import request_control
+        preflight_control = request_control(binding=source_control_binding,
+                                            execution_deadline_epoch=_deadline(current_source))
+        _write(root / "control_preflight" / (preflight_control["control_digest"][7:] + ".json"), preflight_control)
+        if preflight_control["status"] != "current":
+            raise ValueError("beta_screening_current_source_revoked_before_spawn")
+        # This authenticated existing-source contract supplies the actual
+        # intake expiry. A missing expiry can never become a four-hour default.
+        deadline = preflight_control["execution_deadline_at_ms"] / 1000
+    except (ValueError, OSError, RuntimeError, http.client.HTTPException) as exc:
+        from .beta_policy_screening_control import transport_failure
+        if transport_failure(exc):
+            # A 429, 5xx or timeout is no answer about the site's rights. No
+            # slot is claimed and nothing can spawn: keep the reservation and
+            # read again later. A definite stopped/changed answer still blocks.
+            return {"status": "deferred", "provider_allocation_performed": False, "provider_zero_verified": True,
+                    "no_allocation_proven": True, "retryable_control_refusal": True,
+                    "blockers": ["beta_screening_control_unavailable_before_spawn"]}
         # Claim the same exclusive intent slot as a launch, so a concurrent
         # caller cannot start after this refusal releases its reservation.
         refusal = {"prepared_digest": prepared["prepared_digest"], "status": "refused_before_spawn",
@@ -337,17 +380,79 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         return {"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
                 "no_allocation_proven": True, "blockers": [refusal["blocker"]]}
     try:
-        _write(root / "allocator_launch_intent.json", {"prepared_digest": prepared["prepared_digest"]})
+        argv = list(prepared["argv"])
+        if deadline is not None:
+            argv += ["--team-candidate-execution-deadline-epoch", str(deadline)]
+        invocation = retain_invocation(attempt_dir=root, argv=argv, control={
+            "site_id": plan["site_id"], "source": plan["source"],
+            "prepared_digest": prepared["prepared_digest"], "initial_observed_at_epoch": time.time(),
+            "execution_deadline_epoch": deadline, "source_control_binding": source_control_binding,
+        }, binding=invocation_binding)
+        _write(root / "allocator_launch_intent.json", {"prepared_digest": prepared["prepared_digest"],
+                                                     "invocation_manifest": str(invocation)})
     except FileExistsError:
         return reconcile_candidate(plan=plan, candidate=candidate, attempt_dir=root, prepared=prepared)
-    # A crash anywhere after intent remains uncertain. Neither a dead PID nor
-    # global provider zero proves that another create cannot still occur.
-    pid = _start_allocator(prepared["argv"], log_path=root / "allocator.log")
+    # The named invocation owns a durable lock through provider create. A
+    # delayed process must honor its no-create fence before it can allocate.
+    pid = start_invocation(invocation, log_path=root / "allocator.log")
     process = {"pid": pid, "start_ticks": _process_start_ticks(pid),
                "prepared_digest": prepared["prepared_digest"]}
     _write(root / "allocator_process.json", process)
     return {"status": "running", "handle": process, "provider_zero_verified": False,
             "no_allocation_proven": False, "blockers": []}
+
+
+def _invocation_stop(path: Path, value: Mapping[str, Any], *, finished: bool) -> dict[str, Any] | None:
+    """This invocation's control stop, if any.
+
+    A finished allocator is never observed again, so no later read can void
+    its result: only a stop recorded while it ran applies. While it runs, its
+    own monitor reads the control every minute; this timer reads only when
+    that read is not fresh, and sends the stop signal only when that monitor
+    is dead and no stop signal was recorded, so the allocator gets one.
+    """
+    from .allocator_invocation import STOP_SIGNAL_RECORD, stop_invocation
+    from .beta_policy_screening_control import POLL_SECONDS, monitor_alive, observe, recorded
+    invocation_root = Path(value["root"])
+    stop = recorded(control=value["control"], root=invocation_root)
+    if finished:
+        return stop if stop.get("new_processing_authorized") is False else None
+    started = invocation_root / "started.json"
+    pid = _read(started).get("pid") if started.exists() else None
+    alive = pid is not None and monitor_alive(invocation_root, pid=pid)
+    if stop.get("new_processing_authorized") is not False:
+        fresh = (alive and stop.get("status") == "current"
+                 and time.time() - stop["last_success_at_epoch"] < 2 * POLL_SECONDS)
+        if not fresh:
+            stop = observe(control=value["control"], root=invocation_root)
+        if stop.get("new_processing_authorized") is not False:
+            return None
+    if pid is not None and not alive and not (invocation_root / STOP_SIGNAL_RECORD).exists():
+        try:
+            stop_invocation(path, reason=str(stop.get("reason") or "beta_screening_current_source_stopped"))
+        except (OSError, ValueError):
+            pass  # Never signal an unverified/reused pid; reconcile its durable job.
+    return stop
+
+
+def _unstarted_refusal(fenced: Mapping[str, Any], stopped: Mapping[str, Any] | None, *,
+                       unanswered: bool) -> dict[str, Any]:
+    """A job fenced before any create spent nothing; only a definite stop blocks its retry.
+
+    ``retry_cause`` is ``control_unanswered`` when a control read that got no
+    answer refused it (the coordinator caps those retries), otherwise
+    ``allocator_lost_before_create`` (a crash or a deploy before create).
+    """
+    from .beta_policy_screening_control import retryable_stop
+    retryable = retryable_stop(stopped)
+    cause = "control_unanswered" if unanswered or stopped is not None else "allocator_lost_before_create"
+    return {"status": "blocked", "provider_allocation_performed": False,
+            "provider_zero_verified": True, "no_allocation_proven": True,
+            "no_policy_api_calls_proven": True, "retryable_unstarted_refusal": retryable,
+            **({"retry_cause": cause} if retryable else {}),
+            "unstarted_refusal_receipt": _record(Path(fenced["proof_path"])),
+            "blockers": (["beta_screening_allocator_fenced_before_create"] if retryable
+                         else [str(stopped["reason"])])}
 
 
 def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,
@@ -358,20 +463,47 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
     from .team_candidate_quick10_closeout import validate_native_result_binding
     from .beta_policy_screening_closeout import (
         collect_scoped_closeout, scoped_closeout_verified, join_scoped_session_closeout,
+        scoped_setup_failure_blocker,
     )
     root = Path(attempt_dir).resolve()
     _validate_prepared(plan, candidate, root, prepared)
     intent_path = root / "allocator_launch_intent.json"
+    intent: dict[str, Any] = {}
     if intent_path.exists():
         intent = _read(intent_path)
+        if intent.get("prepared_digest") != prepared.get("prepared_digest"):
+            raise ValueError("beta_screening_launch_intent_binding_changed")
         if (intent.get("status") == "refused_before_spawn"
                 and intent.get("prepared_digest") == prepared["prepared_digest"]):
             return {"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
                     "no_allocation_proven": True, "blockers": [intent["blocker"]]}
     result_path = root / "allocator_result.json"
+    stopped = None
+    invocation_path = root / "invocation/manifest.json"
+    invocation = invocation_path.exists() and intent.get("invocation_manifest") in {None, str(invocation_path)}
+    if invocation:
+        from .allocator_invocation import manifest
+        value = manifest(invocation_path)
+        if value.get("control") is not None:
+            stopped = _invocation_stop(invocation_path, value, finished=result_path.exists())
     if result_path.is_file():
         adapter = _read(result_path)
         if proves_no_provider_allocation(adapter):
+            from .beta_policy_screening_control import retryable_stop
+            if invocation and ((root / "invocation" / "no_create_fence.json").exists()
+                               or (stopped is not None and retryable_stop(stopped))):
+                # The allocator fenced its own create on a read that never got
+                # an answer, or the control's outage grace stopped it before any
+                # create: nothing was spent, so the candidate is retried.
+                from .allocator_invocation import fence_unstarted, manifest
+                if manifest(invocation_path)["binding"].get("prepared_digest") != prepared.get("prepared_digest"):
+                    raise ValueError("beta_screening_invocation_binding_changed")
+                fenced = fence_unstarted(invocation_path)
+                if fenced["status"] == "running":  # Its result is written; the process is exiting.
+                    return {"status": "running", "provider_zero_verified": False,
+                            "no_allocation_proven": False, "blockers": []}
+                if fenced["status"] == "fenced_unspent":
+                    return _unstarted_refusal(fenced, stopped, unanswered=True)
             refusal = {"status": "blocked", "provider_allocation_performed": False,
                        "provider_zero_verified": True, "no_allocation_proven": True,
                        "blockers": adapter.get("blockers") or ["beta_screening_allocator_refused"]}
@@ -382,6 +514,18 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
                 refusal.update(retryable_capacity_refusal=True, no_policy_api_calls_proven=True,
                                capacity_refusal_receipt=_record(result_path))
             return refusal
+        from .policy_canary_provider_null_closeout import proven_provider_null_closeout
+        null = proven_provider_null_closeout(adapter, root=root, record_file=_record)
+        if null is not None and null["watchdog_retained_until_hard_ttl"] is False:
+            # Vast refused the create (a stale offer; this lane does not
+            # re-select), every attempted label is authenticated absent, the
+            # teardown is empty and the watchdog closed without an allocation.
+            # Nothing exists to close, so the attempt is unallocated: without
+            # this it has no instance for the scoped closeout and stays
+            # reserved and unresolved forever, and its campaign never ends.
+            return {"status": "blocked", "provider_allocation_performed": False,
+                    "provider_zero_verified": True, "no_allocation_proven": True,
+                    "blockers": adapter.get("blockers") or ["beta_screening_allocator_refused"]}
         try:
             absence = collect_scoped_closeout(adapter=adapter, prepared=prepared, adapter_path=result_path)
             observed = root / "provider_absence" / (canonical_digest(absence)[7:] + ".json")
@@ -395,6 +539,10 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             return {"status": "reconciliation_required", "provider_zero_verified": False,
                     "no_allocation_proven": False,
                     "blockers": absence.get("blockers") or ["beta_screening_scoped_closeout_unproven"]}
+        if stopped is not None:
+            return {"status": "blocked", "provider_allocation_performed": True,
+                    "provider_zero_verified": True, "no_allocation_proven": False,
+                    "applicability": "historical_only", "blockers": [stopped["reason"]]}
         if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
             try:
                 from .beta_policy_screening_g1_launch import join_result
@@ -411,6 +559,17 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             native_path = Path(str(adapter.get("native_control_result_path") or ""))
             native = _read(native_path)
             validate_native_result_binding(native, expected_digest=adapter.get("native_control_result_digest"))
+            setup = scoped_setup_failure_blocker(inner=native, adapter=adapter, prepared=prepared,
+                                                 receipt=absence, adapter_path=result_path)
+            admission = native.get("beta_screening_admission")
+            if (setup is not None and isinstance(admission, Mapping) and admission.get("plan_digest") == plan["plan_digest"]
+                    and not native.get("episodes")):
+                # A cell could not open the runtime, pass the pre-policy gate or load
+                # the policy, and the matrix stopped there: our harness, no score.
+                # With cells measured before it, that prefix is the result instead and
+                # the cells it never reached count unscored (``cell_not_returned``).
+                return {"status": "blocked", "provider_allocation_performed": True,
+                        "provider_zero_verified": True, "no_allocation_proven": False, "blockers": [setup]}
             joined = join_scoped_session_closeout(inner=native, adapter=adapter, prepared=prepared,
                                                   receipt=absence, adapter_path=result_path)
             joined = validate_session_result(joined)
@@ -430,8 +589,26 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
         process = _read(process_path)
         if (process.get("prepared_digest") == prepared["prepared_digest"] and process.get("start_ticks")
                 and _process_start_ticks(process["pid"]) == process["start_ticks"] and _alive(process["pid"])):
-            return {"status": "running", "handle": process, "provider_zero_verified": False,
+            return {"status": "reconciliation_required" if stopped else "running", "handle": process,
+                    "provider_zero_verified": False, "no_allocation_proven": False,
+                    "blockers": ["beta_screening_stop_teardown_pending"] if stopped else []}
+    if invocation_path.exists() and intent.get("invocation_manifest") in {None, str(invocation_path)}:
+        from .allocator_invocation import fence_unstarted, manifest
+        value = manifest(invocation_path)
+        if value["binding"].get("prepared_digest") != prepared.get("prepared_digest"):
+            raise ValueError("beta_screening_invocation_binding_changed")
+        # A fence already present was written by the allocator itself: its
+        # control read got no answer before it could start or create.
+        self_fenced = (root / "invocation" / "no_create_fence.json").exists()
+        fenced = fence_unstarted(invocation_path)
+        if fenced["status"] == "fenced_unspent":
+            return _unstarted_refusal(fenced, stopped, unanswered=self_fenced)
+        if fenced["status"] == "running":
+            return {"status": "running", "provider_zero_verified": False,
                     "no_allocation_proven": False, "blockers": []}
+        return {"status": "reconciliation_required", "provider_zero_verified": False,
+                "no_allocation_proven": False, "next_action": "reconcile_exact_provider_identity",
+                "blockers": ["beta_screening_provider_create_outcome_unknown"]}
     return {"status": "reconciliation_required", "provider_zero_verified": False,
             "no_allocation_proven": False, "blockers": ["beta_screening_allocator_identity_unresolved"]}
 

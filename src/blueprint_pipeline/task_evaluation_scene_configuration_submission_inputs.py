@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import stat
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -338,16 +341,58 @@ def release_inputs(*, deploy_path: Path, provenance_path: Path,
     return deploy, *publications
 
 
-class Staging:
-    """Exact byte inventory; raw sources retain publisher URLs and cannot be uploaded."""
+#: Staged inputs at least this large may share an earlier attempt's inode.
+#: Below it a private copy costs less than proving the earlier one.
+REUSE_MIN_BYTES = 1024 * 1024
+#: ``link(2)`` refusals that only mean "copy instead": another filesystem,
+#: a filesystem or policy that forbids the link, or a full link count.
+_LINK_FALLBACK_ERRNOS = frozenset({errno.EXDEV, errno.EPERM, errno.EACCES, errno.EMLINK,
+                                   errno.ENOTSUP, errno.EOPNOTSUPP})
 
-    def __init__(self, root: Path, namespace: str):
+
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_uid, info.st_gid,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _physical_sha256(path: Path) -> tuple[str, os.stat_result]:
+    """The bytes on disk under ``path``, never a retained logical selector or a link target."""
+
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+        after = os.fstat(stream.fileno())
+    require(_file_identity(before) == _file_identity(after), "staged_reuse_source_changed")
+    return "sha256:" + digest.hexdigest(), after
+
+
+class Staging:
+    """Exact byte inventory; raw sources retain publisher URLs and cannot be uploaded.
+
+    ``reuse_roots`` (``None`` keeps the original copy-only behaviour) names the
+    staging roots of earlier attempts of the same scene intent. An input of at
+    least ``REUSE_MIN_BYTES`` is then hard-linked from the same relative path
+    of one of them when that file is a read-only regular file on this
+    filesystem whose bytes hash to the source's digest, read through a
+    descriptor just before linking; otherwise it is copied as before. Every
+    staged input of that size is made read-only either way, so the next
+    attempt can share it and no write through one name can change another
+    attempt's bytes. Reuse stays inside one intent's directory, so a
+    withdrawal or retirement that removes that directory removes every name.
+    """
+
+    def __init__(self, root: Path, namespace: str, *, reuse_roots: Sequence[Path] | None = None):
         _no_symlinks(root)
         require(not root.exists(), "staging_root_exists")
         root.mkdir(parents=True)
         self.root = root
         self.prefix = f"s3://blueprint/task-evaluation/production-inputs/{namespace}/"
         self.files: dict[str, dict[str, Any]] = {}
+        self.reuse_roots = None if reuse_roots is None else tuple(Path(item) for item in reuse_roots)
+        self.reused = {"files": 0, "bytes": 0}
 
     def _record(self, relative: str, *, publisher_uri: str | None = None) -> dict[str, Any]:
         path = beneath(self.root, relative)
@@ -373,11 +418,56 @@ class Staging:
             except OSError:
                 with source.open("rb") as src, target.open("xb") as dst:
                     shutil.copyfileobj(src, dst, length=1024 * 1024)
-        else:
+        elif not self._reuse(source, target, relative):
             with source.open("rb") as src, target.open("xb") as dst:
                 shutil.copyfileobj(src, dst, length=1024 * 1024)
+            if self.reuse_roots is not None and target.stat().st_size >= REUSE_MIN_BYTES:
+                # Sealed from here on: a later attempt may share this inode.
+                target.chmod(stat.S_IMODE(target.stat().st_mode) & ~0o222)
         require(sha(source) == sha(target), "staged_bytes_mismatch")
         return self._record(relative, publisher_uri=publisher_uri)
+
+    def _reuse(self, source: Path, target: Path, relative: str) -> bool:
+        """Link ``target`` to an earlier attempt's verified copy of ``source``; False means copy."""
+
+        if not self.reuse_roots:
+            return False
+        size = source.stat().st_size
+        if size < REUSE_MIN_BYTES:
+            return False
+        digest, _ = _physical_sha256(source)
+        if sha(source) != digest:
+            return False  # a retained logical selector: keep the original copy path
+        device = target.parent.stat().st_dev
+        for root in self.reuse_roots:
+            try:
+                candidate = beneath(root, relative)
+                before = candidate.lstat()
+            except (OSError, ValueError):
+                continue
+            if (not stat.S_ISREG(before.st_mode) or before.st_mode & 0o222
+                    or before.st_size != size or before.st_dev != device):
+                continue
+            try:
+                observed, opened = _physical_sha256(candidate)
+            except (OSError, ValueError):
+                continue
+            if observed != digest or _file_identity(opened) != _file_identity(before):
+                continue
+            try:
+                os.link(candidate, target, follow_symlinks=False)
+            except OSError as exc:
+                if exc.errno in _LINK_FALLBACK_ERRNOS:
+                    return False
+                raise
+            linked = target.lstat()
+            if (linked.st_dev, linked.st_ino) != (before.st_dev, before.st_ino):
+                target.unlink()
+                return False
+            self.reused["files"] += 1
+            self.reused["bytes"] += size
+            return True
+        return False
 
     def json(self, relative: str, value: dict[str, Any]) -> dict[str, Any]:
         target = beneath(self.root, relative)

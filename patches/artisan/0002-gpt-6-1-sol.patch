@@ -1,0 +1,118 @@
+Price and admit OpenAI gpt-6.1-sol; allow its xhigh and max reasoning efforts.
+
+Owner direction 2026-11-02: ARTISAN authors with gpt-6.1-sol at maximum
+reasoning instead of gpt-6-astra. Rates, context window and reasoning efforts
+were read on 2026-11-02 from
+https://developers.openai.com/api/docs/models/gpt-6.1-sol: $2 input, $0.10
+cached input, $2.50 cache writes, $10 output per 1M tokens (2x input and cache,
+1.5x output above 272K input tokens); a 1,050,000-token context window; and
+reasoning.effort low, medium (default), high, xhigh and max.
+
+Applied after 0001-confine-generated-code.patch, against
+physicalvision/Artisan@ad322b5b31e50bdb84155520f09622c00c6056c3.
+
+--- a/pipeline/cost.py
++++ b/pipeline/cost.py
+@@ -86,6 +86,23 @@ OPENAI_GPT_6_ASTRA_PRICING: dict[str, float] = {
+     "output_above_threshold": 75.00,
+ }
+ 
++# Standard rates verified 2026-11-02 at
++# https://developers.openai.com/api/docs/models/gpt-6.1-sol: $2 input, $0.10
++# cached input, $2.50 cache writes and $10 output per 1M tokens; a request with
++# more than 272K input tokens is priced at 2x input and cache rates and 1.5x
++# output.
++OPENAI_GPT_6_1_SOL_PRICING: dict[str, float] = {
++    "input_uncached": 2.00,
++    "input_cached": 0.10,
++    "input_cache_write": 2.50,
++    "output": 10.00,
++    "prompt_tier_threshold_tokens": 272_000,
++    "input_uncached_above_threshold": 4.00,
++    "input_cached_above_threshold": 0.20,
++    "input_cache_write_above_threshold": 5.00,
++    "output_above_threshold": 15.00,
++}
++
+ ANTHROPIC_OPUS_PRICING: dict[str, float] = {
+     "input_uncached": 5.0,
+     "input_cached": 0.5,
+@@ -450,6 +467,7 @@ def pricing_for_provider_model(provider: str, model_id: str) -> dict[str, float]
+         "gpt-5.6-terra": OPENAI_GPT_5_6_TERRA_PRICING,
+         "gpt-5.6-luna": OPENAI_GPT_5_6_LUNA_PRICING,
+         "gpt-6-astra": OPENAI_GPT_6_ASTRA_PRICING,
++        "gpt-6.1-sol": OPENAI_GPT_6_1_SOL_PRICING,
+     }.get(model)
+ 
+ 
+--- a/pipeline/llm/model_registry.py
++++ b/pipeline/llm/model_registry.py
+@@ -24,6 +24,7 @@ DEFAULT_IMAGE_TOOL_MODEL = "gpt-image-2.5-sunburst"
+ _TEXT_ROLES = frozenset({"text", "compaction", "image_envelope"})
+ MODEL_CAPABILITIES: dict[str, frozenset[str]] = {
+     "gpt-6-astra": _TEXT_ROLES,
++    "gpt-6.1-sol": _TEXT_ROLES,
+     "gpt-5.6-sol": _TEXT_ROLES,
+     "gpt-5.5": _TEXT_ROLES,
+     "gpt-5.5-2026-04-23": _TEXT_ROLES,
+--- a/pipeline/llm/openai.py
++++ b/pipeline/llm/openai.py
+@@ -1192,7 +1192,7 @@ def _hard_pressure_threshold_for_model(model_id: str) -> int | None:
+     override = _env_int_or_none("OPENAI_HARD_PRESSURE_THRESHOLD_TOKENS")
+     if override is not None:
+         return override
+-    if model_id in {"gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.6-sol", "gpt-6-astra"}:
++    if model_id in {"gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.6-sol", "gpt-6-astra", "gpt-6.1-sol"}:
+         return DEFAULT_OPENAI_HARD_PRESSURE_TOKENS
+     return None
+ 
+@@ -1222,7 +1222,7 @@ def _context_window_tokens_for_model(model_id: str) -> int | None:
+     override = _env_int_or_none("OPENAI_CONTEXT_WINDOW_TOKENS")
+     if override is not None:
+         return override
+-    if model_id in {"gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.6-sol", "gpt-6-astra"}:
++    if model_id in {"gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.6-sol", "gpt-6-astra", "gpt-6.1-sol"}:
+         return DEFAULT_OPENAI_CONTEXT_TOKENS
+     return None
+ 
+@@ -1284,14 +1284,20 @@ def _user_item_fingerprints(items: list[dict[str, Any]]) -> list[str]:
+     return fingerprints
+ 
+ 
++# reasoning.effort values each model accepts above "high", verified 2026-11-02 at
++# https://developers.openai.com/api/docs/models/<model>: both support low,
++# medium, high, xhigh and max.
++EXTENDED_REASONING_MODELS = frozenset({"gpt-6-astra", "gpt-6.1-sol"})
++
++
+ def _effort_from_thinking_level(thinking_level: str, model_id: str | None = None) -> str:
+-    if model_id == "gpt-6-astra":
++    if model_id in EXTENDED_REASONING_MODELS:
+         effort = str(thinking_level).strip().lower()
+         effort = {"med": "medium", "mid": "medium", "none": "low", "minimal": "low"}.get(
+             effort, effort
+         )
+         if effort not in {"low", "medium", "high", "xhigh", "max"}:
+-            raise ProviderConfigurationError(f"Unsupported GPT-6 Astra reasoning effort: {effort}")
++            raise ProviderConfigurationError(f"Unsupported {model_id} reasoning effort: {effort}")
+         return effort
+     return provider_reasoning_level(thinking_level, default=ThinkingLevel.MED)
+ 
+--- a/pipeline/providers.py
++++ b/pipeline/providers.py
+@@ -52,8 +52,13 @@ def pipeline_thinking(role: str | None = None) -> str:
+     if raw in ("mid", "medium"):
+         raw = ThinkingLevel.MED.value
+     if raw in {"xhigh", "max"}:
+-        if pipeline_provider(role) != "openai" or effective_pipeline_model(role) != "gpt-6-astra":
+-            raise ValueError(f"Thinking level {raw} requires the OpenAI gpt-6-astra model")
++        if pipeline_provider(role) != "openai" or effective_pipeline_model(role) not in {
++            "gpt-6-astra",
++            "gpt-6.1-sol",
++        }:
++            raise ValueError(
++                f"Thinking level {raw} requires the OpenAI gpt-6-astra or gpt-6.1-sol model"
++            )
+         return raw
+     return normalize_thinking_level(raw, default=ThinkingLevel.HIGH).value
+ 

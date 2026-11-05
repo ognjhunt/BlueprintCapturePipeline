@@ -41,9 +41,10 @@ arm's shoulder at 60 degrees.
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -385,12 +386,46 @@ def descendants(model: AssetModel, joint_id: str) -> set[str]:
     return moving
 
 
+#: Triangles ``load_background_triangles`` measures at once (19 MB of them, about 0.1 GB with temporaries; the
+#: 262 k faces ``website_support_geometry`` reads at a time, #3346).
+BACKGROUND_TRIANGLE_BLOCK = 1 << 18
+
+
+@contextmanager
+def collision_kept_loaded(usd_path: str | Path) -> Iterator[Any]:
+    """``usd_path``'s stage, held open while the block runs, so every open of it inside shares one parse.
+
+    ``Usd.Stage.Open`` reuses a layer only while some stage still holds it; with none alive it reads the
+    file again. A website collider is a USDA text file (capture-447's: one 292 MB mesh of 3.25 M points),
+    and each such read parses the whole text, transiently at about twelve times the file's size (3.4 GB
+    for a 280 MB synthetic room). A carry search reads it once per stance it tries; a team packet's
+    station searches read it 16 times for three registered bodies. Readers inside must only read, so
+    each still sees the file's own bytes (an edit to the shared layer would outlive its stage); a file
+    that cannot be opened is left to the reader that needs it to refuse. Inside a read scope it holds the
+    scope's binary copy (``usd_binary_read_cache.readable``), which no open parses.
+    """
+    from pxr import Tf, Usd
+
+    from .usd_binary_read_cache import readable
+
+    try:
+        stage = Usd.Stage.Open(readable(usd_path))
+    except Tf.ErrorException:
+        stage = None
+    try:
+        yield stage
+    finally:
+        del stage
+
+
 def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], radius: float,
                               world_from_stage: np.ndarray | None = None) -> np.ndarray:
     """World triangles of every static collision mesh within ``radius`` of ``centre``."""
     from pxr import Usd, UsdGeom, UsdPhysics
 
-    stage = Usd.Stage.Open(str(usd_path))
+    from .usd_binary_read_cache import readable
+
+    stage = Usd.Stage.Open(readable(usd_path))
     if not stage or not math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.0) or UsdGeom.GetStageUpAxis(stage) != "Z":
         raise ScenePhysicsPreflightError("scene_physics_background_frame_invalid")
     cache = UsdGeom.XformCache()
@@ -406,25 +441,34 @@ def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], 
             continue
         meshes += 1
         mesh = UsdGeom.Mesh(prim)
-        points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=float).reshape(-1, 3)
-        counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get() or [], dtype=np.int64)
-        indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get() or [], dtype=np.int64)
+        # The arrays as the file holds them (float32 points, int32 indices), read in place: a block's corners
+        # are made float64 and moved to the world as the block is read. Each corner gets the same arithmetic
+        # a whole-mesh pass gives it; a 7.2 M-triangle room's float64 and int64 copies held 0.4 GB more.
+        stored = [mesh.GetPointsAttr().Get(), mesh.GetFaceVertexCountsAttr().Get(),
+                  mesh.GetFaceVertexIndicesAttr().Get()]
+        points, counts, indices = (np.asarray(value if value is not None else [])
+                                   for value in stored)
+        points = points.reshape(-1, 3)
         if not len(points) or not len(counts):
             continue
         if np.all(counts == 3):
             faces = indices.reshape(-1, 3)
         else:
-            starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+            starts = np.concatenate([[0], np.cumsum(counts, dtype=np.int64)[:-1]])
             faces = np.asarray([[indices[s], indices[s + i], indices[s + i + 1]]
                                 for s, c in zip(starts, counts) for i in range(1, c - 1)], dtype=np.int64)
         matrix = _usd_matrix(cache, prim)
         if world_from_stage is not None:
             matrix = world_from_stage @ matrix
-        world = points @ matrix[:3, :3].T + matrix[:3, 3]
-        triangles = world[faces]
-        near = np.linalg.norm(triangles.mean(axis=1) - centre, axis=1) <= radius + np.linalg.norm(
-            triangles - triangles.mean(axis=1, keepdims=True), axis=2).max(axis=1)
-        kept.append(triangles[near])
+        rotation, translation = matrix[:3, :3].T, matrix[:3, 3]
+        # A block of triangles at a time: a scanned room's whole array and its temporaries held 2.1 GB at once.
+        for first in range(0, len(faces), BACKGROUND_TRIANGLE_BLOCK):
+            corners = points[faces[first:first + BACKGROUND_TRIANGLE_BLOCK]].astype(float)
+            triangles = (corners.reshape(-1, 3) @ rotation + translation).reshape(-1, 3, 3)
+            del corners
+            near = np.linalg.norm(triangles.mean(axis=1) - centre, axis=1) <= radius + np.linalg.norm(
+                triangles - triangles.mean(axis=1, keepdims=True), axis=2).max(axis=1)
+            kept.append(triangles[near])
     if meshes == 0:
         raise ScenePhysicsPreflightError("scene_physics_background_collision_missing")
     return np.concatenate(kept) if kept else np.zeros((0, 3, 3))

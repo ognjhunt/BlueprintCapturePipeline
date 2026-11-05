@@ -38,14 +38,20 @@ try:  # flat provider-bundle layout
 except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
 try:  # flat provider-bundle layout
-    from policy_episode_lifecycle import TERMINAL_POLICY_SAFETY, TERMINAL_SCIENTIFIC
+    from policy_episode_lifecycle import (
+        TERMINAL_POLICY_SAFETY, TERMINAL_SCIENTIFIC, observation_quality_flag_codes,
+    )
 except ModuleNotFoundError:  # repository package
-    from .policy_episode_lifecycle import TERMINAL_POLICY_SAFETY, TERMINAL_SCIENTIFIC
+    from .policy_episode_lifecycle import (
+        TERMINAL_POLICY_SAFETY, TERMINAL_SCIENTIFIC, observation_quality_flag_codes,
+    )
 
 
 ARM_MOTION_EPSILON_RAD = 1e-6
 BLOCKER_CLIENT_RETURNED_NOTHING = "policy_episode_client_returned_no_chunk"
 PRESTART_READINESS_BLOCKER = "policy_episode_prestart_readiness_failed"
+# The website screening lane (``BETA_RUN_KIND`` of the paired session).
+BETA_SCREENING_RUN_KIND = "blueprint_beta_screening"
 BLOCKER_POLICY_INPUT_SATURATION_GATE_UNAVAILABLE = (
     f"{PRESTART_READINESS_BLOCKER}:policy_input_saturation_gate_unavailable"
 )
@@ -108,31 +114,52 @@ def prepolicy_visual_readiness_evidence(
     ``observation_integrity`` carries the sealed
     ``policy_observation_integrity_authority.v1`` (``authority``) and the
     session's ``appearance_render_backend_receipt_digest``; without both the
-    gate refuses before the first query.
+    gate refuses before the first query.  Its ``run_kind`` names the session's
+    lane: a beta screening episode whose bound runtime gate found structurally
+    usable frames proceeds and records the gate's blockers as flags.
     """
 
     binding = dict(observation_integrity or {})
     runtime_gate = binding.get("runtime_gate")
     runtime_gate = dict(runtime_gate) if isinstance(runtime_gate, Mapping) else None
-    runtime_gate_passed = bool(
+    # The digest-bound runtime camera gate as the session sealed it, bound to
+    # this session's exact appearance backend; nothing here trusts its verdict.
+    runtime_gate_bound = bool(
         runtime_gate
         and runtime_gate.get("schema_version")
         == "policy_canary_runtime_observation_integrity_gate.v1"
-        and runtime_gate.get("status") == "passed"
         and runtime_gate.get("run_kind") == "internal_policy_canary"
         and runtime_gate.get("claim_ceiling") == "diagnostic_policy_execution"
         and runtime_gate.get("frame_structure_passed") is True
-        and runtime_gate.get("target_semantic_visibility_passed") is True
         and runtime_gate.get("candidate_policy_loaded") is False
         and runtime_gate.get("candidate_policy_queried") is False
         and runtime_gate.get("official_ranking_permitted") is False
         and runtime_gate.get("scene_promotion_permitted") is False
-        and runtime_gate.get("blockers") == []
-        and runtime_gate.get("policy_observation_integrity_passed") is True
         and runtime_gate.get("appearance_render_backend_receipt_digest")
         == binding.get("appearance_render_backend_receipt_digest")
         and runtime_gate.get("gate_digest")
         == canonical_digest(runtime_gate, digest_field="gate_digest")
+    )
+    runtime_gate_passed = bool(
+        runtime_gate_bound
+        and runtime_gate.get("status") == "passed"
+        and runtime_gate.get("target_semantic_visibility_passed") is True
+        and runtime_gate.get("blockers") == []
+        and runtime_gate.get("policy_observation_integrity_passed") is True
+    )
+    # Beta screening: only privacy, rights and money stop a run.  A bound gate
+    # whose frames are structurally usable but whose integrity did not pass
+    # lets the episode proceed; its blockers become this receipt's flags.  A
+    # forged, unbound or unsealed gate, and unusable frames, still refuse.
+    runtime_gate_flags = (
+        observation_quality_flag_codes(runtime_gate["blockers"])
+        if runtime_gate_bound
+        and binding.get("run_kind") == BETA_SCREENING_RUN_KIND
+        and runtime_gate.get("status") == "blocked"
+        and runtime_gate.get("policy_observation_integrity_passed") is False
+        and isinstance(runtime_gate.get("blockers"), list)
+        and bool(runtime_gate["blockers"])
+        else []
     )
 
     try:  # flat provider-bundle layout
@@ -190,16 +217,41 @@ def prepolicy_visual_readiness_evidence(
                 "reference-render parity, ranking, or scene promotion"
             ),
         )
+    if runtime_gate_flags and receipt["frame_structure_passed"] is True:
+        # The measured integrity verdict and its blockers stay as measured.
+        receipt = dict(receipt)
+        receipt.update(
+            observation_integrity_flagged=True,
+            observation_quality_flags=runtime_gate_flags,
+            runtime_observation_gate={
+                "status": runtime_gate["status"],
+                "gate_digest": runtime_gate["gate_digest"],
+                "wrist_camera_mount_selection_digest": runtime_gate.get(
+                    "wrist_camera_mount_selection_digest"
+                ),
+                "appearance_render_backend_receipt_digest": runtime_gate[
+                    "appearance_render_backend_receipt_digest"
+                ],
+            },
+            quality_boundary=(
+                "beta screening estimate only; the digest-bound native camera gate "
+                "found structurally usable reset frames but did not pass observation "
+                "integrity, so the episode proceeds carrying the gate's blockers as "
+                "observation-quality flags; never ranking, scene promotion or "
+                "physical evidence"
+            ),
+        )
     # A structural pass is not observation integrity: Scene 839873's frames
     # passed every structural check and were visibly corrupt.  Only sealed
     # same-pose parity bound to this backend plus human approval may unlock
-    # the first query.
+    # the first query, except that a beta episode proceeds with its flags.
     blockers = (
         receipt["blockers"]
         if not receipt["frame_structure_passed"]
         else (
             []
             if receipt["policy_observation_integrity_passed"] is True
+            or receipt.get("observation_integrity_flagged") is True
             else receipt["policy_observation_integrity_blockers"]
         )
     )
@@ -733,6 +785,7 @@ __all__ = [
     "request_storage_bytes",
     "project_media_reserve_bytes",
 
+    "BETA_SCREENING_RUN_KIND",
     "BLOCKER_POLICY_INPUT_SATURATION_GATE_UNAVAILABLE",
     "PRESTART_READINESS_BLOCKER",
     "policy_input_saturation_evidence",

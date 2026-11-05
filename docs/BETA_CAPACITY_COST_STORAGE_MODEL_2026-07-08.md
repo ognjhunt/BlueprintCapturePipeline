@@ -1,5 +1,9 @@
 # Beta Capacity, Cost, and Storage Model
 
+> **Superseded for cost (2026-11-02).** The per-capture cost figures below ($3.56 per capture, 1,200 GPU-s,
+> Cloud Run) predate the Vast GPU and ARTISAN lanes. Use the measured model in
+> [`launch-readiness/2026-11-cost-model.md`](launch-readiness/2026-11-cost-model.md) for budgets and defaults.
+
 Status: launch gate artifact for 100-user external beta.
 
 This model covers the storage and ingest side of the beta. It keeps raw capture

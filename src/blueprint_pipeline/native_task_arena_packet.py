@@ -24,6 +24,7 @@ from .native_task_arena_scene_plan import (
     materialize_native_task_arena_scene_plan,
 )
 from .native_task_arena_runtime import author_gpu_compatible_scene_collision
+from .usd_binary_read_cache import editable
 from .native_g1_usd_dependency_closure import (
     G1_KIT_RUNTIME_ASSETS,
     robot_usd_dependency_sources,
@@ -629,8 +630,10 @@ def materialize_native_task_arena_packet(
             collision_adaptation = None
             if role == "scene_collision":
                 try:
+                    # Its own copy of the compile's binary read (usd_binary_read_cache): an
+                    # edit it makes reaches no other reader.
                     collision_adaptation = author_gpu_compatible_scene_collision(
-                        source_path, destination
+                        source_path, destination, opened=editable(source_path)
                     )
                 except Exception as exc:
                     raise NativeTaskArenaPacketError(

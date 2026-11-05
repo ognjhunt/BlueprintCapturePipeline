@@ -20,10 +20,16 @@ ran its preparation and a terminal scene-configuration launch may have paid for
 image edits or a GPU. Each receipt therefore carries ``settled_spend``: the hold
 the row keeps against the owner's cap (its full reservation while no billing
 reconciliation is bound), and whether it still counts as an executed attempt.
-Only rows proven never started -- a launch that was never queued, or a controls
-row downstream of a launch that blocked before controls eligibility -- release
-in full. ``retained_hold`` derives the same block for receipts sealed before the
+Only rows proven never started -- a launch that was never queued, a launch the
+reconciler closed before the dispatcher started any run, or a controls row
+downstream of a launch that blocked before controls eligibility -- release in
+full. ``retained_hold`` derives the same block for receipts sealed before the
 field existed.
+
+An intent whose authority ended (revoked or expired) stops before it retires
+its current attempt, so nothing above settled that attempt's rows.
+``task_evaluation_ended_authority_settlement.settle_ended_authority_attempt`` settles them, accounting only, when the
+attempt's terminal launch proves it never allocated anything.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +49,23 @@ from .task_evaluation_retained_controls_evidence import DIRECTORY, _file, _read,
 
 SCHEMA = "task_evaluation_terminal_scene_attempt_settlement.v1"
 STATUS = "settled_after_terminal_attempt"
+#: The current attempt of an intent whose authority ended, retired only because
+#: its terminal launch proved no allocation (``task_evaluation_ended_authority_settlement``).
+AUTHORITY_ENDED_SCHEMA = "task_evaluation_scene_authority_ended_retirement.v1"
 RETIREMENT_SCHEMAS = {
     "task_evaluation_scene_release_transition.v1",
     "task_evaluation_scene_attempt_failure.v1",
+    AUTHORITY_ENDED_SCHEMA,
 }
+#: Teardown states that prove no provider instance was ever requested.
+UNALLOCATED_TEARDOWN_STATUSES = frozenset({
+    "not_required_provider_adapter_never_invoked",
+    "not_required_prelaunch_inventory_guard_blocked",
+    # Bundle preflight refused before any offer search.
+    "not_required_blueprint_bundle_preflight_blocked",
+})
+#: A global ownership reconciliation that found live work is retried at most this often.
+OWNERSHIP_RETRY_SECONDS = 600
 OWNERSHIP_SCHEMA = "task_evaluation_scene_attempt_ownership.v1"
 TERMINAL_LAUNCH_STATUSES = {"blocked", "completed", "failed"}
 CONTROLS_PHASES = ("construction", "controls", "placement")
@@ -55,8 +75,16 @@ SETTLED_SPEND_BASES = {
     "terminal_launch_unreconciled",     # a terminal launch may have paid: full hold until a reconciliation is bound
     "downstream_of_blocked_launch",     # controls rows behind a launch that blocked before controls eligibility
     "launch_never_queued",              # nothing ever started for this row
+    "launch_contained_before_run",      # queued, but closed with provider zero before any run existed
+    "launch_stopped_before_allocator",  # run started, one-use authority never consumed, closed with provider zero
 }
 PREPARATION_ONLY_BASIS = "preparation_only_no_execution_authority_issued"
+# ``budget_retained_hold`` (B-04): the GPU allowance plus the authoring spend a
+# completed, agreeing ARTISAN cost gate and usage meter prove.
+PROVEN_AUTHORING_SPEND_BASIS = "artisan_proven_authoring_with_native_allowance"
+# The same proof for ARTISAN run on the CPU prestage, which rented no GPU: the
+# compute allowance is released too, since the run's records prove no allocation.
+PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS = "artisan_proven_authoring_without_allocation"
 # What ``_release_successor`` records under that basis, apart from an optional
 # ``preparation_failure``. It never records a ``reconciliation``.
 _PREPARATION_ONLY_LINEAGE_KEYS = frozenset({"attempt", "factory", "new_source_commit", "basis"})
@@ -154,6 +182,12 @@ def validate_terminal_settlement(*, receipt: Mapping[str, Any], attempt: Mapping
     execution = receipt.get("execution_terminal") or {}
     launch_id = launch_id_for_preparation(str(link["preparation_id"]))
     _require(execution.get("launch_id") == launch_id, "execution_launch_id_invalid")
+    if retirement.get("schema_version") == AUTHORITY_ENDED_SCHEMA:
+        # Retired for one launch only: the one whose refusal proved no allocation.
+        _require(retirement.get("provider_allocation_performed") is False
+                 and retirement.get("launch_id") == launch_id
+                 and retirement.get("launch_receipt") == execution.get("launch_receipt"),
+                 "authority_ended_retirement_invalid")
     launch_ref = execution.get("launch_receipt")
     if launch_ref is not None:
         _require(_file(Path(str(launch_ref.get("path") or ""))) == launch_ref, "launch_receipt_changed")
@@ -163,6 +197,27 @@ def validate_terminal_settlement(*, receipt: Mapping[str, Any], attempt: Mapping
             "launch_not_terminal",
         )
         _require(execution.get("launch_status") in (None, launch.get("status")), "launch_status_changed")
+    elif execution.get("launch_stopped_before_allocator") is True:
+        orphan_ref = execution.get("orphan_recovery_receipt") or {}
+        orphan_path = Path(str(orphan_ref.get("path") or ""))
+        _require(execution.get("launch_never_queued") is False
+                 and orphan_path.name == "orphan_recovery_receipt.json"
+                 and orphan_path.parent.name == launch_id, "orphan_recovery_binding_invalid")
+        _require(_file(orphan_path) == orphan_ref and _orphan_receipt_valid(orphan_path, launch_id),
+                 "orphan_recovery_receipt_changed")
+        from .task_evaluation_launch_preallocation import preallocation_evidence_still_holds
+        _require(preallocation_evidence_still_holds(execution.get("preallocation_evidence") or {},
+                                                    run_root=orphan_path.parent),
+                 "preallocation_evidence_invalid")
+    elif execution.get("launch_contained_before_run") is True:
+        orphan_ref = execution.get("orphan_recovery_receipt") or {}
+        orphan_path = Path(str(orphan_ref.get("path") or ""))
+        _require(execution.get("launch_never_queued") is False
+                 and orphan_path.name == "orphan_recovery_receipt.json"
+                 and orphan_path.parent.name == launch_id, "orphan_recovery_binding_invalid")
+        _require(_file(orphan_path) == orphan_ref, "orphan_recovery_receipt_changed")
+        _require(_contained_before_run(run_root=orphan_path.parent, launch_id=launch_id) == orphan_ref,
+                 "orphan_recovery_evidence_invalid")
     else:
         _require(execution.get("launch_never_queued") is True, "execution_evidence_missing")
 
@@ -175,6 +230,10 @@ def _derive_settled_spend(*, maximum_spend_usd: Any, dependency: Mapping[str, An
         return {"basis": "retired_source_unreconciled", "retained_spend_usd": cap, "counts_as_attempt": True}
     if (execution or {}).get("launch_never_queued") is True:
         return {"basis": "launch_never_queued", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+    if (execution or {}).get("launch_contained_before_run") is True:
+        return {"basis": "launch_contained_before_run", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+    if (execution or {}).get("launch_stopped_before_allocator") is True:
+        return {"basis": "launch_stopped_before_allocator", "retained_spend_usd": 0.0, "counts_as_attempt": False}
     if phase != "scene_configuration" and launch_status == "blocked":
         return {"basis": "downstream_of_blocked_launch", "retained_spend_usd": 0.0, "counts_as_attempt": False}
     return {"basis": "terminal_launch_unreconciled", "retained_spend_usd": cap, "counts_as_attempt": False}
@@ -211,7 +270,12 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
     applies. Legacy pre-allocation failures retain the API background allowance.
     Two initial admission refusals prove model work unentered; the native case
     still retains its entire provider allowance, not an estimated final bill.
+    A native ARTISAN run past its model gate keeps that allowance plus the
+    authoring spend its gate and meter prove (B-04, owner approval 2026-11-02),
+    with the proof's evidence and policy version under ``evidence``. One that
+    failed on the CPU prestage, before any GPU, keeps only the proven spend.
     Callers must first validate the terminal settlement and ownership evidence.
+    Holds are derived on every read, so this applies to existing settlements.
     """
     hold = retained_hold(receipt)
     if hold["basis"] != "terminal_launch_unreconciled":
@@ -248,25 +312,31 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
         result = terminal_artifact(terminal["result"])
         teardown = terminal_artifact(terminal["artifacts"]["teardown_manifest_path"])
         from .task_evaluation_unentered_authoring_budget import (
-            authoring_never_entered, pretraining_never_entered, prestage_before_first_stage,
+            artisan_proven_authoring_spend, authoring_never_entered, pretraining_never_entered,
+            prestage_before_first_stage,
         )
-        if (result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
-                and result.get("run_id") == request["run_id"]
-                and result.get("source_commit") == receipt["source_commit"]
-                and result.get("status") == "blocked"
-                and result.get("continuing_spend_from_this_run") is False
-                and type(result.get("provider_mutations_performed")) is int
-                and result.get("provider_mutations_performed") == 1
-                and teardown.get("schema_version") == "vast_teardown_manifest.v1"
-                and teardown.get("status") == "completed"
-                and teardown.get("continuing_spend_from_this_run") is False
-                and authoring_never_entered(result, request)):
+        native_run = (result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
+                      and result.get("run_id") == request["run_id"]
+                      and result.get("source_commit") == receipt["source_commit"]
+                      and result.get("status") == "blocked"
+                      and result.get("continuing_spend_from_this_run") is False
+                      and type(result.get("provider_mutations_performed")) is int
+                      and result.get("provider_mutations_performed") == 1
+                      and teardown.get("schema_version") == "vast_teardown_manifest.v1"
+                      and teardown.get("status") == "completed"
+                      and teardown.get("continuing_spend_from_this_run") is False)
+        if native_run and authoring_never_entered(result, request):
             # Keep the entire native allowance; partial posted billing or a
             # runtime estimate cannot establish a final provider charge.
             bound = float(request["spend"]["provider_compute_spend_cap_usd"])
             if 0 <= bound <= hold["retained_spend_usd"]:
                 return {"basis": "native_allowance_with_unentered_authoring", "retained_spend_usd": bound,
                         "counts_as_attempt": hold["counts_as_attempt"]}
+        if native_run:
+            proof = artisan_proven_authoring_spend(result, request)
+            if proof is not None:
+                return _proven_authoring_hold(hold, proof, request, compute_allocated=True)
+            return hold
         if (result.get("schema_version") != "task_evaluation_scene_configuration_vast_result.v1"
                 or result.get("run_id") != request["run_id"]
                 or result.get("source_commit") != receipt["source_commit"]
@@ -275,8 +345,7 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 or result["provider_mutations_performed"] != 0
                 or result.get("continuing_spend_from_this_run") is not False
                 or teardown.get("schema_version") != "vast_teardown_manifest.v1"
-                or teardown.get("status") not in {"not_required_provider_adapter_never_invoked",
-                                                  "not_required_prelaunch_inventory_guard_blocked"}
+                or teardown.get("status") not in UNALLOCATED_TEARDOWN_STATUSES
                 or teardown.get("vast_instance_ids") != []
                 or teardown.get("continuing_spend_from_this_run") is not False):
             return hold
@@ -297,6 +366,11 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                         "retained_spend_usd": rejected["retained_spend_usd"],
                         "counts_as_attempt": hold["counts_as_attempt"]}
             if not authoring_never_entered(result, request):
+                # ARTISAN past its model gate on the CPU prestage, before any GPU.
+                if _cpu_prestage_failed_before_allocation(result):
+                    proof = artisan_proven_authoring_spend(result, request)
+                    if proof is not None:
+                        return _proven_authoring_hold(hold, proof, request, compute_allocated=False)
                 return hold
             return {"basis": "preallocation_unentered_authoring", "retained_spend_usd": 0.0,
                     "counts_as_attempt": hold["counts_as_attempt"]}
@@ -313,20 +387,128 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
         return hold
 
 
+def _proven_authoring_hold(hold: Mapping[str, Any], proof: Mapping[str, Any],
+                           request: Mapping[str, Any], *, compute_allocated: bool) -> dict[str, Any]:
+    """The row's hold with its unspent authoring allowance released (B-04).
+
+    Every other model allowance stays held. So does the whole GPU allowance of
+    a run that rented a GPU (a runtime estimate is not a Vast bill); a run whose
+    records prove no allocation (``compute_allocated`` false) releases it. The
+    figure is rounded up to the micro-dollar, so it never falls below the proof.
+    """
+    held = Decimal(str(hold["retained_spend_usd"]))
+    compute = Decimal(str(request["spend"]["provider_compute_spend_cap_usd"]))
+    others = held - Decimal(str(proof["authoring_allowance_usd"])) - compute
+    kept = others + compute if compute_allocated else others
+    proven = Decimal(str(proof["proven_authoring_spend_usd"]))
+    retained = (kept + proven).quantize(Decimal("0.000001"), rounding=ROUND_CEILING)
+    if not (0 <= compute and 0 <= others and kept + proven <= retained <= held):
+        return dict(hold)
+    return {"basis": PROVEN_AUTHORING_SPEND_BASIS if compute_allocated else PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS,
+            "retained_spend_usd": float(retained), "counts_as_attempt": hold["counts_as_attempt"],
+            "evidence": {**proof, "kept_allowance_usd": float(kept), "compute_allowance_usd": float(compute),
+                         "compute_allowance_kept": compute_allocated}}
+
+
+def _cpu_prestage_failed_before_allocation(result: Mapping[str, Any]) -> bool:
+    """The output is the CPU prestage's own archive, retained when the prestage failed before any GPU.
+
+    The caller has already bound the result and its teardown: no provider
+    mutation, no instance, a teardown that never had to run. The lane writes
+    ``cpu_prestage_failure.json`` beside the archive only on that path.
+    """
+    try:
+        archive = Path(str(result["provider_runtime_output_zip_path"]))
+        failure = _read(archive.parent / "cpu_prestage_failure.json")
+        return (archive.name == "cpu_prestage_output.zip" and result.get("cpu_prestage") is None
+                and failure.get("status") == "blocked_before_gpu_allocation"
+                and failure.get("phase") == "cpu_prestage"
+                and failure.get("gpu_allocation_attempted") is False
+                and failure.get("run_id") == result.get("run_id")
+                and failure.get("source_commit") == result.get("source_commit"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def _contained_before_run(*, run_root: Path, launch_id: str) -> dict[str, Any] | None:
+    """The orphan receipt of a launch the reconciler closed before any run existed, else None.
+
+    The reconciler writes ``orphan_recovery_receipt.json`` only after fresh
+    provider-zero evidence, and moves the request to ``blocked/``. It also
+    writes one for a run that started and then went silent, so the receipt
+    alone proves nothing: the run directory must hold only the reconciler's own
+    records. The dispatcher creates that directory before any allocator call
+    (``create_launch_output``, then ``launch_started.json``).
+    """
+    from .task_evaluation_launch_reconciler import _dispatcher_run_evidence
+
+    path = run_root / "orphan_recovery_receipt.json"
+    if _dispatcher_run_evidence(run_root) or not _orphan_receipt_valid(path, launch_id):
+        return None
+    return _file(path)
+
+
+def _orphan_receipt_valid(path: Path, launch_id: str) -> bool:
+    """A sealed provider-zero orphan receipt for this launch that invoked nothing itself."""
+    from .task_evaluation_launch_reconciler import ORPHAN_RECOVERY_SCHEMA_VERSION
+
+    if path.is_symlink() or not path.is_file():
+        return False
+    try:
+        receipt = _read(path)
+    except (OSError, ValueError):
+        return False
+    return (receipt.get("schema_version") == ORPHAN_RECOVERY_SCHEMA_VERSION
+            and receipt.get("recovery_digest") == canonical_digest(receipt, digest_field="recovery_digest")
+            and receipt.get("launch_id") == launch_id
+            and receipt.get("status") == "provider_zero_confirmed"
+            and receipt.get("provider_zero_confirmed") is True
+            and receipt.get("allocator_invoked") is False
+            and receipt.get("automatic_retry_performed") is False
+            and receipt.get("blockers") == [])
+
+
+def _stopped_before_allocator(*, run_root: Path, launch_id: str, launch_execution_root: Path) -> dict[str, Any] | None:
+    """Provider-zero closure of a run that never consumed the one-use authority its live allocator needs."""
+    from .task_evaluation_launch_preallocation import preallocation_stop_evidence
+
+    path = run_root / "orphan_recovery_receipt.json"
+    if not _orphan_receipt_valid(path, launch_id):
+        return None
+    evidence = preallocation_stop_evidence(run_root=run_root, launch_id=launch_id,
+                                           state_root=launch_execution_root)
+    if evidence is None:
+        return None
+    return {"orphan_recovery_receipt": _file(path), "preallocation_evidence": evidence}
+
+
 def _launch_state(*, launch_id: str, launch_execution_root: Path, launch_queue_root: Path) -> dict[str, Any] | None:
     """Terminal evidence for a dependent row, or None while a launch may still spend."""
-    receipt_path = launch_execution_root / launch_id / "launch_receipt.json"
+    run_root = launch_execution_root / launch_id
+    receipt_path = run_root / "launch_receipt.json"
     if receipt_path.is_file():
         launch = _read(receipt_path)
         if launch.get("launch_id") != launch_id or launch.get("status") not in TERMINAL_LAUNCH_STATUSES:
             return None
         return {"launch_id": launch_id, "launch_receipt": _file(receipt_path), "launch_never_queued": False,
                 "launch_status": str(launch.get("status"))}
-    if (launch_execution_root / launch_id).exists():
-        return None  # A launch directory without a terminal receipt is still running or unreconciled.
+    contained = stopped = None
+    if run_root.exists():
+        contained = _contained_before_run(run_root=run_root, launch_id=launch_id)
+        if contained is None:
+            stopped = _stopped_before_allocator(run_root=run_root, launch_id=launch_id,
+                                                launch_execution_root=launch_execution_root)
+        if contained is None and stopped is None:
+            return None  # A launch directory without a terminal receipt is still running or unreconciled.
     for state in ("pending", "processing"):
         if any(path.name.startswith(launch_id) for path in (launch_queue_root / state).glob("*.json")):
             return None
+    if contained is not None:
+        return {"launch_id": launch_id, "launch_receipt": None, "launch_never_queued": False,
+                "launch_contained_before_run": True, "orphan_recovery_receipt": contained}
+    if stopped is not None:
+        return {"launch_id": launch_id, "launch_receipt": None, "launch_never_queued": False,
+                "launch_stopped_before_allocator": True, **stopped}
     return {"launch_id": launch_id, "launch_receipt": None, "launch_never_queued": True}
 
 
@@ -486,3 +668,43 @@ def sweep_retired_attempts(*, directory: Path, state: Mapping[str, Any], config:
     summary["skipped"] = [json.loads(row) for row in summary["skipped"]]
     summary["summary_digest"] = "sha256:" + hashlib.sha256(json.dumps(summary, sort_keys=True).encode()).hexdigest()
     return summary
+
+
+def unallocated_launch_evidence(*, launch: Mapping[str, Any], request: Mapping[str, Any],
+                                source_commit: str) -> dict[str, Any] | None:
+    """The terminal evidence of a blocked launch that proves no allocation and no paid authoring, else None.
+
+    No provider instance was requested or created, no API preparation ran, and
+    either no stage produced output at all or the retained archive passes an
+    existing pre-gate proof (stopped before stage 1, or before the model gate).
+    """
+    from .task_evaluation_scene_capacity_recovery import nothing_started
+    from .task_evaluation_unentered_authoring_budget import authoring_never_entered, prestage_before_first_stage
+    try:
+        terminal = launch["terminal_evidence"]
+        refs = {"result": terminal["result"], "teardown": terminal["artifacts"]["teardown_manifest_path"]}
+        values = {}
+        for name, ref in refs.items():
+            _require(ref.get("exists") is True and _file(Path(ref["path"]))["digest"] == ref["digest"],
+                     "launch_terminal_artifact_changed")
+            values[name] = _read(Path(ref["path"]))
+        result, teardown = values["result"], values["teardown"]
+        _require(launch.get("status") == "blocked" and launch.get("source_commit") == source_commit
+                 and result.get("run_id") == request["run_id"] and result.get("source_commit") == source_commit
+                 and result.get("cpu_prestage") is None
+                 and teardown.get("schema_version") == "vast_teardown_manifest.v1"
+                 and teardown.get("status") in UNALLOCATED_TEARDOWN_STATUSES
+                 and teardown.get("vast_instance_ids") == []
+                 and teardown.get("continuing_spend_from_this_run") is False, "launch_may_have_allocated")
+        if not nothing_started(result):
+            # Output was retained: only a pre-gate proof shows no stage spent.
+            _require(result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
+                     and type(result.get("provider_mutations_performed")) is int
+                     and result["provider_mutations_performed"] == 0
+                     and not result.get("instance_id") and not result.get("vast_instance_ids")
+                     and result.get("allocation_created") is not True
+                     and (prestage_before_first_stage(result, request) or authoring_never_entered(result, request)),
+                     "launch_may_have_spent")
+        return {"result": refs["result"], "teardown": refs["teardown"]}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None

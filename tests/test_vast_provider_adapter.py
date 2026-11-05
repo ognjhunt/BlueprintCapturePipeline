@@ -9809,6 +9809,8 @@ def test_uploaded_result_survives_log_failure_before_teardown(tmp_path, monkeypa
         if method == "DELETE" and path == "/instances/888/":
             events.append("teardown")
             assert output.is_file(), "teardown must follow preservation of observed output"
+            assert (tmp_path / "provider_runtime_diagnostics.v1.json").is_file(), \
+                "the run's own failure account is kept before teardown"
             return 200, {"success": True}
         raise AssertionError((method, path))
 
@@ -9850,6 +9852,12 @@ def test_uploaded_result_survives_log_failure_before_teardown(tmp_path, monkeypa
     receipt = _read_json(tmp_path / "vast_provider_output_preclassification_receipt.json")
     assert receipt["transfer"]["status"] == "completed"
     assert receipt["startup_or_scientific_success_claimed"] is False
+    # The full summary lives in its own file; the receipt keeps the compact copy.
+    compact = receipt["transfer"]["runtime_diagnostics"]
+    assert "results" not in compact and "logs" not in compact
+    assert compact["path"] == str(tmp_path / "provider_runtime_diagnostics.v1.json") and compact["written"]
+    assert compact["failing_results"] == [{"member": "native_task_arena_construction_result.v1.json",
+                                           "status": "blocked", "blockers": ["pregrasp"]}]
 
 
 _OUTPUT_GET_URL = "https://storage.example.invalid/private/run.zip?X-Amz-Signature=SECRET_DO_NOT_RECORD"
@@ -9951,6 +9959,10 @@ def test_default_collector_still_downloads_before_teardown(tmp_path: Path, monke
     assert len(list((tmp_path / "vast_provider_runtime_output_videos").glob("*.mp4"))) == 2
     manifest = _read_json(tmp_path / "vast_provider_output_download_manifest.json")
     assert manifest["output_zip_present_after_download"] is True
+    summary = _read_json(tmp_path / "provider_runtime_diagnostics.v1.json")
+    assert (summary["status"], summary["archive_source"]) == ("completed", "local_file")
+    assert summary["unread_member_counts"] == {"not_a_text_member": 2}  # the MP4s are listed, never read
+    assert provider["provider_runtime_diagnostics"]["failing_results"][0]["blockers"] == ["controller_missing"]
 
 
 def test_remote_transfer_replaces_path_inspection_and_records_the_observation(
@@ -9987,6 +9999,12 @@ def test_remote_transfer_replaces_path_inspection_and_records_the_observation(
     assert inspection["mp4_count"] == 2 and inspection["mp4_validation"]["files"] == []
     assert provider["provider_runtime_output_zip_received"] is True
     assert provider["runtime_result_status"] == "blocked_controller_runtime_unavailable"
+    # Read by range in the paid window: the archive itself never lands here.
+    summary = _read_json(tmp_path / "provider_runtime_diagnostics.v1.json")
+    assert (summary["status"], summary["archive_source"]) == ("completed", "remote_range")
+    assert provider["provider_runtime_diagnostics"]["failing_results"] == [
+        {"member": "isaac_runtime_result.json", "status": "blocked_controller_runtime_unavailable",
+         "blockers": ["controller_missing"]}]
     assert provider["structured_policy_canary"]["blockers"] == [
         "structured_policy_canary_member_missing"]
     manifest = _read_json(tmp_path / "vast_provider_output_download_manifest.json")
@@ -10083,3 +10101,43 @@ def test_policy_canary_deadline_environment_uses_watchdog_value_and_forbids_over
 def test_invalid_provider_deadline_refuses_before_create(tmp_path, deadline):
     with pytest.raises(ValueError, match="vast_provider_hard_deadline_invalid"):
         vpa._probe_env(job_dir=tmp_path, enable_isaac_smoke=False, provider_hard_deadline_epoch=deadline)
+
+
+def test_vendored_toolchain_runtime_json_is_not_parsed_as_blueprint_json() -> None:
+    """capture-447ae4f4, 2026-11-01: Blender's USD plugInfo.json files carry '#' comments."""
+    vendored = "provider_runtime/toolchain/components/content_agents_rigid_replacement/package/runtime/"
+    assert vpa._vendored_toolchain_runtime_member(vendored + "blender/lib/usd/usdGeom/resources/plugInfo.json")
+    assert vpa._vendored_toolchain_runtime_member(vendored + "site_packages/pkg/fixtures/case.json")
+    component = "provider_runtime/toolchain/components/content_agents_rigid_replacement/package/"
+    for member in (component + "artisan_runtime_manifest.v1.json",
+                   vendored + "runtime_manifest.json",
+                   "provider_runtime/toolchain/toolchain_inventory.json",
+                   "provider_runtime/scenario_eval_matrix.json",
+                   "provider_runtime/toolchain/components/x/other/runtime/a/b.json"):
+        assert not vpa._vendored_toolchain_runtime_member(member), member
+
+
+def test_bundle_preflight_skips_vendored_runtime_json_but_still_parses_manifests(tmp_path: Path) -> None:
+    bundle = tmp_path / "valid-isaac.zip"
+    _write_valid_provider_bundle(bundle)
+    vendored = ("provider_runtime/toolchain/components/content_agents_rigid_replacement/package/"
+                "runtime/blender/lib/usd/usdGeom/resources/plugInfo.json")
+    with zipfile.ZipFile(bundle, "a") as archive:
+        archive.writestr(vendored, '# Portions of this file auto-generated by usdGenSchema.\n{"Plugins": []}\n')
+
+    def preflight(name: str) -> dict:
+        return vpa._blueprint_bundle_preflight(
+            job_dir=tmp_path / name, generated_at="2026-11-01T07:05:30Z",
+            enable_blueprint_bundle=True, enable_isaac_smoke=True, provider_bundle_kind="isaac",
+            bundle_path=bundle, provider_bundle_url="https://example.invalid/isaac.zip",
+            provider_output_put_url="https://example.invalid/out.zip")
+
+    skipped = preflight("vendored")
+    assert skipped["json_member_parse_errors"] == []
+    assert "provider_runtime_bundle_json_parse_failed" not in skipped["blockers"]
+    manifest = "provider_runtime/toolchain/components/content_agents_rigid_replacement/package/broken_manifest.json"
+    with zipfile.ZipFile(bundle, "a") as archive:
+        archive.writestr(manifest, "{not json")
+    parsed = preflight("manifest")
+    assert parsed["json_member_parse_errors"] == [manifest + ":JSONDecodeError"]
+    assert "provider_runtime_bundle_json_parse_failed" in parsed["blockers"]

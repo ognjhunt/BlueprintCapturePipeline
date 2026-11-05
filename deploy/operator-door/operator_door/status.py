@@ -31,7 +31,7 @@ _VERSION_KEYS = ("source_commit", "commit_proven", "blockers", "disk_headroom", 
 _RECEIPT_KEYS = ("schema", "status", "source_commit", "commit", "mode", "finished_at", "completed_at")
 _CAPACITY_KEYS = (
     "schema_version", "observed_at_epoch", "level", "report_digest", "alerts", "mounts", "usage",
-    "volume_resize", "truncated",
+    "volume_resize", "truncated", "reclaim_outlook", "stall", "provider_spend",
 )
 _MAX_JSON_BYTES = 256 * 1024
 _MAX_BREAK_GLASS_LEDGER_BYTES = 16 * 1024 * 1024
@@ -43,6 +43,8 @@ _BETA_TRIGGERS = frozenset((
     "blueprint-pubsub-handoff-listener.timer", "blueprint-team-scene-packet.path",
     "blueprint-rigid-robot-free-probe-runner.path", "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-beta-policy-screening.timer",
+    # Its leases and provider-zero receipts gate release succession and completion.
+    "blueprint-task-evaluation-launch-reconciler.timer",
 ))
 
 
@@ -273,7 +275,9 @@ def _handoff_delivery(config: DoorConfig) -> dict[str, Any]:
         raise ValueError("delivery_metrics_schema_invalid")
     keys = ("observed_at_epoch", "attempted", "delivered", "unavailable", "due_backlog",
             "oldest_due_age_seconds", "hint_count_scanned", "hint_scan_limit_reached", "invalid_hint_count",
-            "overloaded", "repair_scanned", "successful_delivery_lag_seconds")
+            "overloaded", "repair_scanned", "successful_delivery_lag_seconds",
+            # D-05: live callbacks (due or waiting out a retry) and parked ones, counted apart.
+            "live_count", "oldest_live_age_seconds", "parked_count", "oldest_parked_age_seconds")
     safe: dict[str, Any] = {"schema_version": document["schema_version"]}
     for key in keys:
         value = document.get(key)
@@ -341,6 +345,17 @@ def _door_requests(config: DoorConfig) -> dict[str, int]:
     return {state: len(list((spool / state).glob("*.json"))) for state in ("pending", "processing", "parked")}
 
 
+def _deploy_activation_hold(config: DoorConfig) -> dict[str, Any] | None:
+    """Why parked deploys wait, as door-deploy.sh last saw it; None when nothing holds them."""
+
+    try:
+        document = json.loads((Path(config.spool_root) / "parked" / ".activation-hold").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    keys = ("active_release", "first_held_at_epoch", "cap_at_epoch", "recheck_after_epoch", "live")
+    return {key: document.get(key) for key in keys} if isinstance(document, dict) else None
+
+
 def _holds(config: DoorConfig) -> list[dict[str, Any]]:
     now = time.time()
     records = hold_records.active(Path(config.spool_root) / "holds")
@@ -385,7 +400,10 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
                          "disk_unavailable"),
         "capacity": _section(lambda: _capacity(config), "capacity_unavailable"),
         "load": _section(host.load, "load_unavailable"),
+        "memory": _section(host.memory, "memory_unavailable"),
         "door_requests": _section(lambda: _door_requests(config), "door_requests_unavailable"),
+        "deploy_activation_hold": _section(lambda: _deploy_activation_hold(config),
+                                           "deploy_activation_hold_unavailable"),
         "holds": _section(lambda: _holds(config), "holds_unavailable"),
         "break_glass": _section(lambda: _break_glass(config), "break_glass_unavailable"),
     }

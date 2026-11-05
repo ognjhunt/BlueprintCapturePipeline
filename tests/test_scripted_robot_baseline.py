@@ -121,7 +121,7 @@ def test_planner_retains_scripted_identity_for_selected_deferred_and_unavailable
         bindings[row["candidate_id"]], quotes[row["candidate_id"]] = admitted(row, maximum="8.00")
     plan = build_screening_plan(catalog, scene(), campaign_id="development-only", now=NOW,
         capabilities={"candidate_bindings": bindings}, cost_quotes=quotes)
-    assert [row["status"] for row in plan["candidates"]] == ["selected", "deferred", "unavailable"]
+    assert [row["status"] for row in plan["candidates"]] == ["selected", "waitlisted", "unavailable"]
     assert {row["execution_evidence_kind"] for row in plan["candidates"]} == {EVIDENCE_KIND}
     assert validate_screening_plan(plan) == plan
     import json

@@ -3908,6 +3908,15 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
     assert result["configured_scene_revision_reference"]["uri"].startswith(
         "s3://blueprint-inputs/"
     )
+    # The reference (uri, sha256 of the revision file's bytes, size) is what a
+    # website intent's status names as ``result_reference``; a screening source
+    # names the revision's self-digest. Two kinds of digest: the website relates
+    # them only through the offering's evaluation_preparation_binding.
+    binding = result["configured_scene_offering"]["evaluation_preparation_binding"]
+    assert binding["configured_scene_revision"] == result["configured_scene_revision_reference"]
+    assert binding["configured_scene_revision_digest"] == result["configured_scene_revision_digest"]
+    assert (result["configured_scene_revision_reference"]["digest"]
+            != result["configured_scene_revision_digest"])
     assert result["provider_runtime_output_remote_reference"][
         "remote_identity_verified"
     ] is True
@@ -4341,6 +4350,76 @@ def test_provider_materializes_and_preflights_sealed_python_closure() -> None:
         in script
     )
     assert "timeout" in vpa.SCENE_CONFIGURATION_REQUIRED_COMMANDS.split()
+
+
+@pytest.mark.parametrize("backend", ["artisan_v1", "astra_cad_blender_v1", None])
+def test_provider_entrypoint_materializes_the_wheelhouse_profile_the_release_sealed(
+    tmp_path, monkeypatch, backend
+) -> None:
+    """2026-11-01: an ARTISAN release seals ``artisan_source_validation``.
+
+    The release builder and the bundle check pick the provider wheelhouse
+    profile with ``declared_python_profile``. The entrypoint chose only between
+    ``astra_asset_authoring`` and ``base``, so capture-447ae4f4's ARTISAN bundle
+    (toolchain 7d27dc64, wheelhouse ``runtime_profile: artisan_source_validation``)
+    would have asked for ``base`` and stopped with
+    ``scene_configuration_python_wheelhouse_manifest_invalid`` before stage one,
+    on the CPU prestage or on the rented GPU.
+    """
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_artisan_runtime as artisan_runtime
+    from blueprint_pipeline import task_evaluation_scene_configuration_astra_runtime as astra_runtime
+
+    runtime = tmp_path / "provider_runtime"
+    toolchain = runtime / "toolchain"
+    package = toolchain / "components/content_agents_rigid_replacement/package"
+    package.mkdir(parents=True)
+    (toolchain / "components/artifixer3d_observed_object_removal/package/python_wheelhouse").mkdir(parents=True)
+    (toolchain / "task_evaluation_scene_configuration_toolchain.v1.json").write_text('{"files": []}\n')
+    if backend == "artisan_v1":
+        (package / artisan_runtime.MANIFEST).write_text("{}\n")
+        monkeypatch.setattr(artisan_runtime, "validate_artisan_runtime", lambda _package: {})
+    elif backend == "astra_cad_blender_v1":
+        manifest = {"schema_version": astra_runtime.SCHEMA_VERSION,
+                    "python_profile": astra_runtime.PYTHON_PROFILE,
+                    "authoring_backend": "astra_cad_blender_v1",
+                    "python_runtime": astra_runtime._python_contract(), "manifest_digest": ""}
+        manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+        (package / astra_runtime.MANIFEST_NAME).write_text(json.dumps(manifest))
+    sealed_profile = astra_runtime.declared_python_profile(toolchain)
+
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    calls = tmp_path / "python_calls.log"
+    (stub / "python3").write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{calls}"\n'
+        'case "$*" in *task_evaluation_scene_configuration_python_runtime*) exit 86 ;; esac\n'
+        "cat >/dev/null\n"
+        "exit 0\n"
+    )
+    (stub / "python3").chmod(0o755)
+    output = tmp_path / "runtime_output"
+    script = Path(__file__).resolve().parents[1] / "scripts/run_task_evaluation_scene_configuration_provider.sh"
+    try:
+        with (tmp_path / "entrypoint.log").open("wb") as log:
+            completed = subprocess.run(
+                ["bash", str(script)],
+                env={"PATH": f"{stub}:/usr/bin:/bin",
+                     "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT": str(runtime),
+                     "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT": str(output)},
+                stdout=log, stderr=subprocess.STDOUT, check=False, timeout=60,
+            )
+    finally:
+        for path in [toolchain, *toolchain.rglob("*")]:
+            if path.is_dir():
+                path.chmod(0o755)
+    assert completed.returncode == 86
+    [materialize] = [line for line in calls.read_text().splitlines()
+                     if "task_evaluation_scene_configuration_python_runtime" in line]
+    assert materialize.split("--profile ", 1)[1].split()[0] == sealed_profile
+    assert sealed_profile == {"artisan_v1": "artisan_source_validation",
+                              "astra_cad_blender_v1": "astra_asset_authoring", None: "base"}[backend]
 
 
 def test_stage_budget_exceeds_the_budget_it_grants_its_child() -> None:
@@ -5555,3 +5634,94 @@ def test_zip_tree_writes_members_past_the_zip64_limit(tmp_path, monkeypatch):
     bundle_module._zip_tree(stage, destination)
     with _zipfile.ZipFile(destination) as archive:
         assert archive.read("libbig.so") == payload
+
+
+def test_bundle_refuses_a_toolchain_other_than_the_activation_bound(tmp_path: Path) -> None:
+    # The activation worker binds only the sealed manifest digest; the bundle
+    # step's full-byte validation must then prove exactly that toolchain.
+    first = _build(tmp_path, "unbound")
+    commit = "a" * 40
+    common = {
+        "construction_envelope_path": tmp_path / "source" / "envelope.json",
+        "toolchain_root": tmp_path / "toolchain",
+        "repository_root": tmp_path / "repo",
+        "expected_source_commit": commit,
+    }
+    bound = build_scene_configuration_provider_bundle(
+        **common, output_root=tmp_path / "bound",
+        expected_toolchain_digest=first["toolchain_digest"],
+    )
+    assert bound["bundle_sha256"] == first["bundle_sha256"]
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError,
+                       match="toolchain_binding_mismatch"):
+        build_scene_configuration_provider_bundle(
+            **common, output_root=tmp_path / "mismatch",
+            expected_toolchain_digest="sha256:" + "0" * 64,
+        )
+    assert not (tmp_path / "mismatch").exists()
+
+
+def test_provider_bundle_step_passes_the_activation_bound_toolchain_digest() -> None:
+    from scripts import prepare_paid_lane_launch as module
+
+    step = next(step for step in module._scene_configuration_steps() if step.step_id == "provider_bundle")
+    base = {
+        "python": "python", "construction_envelope": "e", "toolchain_root": "t",
+        "repository_root": "r", "set_root": "s", "source_commit": "a" * 40,
+    }
+    assert "--expected-toolchain-digest" not in module._step_argv(step, base)
+    argv = module._step_argv(step, {**base, "expected_toolchain_digest": "sha256:" + "1" * 64})
+    assert argv[argv.index("--expected-toolchain-digest") + 1] == "sha256:" + "1" * 64
+
+
+def test_receipt_reopen_reuses_a_sealed_bundle_digest_and_refuses_a_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import sealed_file_digest as sealed
+
+    receipt = _build(tmp_path, "sealed")
+    receipt_path = tmp_path / "sealed" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    bundle = Path(receipt["bundle_path"])
+    monkeypatch.setattr(sealed, "time_ns", lambda: bundle.stat().st_ctime_ns + 2 * sealed.STABLE_AGE_NS)
+    reads: list[int] = []
+    original = sealed._hash_stream
+    monkeypatch.setattr(sealed, "_hash_stream", lambda stream: reads.append(1) or original(stream))
+
+    for _ in range(3):
+        assert load_scene_configuration_provider_bundle_receipt(receipt_path)["bundle_sha256"] == (
+            receipt["bundle_sha256"]
+        )
+    assert len(reads) == 1
+
+    before = bundle.stat()
+    payload = bytearray(bundle.read_bytes())
+    payload[-30] ^= 0xFF  # inside the end record; size unchanged
+    bundle.write_bytes(bytes(payload))
+    os.utime(bundle, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="bundle_bytes_invalid"):
+        load_scene_configuration_provider_bundle_receipt(receipt_path)
+
+
+@pytest.mark.parametrize("suffix", [".usdc", ".usda"])
+def test_provided_mesh_visual_geometry_keeps_its_format_name_in_the_packet(tmp_path, suffix):
+    # The normalized collision layer is crate (.usdc) since 2026-11-03 and text before. Its digest-named
+    # bytes keep a name of their own format: OpenUSD refuses crate bytes named .usda.
+    from pxr import Usd, UsdGeom
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import MESH_INPUT_STATUS
+
+    layer = tmp_path / ("normalized_scene" + suffix)
+    stage = Usd.Stage.CreateNew(str(layer))
+    UsdGeom.Mesh.Define(stage, "/Root/Support")
+    stage.GetRootLayer().Save()
+    stage = None
+    cas = tmp_path / hashlib.sha256(layer.read_bytes()).hexdigest()
+    shutil.copyfile(layer, cas)
+    render = {"status": MESH_INPUT_STATUS, "result_digest": "sha256:" + "0" * 64,
+              "derived_visual_geometry": {"path": str(cas), "digest": file_digest(cas),
+                                          "size_bytes": cas.stat().st_size}}
+    runtime = tmp_path / "runtime"
+    portable = bundle_module._portable_render_inputs(runtime=runtime, render=render)
+    packed = runtime / portable["derived_visual_geometry"]["path"]
+    assert packed.name == "normalized_visual_geometry" + suffix and packed.read_bytes() == cas.read_bytes()
+    assert Usd.Stage.Open(str(packed)).GetPrimAtPath("/Root/Support").IsValid()

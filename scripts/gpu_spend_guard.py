@@ -55,6 +55,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from blueprint_pipeline.common import write_json
+from blueprint_pipeline.record_tree_index import Rule, find_records
 from blueprint_pipeline.spend_admission_lock import build_spend_admission_lock
 
 SCHEMA_VERSION = "gpu_spend_guard.v1"
@@ -1222,9 +1223,15 @@ def _iter_owner_bindings(
         base = Path(root).expanduser()
         if not base.is_dir():
             continue
-        candidates = list(base.glob(f"**/object_store_real_run/{filename}"))
-        if filename == "started_vast_instance_id.txt":
-            candidates.extend(base.glob(f"**/{filename}"))
+        # **/object_store_real_run/<filename>, plus **/<filename> for Vast,
+        # from the one shared walk of this root (see _owner_records).
+        candidates = [
+            path for path in _owner_records(base)
+            if path.name == filename and (
+                path.parent.name == "object_store_real_run"
+                or filename == "started_vast_instance_id.txt"
+            )
+        ]
         for path in candidates:
             payload = _read_bounded_regular_text(path, max_bytes=MAX_OWNER_ID_BYTES)
             launched_id = str(payload or "").strip()
@@ -1291,6 +1298,21 @@ def iter_started_pod_id_files(output_roots: Iterable[Path | str]) -> list[tuple[
 
 
 WARM_SERVE_MARKER_FILENAME = "warm_serve_pod.json"
+TASK_EVALUATION_WATCHDOG_FILENAME = "groot_oscar_runpod_canary_watchdog.json"
+# Every owner record a guard pass looks for under an output root. One rule set
+# means one walk per root per pass (instead of one full ``**`` glob per
+# filename), and later passes in a process reread only changed directories.
+OWNER_RECORD_RULES = (
+    *(Rule(parent="object_store_real_run", name=filename) for filename in OWNER_ID_FILENAMES),
+    Rule(name="started_vast_instance_id.txt"),
+    Rule(name=WARM_SERVE_MARKER_FILENAME),
+    Rule(parent="independent_vast_watchdog", name=TASK_EVALUATION_WATCHDOG_FILENAME),
+)
+
+
+def _owner_records(base: Path) -> list[Path]:
+    """Owner records under ``base``; files are always read fresh by callers."""
+    return find_records([base], OWNER_RECORD_RULES)
 
 
 def find_expected_serve_pod_ids(
@@ -1307,7 +1329,7 @@ def find_expected_serve_pod_ids(
         base = Path(root).expanduser()
         if not base.is_dir():
             continue
-        for path in base.glob(f"**/{WARM_SERVE_MARKER_FILENAME}"):
+        for path in (p for p in _owner_records(base) if p.name == WARM_SERVE_MARKER_FILENAME):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
@@ -1464,10 +1486,18 @@ def _task_evaluation_watchdog_owned_ids(
     expired or terminal watchdog records confer no protection.
     """
     protected: set[str] = set()
-    pattern = "groot_oscar_runpod_canary_watchdog.json" if preparation_only else (
-        "**/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json")
+    def watchdog_paths(root: Path | str) -> Iterable[Path]:
+        if preparation_only:
+            return Path(root).glob(TASK_EVALUATION_WATCHDOG_FILENAME)
+        # **/independent_vast_watchdog/<watchdog>.json from the shared walk.
+        return [
+            path for path in _owner_records(Path(root))
+            if path.name == TASK_EVALUATION_WATCHDOG_FILENAME
+            and path.parent.name == "independent_vast_watchdog"
+        ]
+
     for root in output_roots:
-        for path in Path(root).glob(pattern):
+        for path in watchdog_paths(root):
             text = _read_bounded_regular_text(path, max_bytes=MAX_QUALIFICATION_MANIFEST_BYTES)
             if text is None or any(p.is_symlink() for p in path.parents):
                 continue

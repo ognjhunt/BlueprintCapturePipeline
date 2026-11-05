@@ -34,7 +34,13 @@ ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/sam31-preparation-execu
 ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 TasksMax=512
 LimitNOFILE=8192
-MemoryMax=8G
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 32M on the host.
+MemoryHigh=1G
+MemoryMax=2G
+OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=1h
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane

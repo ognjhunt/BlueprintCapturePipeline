@@ -1196,6 +1196,46 @@ def test_large_container_runtime_store_warns_by_name() -> None:
     assert projection["container_runtime_complete"] is False  # a lower bound, not a measurement
 
 
+def test_a_storage_class_over_its_byte_budget_pages(monkeypatch):
+    """2026-11-02: work and unclassified grew with no cap; a budget makes that a page."""
+    monkeypatch.delenv(cap.CLASS_BUDGETS_ENV, raising=False)
+    # Today's backlog sits below the defaults (16.4 and 24.4 GiB); new growth past them pages.
+    by_class = [{"storage_class": "work", "allocated_bytes": 27_595_211_776},
+                {"storage_class": "unclassified", "allocated_bytes": 30 * GIB},  # at budget: quiet
+                {"storage_class": "release", "allocated_bytes": 4096},
+                {"storage_class": "scene_workspace", "allocated_bytes": 27_139_760_128}]  # no budget
+    survey = _survey_result(by_class=by_class, byte_accounting="current_snapshot_lower_bound")
+    alerts = cap.usage_alerts(survey)
+    assert alerts == [{"code": "storage_class_over_budget", "storage_class": "work",
+                       "allocated_bytes": 27_595_211_776, "budget_bytes": 25 * GIB,
+                       "byte_accounting": "current_snapshot_lower_bound"}]
+    cap._annotate_alerts(alerts)
+    assert alerts[0]["severity"] == "page"
+    summary = cap.capacity_summary({"alerts": alerts, "level": "warning"})
+    assert summary["alerts"][0]["storage_class"] == "work"
+    assert summary["alerts"][0]["budget_bytes"] == 25 * GIB
+
+
+def test_class_budgets_come_from_the_environment():
+    defaults = {name: gib * GIB for name, gib in cap.DEFAULT_CLASS_BUDGETS_GIB.items()}
+    assert defaults == {"release": 15 * GIB, "cache": 20 * GIB, "work": 25 * GIB, "unclassified": 30 * GIB}
+    assert cap.class_budgets({}) == (defaults, False)
+    assert cap.class_budgets({cap.CLASS_BUDGETS_ENV: "work=40, cache=25"}) == (
+        {"work": 40 * GIB, "cache": 25 * GIB}, False)
+    assert cap.class_budgets({cap.CLASS_BUDGETS_ENV: "off"}) == ({}, False)
+    for invalid in ("work=0", "work", "work=lots", "work=5,work=6", "Work=5"):
+        assert cap.class_budgets({cap.CLASS_BUDGETS_ENV: invalid}) == (defaults, True), invalid
+
+
+def test_an_invalid_budget_setting_warns_and_keeps_the_defaults(monkeypatch):
+    monkeypatch.setenv(cap.CLASS_BUDGETS_ENV, "work=many")
+    survey = _survey_result(by_class=[{"storage_class": "cache", "allocated_bytes": 21 * GIB}])
+    codes = [alert["code"] for alert in cap.usage_alerts(survey)]
+    assert codes == ["class_budget_setting_invalid", "storage_class_over_budget"]
+    monkeypatch.setenv(cap.CLASS_BUDGETS_ENV, "off")
+    assert cap.usage_alerts(survey) == []
+
+
 @pytest.mark.parametrize(("total", "largest"), [
     (5 * GIB + 1, GIB), (3 * GIB, 2 * GIB + 1),
 ])
@@ -1315,7 +1355,8 @@ def test_direct_controller_call_surveys_by_default(tmp_path, monkeypatch):
         reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
         ack="", token="", disk_usage=_usage(free_gib=100.0), now=1_000.0,
     )
-    assert calls == [{"mounts": [str(tmp_path), "/"], "continuation": None, "partitions_per_mount": 4}]
+    assert calls == [{"mounts": [str(tmp_path), "/"], "continuation": None,
+                      "partitions_per_mount": cap.USAGE_PARTITIONS_PER_MOUNT}]
     assert report["usage"]["status"] == "complete"
 
 

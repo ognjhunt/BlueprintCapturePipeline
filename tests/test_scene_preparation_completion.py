@@ -40,17 +40,19 @@ def _prepare(tmp_path, monkeypatch, request):
         'task_evaluation_run': {'run_mode': 'scene_configuration', 'configuration_run_id': 'scene-839873-configuration',
                                'task_id': intent['request']['task']['task_id']}}, 'profile_digest')
     reference = {'uri': 's3://test/qualified-scene', 'digest': 'sha256:' + 'c' * 64, 'size_bytes': 100}
+    # The revision's own self-digest: never the sha256 of its file's bytes (``reference['digest']``).
+    revision_digest = 'sha256:' + 'd' * 64
     result = json.loads(result_path.read_text())
     result.update(status='completed', source_commit=SOURCE_CONFIGURATION_COMMIT, configuration_completed=True,
         configured_scene_published=True, full_byte_service_account_readback_passed=True,
         configured_scene_revision_reference=reference, configured_scene_bundle_reference=reference,
-        configured_scene_revision_digest=reference['digest'], publication_result_digest=reference['digest'],
+        configured_scene_revision_digest=revision_digest, publication_result_digest=reference['digest'],
         task_thumbnail_reference=reference, task_thumbnail_selection_receipt_reference=reference)
     offering = {'schema_version': 'task_evaluation_configured_scene_offering.v1', 'status': 'configured_controls_pending',
         'configuration_run_id': result['run_id'], 'catalog_visibility': 'team_only',
         'presentation': {'task_thumbnail': reference, 'selection_receipt': reference},
         'evaluation_preparation_binding': {'configured_scene_revision': reference,
-            'configured_scene_revision_digest': reference['digest'], 'configured_scene_bundle': reference}}
+            'configured_scene_revision_digest': revision_digest, 'configured_scene_bundle': reference}}
     offering['offering_digest'] = canonical_digest(offering, digest_field='offering_digest')
     result['configured_scene_offering'] = offering
     finalization = {'schema_version': 'task_evaluation_scene_construction_finalization.v1', 'status': 'completed',
@@ -85,9 +87,17 @@ def prepared(tmp_path, monkeypatch):
 
 
 def test_scene_preparation_finishes_without_robot_or_policy_result(prepared):
-    args, run, _ = prepared
+    args, run, result_path = prepared
     result = reconcile_preparation_completion(**args)
     assert result['status'] == 'completed' and result['phase'] == 'scene_prepared'
+    # The intent status names the revision file; a screening source names the
+    # revision's self-digest. Only the offering's evaluation_preparation_binding
+    # relates the two, and the website binds screening through it.
+    published = json.loads(result_path.read_text())
+    binding = published['configured_scene_offering']['evaluation_preparation_binding']
+    assert result['result_reference'] == published['configured_scene_revision_reference'] == binding['configured_scene_revision']
+    assert binding['configured_scene_revision_digest'] == published['configured_scene_revision_digest']
+    assert result['result_reference']['digest'] != published['configured_scene_revision_digest']
     assert result['state']['scene_preparation_completion']['robot_evaluation_performed'] is False
     assert not (run / 'policy_canary_result_projection.json').exists()
 
@@ -103,6 +113,23 @@ def test_completion_retains_the_robot_free_readiness_receipt_beside_the_launch(p
                       'revision_digest': published['configured_scene_revision_digest']}]
     assert result['state']['scene_preparation_completion']['robot_free_readiness'] == {
         'status': 'passed', 'retained': True}
+
+
+def test_an_injected_fetcher_reaches_retention_and_the_default_call_is_unchanged(prepared, monkeypatch):
+    """The offline downstream replay answers the published revision locally; production passes none."""
+    args, _, _ = prepared
+    calls = []
+    monkeypatch.setattr(retention, 'retain_robot_free_readiness',
+                        lambda **kwargs: calls.append(kwargs) or {'status': 'passed', 'retained': True})
+
+    def fetcher(_reference):
+        return b''
+
+    reconcile_preparation_completion(**args)
+    reconcile_preparation_completion(**args, fetcher=fetcher)
+    # Today's call keeps exactly its three keywords, so retention's default fetcher still applies.
+    assert set(calls[0]) == {'run_root', 'revision_reference', 'revision_digest'}
+    assert calls[1] == {**calls[0], 'fetcher': fetcher}
 
 
 def test_a_transient_retention_failure_keeps_completion_pending_for_retry(prepared, monkeypatch):
@@ -190,17 +217,13 @@ def test_completion_enqueues_one_team_scene_request_and_launches_nothing(tmp_pat
     assert not list((queue / 'processing').iterdir()) and not list((queue / 'processed').iterdir())
 
 
-@pytest.mark.parametrize('case', ['not_a_website_scene', 'receipt_not_retained', 'probe_failed',
-                                  'queue_not_configured'])
+@pytest.mark.parametrize('case', ['not_a_website_scene', 'probe_failed', 'queue_not_configured'])
 def test_completion_queues_no_team_scene_request_without_a_website_scene_and_its_retained_receipt(
         tmp_path, monkeypatch, case):
     from blueprint_pipeline import team_scene_packet_worker as worker
 
     args, _run, _ = _prepare(tmp_path, monkeypatch,
                              preparation_request() if case == 'not_a_website_scene' else _website_request())
-    if case == 'receipt_not_retained':
-        monkeypatch.setattr(retention, 'retain_robot_free_readiness',
-                            lambda **_kwargs: {'status': 'refused', 'reason': 'x', 'retained': False})
     if case == 'probe_failed':
         monkeypatch.setattr(retention, 'retain_robot_free_readiness',
                             lambda **_kwargs: {'status': 'failed', 'retained': True, 'write': 'written'})
@@ -211,9 +234,36 @@ def test_completion_queues_no_team_scene_request_without_a_website_scene_and_its
         monkeypatch.setenv(worker.QUEUE_ROOT_ENV, str(queue))
     result = reconcile_preparation_completion(**args)
     assert result['status'] == 'completed'
-    assert result['state']['scene_preparation_completion']['team_scene_request'] == {
+    team_scene = result['state']['scene_preparation_completion']['team_scene_request']
+    held = team_scene.pop('hold_request_key', None)
+    assert team_scene == {
         'not_a_website_scene': {'status': 'not_a_website_scene'},
-        'receipt_not_retained': {'status': 'not_enqueued', 'reason': 'robot_free_readiness_not_retained'},
         'probe_failed': {'status': 'not_enqueued', 'reason': 'robot_free_probe_failed'},
         'queue_not_configured': {'status': 'not_configured'}}[case]
     assert not list(queue.glob('pending/*.json'))
+    # A decided failure compiles nothing; its request is kept only so the website job is held by name.
+    assert [path.stem for path in queue.glob('holds/*.json')] == ([held] if case == 'probe_failed' else [])
+    assert (held is not None) == (case == 'probe_failed')
+
+
+def test_a_refused_readiness_score_is_recorded_and_still_queues_the_team_half(tmp_path, monkeypatch):
+    """The compile never reads the receipt, and only the compiled half queues the probe that can decide it."""
+    from blueprint_pipeline import team_scene_packet_worker as worker
+
+    args, run, _ = _prepare(tmp_path, monkeypatch, _website_request())
+    refused = {'status': 'refused', 'reason': 'rigid_construction_probe_binding_mismatch', 'retained': False}
+    monkeypatch.setattr(retention, 'retain_robot_free_readiness', lambda **_kwargs: dict(refused))
+    queue = tmp_path / 'team-scene-packets'
+    monkeypatch.setenv(worker.QUEUE_ROOT_ENV, str(queue))
+    result = reconcile_preparation_completion(**args)
+    assert (result['status'], result['phase']) == ('completed', 'scene_prepared')
+    completion = result['state']['scene_preparation_completion']
+    # The refusal stays on record by name, and nothing claims a receipt was retained.
+    assert completion['robot_free_readiness'] == refused
+    assert not (run / 'robot_free_readiness.v1.json').exists()
+    queued = completion['team_scene_request']
+    assert queued['status'] == 'enqueued'
+    [pending] = (queue / 'pending').glob('*.json')
+    request = worker.validated_request(json.loads(pending.read_text()))
+    assert request['robot_free_readiness_status'] == 'refused'
+    assert request['request_digest'] == queued['request_digest']

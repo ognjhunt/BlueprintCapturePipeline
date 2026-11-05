@@ -23,7 +23,7 @@ SCHEMA_VERSION = "blueprint.beta_policy_screening_worker_status.v1"
 STATUS_FILENAME = "worker_status.json"
 _MAX_LEDGER_BYTES = 4 * 1024 * 1024
 _MAX_STATUS_BYTES = 32 * 1024
-_STATES = frozenset(("pending", "preparing", "launching", "running", "reconciliation_required",
+_STATES = frozenset(("pending", "waitlisted", "preparing", "launching", "running", "reconciliation_required",
                      "completed", "blocked", "unavailable", "deferred", "stopped", "cancelled"))
 _FAILURES = frozenset(("auth", "source", "ack", "unavailable", "unknown"))
 
@@ -131,7 +131,7 @@ def build_worker_status(root: str | Path, *, publication_before: Any = None,
                     if not isinstance(code, str):
                         continue
                     category = ("intentional_hold" if "hold" in code else "authority" if any(part in code for part in ("consent", "grant", "revoked", "expired"))
-                                else "budget" if any(part in code for part in ("budget", "cost", "funding"))
+                                else "budget" if any(part in code for part in ("budget", "cost", "funding", "ceiling"))
                                 else "capacity" if "capacity" in code else "capability_preparation" if state == "unavailable"
                                 else "reconciliation" if state == "reconciliation_required" else "preparation")
                     categories[category] = categories.get(category, 0) + 1
@@ -149,7 +149,7 @@ def build_worker_status(root: str | Path, *, publication_before: Any = None,
         if failure is not None:
             failure["observed_at_epoch"] = _number(previous_failure.get("observed_at_epoch"))
     active = sum(counts[state] for state in ("launching", "running", "reconciliation_required"))
-    waiting = counts["pending"] + counts["preparing"]
+    waiting = counts["pending"] + counts["waitlisted"] + counts["preparing"]
     status = "working" if active else "waiting" if waiting or publication_pending else "preparation_needed" if counts["unavailable"] or counts["blocked"] or counts["deferred"] else "idle"
     return {**result, "status": status, "coverage": "current_ledger", "reason": None,
             "ledger_digest": ledger["ledger_digest"], "campaign_count": len(ledger["campaigns"]),

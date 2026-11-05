@@ -8,7 +8,9 @@ from collections.abc import Mapping
 import math
 import re
 
+from .decision_deadlines import note_deadline
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
 from .website_task_context_contracts import validate_website_task_context
 
 from .task_evaluation_scene_execution_scope import scene_preparation_only
@@ -21,7 +23,7 @@ def _require(condition):
 
 def preparation_consent_valid(request):
     """Structural scope only; consequential consumers must reopen authority."""
-    from .website_preparation_revision_identity import revision
+    from .website_preparation_revision_identity import renewal, revision
     consent = request.get("consent") or {}
     task = request.get("task") or {}
     return (
@@ -30,7 +32,7 @@ def preparation_consent_valid(request):
         and "robot_binding_id" not in task
         and "evaluation_source" not in task
         and (consent.get("task_confirmed") is False or (consent.get("task_confirmed") is True
-             and revision(request) is not None))
+             and (revision(request) is not None or renewal(request) is not None)))
     )
 
 
@@ -62,7 +64,8 @@ def validate_preparation_authority(*, task_context, authority, now, valid_until=
     """``valid_until`` is the bound intent's effective (owner-extended) expiry.
 
     It moves only the "still valid now" check, never past raw expiry + 7 days;
-    the grant's own issued-to-expiry window is checked unchanged.
+    the grant's own issued-to-expiry window is checked unchanged, at most
+    ``WEBSITE_JOB_WINDOW_MAX_SECONDS`` (the WebApp's policy bound, mirrored).
     """
     validate_website_task_context(
         task_context,
@@ -82,6 +85,11 @@ def validate_preparation_authority(*, task_context, authority, now, valid_until=
             raise ValueError("website_preparation_authority_invalid")
         if isinstance(expiry, (int, float)) and not isinstance(expiry, bool):
             current = min(max(expiry, valid_until), expiry + 7 * 86400)
+    # Reported: "still valid now" ends at ``current`` and "issued in the past"
+    # starts 60 s before ``issued``, both with no file changing.
+    note_deadline(current)
+    if isinstance(issued, (int, float)) and not isinstance(issued, bool):
+        note_deadline(issued - 60)
     limits = [
         authority.get(k)
         for k in (
@@ -126,7 +134,7 @@ def validate_preparation_authority(*, task_context, authority, now, valid_until=
         )
         or issued > now + 60
         or not now < current
-        or not 0 < expiry - issued <= 86400
+        or not 0 < expiry - issued <= WEBSITE_JOB_WINDOW_MAX_SECONDS
     ):
         raise ValueError("website_preparation_authority_invalid")
     validate_preparation_proposal(authority, task_context)

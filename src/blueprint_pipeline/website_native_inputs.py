@@ -72,9 +72,13 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
     reference("scene.geometry.collision", runtime["collision"])
     _, normalization_path = reference("scene.geometry.validation")
     normalization = json.loads(normalization_path.read_text())
+    # A support planarized at its success plane (``website_support_pad``) is derived from the normalized bytes.
+    derived = (runtime["collision"].get("support_pad") or {}).get("derived_collider")
+    normalized_digest = (derived["derived_from_sha256"] if isinstance(derived, dict)
+                         and derived.get("sha256") == runtime["collision"]["digest"] else runtime["collision"]["digest"])
     _require(normalization.get("normalization_digest") == canonical_digest(normalization, digest_field="normalization_digest")
              and normalization.get("source_digest") == preparation["binding"]["collision_mesh_digest"]
-             and normalization["output"]["sha256"] == runtime["collision"]["digest"], "collision_normalization_invalid")
+             and normalization["output"]["sha256"] == normalized_digest, "collision_normalization_invalid")
     appearance = runtime["appearance"]
     reference(PREFIX + ".appearance", appearance)
     receipt = appearance.get("receipt", {})
@@ -86,8 +90,10 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
              and receipt.get("physical_measurement_proven") is False, "appearance_binding_invalid")
     observed_row, observed_path = reference(PREFIX + ".observations", authoring["observation_manifest"])
     from .website_native_background import derived_stage_three_configuration
-    _require(third == derived_stage_three_configuration(
-        runtime=runtime, preparation=preparation, observation_manifest_path=observed_path),
+    from .website_owner_authoring_cap import same_except_owner_cap
+    # The control plane may have raised the ARTISAN cap to the owner's deployed value.
+    _require(same_except_owner_cap(third, derived_stage_three_configuration(
+        runtime=runtime, preparation=preparation, observation_manifest_path=observed_path)),
         "object_configuration_transition_invalid")
     observed = json.loads(observed_path.read_text())
     # A designed subject is authored from its supplied mesh: whole, with no observed frames.

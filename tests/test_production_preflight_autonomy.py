@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import stat
@@ -58,6 +59,25 @@ def test_summary_projects_only_fixed_safe_fields_and_groups_causes() -> None:
     assert len(summary["findings"]) == 1 and summary["findings"][0]["count"] == 2
     assert summary["findings"][0]["next_action"] == "inspect_selected_route_access_contract"
     assert summary["proof_boundary"] == "selected_route_plumbing_only"
+
+
+def test_summary_accepts_the_report_bytes_the_chain_actually_writes() -> None:
+    # run_chain stores EnvironmentFiles as (path, ignore_errors) tuples. JSON
+    # has no tuples, so the written bytes hold lists for the same document.
+    report = _report()
+    report["units"]["blueprint-beta-policy-screening.service"]["environment_files"] = preflight.environment_files(
+        {"EnvironmentFiles": ["/etc/blueprint/pipeline-control-plane.env (ignore_errors=no)"]})
+    raw = (json.dumps(report, indent=1, sort_keys=True) + "\n").encode()
+    summary = build_safe_summary(report, raw_report_bytes=raw)
+    assert summary["report_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert summary["counts"] == {"blocker": 1, "warning": 0, "info": 0}
+
+
+def test_summary_still_refuses_bytes_of_a_different_report() -> None:
+    report, other = _report(), _report()
+    other["host_findings"].append({"severity": "blocker", "code": "unit_not_found"})
+    with pytest.raises(PreflightSummaryError, match="preflight_report_bytes_mismatch"):
+        build_safe_summary(report, raw_report_bytes=json.dumps(other).encode())
 
 
 @pytest.mark.parametrize("field,value", [("active_sha", "unknown"), ("active_sha", ""), ("active_sha", None),
@@ -160,16 +180,20 @@ def _probe_args(tmp_path: Path) -> object:
 
 def test_scoped_probe_keeps_unused_templates_visible_without_write_probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     args = _probe_args(tmp_path)
-    queue, inputs = tmp_path / "queue", tmp_path / "inputs"
+    queue, work, inputs = tmp_path / "queue", tmp_path / "work", tmp_path / "inputs"
     queue.mkdir()
+    work.mkdir()
     inputs.mkdir()
     monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", str(queue))
+    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", str(work))
     monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
     writes = []
     monkeypatch.setattr(preflight, "write_probe", lambda path: writes.append(path) or {"status": "writable"})
     report = preflight.run_probe(args)
-    assert writes == [queue]
-    assert report["paths"][str(inputs)]["status"] == "readable"
+    # The screening pass writes its ledger queue and its attempts' work-volume root, and also returns
+    # transient team-half blocks to the packet queue, so all three are written.
+    assert writes == [queue, work, inputs]
+    assert report["paths"][str(inputs)]["status"] == "writable"
     assert report["paths"]["/var/lib/blueprint/{root}"]["code"] == "path_template_unresolved"
     assert report["paths"]["/var/lib/blueprint/unselected-legacy"]["requirement"] == "static_candidate"
     assert not any(finding["severity"] == "blocker" for finding in report["findings"])
@@ -177,28 +201,33 @@ def test_scoped_probe_keeps_unused_templates_visible_without_write_probes(tmp_pa
 
 def test_required_output_denied_is_still_a_blocker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     args = _probe_args(tmp_path)
-    queue, inputs = tmp_path / "queue", tmp_path / "inputs"
+    queue, work, inputs = tmp_path / "queue", tmp_path / "work", tmp_path / "inputs"
     queue.mkdir()
+    work.mkdir()
     inputs.mkdir()
     monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", str(queue))
+    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", str(work))
     monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
     monkeypatch.setattr(preflight, "write_probe", lambda _path: {"status": "read_only", "errno": 30})
     report = preflight.run_probe(args)
     blockers = [row for row in report["findings"] if row["severity"] == "blocker"]
-    assert len(blockers) == 1 and blockers[0]["code"] == "required_path_access_refused"
+    assert [row["code"] for row in blockers] == ["required_path_access_refused"] * 3
 
 
 def test_required_queue_template_refuses_before_any_path_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     args = _probe_args(tmp_path)
-    inputs = tmp_path / "inputs"
+    inputs, work = tmp_path / "inputs", tmp_path / "work"
     inputs.mkdir()
+    work.mkdir()
     template = "/var/lib/blueprint/{root}"
     monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", template)
+    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", str(work))
     monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
     writes = []
     monkeypatch.setattr(preflight, "write_probe", lambda path: writes.append(path) or {"status": "read_only"})
     report = preflight.run_probe(args)
-    assert not writes
+    # The unresolved template is never probed; only the resolved work root and packet queue are.
+    assert writes == [work, inputs]
     assert report["coverage"]["status"] == "unknown"
     assert report["coverage"]["reason"] == "required_path_binding_unresolved"
     row = report["paths"][template]
@@ -220,3 +249,14 @@ def test_route_health_separates_held_unused_and_broken_required_trigger(monkeypa
     rows = _unit_health([{"Id": unit, "ActiveState": "inactive", "Type": "oneshot", "Result": "success"}], ["blueprint-old-diagnostic.service"])
     assert rows["current"][0]["state"] == "successful_inactive_oneshot"
     assert rows["historical_diagnostics"] == ["blueprint-old-diagnostic.service"]
+
+
+def test_preflight_unit_claims_its_private_report_directory_before_it_runs() -> None:
+    # 2026-11-02: an older tool had created the report directory as another account, so
+    # write_safe_summary refused it (preflight_summary_private_parent_unsafe) on every run.
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-control-plane-preflight.service").read_text()
+    report_dir = "/var/lib/blueprint/pipeline-control-plane/preflight"
+    claim = next(line for line in unit.splitlines() if line.startswith("ExecStartPre=+"))
+    assert f"chown root:root {report_dir}" in claim and f"chmod 0711 {report_dir}" in claim
+    assert unit.index("ExecStartPre=+") < unit.index("ExecStart=/bin/bash")
+    assert f"--json-out {report_dir}/latest.json" in unit

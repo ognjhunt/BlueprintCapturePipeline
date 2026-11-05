@@ -1,0 +1,19 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-agent-stage-replay.path.json
+Description=Wake the Blueprint offline retained-stage replay worker when a replay is requested
+
+[Path]
+# The agent worker rewrites this file after it writes a new replay request
+# (BLUEPRINT_AGENT_STAGE_REPLAY_WAKE in blueprint-agent-execution.service).
+# Requests live under the configured agent state_root, which a unit cannot
+# read, and are never removed, so a PathExistsGlob= on them would retrigger
+# forever. The five-minute timer stays as the fallback for a request that
+# lands while a replay is already running, a lost signal, or a cancellation
+# or deadline that needs a receipt.
+PathChanged=/var/lib/blueprint/pipeline-control-plane/agent-execution/stage-replay.wake
+Unit=blueprint-agent-stage-replay.service
+
+[Install]
+WantedBy=multi-user.target

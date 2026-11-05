@@ -420,7 +420,9 @@ def _stage_three_refusal(
             requested = request_authoring_cap(envelope.get("request") or {})
         except (ValueError, KeyError, TypeError):
             return "authoring_budget"
-        if ((requested is not None and cap != requested)
+        # A request may allocate less than the cumulative cap (a continuation
+        # reserves only what its source left), never more.
+        if ((requested is not None and requested > cap)
                 or configuration.get("authoring_models") != ARTISAN_MODELS
                 or configuration.get("authoring_framework", {}).get("revision") != ARTISAN_REVISION
                 or configuration.get("authoring_agent_runtime") is not None

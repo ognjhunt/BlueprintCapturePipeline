@@ -266,6 +266,7 @@
           "status": {
             "enum": [
               "pending",
+              "waitlisted",
               "preparing",
               "launching",
               "running",

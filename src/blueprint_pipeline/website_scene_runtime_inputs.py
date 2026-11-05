@@ -16,6 +16,39 @@ from .local_reconstruction_adapters import _sha256_file
 from .task_evaluation_completed_scene_geometry import normalize_completed_mesh
 
 
+def normalize_runtime_collision(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
+                                output_root: Path) -> tuple[Path, dict[str, Any]]:
+    """The base scene's collider in simulator metres, Z up, as every robot check reads it.
+
+    CPU only. The runtime inputs and a geometry-only fit check (``website_scene_handoff``)
+    share it. Returns the cache root and the normalisation record.
+    """
+    bindings = preparation["binding"]
+    coordinates = preparation["coordinate_frame"]
+    if coordinates.get("physical_scale_measured") is not False:
+        raise ValueError("website_native_scale_authority_invalid")
+    frame = {"meters_per_unit": coordinates["declared_meters_per_unit"],
+             "up_axis": coordinates["declared_up_axis"]}
+    if frame["up_axis"] != base_scene["up_axis"] or frame["up_axis"] not in {"Y", "-Y", "Z"}:
+        raise ValueError("website_native_coordinate_frame_mismatch")
+    expected = np.eye(4)
+    sign = -1 if frame["up_axis"] == "-Y" else 1
+    expected[:3, :3] = frame["meters_per_unit"] * (
+        np.array([[1, 0, 0], [0, 0, -sign], [0, sign, 0]]) if frame["up_axis"] in {"Y", "-Y"} else np.eye(3))
+    retained = np.asarray(coordinates.get("runtime_to_simulator"), dtype=float)
+    if retained.shape != (4, 4) or not np.allclose(retained, expected, rtol=0, atol=1e-10):
+        raise ValueError("website_native_coordinate_frame_mismatch")
+    # Include the frame in the cache key: the same provider mesh with a revised
+    # source-geometry estimate must never reuse a prior coordinate conversion.
+    cache_key = canonical_digest({"mesh": bindings["collision_mesh_digest"], "frame": frame})[7:]
+    collision_root = output_root.resolve() / "collision" / cache_key
+    source = Path(base_scene["collision_mesh_path"])
+    normalized = normalize_completed_mesh(source=source, original_filename=source.name,
+                                         coordinate_frame=frame, output_root=collision_root)
+    handoff_lease_checkpoint("website_runtime_inputs_after_collision")
+    return collision_root, normalized
+
+
 def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
                                    source_geometry: Mapping[str, Any], task_masks: Mapping[str, Any],
                                    output_root: Path) -> dict[str, Any]:
@@ -41,28 +74,8 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
     for frame in frames:
         if frame.get("role") != "observed_source" or _sha256_file(Path(frame["path"])) != frame["sha256"]:
             raise ValueError("website_native_object_reference_changed")
-    coordinates = preparation["coordinate_frame"]
-    if coordinates.get("physical_scale_measured") is not False:
-        raise ValueError("website_native_scale_authority_invalid")
-    frame = {"meters_per_unit": coordinates["declared_meters_per_unit"],
-             "up_axis": coordinates["declared_up_axis"]}
-    if frame["up_axis"] != base_scene["up_axis"] or frame["up_axis"] not in {"Y", "-Y", "Z"}:
-        raise ValueError("website_native_coordinate_frame_mismatch")
-    expected = np.eye(4)
-    sign = -1 if frame["up_axis"] == "-Y" else 1
-    expected[:3, :3] = frame["meters_per_unit"] * (
-        np.array([[1, 0, 0], [0, 0, -sign], [0, sign, 0]]) if frame["up_axis"] in {"Y", "-Y"} else np.eye(3))
-    retained = np.asarray(coordinates.get("runtime_to_simulator"), dtype=float)
-    if retained.shape != (4, 4) or not np.allclose(retained, expected, rtol=0, atol=1e-10):
-        raise ValueError("website_native_coordinate_frame_mismatch")
-    # Include the frame in the cache key: the same provider mesh with a revised
-    # source-geometry estimate must never reuse a prior coordinate conversion.
-    cache_key = canonical_digest({"mesh": bindings["collision_mesh_digest"], "frame": frame})[7:]
-    collision_root = output_root.resolve() / "collision" / cache_key
-    source = Path(base_scene["collision_mesh_path"])
-    normalized = normalize_completed_mesh(source=source, original_filename=source.name,
-                                         coordinate_frame=frame, output_root=collision_root)
-    handoff_lease_checkpoint("website_runtime_inputs_after_collision")
+    collision_root, normalized = normalize_runtime_collision(preparation=preparation, base_scene=base_scene,
+                                                             output_root=output_root)
     collision = collision_root / normalized["output"]["relative_path"]
     from .website_native_background import reconcile_enclosed_fixture_collision
     reconciliation = reconcile_enclosed_fixture_collision(source=collision, preparation=preparation,
@@ -72,6 +85,19 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
                         if reconciliation is not None else {
                             "path": str(collision), "digest": normalized["output"]["sha256"],
                             "size_bytes": normalized["output"]["size_bytes"]})
+    if reconciliation is None:
+        # A rigid task that starts and ends on one registered support: the collider the scene revision
+        # seals has that support flat at the success plane, checked on the CPU (``website_support_pad``).
+        # Any other task keeps the normalized collider and these inputs exactly as before.
+        from .website_support_pad import seal_support_pad
+        pad = seal_support_pad(preparation=preparation, collision=collision, output_root=output_root)
+        handoff_lease_checkpoint("website_runtime_inputs_after_support_pad")
+        if pad is not None:
+            derived = pad.get("derived_collider")
+            if derived is not None:
+                collision_record = {"path": derived["path"], "digest": derived["sha256"],
+                                    "size_bytes": derived["size_bytes"]}
+            collision_record["support_pad"] = pad
     from .website_object_observations import materialize_object_observations, REFERENCE_ROLE
     observations = materialize_object_observations(preparation=preparation, source_geometry=source_geometry,
         task_masks=task_masks, output_root=output_root / "object_observations")

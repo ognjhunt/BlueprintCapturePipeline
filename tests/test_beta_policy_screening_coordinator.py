@@ -138,9 +138,13 @@ def test_site_budget_is_shared_across_scene_revisions_and_uncertain_launches(tmp
     assert backend.launches == 1
     assert publication(tmp_path)["status"] == "reconciliation_required"
     assert publication(tmp_path)["budget"]["reserved_usd"] == "8"
-    assert publication(tmp_path, "campaign-2")["candidates"][0]["blockers"] == ["beta_screening_site_budget_exhausted"]
+    # The uncertain launch may still release its reservation: campaign 2 waits, it is not closed.
+    second_row = publication(tmp_path, "campaign-2")["candidates"][0]
+    assert second_row["status"] == "waitlisted" and second_row["blockers"] == ["site_screening_budget_insufficient"]
+    assert publication(tmp_path, "campaign-2")["status"] == "queued"
     coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
     assert backend.launches == 1 and backend.reconciliations == 1
+    assert publication(tmp_path, "campaign-2")["candidates"][0]["status"] == "waitlisted"
 
 
 def test_no_allocation_requires_explicit_proof_to_release(tmp_path):
@@ -421,3 +425,195 @@ def test_restarted_preparing_attempt_requires_ack_of_its_latest_progress(tmp_pat
     coordinator.acknowledge_publication(value["campaign_id"], current["publication_digest"], queue_root=tmp_path)
     coordinator.process_screening_queue(queue_root=tmp_path, executor=backend)
     assert backend.preparations == backend.launches == 1
+
+
+def test_control_read_without_answer_keeps_the_attempt_and_its_reservation_then_launches(tmp_path, monkeypatch):
+    """A 429/5xx/timeout before spawn is not a terminal block: nothing could start, so read again."""
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend({"status": "deferred", "provider_allocation_performed": False, "provider_zero_verified": True,
+                       "no_allocation_proven": True, "retryable_control_refusal": True,
+                       "blockers": ["beta_screening_control_unavailable_before_spawn"]})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    first = row["attempt"]["attempt_id"]
+    assert row["status"] == "preparing" and row["attempt"]["reservation_status"] == "reserved"
+    # The website accepts a return to preparing only with the capacity-wait code.
+    assert coordinator.CAPACITY_WAIT_BLOCKER in row["blockers"] and coordinator.CONTROL_WAIT_BLOCKER in row["blockers"]
+    assert publication(tmp_path)["budget"]["reserved_usd"] == "4"
+    backend.observation = {"status": "running"}
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    assert row["status"] == "running" and row["attempt"]["attempt_id"] == first and backend.launches == 2
+
+
+def test_retryable_control_refusal_needs_an_unclaimed_launch_slot(tmp_path):
+    """A claimed launch intent means an allocator may exist: never treat that as a free retry."""
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+
+    class Claimed(Backend):
+        def launch_candidate(self, **kwargs):
+            self.launches += 1
+            (kwargs["attempt_dir"] / "allocator_launch_intent.json").write_text("{}")
+            return self.observation
+
+    backend = Claimed({"status": "deferred", "provider_allocation_performed": False, "provider_zero_verified": True,
+                       "no_allocation_proven": True, "retryable_control_refusal": True, "blockers": []})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    assert row["status"] == "reconciliation_required" and row["attempt"]["reservation_status"] == "reserved"
+
+
+DEFERRED = {"status": "deferred", "provider_allocation_performed": False, "provider_zero_verified": True,
+            "no_allocation_proven": True, "retryable_control_refusal": True,
+            "blockers": ["beta_screening_control_unavailable_before_spawn"]}
+
+
+def _row(root, candidate_id="candidate-000"):
+    return coordinator._ledger(root)["campaigns"]["campaign-1"]["candidates"][candidate_id]
+
+
+def test_third_unanswered_control_retry_still_runs_and_the_fourth_blocks_releasing_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend(DEFERRED)
+    first = None
+    for retry in range(1, coordinator.TRANSPORT_RETRY_CAP + 1):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+        row = _row(tmp_path)
+        first = first or row["attempt"]["attempt_id"]
+        assert row["status"] == "preparing" and row["transport_retries"] == retry
+        assert row["attempt"]["attempt_id"] == first and row["attempt"]["reservation_status"] == "reserved"
+        assert publication(tmp_path)["budget"]["reserved_usd"] == "4"
+    assert backend.launches == coordinator.TRANSPORT_RETRY_CAP == 3
+    # The fourth read without an answer blocks this candidate and releases its one reservation.
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = _row(tmp_path)
+    assert backend.launches == 4
+    assert row["status"] == "blocked" and row["blockers"] == [coordinator.TRANSPORT_RETRY_CAP_BLOCKER]
+    assert row["attempt"]["attempt_id"] == first and row["attempt"]["reservation_status"] == "released"
+    assert not row.get("attempt_history")
+    budget = publication(tmp_path)["budget"]
+    assert budget["reserved_usd"] == "0" and budget["spent_upper_bound_usd"] == "0"
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    assert backend.launches == 4 and _row(tmp_path)["status"] == "blocked"
+
+
+def test_definite_refusal_still_blocks_at_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend({"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
+                       "no_allocation_proven": True, "blockers": ["beta_screening_prelaunch_refused:ValueError"]})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = _row(tmp_path)
+    assert backend.launches == 1 and row["status"] == "blocked"
+    assert coordinator.TRANSPORT_RETRY_CAP_BLOCKER not in row["blockers"]
+    assert row["attempt"]["reservation_status"] == "released" and row.get("transport_retries", 0) == 0
+    assert publication(tmp_path)["budget"]["reserved_usd"] == "0"
+
+
+def test_unanswered_control_retries_wait_longer_each_time(tmp_path):
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend(DEFERRED)
+    waits = []
+    for _ in range(coordinator.TRANSPORT_RETRY_CAP):
+        before = datetime.now(timezone.utc)
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+        attempt = _row(tmp_path)["attempt"]
+        waits.append((datetime.fromisoformat(attempt["retry_not_before"]) - before).total_seconds())
+        # Let the next tick launch at once; the recorded wait is what matters.
+        state = coordinator._ledger(tmp_path)
+        state["campaigns"]["campaign-1"]["candidates"]["candidate-000"]["attempt"]["retry_not_before"] = (
+            before - timedelta(seconds=1)).isoformat()
+        coordinator._save(tmp_path, state)
+    base = coordinator.CAPACITY_RETRY_SECONDS
+    assert [round(value / base) for value in waits] == [1, 2, 4]
+
+
+def test_capped_candidate_blocks_alone_while_the_others_and_the_campaign_continue(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+
+    class Split(Backend):
+        def launch_candidate(self, **kwargs):
+            self.launches += 1
+            return DEFERRED if kwargs["candidate"]["candidate_id"] == "candidate-000" else {"status": "running"}
+
+        def reconcile_candidate(self, **kwargs):
+            self.reconciliations += 1
+            return {"status": "running"}
+
+    backend = Split()
+    for _ in range(coordinator.TRANSPORT_RETRY_CAP + 2):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend,
+                                            max_launches=2)
+    capped, other = _row(tmp_path, "candidate-000"), _row(tmp_path, "candidate-001")
+    assert capped["status"] == "blocked" and capped["blockers"] == [coordinator.TRANSPORT_RETRY_CAP_BLOCKER]
+    assert other["status"] == "running" and other["attempt"]["reservation_status"] == "reserved"
+    assert publication(tmp_path)["status"] == "running"
+    assert publication(tmp_path)["budget"]["reserved_usd"] == "4"
+
+
+class _RecordingBackend(Backend):
+    def __init__(self, observation=None):
+        super().__init__(observation)
+        self.attempt_dirs = []
+
+    def prepare_candidate(self, **kwargs):
+        self.attempt_dirs.append(("prepare", Path(kwargs["attempt_dir"])))
+        return super().prepare_candidate(**kwargs)
+
+    def reconcile_candidate(self, **kwargs):
+        self.attempt_dirs.append(("reconcile", Path(kwargs["attempt_dir"])))
+        return super().reconcile_candidate(**kwargs)
+
+
+def test_with_a_work_root_attempts_live_on_it_and_the_ledger_stays_in_the_queue(tmp_path, monkeypatch):
+    queue, work = tmp_path / "queue", tmp_path / "volume" / "beta-policy-screening-work"
+    work.mkdir(parents=True)
+    monkeypatch.setenv(coordinator.WORK_ROOT_ENV, str(work))
+    coordinator.enqueue_screening_campaign(plan(), queue_root=queue)
+    backend = _RecordingBackend()
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    attempt = _row(queue)["attempt"]
+    expected = work / "attempts" / attempt["attempt_id"]
+    assert attempt[coordinator.ATTEMPT_DIR_FIELD] == str(expected) and expected.is_dir()
+    assert backend.attempt_dirs == [("prepare", expected)] and backend.launches == 1
+    assert (queue / coordinator.LEDGER_FILENAME).is_file() and not (queue / "attempts" / attempt["attempt_id"]).exists()
+    pointer = json.loads((queue / "attempts" / f"{attempt['attempt_id']}.attempt_dir.json").read_text())
+    assert pointer[coordinator.ATTEMPT_DIR_FIELD] == str(expected)
+    # The recorded directory wins over the current setting: unset, the attempt still reconciles there.
+    monkeypatch.delenv(coordinator.WORK_ROOT_ENV)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    assert backend.attempt_dirs[-1] == ("reconcile", expected) and backend.launches == 1
+    # A lost ledger is still detected from the pointer beside it.
+    (queue / coordinator.LEDGER_FILENAME).unlink()
+    with pytest.raises(ValueError, match="ledger_missing_after_attempt"):
+        coordinator.enqueue_screening_campaign(plan(campaign_id="campaign-2"), queue_root=queue)
+
+
+def test_an_attempt_reserved_without_a_work_root_keeps_its_queue_directory(tmp_path, monkeypatch):
+    monkeypatch.delenv(coordinator.WORK_ROOT_ENV, raising=False)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = _RecordingBackend()
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    attempt = _row(tmp_path)["attempt"]
+    legacy = tmp_path / "attempts" / attempt["attempt_id"]
+    assert coordinator.ATTEMPT_DIR_FIELD not in attempt and legacy.is_dir()
+    work = tmp_path / "volume"
+    work.mkdir()
+    monkeypatch.setenv(coordinator.WORK_ROOT_ENV, str(work))
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    assert backend.attempt_dirs[-1] == ("reconcile", legacy) and not (work / "attempts").exists()
+
+
+def test_a_work_root_that_is_not_there_stages_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv(coordinator.WORK_ROOT_ENV, str(tmp_path / "unmounted"))
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path / "queue")
+    backend = _RecordingBackend()
+    with pytest.raises(ValueError, match="beta_screening_work_root_unavailable"):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path / "queue",
+                                            executor=backend)
+    assert backend.attempt_dirs == [] and backend.launches == 0
+    assert not (tmp_path / "unmounted").exists()

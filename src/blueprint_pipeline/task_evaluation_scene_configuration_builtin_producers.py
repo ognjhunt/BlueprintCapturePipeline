@@ -151,9 +151,10 @@ def _relative_file(root: Path, value: Any, *, code: str) -> Path:
     return path
 
 
-def _validate_toolchain(
+def _read_toolchain_manifest(
     *, root: Path, expected_source_commit: str
-) -> tuple[dict[str, Any], dict[str, Path]]:
+) -> tuple[dict[str, Any], Path]:
+    """The sealed manifest of a read-only published toolchain, bytes unread."""
     if root.is_symlink() or not root.is_dir() or root.stat().st_mode & 0o222:
         raise TaskEvaluationSceneConfigurationStageProducerError(
             "scene_configuration_toolchain_root_invalid"
@@ -179,6 +180,17 @@ def _validate_toolchain(
         raise TaskEvaluationSceneConfigurationStageProducerError(
             "scene_configuration_toolchain_manifest_invalid"
         )
+    return manifest, manifest_path
+
+
+def _validate_toolchain(
+    *, root: Path, expected_source_commit: str, verify_bytes: bool = True
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    manifest, manifest_path = _read_toolchain_manifest(
+        root=root, expected_source_commit=expected_source_commit
+    )
+    stages = manifest["stages"]
+    files = manifest["files"]
     inventory: dict[str, tuple[str, int, bool]] = {}
     for row in files:
         if not isinstance(row, Mapping):
@@ -227,7 +239,10 @@ def _validate_toolchain(
         if (
             expected is None
             or info.st_size != expected[1]
-            or _sha256(Path(entry.path)) != expected[0]
+            # Manifests are hashed even when bytes are not: the bundle builder
+            # reads them from this tree to decide what the receipt claims.
+            or ((verify_bytes or relative.endswith(".json"))
+                and _sha256(Path(entry.path)) != expected[0])
             or bool(info.st_mode & 0o111) != expected[2]
             or info.st_mode & 0o222
         ):
@@ -283,6 +298,7 @@ def _validate_toolchain(
             package = validate_scene_configuration_component_package(
                 root=package_manifest.parent,
                 expected_adapter_id=str(adapter_id),
+                verify_bytes=verify_bytes,
             )
         except TaskEvaluationSceneConfigurationComponentPackageError as exc:
             raise TaskEvaluationSceneConfigurationStageProducerError(
@@ -306,14 +322,38 @@ def _validate_toolchain(
     return manifest, entrypoints
 
 
-def validate_scene_configuration_toolchain(
+def read_scene_configuration_toolchain_manifest(
     *, root: str | Path, expected_source_commit: str
 ) -> dict[str, Any]:
-    """Validate every toolchain byte without constructing executable handlers."""
+    """Check the published manifest's seal and release binding, not its bytes.
+
+    For callers that only bind ``toolchain_digest`` and hand the tree to a later
+    step that validates every byte against it (the provider bundle builder).
+    """
+
+    manifest, _path = _read_toolchain_manifest(
+        root=Path(root).expanduser().resolve(),
+        expected_source_commit=expected_source_commit,
+    )
+    return manifest
+
+
+def validate_scene_configuration_toolchain(
+    *, root: str | Path, expected_source_commit: str, verify_bytes: bool = True
+) -> dict[str, Any]:
+    """Validate every toolchain byte without constructing executable handlers.
+
+    ``verify_bytes=False`` keeps every manifest, stage, inventory, size, mode
+    and completeness check and skips the per-file sha256 of every file except
+    ``.json`` manifests, which callers read to make decisions. It is for the
+    bundle builder, whose shipped toolchain bytes come from an archive hashed
+    against this same inventory.
+    """
 
     manifest, _entrypoints = _validate_toolchain(
         root=Path(root).expanduser().resolve(),
         expected_source_commit=expected_source_commit,
+        verify_bytes=verify_bytes,
     )
     return manifest
 

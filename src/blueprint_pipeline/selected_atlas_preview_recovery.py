@@ -3,6 +3,9 @@
 Atlas status/requeue creates no grant or provider request. A separately selected
 preparation resume invokes the existing native handler after a reviewed snapshot;
 that handler retains its source, lease, completed-stage and spending admission.
+A preparation reissue, after the same review, hands a completed preparation to
+``website_preparation_renewal`` once its sponsor renewed the expired grant; it
+never invokes the native handler or buys anything.
 """
 from __future__ import annotations
 
@@ -351,13 +354,48 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
     return value
 
 
+def _reissue_preparation(snapshot, native, observation, capture_root):
+    """A completed native preparation gains a new job only under its sponsor's renewed grant.
+
+    The renewal module rechecks the ended intent, settled attempts, current task
+    and grant lineage; the normal intake keeps every sibling hold and the WebApp
+    its job ceiling. Its refusals and the WebApp's are typed outcomes.
+    """
+    _require(type(native) is dict and native["status"] == "completed"
+             and type(native["producer_delivery_key"]) is str
+             and _SHA.fullmatch(native["producer_delivery_key"])
+             and native["producer_delivery_key"] == observation["producer_delivery"].get("delivery_key"),
+             "native_reissue_not_eligible")
+    queue_root = os.getenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", "")
+    _require(queue_root and Path(queue_root).is_absolute(), "intake_root_missing")
+    from .website_preparation_renewal import REFUSAL, reissue_renewed_preparation
+    outcome = {"atlas": snapshot, "atlas_retry_performed": False, "native_handler_invoked": False}
+    try:
+        result = reissue_renewed_preparation(capture_root=Path(capture_root), queue_root=Path(queue_root),
+                                             now=time.time())
+    except ValueError as exc:
+        if REFUSAL.fullmatch(str(exc)) is None:
+            raise
+        return {**outcome, "status": "blocked", "blockers": [str(exc)]}
+    reissue = {key: result[key] for key in ("status", "submission_id", "intent_id", "request_digest",
+                                           "preparation_digest", "authority_digest") if key in result}
+    if result["status"] == "reissued":
+        reissue["website_intake_outbox"] = {key: result["website_intake_outbox"].get(key)
+                                            for key in ("id", "state", "request_digest")}
+        return {**outcome, "status": "preparation_reissued", "reissue": reissue, "blockers": []}
+    reissue["webapp_refusal"] = result.get("webapp_refusal")
+    return {**outcome, "status": "blocked", "reissue": reissue,
+            "blockers": ["selected_handoff_preparation_reissue_enqueue_refused"]}
+
+
 def recover_selected_atlas_preview(selection, *, observation, membership, capture_root, storage_root,
                                    handoff_payload=None, listener=None):
     from .task_evaluation_scene_retirement_generations import _capture_admission
     from .website_atlas_preview import retry_failed_job
     from .website_atlas_preview_store import capture_withdrawn
 
-    _require(selection["mode"] in {"atlas-status", "atlas-retry", "preparation-resume"}, "mode_invalid")
+    _require(selection["mode"] in {"atlas-status", "atlas-retry", "preparation-resume", "preparation-reissue"},
+             "mode_invalid")
 
     expected = (Path(storage_root) / selection["bucket"] / "scenes" / selection["scene_id"]
                 / "captures" / selection["capture_id"])
@@ -368,7 +406,7 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
     _safe_path(lock_path, storage_root)
     with _capture_admission(capture_root, required=True):
         _require(not capture_withdrawn(capture_root), "capture_withdrawn")
-        if selection["mode"] in {"atlas-status", "preparation-resume"}:
+        if selection["mode"] in {"atlas-status", "preparation-resume", "preparation-reissue"}:
             with os.fdopen(os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
@@ -376,7 +414,7 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                     raise ValueError("selected_handoff_atlas_job_busy") from None
                 job, _ = _read_json(job_path, storage_root)
                 snapshot = _snapshot(selection, observation, membership, capture_root, storage_root, job)
-            if selection["mode"] == "preparation-resume":
+            if selection["mode"] in {"preparation-resume", "preparation-reissue"}:
                 # Atlas has finished and will not be repurchased. Its remaining
                 # processing deadline, call quota and price-review date cannot
                 # block reuse; native allocation checks its current authority.
@@ -387,6 +425,8 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                 _require(snapshot["atlas_status_digest"] == selection["atlas_status_digest"], "status_changed")
                 _require(job["state"] == "ready", "reconstruction_not_ready")
                 native = snapshot["native_preparation"]
+                if selection["mode"] == "preparation-reissue":
+                    return _reissue_preparation(snapshot, native, observation, capture_root)
                 _require(type(native) is dict and native["status"] == "failed_retryable"
                          and type(native["producer_delivery_key"]) is str
                          and _SHA.fullmatch(native["producer_delivery_key"])

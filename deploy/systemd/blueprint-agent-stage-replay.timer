@@ -5,9 +5,12 @@ ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-a
 Description=Wake Blueprint offline retained-stage replay worker
 
 [Timer]
+# Fallback only: blueprint-agent-stage-replay.path wakes the worker when a
+# request is written. Polling every 5 s spent ~0.4 of the host's 4 cores
+# (about 9 s CPU per idle run, 500 runs in 3 h on 2026-10-31).
 OnBootSec=20s
-OnUnitInactiveSec=5s
-AccuracySec=1s
+OnUnitInactiveSec=5min
+AccuracySec=10s
 Unit=blueprint-agent-stage-replay.service
 
 [Install]

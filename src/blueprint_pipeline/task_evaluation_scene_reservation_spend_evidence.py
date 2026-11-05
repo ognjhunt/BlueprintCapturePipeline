@@ -35,10 +35,14 @@ def scene_reservation_spend_record(path: Path) -> tuple[dict[str, Any], dict[str
     cancellation = validated_cancellation(path.parent.parent, attempt)
     settlement = {}
     if cancellation is not None:
-        cap = (budget_retained_hold(cancellation)["retained_spend_usd"]
-               if cancellation.get("schema_version") == "task_evaluation_terminal_scene_attempt_settlement.v1"
-               else 0.0)
         settlement = {"settlement_digest": cancellation["receipt_digest"]}
+        cap = 0.0
+        if cancellation.get("schema_version") == "task_evaluation_terminal_scene_attempt_settlement.v1":
+            hold = budget_retained_hold(cancellation)
+            cap = hold["retained_spend_usd"]
+            if "evidence" in hold:
+                # A hold settled at proven spend names the evidence and policy that proved it.
+                settlement["settled_spend"] = {"basis": hold["basis"], "evidence": hold["evidence"]}
     return {**attempt, "authorization_digest": attempt["attempt_digest"], "hard_attempt_spend_cap_usd": cap}, {
         **record, "authorization_digest": attempt["attempt_digest"], "hard_attempt_spend_cap_usd": cap,
         "accounting_kind": "persistent_scene_reservation", "owner_intent": intent_record, **settlement,

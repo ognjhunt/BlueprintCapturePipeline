@@ -5,7 +5,9 @@ quotes determine what can be scheduled. This pure planner performs no launch.
 It reuses the existing bounded scenario draws under a separate screening seed
 domain and never consumes the private scored matrix. The completed campaign is
 the job's evaluation result; only spend beyond the site allowance needs the
-owner's approval, and no plan can exceed it.
+owner's approval, and no plan can exceed it. A website job's plan is also
+sized to what the job's one dollar ceiling leaves
+(``build_job_ceiling_screening_plan``).
 """
 
 from __future__ import annotations
@@ -13,10 +15,11 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -24,6 +27,7 @@ from urllib.parse import urlsplit
 from .beta_policy_candidate_catalog import CANDIDATE_ID_PATTERN, DIGEST_PATTERN, ID_PATTERN, validate_catalog
 from .decision_evidence_contracts import canonical_digest
 from .team_evaluation_plan import scored_cells
+from .website_candidate_feasibility import REACH_RANK_FIELDS, REACH_TIERS, reach_rank
 from .task_family_policy_execution import FAMILY_BACKEND, family_policy_execution_binding
 from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES, frozen_cells as g1_cells
 
@@ -35,7 +39,24 @@ QUOTE_SCHEMA_VERSION = "beta_policy_screening_cost_quote.v1"
 # use of its own result, which is published as a simulation estimate.
 CLAIM_CEILING = "diagnostic_policy_execution"
 SITE_BUDGET_USD = Decimal("15.00")
+# A runnable candidate the budget cannot fund yet. Plans built before the
+# waitlist list such rows as ``deferred`` with the same reason and no
+# execution fields; those stay valid and are never funded.
+WAITLISTED = "waitlisted"
+WAITLIST_BLOCKER = "site_screening_budget_insufficient"
 DEFAULT_EPISODES = 10
+# One dollar ceiling per website job (owner decision 2026-10-30, WebApp #1168).
+# A plan sized to it records the read it was sized from.
+JOB_CEILING_BASIS = "website_job_ceiling"
+#: A catalog row switched off: disabled in the catalog, or a scripted baseline on a website job.
+DISABLED_BLOCKER = "candidate_disabled"
+JOB_CEILING_SCHEMA_VERSION = "beta_policy_screening_job_ceiling.v1"
+JOB_CEILING_SUMMARY_SCHEMA = "website_job_ceiling.v1"
+JOB_CEILING_DEFERRED = "website_job_ceiling_insufficient"
+_JOB_CEILING_FIELDS = {"budget_basis", "website_job_ceiling"}
+_JOB_CEILING_RECORD = {"schema_version", "read_at", "summary", "summary_digest", "remaining_cost_usd",
+                       "local_screening_holds_usd", "available_usd"}
+_CENT = Decimal("0.01")
 _DIGEST = re.compile(DIGEST_PATTERN)
 _ID = re.compile(ID_PATTERN)
 _CANDIDATE_ID = re.compile(CANDIDATE_ID_PATTERN)
@@ -47,10 +68,29 @@ _HOSTED_COST_FIELDS = {"provider_hard_cap_usd", "hosted_inference_maximum_usd", 
                        "hosted_max_cost_per_request_usd", "hosted_http_request_limit", "credential_origin"}
 _UNIT_PRICE = re.compile(r"^(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,12})?$")
 _ROOT_POSE_PARAMETERS = {"object_start_x_delta_m", "object_start_y_delta_m", "object_yaw_delta_degrees"}
+_CAPABILITY_REASON = re.compile(r"[a-z][a-z0-9_]{1,127}")
+# A measured refusal carries its numbers, e.g. robot_reach_insufficient:place:1.107m_vs_0.990m; the
+# coordinator publishes the same character set (``beta_policy_screening_coordinator._BLOCKER``).
+_INFEASIBLE_REASON = re.compile(r"[a-z][a-z0-9_:.=-]{1,199}")
 
 
 class BetaPolicyScreeningPlanError(ValueError):
     """Stable refusal for malformed or contradictory screening plans."""
+
+
+def _reach_rank(value: Any) -> dict[str, Any]:
+    """A row's reach tier and the evidence behind it (``website_candidate_feasibility.reach_rank``)."""
+    if (not isinstance(value, dict) or set(value) != REACH_RANK_FIELDS or not isinstance(value["basis"], str)
+            or type(value["tier"]) is not int or REACH_TIERS.get(value["basis"]) != value["tier"]
+            or value["feasibility_status"] not in {None, "feasible", "unassessed"}
+            or any(value[key] is not None and (not isinstance(value[key], str) or not 1 <= len(value[key]) <= 128)
+                   for key in ("reach_source", "solve_source", "solve_status"))
+            or any(value[key] is not None and (not isinstance(value[key], str) or not _DIGEST.fullmatch(value[key]))
+                   for key in ("report_digest", "feasibility_digest"))
+            or not isinstance(value["reasons"], list) or len(value["reasons"]) > 16
+            or any(not isinstance(reason, str) or not 1 <= len(reason) <= 300 for reason in value["reasons"])):
+        raise BetaPolicyScreeningPlanError("beta_screening_reach_rank_invalid")
+    return value
 
 
 def money(value: Any) -> Decimal:
@@ -332,11 +372,32 @@ def _validate_coverage_gaps(scenario: Mapping[str, Any]) -> None:
         raise BetaPolicyScreeningPlanError("beta_screening_coverage_gap_invalid")
 
 
-def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
-                        binding: Mapping[str, Any] | None, credentials: set[str]) -> list[str]:
+#: The refusals ``catalog_blockers`` makes for a task kind a candidate does not run.
+TASK_KIND_BLOCKERS = frozenset({"task_kind_not_supported_by_candidate", "task_kind_support_unverified"})
+
+
+def website_switched_off(candidate: Mapping[str, Any]) -> bool:
+    """A scripted simulator-state baseline: never run for a website job (owner decision 2026-11-04).
+
+    It reads the object's pose from the simulator, so it never answers which policy can do the
+    site's task and never gives the site an estimate (``reference_only`` at best). With the
+    controls step removed (2026-09-21) nothing a website job decides rests on one, so its money
+    is never spent on one. Internal (non-website) plans still list them.
+    """
+    return candidate["policy"]["kind"] == "scripted"
+
+
+def catalog_blockers(candidate: Mapping[str, Any], task_kind: str, *, website: bool = False) -> list[str]:
+    """What the catalog row alone refuses for ``task_kind``: before any runtime binding, credential or quote.
+
+    The plan refuses a candidate with any of these (``_candidate_blockers``). The website robot fit
+    precheck reads the same list before any spend (``website_robot_fit_precheck``), so the two never differ.
+    ``website``: a website job's plan or precheck, where a scripted baseline is switched off
+    (``website_switched_off``) like a disabled row.
+    """
     blockers = list(candidate["eligibility"]["blockers"])
-    if not candidate["eligibility"]["enabled"]:
-        blockers.append("candidate_disabled")
+    if not candidate["eligibility"]["enabled"] or website and website_switched_off(candidate):
+        blockers.append(DISABLED_BLOCKER)
     if candidate["eligibility"]["commercial_use"] not in {"allowed", "allowed_with_conditions"}:
         blockers.append("commercial_use_not_admitted")
     pinned_runtime = (candidate["policy"]["digest_kind"] == "pinned_runtime_file_inventory"
@@ -348,9 +409,15 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
         blockers.append("policy_identity_not_verified")
     if not candidate["policy"]["digest"] or not candidate["policy"]["revision"]:
         blockers.append("policy_identity_not_pinned")
-    if scene["task_kind"] not in candidate["supported_task_kinds"]:
+    if task_kind not in candidate["supported_task_kinds"]:
         blockers.append("task_kind_not_supported_by_candidate" if candidate["supported_task_kinds"]
                         else "task_kind_support_unverified")
+    return blockers
+
+
+def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
+                        binding: Mapping[str, Any] | None, credentials: set[str], *, website: bool = False) -> list[str]:
+    blockers = catalog_blockers(candidate, scene["task_kind"], website=website)
     for credential in candidate["eligibility"]["requires_credentials"]:
         if credential not in credentials:
             blockers.append("credential_unavailable:" + credential)
@@ -374,20 +441,66 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
     return sorted(set(blockers))
 
 
+def _site_fitted_quote(quote: Mapping[str, Any], available: Decimal, *, floor: Decimal) -> dict[str, Any] | None:
+    """The quote re-sealed at what the site has left, when that still bounds the run; else ``None``.
+
+    Only ever lower: the fitted maximum is the site's remaining money rounded down
+    to cents, kept only if it still covers the resource bound (hourly rate times
+    hard time limit) plus at least half the headroom the original quote kept above
+    it for startup transfer, storage and teardown. The allocator's own all-in
+    admission still refuses, before any spend, a run it cannot fit.
+    """
+    original = money(quote["maximum_cost_usd"])
+    fitted = available.quantize(_CENT, rounding=ROUND_FLOOR)
+    if not floor < fitted < original or (fitted - floor) * 2 < original - floor:
+        return None
+    value = {**dict(quote), "quote_id": str(quote["quote_id"]) + "-site-fit",
+             "price_source": str(quote["price_source"]) + ";fitted_to_site_remaining_screening_budget",
+             "maximum_cost_usd": f"{fitted:.2f}", "quote_digest": ""}
+    value["quote_digest"] = canonical_digest(value, digest_field="quote_digest")
+    return value
+
+
 def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *, campaign_id: str,
                          candidate_ids: Sequence[str] | None = None, budget_usd: str = "15.00",
                          episodes_per_candidate: int = DEFAULT_EPISODES,
                          capabilities: Mapping[str, Any] | None = None,
                          cost_quotes: Mapping[str, Any] | None = None,
                          now: dt.datetime | None = None,
-                         priority: Sequence[str] | None = None) -> dict[str, Any]:
+                         priority: Sequence[str] | None = None, intake_ranking: bool = False,
+                         website: bool = False, site_remaining_usd: str | None = None) -> dict[str, Any]:
     """Every requested candidate gets a status and reason; the budget decides how many run.
+
+    ``site_remaining_usd``: what the site's screening allowance has left after every
+    earlier campaign's commitments. A local candidate whose quote no longer fits it
+    is quoted again at exactly what is left when that still bounds the run
+    (``_site_fitted_quote``), so the last money a site holds can fund one more
+    candidate instead of deferring every row. Hosted and G1 candidates keep their
+    quotes (their provider caps are set elsewhere). The coordinator's site limit
+    still decides every reservation.
+
+    ``website``: a website job's plan (``build_job_ceiling_screening_plan``). A scripted
+    baseline is listed ``unavailable`` (``candidate_disabled``) and never funded there
+    (``website_switched_off``), so the site's money only goes to policies that can give it
+    an estimate.
 
     ``priority`` (the job's intake ranking) sets the order the budget is spent
     in; unranked candidates follow by identifier, learned policies before
     scripted baselines, which are reference only and never chosen (a site's few
-    funded slots must not all go to them). Capabilities may name measured
-    ``candidate_infeasible`` refusals, which stay listed as ``infeasible``.
+    funded slots must not all go to them). Capabilities may name
+    ``candidate_infeasible`` refusals (measured station reach, or a GPU memory
+    floor the screening lane cannot rent), which stay listed as ``infeasible``
+    and are never funded or waitlisted. Runnable candidates the budget cannot
+    fund yet are ``waitlisted``, in the same order, for money a selected
+    candidate releases before spend. With ``candidate_reach_rank`` capabilities
+    (``website_candidate_feasibility.reach_rank``) a candidate whose own-arm
+    solve was flagged goes after every unflagged one, so it never spends first.
+    When ``priority`` is the job's intake ranking (``intake_ranking``, from
+    ``website_candidate_ranking.retained_priority``) that is the only change to
+    the order above. On the default-priority path learned policies then go
+    before scripted baselines, ranked or not, and a solve that passed before an
+    unmeasured one, each group in the order above. Every row but an infeasible
+    one records its ``reach_rank``; ranking removes and refuses nothing.
     """
     catalog = validate_catalog(catalog)
     scene = _scene(scene)
@@ -401,11 +514,17 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
     failures = capabilities.get("candidate_blockers") or {}
     infeasible = capabilities.get("candidate_infeasible") or {}
-    for value, reason_required in ((failures, False), (infeasible, True)):
+    for value, reason_required, pattern in ((failures, False, _CAPABILITY_REASON),
+                                            (infeasible, True, _INFEASIBLE_REASON)):
         if (not isinstance(value, dict) or any(not isinstance(reasons, list) or (reason_required and not reasons)
-                or any(not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{1,127}", reason)
+                or any(not isinstance(reason, str) or not pattern.fullmatch(reason)
                        for reason in reasons) for reasons in value.values())):
             raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
+    reach = capabilities.get("candidate_reach_rank")
+    if reach is not None:
+        if not isinstance(reach, dict) or any(not isinstance(key, str) for key in reach):
+            raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
+        reach = {key: _reach_rank(value) for key, value in reach.items()}
     available = capabilities.get("credentials_available", [])
     if not isinstance(available, list) or any(not isinstance(name, str) for name in available):
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
@@ -421,15 +540,30 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_selection_invalid")
     if set(requested) - set(by_id):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_not_in_catalog")
-    if isinstance(priority, (str, bytes)) or any(not isinstance(row, str) for row in priority or ()):
+    if (isinstance(priority, (str, bytes)) or any(not isinstance(row, str) for row in priority or ())
+            or type(intake_ranking) is not bool or type(website) is not bool):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_priority_invalid")
     ranked = [row for row in dict.fromkeys(priority or ()) if row in set(requested)]
     cells = screening_cells(scene, episodes_per_candidate)
     remaining = budget
+    site_left = None if site_remaining_usd is None else max(Decimal(0), money(site_remaining_usd))
     candidates = []
     unranked = sorted(set(requested) - set(ranked),
                       key=lambda row: (by_id[row]["policy"]["kind"] == "scripted", row))
-    for candidate_id in ranked + unranked:
+    order = ranked + unranked
+    if reach is not None:
+        def reach_order(key: str) -> tuple[bool, ...]:
+            # Infeasible rows are never funded and are not ranked by reach.
+            tier = (REACH_TIERS["reach_unmeasured"] if key in infeasible
+                    else (reach.get(key) or reach_rank(None))["tier"])
+            flagged = tier == REACH_TIERS["own_arm_solve_flagged"]
+            if intake_ranking:
+                return (flagged,)  # The job's own ranking stands; only a flagged body moves back.
+            return (flagged, by_id[key]["policy"]["kind"] == "scripted",
+                    tier == REACH_TIERS["reach_unmeasured"])
+
+        order.sort(key=reach_order)  # Stable: the default order holds within each group.
+    for candidate_id in order:
         candidate = by_id[candidate_id]
         row: dict[str, Any] = {"candidate_id": candidate_id,
                                "display_name": candidate["display_name"],
@@ -440,12 +574,15 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         elif candidate_id in G1_CANDIDATES:
             row["execution_evidence_kind"] = "learned_policy"
         if candidate_id in infeasible:
-            # Measured on this scene (station reach); listed with its reason, never quoted.
+            # Measured on this scene (station reach), or a memory floor no GPU the
+            # screening lane may rent can meet; listed with its reason, never quoted.
             row.update(status="infeasible", blockers=sorted(set(infeasible[candidate_id])))
             candidates.append(row)
             continue
+        if reach is not None:
+            row["reach_rank"] = deepcopy(reach.get(candidate_id) or reach_rank(None))
         binding = bindings.get(candidate_id)
-        row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials)
+        row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials, website=website)
         row["blockers"] = sorted(set(row["blockers"] + failures.get(candidate_id, [])))
         if row["blockers"]:
             candidates.append(row)
@@ -461,19 +598,35 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             continue
         maximum = money(quote["maximum_cost_usd"])
         spec = binding["execution_spec"]
+        if (site_left is not None and maximum > site_left and not _HOSTED_COST_FIELDS & set(spec)
+                and spec.get("backend") != G1_BACKEND):
+            fitted = _site_fitted_quote(quote, min(site_left, remaining), floor=execution_cost_floor(spec))
+            if fitted is not None:
+                quote, maximum = fitted, money(fitted["maximum_cost_usd"])
         if maximum < execution_cost_floor(spec):
             row.update(status="deferred", blockers=["cost_quote_below_resource_bound"])
             candidates.append(row)
             continue
-        if maximum > remaining:
-            row.update(status="deferred", blockers=["site_screening_budget_insufficient"])
+        frozen = {"admission_digest": binding["admission_digest"],
+                  "execution_spec": deepcopy(binding["execution_spec"]), "cost_quote": quote,
+                  "max_cost_usd": quote["maximum_cost_usd"], "episode_count": episodes_per_candidate,
+                  "scenario_cells": g1_cells(cells) if spec["backend"] == G1_BACKEND else deepcopy(cells)}
+        if maximum > budget:
+            # More than this plan could ever fund, even with nothing else selected.
+            row.update(status="deferred", blockers=[WAITLIST_BLOCKER])
             candidates.append(row)
             continue
-        row.update(status="selected", admission_digest=binding["admission_digest"],
-                   execution_spec=deepcopy(binding["execution_spec"]), cost_quote=quote,
-                   max_cost_usd=quote["maximum_cost_usd"], episode_count=episodes_per_candidate,
-                   scenario_cells=g1_cells(cells) if spec["backend"] == G1_BACKEND else deepcopy(cells))
+        if maximum > remaining:
+            # Runnable but unfunded for now. It is frozen like a selected row,
+            # so the coordinator can fund it from money a selected candidate
+            # releases before spend, within the same site and plan budget.
+            row.update(status=WAITLISTED, blockers=[WAITLIST_BLOCKER], **frozen)
+            candidates.append(row)
+            continue
+        row.update(status="selected", **frozen)
         remaining -= maximum
+        if site_left is not None:
+            site_left = max(Decimal(0), site_left - maximum)
         candidates.append(row)
     plan = {
         "schema_version": PLAN_SCHEMA_VERSION, "campaign_id": campaign_id, "site_id": scene["site_id"],
@@ -507,7 +660,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                   "family_static_readiness_digest", "scenario_scope"} if family else {"robot_free_probe_digest"})
     # Plans enqueued before the single-tier change carry a digest-bound
     # ``recommendation_eligible: false``; they stay valid and publish alike.
-    if (set(plan) - {"recommendation_eligible"} != required or plan["schema_version"] != PLAN_SCHEMA_VERSION
+    if (set(plan) - {"recommendation_eligible"} - _JOB_CEILING_FIELDS != required
+            or plan["schema_version"] != PLAN_SCHEMA_VERSION
             or plan["purpose"] != "screening" or plan["claim_ceiling"] != CLAIM_CEILING
             or plan.get("recommendation_eligible", False) is not False):
         raise BetaPolicyScreeningPlanError("beta_screening_plan_schema_invalid")
@@ -529,9 +683,7 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         (_digest if key.endswith("digest") else _id)(source[key], "beta_screening_source_invalid")
     if any(source[key] != plan[key] for key in ("capture_id", "task_id", "scene_revision_digest")):
         raise BetaPolicyScreeningPlanError("beta_screening_source_mismatch")
-    budget = money(plan["budget_usd"])
-    if not 0 < budget <= SITE_BUDGET_USD:
-        raise BetaPolicyScreeningPlanError("beta_screening_site_budget_exceeded")
+    budget = _plan_budget(plan)
     cells = plan["scenario_cells"]
     _receipt(plan["scene_inputs"])
     if not isinstance(cells, list) or not 1 <= len(cells) <= DEFAULT_EPISODES:
@@ -583,6 +735,10 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         if evidence_fields and row["execution_evidence_kind"] != "scripted_simulator_state_baseline" and not (
                 row["candidate_id"] in G1_CANDIDATES and row["execution_evidence_kind"] == "learned_policy"):
             raise BetaPolicyScreeningPlanError("beta_screening_evidence_kind_invalid")
+        if "reach_rank" in row:
+            # Why the row sits where it does in the budget order; plans built before it carry none.
+            _reach_rank(row["reach_rank"])
+            evidence_fields = evidence_fields | {"reach_rank"}
         if not _CANDIDATE_ID.fullmatch(row["candidate_id"]):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_invalid")
         _digest(row["configuration_digest"], "beta_screening_configuration_invalid")
@@ -592,12 +748,16 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         if (not isinstance(row["blockers"], list) or len(row["blockers"]) > 100
                 or any(not isinstance(reason, str) or not 1 <= len(reason) <= 300 for reason in row["blockers"])):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_blockers_invalid")
-        if row["status"] == "selected":
+        if row["status"] in {"selected", WAITLISTED}:
             if set(row) - evidence_fields != {"candidate_id", "display_name", "configuration_digest", "status", "blockers", "admission_digest",
                             "execution_spec", "cost_quote", "max_cost_usd", "episode_count", "scenario_cells"}:
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_fields_invalid")
             expected_cells = g1_cells(cells) if row.get("execution_spec", {}).get("backend") == G1_BACKEND else cells
-            if row["blockers"] or row.get("episode_count") != len(cells) or row.get("scenario_cells") != expected_cells:
+            # A plan sized to its website job's ceiling names the ceiling as what waitlisted it.
+            waitlist_reasons = ([[WAITLIST_BLOCKER], [JOB_CEILING_DEFERRED]]
+                                if plan.get("budget_basis") == JOB_CEILING_BASIS else [[WAITLIST_BLOCKER]])
+            if ((row["blockers"] != [] if row["status"] == "selected" else row["blockers"] not in waitlist_reasons)
+                    or row.get("episode_count") != len(cells) or row.get("scenario_cells") != expected_cells):
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_cells_invalid")
             _digest(row["configuration_digest"], "beta_screening_configuration_invalid")
             spec = validate_execution_descriptor(row.get("execution_spec", {}), candidate_id=row["candidate_id"],
@@ -614,7 +774,11 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise BetaPolicyScreeningPlanError("beta_screening_cost_mismatch")
             if money(row["max_cost_usd"]) < execution_cost_floor(spec):
                 raise BetaPolicyScreeningPlanError("beta_screening_cost_below_resource_bound")
-            committed += money(row["max_cost_usd"])
+            if row["status"] == "selected":
+                committed += money(row["max_cost_usd"])
+            elif money(row["max_cost_usd"]) > budget:
+                # A waitlisted row could never be funded within this plan.
+                raise BetaPolicyScreeningPlanError("beta_screening_plan_budget_invalid")
         elif row["status"] not in {"unavailable", "deferred", "infeasible"} or not row["blockers"]:
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_status_invalid")
         elif set(row) - evidence_fields != {"candidate_id", "display_name", "configuration_digest", "status", "blockers"}:
@@ -628,7 +792,118 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     return plan
 
 
+def _plan_budget(plan: Mapping[str, Any]) -> Decimal:
+    """A plan's budget: positive, within the site allowance and, for a plan
+    sized to its website job's ceiling, within what that read left (possibly
+    nothing). Plans built before the job ceiling carry no basis."""
+    budget = money(plan["budget_usd"])
+    available = None
+    if _JOB_CEILING_FIELDS & set(plan):
+        if plan.get("budget_basis") != JOB_CEILING_BASIS:
+            raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+        available = _job_ceiling_available(plan.get("website_job_ceiling"))
+    if budget > SITE_BUDGET_USD or not (budget > 0 or available is not None and budget == 0):
+        raise BetaPolicyScreeningPlanError("beta_screening_site_budget_exceeded")
+    if available is not None and budget > available:
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_exceeded")
+    return budget
+
+
+def _ceiling_dollars(summary: Mapping[str, Any], key: str) -> Decimal:
+    value = summary.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+    return Decimal(str(value))
+
+
+def job_ceiling_record(summary: Mapping[str, Any], *, local_holds_usd: Decimal, read_at: str) -> dict[str, Any]:
+    """What a website job's one dollar ceiling leaves for a new screening plan.
+
+    ``summary`` is the WebApp's ``job_ceiling`` read (``website_job_ceiling.v1``):
+    its ``remaining_cost_usd`` already counts every ledger the WebApp sees
+    (Atlas, upstream rows, native construction and the last screening
+    publication it accepted). ``local_holds_usd`` is the screening this queue
+    holds that the WebApp cannot see yet. The remaining rounds down to cents
+    and the holds round up, so the plan never gets more than the job has left.
+    """
+    summary = _json(summary)
+    holds = Decimal(local_holds_usd)
+    if not holds.is_finite() or holds < 0:
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+    remaining = _ceiling_dollars(summary, "remaining_cost_usd").quantize(_CENT, rounding=ROUND_FLOOR)
+    holds = holds.quantize(_CENT, rounding=ROUND_CEILING)
+    record = {"schema_version": JOB_CEILING_SCHEMA_VERSION, "read_at": read_at, "summary": summary,
+              "summary_digest": canonical_digest(summary), "remaining_cost_usd": f"{remaining:.2f}",
+              "local_screening_holds_usd": f"{holds:.2f}",
+              "available_usd": f"{max(Decimal(0), remaining - holds):.2f}"}
+    _job_ceiling_available(record)
+    return record
+
+
+def _job_ceiling_available(record: Any) -> Decimal:
+    if (not isinstance(record, dict) or set(record) != _JOB_CEILING_RECORD
+            or record["schema_version"] != JOB_CEILING_SCHEMA_VERSION or not isinstance(record["read_at"], str)
+            or not isinstance(record["summary"], dict)
+            or record["summary"].get("schema_version") != JOB_CEILING_SUMMARY_SCHEMA
+            or record["summary_digest"] != canonical_digest(record["summary"])):
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+    try:
+        read_at = dt.datetime.fromisoformat(record["read_at"].replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid") from exc
+    maximum = _ceiling_dollars(record["summary"], "maximum_cost_usd")
+    remaining = _ceiling_dollars(record["summary"], "remaining_cost_usd")
+    floor, holds, available = (money(record[key]) for key in
+                               ("remaining_cost_usd", "local_screening_holds_usd", "available_usd"))
+    if (read_at.tzinfo is None or maximum <= 0 or remaining > maximum
+            or floor != remaining.quantize(_CENT, rounding=ROUND_FLOOR)
+            or available != max(Decimal(0), floor - holds)):
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+    return available
+
+
+def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *,
+                                     job_ceiling: Mapping[str, Any], budget_usd: str = "15.00",
+                                     **options: Any) -> dict[str, Any]:
+    """``build_screening_plan`` within its website job's one dollar ceiling.
+
+    The budget is the smaller of ``budget_usd`` and what ``job_ceiling`` (a
+    ``job_ceiling_record``) leaves, decided once: a built plan is never
+    resized. When the ceiling is what binds, every budget deferral names it;
+    with less left than any quote, every candidate is deferred and the plan
+    still publishes, so the job sees why nothing ran.
+    """
+    job_ceiling = _json(job_ceiling)
+    requested = money(budget_usd)
+    budget = min(requested, _job_ceiling_available(job_ceiling))
+    # The planner needs a positive budget. With none left it plans at the
+    # requested one, and every selection is deferred below.
+    plan = build_screening_plan(catalog, scene, budget_usd=f"{budget:.2f}" if budget > 0 else budget_usd,
+                                website=True, **options)
+    if budget < requested:
+        for row in plan["candidates"]:
+            if (row["status"] in {"selected", WAITLISTED} and budget == 0
+                    or row["status"] == "deferred" and row["blockers"] == [WAITLIST_BLOCKER]):
+                for key in set(row) - {"candidate_id", "display_name", "configuration_digest", "execution_evidence_kind",
+                                       "reach_rank"}:
+                    del row[key]
+                row.update(status="deferred", blockers=[JOB_CEILING_DEFERRED])
+            elif row["status"] == WAITLISTED:
+                # Still fundable within the ceiling-sized budget from money a
+                # selected candidate releases; the ceiling is what holds it back.
+                row["blockers"] = [JOB_CEILING_DEFERRED]
+    planned = sum((money(row["max_cost_usd"]) for row in plan["candidates"] if row["status"] == "selected"), Decimal(0))
+    plan.update(budget_usd=f"{budget:.2f}", maximum_planned_cost_usd=f"{planned:.2f}",
+                budget_basis=JOB_CEILING_BASIS, website_job_ceiling=job_ceiling)
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return validate_screening_plan(plan)
+
+
 __all__ = ["PLAN_SCHEMA_VERSION", "QUOTE_SCHEMA_VERSION", "EXECUTION_SCHEMA_VERSION", "CLAIM_CEILING",
-           "SITE_BUDGET_USD", "DEFAULT_EPISODES", "BetaPolicyScreeningPlanError", "build_screening_plan",
-           "execution_cost_floor", "money", "screening_cells", "validate_cost_quote", "validate_execution_descriptor",
-           "validate_screening_plan"]
+           "DISABLED_BLOCKER", "SITE_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
+           "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "TASK_KIND_BLOCKERS", "WAITLISTED",
+           "WAITLIST_BLOCKER", "BetaPolicyScreeningPlanError", "build_job_ceiling_screening_plan",
+           "build_screening_plan", "catalog_blockers",
+           "execution_cost_floor", "job_ceiling_record", "money", "screening_cells", "validate_cost_quote",
+           "validate_execution_descriptor",
+           "validate_screening_plan", "website_switched_off"]

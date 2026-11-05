@@ -111,3 +111,42 @@ def test_a_supplied_failing_canary_refuses_even_when_not_required(tmp_path, monk
     result = json.loads((tmp_path / "result.json").read_text())
     assert "policy_integration_canary_candidate_failed:groot_n17_droid:gripper_polarity" in result["blockers"]
     assert result["provider_mutations_performed"] == 0
+
+
+def test_screening_create_intent_waits_for_the_adapter_pre_create_hook(tmp_path, monkeypatch):
+    """A stop during staging or watchdog arming must find no create intent, so recovery can fence it."""
+    from blueprint_pipeline import allocator_invocation as jobs
+    from blueprint_pipeline import native_task_arena_policy_canary_bundle as sealed
+
+    monkeypatch.delenv(lane.REQUIRE_INTEGRATION_CANARY_ENV, raising=False)
+    authority_path = tmp_path / "authority.json"
+    bundle_path = tmp_path / "bundle.json"
+    authority_path.write_text("{}")
+    bundle_path.write_text("{}")
+    authority = {"hard_cap_usd": 3.78, "hard_ttl_seconds": 1800, "authority_digest": "sha256:" + "a" * 64,
+        "candidate_ids": ["pi05_droid"], "resource_name": "blueprint-native-task-policy-canary-" + "1" * 32}
+    bundle = {"bundle_sha256": "sha256:" + "3" * 64}
+    monkeypatch.setattr(lane, "validate_session_authority", lambda _: authority)
+    monkeypatch.setattr(lane, "validate_provider_bundle", lambda *a, **kw: bundle)
+    monkeypatch.setattr(lane, "_launch_environment_blockers", lambda *a, **kw: [])
+    monkeypatch.setattr(sealed, "preflight_sealed_policy_canary_bundle", lambda _bundle: {"status": "passed", "blockers": []})
+    monkeypatch.setattr(lane, "require_paid_resource_admission", lambda *a, **kw: object())
+    intents = []
+    monkeypatch.setattr(jobs, "before_provider_create", lambda **kw: intents.append(kw))
+
+    def transport(**kwargs):
+        # Authority consumption, bundle staging and watchdog arming happen in here.
+        assert intents == [], "the create intent was retained before staging and watchdog arming"
+        kwargs["pre_provider_create"]()  # The adapter's hook, immediately before its create request.
+        assert intents == [{"authority": authority, "bundle": bundle}]
+        return {"status": "blocked", "blockers": ["hermetic_stop"], "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(lane, "run_native_task_arena_policy_canary_session_vast", transport)
+    args = SimpleNamespace(provider="vast", execute=True, adp_job_dir=str(tmp_path / "job"),
+        native_task_arena_policy_canary_session_authority=str(authority_path),
+        native_task_arena_policy_canary_session_bundle_receipt=str(bundle_path),
+        adp_max_spend_usd=3.78, adp_hard_ttl_seconds=1800, adp_max_hourly_rate_usd=.8,
+        adp_machine_avoidlist=None, adp_allowed_active_vast_instance_id=[],
+        admission_out=str(tmp_path / "admission.json"), adapter_output=str(tmp_path / "result.json"))
+    assert lane.run_policy_canary_allocator_lane(args, ([], {"orchestrator_source_commit": "5" * 40})) == 2
+    assert len(intents) == 1

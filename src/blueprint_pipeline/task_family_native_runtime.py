@@ -132,6 +132,38 @@ def _qualified_registration(native: Mapping[str, Any], selection: Mapping[str, A
     return copy.deepcopy(row), qualification
 
 
+#: Where the operator installs the protected engine catalog (docs/runbooks/task-family-native-execution.md).
+CATALOG_PATH_ENV = "BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH"
+
+
+def installed_task_family_runtimes() -> dict[str, Any] | None:
+    """The task families this host's runtime catalog registers a Gymnasium runtime for.
+
+    ``configured`` is False when no catalog is installed. None when one is configured but
+    does not read as a catalog: that is an operator fault to fix, not a fact about the
+    families. A listing only: a job's own selection is still authenticated, qualification
+    included, by ``_qualified_registration`` before any SDK code loads.
+    """
+    configured = os.environ.get(CATALOG_PATH_ENV, "").strip()
+    if not configured:
+        return {"configured": False, "catalog_digest": None, "task_families": []}
+    path = Path(configured)
+    try:
+        if not path.is_absolute():
+            return None
+        catalog = _read(path, code="catalog_required")
+    except ValueError:
+        return None
+    rows = catalog.get("runtimes")
+    if (catalog.get("schema_version") != CATALOG_SCHEMA or not isinstance(rows, list)
+            or catalog.get("catalog_digest") != canonical_digest(catalog, digest_field="catalog_digest")):
+        return None
+    families = {family for row in rows if isinstance(row, dict) and row.get("factory_id") == GYMNASIUM_FACTORY
+                and isinstance(row.get("task_families"), list)
+                for family in row["task_families"] if isinstance(family, str)}
+    return {"configured": True, "catalog_digest": catalog["catalog_digest"], "task_families": sorted(families)}
+
+
 def _verify_installed_sources(registration: Mapping[str, Any]) -> None:
     # Resolving an SDK submodule may import its parent. Verify every declared
     # parent first; the operator must pin that executable package code too.

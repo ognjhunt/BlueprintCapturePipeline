@@ -61,6 +61,13 @@ work volume. `assigned_roles` and `refused_roles` in the capacity summary
 identify which stages the measured filesystem can actually block. These
 projections do not replace each worker's atomic disk reservation.
 
+`storage_class_over_budget` (page) names a storage class the usage survey
+measured above its byte budget (`release` 15, `cache` 20, `work` 25,
+`unclassified` 30 GiB; `BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB` overrides them).
+Something in that class grows with no cap. Read `usage.top_roots` and
+`usage.top_owners` for the class, then decide its retention; the alert itself
+changes nothing.
+
 For a configured DigitalOcean volume, check `volume_resize.status` and
 `reason`. `volume_at_maximum` needs a provider limit increase before raising
 `BLUEPRINT_CAPACITY_VOLUME_MAX_GIB`. To permit the approved automatic step, set
@@ -100,8 +107,11 @@ grew the store to about 80 GB and took root from 55 to 31 GB free within hours.
 
 When the hourly walk reaches them, the survey names both stores as host roots
 and warns `usage_container_runtime_large` above 20 GiB. A truncated walk marks
-their totals as lower bounds (`container_runtime_complete: false`). On this host
-the root walk has been stopping before `/var/lib`. A fast unreserved decline
+their totals as lower bounds (`container_runtime_complete: false`). The survey
+reaches every partition within a few hourly passes and reports the composite of
+their latest measurements (`usage.composite` says how many are measured and how
+old the oldest is); until 2026-11-04 it restarted every hour and never reached
+`/var/lib` or `/opt`. A fast unreserved decline
 pages `floor_within_hours` whatever the writer. The door cannot read these
 paths, so the host owner reads `docker system df` and the store's size directly.
 
@@ -119,6 +129,75 @@ automatically:
   first, with a storage-table row and a survey alias. Otherwise the survey
   counts it as orphan scratch, and that pages. The volume then carries each
   build's peak, so check its headroom first.
+
+## Stalled jobs
+
+The same tick runs `control_plane_stall_alarm` and pages on the same webhook
+when a live job stops moving. The disk level is unchanged; the page's summary
+leads with the stall, and `stall_runbook` points here. Each code names the
+oldest offender (`target`, and `label` for a scene's submission id), how long it
+has been stuck and how many there are (`count`, `targets`).
+
+- `scene_progression_stalled`: a scene intent's status, phase and blockers have
+  not changed for 90 minutes while it names blockers, or for 8 hours while it
+  is handed off (`awaiting_execution` or `running` with no blockers). Completed,
+  `needs_input`, revoked or expired rows never page, nor do intended holds:
+  pauses, privacy, rights and money approvals (`*_paused`, consent, rights,
+  `scene_intake_spend_cap_exhausted`, `scene_intake_attempt_cap_exhausted`).
+  Read the intent's `progression.json` and the last `progression-events/`, then
+  the scene-progression journal.
+- `launch_lease_stuck`: a request in `task-evaluation-launches/processing/`
+  that no live dispatcher owns is 30 minutes past the bound the launch
+  reconciler gives it (15 minutes before the allocator starts, otherwise the
+  run's `hard_ttl_seconds`). The reconciler should have closed it: check that
+  `blueprint-task-evaluation-launch-reconciler.timer` is active and read its
+  latest report.
+- `launch_activation_stuck`: a row in
+  `task-evaluation-launch-activations/processing/` that no process holds a lock
+  on (`/proc/locks`; the activation worker holds an exclusive `flock` on its row
+  from claim to terminal move) was claimed longer ago than the activation
+  role's 6-hour TTL. Its staging under
+  `task-evaluation-inputs/launch-activations/<activation>` stays
+  queue-referenced, so the reclaim timer keeps it (2026-10-31: `6e9f0cac` held
+  14 GB for two days). Check the activation journal; nothing moves the row
+  automatically.
+- `trigger_inactive_unheld`: a `.timer` or `.path` the deploy tool always arms
+  (`DEFAULT_ALWAYS_ARM_*`, minus the configured-controls pair a deploy may
+  preserve) is loaded and has been inactive for an hour with no hold record in
+  `/var/lib/blueprint-operator-door/requests/holds/`. Start it through the
+  door, or place an owned hold if it is off on purpose.
+
+A persisting stall repeats hourly; a newly stuck target posts at once.
+`stall_check_incomplete` (warn) means a check could not look, for example an
+unreadable root or a failed `systemctl show`. The `stall` section of
+`capacity/summary.json` lists what each check examined and why rows were
+skipped. Thresholds are minutes in the environment file:
+`BLUEPRINT_STALL_PROGRESSION_MINUTES`, `BLUEPRINT_STALL_HANDOFF_MINUTES`,
+`BLUEPRINT_STALL_LAUNCH_GRACE_MINUTES` and `BLUEPRINT_STALL_TRIGGER_MINUTES`;
+`BLUEPRINT_STALL_ALARM=0` turns the alarm off. It never changes a queue, a
+progression, a provider or a unit.
+
+## Preparation status callbacks
+
+The same tick reads the listener's
+`/var/lib/blueprint/pubsub-handoffs/.website_preparation_delivery_metrics.json`
+(also `preparation_delivery` in `door status`). It only reads.
+
+- `preparation_delivery_stalled` (page): a live callback, due now or waiting
+  out a retry, has been undelivered for over an hour (`age_seconds`, `count`,
+  with `parked_count` for context). Read the capture's
+  `website_preparation_status_delivery.json`: `last_error_type` and
+  `last_unavailable_reason` name the failed check, and a
+  `delivery_attempt_count` of 0 means the status read fails before the WebApp.
+- `preparation_delivery_parked` (warn): callbacks whose status read failed on
+  every attempt for a day (`parked_reason`
+  `preparation_status_persistently_unavailable`). They keep their record, are
+  retried every 6 hours and leave the due backlog. One successful read, or a
+  newer revision of the job, makes them live again.
+- `preparation_delivery_metrics_unreadable` (warn): the metrics file is
+  unreadable, incomplete or more than an hour old (`reason`). The ages of a
+  silent listener's last metrics grow with the silence, so a live callback
+  still pages.
 
 ## Owner's Phase 0 checklist
 

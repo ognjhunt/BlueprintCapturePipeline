@@ -14,7 +14,9 @@ default since the owner's 2026-09-30 decision: unset, empty or ``measured``):
    the output's volume, admission checks the larger of its own need and the
    hold plus those archives up front, and the hold is taken only after that
    prefix released its own reservation; otherwise one reservation holds the
-   output and those archives from the start. A hold
+   output and those archives from the start. When the optional CPU prestage's
+   share is all that does not fit, the run is admitted without it and every
+   stage runs on the GPU (``cpu_prestage_decision``). A hold
    refused then is sealed like a refusal before staging: typed, zero provider
    mutations, and retried by capacity recovery only when the attempt recorded
    no paid external spend. API pretraining that ran, or a CPU prefix whose own
@@ -67,6 +69,7 @@ from .task_evaluation_scene_configuration_output_evidence import (
     output_role_projection,
 )
 
+from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .control_plane_disk_budget import (
     DEFAULT_RESERVATION_ROOT,
@@ -100,20 +103,18 @@ EXTRACTION_BUDGET_EXCEEDED_BLOCKER = (
 RESERVATION_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
 #: Footprint samples are labelled by lane.
 WORKLOAD = "website_scene_configuration"
-#: Both CPU phases that may run on this host before the GPU reserve 3 x the
-#: bundle's unpacked bytes + 512 MiB: the prefix in
-#: ``task_evaluation_scene_configuration_cpu_prestage`` and the ArtiFixer
-#: semantic preparation in ``task_evaluation_artifixer_pretraining``.
+#: The ArtiFixer semantic preparation in ``task_evaluation_artifixer_pretraining``
+#: reserves 3 x the bundle's unpacked bytes + 512 MiB before the GPU. The CPU
+#: prestage sizes itself by what it writes
+#: (``task_evaluation_scene_configuration_cpu_prestage.prestage_peak_bytes``).
 CPU_PREFIX_EXPANSION = 3
 CPU_PREFIX_OVERHEAD_BYTES = 512 * 1024**2
-#: What a CPU phase leaves in the job directory once it released its own
-#: reservation is estimated at one unpacked bundle, not proven: the API
-#: pretraining capsule re-archives the extracted bundle with its prepared
-#: frames, and the prestage keeps its capsule and output archive, both archives
-#: of its stage outputs. Each phase's own 3 x unpacked estimate already budgets
-#: its outgoing archive at one unpacked share, so admission counts that share
-#: beside the output. A prefix that leaves more can still see the deferred hold
-#: refused; compare against the sealed receipts' capsule sizes before tightening.
+#: What the pretraining phase leaves in the job directory once it released its
+#: own reservation is estimated at one unpacked bundle, not proven: its capsule
+#: re-archives the extracted bundle with its prepared frames. The prestage
+#: leaves its capsule and output archive, both archives of its stage outputs
+#: (``prestage_residue_bytes``). A phase that leaves more can still see the
+#: deferred hold refused.
 CPU_PREFIX_RESIDUE_SHARES = 1
 #: Where a hold deferred behind a CPU prefix sharing the volume is taken.
 #: Why a typed refusal after the prefix is not retried automatically: a retry
@@ -122,6 +123,16 @@ PREFIX_SPEND_RECORDED = "prefix_external_spend_recorded"
 #: The prestage's retained output, the cost reservations of failed stages included.
 CPU_PREFIX_OUTPUT_ARCHIVE = "cpu_prestage_output.zip"
 _HOLD_DEFERRED = "deferred_until_after_cpu_prefix"
+#: The phase name of the optional CPU prestage, and the record of skipping it
+#: when only its share of the volume does not fit (``before_allocation``).
+CPU_PRESTAGE_PHASE = "cpu_prestage"
+CPU_PRESTAGE_SKIPPED = "skipped_disk_admission"
+CPU_PRESTAGE_DECISION_NAME = "cpu_prestage_decision.json"
+CPU_PRESTAGE_DECISION_SCHEMA_VERSION = "scene_configuration_cpu_prestage_decision.v1"
+_DECISION_KEYS = (
+    "status", "required_available_bytes", "available_bytes", "hold_phase",
+    "sequential_phases", "blockers",
+)
 _LEDGER_EXCEEDED = "control_plane_disk_budget_exceeded:"
 _LEDGER_NUMBERS = re.compile(r"(need|available|free|floor|reserved)_bytes=(\d+)")
 _READ_ERRORS = (
@@ -154,10 +165,24 @@ def bundle_unpacked_bytes(bundle_path: Path) -> int:
         return sum(member.file_size for member in archive.infolist())
 
 
-def cpu_prefix_peak_bytes(bundle_path: Path) -> int:
+def cpu_prefix_phase_bytes(phase: str, unpacked: int) -> tuple[int, int]:
+    """One pre-GPU CPU phase's (peak, residue) over a bundle of ``unpacked`` bytes."""
+
+    if phase == CPU_PRESTAGE_PHASE:
+        from .task_evaluation_scene_configuration_cpu_prestage import (  # noqa: PLC0415
+            prestage_peak_bytes,
+            prestage_residue_bytes,
+        )
+
+        return prestage_peak_bytes(unpacked), prestage_residue_bytes()
+    return (CPU_PREFIX_EXPANSION * unpacked + CPU_PREFIX_OVERHEAD_BYTES,
+            CPU_PREFIX_RESIDUE_SHARES * unpacked)
+
+
+def cpu_prefix_peak_bytes(bundle_path: Path, phase: str = CPU_PRESTAGE_PHASE) -> int:
     """What a CPU phase over this bundle reserves before the GPU is rented."""
 
-    return CPU_PREFIX_EXPANSION * bundle_unpacked_bytes(bundle_path) + CPU_PREFIX_OVERHEAD_BYTES
+    return cpu_prefix_phase_bytes(phase, bundle_unpacked_bytes(bundle_path))[0]
 
 
 
@@ -350,14 +375,49 @@ class SceneConfigurationOutputAdmission:
         self._deferred_hold_refused = False
         #: What the hold already covered when the output's footprint began.
         self._covered_before_output = 0
+        #: Set when the CPU prestage was skipped so the run fits (``before_allocation``).
+        self.cpu_prestage_decision: dict[str, Any] | None = None
 
     # -- before allocation -------------------------------------------------
 
     def before_allocation(
         self, legacy_check: Callable[..., dict[str, Any]], **legacy_arguments: Any
     ) -> dict[str, Any]:
-        """The pre-staging capacity record; ``status`` is ``ready`` or ``blocked``."""
+        """The pre-staging capacity record; ``status`` is ``ready`` or ``blocked``.
 
+        The CPU prestage only moves cheap stages off the GPU, which can run
+        every stage within the same authority. When its share of the volume is
+        all that does not fit, the run is admitted without it, every stage on
+        the GPU, and ``cpu_prestage_decision`` records why; the lane then skips
+        the prefix. A run that fits neither way keeps the prestage's refusal.
+        """
+
+        record = self._admit_before_allocation(legacy_check, **legacy_arguments)
+        configured = self._cpu_prefix_phases
+        # Only a measured run has phases; ``ceiling`` returns the legacy record untouched.
+        if not any(phase == CPU_PRESTAGE_PHASE for phase, _target in configured) or (
+            record.get("blockers") != [BUDGET_EXCEEDED_BLOCKER]
+        ):
+            return record
+        self._cpu_prefix_phases = [row for row in configured if row[0] != CPU_PRESTAGE_PHASE]
+        admitted = self._admit_before_allocation(legacy_check, **legacy_arguments)
+        if admitted["status"] != "ready":
+            # Nothing was held by either attempt; the refusal stays the prestage's.
+            self._cpu_prefix_phases, self.record = configured, record
+            return record
+        self.cpu_prestage_decision = {
+            "schema_version": CPU_PRESTAGE_DECISION_SCHEMA_VERSION,
+            "status": CPU_PRESTAGE_SKIPPED,
+            "prestage_stages_run_on": "gpu",
+            "prestage_admission": {key: record.get(key) for key in _DECISION_KEYS},
+            "admission_without_prestage": {key: admitted.get(key) for key in _DECISION_KEYS},
+        }
+        write_json(self.job / CPU_PRESTAGE_DECISION_NAME, self.cpu_prestage_decision)
+        return admitted
+
+    def _admit_before_allocation(
+        self, legacy_check: Callable[..., dict[str, Any]], **legacy_arguments: Any
+    ) -> dict[str, Any]:
         if self.mode is None:
             return {
                 "schema_version": ADMISSION_SCHEMA_VERSION,
@@ -532,6 +592,7 @@ class SceneConfigurationOutputAdmission:
             "object_store_cleanup": dict(cleanup),
             "independent_watchdog": dict(watchdog_close),
             "runtime_secret_cleanup_completed": not cleanup_blockers,
+            **self._decision_fields(),
             "blockers": sorted(set(blockers)),
         }
 
@@ -543,10 +604,11 @@ class SceneConfigurationOutputAdmission:
         unpacked = bundle_unpacked_bytes(Path(str(self.receipt["bundle_path"])))
         output_device = target_device(self.job)
         for phase, target in self._cpu_prefix_phases:
+            peak, residue = cpu_prefix_phase_bytes(phase, unpacked)
             self.record["sequential_phases"].append({
                 "phase": phase,
-                "peak_bytes": CPU_PREFIX_EXPANSION * unpacked + CPU_PREFIX_OVERHEAD_BYTES,
-                "residue_bytes": CPU_PREFIX_RESIDUE_SHARES * unpacked,
+                "peak_bytes": peak,
+                "residue_bytes": residue,
                 "shares_output_volume": target_device(target) == output_device,
             })
         return self.record["sequential_phases"]
@@ -728,7 +790,12 @@ class SceneConfigurationOutputAdmission:
         return {
             "provider_output_admission_mode": MEASURED_MODE,
             "provider_output_archive_durable": self.archive_durable,
+            **self._decision_fields(),
         }
+
+    def _decision_fields(self) -> dict[str, Any]:
+        decision = self.cpu_prestage_decision
+        return {} if decision is None else {"cpu_prestage_decision": dict(decision)}
 
     def release(self, outcome: str) -> None:
         """Free the hold and any growth, once, and leave the registry."""
@@ -777,7 +844,7 @@ def open_scene_configuration_output_admission(
             WORK_DIR_ENV,
         )
 
-        phases.append(("cpu_prestage", Path(values.get(WORK_DIR_ENV) or DEFAULT_WORK_DIR)))
+        phases.append((CPU_PRESTAGE_PHASE, Path(values.get(WORK_DIR_ENV) or DEFAULT_WORK_DIR)))
     return SceneConfigurationOutputAdmission(
         mode=mode,
         measured=measured,
@@ -858,6 +925,8 @@ __all__ = [
     "ADMISSION_UNAVAILABLE_BLOCKER",
     "BUDGET_EXCEEDED_BLOCKER",
     "CEILING_MODE",
+    "CPU_PRESTAGE_DECISION_NAME",
+    "CPU_PRESTAGE_SKIPPED",
     "EXTRACTION_BUDGET_EXCEEDED_BLOCKER",
     "EXTRACTION_SCHEMA_VERSION",
     "MEASURED_MODE",
@@ -868,6 +937,7 @@ __all__ = [
     "SceneConfigurationOutputHoldRefused",
     "configured_output_admission_mode",
     "cpu_prefix_peak_bytes",
+    "cpu_prefix_phase_bytes",
     "cpu_prefix_spend",
     "extraction_requirement",
     "measured_admission_record",

@@ -1,4 +1,4 @@
-"""Bound completed team-cell memory and retain digest-bound raw evidence (beta L5)."""
+"""Retain canary result prefixes, bounded raw evidence and exact runtime closeout."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -11,7 +11,10 @@ from blueprint_pipeline.policy_execution_evidence import (
     candidate_execution_kinds, evidence_kind, execution_evidence_valid, rollout_counts_valid,
     session_evidence_binding_valid, retained_rollout_counts, SCRIPTED,
 )
-from blueprint_pipeline.native_task_arena_policy_canary_session import BETA_RUN_KIND, EXECUTION_MODES, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND
+from blueprint_pipeline.native_task_arena_policy_canary_session import (
+    BETA_RUN_KIND, EXECUTION_MODES, PROVIDER_RESULT_FILENAME, PROVIDER_STATUS_FILENAME, PROVIDER_STATUS_SCHEMA,
+    TEAM_RUN_KIND,
+)
 
 
 def _prefix_episode_evidence_paths(
@@ -186,6 +189,41 @@ def _validate_provider_manifest(
     return manifest
 
 
+def _verified_current_child(child_root: Path, *, inputs: Mapping[str, Any], index: int) -> dict[str, Any] | None:
+    """The interrupted cell's own sealed result, when it validates as a completed cell; else None."""
+    current = child_root / PROVIDER_RESULT_FILENAME
+    if current.is_file() and not current.is_symlink() and current.stat().st_size <= 128 * 1024**2:
+        try:
+            child = json.loads(current.read_text())
+            if _validate_isolated_cell_result(child=child, inputs=inputs, index=index):
+                return child
+        except (ValueError, TypeError, KeyError, RuntimeError, OSError):
+            pass  # Original bytes remain on disk; unverified content is not execution evidence.
+    return None
+
+
+def seal_beta_interruption(*, inputs: Mapping[str, Any], authority: Mapping[str, Any],
+        children: list[Mapping[str, Any]], child_root: Path, output_root: Path, index: int,
+        reason: str, seal_result: Callable[..., None], seal_prefix: Callable[..., bool]) -> bool:
+    """Seal a timed-out beta run's measured cells as its partial result; True when sealed.
+
+    A scripted run keeps its own interruption record. A learned-policy run keeps
+    every cell measured before the timeout, and the timed-out cell's own sealed
+    result when Isaac hung only while closing. The cells it did not return are
+    not invented: the host counts each unscored (``cell_not_returned``). With no
+    measured episode nothing is sealed here and the existing handling applies.
+    """
+    if seal_scripted_interruption(inputs=inputs, authority=authority, children=children, child_root=child_root,
+                                  output_root=output_root, index=index, reason=reason, seal_result=seal_result):
+        return True
+    if inputs.get("run_kind") != BETA_RUN_KIND:
+        return False
+    current = _verified_current_child(child_root, inputs=inputs, index=index)
+    return seal_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                       children=[*children, *([current] if current is not None else [])],
+                       reason=reason, interrupted_cell_index=index)
+
+
 def seal_scripted_interruption(*, inputs: Mapping[str, Any], authority: Mapping[str, Any],
         children: list[Mapping[str, Any]], child_root: Path, output_root: Path, index: int,
         reason: str, seal_result: Callable[..., None]) -> bool:
@@ -199,16 +237,10 @@ def seal_scripted_interruption(*, inputs: Mapping[str, Any], authority: Mapping[
     if inputs.get("run_kind") != BETA_RUN_KIND or set(kinds.values()) != {SCRIPTED}:
         return False
     retained = list(children)
-    current = child_root / PROVIDER_RESULT_FILENAME
-    verified_current = False
-    if current.is_file() and not current.is_symlink() and current.stat().st_size <= 128 * 1024**2:
-        try:
-            child = json.loads(current.read_text())
-            verified_current = _validate_isolated_cell_result(child=child, inputs=inputs, index=index)
-            if verified_current:
-                retained.append(child)
-        except (ValueError, TypeError, KeyError, RuntimeError, OSError):
-            pass  # Original bytes remain on disk; unverified content is not execution evidence.
+    current = _verified_current_child(child_root, inputs=inputs, index=index)
+    verified_current = current is not None
+    if verified_current:
+        retained.append(current)
     episodes = [_prefix_episode_evidence_paths(row, prefix=f"cell_runs/{ordinal:02d}")
                 for ordinal, child in enumerate(retained) for row in child.get("episodes", [])]
     inventory = [{**row, "relative_path": f"cell_runs/{ordinal:02d}/{row['relative_path']}"}
@@ -235,3 +267,121 @@ def seal_scripted_interruption(*, inputs: Mapping[str, Any], authority: Mapping[
     value["result_digest"] = canonical_digest(value, digest_field="result_digest")
     seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=value)
     return True
+
+
+def write_team_status_sidecar(*, result_path: Path, result: Mapping[str, Any], seal_result: Callable, sha256: Callable) -> None:
+    """Bind small diagnostic status to the exact sealed terminal bytes, without grading them."""
+    summary = {"schema_version": PROVIDER_STATUS_SCHEMA, "run_kind": TEAM_RUN_KIND,
+               "claim_ceiling": "diagnostic_policy_execution", "status": result.get("status"),
+               "blockers": result.get("blockers") or [],
+               "source_result": {"file_name": result_path.name, "size_bytes": result_path.stat().st_size,
+                                 "sha256": sha256(result_path), "result_digest": result["result_digest"]},
+               "inspection_scope": "hash_bound_status_metadata_only", "result_digest": ""}
+    summary["result_digest"] = canonical_digest(summary, digest_field="result_digest")
+    if len(json.dumps(summary).encode()) > 64 * 1024:
+        raise RuntimeError("team_status_summary_budget_exceeded")
+    seal_result(result_path=result_path.with_name(PROVIDER_STATUS_FILENAME), result=summary)
+
+
+def seal_before_simulation_close(*, result_path: Path, result: Mapping[str, Any], simulation_app: Any, seal_result: Callable) -> None:
+    """Seal the provider result before Isaac can terminate the interpreter."""
+
+    close = getattr(simulation_app, "close", None)
+    if not callable(close):
+        raise RuntimeError("policy_canary_simulation_close_unavailable")
+    seal_result(result_path=result_path, result=result)
+    close()
+
+
+def seal_runtime_stop_sidecar(*, guard, output_root: Path, seal_result: Callable) -> None:
+    """Keep a control stop alongside an independently sealed strict-matrix result."""
+    if guard is not None and (stopped := guard.stop_receipt()) is not None:
+        seal_result(result_path=output_root / "beta_screening_runtime_stop.v1.json", result={
+            **stopped, "result_digest": canonical_digest(stopped)})
+
+
+def seal_team_prefix(*, output_root: Path, inputs: Mapping[str, Any], authority: Mapping[str, Any],
+                     children: list[Mapping[str, Any]], construction_lineage_mode: str, reason: str,
+                     aggregate: Callable, seal_result: Callable, stopped_before_next_cell: bool = False,
+                     interrupted_cell_index: int | None = None) -> bool:
+    """Seal a stopped team or beta run's measured prefix as its result; True when sealed.
+
+    A beta prefix is sealed only when it measured at least one episode and its
+    cells validate: the host then counts the planned cells it did not return as
+    unscored. Otherwise nothing is sealed and the run's existing failure stands
+    (its bounded harness retry and sibling hold included).
+    """
+    beta = inputs.get("run_kind") == BETA_RUN_KIND
+    if (inputs.get("run_kind") != TEAM_RUN_KIND and not beta) or not children:
+        return False
+    if beta and not any(child.get("episodes") for child in children):
+        return False
+    try:
+        result = aggregate(
+            inputs={**inputs, "cells": inputs["cells"][:len(children)]}, authority=authority,
+            child_results=children, output_root=output_root, construction_lineage_mode=construction_lineage_mode)
+    except (RuntimeError, ValueError):
+        if not beta:
+            raise
+        return False  # An unverifiable beta prefix is not execution evidence.
+    result.update(status="blocked", blockers=[reason], planned_episodes_per_policy=len(inputs["cells"]),
+                  execution_stopped_after_cell=len(children),
+                  stopped_before_next_cell=stopped_before_next_cell)
+    if interrupted_cell_index is not None:
+        result["interrupted_cell_index"] = interrupted_cell_index
+        if result.get("candidate_policy_queried") is not True:
+            result["candidate_policy_queried"] = None
+        if not result.get("policy_loads"):
+            result["policy_loads"] = None
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+    return True
+
+
+def seal_beta_control_stop(*, output_root: Path, inputs: Mapping[str, Any], authority: Mapping[str, Any],
+                           children: list[Mapping[str, Any]], construction_lineage_mode: str,
+                           receipt: Mapping[str, Any], aggregate: Callable, validate_child: Callable,
+                           sha256: Callable, seal_result: Callable) -> None:
+    from .task_family_policy_canary_execution import beta_result_binding
+    prefix, partial = [], []
+    for index, child in enumerate(children):
+        try:
+            validate_child(child=child, inputs=inputs, index=index)
+        except RuntimeError:
+            # A revoked mid-query child is retained as its exact raw bytes. It
+            # cannot masquerade as a completed scored cell in aggregation.
+            path = output_root / "cell_runs" / f"{index:02d}" / PROVIDER_RESULT_FILENAME
+            partial.append({"relative_path": path.relative_to(output_root).as_posix(),
+                            "size_bytes": path.stat().st_size, "sha256": sha256(path),
+                            "result_digest": child.get("result_digest")})
+        else:
+            if partial:
+                raise RuntimeError("beta_screening_runtime_nonprefix_result")
+            prefix.append(child)
+    result = (aggregate(inputs={**inputs, "cells": inputs["cells"][:len(prefix)]},
+        authority=authority, child_results=prefix, output_root=output_root,
+        construction_lineage_mode=construction_lineage_mode) if prefix else {
+            "schema_version": "native_task_arena_policy_canary_session_result.v1", "run_kind": BETA_RUN_KIND,
+            "run_id": inputs["run_id"], "authority_digest": authority["authority_digest"],
+            "claim_ceiling": "diagnostic_policy_execution", "candidate_ids": inputs["candidate_ids"],
+            "task_success_contract": inputs["task_success_contract"],
+            "task_success_contract_digest": inputs["task_success_contract_digest"],
+            "episodes": [], "policy_loads": [], "candidate_policy_queried": False,
+            "artifact_inventory": [], "scene_promotion_performed": False, "official_ranking_performed": False,
+            "session_closeout": {"runtime_closed": True, "provider_closeout_pending": True},
+            **beta_result_binding(inputs)})
+    # An interrupted cell cannot supply an accepted score, but a query already
+    # observed in its retained result must not become a false no-query claim.
+    if any(child.get("candidate_policy_queried") is True for child in children):
+        result["candidate_policy_queried"] = True
+    elif partial:
+        result["candidate_policy_queried"] = None
+    if partial and not result.get("policy_loads"):
+        result["policy_loads"] = None
+    result.update(status="blocked", blockers=[receipt["reason"]], planned_episodes_per_policy=len(inputs["cells"]),
+                  execution_stopped_after_cell=len(children), stopped_before_next_cell=True,
+                  execution_control_stop=dict(receipt), applicability="historical_only",
+                  retained_partial_cell_results=partial,
+                  new_processing_authorized=False, read_only_closeout_allowed=True)
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)

@@ -368,8 +368,14 @@ def test_the_runtime_restores_the_prefix_at_its_exact_paths(tmp_path: Path, caps
     assert prestage.consume_stage_prefix_capsule(environment={}, output_root=output, expected_run_id=RUN_ID) is None
 
 
-def test_rehearsal_a_real_prefix_sealed_on_the_host_is_adopted_by_the_paid_chain_at_the_same_paths(tmp_path, capsys):
-    """End to end with the real stage chain, archive writer and resume binding."""
+@pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
+def test_rehearsal_a_real_prefix_sealed_on_the_host_is_adopted_by_the_paid_chain_at_the_same_paths(
+        tmp_path, capsys, backend):
+    """End to end with the real stage chain, archive writer and resume binding.
+
+    ARTISAN is the website backend since 2026-10; its prefix seals the same
+    split binding under its own name and the paid chain adopts stages 1-4.
+    """
     from types import SimpleNamespace
     from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime import (
         execute_scene_configuration_stage_chain,
@@ -377,6 +383,11 @@ def test_rehearsal_a_real_prefix_sealed_on_the_host_is_adopted_by_the_paid_chain
     from tests.test_task_evaluation_scene_configuration_provider_runtime import _astra_inputs, _producers, _registry
 
     envelope, configurations = _astra_inputs(tmp_path)
+    if backend != "astra_cad_blender_v1":
+        authoring = tmp_path / "configuration-3.json"
+        authoring.write_text(json.dumps({"stage": 3, "authoring_backend": backend}) + "\n", encoding="utf-8")
+        configurations["stage-3"] = ({"stage": 3, "authoring_backend": backend}, authoring)
+    prefix = "artisan" if backend == "artisan_v1" else "astra"
     envelope["expected_production_commit"] = COMMIT
     observed_host: list[str] = []
     produced: list[str] = []
@@ -404,7 +415,8 @@ def test_rehearsal_a_real_prefix_sealed_on_the_host_is_adopted_by_the_paid_chain
 
     # The fixture recipe is the canonical ArtiFixer chain (stage 1 funds 12 000 s
     # of training); the transport under test is recipe-independent.
-    receipt, _ = _prepare(tmp_path, entrypoint, now=time.time, ttl_seconds=7 * 3600)
+    receipt, _ = _prepare(tmp_path, entrypoint, now=time.time, ttl_seconds=7 * 3600,
+                          bundle_receipt=_bundle(tmp_path, backend=backend))
     assert observed_host == ["stage-1", "stage-2", "stage-3", "stage-4"] and produced == ["stage-1", "stage-3"]
     work = tmp_path / "workspace"
     output = work / BUNDLE / "runtime_output"
@@ -430,7 +442,8 @@ def test_rehearsal_a_real_prefix_sealed_on_the_host_is_adopted_by_the_paid_chain
     assert full["status"] == "completed" and full["whole_run_completed"] is True
     assert observed_paid == [f"stage-{i}" for i in range(1, 7)] and produced == ["stage-1", "stage-3", "stage-5"]
     assert capsys.readouterr().out.count("BLUEPRINT_SCENE_CONFIGURATION_STAGE_ADOPTED") == 4
-    assert (output.resolve() / "stages/astra_prefix_continuation_binding.json").is_file()
+    assert (output.resolve() / f"stages/{prefix}_prefix_continuation_binding.json").is_file()
+    assert (output.resolve() / f"stages/{prefix}_same_run_resume_binding.json").is_file()
 
 
 def test_ambient_credentials_beyond_the_named_list_are_dropped_but_file_references_survive():

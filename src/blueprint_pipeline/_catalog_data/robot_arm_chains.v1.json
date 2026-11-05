@@ -1,0 +1,229 @@
+{
+ "schema_version": "robot_arm_chains.v1",
+ "claim_ceiling": "cpu_bounded_estimate",
+ "notice": "Each arm's joint frames, axes and limits, read with robot_arm_chains.read_urdf_arm from the URDF the pipeline prepared from the recipe's pinned public sources (tests/fixtures/body_kinematics, where each source's license file is kept). Derived data, not the publishers' files: no meshes or inertias.",
+ "arms": [
+  {
+   "recipe_id": "universal_robots_ur5e",
+   "source": {"repository_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description", "revision": "d4042c1f5123c86645cc5dbd650b4f461f697ee9", "entry_path": "urdf/ur.urdf.xacro", "license_id": "BSD-3-Clause"},
+   "read_from": {"body": "universal_robots_ur5e_robotiq_2f85_sim", "urdf_sha256": "sha256:9cde2637728bf3490e50175525485c4ce1315a3b8c329d3ab2faf6593c801860"},
+   "base_link": "base_link",
+   "flange_link": "tool0",
+   "joints": [
+    {"name": "base_link-base_link_inertia", "type": "fixed", "parent": "base_link", "child": "base_link_inertia", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 3.141592653589793]},
+    {"name": "shoulder_pan_joint", "type": "revolute", "parent": "base_link_inertia", "child": "shoulder_link", "xyz": [0.0, 0.0, 0.1625], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "shoulder_lift_joint", "type": "revolute", "parent": "shoulder_link", "child": "upper_arm_link", "xyz": [0.0, 0.0, 0.0], "rpy": [1.570796327, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "elbow_joint", "type": "revolute", "parent": "upper_arm_link", "child": "forearm_link", "xyz": [-0.425, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "wrist_1_joint", "type": "revolute", "parent": "forearm_link", "child": "wrist_1_link", "xyz": [-0.3922, 0.0, 0.1333], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "wrist_2_joint", "type": "revolute", "parent": "wrist_1_link", "child": "wrist_2_link", "xyz": [0.0, -0.0997, -2.044881182297852e-11], "rpy": [1.570796327, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "wrist_3_joint", "type": "revolute", "parent": "wrist_2_link", "child": "wrist_3_link", "xyz": [0.0, 0.0996, -2.042830148012698e-11], "rpy": [1.570796326589793, 3.141592653589793, 3.141592653589793], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "wrist_3-flange", "type": "fixed", "parent": "wrist_3_link", "child": "flange", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, -1.5707963267948966, -1.5707963267948966]},
+    {"name": "flange-tool0", "type": "fixed", "parent": "flange", "child": "tool0", "xyz": [0.0, 0.0, 0.0], "rpy": [1.5707963267948966, 0.0, 1.5707963267948966]}
+   ]
+  },
+  {
+   "recipe_id": "universal_robots_ur10e",
+   "source": {"repository_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description", "revision": "d4042c1f5123c86645cc5dbd650b4f461f697ee9", "entry_path": "urdf/ur.urdf.xacro", "license_id": "BSD-3-Clause"},
+   "read_from": {"body": "universal_robots_ur10e_robotiq_2f85_sim", "urdf_sha256": "sha256:efd25a1795a66a434f357bc636b14f540772f5858fe7c1917aad73c3b11aea37"},
+   "base_link": "base_link",
+   "flange_link": "tool0",
+   "joints": [
+    {"name": "base_link-base_link_inertia", "type": "fixed", "parent": "base_link", "child": "base_link_inertia", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 3.141592653589793]},
+    {"name": "shoulder_pan_joint", "type": "revolute", "parent": "base_link_inertia", "child": "shoulder_link", "xyz": [0.0, 0.0, 0.1807], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "shoulder_lift_joint", "type": "revolute", "parent": "shoulder_link", "child": "upper_arm_link", "xyz": [0.0, 0.0, 0.0], "rpy": [1.570796327, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "elbow_joint", "type": "revolute", "parent": "upper_arm_link", "child": "forearm_link", "xyz": [-0.6127, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "wrist_1_joint", "type": "revolute", "parent": "forearm_link", "child": "wrist_1_link", "xyz": [-0.57155, 0.0, 0.17415], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "wrist_2_joint", "type": "revolute", "parent": "wrist_1_link", "child": "wrist_2_link", "xyz": [0.0, -0.11985, -2.458164590756244e-11], "rpy": [1.570796327, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "wrist_3_joint", "type": "revolute", "parent": "wrist_2_link", "child": "wrist_3_link", "xyz": [0.0, 0.11655, -2.390480459346185e-11], "rpy": [1.570796326589793, 3.141592653589793, 3.141592653589793], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "wrist_3-flange", "type": "fixed", "parent": "wrist_3_link", "child": "flange", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, -1.5707963267948966, -1.5707963267948966]},
+    {"name": "flange-tool0", "type": "fixed", "parent": "flange", "child": "tool0", "xyz": [0.0, 0.0, 0.0], "rpy": [1.5707963267948966, 0.0, 1.5707963267948966]}
+   ]
+  },
+  {
+   "recipe_id": "fanuc_crx_10ia",
+   "source": {"repository_url": "https://github.com/fanuc-corporation/fanuc_description", "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2", "entry_path": "fanuc_crx_description/robot/crx10ia.urdf.xacro", "license_id": "Apache-2.0"},
+   "read_from": {"body": "fanuc_crx_10ia_robotiq_2f85_sim", "urdf_sha256": "sha256:1394727b030db5e52d0dd4a62a158ccb562c18ca4d41aab37f9aeaeec9569397"},
+   "base_link": "base_link",
+   "flange_link": "fanuc_flange",
+   "joints": [
+    {"name": "J1", "type": "revolute", "parent": "base_link", "child": "J1_link", "xyz": [0.0, 0.0, 0.245], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -3.3161255787892263, "upper": 3.3161255787892263},
+    {"name": "J2", "type": "revolute", "parent": "J1_link", "child": "J2_link", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -3.139847324337799, "upper": 3.139847324337799},
+    {"name": "J3", "type": "revolute", "parent": "J2_link", "child": "J3_link", "xyz": [0.0, 0.0, 0.54], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -1.239183768915974, "upper": 4.380776422505767},
+    {"name": "J4", "type": "revolute", "parent": "J3_link", "child": "J4_link", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -3.3161255787892263, "upper": 3.3161255787892263},
+    {"name": "J5", "type": "revolute", "parent": "J4_link", "child": "J5_link", "xyz": [0.54, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -3.139847324337799, "upper": 3.139847324337799},
+    {"name": "J6", "type": "revolute", "parent": "J5_link", "child": "J6_link", "xyz": [0.0, -0.15, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -3.9269908169872414, "upper": 3.9269908169872414},
+    {"name": "J6-flange", "type": "fixed", "parent": "J6_link", "child": "flange", "xyz": [0.16, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+    {"name": "flange-fanuc_flange", "type": "fixed", "parent": "flange", "child": "fanuc_flange", "xyz": [0.0, 0.0, 0.0], "rpy": [3.141592653589793, -1.5707963267948966, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "fanuc_crx_10ia_l",
+   "source": {"repository_url": "https://github.com/fanuc-corporation/fanuc_description", "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2", "entry_path": "fanuc_crx_description/robot/crx10ia_l.urdf.xacro", "license_id": "Apache-2.0"},
+   "read_from": {"body": "fanuc_crx_10ia_l_robotiq_2f85_sim", "urdf_sha256": "sha256:82ab86585f51c00894152439befde467c31ffb2adc12f64449301bf96044929e"},
+   "base_link": "base_link",
+   "flange_link": "fanuc_flange",
+   "joints": [
+    {"name": "J1", "type": "revolute", "parent": "base_link", "child": "J1_link", "xyz": [0.0, 0.0, 0.245], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -3.139847324337799, "upper": 3.139847324337799},
+    {"name": "J2", "type": "revolute", "parent": "J1_link", "child": "J2_link", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -3.139847324337799, "upper": 3.139847324337799},
+    {"name": "J3", "type": "revolute", "parent": "J2_link", "child": "J3_link", "xyz": [0.0, 0.0, 0.71], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -4.71238898038469, "upper": 4.71238898038469},
+    {"name": "J4", "type": "revolute", "parent": "J3_link", "child": "J4_link", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -3.3161255787892263, "upper": 3.3161255787892263},
+    {"name": "J5", "type": "revolute", "parent": "J4_link", "child": "J5_link", "xyz": [0.54, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -3.139847324337799, "upper": 3.139847324337799},
+    {"name": "J6", "type": "revolute", "parent": "J5_link", "child": "J6_link", "xyz": [0.0, -0.15, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -3.9269908169872414, "upper": 3.9269908169872414},
+    {"name": "J6-flange", "type": "fixed", "parent": "J6_link", "child": "flange", "xyz": [0.16, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+    {"name": "flange-fanuc_flange", "type": "fixed", "parent": "flange", "child": "fanuc_flange", "xyz": [0.0, 0.0, 0.0], "rpy": [3.141592653589793, -1.5707963267948966, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "fanuc_m710ic_45m",
+   "source": {"repository_url": "https://github.com/fanuc-corporation/fanuc_description", "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2", "entry_path": "fanuc_m710_description/robot/m710ic_45m.urdf.xacro", "license_id": "Apache-2.0"},
+   "read_from": {"body": "fanuc_m710ic_45m_robotiq_2f85_sim", "urdf_sha256": "sha256:e38e2c5bde6e67480016f5ca27e4e2d695be110afbaa76065f5161e9c4e5af3f"},
+   "base_link": "base_link",
+   "flange_link": "fanuc_flange",
+   "joints": [
+    {"name": "J1", "type": "revolute", "parent": "base_link", "child": "J1_link", "xyz": [0.0, 0.0, 0.565], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "J2", "type": "revolute", "parent": "J1_link", "child": "J2_link", "xyz": [0.15, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -1.5707963267948966, "upper": 2.356194490192345},
+    {"name": "J3", "type": "revolute", "parent": "J2_link", "child": "J3_link", "xyz": [0.0, 0.0, 1.15], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -1.4049900478554354, "upper": 3.5779249665883754},
+    {"name": "J4", "type": "revolute", "parent": "J3_link", "child": "J4_link", "xyz": [0.0, 0.0, 0.17], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -6.981317007977318, "upper": 6.981317007977318},
+    {"name": "J5", "type": "revolute", "parent": "J4_link", "child": "J5_link", "xyz": [1.295, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -2.181661564992912, "upper": 2.181661564992912},
+    {"name": "J6", "type": "revolute", "parent": "J5_link", "child": "J6_link", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -6.981317007977318, "upper": 6.981317007977318},
+    {"name": "J6-flange", "type": "fixed", "parent": "J6_link", "child": "flange", "xyz": [0.175, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+    {"name": "flange-fanuc_flange", "type": "fixed", "parent": "flange", "child": "fanuc_flange", "xyz": [0.0, 0.0, 0.0], "rpy": [3.141592653589793, -1.5707963267948966, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "yaskawa_gp12",
+   "source": {"repository_url": "https://github.com/ros-industrial/motoman", "revision": "846fbbc57c60223f12bf4795ea6404982d57709e", "entry_path": "motoman_gp12_support/urdf/gp12.xacro", "license_id": "BSD-3-Clause"},
+   "read_from": {"body": "yaskawa_gp12_robotiq_2f85_sim", "urdf_sha256": "sha256:3696732c53ea01cd42dd2b0b80ebb483229807b22811f97c01cd64556c78be49"},
+   "base_link": "base_link",
+   "flange_link": "tool0",
+   "joints": [
+    {"name": "joint_1_s", "type": "revolute", "parent": "base_link", "child": "link_1_s", "xyz": [0.0, 0.0, 0.45], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -2.967, "upper": 2.967},
+    {"name": "joint_2_l", "type": "revolute", "parent": "link_1_s", "child": "link_2_l", "xyz": [0.155, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -1.5708, "upper": 2.7052},
+    {"name": "joint_3_u", "type": "revolute", "parent": "link_2_l", "child": "link_3_u", "xyz": [0.0, 0.0, 0.614], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -1.4835, "upper": 2.6179},
+    {"name": "joint_4_r", "type": "revolute", "parent": "link_3_u", "child": "link_4_r", "xyz": [0.64, 0.0, 0.2], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -3.4906, "upper": 3.4906},
+    {"name": "joint_5_b", "type": "revolute", "parent": "link_4_r", "child": "link_5_b", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -2.6179, "upper": 2.6179},
+    {"name": "joint_6_t", "type": "revolute", "parent": "link_5_b", "child": "link_6_t", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -7.9412, "upper": 7.9412},
+    {"name": "joint_6_t-tool0", "type": "fixed", "parent": "link_6_t", "child": "tool0", "xyz": [0.1, 0.0, 0.0], "rpy": [3.1415926, -1.570796, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "yaskawa_gp20",
+   "source": {"repository_url": "https://github.com/ros-industrial/motoman", "revision": "846fbbc57c60223f12bf4795ea6404982d57709e", "entry_path": "motoman_gp25_support/urdf/gp25_20.xacro", "license_id": "BSD-3-Clause"},
+   "read_from": {"body": "yaskawa_gp20_robotiq_2f85_sim", "urdf_sha256": "sha256:92a62e020954baec467623e854768e0b756dea2d5de767a26674588d2d566777"},
+   "base_link": "base_link",
+   "flange_link": "tool0",
+   "joints": [
+    {"name": "joint_1_s", "type": "revolute", "parent": "base_link", "child": "link_1_s", "xyz": [0.0, 0.0, 0.505], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "joint_2_l", "type": "revolute", "parent": "link_1_s", "child": "link_2_l", "xyz": [0.15, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -1.8325957145940461, "upper": 2.705260340591211},
+    {"name": "joint_3_u", "type": "revolute", "parent": "link_2_l", "child": "link_3_u", "xyz": [0.0, 0.0, 0.76], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -1.5009831567151235, "upper": 2.792526803190927},
+    {"name": "joint_4_r", "type": "revolute", "parent": "link_3_u", "child": "link_4_r", "xyz": [0.87, 0.0, 0.2], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -3.490658503988659, "upper": 3.490658503988659},
+    {"name": "joint_5_b", "type": "revolute", "parent": "link_4_r", "child": "link_5_b", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, -1.0, 0.0], "lower": -2.443460952792061, "upper": 2.443460952792061},
+    {"name": "joint_6_t", "type": "revolute", "parent": "link_5_b", "child": "link_6_t", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [-1.0, 0.0, 0.0], "lower": -7.941248096574199, "upper": 7.941248096574199},
+    {"name": "joint_6_t-flange", "type": "fixed", "parent": "link_6_t", "child": "flange", "xyz": [0.105, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+    {"name": "flange-tool0", "type": "fixed", "parent": "flange", "child": "tool0", "xyz": [0.0, 0.0, 0.0], "rpy": [3.141592653589793, -1.5707963267948966, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "kuka_lbr_iiwa_14",
+   "source": {"repository_url": "https://github.com/google-deepmind/mujoco_menagerie", "revision": "cda5236f98383f6fbaa4820c6b18dba892cd087f", "entry_path": "kuka_iiwa_14/iiwa14.xml", "license_id": "BSD-3-Clause"},
+   "read_from": {"body": "kuka_lbr_iiwa_14_robotiq_2f85_sim", "urdf_sha256": "sha256:70bb46e137342d96dbb1ffa5c59b429393bf24ad3edfa03131389b1791fa8c68"},
+   "base_link": "base",
+   "flange_link": "attachment_site",
+   "joints": [
+    {"name": "joint1", "type": "revolute", "parent": "base", "child": "link1", "xyz": [0.0, 0.0, 0.1575], "rpy": [0.0, -0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -2.96706, "upper": 2.96706},
+    {"name": "joint2", "type": "revolute", "parent": "link1", "child": "link2", "xyz": [0.0, 0.0, 0.2025], "rpy": [1.5707963267948963, -0.0, 3.141592653589793], "axis": [0.0, 0.0, 1.0], "lower": -2.0944, "upper": 2.0944},
+    {"name": "joint3", "type": "revolute", "parent": "link2", "child": "link3", "xyz": [0.0, 0.2045, 0.0], "rpy": [1.5707963267948963, -0.0, 3.141592653589793], "axis": [0.0, 0.0, 1.0], "lower": -2.96706, "upper": 2.96706},
+    {"name": "joint4", "type": "revolute", "parent": "link3", "child": "link4", "xyz": [0.0, 0.0, 0.2155], "rpy": [1.5707963267948963, -0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -2.0944, "upper": 2.0944},
+    {"name": "joint5", "type": "revolute", "parent": "link4", "child": "link5", "xyz": [0.0, 0.1845, 0.0], "rpy": [1.5707963267948963, -0.0, 3.141592653589793], "axis": [0.0, 0.0, 1.0], "lower": -2.96706, "upper": 2.96706},
+    {"name": "joint6", "type": "revolute", "parent": "link5", "child": "link6", "xyz": [0.0, 0.0, 0.2155], "rpy": [1.5707963267948963, -0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -2.0944, "upper": 2.0944},
+    {"name": "joint7", "type": "revolute", "parent": "link6", "child": "link7", "xyz": [0.0, 0.081, 0.0], "rpy": [1.5707963267948963, -0.0, 3.141592653589793], "axis": [0.0, 0.0, 1.0], "lower": -3.05433, "upper": 3.05433},
+    {"name": "blueprint_attachment_site", "type": "fixed", "parent": "link7", "child": "attachment_site", "xyz": [0.0, 0.0, 0.045], "rpy": [0.0, -0.0, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "abb_gofa_crb15000_5_95",
+   "source": {"repository_url": "https://github.com/ros-industrial/abb", "revision": "45f4769d826cf3ac62a65495f2db67b78b0c81df", "entry_path": "abb_crb15000_support/urdf/crb15000_5_95.xacro", "license_id": "Apache-2.0"},
+   "read_from": {"body": "abb_gofa_crb15000_5_95_robotiq_2f85_sim", "urdf_sha256": "sha256:a78d0825f2a5f6e18180e4f6c0ddd022e271b7e46ce3608dfaa1ef068f39347e"},
+   "base_link": "base_link",
+   "flange_link": "tool0",
+   "joints": [
+    {"name": "joint_1", "type": "revolute", "parent": "base_link", "child": "link_1", "xyz": [0.0, 0.0, 0.265], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "joint_2", "type": "revolute", "parent": "link_1", "child": "link_2", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "joint_3", "type": "revolute", "parent": "link_2", "child": "link_3", "xyz": [0.0, 0.0, 0.444], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -3.9269908169872414, "upper": 1.4835298641951802},
+    {"name": "joint_4", "type": "revolute", "parent": "link_3", "child": "link_4", "xyz": [0.0, 0.0, 0.11], "rpy": [0.0, 0.0, 0.0], "axis": [1.0, 0.0, 0.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "joint_5", "type": "revolute", "parent": "link_4", "child": "link_5", "xyz": [0.47, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "joint_6", "type": "revolute", "parent": "link_5", "child": "link_6", "xyz": [0.101, 0.0, 0.08], "rpy": [0.0, 0.0, 0.0], "axis": [1.0, 0.0, 0.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "joint_6-flange", "type": "fixed", "parent": "link_6", "child": "flange", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+    {"name": "flange-tool0", "type": "fixed", "parent": "flange", "child": "tool0", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 1.5707963267948966, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "abb_gofa_crb15000_12_127",
+   "source": {"repository_url": "https://github.com/ros-industrial/abb", "revision": "45f4769d826cf3ac62a65495f2db67b78b0c81df", "entry_path": "abb_crb15000_support/urdf/crb15000_12_127.xacro", "license_id": "Apache-2.0"},
+   "read_from": {"body": "abb_gofa_crb15000_12_127_robotiq_2f85_sim", "urdf_sha256": "sha256:e38b4e7344bfb8494d8939d3c3361a617c32c3526610a894de8b63965e0300f2"},
+   "base_link": "base_link",
+   "flange_link": "tool0",
+   "joints": [
+    {"name": "joint_1", "type": "revolute", "parent": "base_link", "child": "link_1", "xyz": [0.0, 0.0, 0.338], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -4.71238898038469, "upper": 4.71238898038469},
+    {"name": "joint_2", "type": "revolute", "parent": "link_1", "child": "link_2", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "joint_3", "type": "revolute", "parent": "link_2", "child": "link_3", "xyz": [0.0, 0.0, 0.707], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -3.9269908169872414, "upper": 1.4835298641951802},
+    {"name": "joint_4", "type": "revolute", "parent": "link_3", "child": "link_4", "xyz": [0.0, 0.0, 0.11], "rpy": [0.0, 0.0, 0.0], "axis": [1.0, 0.0, 0.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "joint_5", "type": "revolute", "parent": "link_4", "child": "link_5", "xyz": [0.534, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 1.0, 0.0], "lower": -3.141592653589793, "upper": 3.141592653589793},
+    {"name": "joint_6", "type": "revolute", "parent": "link_5", "child": "link_6", "xyz": [0.101, 0.0, 0.08], "rpy": [0.0, 0.0, 0.0], "axis": [1.0, 0.0, 0.0], "lower": -4.71238898038469, "upper": 4.71238898038469},
+    {"name": "joint_6-flange", "type": "fixed", "parent": "link_6", "child": "flange", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+    {"name": "flange-tool0", "type": "fixed", "parent": "flange", "child": "tool0", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 1.5707963267948966, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "kinova_gen3",
+   "source": {"repository_url": "https://github.com/Kinovarobotics/ros_kortex", "revision": "c3280d8a6a6b5d96590d51538e3f265710a6c77d", "entry_path": "kortex_description/robots/gen3_robotiq_2f_85.xacro", "license_id": "BSD-3-Clause"},
+   "read_from": {"body": "kinova_gen3", "urdf_sha256": "sha256:5270753ca4582338763c9476621cb78bdf6c1ddac2e37251d247bf6c22cd4f84"},
+   "base_link": "base_link",
+   "flange_link": "end_effector_link",
+   "joints": [
+    {"name": "joint_1", "type": "continuous", "parent": "base_link", "child": "shoulder_link", "xyz": [0.0, 0.0, 0.15643], "rpy": [3.1416, 2.7629e-18, -4.9305e-36], "axis": [0.0, 0.0, 1.0]},
+    {"name": "joint_2", "type": "revolute", "parent": "shoulder_link", "child": "half_arm_1_link", "xyz": [0.0, 0.005375, -0.12838], "rpy": [1.5708, 2.1343e-17, -1.1102e-16], "axis": [0.0, 0.0, 1.0], "lower": -2.24, "upper": 2.24},
+    {"name": "joint_3", "type": "continuous", "parent": "half_arm_1_link", "child": "half_arm_2_link", "xyz": [0.0, -0.21038, -0.006375], "rpy": [-1.5708, 1.2326e-32, -2.9122e-16], "axis": [0.0, 0.0, 1.0]},
+    {"name": "joint_4", "type": "revolute", "parent": "half_arm_2_link", "child": "forearm_link", "xyz": [0.0, 0.006375, -0.21038], "rpy": [1.5708, -6.6954e-17, -1.6653e-16], "axis": [0.0, 0.0, 1.0], "lower": -2.57, "upper": 2.57},
+    {"name": "joint_5", "type": "continuous", "parent": "forearm_link", "child": "spherical_wrist_1_link", "xyz": [0.0, -0.20843, -0.006375], "rpy": [-1.5708, 2.2204e-16, -6.373e-17], "axis": [0.0, 0.0, 1.0]},
+    {"name": "joint_6", "type": "revolute", "parent": "spherical_wrist_1_link", "child": "spherical_wrist_2_link", "xyz": [0.0, 0.00017505, -0.10593], "rpy": [1.5708, 9.2076e-28, -8.2157e-15], "axis": [0.0, 0.0, 1.0], "lower": -2.09, "upper": 2.09},
+    {"name": "joint_7", "type": "continuous", "parent": "spherical_wrist_2_link", "child": "bracelet_link", "xyz": [0.0, -0.10593, -0.00017505], "rpy": [-1.5708, -5.5511e-17, 9.6396e-17], "axis": [0.0, 0.0, 1.0]},
+    {"name": "end_effector", "type": "fixed", "parent": "bracelet_link", "child": "end_effector_link", "xyz": [0.0, 0.0, -0.0615250000000001], "rpy": [3.14159265358979, 1.09937075168372e-32, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "ufactory_xarm7",
+   "source": {"repository_url": "https://github.com/xArm-Developer/xarm_ros2", "revision": "ac736c92b02de7ca7e0be6f737d77d46707464d8", "entry_path": "xarm_description/urdf/xarm_device.urdf.xacro", "license_id": "BSD-3-Clause"},
+   "read_from": {"body": "ufactory_xarm7_bimanual", "urdf_sha256": "sha256:193c20d372fa2ee32e41feb4df00eb060207d1795df0cde41b8845945f7089f9"},
+   "base_link": "L_link_base",
+   "flange_link": "L_link_eef",
+   "joints": [
+    {"name": "L_joint1", "type": "revolute", "parent": "L_link_base", "child": "L_link1", "xyz": [0.0, 0.0, 0.267], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "L_joint2", "type": "revolute", "parent": "L_link1", "child": "L_link2", "xyz": [0.0, 0.0, 0.0], "rpy": [-1.5708, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -2.059, "upper": 2.0944},
+    {"name": "L_joint3", "type": "revolute", "parent": "L_link2", "child": "L_link3", "xyz": [0.0, -0.293, 0.0], "rpy": [1.5708, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "L_joint4", "type": "revolute", "parent": "L_link3", "child": "L_link4", "xyz": [0.0525, 0.0, 0.0], "rpy": [1.5708, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -0.19198, "upper": 3.927},
+    {"name": "L_joint5", "type": "revolute", "parent": "L_link4", "child": "L_link5", "xyz": [0.0775, -0.3425, 0.0], "rpy": [1.5708, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "L_joint6", "type": "revolute", "parent": "L_link5", "child": "L_link6", "xyz": [0.0, 0.0, 0.0], "rpy": [1.5708, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -1.69297, "upper": 3.141592653589793},
+    {"name": "L_joint7", "type": "revolute", "parent": "L_link6", "child": "L_link7", "xyz": [0.076, 0.097, 0.0], "rpy": [-1.5708, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -6.283185307179586, "upper": 6.283185307179586},
+    {"name": "L_joint_eef", "type": "fixed", "parent": "L_link7", "child": "L_link_eef", "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]}
+   ]
+  },
+  {
+   "recipe_id": "franka_research_3_robotiq_2f85_sim",
+   "source": {"repository_url": "https://github.com/frankarobotics/franka_description", "revision": "7aeeddc449edf8d62b594f9e36a81da53e7796f9", "entry_path": "robots/fr3/fr3.urdf.xacro", "license_id": "Apache-2.0"},
+   "read_from": {"body": "franka_research_3_robotiq_2f85_sim", "urdf_sha256": "sha256:7531846166d013e2d66a8b55d4f0bb4993107cc270d63b887d4583a0d3ff86a6"},
+   "base_link": "fr3_link0",
+   "flange_link": "fr3_link8",
+   "joints": [
+    {"name": "fr3_joint1", "type": "revolute", "parent": "fr3_link0", "child": "fr3_link1", "xyz": [0.0, 0.0, 0.333], "rpy": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -2.9007, "upper": 2.9007},
+    {"name": "fr3_joint2", "type": "revolute", "parent": "fr3_link1", "child": "fr3_link2", "xyz": [0.0, 0.0, 0.0], "rpy": [-1.570796326794897, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -1.8361, "upper": 1.8361},
+    {"name": "fr3_joint3", "type": "revolute", "parent": "fr3_link2", "child": "fr3_link3", "xyz": [0.0, -0.316, 0.0], "rpy": [1.570796326794897, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -2.9007, "upper": 2.9007},
+    {"name": "fr3_joint4", "type": "revolute", "parent": "fr3_link3", "child": "fr3_link4", "xyz": [0.0825, 0.0, 0.0], "rpy": [1.570796326794897, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -3.077, "upper": -0.1169},
+    {"name": "fr3_joint5", "type": "revolute", "parent": "fr3_link4", "child": "fr3_link5", "xyz": [-0.0825, 0.384, 0.0], "rpy": [-1.570796326794897, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -2.8763, "upper": 2.8763},
+    {"name": "fr3_joint6", "type": "revolute", "parent": "fr3_link5", "child": "fr3_link6", "xyz": [0.0, 0.0, 0.0], "rpy": [1.570796326794897, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": 0.4398, "upper": 4.6216},
+    {"name": "fr3_joint7", "type": "revolute", "parent": "fr3_link6", "child": "fr3_link7", "xyz": [0.088, 0.0, 0.0], "rpy": [1.570796326794897, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "lower": -3.0508, "upper": 3.0508},
+    {"name": "fr3_joint8", "type": "fixed", "parent": "fr3_link7", "child": "fr3_link8", "xyz": [0.0, 0.0, 0.107], "rpy": [0.0, 0.0, 0.0]}
+   ]
+  }
+ ]
+}

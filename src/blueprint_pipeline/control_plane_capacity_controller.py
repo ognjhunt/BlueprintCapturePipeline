@@ -60,6 +60,9 @@ from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT
 from .control_plane_disk_usage import (
     SURVEY_SCHEMA_VERSION, is_orphan_scratch_root, sanitize_public_survey, survey_usage,
 )
+from . import control_plane_stall_alarm as stall_alarm
+from . import provider_spend_alerts as provider_spend
+from . import website_preparation_delivery_index as preparation_delivery
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "control_plane_capacity_report.v1"
@@ -71,12 +74,28 @@ SUMMARY_FILENAME = "summary.json"
 # The door's status reader refuses files over 256 KiB; the summary keeps half that.
 SUMMARY_MAX_BYTES = 128 * 1024
 DEFAULT_SURVEY_INTERVAL_SECONDS = 60 * 60
+#: At most this many partitions of one mount per hourly pass; the pass's time and
+#: entry budget is what normally stops it (2026-11-04: four a pass, with a cursor
+#: reset every hour, left 99.9% of the root disk unvisited).
+USAGE_PARTITIONS_PER_MOUNT = 256
 USAGE_UNCLASSIFIED_ALERT_BYTES = 1024**3
 USAGE_CONTAINER_RUNTIME_ALERT_BYTES = 20 * 1024**3
 ORPHAN_SCRATCH_AGGREGATE_PAGE_BYTES = 5 * 1024**3
 ORPHAN_SCRATCH_SINGLE_PAGE_BYTES = 2 * 1024**3
 USAGE_ATTRIBUTION_ALERT_FRACTION = 0.9
 USAGE_PROJECTED_UNCLASSIFIED_ROOTS = 20
+#: Byte budgets per storage class, in GiB, so a class that grows with no cap
+#: pages instead of filling the disk (2026-11-02: per-deploy and per-attempt
+#: copies grew the work volume about 4.8 GB a day with no retention). A survey
+#: is a lower bound, so a class it measures above budget really is above it;
+#: below budget it proves nothing. Alerting only: nothing is reclaimed.
+#: ``BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB`` overrides them as
+#: ``release=15,cache=20``; ``0``/``off`` turns the budgets off. ``work`` and
+#: ``unclassified`` start above what they held on 2026-11-02 (16.4 and 24.4 GiB),
+#: so the page means new growth, not the backlog awaiting the owner's retention
+#: decisions; tighten them (10 and 5) once that backlog is offloaded.
+CLASS_BUDGETS_ENV = "BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB"
+DEFAULT_CLASS_BUDGETS_GIB: Mapping[str, int] = {"release": 15, "cache": 20, "work": 25, "unclassified": 30}
 RESIZE_RECEIPT_SCHEMA_VERSION = "control_plane_volume_resize_receipt.v1"
 DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/capacity")
 DEFAULT_RELEASE_RETIREMENT_SUMMARY = Path(
@@ -112,11 +131,39 @@ PAGE_ALERT_CODES = frozenset({
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
     "reclaim_ineffective",
     "orphan_scratch_large",
+    # A storage class past its byte budget: something grows with no cap.
+    "storage_class_over_budget",
+    # Vast stops every instance once its balance runs out.
+    "provider_credit_insufficient",
+    # A live website preparation status callback undelivered for over an hour (D-05);
+    # parked callbacks only warn. The disk level is unchanged.
+    *preparation_delivery.PAGE_CODES,
+    # OpenAI, World Labs or Google Cloud spend crossed its line (B-08); the disk level is unchanged.
+    *provider_spend.PAGE_CODES,
+    # A live job that stopped moving (control_plane_stall_alarm); the disk level is unchanged.
+    *stall_alarm.PAGE_CODES,
 })
 
 
 def _severity(code: str) -> str:
     return "page" if code in PAGE_ALERT_CODES else "warn"
+
+
+_LEVEL_RANK = {"ok": 0, "warning": 1, "critical": 2}
+
+
+def _raise_level(report: dict[str, Any], codes: Collection[str]) -> None:
+    """Raise, never lower, the level for alerts that are not disk measurements.
+
+    A page code makes the tick critical; a warn-only code makes it a warning at
+    most. From 2026-09-05 any Vast funding blocker made the tick critical, so a
+    Vast API blip repeated hourly as critical capacity.
+    """
+    if not codes:
+        return
+    target = "critical" if any(code in PAGE_ALERT_CODES for code in codes) else "warning"
+    if _LEVEL_RANK[target] > _LEVEL_RANK.get(str(report.get("level")), 0):
+        report["level"] = target
 
 
 def _annotate_alerts(alerts: list[dict[str, Any]]) -> None:
@@ -179,7 +226,7 @@ def _reclaim_outlook(
 
     reclaim_phases = (
         "derived_directories", "content_store", "scratch_directories",
-        "workspace_bundles", "result_artifact_offload", "evidence_offload",
+        "workspace_bundles", "settled_activation_bundles", "result_artifact_offload", "evidence_offload",
         "replay_caches", "scene_workspaces", "result_residue_offload",
     )
     sources = dict.fromkeys(reclaim_phases)
@@ -205,7 +252,7 @@ def _reclaim_outlook(
     if (not isinstance(skipped_roots, list) or not isinstance(phase_errors, list)
             or skipped_roots or phase_errors):
         return outlook, [], False
-    enabled = [name for name in reclaim_phases[:4] if name in phases]
+    enabled = [name for name in reclaim_phases[:5] if name in phases]
     if opt_in.get("evidence_offload") is True:
         if "result_artifact_offload" in phases:
             enabled.append("result_artifact_offload")
@@ -570,10 +617,11 @@ def _refresh_usage(
     try:
         kwargs: dict[str, Any] = {"mounts": survey_mounts(mounts)}
         if survey is survey_usage:
-            # Each hourly observation gets a bounded, identity-checked next
-            # partition. Historical first trees cannot consume every pass.
-            # These are partial snapshots, never cumulative reclaimable bytes.
-            kwargs.update(continuation=(latest or {}).get("continuation"), partitions_per_mount=4)
+            # Each hourly pass walks the next identity-checked partitions until
+            # its budget is spent, and publishes the composite of every
+            # partition's latest measurement: attribution, never reclaimable bytes.
+            kwargs.update(continuation=(latest or {}).get("continuation"),
+                          partitions_per_mount=USAGE_PARTITIONS_PER_MOUNT)
         result = survey(**kwargs)
     except Exception as exc:  # noqa: BLE001 - a failed survey must never stop the capacity tick
         error = f"usage_survey_failed:{type(exc).__name__}"
@@ -642,19 +690,59 @@ def usage_projection(
             "candidate_partitions": survey.get("candidate_partitions"),
             "partition_entries_examined": survey.get("partition_entries_examined"),
             "continuation_status": list(survey.get("continuation_status") or []),
+            "partition_churn": survey.get("partition_churn"),
+            # How much of the partitioned cycle the composite rows cover, and how old they are.
+            "composite": survey.get("composite"),
         }
     if error:
         projection["error"] = error
     return projection
 
 
-def usage_alerts(survey: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Warnings and one owner page for large unregistered scratch."""
+def class_budgets(environ: Mapping[str, str] | None = None) -> tuple[dict[str, int], bool]:
+    """Budgets in bytes per storage class, and whether the setting was invalid."""
+
+    env = os.environ if environ is None else environ
+    raw = str(env.get(CLASS_BUDGETS_ENV) or "").strip()
+    defaults = {name: gib * GIB for name, gib in DEFAULT_CLASS_BUDGETS_GIB.items()}
+    if not raw:
+        return defaults, False
+    if raw.lower() in {"0", "off", "false", "no"}:
+        return {}, False
+    budgets: dict[str, int] = {}
+    for item in raw.split(","):
+        name, separator, value = item.partition("=")
+        name = name.strip()
+        try:
+            gib = int(value.strip())
+        except ValueError:
+            gib = 0
+        if not separator or not re.fullmatch(r"[a-z_]{1,32}", name) or gib <= 0 or name in budgets:
+            return defaults, True
+        budgets[name] = gib * GIB
+    return budgets, False
+
+
+def usage_alerts(survey: Mapping[str, Any], *, budgets: Mapping[str, int] | None = None) -> list[dict[str, Any]]:
+    """Warnings, one owner page for large unregistered scratch, and a page per class over budget."""
 
     def number(value: Any) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
 
     alerts: list[dict[str, Any]] = []
+    budget_invalid = False
+    if budgets is None:
+        budgets, budget_invalid = class_budgets()
+    if budget_invalid:
+        alerts.append({"code": "class_budget_setting_invalid"})
+    for row in survey.get("by_class") or []:
+        if not isinstance(row, Mapping):
+            continue
+        name, size = row.get("storage_class"), row.get("allocated_bytes")
+        if isinstance(name, str) and name in budgets and number(size) and size > budgets[name]:
+            alerts.append({"code": "storage_class_over_budget", "storage_class": name,
+                           "allocated_bytes": size, "budget_bytes": budgets[name],
+                           "byte_accounting": survey.get("byte_accounting", "current_snapshot")})
     total = survey.get("orphan_scratch_bytes")
     count = survey.get("orphan_scratch_count")
     largest = survey.get("orphan_scratch_largest_bytes")
@@ -690,9 +778,17 @@ _SUMMARY_MOUNT_KEYS = (
 _SUMMARY_ALERT_KEYS = (
     "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
     "allocated_bytes", "attributed_fraction", "severity", "reason", "status", "alert_count", "count",
-    "largest_bytes",
+    "largest_bytes", "credit_usd", "required_usd",
+    # Preparation status callbacks: the live count is ``count``; parked ones only warn.
+    "parked_count",
+    # Provider spend pages: amounts, the line and the window; never keys or paths.
+    "spend_usd", "threshold_usd", "limit_usd", "window", "http_status",
     "top_retained_reasons",
     "hours_until_floor", "decline_bytes_per_hour", "window_seconds",
+    "storage_class", "budget_bytes", "byte_accounting",
+    # Stall pages: identifiers and codes only, never paths or owner fields.
+    "target", "targets", "label", "phase", "blockers", "age_seconds", "age_is_lower_bound",
+    "threshold_seconds", "bound_seconds",
 )
 
 
@@ -700,8 +796,9 @@ def capacity_summary(report: Mapping[str, Any], *, max_bytes: int = SUMMARY_MAX_
     """The secret-free projection of a report that the operator door reads.
 
     Named keys only: no project spend, no provider funding, no alert error text and
-    no URLs. When the document would exceed ``max_bytes`` its longest list is halved
-    until it fits, and ``truncated`` says so.
+    no URLs. Provider spend (``provider_spend_alerts``) appears only as amounts,
+    lines and reason codes. When the document would exceed ``max_bytes`` its longest
+    list is halved until it fits, and ``truncated`` says so.
     """
 
     usage = report.get("usage")
@@ -729,6 +826,11 @@ def capacity_summary(report: Mapping[str, Any], *, max_bytes: int = SUMMARY_MAX_
         ),
         "reclaim_outlook": report.get("reclaim_outlook"),
     }
+    if isinstance(report.get("stall"), Mapping):
+        summary["stall"] = {key: report["stall"][key] for key in ("observed_at_epoch", "thresholds_seconds", "checks")
+                            if key in report["stall"]}
+    if isinstance(report.get("provider_spend"), Mapping):
+        summary["provider_spend"] = provider_spend.summary_projection(report["provider_spend"])
 
     def size() -> int:
         return len(json.dumps(summary, indent=2, sort_keys=True)) + 1
@@ -781,7 +883,11 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
     level = report.get("level")
     has_page = any(row.get("severity") == "page" for row in report.get("alerts") or []
                    if isinstance(row, Mapping))
-    if level == "ok" and not has_page:
+    # A stall check that cannot look is delivered (once, as a new alert below)
+    # even on a healthy host; otherwise the alarm could be silently off.
+    stall_blind = any(row.get("code") == stall_alarm.INCOMPLETE_CODE for row in report.get("alerts") or []
+                      if isinstance(row, Mapping))
+    if level == "ok" and not has_page and not stall_blind:
         return False
     if previous is None or previous.get("level") != level:
         return True
@@ -805,6 +911,18 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
 
     if actionable_alerts(report) - actionable_alerts(previous):
         return True
+
+    def stalled_targets(value: Mapping[str, Any]) -> set[tuple[str, str]]:
+        return {
+            (str(row.get("code")), str(target))
+            for row in value.get("alerts") or []
+            if isinstance(row, Mapping) and row.get("code") in stall_alarm.PAGE_CODES
+            for target in row.get("targets") or []
+        }
+
+    # A newly stalled job pages at once; a persisting one repeats hourly below.
+    if stalled_targets(report) - stalled_targets(previous):
+        return True
     last = previous.get("last_alert_epoch")
     return (has_page or level == "critical") and (
         not isinstance(last, (int, float)) or now - float(last) >= ALERT_REPEAT_SECONDS
@@ -813,7 +931,11 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
 
 def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 10.0) -> None:
     page_alerts = [a for a in report.get("alerts") or [] if a.get("severity") == "page"]
-    urgent = page_alerts or list(report.get("alerts") or [])
+    stalls = [line for a in page_alerts if (line := stall_alarm.describe(a))]
+    spends = [line for a in page_alerts if (line := provider_spend.describe(a))]
+    described = stall_alarm.PAGE_CODES | provider_spend.PAGE_CODES
+    page_alerts = [a for a in page_alerts if a.get("code") not in described]
+    urgent = page_alerts or [a for a in report.get("alerts") or [] if a.get("code") not in described]
     first = urgent[0] if urgent else {}
     summary = f"{first.get('mount') or 'control plane'}: {first.get('code') or report.get('level')}"
     if first.get("code") == "floor_within_three_days":
@@ -827,16 +949,27 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
     elif first.get("code") == "orphan_scratch_large":
         gib = float(first.get("allocated_bytes") or 0) / GIB
         summary = f"control plane: {gib:.1f} GiB unowned scratch in {first.get('count')} folders"
+    elif first.get("code") == "storage_class_over_budget":
+        summary = (f"control plane: {first.get('storage_class')} holds at least "
+                   f"{float(first.get('allocated_bytes') or 0) / GIB:.1f} GiB, over its "
+                   f"{float(first.get('budget_bytes') or 0) / GIB:.0f} GiB budget")
+    elif first.get("code") == preparation_delivery.STALLED_CODE:
+        summary = (f"website preparation status: a callback undelivered for "
+                   f"{float(first.get('age_seconds') or 0) / 3600:.1f}h "
+                   f"({first.get('count')} live, {first.get('parked_count') or 0} parked)")
     ineffective = next(
         (row for row in page_alerts if row.get("code") == "reclaim_ineffective"), None
     )
     if ineffective and ineffective.get("top_retained_reasons"):
         summary += "; retained: " + ", ".join(ineffective["top_retained_reasons"])
+    if stalls or spends:
+        # A stalled job or a provider's spend leads: the disk pages may have been repeating for days.
+        summary = "; ".join([*stalls, *spends, *([summary] if page_alerts else [])])
     payload = {
         "schema_version": "control_plane_capacity_alert.v1",
         "level": report.get("level"),
-        "severity": "page" if page_alerts else "warn",
-        "page": bool(page_alerts),
+        "severity": "page" if page_alerts or stalls or spends else "warn",
+        "page": bool(page_alerts or stalls or spends),
         "fingerprint": alert_fingerprint(report),
         "runbook": "docs/runbooks/control-plane-capacity.md",
         "summary": summary[:200],
@@ -851,14 +984,21 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
             }
             for row in report.get("mounts") or []
         ],
-        "text": "control-plane capacity "
+        "text": ("control-plane stall: " + "; ".join(stalls) + " | " if stalls else "")
+        + ("provider spend: " + "; ".join(spends) + " | " if spends else "")
+        + "control-plane capacity "
         + str(report.get("level"))
         + ": "
-        + "; ".join(f"{a.get('mount')} {a.get('code')}"
+        + "; ".join(f"{a.get('mount') or a.get('provider')} {a.get('code')}"
                     + (f" {float(a.get('hours_until_floor') or 0):.1f}h"
                        if a.get("code") == "floor_within_hours" else "")
-                    for a in report.get("alerts") or []),
+                    for a in report.get("alerts") or []
+                    if a.get("code") not in described),
     }
+    if stalls:
+        payload["stall_runbook"] = "docs/runbooks/control-plane-capacity.md#stalled-jobs"
+    if spends:
+        payload["spend_runbook"] = "docs/runbooks/beta-operations.md#2a-provider-funding"
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST"
     )
@@ -988,7 +1128,7 @@ def run_controller(
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: float | None = None,
     credit_collector: Callable[[], Mapping[str, Any]] | None = None,
-    credit_warning_usd: float = 5.0,
+    credit_warning_usd: float | None = None,
     credit_reserve_usd: float = 1.0,
     survey: Callable[..., Mapping[str, Any]] | None | object = _DEFAULT_SURVEY,
     survey_interval_seconds: float = DEFAULT_SURVEY_INTERVAL_SECONDS,
@@ -996,9 +1136,18 @@ def run_controller(
     release_retirement_summary_path: Path = DEFAULT_RELEASE_RETIREMENT_SUMMARY,
     break_glass_notes_root: Path = DEFAULT_BREAK_GLASS_NOTES_ROOT,
     storage_gc_summary_path: Path = DEFAULT_STORAGE_GC_SUMMARY,
+    stall_check: Callable[[float, Mapping[str, Any] | None], Mapping[str, Any]] | None = None,
+    spend_check: Callable[[float], Mapping[str, Any]] | None = None,
+    delivery_check: Callable[[float], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One tick. By default, survey when stale or forced. Pass ``survey=None``
-    only to reuse an existing report without scanning."""
+    only to reuse an existing report without scanning. ``stall_check`` (the
+    service passes ``control_plane_stall_alarm.observe_stalls``) adds its
+    pages to this tick's alerts; it reads job state and never changes it.
+    ``spend_check`` (``provider_spend_alerts``) adds provider spend pages the
+    same way; it only reads, and nothing admits or refuses work on it.
+    ``delivery_check`` (``website_preparation_delivery_index``) reads the
+    listener's preparation status delivery metrics the same way."""
 
     observed = time.time() if now is None else float(now)
     previous = _read_json(report_root / "latest.json")
@@ -1013,6 +1162,9 @@ def run_controller(
             if isinstance(alert, Mapping) and alert.get("code") == "floor_within_hours"
         },
     )
+    # The disks' own level. Disk-only pages key off it, so an accounting, funding or
+    # spend alert that raises the report's level below cannot raise a disk page.
+    disk_level = report["level"]
     from .task_evaluation_scene_spend import observe_configured_scene_project_spend
     try:
         if project_spend := observe_configured_scene_project_spend(now=observed):
@@ -1026,7 +1178,7 @@ def run_controller(
         } else "scene_spend_snapshot_unreadable_or_invalid"
         report["alerts"].append({"code": "project_spend_observation_blocked", "reason": reason})
     if credit_collector is not None:
-        from .provider_credit_admission import credit_admission
+        from .provider_credit_admission import PAGE_CREDIT_USD, credit_admission
 
         try:
             observation = credit_collector()
@@ -1039,13 +1191,38 @@ def run_controller(
         # old observation (epoch far in the past -> age > maximum_age).
         credit_epoch = observation.get("observed_at_epoch")
         credit_now = max(observed, float(credit_epoch)) if isinstance(credit_epoch, (int, float)) and not isinstance(credit_epoch, bool) else observed
-        funding = credit_admission(observation, required_usd=credit_warning_usd,
-                                   reserve_usd=credit_reserve_usd, now=credit_now)
+        funding = credit_admission(
+            observation, required_usd=PAGE_CREDIT_USD if credit_warning_usd is None else credit_warning_usd,
+            reserve_usd=credit_reserve_usd, now=credit_now)
         report["provider_funding"] = funding
         if funding["blockers"]:
-            report["level"] = "critical"
-            report["alerts"].extend({"provider": "vast", "code": code}
+            _raise_level(report, funding["blockers"])
+            balance = {"credit_usd": observation.get("credit_usd"),
+                       "required_usd": (funding["required_usd"] or 0) + (funding["reserve_usd"] or 0)}
+            report["alerts"].extend({"provider": "vast", "code": code,
+                                     **(balance if code == "provider_credit_insufficient" else {})}
                                     for code in funding["blockers"])
+    if spend_check is not None:
+        # The Vast rule: a spend page makes the tick critical, a warn a warning at most.
+        try:
+            spend = dict(spend_check(observed))
+        except Exception:  # noqa: BLE001 - never stop measurement; the error may carry credentials
+            spend = {"status": "failed", "alerts": [{"code": "provider_spend_check_failed"}]}
+        rows = [dict(row) for row in spend.pop("alerts", None) or [] if isinstance(row, Mapping)]
+        report["alerts"].extend(rows)
+        _raise_level(report, [str(row.get("code") or "") for row in rows])
+        report["provider_spend"] = spend
+    if delivery_check is not None:
+        # The same rule: a live status callback over an hour old pages, a parked one warns.
+        try:
+            delivery = dict(delivery_check(observed))
+        except Exception:  # noqa: BLE001 - never stop measurement
+            delivery = {"status": "failed", "alerts": [{"code": preparation_delivery.METRICS_UNREADABLE_CODE,
+                                                        "reason": "delivery_check_failed"}]}
+        rows = [dict(row) for row in delivery.pop("alerts", None) or [] if isinstance(row, Mapping)]
+        report["alerts"].extend(rows)
+        _raise_level(report, [str(row.get("code") or "") for row in rows])
+        report["preparation_delivery"] = delivery
     if survey is _DEFAULT_SURVEY:
         survey = survey_usage
     usage, usage_error = _refresh_usage(
@@ -1081,6 +1258,15 @@ def run_controller(
     if unreported_count or any(a["code"] == "break_glass_notes_unreadable" for a in report["alerts"]):
         if report["level"] == "ok":
             report["level"] = "warning"
+    if stall_check is not None:
+        try:
+            prior_stall = (previous or {}).get("stall")
+            stall = dict(stall_check(observed, prior_stall if isinstance(prior_stall, Mapping) else None))
+        except Exception:  # noqa: BLE001 - a stall check must never stop measurement
+            stall = {"status": "failed", "alerts": [{"code": stall_alarm.INCOMPLETE_CODE,
+                                                     "reason": "stall_check_failed"}]}
+        report["alerts"].extend(row for row in stall.pop("alerts", []) if isinstance(row, Mapping))
+        report["stall"] = stall
     if not webhook_url:
         report["alerts"].append({"code": "operator_alert_route_unconfigured"})
         if report["level"] == "ok":
@@ -1123,7 +1309,8 @@ def run_controller(
         gc_summary, now=observed, volume_growth=growth,
     )
     report["reclaim_outlook"] = outlook
-    if report["level"] == "critical" and reclaim_ineffective:
+    # Critical disks that GC cannot relieve; another alert's critical level is not a disk.
+    if disk_level == "critical" and reclaim_ineffective:
         report["alerts"].append({
             "code": "reclaim_ineffective",
             "top_retained_reasons": retained_reasons,
@@ -1169,7 +1356,7 @@ def _volume_from_environment() -> dict[str, Any] | None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     from .provider_credit_admission import (
-        ENABLED_ENV, RESERVE_ENV, WARNING_ENV, observe_vast_credit,
+        ENABLED_ENV, PAGE_CREDIT_USD, RESERVE_ENV, WARNING_ENV, observe_vast_credit,
     )
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -1184,6 +1371,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="survey disk usage now, whatever the age of the last survey")
     args = parser.parse_args(argv)
     mounts = args.mount or [item for item in str(os.getenv(MOUNTS_ENV) or "").split(":") if item] or list(DEFAULT_MOUNTS)
+    stall_config = stall_alarm.config_from_environment()
     report = run_controller(
         mounts=mounts,
         report_root=Path(args.report_root),
@@ -1194,11 +1382,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         token=_read_secret(str(os.getenv(DO_TOKEN_FILE_ENV) or "")) if os.getenv(VOLUME_ID_ENV) else "",
         credit_collector=(observe_vast_credit if os.getenv(ENABLED_ENV, "false").lower()
                           not in {"false", "0", ""} else None),
-        credit_warning_usd=float(os.getenv(WARNING_ENV, "5")),
+        credit_warning_usd=float(os.getenv(WARNING_ENV, str(PAGE_CREDIT_USD))),
         credit_reserve_usd=float(os.getenv(RESERVE_ENV, "1")),
         survey=survey_usage,
         survey_interval_seconds=_env_int(SURVEY_INTERVAL_ENV, DEFAULT_SURVEY_INTERVAL_SECONDS),
         force_survey=args.survey,
+        stall_check=None if stall_config is None else (
+            lambda now, prior: stall_alarm.observe_stalls(stall_config, now=now, previous=prior)),
+        spend_check=provider_spend.configured_spend_check(),
+        delivery_check=preparation_delivery.configured_delivery_check(),
     )
     if args.print_report:
         print(json.dumps(report, indent=2, sort_keys=True))

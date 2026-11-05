@@ -61,6 +61,47 @@ fi
 export TMPDIR="$deploy_tmp"
 door_phase staging_guard_done
 
+# A deploy retires an in-flight scene-configuration activation and every stage after
+# it refuses the old release, so its pre-paid work would be rebuilt from scratch.
+# Hold the deploy (never the job) while one is live on the running release, up to
+# the activation's own time limit; an override for a money, privacy or rights fix
+# goes now. Checked before the fetch, and before parked_settle.py marks a record as
+# deploying, so staying parked here leaves every record as it was.
+door_phase activation_hold_start
+hold_rc=0
+hold_out="$(DOOR_ACTIVE_RELEASE_LINK="${DOOR_ACTIVE_RELEASE_LINK:-/opt/blueprint/task-evaluation-control-plane}" \
+  python3 -I -S "$DOOR_INSTALLED_DIR/operator_door/activation_hold.py")" || hold_rc=$?
+hold_reason="${hold_out%%$'\n'*}"
+hold_times=""
+[[ "$hold_out" == *$'\n'* ]] && hold_times="${hold_out#*$'\n'}"
+echo "activation hold: ${hold_reason:-none} (rc=$hold_rc)${hold_times:+ retry/cap: $hold_times}"
+if [ "$hold_rc" -eq 5 ]; then
+  if [ -n "${DOOR_PARKED:-}" ]; then
+    door_stay_parked "$hold_reason"
+  elif [ "$mode" = production ]; then
+    # A canonical deploy carries one commit's provenance and never parks, so the
+    # refusal says when to retry (the next recheck) and when the cap lets it go.
+    time_re='^([0-9T:+-]{25}) ([0-9]{10}) ([0-9T:+-]{25}) ([0-9]{10})$'
+    echo "refused: scene_configuration_activation_live"
+    if [[ "$hold_times" =~ $time_re ]]; then
+      door_outcome refused scene_configuration_activation_live 2 activation_hold "$hold_reason" \
+        retry_after "${BASH_REMATCH[1]}" retry_after_epoch "${BASH_REMATCH[2]}" \
+        deploys_by "${BASH_REMATCH[3]}" deploys_by_epoch "${BASH_REMATCH[4]}"
+    else
+      door_outcome refused scene_configuration_activation_live 2 activation_hold "$hold_reason"
+    fi
+    exit 2
+  elif DOOR_ACTIVE_RELEASE_LINK="${DOOR_ACTIVE_RELEASE_LINK:-/opt/blueprint/task-evaluation-control-plane}" \
+      python3 -I -S "$DOOR_INSTALLED_DIR/operator_door/activation_hold.py" park; then
+    # Now a parked request: the runner's minute timer retries it, and its outcome
+    # is written by the deploy that settles it.
+    door_stay_parked "$hold_reason"
+  else
+    door_fail scene_configuration_activation_live
+  fi
+fi
+door_phase activation_hold_done
+
 door_prepare_source
 door_phase prepare_source_done
 door_settle_parked

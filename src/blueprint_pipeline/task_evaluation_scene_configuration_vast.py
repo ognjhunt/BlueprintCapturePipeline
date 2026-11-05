@@ -124,6 +124,7 @@ from .vast_independent_watchdog_control import (
     close_independent_vast_watchdog,
     close_independent_vast_watchdog_without_allocation,
 )
+from .provider_machine_avoidlist import scene_configuration_excluded_machine_ids
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_evidence_contracts import SCENE_CONFIGURATION_DIAGNOSTIC_RESULT_SCHEMA_VERSION
 from .vast_provider_transfer_upload import EXPECTED_PROVIDER_UPLOAD_BYTES_ENV
@@ -1075,7 +1076,8 @@ def run_scene_configuration_vast(
     With ``cpu_prestage_stage_limit`` the CPU stages up to that limit execute
     on this host first, from the same bundle and authority; their completed
     checkpoints travel as a digest-bound capsule and the paid run starts at
-    the first GPU stage. A prefix that fails never rents a GPU.
+    the first GPU stage. A prefix that fails never rents a GPU, and one whose
+    disk admission alone does not fit is skipped (``cpu_prestage_decision``).
     """
 
     job = Path(job_dir).expanduser().resolve()
@@ -1260,6 +1262,8 @@ def run_scene_configuration_vast(
         phase="before_allocation_and_staging",
         disk_usage_provider=disk_usage_provider,
     )
+    if output_admission.cpu_prestage_decision is not None:
+        cpu_prestage_stage_limit = None  # admitted only without it: every stage on the GPU
     if preallocation_disk_capacity["status"] != "ready":
         return _seal_live_terminal_result(
             job,
@@ -1588,6 +1592,7 @@ def run_scene_configuration_vast(
                 preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000"),
                 prefer_isaac_rt=True,
                 allowed_machine_ids=allowed_machine_ids,
+                excluded_machine_ids=scene_configuration_excluded_machine_ids(job_dir=job),
                 allowed_active_instance_ids=(),
                 vast_launch_lock_file=job.parent
                 / "scene_configuration_paid_launch.lock",

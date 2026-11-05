@@ -60,6 +60,17 @@ jobs:
       FULL_TEST_LANE_SHARD_INDEX: ${{ matrix.shard_index }}
 
     steps:
+      - name: Free runner disk for CUDA wheel installs
+        # The hosted image's unused toolchains leave too little room for the CUDA torch and warp
+        # wheels: 2026-11-04/05 runs failed with "No space left on device" mid-install.
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/powershell
+          df -h /
+
       - name: Bind ephemeral artifact roots
         shell: bash
         run: |
