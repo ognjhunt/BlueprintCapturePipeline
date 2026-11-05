@@ -1,6 +1,8 @@
 """A deploy between planning and preparation re-plans unprepared candidates, never spent ones."""
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
@@ -166,6 +168,41 @@ def test_a_candidate_our_harness_failed_is_planned_again_after_a_deploy_within_t
     # candidate-000 failed three times: never a fourth paid run, not even after another deploy.
     assert coordinator.replan_scope("campaign-1c", implementation_commit="d" * 40, queue_root=tmp_path) == [
         "candidate-001"]
+
+
+def test_a_raised_retry_bound_admits_a_candidate_dropped_when_its_retries_ran_out(tmp_path, monkeypatch):
+    """2026-11-05: pi05 and cosmos3 used every harness retry and left the site's plan chain while
+    their fixes shipped; the owner then raised the bound. After the next deploy each is planned
+    again, once, inside the site's allowance; a candidate with a result never is."""
+    from tests.test_beta_policy_screening_waitlist import Completes
+
+    monkeypatch.setattr(coordinator, "HARNESS_RETRY_LIMIT", 0)  # no retries yet
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                        executor=Backend(HARNESS_FAILED))
+    assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
+        "candidate-001"]
+    second = successor(plan(count=2), keep={"candidate-001"})
+    coordinator.supersede_campaign("campaign-1", second, implementation_commit=NEW, queue_root=tmp_path)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                        executor=Completes(second))
+    assert [row["status"] for row in publication(tmp_path, "campaign-1b")["candidates"]] == ["completed"]
+    third = "c" * 40
+    assert coordinator.replan_scope("campaign-1b", implementation_commit=third, queue_root=tmp_path) is None
+
+    monkeypatch.setattr(coordinator, "HARNESS_RETRY_LIMIT", 1)  # the owner raises the bound
+    # Only after a deploy: the plan that dropped it froze the commit it last failed under.
+    assert coordinator.replan_scope("campaign-1b", implementation_commit=NEW, queue_root=tmp_path) is None
+    assert coordinator.replan_scope("campaign-1b", implementation_commit=third, queue_root=tmp_path) == [
+        "candidate-000"]
+    coordinator.supersede_campaign("campaign-1b", successor(plan(count=2), campaign_id="campaign-1c",
+                                                            keep={"candidate-000"}, commit=third),
+                                   implementation_commit=third, queue_root=tmp_path)
+    retried = publication(tmp_path, "campaign-1c")
+    assert [(row["candidate_id"], row["status"]) for row in retried["candidates"]] == [("candidate-000", "pending")]
+    # The failed run's money stays committed at the site, and the re-admission is once per deploy.
+    assert Decimal(retried["budget"]["spent_upper_bound_usd"]) == Decimal("8")
+    assert coordinator.replan_scope("campaign-1c", implementation_commit=third, queue_root=tmp_path) is None
 
 
 def test_only_harness_failures_with_no_scored_episode_are_retried(tmp_path):

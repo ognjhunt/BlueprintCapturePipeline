@@ -55,7 +55,7 @@ from .vast_launch_slots import (  # noqa: F401 - re-exported for existing caller
     vast_launch_lock_paths,
 )
 from .decision_evidence_contracts import canonical_digest
-from .vast_create_failure_diagnosis import diagnose_empty_create_400
+from .vast_create_failure_diagnosis import diagnose_empty_create_400, offer_gone_codes
 from .vast_render_bundle_inventory import RETAINED_ENTRIES, read_render_manifest, resolve_render_inventory
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
 from .isaac_driver_support import (
@@ -9773,7 +9773,7 @@ def run_vast_provider_adapter(
             {
                 "status": "failed",
                 "reason": "vast_api_http_error",
-                "blockers": ["vast_api_http_error"],
+                "blockers": ["vast_api_http_error", *offer_gone_codes(base_result)],
                 "api_call_performed": True,
                 "http_status_code": exc.code,
                 "vast_error": _redact_text(

@@ -129,7 +129,8 @@ def publication(root, campaign_id="campaign-1"):
     return next(row for row in coordinator.pending_publications(queue_root=root) if row["campaign_id"] == campaign_id)
 
 
-def test_site_budget_is_shared_across_scene_revisions_and_uncertain_launches(tmp_path):
+def test_site_budget_is_shared_across_scene_revisions_and_uncertain_launches(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator, "SITE_LIMIT", Decimal("15"))  # two $8 campaigns, one fits
     first, second = plan(cost="8.00"), plan(campaign_id="campaign-2", cost="8.00")
     for value in (first, second):
         coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
@@ -188,7 +189,7 @@ def test_closed_native_result_within_budget_is_the_jobs_evaluation_result(tmp_pa
     assert published["schema_version"] == "beta_policy_screening_publication.v2"
     assert published["purpose"] == "job_evaluation" and published["claim_ceiling"] == "simulation_estimate"
     assert "recommendation_eligible" not in published
-    assert published["budget"]["spent_upper_bound_usd"] == "4" and published["budget"]["limit_usd"] == "15"
+    assert published["budget"]["spent_upper_bound_usd"] == "4" and published["budget"]["limit_usd"] == "30"
     # ADP separation: the runtime session stays below qualified evidence.
     assert value["claim_ceiling"] == "diagnostic_policy_execution"
     assert published["source"]["capture_id"] != published["site_id"]

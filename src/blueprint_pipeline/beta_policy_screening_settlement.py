@@ -1,7 +1,7 @@
 """Settle a finished beta screening attempt down to its own run's measured provider cost.
 
 Beta journey step: L5 candidate screening. The coordinator reserves each candidate's cap from the
-site's $15 allowance (``SITE_LIMIT``) and commits the whole cap once the provider allocated. Nothing
+site's allowance (``SITE_LIMIT``, $15 then) and commits the whole cap once the provider allocated. Nothing
 settled those commitments: capture-447ae4f4's three learned-policy attempts (2026-11-04) kept $12 of
 the $15 while their Vast budget ledgers estimated $0.44, $1.31 and $0.91 (runtime plus priced
 transfer), so no further $4 candidate could be funded at the site.
