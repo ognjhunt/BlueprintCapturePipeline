@@ -125,10 +125,25 @@ You are picking up from a Claude Code cloud session on another account that ran 
 
 ### 3.3 Video retention: Pipeline #3396 + WebApp #1218. Fix the review findings, then merge (WebApp first)
 
+- **UPDATE 15:15Z: every review fix below is DONE.**
+  - Heads: Pipeline `8d5f2ec`, WebApp `d7f8a1f`.
+  - Pipeline tests: 740 passed; the wide lane's failures are the same 193 that fail on main.
+  - WebApp: 649 + 1371 + 34 e2e passed.
+  - Deviation: the WebApp cache purge uses per-job markers written when a copy is fetched, not a read of the job's publications.
+  - #3396 also adds a `retention.lock` that withdrawal deletion now takes, refusing with `review_videos_busy`. **It therefore touches `website_capture_withdrawal_deletion.py`, as #3397 does.** Merge one, then merge main into the other and re-run its tests.
+  - **Order:**
+    1. WebApp #1218. Wait for green CI, merge, and confirm `https://tryblueprint.io/version.json` shows its commit.
+    2. Pipeline #3396: green CI, merge, deploy.
+    3. #3397: merge main in, CI, merge, deploy.
+  - **Backfill design (not built):**
+    - Run it as a bounded pass inside the existing `blueprint-beta-policy-screening.service`, beside `_settle_finished`, one attempt per tick. That unit has the object-store credentials and owns the ledger. It can't be a door operation: door units have no network and no credentials.
+    - Steps: run `retain` outside the ledger lock (idempotent; refuses a withdrawn capture). Then, under the lock, set `summary.review_videos` only if absent. `pending_publications` re-sends as a new revision, and the WebApp accepts videos added to a finished campaign.
+    - For groot's `screen-cea30f50e4d7a2b61e0eca0a92cfc58f`: 60 videos, 77,308,353 bytes, 61 range requests from our private store, no GPU.
+    - Build it as a PR after #3396 deploys, deploy it, then tell the owner the videos are on the task page.
 - **Branches:**
-  - Pipeline `claude/retain-screening-videos`, head 44562d6e3 at 14:50Z.
-  - WebApp `claude/task-page-screening-videos`, head 09d8e0d7d.
-- A subagent in the old session was applying fixes; it is gone. Check whether the heads moved and what the new commits did. If the heads haven't moved, implement the fixes yourself.
+  - Pipeline `claude/retain-screening-videos`, head 8d5f2ec (was 44562d6e3).
+  - WebApp `claude/task-page-screening-videos`, head d7f8a1f (was 09d8e0d7d).
+- The review fixes listed below were applied (see the UPDATE above). Spot-check them against the list before merging.
 - **What the PRs do:**
   - After GPU teardown, keep up to 80 MP4s per attempt (1 GiB, 64 MiB each) from the promoted output archive, verified against the sealed index.
   - Store them in `<pubsub-handoffs>/<bucket>/scenes/site-<req>/captures/<cap>/pipeline/beta_screening_review_videos/<attempt_id>/` with a sealed `manifest.json`.
