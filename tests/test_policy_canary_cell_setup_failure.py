@@ -284,3 +284,97 @@ def test_a_beta_gate_the_session_continued_past_is_not_named_the_gate_stage(tmp_
     else:  # Unchanged: a refusal the session did not continue past names the gate.
         assert failure["stage"] == "observation_gate" and failure["observation_gate_verdict"] == "refused"
         assert "observation_quality_flags" not in failure
+
+
+
+@pytest.mark.parametrize("exit_code, signal_number", [
+    (139, 11), (-11, 11), (135, 7), (-7, 7), (134, 6), (132, 4), (136, 8), (1, None), (0, None),
+    (137, None), (-9, None), (143, None), ("139", None), (None, None)])
+def test_only_a_fault_signal_is_a_fatal_signal(exit_code, signal_number) -> None:
+    assert setup_failure.fatal_signal(exit_code) == signal_number
+
+
+def _crashed_cell(tmp_path: Path, stages: list[str]) -> Path:
+    child_root = tmp_path / "cell_runs" / "00"
+    child_root.mkdir(parents=True)
+    (child_root / setup_failure.PROGRESS_FILENAME).write_text(
+        "".join(f"BLUEPRINT_POLICY_CANARY_PROGRESS:cell=0:stage={stage}\n" for stage in stages))
+    (child_root / "worker_console.log").write_text("[Fatal] terminating this process with exit code 139.\n")
+    return child_root
+
+
+@pytest.mark.parametrize("case", ["start_crash", "launched", "not_started", "exit_one", "child_sealed"])
+def test_a_machine_fault_is_a_fatal_signal_while_isaac_was_starting_with_no_result(tmp_path: Path, case: str) -> None:
+    inputs = _inputs(tmp_path)
+    stages = ["static_preflight_passed", "isaac_launch_started"]
+    if case == "launched":
+        stages.append("isaac_launch_completed")
+    elif case == "not_started":
+        stages = ["static_preflight_passed"]
+    child_root = _crashed_cell(tmp_path, stages)
+    if case == "child_sealed":
+        (child_root / RESULT).write_text("{}")
+    fault = setup_failure.cell_machine_fault(exit_code=1 if case == "exit_one" else 139, inputs=inputs, index=0,
+                                             child_root=child_root, output_root=tmp_path)
+    if case != "start_crash":
+        assert fault is None
+        return
+    assert fault["blocker"] == "policy_canary_session_machine_fault:simulator_start_crash"
+    assert (fault["stage"], fault["fatal_signal"], fault["worker_exit_code"]) == ("simulator_start_crash", 11, 139)
+    assert fault["progress_stages"] == stages and fault["candidate_policy_queried"] is False
+    assert fault["worker_console"]["relative_path"] == "cell_runs/00/worker_console.log"
+    assert fault["record_digest"] == canonical_digest(fault, digest_field="record_digest")
+    assert setup_failure.MACHINE_FAULT_BLOCKERS.isdisjoint(setup_failure.SETUP_FAILURE_BLOCKERS)
+
+
+@pytest.mark.parametrize("forge", ["none", "setup_prefix", "stage"])
+def test_the_recognizer_returns_the_machine_fault_code_only_for_its_own_record(tmp_path: Path, forge: str) -> None:
+    inputs = {**_inputs(tmp_path), "run_kind": session.BETA_RUN_KIND,
+              "candidate_ids": ["pi05_droid"], "runtime_inputs_digest": "sha256:" + "e" * 64,
+              "matrix_digest": "sha256:" + "f" * 64}
+    child_root = _crashed_cell(tmp_path, ["static_preflight_passed", "isaac_launch_started"])
+    sealed = {}
+    assert setup_failure.seal_cell_machine_fault(
+        exit_code=-11, inputs=inputs, index=0, child_root=child_root, output_root=tmp_path, children=[],
+        authority={"authority_digest": "sha256:" + "d" * 64}, construction_lineage_mode="diagnostic",
+        aggregate=lambda **_: None, seal_result=lambda *, result_path, result: sealed.update(result=result))
+    result = sealed["result"]
+    assert result["blockers"] == ["policy_canary_session_machine_fault:simulator_start_crash"]
+    assert result["execution_stopped_after_cell"] == 1 and result["stopped_before_next_cell"] is True
+    failure = result["cell_setup_failure"]
+    if forge == "setup_prefix":
+        failure["blocker"] = result["blockers"][0] = "policy_canary_session_setup_failed:simulator_start_crash"
+    elif forge == "stage":
+        failure["stage"] = "runtime_open"
+    if forge != "none":
+        failure["record_digest"] = canonical_digest(failure, digest_field="record_digest")
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    expected = "policy_canary_session_machine_fault:simulator_start_crash" if forge == "none" else None
+    assert setup_failure.sealed_setup_failure_blocker(result) == expected
+    # Outside a beta screening run nothing is sealed: the existing missing-result handling stands.
+    assert not setup_failure.seal_cell_machine_fault(
+        exit_code=139, inputs={**inputs, "run_kind": session.RUN_KIND}, index=0, child_root=child_root,
+        output_root=tmp_path, children=[], authority={}, construction_lineage_mode="diagnostic",
+        aggregate=lambda **_: None, seal_result=lambda **_: None)
+
+
+def test_the_parent_seals_a_machine_fault_instead_of_raising(tmp_path: Path, monkeypatch) -> None:
+    runtime_root, output = _stage_runtime_root(tmp_path)
+    calls = []
+
+    def seal(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(worker, "seal_cell_machine_fault", seal)
+
+    def spawn(*, index, child_root, **_kwargs):
+        (child_root / setup_failure.PROGRESS_FILENAME).write_text(
+            f"BLUEPRINT_POLICY_CANARY_PROGRESS:cell={index}:stage=isaac_launch_started\n")
+        return 139
+
+    assert worker._run_isolated_cell_processes(runtime_root=runtime_root, output_root=output,
+                                               run_cell_process=spawn) == 1
+    [call] = calls
+    assert (call["exit_code"], call["index"], call["children"]) == (139, 0, [])
+    assert not (output / "cell_runs/01").exists()

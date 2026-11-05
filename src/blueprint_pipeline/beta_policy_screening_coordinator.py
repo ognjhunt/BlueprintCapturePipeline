@@ -42,7 +42,7 @@ from .beta_policy_screening_result import (
 from .beta_policy_screening_settlement import settled_cost
 from .decision_evidence_contracts import canonical_digest
 from .policy_execution_evidence import SCRIPTED
-from .policy_canary_cell_setup_failure import SETUP_FAILURE_BLOCKERS
+from .policy_canary_cell_setup_failure import MACHINE_FAULT_BLOCKERS, SETUP_FAILURE_BLOCKERS
 from .website_candidate_feasibility import is_measured_refusal
 
 QUEUE_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT"
@@ -353,6 +353,24 @@ HARNESS_RETRY_LIMIT = 7
 #: same way: they are held, unspent, and planned again after the next deploy. Matches the WebApp's
 #: "launch" category ("Could not start in our simulator. This is ours to fix.").
 HARNESS_HOLD_BLOCKER = "beta_screening_held_after_launch_failure"
+#: How many times a site's candidate is planned again after its rented machine failed while starting
+#: the simulator (``MACHINE_FAULT_BLOCKERS``: a fatal signal before Isaac finished launching, so no
+#: policy ran). That is the machine, not our harness or the policy, so it never spends a harness
+#: retry (owner decision, 2026-11-05) and needs no deploy: the candidate is planned again at the
+#: same commit, on whatever machine the next offer search finds. It still spent money, so it is
+#: bounded, inside the site's existing allowance.
+MACHINE_FAULT_RETRY_LIMIT = 3
+
+
+def _machine_faulted(row: Mapping[str, Any]) -> bool:
+    blockers = set(row.get("blockers") or [])
+    return row.get("status") == "blocked" and bool(blockers) and blockers <= MACHINE_FAULT_BLOCKERS
+
+
+def _machine_fault_retry_allowed(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> bool:
+    faults = sum(1 for state in ledger["campaigns"].values()
+                 if state["site_id"] == site_id and _machine_faulted(state["candidates"].get(candidate_id) or {}))
+    return 0 < faults <= MACHINE_FAULT_RETRY_LIMIT
 
 
 def _measured_nothing(row: Mapping[str, Any]) -> bool:
@@ -451,7 +469,10 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
                 # limit still decides every reservation.
                 or row["status"] == "deferred" and row.get("blockers") == [BUDGET_EXHAUSTED_BLOCKER]
                 and frozen not in (None, implementation_commit) and not _spent(row)
-                and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < SITE_LIMIT):
+                and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < SITE_LIMIT
+                # Its machine failed while starting the simulator: planned again at any commit, bounded.
+                or _machine_faulted(row)
+                and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])):
             stale = True
     # A candidate whose retries ran out left the chain; a raised retry bound admits it again
     # at the next deploy, once (the plan that re-admits it freezes the new commit).
@@ -471,7 +492,9 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
     return [candidate["candidate_id"] for candidate in plan["candidates"]
             if not _spent(rows[candidate["candidate_id"]])
             or _harness_failed(rows[candidate["candidate_id"]])
-            and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] + dropped or None
+            and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])
+            or _machine_faulted(rows[candidate["candidate_id"]])
+            and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] + dropped or None
 
 
 def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: str | None = None,

@@ -64,7 +64,7 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
     validate_session_authority,
 )
 from blueprint_pipeline.policy_canary_cell_setup_failure import (
-    CELL_PROGRESS_STAGES as _CELL_PROGRESS_STAGES, cell_setup_failure, seal_cell_setup_failure,
+    CELL_PROGRESS_STAGES as _CELL_PROGRESS_STAGES, cell_setup_failure, seal_cell_machine_fault, seal_cell_setup_failure,
 )
 
 
@@ -1357,6 +1357,10 @@ def _run_isolated_cell_processes(
                 reason="policy_canary_isolated_cell_process_failed", interrupted_cell_index=index)
             raise
         child_result_path = child_root / PROVIDER_RESULT_FILENAME
+        if not child_result_path.is_file() and seal_cell_machine_fault(exit_code=exit_code, inputs=inputs, index=index,
+                child_root=child_root, output_root=output_root, authority=authority, children=child_results,
+                construction_lineage_mode=construction_lineage_mode, aggregate=_aggregate_isolated_cell_results, seal_result=_seal_result):
+            return 1  # the rented machine's simulator died while starting: never a harness retry
         if not child_result_path.is_file():
             _seal_team_prefix(output_root=output_root, inputs=inputs, authority=authority,
                 children=child_results, construction_lineage_mode=construction_lineage_mode,

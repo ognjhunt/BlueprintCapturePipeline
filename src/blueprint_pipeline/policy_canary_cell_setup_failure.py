@@ -7,6 +7,14 @@ way on the same image and scene. The parent checks each cell as it finishes,
 names the stage from the cell's own progress markers and sealed failure record,
 seals a blocked session result that says so, and starts no further cell.
 
+A cell whose simulator died by a fatal signal while Isaac was still starting
+(its progress reached ``isaac_launch_started`` and never
+``isaac_launch_completed``) and wrote no result failed on the rented machine,
+not in our harness: on 2026-11-05 a pi05 cell segfaulted inside the GPU's
+ray-tracing driver two seconds into start-up. It is sealed the same way under
+its own code (``MACHINE_FAULT_BLOCKERS``), which never spends a harness retry
+(owner decision, 2026-11-05).
+
 A gate refusal in the retained pre-policy shape keeps its existing handling:
 it is per cell, and the matrix continues. The diagnostic continuation's
 first-cell gate keeps cell 0 of its own runs. A beta gate that the session
@@ -18,6 +26,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import re
+import signal
 from typing import Any, Callable, Mapping
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -28,6 +37,14 @@ SCHEMA_VERSION = "policy_canary_cell_setup_failure.v1"
 BLOCKER_PREFIX = "policy_canary_session_setup_failed"
 STAGES = ("runtime_open", "observation_gate", "policy_load")
 SETUP_FAILURE_BLOCKERS = frozenset(f"{BLOCKER_PREFIX}:{stage}" for stage in STAGES)
+# The rented machine failed: "session" keeps the website's launch category, and it is not a setup failure.
+MACHINE_FAULT_PREFIX = "policy_canary_session_machine_fault"
+MACHINE_FAULT_STAGE = "simulator_start_crash"
+MACHINE_FAULT_BLOCKERS = frozenset({f"{MACHINE_FAULT_PREFIX}:{MACHINE_FAULT_STAGE}"})
+_PREFIXES = {**{stage: BLOCKER_PREFIX for stage in STAGES}, MACHINE_FAULT_STAGE: MACHINE_FAULT_PREFIX}
+# Signals that end a process on a hardware, driver or memory fault, never on request.
+_FATAL_SIGNALS = frozenset(int(value) for value in (
+    signal.SIGSEGV, signal.SIGBUS, signal.SIGILL, signal.SIGFPE, signal.SIGABRT))
 PROGRESS_FILENAME = "cell_progress.log"
 # The fixed milestones a cell reports; nothing else is ever written or read.
 CELL_PROGRESS_STAGES = frozenset({
@@ -174,6 +191,46 @@ def cell_setup_failure(*, child: Any, inputs: Mapping[str, Any], index: int, chi
     return record
 
 
+def fatal_signal(exit_code: Any) -> int | None:
+    """The fatal signal a process died of: a negative return code, or a crash reporter's 128 + N exit."""
+    if type(exit_code) is not int:
+        return None
+    for value in (-exit_code, exit_code - 128):
+        if value in _FATAL_SIGNALS:
+            return value
+    return None
+
+
+def cell_machine_fault(*, exit_code: Any, inputs: Mapping[str, Any], index: int, child_root: Path,
+                       output_root: Path) -> dict[str, Any] | None:
+    """The machine fault of a cell whose simulator died by a fatal signal while starting, else ``None``.
+
+    Only a cell that wrote no result qualifies: a sealed child owns its own account.
+    """
+    from blueprint_pipeline.native_task_arena_policy_canary_session import PROVIDER_RESULT_FILENAME
+
+    child_root = Path(child_root)
+    reached = cell_progress_stages(child_root, index)
+    signal_number = fatal_signal(exit_code)
+    if (signal_number is None or "isaac_launch_started" not in reached or "isaac_launch_completed" in reached
+            or (child_root / PROVIDER_RESULT_FILENAME).exists()):
+        return None
+    cell = inputs["cells"][index]
+    console = child_root / "worker_console.log"
+    record: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION, "stage": MACHINE_FAULT_STAGE,
+        "blocker": f"{MACHINE_FAULT_PREFIX}:{MACHINE_FAULT_STAGE}",
+        "cell_index": index, "cell_id": str(cell["cell_id"]), "seed": cell["seed"],
+        "fatal_signal": signal_number, "worker_exit_code": exit_code, "progress_stages": reached,
+        "candidate_policy_loaded": False, "candidate_policy_queried": False,
+        "worker_console": (_file_record(Path(output_root), console, None)
+                           if console.is_file() and not console.is_symlink() else None),
+        "record_digest": "",
+    }
+    record["record_digest"] = canonical_digest(record, digest_field="record_digest")
+    return record
+
+
 def seal_cell_setup_failure(*, output_root: Path, inputs: Mapping[str, Any], authority: Mapping[str, Any],
                             children: list[Mapping[str, Any]], failure: Mapping[str, Any],
                             construction_lineage_mode: str, aggregate: Callable[..., dict[str, Any]],
@@ -235,8 +292,24 @@ def seal_cell_setup_failure(*, output_root: Path, inputs: Mapping[str, Any], aut
     return result
 
 
+def seal_cell_machine_fault(*, exit_code: Any, inputs: Mapping[str, Any], index: int, child_root: Path,
+                            output_root: Path, children: list[Mapping[str, Any]], **seal: Any) -> bool:
+    """Seal a beta session stopped by its machine (``cell_machine_fault``); ``False`` when there is none.
+
+    No policy ran in the cell, and the next cell would start on the same machine.
+    """
+    from blueprint_pipeline.native_task_arena_policy_canary_session import BETA_RUN_KIND
+
+    fault = (cell_machine_fault(exit_code=exit_code, inputs=inputs, index=index, child_root=child_root,
+                                output_root=output_root) if inputs.get("run_kind") == BETA_RUN_KIND else None)
+    if fault is None:
+        return False
+    seal_cell_setup_failure(output_root=output_root, inputs=inputs, children=[*children, {}], failure=fault, **seal)
+    return True
+
+
 def sealed_setup_failure_blocker(result: Any) -> str | None:
-    """The one named setup blocker of a sealed provider session result, else ``None``.
+    """The one named setup blocker (or machine fault) of a sealed provider session result, else ``None``.
 
     Only a code from the closed vocabulary is returned; nothing in the record
     is echoed. The caller authenticates the result's binding to its attempt.
@@ -251,9 +324,11 @@ def sealed_setup_failure_blocker(result: Any) -> str | None:
             or result.get("claim_ceiling") != CLAIM_CEILING or result.get("stopped_before_next_cell") is not True
             or result.get("official_ranking_performed") is not False
             or result.get("scene_promotion_performed") is not False
-            or not isinstance(blockers, list) or len(blockers) != 1 or blockers[0] not in SETUP_FAILURE_BLOCKERS
+            or not isinstance(blockers, list) or len(blockers) != 1
+            or blockers[0] not in SETUP_FAILURE_BLOCKERS | MACHINE_FAULT_BLOCKERS
             or not isinstance(failure, Mapping) or failure.get("schema_version") != SCHEMA_VERSION
-            or failure.get("stage") not in STAGES or failure.get("blocker") != f"{BLOCKER_PREFIX}:{failure['stage']}"
+            or failure.get("stage") not in _PREFIXES
+            or failure.get("blocker") != f"{_PREFIXES[failure['stage']]}:{failure['stage']}"
             or failure["blocker"] != blockers[0]
             or failure.get("candidate_policy_loaded") is not False or failure.get("candidate_policy_queried") is not False
             or failure.get("record_digest") != canonical_digest(failure, digest_field="record_digest")
@@ -261,10 +336,11 @@ def sealed_setup_failure_blocker(result: Any) -> str | None:
             or not 0 <= failure["cell_index"] == stopped - 1 < planned
             or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")):
         return None
-    return f"{BLOCKER_PREFIX}:{failure['stage']}"
+    return f"{_PREFIXES[failure['stage']]}:{failure['stage']}"
 
 
 __all__ = [
-    "BLOCKER_PREFIX", "CELL_PROGRESS_STAGES", "SETUP_FAILURE_BLOCKERS", "STAGES",
-    "cell_progress_stages", "cell_setup_failure", "seal_cell_setup_failure", "sealed_setup_failure_blocker",
+    "BLOCKER_PREFIX", "CELL_PROGRESS_STAGES", "MACHINE_FAULT_BLOCKERS", "SETUP_FAILURE_BLOCKERS", "STAGES",
+    "cell_machine_fault", "cell_progress_stages", "cell_setup_failure", "fatal_signal", "seal_cell_machine_fault",
+    "seal_cell_setup_failure", "sealed_setup_failure_blocker",
 ]
