@@ -10,9 +10,17 @@ import pytest
 import blueprint_pipeline.internal_team_evaluation_diagnostic as diagnostic
 from blueprint_pipeline import team_candidate_quick10_launch as launch
 from blueprint_pipeline.droid_https_policy_client import INTERFACE_ID, REQUEST_SCHEMA
-from blueprint_pipeline.team_candidate_quick10_registry import offer_eligibility
+from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, offer_eligibility
 from tests.test_native_task_arena_bundle import _runtime_source_packet
 from tests.test_native_task_arena_packet import _request
+
+
+@pytest.fixture(autouse=True)
+def _registry_env_restored(monkeypatch):
+    """The diagnostic points the whole process at its registry (``os.environ``); undo that after each test,
+    or every later test in the worker reads this test's registry as the operator's."""
+    monkeypatch.setenv(REGISTRY_ENV, "")
+    monkeypatch.delenv(REGISTRY_ENV)
 
 
 def test_authored_fixture_binds_the_real_native_rigid_scorer(tmp_path):
