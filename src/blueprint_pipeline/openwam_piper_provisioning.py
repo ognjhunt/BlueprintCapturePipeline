@@ -9,7 +9,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -23,7 +22,7 @@ from .openwam_piper_runtime import policy_binding, serialized_binding, validate_
 from .openwam_piper_source import SOURCE_ARCHIVE, SOURCE_MANIFEST, extract_source
 
 from .local_policy_provisioning import (
-    DEADLINE_ENV, TransferBudget, fetch_exact, remaining_seconds,
+    DEADLINE_ENV, TransferBudget, fetch_exact, provisioning_failure_code, remaining_seconds,
     _sha256, _command, _extract_interpreter, _install_wheels,
 )
 
@@ -161,8 +160,7 @@ def _main(argv, *, provisioner, receipt_name):
         result = provisioner(Path(args.runtime), output, json.loads(Path(args.spec).read_text()))
     except Exception as exc:
         # Provider URL/query or secret values never enter the public result.
-        reason = str(exc)
-        code = reason if re.fullmatch(r"(?:openwam|local_policy)_[a-z0-9_]{1,120}", reason) else "openwam_provisioning_failed:" + type(exc).__name__
+        code = provisioning_failure_code("openwam", exc)
         result = {"status": "blocked", "blockers": [code],
                   "candidate_policy_queried": False}
     (output / receipt_name).write_text(json.dumps(result, sort_keys=True))

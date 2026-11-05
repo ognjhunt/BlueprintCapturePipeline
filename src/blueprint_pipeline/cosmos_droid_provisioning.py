@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -17,7 +16,7 @@ from .cosmos_droid_dependencies import DEPENDENCY_MANIFEST_FILENAME, verified_de
 from .cosmos_droid_source import (CHECKPOINT_REGISTRY_BYTES, CHECKPOINT_REGISTRY_STORE, SOURCE_ARCHIVE, SOURCE_MANIFEST,
     checkpoint_registry_downloads, extract_source)
 from .local_policy_provisioning import (
-    DEADLINE_ENV, TransferBudget, fetch_exact, remaining_seconds, _sha256,
+    DEADLINE_ENV, TransferBudget, fetch_exact, provisioning_failure_code, remaining_seconds, _sha256,
     _command, _extract_interpreter, _install_wheels,
 )
 
@@ -166,8 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = provision(Path(args.runtime), output, json.loads(Path(args.spec).read_text()))
     except Exception as exc:
-        reason = str(exc)
-        code = reason if re.fullmatch(r"(?:cosmos|local_policy)_[a-z0-9_]{1,120}", reason) else "cosmos_provisioning_failed:" + type(exc).__name__
+        code = provisioning_failure_code("cosmos", exc)
         result = {"status": "blocked", "blockers": [code], "candidate_policy_queried": False}
     (output / "cosmos_droid_provisioning.v1.json").write_text(json.dumps(result, sort_keys=True))
     return 0 if result["status"] == "ready" else 2
