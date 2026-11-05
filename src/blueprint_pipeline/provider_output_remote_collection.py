@@ -249,7 +249,7 @@ class RemoteProviderOutputCollector:
         """Bounded failure diagnostics, read after the verdicts; never refuses the collection."""
         if source.failure is not None:
             return not_collected("provider_output_transport_failed")
-        if not diagnostics_wanted(inspection):
+        if not diagnostics_wanted(inspection, archive.namelist()):
             return not_collected("runtime_result_completed_without_blockers")
         if not self._diagnostics_transfer_bytes:
             return not_collected("diagnostics_transfer_budget_zero")

@@ -23,7 +23,9 @@ Rules:
 - JSON is reduced to diagnostic fields: status, blockers, failure type and codes,
   trace frames as function, file name and line, selected cell index, and short
   error-message fields. Other content is never copied. JSON nested more than
-  ``MAX_JSON_DEPTH`` directories deep (per-episode records) is only counted.
+  ``MAX_JSON_DEPTH`` directories deep, and per-episode records, are only
+  counted, except an episode's own failure record (``*.failure_gap.json``,
+  ``*.failure_evidence.json``): at most ``MAX_EPISODE_FAILURE_RECORDS`` are read.
 - Every line or message kept is credential-redacted (``bounded_error``) and
   trimmed. A log excerpt keeps its last ``TAIL_LINES`` lines and earlier lines
   that look like errors: at most ``EXCERPT_LINES`` lines and ``EXCERPT_BYTES``.
@@ -70,6 +72,9 @@ ERROR_LINES = 120
 EXCERPT_LINES = 200
 EXCERPT_BYTES = 64 * 1024
 MAX_RESULT_ROWS = 200
+#: Per-episode failure records read: each says why one episode stopped.
+EPISODE_FAILURE_SUFFIXES = (".failure_gap.json", ".failure_evidence.json")
+MAX_EPISODE_FAILURE_RECORDS = 24
 MAX_LISTED_MEMBERS = 200
 MAX_SUMMARY_BYTES = 1024**2
 COMPACT_MAX_BYTES = 32 * 1024
@@ -82,8 +87,9 @@ CLEAN_STATUSES = frozenset({
     "completed", "completed_unqualified", "passed", "runtime_completed_unqualified_pending_closeout",
 })
 _MESSAGE_KEY = re.compile(r"(?i)error|exception|message|reason|failure|stderr|detail")
+_EPISODE_FAILURE_FIELDS = ("episode_failure_stage", "episode_failure_cause", "failure_type", "failure_code")
 _PROJECTED = frozenset({"status", "blockers", "session_failure_type", "session_failure_codes",
-                        "session_failure_source_trace", "selected_cell_index"})
+                        "session_failure_source_trace", "selected_cell_index", *_EPISODE_FAILURE_FIELDS})
 _TRACE_FILE = re.compile(r"[A-Za-z0-9_.-]{1,160}")
 _TRACE_FUNCTION = re.compile(r"[A-Za-z_<][A-Za-z0-9_<>.]{0,159}")
 _CONTROL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
@@ -107,12 +113,21 @@ def _name(name: str) -> str:
     return bounded_error_text(name)
 
 
-def diagnostics_wanted(inspection: Mapping[str, Any]) -> bool:
-    """False only for a readable runtime result that completed with no blockers."""
+def _episode_failure_record(name: str) -> bool:
+    return name.lower().endswith(EPISODE_FAILURE_SUFFIXES)
+
+
+def diagnostics_wanted(inspection: Mapping[str, Any], member_names: Iterable[str] = ()) -> bool:
+    """False only for a readable runtime result that completed with no blockers and no episode failure.
+
+    A session that closed cleanly can still hold episodes that stopped before the
+    policy ran; their failure records are the only account of why.
+    """
     return not (inspection.get("runtime_result_present") is True
                 and inspection.get("runtime_result_status") in CLEAN_STATUSES
                 and not inspection.get("runtime_result_blockers")
-                and not inspection.get("json_parse_errors"))
+                and not inspection.get("json_parse_errors")
+                and not any(_episode_failure_record(name) for name in member_names))
 
 
 def not_collected(reason: str) -> dict[str, Any]:
@@ -138,7 +153,8 @@ def _unread_reason(info: zipfile.ZipInfo) -> str | None:
     if info.flag_bits & 0x1:
         return "encrypted_member"
     is_json = name.lower().endswith(".json")
-    if is_json and (len(path.parts) - 1 > MAX_JSON_DEPTH or "episodes" in path.parts[:-1]):
+    if is_json and (len(path.parts) - 1 > MAX_JSON_DEPTH
+                    or "episodes" in path.parts[:-1] and not _episode_failure_record(name)):
         # Per-episode records are counted, never read: a run can hold thousands.
         return "nested_json_member"
     cap = MAX_JSON_MEMBER_BYTES if is_json else MAX_TEXT_MEMBER_BYTES
@@ -149,7 +165,8 @@ def _unread_reason(info: zipfile.ZipInfo) -> str | None:
 
 def _priority(info: zipfile.ZipInfo) -> tuple[int, int]:
     lower = PurePosixPath(info.filename).name.lower()
-    rank = (0 if lower.endswith(".json") and "result" in lower else 1 if lower.endswith(".log")
+    rank = (0 if lower.endswith(".json") and "result" in lower or _episode_failure_record(lower)
+            else 1 if lower.endswith(".log")
             else 2 if lower.endswith(".json") else 3)
     # Within a rank, archive order keeps a remote reader's blocks local.
     return rank, info.header_offset
@@ -247,6 +264,9 @@ def _result_row(member: str, value: Any) -> dict[str, Any] | None:
             row[key] = [_text(item, 200) for item in value[key][:20] if isinstance(item, str)]
     if isinstance(value.get("session_failure_type"), str):
         row["session_failure_type"] = _text(value["session_failure_type"], 160)
+    for key in _EPISODE_FAILURE_FIELDS:  # an episode failure record's typed verdict
+        if isinstance(value.get(key), str):
+            row[key] = _text(value[key], 200)
     if type(value.get("selected_cell_index")) is int:
         row["selected_cell_index"] = value["selected_cell_index"]
     trace = _trace(value.get("session_failure_source_trace"))
@@ -372,8 +392,12 @@ def _summarize(archive: zipfile.ZipFile, *, archive_source: str,
         if reason != "nested_json_member" and len(listed) < MAX_LISTED_MEMBERS:
             listed.append({"member": _name(info.filename), "reason": reason})
 
+    failure_records = 0
     for info in infos:
         reason = _unread_reason(info)
+        if not reason and _episode_failure_record(info.filename):
+            failure_records += 1
+            reason = "episode_failure_record_cap" if failure_records > MAX_EPISODE_FAILURE_RECORDS else None
         if reason:
             skip(info, reason)
         else:
@@ -463,7 +487,7 @@ def compact(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
     rows = [{key: row[key] for key in ("member", "status", "blockers", "session_failure_type",
                                         "session_failure_codes", "session_failure_source_trace",
                                         "selected_cell_index", "episode_count", "candidate_policy_queried",
-                                        "error_messages") if key in row}
+                                        *_EPISODE_FAILURE_FIELDS, "error_messages") if key in row}
             for row in diagnostics.get("results") or [] if isinstance(row, Mapping) and _failing(row)]
     for row in rows:
         for key, keep in (("blockers", 8), ("session_failure_codes", 8), ("error_messages", 4)):
