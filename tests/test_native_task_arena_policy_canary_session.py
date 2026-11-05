@@ -857,3 +857,113 @@ def test_a_missing_module_is_named_and_its_import_frames_are_kept(tmp_path: Path
     trace = result["session_failure_source_trace"]
     assert {"file": "episode.py", "function": "<module>", "line": 1} in trace
     assert "secret-value" not in json.dumps(result)
+
+
+def _completed_episode(_session, policy, context):
+    return {
+        "status": "completed", "candidate_policy_queried": True, "actions_reached_robot": True, "arm_moved": True,
+        "checkpoint_digest": policy["checkpoint_digest"], "runtime_identity_digest": policy["runtime_identity_digest"],
+        **{field: "sha256:" + str(index) * 64 for index, field in enumerate((
+            "lossless_frame_manifest_digest", "review_video_digest", "returned_action_sequence_digest",
+            "action_delivery_readback_digest", "state_trace_digest", "contact_force_digest",
+            "task_object_trajectory_digest", "deterministic_score_digest"), start=1)},
+        "scoring_authority": "deterministic_simulator_state",
+    }
+
+
+def _gated_session(authority, inputs, gate, calls, *, selected_cell_index=0):
+    def load_policy(_session, candidate_id):
+        calls["loads"].append(candidate_id)
+        return {"candidate_id": candidate_id, "checkpoint_digest": "sha256:" + candidate_id.encode().hex()[:64].ljust(64, "0"),
+                "runtime_identity_digest": "sha256:" + "e" * 64}
+
+    return execute_paired_session(
+        authority=authority, runtime_inputs=inputs, selected_cell_index=selected_cell_index,
+        open_session=lambda _inputs: {"session": "warm", "provider_allocations_observed": 1},
+        load_policy=load_policy, run_episode=_completed_episode, close_policy=lambda _policy: None,
+        close_session=lambda _session: {"status": "closed", "provider_allocations_observed": 1,
+                                        "teardown_completed": True, "provider_zero_confirmed": True},
+        prepolicy_observation_gate=lambda _session: gate,
+    )
+
+
+def test_beta_session_continues_past_a_usable_frame_gate_and_records_typed_flags(tmp_path, monkeypatch) -> None:
+    from tests.test_beta_screening_worker_control import REAL_GATE_BLOCKERS, runtime_observation_gate, stage_beta_bundle
+    _runtime, _output, inputs, authority, *_ = stage_beta_bundle(tmp_path, monkeypatch)
+    gate, calls = runtime_observation_gate(backend_digest="sha256:" + "b" * 64), {"loads": []}
+    result = _gated_session(authority, inputs, gate, calls)
+    assert result["session_failure_type"] is None and result["status"] == "completed_unqualified"
+    assert calls["loads"] == inputs["candidate_ids"] and len(result["episodes"]) == 1
+    assert result["preload_observation_gate"] == gate  # the verdict, unchanged
+    assert result["observation_quality_flags"] == sorted(REAL_GATE_BLOCKERS)
+    assert result["observation_integrity_flagged"] is True
+
+    unusable = runtime_observation_gate(backend_digest="sha256:" + "b" * 64, frame_structure_passed=False)
+    forged = {**gate, "blockers": gate["blockers"][:1]}
+    for refused in (unusable, forged):
+        calls = {"loads": []}
+        blocked = _gated_session(authority, inputs, refused, calls)
+        assert blocked["status"] == "blocked" and calls["loads"] == [] and blocked["episodes"] == []
+        assert blocked["session_failure_type"] == "PolicyCanarySessionError"
+        assert "observation_quality_flags" not in blocked
+
+
+def test_internal_canary_session_still_stops_at_the_same_gate(tmp_path) -> None:
+    from tests.test_beta_screening_worker_control import runtime_observation_gate
+    authority, inputs = _authority(tmp_path)
+    calls = {"open": 0, "close": 0, "loads": []}
+    result = execute_paired_session(**_preload_gate_session_kwargs(tmp_path, calls),
+                                    prepolicy_observation_gate=lambda _session: runtime_observation_gate(
+                                        backend_digest="sha256:" + "b" * 64))
+    assert result["status"] == "blocked" and calls["loads"] == [] and result["episodes"] == []
+    assert "observation_quality_flags" not in result
+
+
+def test_observation_quality_flags_are_typed_and_only_beta() -> None:
+    from blueprint_pipeline.native_task_arena_policy_canary_session import (
+        BETA_RUN_KIND, RUN_KIND, TEAM_RUN_KIND, observation_quality_flags,
+    )
+    from blueprint_pipeline.policy_episode_lifecycle import observation_quality_flag_codes
+    from tests.test_beta_screening_worker_control import runtime_observation_gate
+
+    assert observation_quality_flag_codes([
+        "composition_gate_capture_failed:RuntimeError:boom at /workspace/x", "Not A Code", "wrist:task_object:x",
+        "wrist:task_object:x"]) == ["composition_gate_capture_failed", "observation_gate_blocker_untyped",
+                                    "wrist:task_object:x"]
+    gate = runtime_observation_gate(backend_digest="sha256:" + "b" * 64)
+    assert observation_quality_flags(gate, run_kind=BETA_RUN_KIND) == gate["blockers"]
+    assert observation_quality_flags(gate, run_kind=RUN_KIND) is None
+    assert observation_quality_flags(gate, run_kind=TEAM_RUN_KIND) is None
+    malformed = {**gate, "status": "passed"}
+    malformed["gate_digest"] = canonical_digest(malformed, digest_field="gate_digest")
+    assert observation_quality_flags(malformed, run_kind=BETA_RUN_KIND) is None
+    # A passing gate has nothing to flag.
+    passed = {**gate, "status": "passed", "policy_observation_integrity_passed": True, "blockers": []}
+    passed["gate_digest"] = canonical_digest(passed, digest_field="gate_digest")
+    assert observation_quality_flags(passed, run_kind=BETA_RUN_KIND) is None
+
+
+@pytest.mark.parametrize("change", ["internal_run_kind", "unsorted", "untyped", "empty", "unmarked"])
+def test_result_validator_rejects_malformed_or_non_beta_flags(tmp_path, monkeypatch, change) -> None:
+    from tests.test_beta_screening_worker_control import runtime_observation_gate, stage_beta_bundle
+    gate = runtime_observation_gate(backend_digest="sha256:" + "b" * 64)
+    _runtime, _output, inputs, authority, *_ = stage_beta_bundle(tmp_path, monkeypatch)
+    result = _gated_session(authority, inputs, gate, {"loads": []}, selected_cell_index=None)
+    assert validate_session_result(result)["observation_quality_flags"] == gate["blockers"]
+    if change == "internal_run_kind":  # The same flags on an internal canary result.
+        (tmp_path / "internal").mkdir()
+        authority, inputs = _authority(tmp_path / "internal")
+        result = {**_gated_session(authority, inputs, {"policy_observation_integrity_passed": True}, {"loads": []},
+                                   selected_cell_index=None),
+                  "observation_quality_flags": gate["blockers"], "observation_integrity_flagged": True}
+    elif change == "unsorted":
+        result["observation_quality_flags"] = list(reversed(result["observation_quality_flags"]))
+    elif change == "untyped":
+        result["observation_quality_flags"] = ["Free text: /workspace/secret"]
+    elif change == "empty":
+        result["observation_quality_flags"] = []
+    else:
+        result.pop("observation_integrity_flagged")
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    with pytest.raises(PolicyCanarySessionError, match="policy_canary_session_observation_quality_flags_invalid"):
+        validate_session_result(result)

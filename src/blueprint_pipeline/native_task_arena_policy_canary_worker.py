@@ -59,7 +59,7 @@ from blueprint_pipeline.appearance_render_backend import (
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     BETA_RUN_KIND, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND,
-    execute_paired_session,
+    execute_paired_session, observation_quality_fields, observation_quality_flags,
     validate_runtime_input_manifest,
     validate_session_authority,
 )
@@ -1142,6 +1142,7 @@ def _aggregate_isolated_cell_results(
         "provider_zero_required_after_return": True,
         "construction_lineage_mode": construction_lineage_mode,
         "matrix_digest": inputs.get("matrix_digest") or _digest(inputs["cells"]),
+        **observation_quality_fields(child_results),  # a beta cell's flags stay with the run
         "result_digest": "",
     }
     if inputs.get("run_kind") == BETA_RUN_KIND:
@@ -1840,6 +1841,7 @@ def _run_selected_cell(
                         "runtime_gate": current_session.get(
                             "policy_observation_runtime_gate"
                         ),
+                        "run_kind": inputs["run_kind"],
                     },
                     progress=episode_progress,
                     scientific_reset_reader=scientific_reset_reader,
@@ -2160,28 +2162,25 @@ def _run_selected_cell(
                 gate["gate_digest"] = canonical_digest(gate, digest_field="gate_digest")
                 (output_root / "prepolicy_asset_feasibility/combined_observation_gate.json").write_text(
                     json.dumps(gate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            if gate.get("status") != "passed" or gate.get("policy_observation_integrity_passed") is not True:
+            passed = gate.get("status") == "passed" and gate.get("policy_observation_integrity_passed") is True
+            # A beta gate whose frames are structurally usable continues as if passed, keeping its
+            # verdict; its blockers become flags. Frames that are not structurally usable are
+            # unusable, so they (and every other run kind) still stop here, before any policy load.
+            flags = None if passed else observation_quality_flags(gate, run_kind=inputs["run_kind"])
+            if not passed and flags is None:
                 current_session["policy_observation_runtime_gate"] = gate
                 return gate
             if bound_runtime.configure_post_gate_renderer is None:
-                raise RuntimeError(
-                    "policy_canary_post_gate_renderer_guard_unavailable"
-                )
-            renderer_guard = dict(
-                bound_runtime.configure_post_gate_renderer(
-                    observation_gate=gate,
-                    output_path=(
-                        output_root
-                        / "prepolicy_observation_gate"
-                        / "post_gate_rtx_streaming_guard.v1.json"
-                    ),
-                )
-            )
+                raise RuntimeError("policy_canary_post_gate_renderer_guard_unavailable")
+            renderer_guard = dict(bound_runtime.configure_post_gate_renderer(
+                observation_gate=gate, output_path=output_root / "prepolicy_observation_gate" / "post_gate_rtx_streaming_guard.v1.json",
+                **({"accept_observation_quality_flags": True} if flags else {})))
             if renderer_guard.get("status") != "configured":
                 raise RuntimeError("policy_canary_post_gate_renderer_guard_failed")
             current_session["policy_observation_runtime_gate"] = gate
             current_session["post_gate_rtx_streaming_guard"] = renderer_guard
-            report_progress("observation_gate_passed")
+            if passed:  # A flagged gate did not pass; the session only continues past it.
+                report_progress("observation_gate_passed")
             return gate
         gate = preload_observation_integrity_gate(
             observation_integrity_authority,

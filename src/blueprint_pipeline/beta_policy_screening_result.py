@@ -14,6 +14,12 @@ planned cell it did not return is unscored (void) with the typed reason
 ``cell_not_returned:<stop>``; nothing is invented, and the estimate rests on
 the scored episodes alone. A run that returned no cell keeps its blocked,
 harness-failure handling.
+
+A run whose pre-policy observation gate found structurally usable frames but
+did not pass observation integrity ran its episodes anyway (only privacy,
+rights and money stop a run). The summary keeps that gate's typed
+``observation_quality_flags`` with the estimate. The v2 publication has no
+field for them, so they stay in the ledger and are not published.
 """
 from __future__ import annotations
 
@@ -140,6 +146,9 @@ def candidate_result_summary(
         "success_rate": succeeded / scored if scored else None,
         "session_result_digest": result["result_digest"], "episode_outcomes": outcomes,
         **({"episodes_not_returned": len(missing)} if missing else {}),
+        # Validated as typed codes by ``validate_session_result``; ledger only.
+        **({"observation_quality_flags": list(result["observation_quality_flags"])}
+           if result.get("observation_quality_flags") else {}),
     }
 
 
