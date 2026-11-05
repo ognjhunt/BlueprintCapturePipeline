@@ -68,6 +68,15 @@ OFFER_SHORTAGE_EXHAUSTED_BLOCKER = "beta_screening_gpu_capacity_unavailable"
 OFFER_SHORTAGE_RETRY_CAP = 12
 OFFER_SHORTAGE_FIRST_RETRY_SECONDS = 120
 OFFER_SHORTAGE_MAX_RETRY_SECONDS = 1800
+# The spend admission lock (live billing evidence) was older than its window when the launch
+# preflight read it, as it is for a few minutes after a deploy restarts its refresh: the money
+# check refused before anything was created. The check stays: the attempt waits and the next one
+# reads a fresh lock, 2, 4, 8, 16, then 30 minutes apart, at most SPEND_LOCK_RETRY_CAP times. A
+# stale lock beside any other spend blocker is not this wait and keeps its refusal.
+SPEND_LOCK_STALE_BLOCKER = "spend_admission:spend_admission_lock_stale"
+SPEND_LOCK_RETRY_CAP = 6
+_SPEND_LOCK_REFUSAL = frozenset({SPEND_LOCK_STALE_BLOCKER, "paid_resource_admission_has_blockers",
+                                 "paid_resource_admission_not_admitted"})
 # A candidate retries a refusal whose control read got no answer (a 429, a 5xx,
 # a timeout) at most this many times in all: a launch preflight read again, or
 # a fresh attempt after its allocator fenced its own create. Each fresh attempt
@@ -616,6 +625,18 @@ def _offer_shortage(observation: Mapping[str, Any]) -> bool:
                for code in observation.get("blockers") or [])
 
 
+def _spend_lock_stale(observation: Mapping[str, Any]) -> bool:
+    """Refused before any create only because the spend admission lock was stale."""
+    blockers = set(observation.get("blockers") or [])
+    return SPEND_LOCK_STALE_BLOCKER in blockers and blockers <= _SPEND_LOCK_REFUSAL
+
+
+def _spend_lock_retries(row: Mapping[str, Any]) -> int:
+    value = row.get("spend_lock_retries", 0)
+    # An unreadable count is treated as spent, so the cap always holds.
+    return value if type(value) is int and 0 <= value <= SPEND_LOCK_RETRY_CAP else SPEND_LOCK_RETRY_CAP
+
+
 def _offer_shortage_retries(row: Mapping[str, Any]) -> int:
     value = row.get("offer_shortage_retries", 0)
     # An unreadable count is treated as spent, so the cap always holds.
@@ -964,6 +985,20 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                     return
                 attempt["reservation_status"] = "released"
                 row.update(status="blocked", blockers=[OFFER_SHORTAGE_EXHAUSTED_BLOCKER])
+                return
+            if _spend_lock_stale(observation) and _spend_lock_retries(row) < SPEND_LOCK_RETRY_CAP:
+                # Proven zero allocation: the money check could not read fresh billing evidence.
+                # Search again later under a fresh identity holding the same reservation; the next
+                # preflight reads the lock again. Past the cap it keeps the refusal below.
+                retries = _spend_lock_retries(row)
+                attempt.update(reservation_status="released", closed_at=_now(),
+                               terminal_reason="spend_admission_lock_stale", no_policy_api_calls_proven=True)
+                row["spend_lock_retries"] = retries + 1
+                row.setdefault("attempt_history", []).append(json.loads(json.dumps(attempt)))
+                row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
+                                  "retry_not_before": _retry_after_offer_shortage(retries)}
+                # The website words this pair "Waiting to confirm this job can still run."
+                row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER, CONTROL_WAIT_BLOCKER])
                 return
             attempt["reservation_status"] = "released"
             row.update(status="blocked", blockers=_safe_blockers(observation.get("blockers"),
