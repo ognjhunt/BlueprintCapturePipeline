@@ -32,6 +32,17 @@ from .task_family_policy_execution import FAMILY_BACKEND, family_policy_executio
 from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES, frozen_cells as g1_cells
 
 PLAN_SCHEMA_VERSION = "beta_policy_screening_plan.v1"
+#: The screening harness revision a plan was made under. Plans made before revisions existed
+#: carry none and read as 0. A revision is raised when a defect in our harness made results it
+#: produced measure something other than the policy; the coordinator then counts no result made
+#: under an older revision on an affected backend (``RESULTS_NOT_COUNTED_BELOW``) and plans that
+#: candidate again once. Revision 1 (2026-11-05): on the RoboLab backend every DROID policy was
+#: told its gripper was closed when it was open, and the rigid readback placed the jaws at the
+#: inner-finger body origins instead of the pad centres the convention probe calibrates.
+SCREENING_HARNESS_REVISION = 1
+HARNESS_REVISION_FIELD = "screening_harness_revision"
+#: Results on each backend made under a lower harness revision are not counted (see above).
+RESULTS_NOT_COUNTED_BELOW = {"robolab.v1": 1}
 EXECUTION_SCHEMA_VERSION = "blueprint.beta_policy_screening_execution.v1"
 QUOTE_SCHEMA_VERSION = "beta_policy_screening_cost_quote.v1"
 # Runtime ceiling shared with the native session: beta runs never become Arm
@@ -648,10 +659,16 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         "scenario_plan_digest": canonical_digest({"cells": cells}), "scenario_cells": cells,
         "budget_usd": budget_usd, "maximum_planned_cost_usd": f"{budget - remaining:.2f}",
         "purpose": "screening", "claim_ceiling": CLAIM_CEILING,
+        HARNESS_REVISION_FIELD: SCREENING_HARNESS_REVISION,
         "candidates": candidates, "plan_digest": "",
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return validate_screening_plan(plan)
+
+
+def plan_harness_revision(plan: Mapping[str, Any]) -> int:
+    """The screening harness revision a validated plan was made under; 0 before revisions existed."""
+    return int(plan.get(HARNESS_REVISION_FIELD, 0))
 
 
 def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -666,10 +683,13 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                   "family_static_readiness_digest", "scenario_scope"} if family else {"robot_free_probe_digest"})
     # Plans enqueued before the single-tier change carry a digest-bound
     # ``recommendation_eligible: false``; they stay valid and publish alike.
-    if (set(plan) - {"recommendation_eligible"} - _JOB_CEILING_FIELDS != required
+    # Plans made before harness revisions carry none (revision 0) and stay valid.
+    revision = plan.get(HARNESS_REVISION_FIELD, 0)
+    if (set(plan) - {"recommendation_eligible", HARNESS_REVISION_FIELD} - _JOB_CEILING_FIELDS != required
             or plan["schema_version"] != PLAN_SCHEMA_VERSION
             or plan["purpose"] != "screening" or plan["claim_ceiling"] != CLAIM_CEILING
-            or plan.get("recommendation_eligible", False) is not False):
+            or plan.get("recommendation_eligible", False) is not False
+            or type(revision) is not int or (HARNESS_REVISION_FIELD in plan and revision < 1)):
         raise BetaPolicyScreeningPlanError("beta_screening_plan_schema_invalid")
     for key in ("campaign_id", "site_id", "scene_id", "capture_id", "task_id"):
         _id(plan[key], "beta_screening_plan_identity_invalid")

@@ -1754,6 +1754,9 @@ def _run_selected_cell(
                 env=env, robot=robot, gripper_convention=gripper
             )
             task_kind = str(scene_plan["task_kind"])
+            # DROID's gripper state (and rigid release evidence) read the pads the probe sealed.
+            from blueprint_pipeline.native_task_episode_environment import policy_gripper_pad_binding
+            pads = policy_gripper_pad_binding(servo)
             if task_kind == "articulated_open_close":
                 task_readback = bound_runtime.make_task_readback(
                     built,
@@ -1762,15 +1765,12 @@ def _run_selected_cell(
             elif task_kind == "rigid_pick_place":
                 if bound_runtime.make_rigid_task_readback is None:
                     raise RuntimeError("policy_canary_rigid_task_readback_missing")
-                task_readback = bound_runtime.make_rigid_task_readback(built)
+                task_readback = bound_runtime.make_rigid_task_readback(built, **pads)
             else:
                 task_readback = None
             episode_environment, environment_receipt = bound_runtime.build_episode_environment(
-                built=built,
-                gripper_convention=gripper,
-                servo=servo,
-                task_readback=task_readback,
-                to_tensor=bound_runtime.to_tensor,
+                built=built, gripper_convention=gripper, servo=servo,
+                task_readback=task_readback, to_tensor=bound_runtime.to_tensor, **pads,
             )
             if task_kind == "rigid_pick_place":
                 if bound_runtime.wrap_rigid_scoring_environment is None:

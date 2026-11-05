@@ -29,7 +29,7 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -442,8 +442,56 @@ def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any
     return any(row["status"] in ACTIVE_STATUSES for key, row in rows.items() if key != candidate_id)
 
 
+def _result_not_counted(row: Mapping[str, Any], candidate: Mapping[str, Any], plan: Mapping[str, Any]) -> bool:
+    """A result made under a harness revision a later one corrected for this candidate's backend.
+
+    A scored result (completed, or a closed run that scored episodes) is normally final: the
+    candidate is never planned again. When our harness made it measure something other than
+    the policy (``RESULTS_NOT_COUNTED_BELOW``), it is not counted, and the candidate is planned
+    again once at the next deploy, inside the site's existing allowance (owner approval
+    2026-11-05). The new plan carries the current revision, so its result counts and the
+    candidate is never planned again for the same defect.
+    """
+    from .beta_policy_screening_plan import RESULTS_NOT_COUNTED_BELOW, plan_harness_revision
+
+    backend = (candidate.get("execution_spec") or {}).get("backend")
+    if plan_harness_revision(plan) >= RESULTS_NOT_COUNTED_BELOW.get(backend, 0):
+        return False
+    return (row.get("status") in {"completed", "blocked"} and not _harness_failed(row)
+            and bool((row.get("summary") or {}).get("episodes_scored")))
+
+
+def _dropped_results_not_counted(ledger: Mapping[str, Any], state: Mapping[str, Any], plan: Mapping[str, Any],
+                                 plans: Callable[[str, str], Mapping[str, Any]]) -> list[str]:
+    """Candidates an earlier plan in this campaign's chain ran to a result that is not counted.
+
+    A finished candidate leaves the chain, so its result sits in the campaign that ran it. It
+    counts here only if the last row the chain holds for it is that result.
+    """
+    listed = {candidate["candidate_id"] for candidate in plan["candidates"]}
+    latest: dict[str, tuple[Mapping[str, Any], str]] = {}
+    seen: set[str] = set()
+    previous = state.get("supersedes")
+    while isinstance(previous, str) and previous not in seen and previous in ledger["campaigns"]:
+        seen.add(previous)
+        earlier = ledger["campaigns"][previous]
+        for candidate_id, row in earlier["candidates"].items():
+            latest.setdefault(candidate_id, (row, previous))
+        previous = earlier.get("supersedes")
+    dropped = []
+    for candidate_id, (row, campaign_id) in sorted(latest.items()):
+        if candidate_id in listed or not (row.get("summary") or {}).get("episodes_scored"):
+            continue
+        earlier_plan = plans(campaign_id, ledger["campaigns"][campaign_id]["plan_digest"])
+        candidate = next((item for item in earlier_plan["candidates"] if item["candidate_id"] == candidate_id), None)
+        if candidate is not None and _result_not_counted(row, candidate, earlier_plan):
+            dropped.append(candidate_id)
+    return dropped
+
+
 def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementation_commit: str,
-                  scene_half: str | None = None) -> list[str] | None:
+                  scene_half: str | None = None,
+                  plans: Callable[[str, str], Mapping[str, Any]] | None = None) -> list[str] | None:
     state = ledger["campaigns"][plan["campaign_id"]]
     rows = state["candidates"]
     if state.get("superseded_by") or any(row["status"] in ACTIVE_STATUSES for row in rows.values()):
@@ -469,7 +517,10 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
                 # limit still decides every reservation.
                 or row["status"] == "deferred" and row.get("blockers") == [BUDGET_EXHAUSTED_BLOCKER]
                 and frozen not in (None, implementation_commit) and not _spent(row)
-                and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < SITE_LIMIT):
+                and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < SITE_LIMIT
+                # Its result was made under a harness revision a later one corrected: not counted,
+                # so the candidate runs once more on the deployed harness.
+                or frozen not in (None, implementation_commit) and _result_not_counted(row, candidate, plan)):
             stale = True
         # Its machine failed while starting the simulator: planned again at any commit, bounded.
         machine = machine or (_machine_faulted(row)
@@ -478,8 +529,10 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
     # at the next deploy, once (the plan that re-admits it freezes the new commit).
     frozen_commits = {(candidate.get("execution_spec") or {}).get("implementation_commit")
                       for candidate in plan["candidates"]} - {None}
-    dropped = (_dropped_harness_retries(ledger, state, plan)
-               if frozen_commits and implementation_commit not in frozen_commits else [])
+    moved = bool(frozen_commits) and implementation_commit not in frozen_commits
+    dropped = _dropped_harness_retries(ledger, state, plan) if moved else []
+    if moved and plans is not None:
+        dropped = sorted({*dropped, *_dropped_results_not_counted(ledger, state, plan, plans)})
     stale = stale or bool(dropped)
     if not stale and scene_half is not None:
         from .beta_policy_screening_scene_half import planned_half
@@ -495,6 +548,7 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
             if not _spent(rows[candidate["candidate_id"]])
             or stale and _harness_failed(rows[candidate["candidate_id"]])
             and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])
+            or stale and _result_not_counted(rows[candidate["candidate_id"]], candidate, plan)
             or _machine_faulted(rows[candidate["candidate_id"]])
             and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] + dropped or None
 
@@ -524,7 +578,7 @@ def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: st
         if state is None:
             return None
         return _replan_scope(ledger, _plan(root, campaign_id, state["plan_digest"]), implementation_commit,
-                             scene_half)
+                             scene_half, plans=lambda earlier, digest: _plan(root, earlier, digest))
 
 
 def latest_campaign(campaign_id: str, *, queue_root: str | Path | None = None) -> str:
@@ -572,7 +626,8 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
             return {"campaign_id": successor, "status": "already_enqueued", "plan_digest": value["plan_digest"],
                     "superseded_campaign_id": campaign_id}
         previous = _plan(root, campaign_id, old["plan_digest"])
-        scope = _replan_scope(ledger, previous, implementation_commit, planned_half(value))
+        scope = _replan_scope(ledger, previous, implementation_commit, planned_half(value),
+                              plans=lambda earlier, digest: _plan(root, earlier, digest))
         if (scope is None or successor in ledger["campaigns"] or value["site_id"] != old["site_id"]
                 or value["source"] != previous["source"]
                 or not {row["candidate_id"] for row in value["candidates"]} <= set(scope)):

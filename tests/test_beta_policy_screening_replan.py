@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-from blueprint_pipeline.beta_policy_screening_plan import validate_screening_plan
+from blueprint_pipeline.beta_policy_screening_plan import G1_BACKEND, validate_screening_plan
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_beta_policy_screening_coordinator import Backend, plan, publication
 
@@ -341,3 +341,83 @@ def test_a_budget_deferred_unspent_candidate_is_planned_again_after_a_deploy_whi
     # No money left at the site: nothing to fit, so nothing is planned again.
     monkeypatch.setattr(coordinator, "SITE_LIMIT", coordinator.Decimal("0"))
     assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) is None
+
+
+def made_before_revisions(value):
+    """The same plan as one made before screening harness revisions existed (revision 0)."""
+    older = {key: item for key, item in value.items() if key != "screening_harness_revision"}
+    older["plan_digest"] = canonical_digest(older, digest_field="plan_digest")
+    return validate_screening_plan(older)
+
+
+def completes(value, root, **options):
+    from tests.test_beta_policy_screening_waitlist import Completes
+
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=root,
+                                        executor=Completes(value, **options), max_launches=2)
+
+
+def test_a_result_made_before_the_gripper_fix_is_not_counted_and_runs_once_more_after_the_deploy(tmp_path):
+    """2026-11-05: on the RoboLab backend every DROID policy was told its gripper was closed when it
+    was open. A result made under that harness measured something other than the policy, so once
+    the fix deploys each candidate runs once more, inside the site's allowance; the new result
+    counts, and the candidate is never planned again for the same defect."""
+    first = made_before_revisions(plan(count=2))
+    coordinator.enqueue_screening_campaign(first, queue_root=tmp_path)
+    completes(first, tmp_path)
+    old = publication(tmp_path)
+    assert [row["status"] for row in old["candidates"]] == ["completed", "completed"]
+    spent = Decimal(old["budget"]["spent_upper_bound_usd"])
+    assert spent > 0
+    # The same commit changed nothing: no run.
+    assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) is None
+    assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
+        "candidate-000", "candidate-001"]
+    second = successor(plan(count=2))  # today's planner: the current revision
+    coordinator.supersede_campaign("campaign-1", second, implementation_commit=NEW, queue_root=tmp_path)
+    retried = publication(tmp_path, "campaign-1b")
+    assert [row["status"] for row in retried["candidates"]] == ["pending", "pending"]
+    # The money the earlier runs committed stays committed at the site.
+    assert Decimal(retried["budget"]["spent_upper_bound_usd"]) == spent
+    completes(second, tmp_path)
+    assert [row["status"] for row in publication(tmp_path, "campaign-1b")["candidates"]] == ["completed", "completed"]
+    assert coordinator.replan_scope("campaign-1b", implementation_commit="c" * 40, queue_root=tmp_path) is None
+
+
+def test_a_finished_candidate_whose_result_is_not_counted_rejoins_the_plan_after_the_deploy(tmp_path):
+    """A finished candidate leaves the plan chain, so its result sits in the campaign that ran it
+    (capture-447's GR00T run). It is planned again too, once, from that earlier campaign."""
+    first = made_before_revisions(plan(count=2))
+    coordinator.enqueue_screening_campaign(first, queue_root=tmp_path)
+    completes(first, tmp_path, refuse={"candidate-001"})
+    assert [row["status"] for row in publication(tmp_path)["candidates"]] == ["completed", "blocked"]
+    # Before the fix, a deploy re-planned only the candidate that never ran.
+    second = successor(made_before_revisions(plan(count=2)), keep={"candidate-001"})
+    coordinator.supersede_campaign("campaign-1", second, implementation_commit=NEW, queue_root=tmp_path)
+    completes(second, tmp_path)
+    assert [row["status"] for row in publication(tmp_path, "campaign-1b")["candidates"]] == ["completed"]
+    third = "c" * 40
+    assert coordinator.replan_scope("campaign-1b", implementation_commit=third, queue_root=tmp_path) == [
+        "candidate-001", "candidate-000"]
+    final = successor(plan(count=2), campaign_id="campaign-1c", commit=third)
+    coordinator.supersede_campaign("campaign-1b", final, implementation_commit=third, queue_root=tmp_path)
+    assert [row["status"] for row in publication(tmp_path, "campaign-1c")["candidates"]] == ["pending", "pending"]
+    completes(final, tmp_path)
+    assert coordinator.replan_scope("campaign-1c", implementation_commit="d" * 40, queue_root=tmp_path) is None
+
+
+def test_only_scored_results_on_an_affected_backend_under_an_older_revision_are_not_counted():
+    robolab, g1 = {"execution_spec": {"backend": "robolab.v1"}}, {"execution_spec": {"backend": G1_BACKEND}}
+    scored = {"status": "completed", "summary": {"episodes_scored": 10}}
+    partial = {"status": "blocked", "blockers": ["policy_canary_session_stopped"], "summary": {"episodes_scored": 3}}
+    harness = {"status": "blocked", "blockers": ["beta_screening_native_result_missing_or_invalid"]}
+    void = {"status": "completed", "summary": {"episodes_scored": 0, "episode_outcomes": [{"outcome": "void"}]}}
+    before, current = {}, {"screening_harness_revision": 1}
+    assert coordinator._result_not_counted(scored, robolab, before)
+    assert coordinator._result_not_counted(partial, robolab, before)
+    assert not coordinator._result_not_counted(scored, robolab, current)
+    # Another backend's results, and runs that measured nothing (their own retry rule), are untouched.
+    assert not coordinator._result_not_counted(scored, g1, before)
+    assert not coordinator._result_not_counted(harness, robolab, before)
+    assert not coordinator._result_not_counted(void, robolab, before)
+    assert not coordinator._result_not_counted({"status": "pending"}, robolab, before)
