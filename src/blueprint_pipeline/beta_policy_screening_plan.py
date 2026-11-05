@@ -441,6 +441,26 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
     return sorted(set(blockers))
 
 
+def _site_fitted_quote(quote: Mapping[str, Any], available: Decimal, *, floor: Decimal) -> dict[str, Any] | None:
+    """The quote re-sealed at what the site has left, when that still bounds the run; else ``None``.
+
+    Only ever lower: the fitted maximum is the site's remaining money rounded down
+    to cents, kept only if it still covers the resource bound (hourly rate times
+    hard time limit) plus at least half the headroom the original quote kept above
+    it for startup transfer, storage and teardown. The allocator's own all-in
+    admission still refuses, before any spend, a run it cannot fit.
+    """
+    original = money(quote["maximum_cost_usd"])
+    fitted = available.quantize(_CENT, rounding=ROUND_FLOOR)
+    if not floor < fitted < original or (fitted - floor) * 2 < original - floor:
+        return None
+    value = {**dict(quote), "quote_id": str(quote["quote_id"]) + "-site-fit",
+             "price_source": str(quote["price_source"]) + ";fitted_to_site_remaining_screening_budget",
+             "maximum_cost_usd": f"{fitted:.2f}", "quote_digest": ""}
+    value["quote_digest"] = canonical_digest(value, digest_field="quote_digest")
+    return value
+
+
 def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *, campaign_id: str,
                          candidate_ids: Sequence[str] | None = None, budget_usd: str = "15.00",
                          episodes_per_candidate: int = DEFAULT_EPISODES,
@@ -448,8 +468,16 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                          cost_quotes: Mapping[str, Any] | None = None,
                          now: dt.datetime | None = None,
                          priority: Sequence[str] | None = None, intake_ranking: bool = False,
-                         website: bool = False) -> dict[str, Any]:
+                         website: bool = False, site_remaining_usd: str | None = None) -> dict[str, Any]:
     """Every requested candidate gets a status and reason; the budget decides how many run.
+
+    ``site_remaining_usd``: what the site's screening allowance has left after every
+    earlier campaign's commitments. A local candidate whose quote no longer fits it
+    is quoted again at exactly what is left when that still bounds the run
+    (``_site_fitted_quote``), so the last money a site holds can fund one more
+    candidate instead of deferring every row. Hosted and G1 candidates keep their
+    quotes (their provider caps are set elsewhere). The coordinator's site limit
+    still decides every reservation.
 
     ``website``: a website job's plan (``build_job_ceiling_screening_plan``). A scripted
     baseline is listed ``unavailable`` (``candidate_disabled``) and never funded there
@@ -518,6 +546,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     ranked = [row for row in dict.fromkeys(priority or ()) if row in set(requested)]
     cells = screening_cells(scene, episodes_per_candidate)
     remaining = budget
+    site_left = None if site_remaining_usd is None else max(Decimal(0), money(site_remaining_usd))
     candidates = []
     unranked = sorted(set(requested) - set(ranked),
                       key=lambda row: (by_id[row]["policy"]["kind"] == "scripted", row))
@@ -569,6 +598,11 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             continue
         maximum = money(quote["maximum_cost_usd"])
         spec = binding["execution_spec"]
+        if (site_left is not None and maximum > site_left and not _HOSTED_COST_FIELDS & set(spec)
+                and spec.get("backend") != G1_BACKEND):
+            fitted = _site_fitted_quote(quote, min(site_left, remaining), floor=execution_cost_floor(spec))
+            if fitted is not None:
+                quote, maximum = fitted, money(fitted["maximum_cost_usd"])
         if maximum < execution_cost_floor(spec):
             row.update(status="deferred", blockers=["cost_quote_below_resource_bound"])
             candidates.append(row)
@@ -591,6 +625,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             continue
         row.update(status="selected", **frozen)
         remaining -= maximum
+        if site_left is not None:
+            site_left = max(Decimal(0), site_left - maximum)
         candidates.append(row)
     plan = {
         "schema_version": PLAN_SCHEMA_VERSION, "campaign_id": campaign_id, "site_id": scene["site_id"],

@@ -415,7 +415,13 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
                 # Our harness failed after allocation at an older commit: the deploy may have fixed
                 # it, so the candidate is planned again once per site (bounded, it spent money).
                 or frozen not in (None, implementation_commit) and _harness_failed(row)
-                and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])):
+                and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])
+                # Closed for the site's budget at an older commit, never spent, while the site
+                # still has money: the new plan may fit its quote to what is left. The site
+                # limit still decides every reservation.
+                or row["status"] == "deferred" and row.get("blockers") == [BUDGET_EXHAUSTED_BLOCKER]
+                and frozen not in (None, implementation_commit) and not _spent(row)
+                and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < SITE_LIMIT):
             stale = True
     if not stale and scene_half is not None:
         from .beta_policy_screening_scene_half import planned_half

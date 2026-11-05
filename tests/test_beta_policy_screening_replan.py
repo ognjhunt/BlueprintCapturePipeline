@@ -287,3 +287,20 @@ def test_an_all_void_completion_does_not_prove_the_harness_for_its_siblings():
     proven = {**state, "candidates": {**state["candidates"], "a": {
         "status": "completed", "blockers": [], "summary": {**_all_void_summary(2), "episodes_scored": 1}}}}
     assert not coordinator._unproven_retry_in_flight({"campaigns": {"campaign-1": proven}}, proven, "c")
+
+
+def test_a_budget_deferred_unspent_candidate_is_planned_again_after_a_deploy_while_money_is_left(tmp_path, monkeypatch):
+    """2026-11-05: with $3.78 of $15 left every remaining row closed as budget-deferred, and no
+    rule ever planned them again. After a deploy the new plan may fit a quote to what is left."""
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    root = coordinator._root(tmp_path)
+    ledger = coordinator._ledger(root)
+    for row in ledger["campaigns"]["campaign-1"]["candidates"].values():
+        row.update(status="deferred", blockers=[coordinator.BUDGET_EXHAUSTED_BLOCKER])
+    coordinator._save(root, ledger)
+    assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) is None
+    assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
+        "candidate-000", "candidate-001"]
+    # No money left at the site: nothing to fit, so nothing is planned again.
+    monkeypatch.setattr(coordinator, "SITE_LIMIT", coordinator.Decimal("0"))
+    assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) is None
