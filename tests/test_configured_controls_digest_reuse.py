@@ -99,6 +99,8 @@ def test_status_walks_each_retained_adoption_once_per_read(tmp_path, monkeypatch
     for _ in range(2):
         result = intake.scene_intent_status(queue_root=root, intent_id=intent["intent_id"], now=102)
         assert [row["status"] for row in result["attempts"]] == ["cancelled_before_execution"] * 2
+        # A never-started cancellation releases everything: no settled hold to report.
+        assert not any("retained_spend_usd" in row for row in result["attempts"])
     # Three release generations: walked once per status read, not once per cancelled
     # attempt (12 walks before), and never reused across reads.
     assert len(walked) == 6 and len(set(walked)) == 3
