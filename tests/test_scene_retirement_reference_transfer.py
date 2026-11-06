@@ -84,15 +84,17 @@ def test_exact_closed_selected_preparation_record_is_transferred_not_discarded(t
     assert fresh['reference_observation']['record_dispositions']==[record]
 
 
-def test_selected_envelope_proves_only_its_valid_nested_surface_target(tmp_path):
+@pytest.mark.parametrize('version', ['v1', 'v2'])
+def test_selected_envelope_proves_only_its_valid_nested_surface_target(tmp_path, version):
+    # v2 (G3, 2026-11-06) seals success_rule; the census must accept it as a known field.
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.control_plane_preparation_activation_references import (
         RawReferenceProvenance, ReferenceFact)
-    from tests.test_task_evaluation_surface_target import target_fixture
+    from tests.test_task_evaluation_surface_target import target_fixture, v2_target
 
     fresh, record, proof, allowance = setup(tmp_path)
     source = RawReferenceProvenance(**record['source'])
-    target = target_fixture()
+    target = target_fixture() if version == 'v1' else v2_target()
     fact = ReferenceFact(source, 'task.surface_target.target_digest', 'selector_only',
         'declared_document_selector', 'canonical_document_seal', target['target_digest'])
     fresh['reference_observation']['protections'] = [{
@@ -418,3 +420,25 @@ def test_sam_transfer_requires_actual_nested_installed_root_not_an_extra_flat_al
     fresh['planner_context']['sam_queue_root']=root
     with pytest.raises(ValueError,match='scene_retirement_reference_'):
         check(fresh,allowance)
+
+
+@pytest.mark.parametrize('kind', ['v1', 'v2', 'inside'])
+def test_the_reference_census_knows_every_field_a_sealed_surface_target_carries(kind):
+    # 2026-11-06: a G3 v2 target's success_rule was unknown to the census, which deferred every new
+    # website job's request as unsupported_metadata_shape and blocked its scene retirement.
+    import time
+
+    from blueprint_pipeline.control_plane_preparation_activation_references import (
+        SURFACE_TARGET_FIELDS, RawReferenceProvenance, _Document, _Interpretation)
+    from tests.test_task_evaluation_surface_target import target_fixture, v2_target
+
+    target = {'v1': target_fixture, 'v2': v2_target}.get(kind, target_fixture)()
+    if kind == 'inside':
+        target = {**target, 'placement_relation': 'inside',
+                  'interior_bounds_world_m': {'minimum': [0.0, 0.0, 0.7], 'maximum': [0.2, 0.2, 0.9]}}
+    assert set(target) <= set(SURFACE_TARGET_FIELDS.split())
+    source = RawReferenceProvenance('preparation', '/q', 'request', 'r.json', 'sha256:' + 'a' * 64, 1, None)
+    doc = _Document(source, {}, 'request', 'sha256:' + 'b' * 64, 'sha256:' + 'c' * 64, 'pending')
+    census = _Interpretation(time.monotonic, 60.0)
+    census.shape(doc, target, 'task.surface_target', SURFACE_TARGET_FIELDS)
+    assert doc.supported_semantics is True and not census.facts['missing_edge_obligations']
