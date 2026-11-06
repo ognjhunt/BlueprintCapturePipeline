@@ -55,6 +55,8 @@ from blueprint_pipeline.paid_resource_admission import (
     require_paid_resource_admission,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_runpod_mechanics")  # RunPod retired 2026-11-05; see conftest
+
 
 ALLOCATION_NONCE = "nonce1234"
 _REAL_RUNPOD_TRANSFER_CONFIG_FACTORY = s3_transport._runpod_transfer_config

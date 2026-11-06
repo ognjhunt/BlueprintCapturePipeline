@@ -53,12 +53,3 @@ def test_readiness_cli_writes_blocked_local_gate_without_live_evidence(
     assert rc == 1
     assert '"status": "local_contract_ready_live_proof_required"' in output.read_text()
 
-
-def test_production_pool_systemd_unit_is_private_and_restartable() -> None:
-    unit = (
-        ROOT / "deploy/systemd/blueprint-production-gpu-worker-pool.service"
-    ).read_text()
-    assert "--host 127.0.0.1" in unit
-    assert "Restart=on-failure" in unit
-    assert "NoNewPrivileges=true" in unit
-    assert "ProtectSystem=strict" in unit

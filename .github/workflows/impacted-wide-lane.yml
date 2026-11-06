@@ -234,7 +234,7 @@ jobs:
           uv lock --check
           for attempt in 1 2; do
             if timeout --kill-after=10s 360s uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
-                --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3 --link-mode copy \
+                --extra exact-geometry-development --python /usr/bin/python3 --link-mode copy \
               && timeout --kill-after=10s 90s uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts; then
               break
             fi

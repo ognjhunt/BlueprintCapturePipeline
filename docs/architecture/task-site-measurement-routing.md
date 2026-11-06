@@ -68,19 +68,6 @@ loop:
   cases, implementation bytes, exact runtime settings, worker results, and log
   digests; rejects qualification-split execution; and never grants production,
   provider-spend, physical, R6, or R7 authority;
-- `blueprint_pipeline.measurement_site_evidence_bridge` — the deterministic
-  join from an observed metric surface, no-fill collider candidate, independent
-  bounded-navigation collider report, and signed measured robot-base-to-site-
-  frame SE(3) record into `site_evidence_profile.v1`. It verifies source,
-  asset, task-region, evaluator, signature, threshold, and digest lineage while
-  denying qualification, R5-R7, physical-success, deployment, and safety
-  authority;
-- `blueprint_pipeline.measurement_pinocchio_coal_kinematic_adapter` and
-  `blueprint_pipeline.measurement_geometry_kinematic_development_suite` — an
-  exact-pinned Pinocchio 4.1.0/Coal 3.0.3 Q-KIN development port and checked
-  three-case corpus for planar two-link reachability plus finite-sample GJK
-  signed-distance queries. They explicitly exclude captured meshes,
-  registration, continuous collision, physical evidence, and R5-R7 authority;
 - `blueprint_pipeline.measurement_mujoco_adapter` — the first real narrow
   worker, pinned to MuJoCo 3.11.0. It runs a rigid drop/contact protocol twice
   and requires exact replay agreement before emitting development predictions;
@@ -89,23 +76,16 @@ loop:
   implementation, solver, exact runtime, receipts, first-contact timing, and
   penetration aggregates while schemas force synthetic, non-instrumented,
   development-only, non-R5/R6/R7 authority;
-- `blueprint_pipeline.measurement_newton_rigid_adapter` and
-  `blueprint_pipeline.measurement_geometry_contact_cross_engine_development_suite`
-  — an exact-pinned Newton 1.4.0/Warp 1.15.0 CPU XPBD port and paired
-  MuJoCo/Newton runner over the same method-neutral sphere/box corpus. It
-  preserves per-engine receipt identities plus contact-time and transient-
-  penetration deltas instead of treating engine agreement as qualification;
-- `blueprint_pipeline.measurement_drake_rigid_adapter` and
-  `blueprint_pipeline.measurement_geometry_contact_drake_development_suite`
-  — an exact Drake 1.55.0 MultibodyPlant CPU/SAP/point-contact development
-  worker and checked runner over the same method-neutral sphere/box corpus.
+- `blueprint_pipeline.measurement_drake_rigid_adapter` — an exact Drake
+  1.55.0 MultibodyPlant CPU/SAP/point-contact development worker over the same
+  method-neutral sphere/box corpus (its separate suite runner was retired on
+  2026-11-05).
   They bind an explicit isolated Python 3.13/3.14 interpreter, worker and
   wrapper source, solver, cases, logs, receipts, and exact double replay while
   denying renderer, physical, qualification, and R5-R7 authority;
-- `blueprint_pipeline.measurement_isaac_physx_rigid_adapter` and
-  `blueprint_pipeline.measurement_geometry_contact_isaac_physx_development_suite`
-  — an exact Isaac Sim 6.0.1 CPU PhysX/TGS/SAP development port over the same
-  method-neutral sphere/box corpus. The worker starts `SimulationApp` before
+- `blueprint_pipeline.measurement_isaac_physx_rigid_adapter` — an exact Isaac
+  Sim 6.0.1 CPU PhysX/TGS/SAP development port over the same method-neutral
+  sphere/box corpus (its separate suite runner was retired on 2026-11-05). The worker starts `SimulationApp` before
   Isaac imports, creates a fresh metric Z-up USD stage, observes the live body
   pose and PhysX contact report, repeats the complete trace, and binds the
   runtime and solver without invoking RTX sensors or a renderer. A digest-bound
@@ -122,89 +102,14 @@ loop:
   and structured-output production; it creates no calibrated sensor match,
   Q-SENSOR qualification, R5-R7 evidence, production route, captured-site
   accuracy, policy result, task success, or physical claim;
-- `blueprint_pipeline.measurement_sapien_rigid_adapter` and
-  `blueprint_pipeline.measurement_geometry_contact_sapien_development_suite`
-  — an exact-pinned SAPIEN 3.0.3/PhysX CPU development worker and checked
-  corpus runner over the same method-neutral sphere/box cases. They use no
-  renderer or ManiSkill task layer, enable TGS and enhanced determinism with
-  zero CPU workers, require exact double replay, and emit a schema-checked
-  non-authorizing aggregate;
-- `blueprint_pipeline.measurement_mujoco_articulation_adapter` and
-  `blueprint_pipeline.measurement_geometry_contact_articulation_development_suite`
-  — a separately identified Q-ART port and two-case door-hinge/drawer-slide
-  runner. They bind joint type, mass, damping, effort, limits, target travel,
-  solver, exact runtime, and replay while explicitly excluding captured joints,
-  instrumented force, policy interaction, and R5/R6/R7 authority;
-- `blueprint_pipeline.measurement_mujoco_insertion_adapter` and
-  `blueprint_pipeline.measurement_geometry_contact_insertion_development_suite`
-  — a separately identified centered-clearance/interference square-peg port.
-  It records signed clearance, side-contact sequence, insertion outcome, and
-  penetration under exact replay while excluding captured geometry,
-  instrumented force, robot control, and qualification authority;
-- `blueprint_pipeline.measurement_opencv_observation_adapter` — a second real
-  development worker for `direct-captured-observations`. It runs OpenCV PnP and
-  calibrated reprojection twice over public, digest-bound cases; measures RGB
-  reprojection, depth availability, depth residual, and timestamp alignment;
-  and refuses version drift, noncanonical calibration, degenerate targets, or
-  replay disagreement. The checked synthetic corpus exercises the port but is
-  explicitly neither held-out nor physical evidence;
-- `blueprint_pipeline.measurement_observation_development_suite` — the corpus
-  runner that plans or executes every public observation case through the
-  uniform boundary and emits a digest-bound aggregate suite. The suite schema
-  hard-codes development/synthetic truth and makes held-out, physical, R5, R6,
-  R7, production, and agent-promotion claims impossible;
-- `blueprint_pipeline.measurement_pyelastica_cable_adapter` — a real CPU
-  PyElastica 0.3.3.post2 Q-DLO development worker. It executes a bounded
-  fixed-free Cosserat rod under a known load, samples the full tip trajectory,
-  measures displacement, segment strain, and applied force, and requires exact
-  double-run replay before emitting a cable-lane prediction;
-- `blueprint_pipeline.measurement_deformation_cable_development_suite` — the
-  two-regime PyElastica corpus runner. It binds the solver, material, geometry,
-  timestep, load, corpus, cases, and receipts while forcing synthetic,
-  development-only, nonphysical, non-R5/R6/R7 status;
-- `blueprint_pipeline.measurement_mujoco_flex_cloth_adapter` — a separately
-  identified MuJoCo 3.11 Q-CLOTH worker for the `flexcomp` 2D stretch
-  formulation. It binds grid topology, pinning, material, collision, solver,
-  timestep, warnings, sag, strain, penetration, and contact traces and refuses
-  to inherit identity or validity from the rigid-drop worker;
-- `blueprint_pipeline.measurement_deformation_cloth_development_suite` — the
-  two-regime flex-cloth runner covering free sag and ground contact. Its solver
-  scope is fixed to `mujoco-flex-elastic2d-stretch`; self-contact, bending,
-  garments, topology change, and physical material validity remain excluded;
-- `blueprint_pipeline.measurement_mujoco_granular_adapter` — a separately
-  identified MuJoCo 3.11 Q-GRAN development reference for identical rigid
-  spheres. It runs a staggered column collapse twice, measuring spread,
-  settling, contact topology, normal force, and penetration while forcing
-  cohesion, nonspherical grains, and physical characterization out of scope;
-- `blueprint_pipeline.measurement_deformation_granular_development_suite` —
-  the two-regime spherical-particle corpus runner. It keeps the solver scope at
-  `mujoco-rigid-monodisperse-sphere-contact` and cannot claim Chrono DEM,
-  pouring/tool interaction, material calibration, scale transfer, or granular
-  qualification;
-- `blueprint_pipeline.measurement_chrono_granular_adapter` and
-  `blueprint_pipeline.measurement_deformation_granular_chrono_development_suite`
-  — an exact PyChrono 10.0.0 core NSC CPU/Bullet/PSOR worker and distinct
-  two-regime 27-sphere corpus. They bind the official conda build/channel,
+- `blueprint_pipeline.measurement_chrono_granular_adapter` — an exact PyChrono
+  10.0.0 core NSC CPU/Bullet/PSOR worker over a distinct two-regime 27-sphere
+  corpus (its separate suite runner was retired on 2026-11-05). They bind the official conda build/channel,
   environment-owned OpenMP preload, material parameters, solver, collision
   system, timestep, force, penetration, settling, contact scope, and double
   replay. The specialized Chrono::Granular GPU module, material calibration,
   nonspherical/cohesive particles, pouring/tool interaction, and R5-R7 remain
   explicitly false;
-- `blueprint_pipeline.measurement_direct_tactile_adapter` — the direct-sensor
-  Q-TACT development port. It deterministically reduces synchronized optical
-  marker displacement, contact intensity, and normal/shear-force sequences,
-  but the checked corpus is synthetic and cannot represent real calibration or
-  force truth;
-- `blueprint_pipeline.measurement_tactile_development_suite` — the stable-
-  contact/incipient-slip two-case runner. It binds the tactile lane and forces
-  physical measurements, real-sensor calibration, independent execution, R5,
-  R6, R7, production, and physical-success authority false;
-- `blueprint_pipeline.measurement_world_model_action_fidelity_adapter` and
-  `blueprint_pipeline.measurement_world_model_action_fidelity_suite` — a
-  model-neutral Q-WM development port over the existing strict numeric action-
-  recovery and cross-step replay contracts. It executes synthetic within/out-
-  of-envelope cases but never generates model output, scores policy ranking,
-  claims physics, or changes `thesis_not_supported`;
 - `blueprint_pipeline.measurement_qualification_benchmarks` — executable
   benchmark-contract machinery for preregistering the three qualification
   programs, sealing development versus qualification splits, binding adapter
@@ -212,17 +117,6 @@ loop:
   labels, computing deterministic metrics, and producing R4/R5 evidence
   candidates. A passing report cannot make the R6 human decision or R7 catalog
   admission;
-- `blueprint_pipeline.measurement_sensor_stream_pairing` and
-  `blueprint_pipeline.measurement_observation_qualification` — the task/site
-  Q-SENSOR evidence-preparation lane. The first binds raw calibrated sensor
-  samples and timing; the second requires the full transparent, reflective,
-  dark, small, thin, occluded, and opaque-control taxonomy under controlled,
-  natural, and adverse lighting for the exact task, site, accepted sensor
-  pairing, synthetic methods, and three-or-more exact policy checkpoints. Every
-  material/lighting pair must carry all task-required physical and synthetic
-  modalities plus repeated paired policy outcomes. A generic observation
-  benchmark report cannot produce R5 stage data without this matrix, and the
-  joined result remains only an R5 evidence candidate pending R6/R7;
 - `blueprint_pipeline.measurement_research_monitoring` (with
   `scripts/measurement_research_monitor.py`) — release monitoring that emits
   version-change alerts, stale-profile flags, R0 intake drafts, regression
@@ -234,6 +128,14 @@ loop:
   emits bounded regression plans, and defines a monthly schedule contract. It
   neither fetches arbitrary sources by itself nor installs an external host
   scheduler.
+
+The measurement development lane was retired on 2026-11-05: the MuJoCo
+worker, articulation, insertion, flex-cloth and granular ports, the Newton,
+SAPIEN, PyElastica, Pinocchio/Coal, OpenCV observation, direct-tactile and
+world-model ports, their suite runners, the routed execution stage, the
+site-evidence bridge and compiler, and the Q-SENSOR pairing and observation
+qualification modules were deleted because no production path reached them
+(see git history and `docs/archive/runbooks/measurement-adapter-execution.md`).
 
 The two monitoring modules are intentionally layered rather than competing
 authorities. `measurement_research_monitoring` is the lightweight

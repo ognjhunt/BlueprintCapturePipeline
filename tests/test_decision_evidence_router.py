@@ -22,14 +22,6 @@ from blueprint_pipeline.decision_evidence_execution import (
     execute_evidence_plan,
 )
 from blueprint_pipeline.physical_outcome_learning import join_physical_outcome
-from blueprint_pipeline.legacy_wam_evidence import (
-    translate_wam_cross_check_plan,
-    wam_scorecard_as_debug_evidence,
-)
-from blueprint_pipeline.legacy_task_evaluation_translation import (
-    translate_policy_improvement_request,
-    translate_post_training_data_request,
-)
 from blueprint_pipeline.task_evaluation_evidence_use import determine_evidence_use
 from blueprint_pipeline.decision_evidence_cli import main as decision_evidence_cli_main
 from blueprint_pipeline.decision_evidence_handoff import verify as verify_webapp_handoff
@@ -1345,89 +1337,6 @@ def test_checked_in_json_schemas_validate_control_plane_and_webapp_examples() ->
     assert verification["status"] == "passed"
     assert verification["artifact_count"] == 9
     assert verification["example_count"] == 3
-
-
-def test_legacy_wam_cross_check_is_candidate_only_not_qualification() -> None:
-    translated = translate_wam_cross_check_plan(
-        {
-            "schema_version": "wam_classical_sim_cross_check_plan.v1",
-            "job_id": "job-legacy-wam",
-            "primary_evaluation_substrate": "oscar_wam",
-            "recommended_cross_checks": ["classical_sim_mujoco", "classical_sim_isaac"],
-            "promotion_effect": "none_without_owner_execution_evidence_and_review",
-        }
-    )
-    assert [row["legacy_method_id"] for row in translated["candidate_methods"]] == [
-        "classical_sim_isaac",
-        "classical_sim_mujoco",
-    ]
-    assert translated["qualification_granted"] is False
-    assert translated["execution_started"] is False
-    assert all(row["candidate_only"] for row in translated["candidate_methods"])
-    assert all(not row["availability_asserted"] for row in translated["candidate_methods"])
-
-
-def test_legacy_wam_scorecard_stays_debug_evidence_and_cannot_name_winner() -> None:
-    evidence = wam_scorecard_as_debug_evidence(
-        {
-            "schema_version": "policy_ranking_scorecard.v1",
-            "status": "blocked_inconclusive_ranking",
-            "top_policy_id": None,
-            "single_best_policy_claimed": False,
-            "blockers": ["insufficient_qualified_evidence"],
-        }
-    )
-    assert evidence["status"] == "uncertain"
-    assert evidence["categorical_finding"] == "thesis_not_supported"
-    assert evidence["claim_ceiling"]["comparative_policy_ranking"] is False
-    assert evidence["provenance"]["self_grading_used_for_qualification"] is False
-    with pytest.raises(ValueError, match="unproven_winner_forbidden"):
-        wam_scorecard_as_debug_evidence(
-            {
-                "schema_version": "policy_ranking_scorecard.v1",
-                "status": "completed",
-                "top_policy_id": "policy-a",
-                "single_best_policy_claimed": True,
-            }
-        )
-
-
-@pytest.mark.parametrize(
-    ("translator", "legacy_kind", "claim_type"),
-    [
-        (
-            translate_policy_improvement_request,
-            "policy_improvement_run",
-            "comparative_policy_ranking",
-        ),
-        (
-            translate_post_training_data_request,
-            "post_training_data_package",
-            "post_training_evidence_use_eligibility",
-        ),
-    ],
-)
-def test_legacy_product_request_translation_is_deprecated_and_provider_neutral(
-    translator, legacy_kind: str, claim_type: str
-) -> None:
-    translated = translator(
-        {
-            "run_id": "legacy-1",
-            "policies": [{"policy_id": "policy-a", "api_key": "must-not-copy"}],
-            "selected_provider": "legacy-provider-must-not-copy",
-            "budget_usd": 5,
-            "caller_identity": "compatibility-test",
-        },
-        _testbed(),
-    )
-    request = translated.request.to_mapping()
-    assert request["claims"][0]["claim_type"] == claim_type
-    assert "selected_provider" not in request
-    assert "api_key" not in json.dumps(request)
-    assert translated.metadata["legacy_contract_kind"] == legacy_kind
-    assert translated.metadata["deprecated"] is True
-    assert translated.metadata["replacement_product"] == "Task Evaluation Run"
-    assert translated.metadata["translation_grants_qualification"] is False
 
 
 def test_post_training_is_a_gated_evidence_use_not_a_product_or_improvement_claim() -> None:

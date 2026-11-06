@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from blueprint_pipeline import live_pipeline_manifest_alert as alert
@@ -320,3 +323,28 @@ def test_live_pipeline_manifest_alert_cli_exit_codes(tmp_path: Path) -> None:
         )
         == 0
     )
+
+
+def test_spend_guard_pages_from_its_own_lock_without_the_retired_control_plane_loop() -> None:
+    """P-RT-06 retired the 5-minute loop whose manifest this module first paged on.
+
+    The GPU spend guard's ExecStopPost pages through this module from the spend
+    admission lock the guard itself writes, so retiring the loop must not touch
+    it: the unit names the lock, never the loop's manifest, and the module loads
+    without importing the loop.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    unit = (repo / "deploy/systemd/blueprint-gpu-spend-guard.service").read_text(encoding="utf-8")
+    stop_post = next(line for line in unit.splitlines() if line.startswith("ExecStopPost="))
+    assert "-m blueprint_pipeline.live_pipeline_manifest_alert" in stop_post
+    assert '--manifest-path "$${BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH}"' in stop_post
+    assert '--output-path "$${BLUEPRINT_GPU_SPEND_GUARD_PAGE_AUDIT}"' in stop_post
+    assert "live_pipeline_control_plane_manifest" not in stop_post
+    probe = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, blueprint_pipeline.live_pipeline_manifest_alert; "
+         "print('blueprint_pipeline.live_pipeline_control_plane' in sys.modules)"],
+        env={**os.environ, "PYTHONPATH": str(repo / "src")},
+        capture_output=True, text=True, timeout=120, check=True,
+    )
+    assert probe.stdout.strip() == "False"

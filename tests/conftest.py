@@ -54,6 +54,27 @@ def _website_object_spec_agent_off(monkeypatch):
     monkeypatch.setenv("BLUEPRINT_WEBSITE_OBJECT_SPEC_AGENT", "0")
 
 
+@pytest.fixture(autouse=True)
+def _vast_credit_guard_off(monkeypatch):
+    """The Vast credit guard is on by default (P-D01, 2026-11-05): with it on, every
+    Vast launch first GETs the live account balance. Never let a test reach Vast
+    by default. A test that exercises the guard sets
+    ``BLUEPRINT_VAST_CREDIT_GUARD_ENABLED`` itself, or deletes it to test the default."""
+    monkeypatch.setenv("BLUEPRINT_VAST_CREDIT_GUARD_ENABLED", "false")
+
+
+@pytest.fixture
+def legacy_runpod_mechanics(monkeypatch):
+    """RunPod is retired (2026-11-05): no grant is issued for a RunPod allocation and
+    the allocator and the RunPod render launcher refuse it. The retired lanes' own
+    tests keep exercising their mechanics (redaction, teardown, ambiguity handling)
+    with the refusal lifted, until the removal plan deletes those lanes and tests.
+    Tests that prove the refusal never use this fixture."""
+    from blueprint_pipeline import paid_resource_admission
+
+    monkeypatch.setattr(paid_resource_admission, "RUNPOD_PROVIDER_RETIRED", False)
+
+
 @pytest.fixture
 def _single_threaded_verdict_persistence(monkeypatch):
     """Validator verdicts persist only while no other thread runs. A thread another

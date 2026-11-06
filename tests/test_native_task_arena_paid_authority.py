@@ -2051,3 +2051,22 @@ def test_the_no_allocation_seal_demands_proof_that_nothing_was_allocated(
             result_path=result_path,
             output_path=tmp_path / "invalid_continuing.json",
         )
+
+
+def test_recovered_zero_accepts_a_retired_keyless_runpod_row(tmp_path: Path) -> None:
+    """RunPod is retired (2026-11-05): a guard run after its key was deleted records it
+    as retired and not required; that still proves account-wide zero. A guard that
+    simply lacks the RunPod row does not."""
+
+    from blueprint_pipeline.spend_admission_lock import retired_provider_inventory_row
+
+    guard = json.loads(_guard(tmp_path, generated_at="2026-08-18T19:25:00+00:00").read_text())
+    keyless = {**guard, "inventory_results": [
+        *(row for row in guard["inventory_results"] if row["provider"] != "runpod"),
+        retired_provider_inventory_row("runpod"),
+    ]}
+    assert paid._global_guard_proves_zero(guard) is True
+    assert paid._global_guard_proves_zero(keyless) is True
+    missing = {**guard, "inventory_results": [
+        row for row in guard["inventory_results"] if row["provider"] != "runpod"]}
+    assert paid._global_guard_proves_zero(missing) is False

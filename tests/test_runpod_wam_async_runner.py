@@ -25,7 +25,7 @@ from blueprint_pipeline.runpod_provider_adapter import RUNPOD_API_GATE_ENV
 
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.usefixtures("legacy_runpod_mechanics")]  # RunPod retired 2026-11-05; see conftest
 
 
 def _paid_grant():

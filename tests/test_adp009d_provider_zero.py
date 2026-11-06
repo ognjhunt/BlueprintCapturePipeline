@@ -60,3 +60,45 @@ def test_provider_zero_cli_writes_only_compact_sanitized_summary(
 
     assert adp009d_provider_zero.main(["--output", str(output)]) == 0
     assert output.is_file()
+
+
+def test_keyless_retired_runpod_leaves_the_required_scope_only_on_its_marker(monkeypatch) -> None:
+    """RunPod is retired (2026-11-05): with no RunPod key it is recorded as retired and
+    the receipt needs Vast and DigitalOcean; with a key it is still queried and required."""
+
+    from blueprint_pipeline import gpu_render_providers
+    from blueprint_pipeline.spend_admission_lock import retired_provider_inventory_row
+
+    inventories = _inventories()
+    inventories["runpod"] = {"provider": "runpod", "status": adp009d_provider_zero.RETIRED_CREDENTIAL_ABSENT}
+    receipt = build_provider_zero_receipt(inventories)
+    assert receipt["status"] == "passed" and receipt["provider_zero_verified"] is True
+    assert receipt["provider_zero"]["required_provider_ids"] == ["vast", "digitalocean"]
+    assert retired_provider_inventory_row("runpod") in receipt["inventory_results"]
+    # Any other RunPod answer is a required inventory, as before.
+    inventories["runpod"] = {"provider": "runpod", "status": "blocked", "blockers": ["runpod_api_key_missing"]}
+    blocked = build_provider_zero_receipt(inventories)
+    assert blocked["provider_zero_verified"] is False
+    assert blocked["provider_zero"]["required_provider_ids"] == ["runpod", "vast", "digitalocean"]
+
+    queried = []
+
+    class Provider:
+        def __init__(self, name, available):
+            self.name, self._available = name, available
+
+        def available(self):
+            return {"provider": self.name, "available": self._available}
+
+        def billable_inventory(self, *, name_prefix):
+            queried.append(self.name)
+            return _inventories()[self.name]
+
+    for runpod_key in (False, True):
+        queried.clear()
+        monkeypatch.setattr(gpu_render_providers, "get_render_provider",
+                            lambda name, runpod_key=runpod_key: Provider(name, name != "runpod" or runpod_key))
+        collected = adp009d_provider_zero.collect_provider_zero_receipt()
+        assert collected["provider_zero_verified"] is True
+        assert ("runpod" in queried) is runpod_key
+        assert ("runpod" in collected["provider_zero"]["required_provider_ids"]) is runpod_key

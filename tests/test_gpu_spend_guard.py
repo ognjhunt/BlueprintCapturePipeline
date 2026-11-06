@@ -2396,3 +2396,106 @@ def test_unknown_cpu_vm_cost_is_not_zero_or_a_ledger_update(tmp_path):
     assert report['instances'][0]['cost_per_hr_usd'] is None
     assert 'Total burn estimate: unknown' in guard.build_report(
         [vm], protected_ids=set(), max_boot_seconds=30)
+
+
+# ----------------------- RunPod retired (2026-11-05) -----------------------
+
+
+def _keyed_billing(tmp_path: Path, now: float) -> Path:
+    billing = tmp_path / "provider-billing-retired.json"
+    billing.write_text(json.dumps({
+        "schema_version": guard.BILLING_EXPORT_SCHEMA_VERSION,
+        "generated_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
+        "currency": "USD", "scope": guard.BILLING_EXPORT_SCOPE,
+        "provider_totals_usd": {"vast": 0.0, "digitalocean": 0.0},
+    }), encoding="utf-8")
+    return billing
+
+
+def _guard_args(tmp_path: Path, output_root: Path, billing: Path) -> list[str]:
+    return ["--reap", "--output-root", str(output_root), "--max-boot-seconds", "480",
+            "--spend-ledger", str(tmp_path / "ledger.json"),
+            "--billing-export", str(billing), "--require-billing-reconciliation",
+            "--admission-lock-report", str(tmp_path / "lock.json"),
+            "--json-report", str(tmp_path / "guard.json")]
+
+
+def test_runpod_key_present_still_inventories_blocks_and_reaps(patched_guard, monkeypatch) -> None:
+    """While a RunPod key exists the retired provider is still a required inventory:
+    a live orphan pod is reaped and keeps provider-zero and paid admission closed."""
+
+    tmp_path, terminated = patched_guard
+    monkeypatch.setattr(guard, "_read_secret", lambda name, **_kw: {
+        "runpod_api_key": "rp-super-secret", "vast_api_key": "va-super-secret",
+        "digitalocean_api_token": "do-super-secret"}.get(name))
+    monkeypatch.setattr(guard, "fetch_do_droplets", lambda *_a, **_k: [])
+    billing = _keyed_billing(tmp_path, guard._now())
+    assert guard.main(_guard_args(tmp_path, tmp_path, billing)) == 2
+    report = json.loads((tmp_path / "guard.json").read_text(encoding="utf-8"))
+    runpod = next(row for row in report["inventory_results"] if row["provider"] == "runpod")
+    assert runpod["required"] is True and runpod["status"] == "succeeded" and runpod["row_count"] == 4
+    assert sorted(report["provider_zero"]["required_provider_ids"]) == ["digitalocean", "runpod", "vast"]
+    assert report["provider_zero_verified"] is False
+    assert sorted(url.rsplit("/", 1)[-1] for url in terminated) == ["pod-booted-orphan", "pod-dud"]
+    # The live pods' provider has no billing total, so paid admission stays closed.
+    assert "provider_billing_export_missing:runpod" in report["billing_reconciliation"]["blockers"]
+    lock = json.loads((tmp_path / "lock.json").read_text(encoding="utf-8"))
+    assert lock["admission_allowed"] is False
+    assert "runpod" in {row["provider"] for row in lock["provider_inventory"]}
+
+
+def test_runpod_key_absent_is_retired_not_required_and_nothing_else_changes(
+    patched_guard, monkeypatch, capsys,
+) -> None:
+    tmp_path, terminated = patched_guard
+    fetched: list[str] = []
+    monkeypatch.setattr(guard, "_read_secret", lambda name, **_kw: {
+        "vast_api_key": "va-super-secret", "digitalocean_api_token": "do-super-secret"}.get(name))
+    monkeypatch.setattr(guard, "fetch_runpod_pods", lambda *_a, **_k: fetched.append("runpod") or [])
+    monkeypatch.setattr(guard, "fetch_do_droplets", lambda *_a, **_k: [])
+    billing = _keyed_billing(tmp_path, guard._now())
+    for extra in ([], ["--require-provider", "runpod"]):
+        assert guard.main([*_guard_args(tmp_path, tmp_path, billing), *extra]) == 0
+        report = json.loads((tmp_path / "guard.json").read_text(encoding="utf-8"))
+        runpod = next(row for row in report["inventory_results"] if row["provider"] == "runpod")
+        assert runpod == {
+            "provider": "runpod", "required": False, "credential_present": False,
+            "status": "unavailable", "row_count": None, "api_confirmed": False,
+            "reason": "runpod_provider_retired_credential_absent", "blockers": [],
+        }
+        assert report["status"] == "passed" and report["blockers"] == []
+        assert report["provider_zero_verified"] is True
+        assert sorted(report["provider_zero"]["required_provider_ids"]) == ["digitalocean", "vast"]
+        assert "runpod" in report["provider_zero"]["excluded_retired_provider_ids"]
+        vast = next(row for row in report["inventory_results"] if row["provider"] == "vast")
+        assert vast["required"] is True and vast["status"] == "succeeded"
+        lock = json.loads((tmp_path / "lock.json").read_text(encoding="utf-8"))
+        assert lock["admission_allowed"] is True
+        assert lock["billing_uncovered_provider_ids"] == []
+        assert lock["provider_admission"]["vast"] == {"admission_allowed": True, "blockers": []}
+    assert fetched == [] and terminated == []
+    assert "rp-super-secret" not in capsys.readouterr().out
+
+
+def test_runpod_key_absent_never_relaxes_vast_digitalocean_or_gcp(patched_guard, monkeypatch) -> None:
+    tmp_path, _terminated = patched_guard
+    monkeypatch.setattr(guard, "cloud_provider_configured", lambda _provider: False)
+    billing = _keyed_billing(tmp_path, guard._now())
+    for present, missing in ((("vast",), ("digitalocean", "gcp")), ((), ("vast",))):
+        keys = {"vast": "va-super-secret"} if present else {}
+        monkeypatch.setattr(guard, "_read_secret",
+                            lambda name, keys=keys, **_kw: keys.get(name.replace("_api_key", "")))
+        requires = [arg for provider in ("vast", "digitalocean", "gcp")
+                    for arg in ("--require-provider", provider)]
+        assert guard.main([*_guard_args(tmp_path, tmp_path, billing), *requires]) == 2
+        report = json.loads((tmp_path / "guard.json").read_text(encoding="utf-8"))
+        rows = {row["provider"]: row for row in report["inventory_results"]}
+        assert rows["runpod"]["required"] is False
+        for provider in ("vast", "digitalocean", "gcp"):
+            assert rows[provider]["required"] is True
+        for provider in missing:
+            assert f"{provider}_inventory_credential_missing" in report["blockers"]
+            assert f"provider_zero_inventory_unverified:{provider}" in report["provider_zero"]["blockers"]
+        lock = json.loads((tmp_path / "lock.json").read_text(encoding="utf-8"))
+        for provider in missing:
+            assert lock["provider_admission"][provider]["admission_allowed"] is False

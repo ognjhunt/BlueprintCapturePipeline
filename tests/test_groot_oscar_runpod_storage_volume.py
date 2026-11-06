@@ -20,6 +20,8 @@ from blueprint_pipeline.paid_resource_admission import (
     require_paid_resource_admission,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_runpod_mechanics")  # RunPod retired 2026-11-05; see conftest
+
 
 VERIFY_RETAINED_REMOTE = storage._verify_retained_model_cache_remote
 

@@ -21,9 +21,7 @@ sudo systemd-analyze verify \
   /etc/systemd/system/blueprint-*.service
 
 for unit in \
-  blueprint-pipeline-control-plane.service \
   blueprint-pipeline-intake.service \
-  blueprint-pipeline-intake-staging.service \
   blueprint-pubsub-handoff-listener.service \
   blueprint-gpu-spend-guard.service
 do

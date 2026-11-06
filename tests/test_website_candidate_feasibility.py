@@ -393,7 +393,7 @@ def reach_rows(learned):
 
 
 def capture_447(*, ranked=True, priority=DEFAULT_PRIORITY, intake_ranking=False, budget_usd="15.00", learned=None,
-                ceiling=None):
+                ceiling=None, candidate_ids=None):
     from blueprint_pipeline.beta_policy_candidate_catalog import catalog_candidate
     from blueprint_pipeline.website_candidate_feasibility import infeasible_blockers, reach_ranks
     from tests.test_beta_policy_screening_plan import admitted
@@ -417,6 +417,8 @@ def capture_447(*, ranked=True, priority=DEFAULT_PRIORITY, intake_ranking=False,
         capabilities["candidate_reach_rank"] = reach_ranks(feasibility)
     options = {"campaign_id": "campaign1", "capabilities": capabilities, "cost_quotes": quotes, "now": NOW,
                "budget_usd": budget_usd, "priority": priority, "intake_ranking": intake_ranking}
+    if candidate_ids is not None:
+        options["candidate_ids"] = candidate_ids
     if ceiling is not None:
         return build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=ceiling, **options)
     return build_screening_plan(catalog, scene(), **options)
@@ -526,11 +528,17 @@ def test_ranking_by_reach_makes_nothing_infeasible_or_unfunded_that_was_not():
     # A job ceiling that defers the waitlist keeps each row's rank, and so does a deferral for no money left.
     from tests.test_beta_policy_screening_job_ceiling import READ_AT, ceiling_summary
 
-    # A website job's plan lists its scripted baselines switched off (owner 2026-11-04), rank kept.
+    # A website job's re-plan that names its scripted baselines lists them switched off (owner
+    # 2026-11-04), rank kept; a new website campaign leaves them out (owner 2026-11-05), the rest unchanged.
+    every = sorted(row["candidate_id"] for row in capture_447(learned=learned)["candidates"])
     for remaining, statuses in ((5, {"selected", "waitlisted", "infeasible", "unavailable"}),
                                 (0, {"deferred", "infeasible", "unavailable"})):
-        bounded = capture_447(learned=learned, ceiling=job_ceiling_record(
-            ceiling_summary(remaining), local_holds_usd=Decimal(0), read_at=READ_AT))
+        record = job_ceiling_record(ceiling_summary(remaining), local_holds_usd=Decimal(0), read_at=READ_AT)
+        bounded = capture_447(learned=learned, ceiling=record, candidate_ids=every)
+        fresh = capture_447(learned=learned, ceiling=record)
+        assert fresh["candidates"] == [row for row in bounded["candidates"]
+                                       if row.get("execution_evidence_kind") != "scripted_simulator_state_baseline"]
+        assert {row["status"] for row in fresh["candidates"]} == statuses - {"unavailable"}
         assert {row["status"] for row in bounded["candidates"]} == statuses
         assert {row["candidate_id"] for row in bounded["candidates"] if row["status"] == "unavailable"} == {
             row["candidate_id"] for row in bounded["candidates"]

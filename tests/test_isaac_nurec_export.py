@@ -1,4 +1,8 @@
-"""Fail-closed contracts for the optional 3dgrut/Isaac export adapter."""
+"""Contract checks for ``scripts/run_isaac_splat_nurec_render.py``.
+
+The in-package 3dgrut/Isaac export adapter these tests once covered was
+retired; the runner script stays in scripts/ and is checked here.
+"""
 
 from __future__ import annotations
 
@@ -6,54 +10,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from blueprint_pipeline.isaac_nurec_export import (
-    convert_ply_to_isaac_usd,
-    threedgrut_available,
-)
-
 
 REPO = Path(__file__).resolve().parents[1]
 RUNNER = REPO / "scripts" / "run_isaac_splat_nurec_render.py"
-
-
-def test_threedgrut_unavailable_locally() -> None:
-    assert threedgrut_available(sys.executable) is False
-
-
-def test_convert_blocked_unsupported_format(tmp_path: Path) -> None:
-    ply = tmp_path / "scene.ply"
-    ply.write_bytes(b"ply\n")
-    result = convert_ply_to_isaac_usd(
-        ply,
-        tmp_path / "o.usdz",
-        fmt="bogus",
-        python=sys.executable,
-    )
-    assert result["status"] == "blocked"
-    assert "unsupported_isaac_splat_format" in result["blockers"]
-
-
-def test_convert_blocked_missing_ply(tmp_path: Path) -> None:
-    result = convert_ply_to_isaac_usd(
-        tmp_path / "nope.ply",
-        tmp_path / "o.usdz",
-        python=sys.executable,
-    )
-    assert result["status"] == "blocked"
-    assert "standard_ply_missing" in result["blockers"]
-
-
-def test_convert_blocked_threedgrut_unavailable(tmp_path: Path) -> None:
-    ply = tmp_path / "scene.ply"
-    ply.write_bytes(b"ply\nformat binary_little_endian 1.0\nend_header\n")
-    result = convert_ply_to_isaac_usd(
-        ply,
-        tmp_path / "o.usdz",
-        python=sys.executable,
-    )
-    assert result["status"] == "blocked"
-    assert "threedgrut_unavailable" in result["blockers"]
-    assert "remediation" in result
 
 
 def test_runner_py_compiles() -> None:
@@ -94,4 +53,3 @@ def test_runner_requires_ply_or_usdz(tmp_path: Path) -> None:
     )
     assert process.returncode == 2
     assert "ply" in process.stderr.lower()
-

@@ -112,7 +112,6 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint/scene-retirement/journals.metadata", "evidence_hot", "root", "public lifecycle receipt metadata"),
     StorageRoot("/var/lib/blueprint/scene-retirement/consents", "evidence_hot", "root", "owner-bound immutable action authorization"),
     StorageRoot("/mnt/blueprint-work/scene-retirement-runtime", "evidence_hot", "root", "protected installed executable snapshot; no GC authority"),
-    StorageRoot("/var/lib/blueprint-staging", "staging", "blueprint", "isolated staging intake"),
     # --- evidence that live services read; never evicted or offloaded
     StorageRoot(f"{_CONTROL_PLANE}/agent-execution", "evidence_hot", "blueprint", "durable agent task and operation journals with inference budget evidence"),
     StorageRoot(f"{_CONTROL_PLANE}/beta-policy-screening", "evidence_hot", "blueprint",
@@ -137,8 +136,6 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     # are evidence, not reproducible cache: never evicted or offloaded.
     StorageRoot(f"{_INPUTS}/sam31-profile-registry", "evidence_hot", "blueprint", "content-addressed SAM server profile registry"),
     StorageRoot(f"{_INPUTS}/semantic-pretraining", "work", "blueprint", "ArtiFixer semantic-pretraining workspaces; bundle/ is a reproducible runtime copy reaped once the workspace is idle"),
-    StorageRoot("/var/lib/blueprint/production-gpu-campaigns.sqlite", "evidence_hot", "blueprint", "gpu campaign ledger"),
-    StorageRoot("/var/lib/blueprint/production-gpu-worker-pool.sqlite", "evidence_hot", "blueprint", "gpu worker pool ledger"),
     StorageRoot(f"{_INPUTS}/task-evaluation-terminal-results", "evidence_hot", "blueprint", "sealed terminal result indexes and lineage"),
     StorageRoot(f"{_INPUTS}/g1-team-campaign-registry.json", "evidence_hot", "blueprint", "owner-scoped G1 team campaign registry"),
     StorageRoot(f"{_INPUTS}/g1-team-policy-approvals", "evidence_hot", "blueprint", "reviewed exact G1 policy execution authority"),
@@ -217,7 +214,6 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/opt/blueprint/task-evaluation-control-plane-releases", "release", "root", "per-commit release worktrees"),
     StorageRoot("/opt/blueprint/task-evaluation-control-plane", "release", "root", "active release link"),
     StorageRoot("/opt/blueprint/BlueprintCapturePipeline", "release", "root", "mutable source checkout and venv"),
-    StorageRoot("/opt/blueprint/BlueprintCapturePipeline-staging", "staging", "root", "staging checkout"),
     # --- operator door (deploy/operator-door): installed apart from pipeline releases
     StorageRoot("/var/lib/blueprint-operator-door", "container", "blueprint", "operator door state"),
     StorageRoot("/var/lib/blueprint-operator-door/requests", "work", "blueprint", "operator door request spool, results and logs"),

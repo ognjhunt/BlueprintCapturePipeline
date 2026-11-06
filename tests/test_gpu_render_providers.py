@@ -83,6 +83,7 @@ def _spec(**over) -> RenderLaunchSpec:
 
 
 @pytest.mark.parametrize("provider_class", list(_ORIGINAL_PROVIDER_LAUNCHES))
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_legacy_provider_launch_requires_opaque_grant_before_network(
     provider_class,
     tmp_path: Path,
@@ -172,6 +173,7 @@ def test_runpod_build_request_is_pod_body(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_launch_strips_local_capability_filters_before_create(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -548,6 +550,7 @@ def test_runpod_exact_one_gpu_offer_requires_explicit_stock_label(monkeypatch) -
     assert result["capacity_confidence"] == "unavailable"
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_create_capacity_failure_is_capacity_outcome_not_spend(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -590,6 +593,7 @@ def test_runpod_capacity_preflight_fails_closed_on_query_error(monkeypatch) -> N
     assert result["raw_provider_response_recorded"] is False
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> None:
     # point secret lookups at an empty dir so no key is found and no network call happens
     monkeypatch.setenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR", str(tmp_path))
@@ -600,6 +604,7 @@ def test_runpod_launch_fail_closed_without_key(tmp_path: Path, monkeypatch) -> N
     assert res["spend_occurred"] is False
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_launch_blocks_without_prelaunch_guard_before_provider_call(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -628,6 +633,7 @@ def test_runpod_launch_blocks_without_prelaunch_guard_before_provider_call(
     assert calls == []
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_launch_strips_internal_guard_fields_before_create(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -653,6 +659,7 @@ def test_runpod_launch_strips_internal_guard_fields_before_create(
     assert "pending_teardown_record" not in observed[0]
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_rechecks_and_filters_rate_cap_before_cold_create(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -697,6 +704,7 @@ def test_runpod_rechecks_and_filters_rate_cap_before_cold_create(
     assert "max_hourly_rate_usd" not in sent
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_blocks_when_fresh_price_cannot_meet_rate_cap(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -731,6 +739,7 @@ def test_runpod_blocks_when_fresh_price_cannot_meet_rate_cap(
     assert result["blockers"] == ["runpod_pre_mutation_rate_cap_unverified"]
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_warm_rate_cap_blocks_before_start_mutation(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -767,6 +776,7 @@ def test_runpod_warm_rate_cap_blocks_before_start_mutation(
     assert calls == [("GET", "/pods/warm-1")]
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_launch_classifies_create_resource_500_as_capacity(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -798,6 +808,7 @@ def test_runpod_launch_classifies_create_resource_500_as_capacity(
     assert result["attempts"][0]["pod_id"] is None
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_warm_start_rejection_is_recorded_before_cold_fallback(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
@@ -845,6 +856,7 @@ def test_runpod_warm_start_rejection_is_recorded_before_cold_fallback(tmp_path: 
     ]
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_warm_only_blocks_without_cold_create(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
@@ -876,6 +888,7 @@ def test_runpod_warm_only_blocks_without_cold_create(tmp_path: Path, monkeypatch
     assert ("POST", "/pods") not in calls
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_warm_update_failure_does_not_start_stale_command(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
@@ -918,6 +931,7 @@ def test_runpod_warm_update_failure_does_not_start_stale_command(tmp_path: Path,
         ("/pods/warm-1/start", 500, "runpod_warm_start_outcome_ambiguous"),
     ],
 )
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_warm_mutation_lost_response_never_falls_back_to_cold_create(
     tmp_path: Path,
     monkeypatch,
@@ -953,6 +967,7 @@ def test_runpod_warm_mutation_lost_response_never_falls_back_to_cold_create(
     assert ("POST", "/pods") not in calls
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_generic_start_conflict_is_ambiguous_not_cold_fallback(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -981,6 +996,7 @@ def test_runpod_generic_start_conflict_is_ambiguous_not_cold_fallback(
     assert ("POST", "/pods") not in calls
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_warm_start_accepts_any_successful_2xx_response(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1007,6 +1023,7 @@ def test_runpod_warm_start_accepts_any_successful_2xx_response(
     assert result["mode"] == "warm_restart"
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_cold_create_lost_response_is_not_explicit_no_allocation(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1037,6 +1054,7 @@ def test_runpod_cold_create_lost_response_is_not_explicit_no_allocation(
         (500, {"error": "internal server error"}),
     ],
 )
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_no_id_without_definitive_rejection_is_ambiguous(
     tmp_path: Path, monkeypatch, status: int, body: dict
 ) -> None:
@@ -1059,6 +1077,7 @@ def test_runpod_no_id_without_definitive_rejection_is_ambiguous(
     "malformed_id",
     [True, 123, {"id": "pod-1"}, " pod-1", "pod/escape"],
 )
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_runpod_malformed_success_id_is_ambiguous(
     tmp_path: Path, monkeypatch, malformed_id: object
 ) -> None:
@@ -4034,3 +4053,23 @@ def test_digitalocean_billable_inventory_counts_powered_off_resources(monkeypatc
     assert result["api_confirmed"] is True
     assert result["live_resource_count"] == 1
     assert result["resources"][0]["status"] == "off"
+
+
+
+def test_retired_runpod_launch_refuses_before_grant_key_or_any_call(tmp_path, monkeypatch) -> None:
+    """RunPod is retired (2026-11-05): its render launcher refuses before it checks a
+    grant, reads a key or makes any call. Stop, inspect and terminate stay available."""
+
+    from blueprint_pipeline import gpu_render_providers as providers
+
+    monkeypatch.setattr(providers.RunPodRenderProvider, "_key",
+                        lambda _self: pytest.fail("retired RunPod launch read its key"))
+    monkeypatch.setattr(providers, "_runpod_call",
+                        lambda *a, **k: pytest.fail("retired RunPod launch called RunPod"))
+    monkeypatch.setattr(providers, "require_paid_resource_admission_grant",
+                        lambda *a, **k: pytest.fail("retired RunPod launch reached the grant check"))
+    result = providers.get_render_provider("runpod").launch(tmp_path, {"prelaunch_spend_guard": {}})
+    assert result == {"status": "blocked", "blockers": ["runpod_provider_retired"], "allocation_created": False,
+                      "spend_occurred": False, "provider_mutations_performed": 0}
+    assert hasattr(providers.RunPodRenderProvider, "terminate")
+    assert hasattr(providers.RunPodRenderProvider, "stop")

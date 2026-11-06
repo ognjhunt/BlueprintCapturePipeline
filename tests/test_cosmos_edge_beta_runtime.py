@@ -11,14 +11,17 @@ from blueprint_pipeline import cosmos_edge_beta_runtime as runtime
 from blueprint_pipeline import adp009d_policy_server_worker as server_worker
 from blueprint_pipeline.adp009d_droid_action_execution import plan_chunk_execution
 from blueprint_pipeline.adp009d_droid_observation import build_droid_observation
-from blueprint_pipeline.cosmos_edge_beta_provisioning import build_provisioning_script, DEPENDENCY_LOCK_SHA256
 from blueprint_pipeline.cosmos_edge_droid_policy_runtime import CosmosEdgeDroidPolicySpec
-from blueprint_pipeline.cosmos_droid_bundle import runtime_contract
+from blueprint_pipeline.cosmos_droid_bundle import provisioning_script, runtime_contract
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.droid_policy_bridge import DROID_ROBOARENA_CONCAT_VIEWS
 from blueprint_pipeline.policy_interface_binding import observation_interface
 from tests.test_cosmos_edge_droid_policy_runtime import _metadata
 from tests.test_beta_robolab_runtime import stock_robolab  # noqa: F401 - shared pinned upstream loop fixture
+
+
+# Pinned digest of the upstream Cosmos uv.lock the locked server environment uses.
+UPSTREAM_UV_LOCK_SHA256 = "f5ec25154f3dc63f49680c91c0dee807b02ea6b846833d6f204bc5659f67e555"
 
 
 def _policy():
@@ -163,14 +166,14 @@ def test_snapshot_inventory_and_execution_are_exact_and_secret_free(tmp_path):
 
 
 def test_bootstrap_uses_cosmos_locked_environment_and_does_not_install_model_into_isaac(tmp_path):
-    script = build_provisioning_script()
+    script = provisioning_script()
     path = tmp_path / "provision.sh"
     path.write_text(script)
     checked = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
     assert checked.returncode == 0, checked.stderr
     from blueprint_pipeline.cosmos_droid_dependencies import verified_dependency_manifest
     dependencies = verified_dependency_manifest()
-    assert dependencies["upstream_uv_lock_sha256"] == DEPENDENCY_LOCK_SHA256
+    assert dependencies["upstream_uv_lock_sha256"] == UPSTREAM_UV_LOCK_SHA256
     assert dependencies["interpreter"]["version"] == "3.13.9"
     assert "blueprint_pipeline.cosmos_droid_provisioning" in script
     assert "uv sync" not in script and "snapshot_download" not in script

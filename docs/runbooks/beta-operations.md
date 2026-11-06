@@ -80,7 +80,8 @@ What frequent states mean:
 
 What breaks: Vast stops every instance when the account balance runs out
 (`PAGE_ALERT_CODES` in `src/blueprint_pipeline/control_plane_capacity_controller.py`).
-Every unit that can allocate Vast runs with `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true`
+The credit guard is on by default in code; only `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=false`
+(or `0`) turns it off. Every unit that can allocate Vast also sets `=true` explicitly
 (`PAID_ALLOCATION_UNITS` in
 `src/blueprint_pipeline/task_evaluation_production_chain_preflight.py`; the chain
 preflight refuses one without it). That includes the rigid robot-free probe runner
@@ -154,6 +155,21 @@ raises it to `warning` at most. Neither raises a disk page.
 | OpenAI | Owner to confirm: prepaid credit (with or without automatic recharge) or a monthly invoice. | `openai_spend_24h_high`: organization spend in one UTC day, today so far or yesterday. `openai_spend_month_high`: the UTC month to date. | $75 a day. $560 a month. | `BLUEPRINT_OPENAI_SPEND_24H_PAGE_USD`, `BLUEPRINT_OPENAI_SPEND_MONTH_PAGE_USD` |
 | World Labs (Atlas) | Prepaid credit: tasks draw from the account balance, 1,000 credits per US dollar in the beta. Automatic recharge and the account's monthly spend limit: owner to confirm. | `world_labs_spend_24h_high`: Blueprint's recorded Atlas purchases in the last 24 h. `world_labs_spend_month_high`: the UTC month to date. | $60 a day. $450 a month. | `BLUEPRINT_WORLD_LABS_SPEND_24H_PAGE_USD`, `BLUEPRINT_WORLD_LABS_SPEND_MONTH_PAGE_USD` |
 | Google Cloud project `blueprint-8c1ca` (Gemini) | A Cloud Billing account that Google charges after use. Payment setup: owner to confirm. | `gcp_spend_month_high`: the budget guard's cost for the month. | 80% of the month's limit: $80 of $100. | `BLUEPRINT_GCP_SPEND_PAGE_FRACTION`, more than 0 and at most 1 |
+
+**RunPod is retired** (owner decision, 2026-11-05). Nothing can start RunPod
+spend: the canonical allocator, the shared paid admission
+(`RUNPOD_PROVIDER_RETIRED` in `src/blueprint_pipeline/paid_resource_admission.py`)
+and the RunPod render launcher refuse with `runpod_provider_retired` before any
+RunPod resource is created. The billing reconciler no longer requests RunPod billing (it had
+failed on every call: 85 of 85 on 2026-11-05). While a RunPod key exists, the
+GPU spend guard still reads the RunPod inventory as a required provider: an
+orphan pod is reaped, and it keeps provider-zero and paid admission closed until
+it is gone. The paid-spend admission lock lists RunPod as retired, not as
+uncovered billing. Owner step: close the RunPod account, then delete the RunPod
+key file (`runpod_api_key` in `/etc/blueprint/provider-secrets`, and the file
+`RUNPOD_API_KEY_FILE` names where an env file sets it). With no key the guard
+records RunPod as retired and not required, and Vast, DigitalOcean and GCP stay
+required exactly as before.
 
 The lines come from the B-03 cost model
 ([`../launch-readiness/2026-11-cost-model.md`](../launch-readiness/2026-11-cost-model.md)):
@@ -465,7 +481,7 @@ unit is in `DEFAULT_ALWAYS_ARM_TIMER_UNITS`
 | `blueprint-provider-billing-reconciler.timer` | Refreshes provider billing evidence every 10 minutes. | Not needed. `blueprint-gpu-spend-guard.service` `Wants=` the reconciler, so the reconciler runs with every guard start. Since #3278 (E-02), it refreshes at most every 10 minutes, and only while a live provider needs it. | Nothing to do. |
 | `blueprint-task-evaluation-launch-supervisor.timer` | Supervises launches with the OpenAI Agents SDK. This is optional. | It spends OpenAI money on every launch. | The owner decides the money first. |
 | `blueprint-task-evaluation-terminal-resource-release.path` | Watches the terminal resource release queue. It releases one terminal Vast record through the canonical allocator. | The queue has been empty since 2026-08-12 (one completed record). When `BLUEPRINT_ALLOW_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER` is set, the intake starts the release unit directly (`live_pipeline_intake_runtime_controls.py`). Teardown runs in the paid lane. The launch reconciler files the provider-zero receipt. | Add it to `DEFAULT_ALWAYS_ARM_TIMER_UNITS` if anything writes to its `pending/` folder again. |
-| `blueprint-capture-reconstruction-dispatcher.timer` and `.path` | Advances the legacy capture reconstruction queue. | The website beta reconstructs through Atlas. The queue (`capture-reconstruction-queue/{pending,processing,completed}`) is empty, and no door hold is set. | Retire them in the host cleanup (H-03). |
+| `blueprint-capture-reconstruction-dispatcher.timer` and `.path` | Advanced the legacy capture reconstruction queue. | Retired: the website beta reconstructs through Atlas. The unit files, the dispatcher module and the listener's enqueue are gone from the repo (P-RT-01); the queue (`capture-reconstruction-queue/{pending,processing,completed}`) was empty. | The host still has the installed unit files until the host cleanup (H-03) disables and removes them. |
 
 Not done: `reset-failed` on the transient failed units (O-24). It needs a door
 unit action, and another operator uses the host, so do it in a deploy window.

@@ -116,16 +116,21 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+# Re-exported: callers import these from the worker. The capture lookup lives in a module
+# the CPU-only intake can import without the paid launch path (see team_scene_capture_root).
+from .team_scene_capture_root import (  # noqa: F401
+    CAPTURE_PARTITION_ENV,
+    WEBSITE_TASK_PREFIX,
+    TeamScenePacketRequestRefused,
+    _read_json,
+    resolve_capture_root,
+)
 
 REQUEST_SCHEMA = "blueprint.team_scene_packet_request.v1"
 STATUS_SCHEMA = "blueprint.team_scene_packet_status.v1"
 RUN_SCHEMA = "blueprint.team_scene_packet_queue_run.v1"
 QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
-# The root the agent-run executor admits captures under (agent_run_executor._row_capture_root).
-CAPTURE_PARTITION_ENV = "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT"
 SCENARIO_ID = "nominal"
-# A website scene's task is "website-" plus its task context digest (website_task_preparation).
-WEBSITE_TASK_PREFIX = "website-"
 PACKET_INPUT_FIELDS = ("droid_profile_path", "droid_profile_digest", "runtime_source_receipt_path", "output_root")
 # Published beside the revision (task_evaluation_scene_configuration_publication), where
 # configured-controls autostart also reads it; materialize_team_scene re-checks its digest.
@@ -189,24 +194,10 @@ _TRANSIENT_CODES = frozenset({408, 425, 429})
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
-class TeamScenePacketRequestRefused(ValueError):
-    """This request cannot become a team scene half; the message names why."""
-
-
 def _seal(value: Mapping[str, Any], field: str) -> dict[str, Any]:
     sealed = {**value, field: ""}
     sealed[field] = canonical_digest(sealed, digest_field=field)
     return sealed
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    if path.is_symlink():
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
 
 
 def _temporary(directory: Path, value: Mapping[str, Any]) -> Path:
@@ -811,40 +802,6 @@ def registered_embodiment_models(registry: Mapping[str, Any]) -> dict[str, Path]
         except (OSError, ValueError, KeyError, TypeError):
             continue
     return models
-
-
-def resolve_capture_root(request: Mapping[str, Any], *, partition: str | Path | None = None) -> Path:
-    """The request's website capture inside the executor's partition, bound to the scene's task."""
-
-    from .website_atlas_preview_store import capture_withdrawn
-
-    raw = str(partition or os.environ.get(CAPTURE_PARTITION_ENV, "")).strip()
-    if not raw:
-        raise TeamScenePacketRequestRefused("team_scene_capture_partition_not_configured")
-    root = Path(raw)
-    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
-        raise TeamScenePacketRequestRefused("team_scene_capture_partition_invalid")
-    capture_id = str(request["capture_id"])
-    matches = sorted(path for path in (root / "scenes").glob(f"*/captures/{capture_id}")
-                     if path.is_dir() and not path.is_symlink())
-    if len(matches) != 1:
-        raise TeamScenePacketRequestRefused(
-            "team_scene_capture_root_" + ("missing" if not matches else "ambiguous"))
-    capture = matches[0].resolve()
-    scene_id = capture.parent.parent.name
-    descriptor = _read_json(capture / "capture_descriptor.json") or {}
-    if (not capture.is_relative_to(root.resolve()) or descriptor.get("capture_id") != capture_id
-            or descriptor.get("scene_id") != scene_id):
-        raise TeamScenePacketRequestRefused("team_scene_capture_root_identity_mismatch")
-    if capture_withdrawn(capture):
-        raise TeamScenePacketRequestRefused("team_scene_capture_withdrawn")
-    context = _read_json(capture / "pipeline" / "website_task_context.json") or {}
-    digest = str(context.get("context_digest") or "")
-    if (context.get("capture_id") != capture_id or context.get("scene_id") != scene_id
-            or digest != canonical_digest(context, digest_field="context_digest")
-            or request["task_id"] != WEBSITE_TASK_PREFIX + digest[7:27]):
-        raise TeamScenePacketRequestRefused("team_scene_website_task_context_mismatch")
-    return capture
 
 
 def owner_success_confirmation_scope(request: Mapping[str, Any], *,

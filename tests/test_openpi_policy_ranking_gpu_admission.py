@@ -8,6 +8,7 @@ from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
     INPUT_SCHEMA_VERSION,
 )
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
+import pytest
 
 
 def _inputs():
@@ -71,6 +72,7 @@ def _inputs():
     return release, bundle, preflight, spend
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_openpi_gpu_admission_passes_exact_contract() -> None:
     release, bundle, preflight, spend = _inputs()
     result = build_openpi_policy_ranking_gpu_admission(
@@ -85,6 +87,7 @@ def test_openpi_gpu_admission_passes_exact_contract() -> None:
     assert result["shared_paid_lane_admission"]["status"] == "admitted"
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_openpi_gpu_admission_accepts_one_arm_label_free_canary_receipt() -> None:
     release, _bundle, preflight, spend = _inputs()
     manifest = {
@@ -147,6 +150,7 @@ def test_openpi_gpu_admission_blocks_rights_robot_and_budget_regressions() -> No
     assert "openpi_gpu_ttl_cost_exceeds_max_spend" in result["blockers"]
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_openpi_gpu_admission_accepts_four_hour_two_scene_watchdog_window() -> None:
     release, bundle, preflight, spend = _inputs()
     spend["hard_ttl_seconds"] = 14_400
@@ -244,3 +248,16 @@ def test_openpi_vast_preflight_reserves_frozen_rate_ceiling() -> None:
     )
     assert admission["status"] == "admitted"
     assert admission["provider_resource_class"] == "gpu_render"
+
+
+def test_openpi_gpu_admission_on_retired_runpod_is_refused() -> None:
+    """RunPod is retired (2026-11-05): the same exact contract on RunPod is refused."""
+
+    release, bundle, preflight, spend = _inputs()
+    assert preflight["provider"] == "runpod"
+    result = build_openpi_policy_ranking_gpu_admission(
+        release=release, input_bundle=bundle, preflight=preflight, spend=spend,
+        expected_source_commit="a" * 40, observed_now_epoch=1001.0,
+    )
+    assert result["status"] == "blocked"
+    assert result["shared_paid_lane_admission"]["blockers"] == ["runpod_provider_retired"]

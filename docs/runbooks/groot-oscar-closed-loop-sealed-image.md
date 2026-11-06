@@ -8,7 +8,7 @@
 
 Turns the historical 40-70 min/pod hand-bootstrap of the GR00T x OSCAR closed-loop lane
 (`oscar_isaac_closed_loop_eval` + `groot_sonic_policy_endpoint`) into
-`docker pull` + go. Design: `docs/superpowers/specs/2026-07-06-groot-oscar-eval-worker-image-design.md`.
+`docker pull` + go. Design: `docs/archive/superpowers/specs/2026-07-06-groot-oscar-eval-worker-image-design.md`.
 
 ## What the image contains
 

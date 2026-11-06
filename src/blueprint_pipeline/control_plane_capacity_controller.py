@@ -1356,7 +1356,7 @@ def _volume_from_environment() -> dict[str, Any] | None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     from .provider_credit_admission import (
-        ENABLED_ENV, PAGE_CREDIT_USD, RESERVE_ENV, WARNING_ENV, observe_vast_credit,
+        PAGE_CREDIT_USD, RESERVE_ENV, WARNING_ENV, credit_guard_setting, observe_vast_credit,
     )
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -1380,8 +1380,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         volume=_volume_from_environment(),
         ack=str(os.getenv(RESIZE_ACK_ENV) or "").strip(),
         token=_read_secret(str(os.getenv(DO_TOKEN_FILE_ENV) or "")) if os.getenv(VOLUME_ID_ENV) else "",
-        credit_collector=(observe_vast_credit if os.getenv(ENABLED_ENV, "false").lower()
-                          not in {"false", "0", ""} else None),
+        credit_collector=(observe_vast_credit if credit_guard_setting() != "disabled" else None),
         credit_warning_usd=float(os.getenv(WARNING_ENV, str(PAGE_CREDIT_USD))),
         credit_reserve_usd=float(os.getenv(RESERVE_ENV, "1")),
         survey=survey_usage,

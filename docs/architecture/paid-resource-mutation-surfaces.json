@@ -150,7 +150,8 @@
       "classification": "grant_gated_legacy_adapter",
       "required_markers": [
         "require_paid_resource_admission_grant",
-        "legacy_gpu_render_provider_launch_disabled"
+        "legacy_gpu_render_provider_launch_disabled",
+        "if retired := runpod_retirement_blockers():"
       ]
     },
     {

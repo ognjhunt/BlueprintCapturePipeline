@@ -59,6 +59,7 @@ from blueprint_pipeline.paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
+    runpod_retirement_blockers,
 )
 
 SCHEMA_VERSION = "gpu_render_providers.v1"
@@ -677,6 +678,10 @@ class RunPodRenderProvider(GpuRenderProvider):
         paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     ) -> dict:
         """Warm-host restart first (no image pull); else cold on-demand create."""
+        # RunPod is retired: refuse before the grant check, the key read or any call.
+        if retired := runpod_retirement_blockers():
+            return {"status": "blocked", "blockers": retired, "allocation_created": False,
+                    "spend_occurred": False, "provider_mutations_performed": 0}
         try:
             require_paid_resource_admission_grant(
                 paid_resource_admission_grant,

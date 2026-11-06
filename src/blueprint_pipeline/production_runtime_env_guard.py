@@ -71,12 +71,8 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.control_plane_capacity_controller",
     "blueprint_pipeline.task_evaluation_production_chain_preflight",
     "blueprint_pipeline.paid_resource_allocator",
-    "blueprint_pipeline.live_pipeline_control_plane",
     "blueprint_pipeline.live_pipeline_intake_service",
     "blueprint_pipeline.live_pipeline_manifest_alert",
-    "blueprint_pipeline.production_gpu_campaign_control_plane",
-    "blueprint_pipeline.production_gpu_worker_agent",
-    "blueprint_pipeline.production_gpu_worker_pool",
     "blueprint_pipeline.production_runtime_env_guard",
     "blueprint_pipeline.provider_billing_reconciler",
     "blueprint_pipeline.pubsub_handoff_listener",
@@ -84,8 +80,6 @@ CONTROL_PLANE_ENTRYPOINTS = (
     # so an idle tick does not load it; proving it here keeps a broken install
     # from reaching the first handoff.
     "blueprint_pipeline.run_e2e",
-    "blueprint_pipeline.capture_reconstruction_launch_dispatcher",
-    "blueprint_pipeline.capture_reconstruction_postshot_allocator",
     "blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup",
     "blueprint_pipeline.task_evaluation_launch_dispatcher",
     "blueprint_pipeline.task_evaluation_launch_preparation_worker",

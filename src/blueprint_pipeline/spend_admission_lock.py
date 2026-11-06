@@ -23,8 +23,17 @@ from urllib.parse import urlsplit
 SCHEMA_VERSION = "blueprint.paid_spend_admission_lock.v1"
 OVERRIDE_SCHEMA_VERSION = "blueprint.paid_spend_override.v1"
 HARD_STOP_USD = 5000.0
-REQUIRED_BILLING_PROVIDERS = {"runpod", "vast", "digitalocean"}
-SUPPORTED_BILLING_PROVIDERS = REQUIRED_BILLING_PROVIDERS | {"gcp", "aws"}
+#: Every lock carries a current, required inventory for these providers.
+REQUIRED_BILLING_PROVIDERS = {"vast", "digitalocean"}
+#: RunPod is retired (owner decision, 2026-11-05): no lane may allocate it and its
+#: billing is no longer collected. The spend guard still inventories it, as a
+#: required provider, while a RunPod credential exists, so an orphan pod still
+#: blocks provider-zero and is reaped. Without a credential the guard records it
+#: as retired (``retired_provider_inventory_row``) and it is not required. A
+#: retired provider is never admitted for paid work and is never counted as
+#: uncovered billing: it is refused because it is retired.
+RETIRED_PROVIDERS = frozenset({"runpod"})
+SUPPORTED_BILLING_PROVIDERS = REQUIRED_BILLING_PROVIDERS | RETIRED_PROVIDERS | {"gcp", "aws"}
 BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_EXPORT_SCOPE = "blueprint_beta_100_user_cohort"
 MAX_LOCK_AGE_SECONDS = 5 * 60
@@ -90,6 +99,47 @@ def _string_items(value: object) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
     return [str(item) for item in value if isinstance(item, str)]
+
+
+def retired_provider_blocker(provider: str) -> str:
+    return f"{provider}_provider_retired"
+
+
+def retired_provider_inventory_row(provider: str) -> dict[str, Any]:
+    """The guard's inventory row for a retired provider with no credential."""
+
+    if provider not in RETIRED_PROVIDERS:
+        raise ValueError(f"provider_not_retired:{provider}")
+    return {
+        "provider": provider,
+        "required": False,
+        "credential_present": False,
+        "status": "unavailable",
+        "row_count": None,
+        "api_confirmed": False,
+        "reason": f"{provider}_provider_retired_credential_absent",
+        "blockers": [],
+    }
+
+
+def retired_provider_absent(rows: object, provider: str) -> bool:
+    """Did the guard record ``provider`` as retired with no credential, and nothing else?
+
+    A provider-zero reader drops a retired provider from its required set only on
+    this exact row: a missing row, a failed query or a present credential keeps it
+    required.
+    """
+
+    if provider not in RETIRED_PROVIDERS or not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return False
+    matching = [row for row in rows if isinstance(row, Mapping) and row.get("provider") == provider]
+    return len(matching) == 1 and dict(matching[0]) == retired_provider_inventory_row(provider)
+
+
+def provider_zero_required_ids(rows: object, historical: Sequence[str]) -> set[str]:
+    """A provider-zero reader's required set: ``historical`` minus a retired, keyless provider."""
+
+    return {provider for provider in historical if not retired_provider_absent(rows, provider)}
 
 
 def _inventory_contract_blockers(value: object) -> list[str]:
@@ -296,6 +346,42 @@ def validate_spend_override(
     }
 
 
+def _uncovered_provider_ids(inventory: set[str], billing: set[str]) -> list[str]:
+    # A retired provider is refused because it is retired, not because its
+    # billing is uncovered (its billing is deliberately no longer collected).
+    return sorted(inventory - billing - RETIRED_PROVIDERS)
+
+
+def _provider_admission_row(
+    provider: str,
+    *,
+    global_open: bool,
+    billing_provider_set: set[str],
+    inventory_blockers: list[str],
+    global_blockers: object,
+) -> dict[str, Any]:
+    retired = provider in RETIRED_PROVIDERS
+    allowed = bool(
+        global_open and not retired and provider in billing_provider_set and not inventory_blockers
+    )
+    if allowed:
+        blockers: object = []
+    elif not global_open:
+        blockers = global_blockers
+    elif retired:
+        blockers = [*inventory_blockers, retired_provider_blocker(provider)]
+    else:
+        blockers = [
+            *inventory_blockers,
+            *(
+                [f"billing_reconciliation_provider_uncovered:{provider}"]
+                if provider not in billing_provider_set
+                else []
+            ),
+        ]
+    return {"admission_allowed": allowed, "blockers": blockers}
+
+
 def _billing_total(reconciliation: Mapping[str, Any]) -> float | None:
     totals = reconciliation.get("provider_totals_usd")
     if not isinstance(totals, Mapping):
@@ -352,7 +438,7 @@ def build_spend_admission_lock(
     ):
         blockers.append("billing_reconciliation_provider_coverage_incomplete")
     covered_provider_ids = sorted(billing_provider_set & inventory_provider_set)
-    uncovered_provider_ids = sorted(inventory_provider_set - billing_provider_set)
+    uncovered_provider_ids = _uncovered_provider_ids(inventory_provider_set, billing_provider_set)
     inventory_by_provider = {
         str(row.get("provider") or "").strip(): row for row in inventory_rows
     }
@@ -472,31 +558,13 @@ def build_spend_admission_lock(
         "billing_covered_provider_ids": covered_provider_ids,
         "billing_uncovered_provider_ids": uncovered_provider_ids,
         "provider_admission": {
-            provider: {
-                "admission_allowed": bool(
-                    admission_allowed
-                    and provider in billing_provider_set
-                    and not inventory_provider_blockers.get(provider)
-                ),
-                "blockers": []
-                if (
-                    admission_allowed
-                    and provider in billing_provider_set
-                    and not inventory_provider_blockers.get(provider)
-                )
-                else (
-                    [
-                        *inventory_provider_blockers.get(provider, []),
-                        *(
-                            [f"billing_reconciliation_provider_uncovered:{provider}"]
-                            if provider not in billing_provider_set
-                            else []
-                        ),
-                    ]
-                    if admission_allowed
-                    else blockers
-                ),
-            }
+            provider: _provider_admission_row(
+                provider,
+                global_open=admission_allowed,
+                billing_provider_set=billing_provider_set,
+                inventory_blockers=inventory_provider_blockers.get(provider, []),
+                global_blockers=blockers,
+            )
             for provider in sorted(inventory_provider_set)
         },
         "billing_reconciliation": billing,
@@ -604,6 +672,8 @@ def validate_spend_admission_lock(
     if required_provider is not None:
         if provider not in SUPPORTED_BILLING_PROVIDERS:
             blockers.append("spend_admission_lock_required_provider_invalid")
+        elif provider in RETIRED_PROVIDERS:
+            blockers.append(f"spend_admission_lock_required_provider_retired:{provider}")
         elif provider not in inventory_provider_set:
             blockers.append(
                 f"spend_admission_lock_required_provider_inventory_missing:{provider}"
@@ -617,7 +687,7 @@ def validate_spend_admission_lock(
                 f"spend_admission_lock_required_provider_billing_missing:{provider}"
             )
     expected_covered = sorted(billing_provider_set & inventory_provider_set)
-    expected_uncovered = sorted(inventory_provider_set - billing_provider_set)
+    expected_uncovered = _uncovered_provider_ids(inventory_provider_set, billing_provider_set)
     if row.get("billing_covered_provider_ids") != expected_covered:
         blockers.append("spend_admission_lock_billing_covered_providers_mismatch")
     if row.get("billing_uncovered_provider_ids") != expected_uncovered:
@@ -629,35 +699,18 @@ def validate_spend_admission_lock(
         global_open = row.get("admission_allowed") is True
         for provider_id in sorted(inventory_provider_set):
             provider_row = _mapping(provider_admission.get(provider_id))
-            expected_allowed = bool(
-                global_open
-                and provider_id in billing_provider_set
-                and not inventory_provider_blockers.get(provider_id)
+            expected = _provider_admission_row(
+                provider_id,
+                global_open=global_open,
+                billing_provider_set=billing_provider_set,
+                inventory_blockers=inventory_provider_blockers.get(provider_id, []),
+                global_blockers=row.get("blockers"),
             )
-            if provider_row.get("admission_allowed") is not expected_allowed:
+            if provider_row.get("admission_allowed") is not expected["admission_allowed"]:
                 blockers.append(
                     f"spend_admission_lock_provider_admission_mismatch:{provider_id}"
                 )
-            expected_provider_blockers = (
-                []
-                if expected_allowed
-                else (
-                    [
-                        *inventory_provider_blockers.get(provider_id, []),
-                        *(
-                            [
-                                "billing_reconciliation_provider_uncovered:"
-                                f"{provider_id}"
-                            ]
-                            if provider_id not in billing_provider_set
-                            else []
-                        ),
-                    ]
-                    if global_open
-                    else row.get("blockers")
-                )
-            )
-            if provider_row.get("blockers") != expected_provider_blockers:
+            if provider_row.get("blockers") != expected["blockers"]:
                 blockers.append(
                     f"spend_admission_lock_provider_blockers_mismatch:{provider_id}"
                 )

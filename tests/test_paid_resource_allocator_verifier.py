@@ -538,3 +538,17 @@ def test_module_and_class_level_calls_to_object_store_writers_are_callers() -> N
          "src/blueprint_pipeline/class_writer.py": class_level}, writers)
     assert observed == {("src/blueprint_pipeline/module_writer.py", "<module>"),
                         ("src/blueprint_pipeline/class_writer.py", "Sweeper")}
+
+
+def test_shared_admission_must_keep_runpod_retired(tmp_path: Path) -> None:
+    source = (SCRIPT.parent.parent / "src/blueprint_pipeline/paid_resource_admission.py").read_text()
+    assert verifier._runpod_retirement_blockers() == []
+    reopened = tmp_path / "reopened.py"
+    reopened.write_text(source.replace("RUNPOD_PROVIDER_RETIRED = True", "RUNPOD_PROVIDER_RETIRED = False"))
+    assert verifier._runpod_retirement_blockers(reopened) == ["runpod_retirement_admission_refusal_missing"]
+    bypassed = tmp_path / "bypassed.py"
+    bypassed.write_text(source.replace(
+        "    blockers.extend(runpod_retirement_blockers(resource_class))\n    admission_resource_class",
+        "    admission_resource_class"))
+    assert bypassed.read_text() != source
+    assert verifier._runpod_retirement_blockers(bypassed) == ["runpod_retirement_admission_refusal_missing"]

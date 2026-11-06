@@ -106,12 +106,12 @@ def _early_spend_lock_blockers() -> list[str]:
 def _early_provider_credit_blockers(required_usd: float) -> list[str]:
     """Check read-only Vast credit before hashing and staging large checkpoints."""
 
-    from .provider_credit_admission import ENABLED_ENV, configured_vast_credit_admission
+    from .provider_credit_admission import configured_vast_credit_admission, credit_guard_setting
 
-    enabled = os.getenv(ENABLED_ENV, "false").strip().lower()
-    if enabled in {"false", "0", ""}:
+    setting = credit_guard_setting()
+    if setting == "disabled":
         return []
-    if enabled not in {"true", "1"}:
+    if setting == "invalid":
         return ["provider_credit_guard_config_invalid"]
     try:
         from .gpu_render_providers import VastRenderProvider
