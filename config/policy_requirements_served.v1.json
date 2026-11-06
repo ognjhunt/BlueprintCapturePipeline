@@ -1,0 +1,138 @@
+{
+  "schema_version": "blueprint.policy_requirements_served.v1",
+  "description": "What each catalog policy can do, as data: whether it moves the robot itself (locomote) and whether it manipulates. Robot and policy choice read this and a compiled task's requirements; adding a policy means adding a row with its evidence. A policy without a row serves nothing it has not declared.",
+  "policies": [
+    {
+      "candidate_id": "cosmos3_edge_policy_droid",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "config/beta_policy_candidates.v1.json",
+        "field": "candidates[].interface.robot_profile_id",
+        "value": "droid_franka_panda_robotiq_2f85_v1",
+        "note": "a fixed-base arm interface"
+      }
+    },
+    {
+      "candidate_id": "cosmos3_nano_policy_droid",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "config/beta_policy_candidates.v1.json",
+        "field": "candidates[].interface.robot_profile_id",
+        "value": "droid_franka_panda_robotiq_2f85_v1",
+        "note": "a fixed-base arm interface"
+      }
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "config/beta_policy_candidates.v1.json",
+        "field": "candidates[].interface.robot_profile_id",
+        "value": "droid_franka_panda_robotiq_2f85_v1",
+        "note": "a fixed-base arm interface"
+      }
+    },
+    {
+      "candidate_id": "humanoidarena_dp_g1_dex3_sonic",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "configs/g1_humanoidarena_checkpoint_inventory.v1.json",
+        "field": "candidates[].policy_role",
+        "value": "manipulation",
+        "inventory_digest": "sha256:0cb71830d1ff4ac5e6db73c558656de50a0a8cae44ead94c741e44f6688d6da1"
+      }
+    },
+    {
+      "candidate_id": "humanoidarena_dp_g1_dex3_sonic_vision_navi",
+      "locomote": true,
+      "manipulate": false,
+      "evidence": {
+        "source": "configs/g1_humanoidarena_checkpoint_inventory.v1.json",
+        "field": "candidates[].policy_role",
+        "value": "movement_navigation",
+        "inventory_digest": "sha256:a679eff7ddabf60ec80223beb51dfb613a9079dc539e4172864f108bf080708d"
+      }
+    },
+    {
+      "candidate_id": "humanoidarena_pi05_g1_dex3_sonic",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "configs/g1_humanoidarena_checkpoint_inventory.v1.json",
+        "field": "candidates[].policy_role",
+        "value": "manipulation",
+        "inventory_digest": "sha256:aa6ae0c8ab888c264a002bc6474b2b3a3f8b898d72cf427428aa0b374d9e706f"
+      }
+    },
+    {
+      "candidate_id": "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
+      "locomote": true,
+      "manipulate": false,
+      "evidence": {
+        "source": "configs/g1_humanoidarena_checkpoint_inventory.v1.json",
+        "field": "candidates[].policy_role",
+        "value": "movement_navigation",
+        "inventory_digest": "sha256:f305ac7cc70a01c1de7aa38a185ec749079ab721a1ec34e0f85a2cd3eee77398"
+      }
+    },
+    {
+      "candidate_id": "molmoact2_droid",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "config/beta_policy_candidates.v1.json",
+        "field": "candidates[].interface.robot_profile_id",
+        "value": "droid_franka_panda_robotiq_2f85_v1",
+        "note": "a fixed-base arm interface"
+      }
+    },
+    {
+      "candidate_id": "pi05_droid",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "config/beta_policy_candidates.v1.json",
+        "field": "candidates[].interface.robot_profile_id",
+        "value": "droid_franka_panda_robotiq_2f85_v1",
+        "note": "a fixed-base arm interface"
+      }
+    },
+    {
+      "candidate_id": "pi0_droid_jointpos_100k_polaris",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "config/beta_policy_candidates.v1.json",
+        "field": "candidates[].interface.robot_profile_id",
+        "value": "droid_franka_panda_robotiq_2f85_v1",
+        "note": "a fixed-base arm interface"
+      }
+    },
+    {
+      "candidate_id": "pi0_droid_jointpos_polaris",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "config/beta_policy_candidates.v1.json",
+        "field": "candidates[].interface.robot_profile_id",
+        "value": "droid_franka_panda_robotiq_2f85_v1",
+        "note": "a fixed-base arm interface"
+      }
+    },
+    {
+      "candidate_id": "pi0_fast_droid_jointpos_polaris",
+      "locomote": false,
+      "manipulate": true,
+      "evidence": {
+        "source": "config/beta_policy_candidates.v1.json",
+        "field": "candidates[].interface.robot_profile_id",
+        "value": "droid_franka_panda_robotiq_2f85_v1",
+        "note": "a fixed-base arm interface"
+      }
+    }
+  ]
+}

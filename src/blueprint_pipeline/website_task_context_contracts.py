@@ -131,6 +131,27 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
                 or ("provider_mutation_performed" in handoff and
                     type(handoff["provider_mutation_performed"]) is not bool)):
             return False
+    elif code == "website_task_runnable_policy_missing":
+        # ``website_locomotion_task.runnable_policy_gap``: the job's own resolved profile needs
+        # no manipulation, and the current catalog and registry still run no policy for it.
+        # Re-derived here, so a newly runnable body or policy releases the hold.
+        from .task_spec_compiler import requirements
+        from .website_locomotion_task import runnable_policy_gap
+        from .website_task_semantics import effective_task_profile
+        try:
+            semantics = gap.get("task_semantics") if family == "general_task" else None
+            profile = task_profile_for(effective_task_profile(task_context=task_context,
+                task_semantics=semantics, source_video_digest=gap.get("source_video_digest")))
+            if profile is None or profile.requires_manipulation:
+                return False
+            need = requirements(locomote=profile.requires_locomotion, manipulate=False)
+            if (gap != runnable_policy_gap(task_context=task_context, requirements=need,
+                                           spec_digest=gap.get("compiled_task_spec_digest"),
+                                           task_semantics=semantics, source_video_digest=gap.get("source_video_digest"))
+                    or handoff.get("compiled_task_spec_digest") != gap.get("compiled_task_spec_digest")):
+                return False
+        except (ValueError, TypeError, KeyError):
+            return False
     elif code == "website_task_family_runtime_preparation_required":
         # ``website_early_task_hold.task_family_runtime_gap``: the job's own family, from its
         # source-bound reading, re-derived here; the catalog is the one recorded at the hold.
