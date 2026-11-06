@@ -32,9 +32,9 @@ from typing import Any
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
+from .website_locomotion_hold import HOLD_CODE, runnable_policy_gap_from_options
 
 FACTS_SCHEMA = "website_locomotion_scene_facts.v1"
-HOLD_CODE = "website_task_runnable_policy_missing"
 SPEC_FILE = "compiled_task_spec.json"
 #: Clearance a standing robot needs from any obstacle when its body declares no footprint.
 ROBOT_CLEARANCE_RADIUS_M = 0.35
@@ -208,22 +208,9 @@ def runnable_policy_gap(*, task_context: Mapping[str, Any], requirements: Mappin
                         options: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     """The typed hold when no policy can run this compiled task here; ``None`` when one can."""
     options = dict(options) if options is not None else runnable_options(requirements)
-    if any(row["runnable"] for row in options["policies"]):
-        return None
-    missing = sorted({item for row in options["policies"] for item in row["missing"]}) or ["policy_for_requirements"]
-    bodies = ", ".join(f"{row['robot']} ({row['status']})" for row in options["embodiments"]) or "none listed"
-    names = ", ".join(row["candidate_id"] for row in options["policies"]) or "none in the catalog"
-    return {
-        "code": HOLD_CODE, "task_family": task_context.get("task_family") or "general_task",
-        "task_context_digest": task_context["context_digest"], "job_disposition": "held_for_preparation",
-        "description": task_context.get("description"), "compiled_task_spec_digest": spec_digest,
-        "runnable_options": options, "missing": missing,
-        "reason": ("The task is compiled and its scene is kept. No robot policy can run it here yet. "
-                   f"Bodies that can do it: {bodies}. Policies for them: {names}. Missing: {', '.join(missing)}."),
-        "claim_boundary": "Blueprint integration gap only; no finding that robot teams cannot perform the job.",
-        **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
-           if task_semantics is not None else {}),
-    }
+    return runnable_policy_gap_from_options(task_context=task_context, requirements=requirements,
+                                            spec_digest=spec_digest, options=options, task_semantics=task_semantics,
+                                            source_video_digest=source_video_digest)
 
 
 def retained_spec(root: Path) -> dict[str, Any] | None:
