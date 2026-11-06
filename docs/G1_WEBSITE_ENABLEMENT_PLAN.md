@@ -52,35 +52,49 @@ Then stop reading the historical ADP registry. Add a controller-owned manifest,
 - the runtime source receipt;
 - the Arena robot USD (`sha256:a7a2bab7…`, 38,195,671 bytes).
 
-`native_g1_registration_install.py` (L62-77) and the automatic path (§2) read
-that manifest. The registration contract keeps verifying every file it names.
-The contract lives under `deploy/operator-door/`, so this part ships with a
-door upgrade.
+**Done for the automatic path (§2):** the manifest exists and
+`native_g1_site_registration` reads it. The door's builder
+(`native_g1_registration_install.py` L62-77) still reads the shared registry.
+Moving it to the manifest changes the registration contract under
+`deploy/operator-door/`, so that part ships with a door upgrade. The robot
+USD's directory is pinned as `g1-841757-development/manipulation`, the
+shared registry's `manipulation_packet_dir` as this plan reads it; the host
+was not read to confirm it.
 
-## 2. Automatic registration for pick-and-place sites (approved 2026-11-06)
+## 2. Automatic registration for pick-and-place sites (done 2026-11-06)
 
-- **Hook.** When `team_scene_packet.record_team_scene` marks a website scene
-  `completed` (`team_scene_packet.py:1268-1291`) and the task is
-  `rigid_pick_place`, the service runs
-  `beta_policy_screening_g1_prepare.prepare_native_g1_beta_packet` on that
-  site's base packet. It writes under the site's own
-  `native-g1/<base>/<source>/` directory.
-- **Overlay.** The result goes to a service-owned file, the same row shape as
+Built in `native_g1_site_registration` (runbook:
+`docs/runbooks/native-g1-beta-screening.md`, "Automatic registration").
+
+- **Hook.** The screening worker's site pass
+  (`beta_policy_screening_worker.enqueue_prepared_scenes`), before it reads
+  the profile. It is not `team_scene_packet.record_team_scene`: the pass
+  already sees every completed scene, runs again after a restore, and plans in
+  the same pass. For a `rigid_pick_place` task the service runs
+  `beta_policy_screening_g1_prepare.prepare_native_g1_beta_packet` on the
+  site's base packet with the door builder's arguments. It writes under the
+  site's own `native-g1/<base>/<source>/` directory. Any other task kind
+  records `g1_beta_native_rigid_task_required`.
+- **Overlay.** The result goes to a service-owned file,
+  `native-g1-site-registrations/<site_id>.json`, in the same row shape as
   `site_screening_candidates.<site_id>` (exact six-field `source`, one
-  `native_g1` record per candidate). `team_candidate_registry_reader._site_screening_profile`
-  reads it when the root-owned registry has no row for the site. The service
-  runs as `blueprint`, which cannot write `/etc/blueprint`.
+  `native_g1` record per candidate). `<site_id>.status.json` holds the
+  reasons. `team_candidate_registry_reader._site_screening_profile` reads the
+  overlay when the root-owned registry has no row naming the current source.
+  The service runs as `blueprint`, which cannot write `/etc/blueprint`.
 - **Independent check.** Planning stays the verifier.
-  `beta_policy_screening_g1.candidate_execution_spec` already re-derives:
+  `beta_policy_screening_g1.candidate_execution_spec` re-derives:
   - the packet derivation, assets and task binding;
   - the robot asset and head camera;
   - the runtime source.
 
   `compose_beta_authority` re-checks consent live. A changed context gets a new
   packet directory and a new catalog identity, so the site re-plans by itself.
-- **Authorization.** One standing reference, recorded once in config, which
-  the overlay copies: the owner's 2026-11-06 decision. All four candidates are
-  covered. Navigation rows still need §6.
+- **Authorization.** One standing reference, recorded once in
+  `config/native_g1_shared_inputs.v1.json`, which each status file copies:
+  the owner's 2026-11-06 decision. All four candidates are covered.
+  Navigation rows still need §6.
+- **Off switch.** `BLUEPRINT_NATIVE_G1_AUTO_REGISTRATION=0`.
 
 ## 3. Money (approved 2026-11-06)
 

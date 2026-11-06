@@ -1,0 +1,25 @@
+{
+  "schema_version": "native_g1_shared_inputs.v1",
+  "publisher_source": {
+    "path": "/var/lib/blueprint/task-evaluation-inputs/g1-841757-development/publisher-source/native_g1_publisher_source_stage.v1.json",
+    "receipt_digest": "sha256:4170b783d3e5937331506d504c61611bb91513f56f5b02d6a6980e17d1ecba75"
+  },
+  "runtime_source": {
+    "path": "/mnt/blueprint-work/g1-cuda-runtime-source-7c1f528-20260926/native_task_runtime_source_packet.v1.json",
+    "sha256": "sha256:b303f3017e799a36a2a467de60f235109b1d810a1ef3a87d8d92feb02e6ca5d2",
+    "size_bytes": 44943
+  },
+  "robot_asset": {
+    "manipulation_packet_dir": "/var/lib/blueprint/task-evaluation-inputs/g1-841757-development/manipulation",
+    "sha256": "sha256:a7a2bab76981d19a1d76adecdfffec9b52afa34df9ba8e288ccedf410d3ce6bd",
+    "size_bytes": 38195671
+  },
+  "authorization_reference": "owner standing approval 2026-11-06 15:07Z (beta launch tracker, G1 humanoid on website screening, owner answer 2): the service registers each site's G1 screening candidates by itself, with no per-site person; registration grants no spend",
+  "candidates": [
+    "humanoidarena_dp_g1_dex3_sonic",
+    "humanoidarena_pi05_g1_dex3_sonic",
+    "humanoidarena_dp_g1_dex3_sonic_vision_navi",
+    "humanoidarena_pi05_g1_dex3_sonic_vision_navi"
+  ],
+  "manifest_digest": "sha256:dbb727d729102672d0530356295c0e8514440ba6a44e6e373d2c124d1be70e38"
+}

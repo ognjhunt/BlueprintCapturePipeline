@@ -298,6 +298,7 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - the G1 runbook and screening docstrings say $30;
   - `docs/G1_WEBSITE_ENABLEMENT_PLAN.md` holds the plan: restore or rebuild the runtime source, automatic registration, money, a spawn check, and navigation.
   - It ships with the first attested deploy after the owner's Bandit review.
+- Automatic G1 registration (owner answer 2): the screening worker registers each pick-and-place site itself into a service-owned overlay from the pinned `config/native_g1_shared_inputs.v1.json`; planning stays the verifier. It registers nothing until the runtime source is restored and the change is deployed.
 
 ## Operating notes (2026-11-02)
 

@@ -47,6 +47,14 @@ def _isolated_paid_provider_lane_lease_dir(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_native_g1_site_registration_root(tmp_path_factory, monkeypatch):
+    """The screening worker registers G1 sites by default; keep its rows out of the host's root."""
+    root = tmp_path_factory.mktemp("native-g1-site-registrations")
+    monkeypatch.setenv("BLUEPRINT_NATIVE_G1_SITE_REGISTRATION_ROOT", str(root))
+    return root
+
+
+@pytest.fixture(autouse=True)
 def _website_object_spec_agent_off(monkeypatch):
     """The spec research agent is on by default in production (2026-09-27); never
     let a test reach the web or the WebApp by default. A test that exercises
