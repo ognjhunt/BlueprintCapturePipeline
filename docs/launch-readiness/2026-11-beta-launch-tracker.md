@@ -29,6 +29,19 @@ Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door
 
   capture-447 results made before it are not counted: pi05 9 scored / 0 succeeded, groot 10 / 0 (two runs moved the tray), pi0_droid_jointpos_100k_polaris 10 / 0. Site spend at deploy: $16.18 of $30.
 - Merged after it, not yet deployed: #3405 (the same pad readback in the controls gate, controls worker, policy worker and `controlled_native_isaac`; no beta screening path).
+- After `3aa16eda8` went live, cosmos3 launched at 21:42Z on a bundle it had staged at 21:34Z, on `64e25c2cd`, while the deploy was building. Its plan predates revision 1, so its result does not count; it failed to load the policy ($0.60). #3408 closes that gap. The revision-1 re-plan (`screening-acf7fbcd…`, 22:16Z) ran on the fixed gripper:
+  - pi05: 9 scored, 0 succeeded, one void episode (joint command out of bounds); $1.39.
+  - groot: 10 scored, 0 succeeded; $1.51.
+  - The run data shows the pad readback working: 0.085 m open, 0 m closed. In 18 of 19 episodes the tray never moved and had no robot contact; the gripper closes about 0.2 m from the tray and above it. Every run carries `droid_wrist_task_pixels_below_threshold`.
+  - cosmos3 failed in provisioning, before any policy ran: the cuDNN wheel download hit the total time limit on its machine ($0.54). As a harness failure, it held molmoact2 and the three other pi0 variants (`beta_screening_held_after_launch_failure`).
+
+  Site spend: $20.22 of $30.
+- `9dd4e0dc4` (06 03:06Z request, live 03:19:56Z, this session). Nothing was preparing, launching or running at any site, and the last deploy was `3aa16eda8`. It releases the held candidates, which are planned again at the new commit. It carried:
+  - #3405;
+  - #3408: preparation compares the running commit before it reuses a staged bundle, so a bundle staged during a deploy's build never launches the old code after the switch;
+  - #3406: this tracker's previous entry.
+
+  The Atlas $130 row expires 11-06 10:16Z; every paid screening run must start before then.
 
 ## Operating notes (2026-11-02)
 
