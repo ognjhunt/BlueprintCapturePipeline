@@ -117,7 +117,6 @@ WORKER_UNITS=(
   blueprint-embodiment-preparation.path
   blueprint-embodiment-preparation.timer
   blueprint-task-evaluation-launch-reconciler.timer
-  blueprint-pipeline-control-plane.timer
   blueprint-agent-run-dispatcher.timer
   blueprint-existing-policy-canary-continuation.timer
   blueprint-gpu-spend-guard.timer
@@ -151,7 +150,6 @@ WORKER_UNITS=(
   blueprint-beta-policy-screening.service
   blueprint-embodiment-preparation.service
   blueprint-task-evaluation-launch-reconciler.service
-  blueprint-pipeline-control-plane.service
   blueprint-agent-run-dispatcher.service
   blueprint-existing-policy-canary-continuation.service
   blueprint-existing-policy-canary-watchdog.service

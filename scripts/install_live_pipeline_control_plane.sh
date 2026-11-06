@@ -28,15 +28,13 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/install_live_pipeline_control_plane.sh [--enable-now] [--dry-run]
 
-Installs the Blueprint live pipeline control-plane systemd service/timer, the
-capture handoff Pub/Sub listener service/timer, and the optional authenticated
-WebApp intake service unit, plus the paid-work spend admission guard service/
-timer and read-only provider billing reconciler. The spend guard remains locked
-until current provider billing input and credentials are installed.
-The service runs one safe control-plane pass on each timer tick:
-read env, audit readiness, optionally consume the robot-eval job inbox, write
-manifests, run the proof-boundary audit, and exit. It does not add secrets or
-enable live simulator/provider actions by itself.
+Installs the capture handoff Pub/Sub listener service/timer, the optional
+authenticated WebApp intake service unit, the paid-work spend admission guard
+service/timer and read-only provider billing reconciler, and the other
+control-plane units below. The spend guard remains locked until current provider
+billing input and credentials are installed. It does not add secrets or enable
+live simulator/provider actions by itself. The legacy
+blueprint-pipeline-control-plane loop is retired and no longer installed.
 
 Environment overrides:
   SYSTEMD_DIR=/etc/systemd/system
@@ -1422,9 +1420,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/host/tmpfiles.d/blueprint-var-tmp.conf" \
   /etc/tmpfiles.d/blueprint-var-tmp.conf
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.service" \
-  "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.service"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.service" \
   "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.service"
 run install -m 0644 \
@@ -1451,9 +1446,6 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.path" \
   "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.path"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.timer" \
-  "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.timer"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-intake.service" \
   "${SYSTEMD_DIR}/blueprint-pipeline-intake.service"
@@ -1754,7 +1746,6 @@ fi
 
 systemctl daemon-reload
 if [[ "${ENABLE_NOW}" == "true" ]]; then
-  systemctl enable --now blueprint-pipeline-control-plane.timer
   systemctl enable --now blueprint-pubsub-handoff-listener.timer
   systemctl enable --now blueprint-provider-billing-reconciler.timer
   systemctl enable --now blueprint-gpu-spend-guard.timer
@@ -1785,7 +1776,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
   systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
 else
-  echo "installed; enable timer with: systemctl enable --now blueprint-pipeline-control-plane.timer"
+  echo "installed"
   echo "enable handoff listener with: systemctl enable --now blueprint-pubsub-handoff-listener.timer"
   echo "enable billing reconciliation with: systemctl enable --now blueprint-provider-billing-reconciler.timer"
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"

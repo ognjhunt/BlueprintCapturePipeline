@@ -71,7 +71,6 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.control_plane_capacity_controller",
     "blueprint_pipeline.task_evaluation_production_chain_preflight",
     "blueprint_pipeline.paid_resource_allocator",
-    "blueprint_pipeline.live_pipeline_control_plane",
     "blueprint_pipeline.live_pipeline_intake_service",
     "blueprint_pipeline.live_pipeline_manifest_alert",
     "blueprint_pipeline.production_runtime_env_guard",

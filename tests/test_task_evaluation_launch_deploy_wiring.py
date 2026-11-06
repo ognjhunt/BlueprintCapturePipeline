@@ -19,9 +19,6 @@ def _shell_script(unit: str, directive: str) -> str:
 
 def test_shell_wrapped_production_unit_commands_parse_before_deploy() -> None:
     units_and_directives = (
-        ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStartPre"),
-        ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStart"),
-        ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStartPost"),
         ("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service", "ExecStart"),
         ("deploy/systemd/blueprint-task-evaluation-launch-reconciler.service", "ExecStart"),
         ("deploy/systemd/blueprint-task-evaluation-launch-supervisor.service", "ExecStart"),
@@ -354,29 +351,17 @@ def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> N
     assert "blueprint_pipeline.provider_billing_reconciler" in billing
 
 
-def test_core_control_plane_uses_the_active_immutable_release() -> None:
-    unit = _text("deploy/systemd/blueprint-pipeline-control-plane.service")
-
-    # Environment=BLUEPRINT_PIPELINE_REPO loses to the credential env file's
-    # archived checkout; tests/test_control_plane_postchecks_runtime.py runs the
-    # unit's commands under that precedence.
-    assert (
-        "BLUEPRINT_LIVE_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane"
-        in unit
-    )
-    assert (
-        "BLUEPRINT_PIPELINE_PYTHON="
-        "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
-        in unit
-    )
-    assert 'cd -P "$${BLUEPRINT_LIVE_CONTROL_PLANE_REPO}"' in unit
-    assert 'cd -P "$${BLUEPRINT_PIPELINE_REPO}"' not in unit
-    assert "GIT_CONFIG_KEY_0=safe.directory" in unit
-    assert 'PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}"' in unit
-    assert ".venv/bin/python -m blueprint_pipeline.production_runtime_env_guard" not in unit
-
+def test_legacy_control_plane_loop_is_neither_deployed_nor_installed() -> None:
+    """P-RT-06: the 5-minute loop is retired; its inbox producer (the agent-run dispatcher) stays installable."""
+    for suffix in ("service", "timer"):
+        assert not (REPO / f"deploy/systemd/blueprint-pipeline-control-plane.{suffix}").exists()
     deployer = _text("scripts/deploy_control_plane_commit.py")
-    assert '"blueprint-pipeline-control-plane.service",' in deployer
+    installer = _text("scripts/install_live_pipeline_control_plane.sh")
+    assert '"blueprint-pipeline-control-plane.service",' not in deployer
+    assert "deploy/systemd/blueprint-pipeline-control-plane" not in installer
+    assert "enable --now blueprint-pipeline-control-plane" not in installer
+    assert '"blueprint-agent-run-dispatcher.service",' in deployer
+    assert "deploy/systemd/blueprint-agent-run-dispatcher.timer" in installer
 
 
 def test_installer_and_environment_enable_durable_queue_and_independent_recovery() -> None:

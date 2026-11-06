@@ -92,25 +92,16 @@ def test_active_launch_docs_and_generated_commands_do_not_embed_laptop_paths():
 def test_production_systemd_units_set_fail_closed_runtime_posture():
     for unit in (
         "blueprint-pipeline-intake.service",
-        "blueprint-pipeline-control-plane.service",
         "blueprint-pubsub-handoff-listener.service",
     ):
         text = _read(unit)
 
         assert re.search(r"/Users/[^/]+/", text) is None
-        if unit in {
-            "blueprint-pipeline-control-plane.service",
-            "blueprint-pubsub-handoff-listener.service",
-        }:
+        if unit == "blueprint-pubsub-handoff-listener.service":
             # The credential EnvironmentFile overrides Environment= and names an
             # archived checkout in BLUEPRINT_PIPELINE_REPO, so the release is
             # located through a unit-owned key and exported to the children.
-            repo_key = (
-                "BLUEPRINT_PUBSUB_HANDOFF_REPO"
-                if unit == "blueprint-pubsub-handoff-listener.service"
-                else "BLUEPRINT_LIVE_CONTROL_PLANE_REPO"
-            )
-            assert f"{repo_key}=/opt/blueprint/task-evaluation-control-plane" in text
+            assert "BLUEPRINT_PUBSUB_HANDOFF_REPO=/opt/blueprint/task-evaluation-control-plane" in text
             assert (
                 "BLUEPRINT_PIPELINE_PYTHON="
                 "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
@@ -129,19 +120,12 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
             assert text.count('cd -P "$${BLUEPRINT_PUBSUB_HANDOFF_REPO}"') == 2
             assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
             assert text.count('export BLUEPRINT_PIPELINE_REPO="$${PWD}"') == 2
-        if unit == "blueprint-pipeline-control-plane.service":
-            assert "Environment=BLUEPRINT_PIPELINE_REPO=" not in text
-            assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
-            assert text.count('cd -P "$${BLUEPRINT_LIVE_CONTROL_PLANE_REPO}"') == 3
-            assert text.count('export BLUEPRINT_PIPELINE_REPO="$${PWD}"') == 3
         assert "BLUEPRINT_LAUNCH_PROOF_MODE=production" in text
         assert "PRIVACY_PIPELINE_ENABLED=true" in text
         assert "PRIVACY_FAIL_CLOSED=true" in text
         assert "PIPELINE_SYNC_REQUIRED=true" in text
         assert "RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true" in text
         assert "blueprint_pipeline.production_runtime_env_guard" in text
-        if unit == "blueprint-pipeline-control-plane.service":
-            assert "BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true" in text
 
 
 def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -> None:
@@ -396,7 +380,6 @@ HOST_MEMORY = {
     "blueprint-team-scene-packet.service": ("200", "4G", "5G", "1.9G"),
     "blueprint-task-evaluation-scene-progression.service": ("200", "4G", "5G", "3.2G"),
     "blueprint-control-plane-storage-gc.service": ("200", "2G", "3G", "722M"),
-    "blueprint-pipeline-control-plane.service": ("200", "2G", "3G", "569M"),
     "blueprint-task-evaluation-launch-preparation.service": ("200", "1G", "2G", "32M"),
     "blueprint-task-evaluation-configured-controls-progression.service": ("200", "1G", "2G", "149M"),
     "blueprint-website-atlas-provider-poll.service": ("200", "1G", "2G", "62M"),
@@ -583,11 +566,10 @@ def test_installer_binds_the_exact_canonical_worker_wheel_and_hash_pinned_runtim
 
 
 def test_control_plane_postcheck_pages_or_fails_blocked_manifests():
-    service = _read("blueprint-pipeline-control-plane.service")
+    """Kept for the host's installed copy of the retired loop until an operator removes it (P-RT-06)."""
     postcheck = _read("blueprint-control-plane-postchecks.sh")
     env_example = _read("pipeline-control-plane.env.example")
 
-    assert "deploy/systemd/blueprint-control-plane-postchecks.sh" in service
     assert "blueprint_pipeline.live_pipeline_proof_audit" in postcheck
     assert "blueprint_pipeline.live_pipeline_manifest_alert" in postcheck
     assert "BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true" in env_example
