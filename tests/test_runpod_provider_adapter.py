@@ -27,6 +27,8 @@ from blueprint_pipeline.runpod_provider_adapter import (
     run_runpod_provider_adapter,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_runpod_mechanics")  # RunPod retired 2026-11-05; see conftest
+
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

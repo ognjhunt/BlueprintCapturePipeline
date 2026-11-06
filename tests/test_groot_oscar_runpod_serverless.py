@@ -25,6 +25,8 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_runpod_mechanics")  # RunPod retired 2026-11-05; see conftest
+
 
 IMAGE = "docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:" + "a" * 64
 MODEL_DIGEST = "sha256:" + "b" * 64

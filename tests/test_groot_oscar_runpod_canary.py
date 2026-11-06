@@ -18,6 +18,8 @@ from blueprint_pipeline.groot_oscar_runpod_canary import (
     validate_strict_policy_smoke_output,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_runpod_mechanics")  # RunPod retired 2026-11-05; see conftest
+
 
 def test_strict_policy_smoke_binding_is_fixed_and_bounded() -> None:
     request = _request()

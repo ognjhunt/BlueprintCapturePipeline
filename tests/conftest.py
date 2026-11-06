@@ -64,6 +64,18 @@ def _vast_credit_guard_off(monkeypatch):
 
 
 @pytest.fixture
+def legacy_runpod_mechanics(monkeypatch):
+    """RunPod is retired (2026-11-05): no grant is issued for a RunPod allocation and
+    the allocator and the RunPod render launcher refuse it. The retired lanes' own
+    tests keep exercising their mechanics (redaction, teardown, ambiguity handling)
+    with the refusal lifted, until the removal plan deletes those lanes and tests.
+    Tests that prove the refusal never use this fixture."""
+    from blueprint_pipeline import paid_resource_admission
+
+    monkeypatch.setattr(paid_resource_admission, "RUNPOD_PROVIDER_RETIRED", False)
+
+
+@pytest.fixture
 def _single_threaded_verdict_persistence(monkeypatch):
     """Validator verdicts persist only while no other thread runs. A thread another
     test file leaves alive must not decide whether a persistence test persists;

@@ -33,6 +33,72 @@ PAID_RESOURCE_CLASSES = frozenset(
 )
 _GRANT_ISSUER = object()
 
+#: RunPod is retired (owner decision, 2026-11-05). No new RunPod pod, endpoint,
+#: serverless run or network volume may start, so no grant is issued for a class
+#: that starts RunPod spend. Reads and teardown stay available: the spend guard
+#: still inventories RunPod and reaps an orphan while a RunPod key exists, and
+#: ``runpod_live_execution`` is absent on purpose (its grant only stops or
+#: terminates an existing pod). ``model_volume`` is a RunPod network volume; only
+#: ``groot_oscar_runpod_storage_volume`` issues it. This is a code constant, not an
+#: environment switch: re-enabling RunPod is a reviewed code change.
+RUNPOD_PROVIDER_RETIRED = True
+RUNPOD_RETIRED_BLOCKER = "runpod_provider_retired"
+RUNPOD_ALLOCATION_RESOURCE_CLASSES = frozenset(
+    {
+        "model_volume",
+        "runpod_provider_adapter",
+        "runpod_serverless_active_worker",
+        "runpod_wam_async",
+        "unitree_unifolm_runpod",
+    }
+)
+
+
+def runpod_retirement_blockers(resource_class: str | None = None) -> list[str]:
+    """``[runpod_provider_retired]`` for a RunPod allocation, else ``[]``.
+
+    Without ``resource_class`` the caller already knows the request is a RunPod
+    allocation (the allocator CLI, the RunPod render launcher).
+    """
+
+    if not RUNPOD_PROVIDER_RETIRED:
+        return []
+    if resource_class is None or resource_class in RUNPOD_ALLOCATION_RESOURCE_CLASSES:
+        return [RUNPOD_RETIRED_BLOCKER]
+    return []
+
+
+#: Canonical allocator routes whose own branch allocates RunPod. Subcommands: the
+#: serverless warm worker and the RunPod network-volume model cache (build, run,
+#: retention). ``gpu-canary`` probe kinds: the generic startup, strict-policy-smoke and
+#: persistent WAM loop canaries (RunPod only), the two kitchen lanes when
+#: ``--provider runpod`` is chosen, and the OpenPI lanes when ``--openpi-provider
+#: runpod`` is. Other probe kinds require Vast, ignore ``--provider``, or reach RunPod
+#: only through the shared admission or the RunPod render launcher, which refuse it
+#: themselves. A terminal resource release only deletes one stopped Vast record.
+RUNPOD_ONLY_ALLOCATOR_COMMANDS = frozenset({"gpu-warm-worker", "model-volume", "model-volume-run"})
+RUNPOD_ONLY_PROBE_KINDS = frozenset({"startup", "strict-policy-smoke", "persistent-policy-wam-loop"})
+RUNPOD_SELECTABLE_PROBE_KINDS = frozenset({"single-kitchen-episode", "single-kitchen-finetune"})
+OPENPI_PROVIDER_PROBE_KINDS = frozenset({"openpi-policy-ranking", "new-site-diagnostic-canary"})
+
+
+def runpod_allocator_request_blockers(args: Any) -> list[str]:
+    """Refuse a canonical allocator request that would allocate, start or extend RunPod."""
+
+    command = getattr(args, "command", None)
+    if command in RUNPOD_ONLY_ALLOCATOR_COMMANDS:
+        return runpod_retirement_blockers()
+    if command != "gpu-canary" or getattr(args, "terminal_resource_release", None):
+        return []
+    probe_kind = getattr(args, "probe_kind", None)
+    if (
+        probe_kind in RUNPOD_ONLY_PROBE_KINDS
+        or (probe_kind in RUNPOD_SELECTABLE_PROBE_KINDS and getattr(args, "provider", None) == "runpod")
+        or (probe_kind in OPENPI_PROVIDER_PROBE_KINDS and getattr(args, "openpi_provider", None) == "runpod")
+    ):
+        return runpod_retirement_blockers()
+    return []
+
 
 @dataclass(frozen=True)
 class PaidResourceAdmissionGrant:
@@ -75,6 +141,7 @@ def require_paid_resource_budget(*, resource_class: str) -> None:
     blockers = _monthly_budget_blockers(resource_class)
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
+    blockers.extend(runpod_retirement_blockers(resource_class))
     if blockers:
         raise PaidResourceAdmissionBlocked(sorted(set(blockers)))
 
@@ -91,6 +158,7 @@ def require_paid_resource_admission(
     blockers: list[str] = _monthly_budget_blockers(resource_class)
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
+    blockers.extend(runpod_retirement_blockers(resource_class))
     admission_resource_class = admission.get("resource_class")
     if (admission_resource_class is not None and admission_resource_class != resource_class) or (
         expected_schema_version == PAID_LANE_ADMISSION_SCHEMA_VERSION
@@ -170,7 +238,7 @@ def build_paid_lane_admission(
     normalized = sorted({str(item).strip() for item in blockers if str(item).strip()})
     if resource_class not in PAID_RESOURCE_CLASSES:
         normalized.append("paid_resource_class_invalid")
-        normalized = sorted(set(normalized))
+    normalized = sorted({*normalized, *runpod_retirement_blockers(resource_class)})
     return {
         "schema_version": PAID_LANE_ADMISSION_SCHEMA_VERSION,
         "status": "admitted" if not normalized else "blocked",

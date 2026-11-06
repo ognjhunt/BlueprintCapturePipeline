@@ -74,7 +74,7 @@ from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
     build_paid_lane_admission,
-    require_paid_resource_admission,
+    require_paid_resource_admission, runpod_allocator_request_blockers,
 )
 from .paid_resource_cli_arguments import (
     add_adp_resource_arguments as _add_adp_resource_arguments,
@@ -2164,8 +2164,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     retired_aws = getattr(args, "provider", None) == "aws"
     if args.command == "gpu-canary" and getattr(args, "probe_kind", None) == RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND and getattr(args, "provider_launch_request", None) and Path(args.provider_launch_request).expanduser().is_file():
         retired_aws = retired_aws or _load(args.provider_launch_request).get("requested_execution_adapter_id") in WINDOWS_TRAINER_ADAPTER_IDS
-    if retired_aws:
-        result = {"status": "blocked", "blockers": ["aws_provider_integration_removed"], "provider_mutations_performed": 0, "success": False}
+    if retired := (["aws_provider_integration_removed"] if retired_aws else runpod_allocator_request_blockers(args)):
+        result = {"status": "blocked", "blockers": retired, "provider_mutations_performed": 0, "success": False}
         if getattr(args, "admission_out", None):
             write_json(Path(args.admission_out), result)
         print(json.dumps(result, sort_keys=True))
