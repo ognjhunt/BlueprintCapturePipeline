@@ -326,3 +326,18 @@ Keep the JSON edit and code changes in separate PRs. Any code change within 6 li
 -      "reviewed_on": "2026-10-06",
 +      "reviewed_on": "2026-11-06",
 ```
+
+## Sign-off (2026-11-06)
+
+The owner replied "Bandit OK as recommended" at about 16:05Z. It was applied on top of #3420's renewal of all 96 entries, which had reviewed them on 11-06 to expire on 2027-02-04:
+
+- **TIGHTEN, 18 entries:** they expire on 2026-12-06, and their reasons say hardening is due before then.
+- **KEEP, 77 entries:** they expire on 2027-02-04. Template B310 reasons now state the URL's actual source (groups a–d). Entries that said "no human approval" now record the owner's acceptance, and every entry's owner is `@ognjhunt`.
+- **[51]:** fixed in `wam_compute_providers.py`:
+  - the DeepInfra result URL opens only over https on `deepinfra.com` or `*.deepinfra.com`;
+  - the download is deleted and refused past 2 GiB;
+  - a `data:` URI is refused too, which stops that job and is not risky.
+
+  Bandit still flags the `urlopen`. Its old entry is gone, and a fresh `mitigated_by_control` entry (line 353) was computed with the gate's own `finding_fingerprint`.
+
+The gate passes on the branch: high 0, medium 96, no blockers.

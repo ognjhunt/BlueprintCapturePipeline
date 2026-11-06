@@ -348,12 +348,19 @@ def _deepinfra_download_file(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     ensure_dir(target_path.parent)
+    url = _resolve_deepinfra_download_url(url)
+    written = 0
     with urllib.request.urlopen(url, timeout=timeout_seconds) as response:  # noqa: S310
         with target_path.open("wb") as output:
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
+                written += len(chunk)
+                if written > DEEPINFRA_DOWNLOAD_MAX_BYTES:
+                    output.close()
+                    target_path.unlink(missing_ok=True)
+                    raise ValueError("deepinfra_download_too_large")
                 output.write(chunk)
     return {
         "path": str(target_path),
@@ -1107,12 +1114,30 @@ def _deepinfra_claim_boundary() -> dict[str, Any]:
     }
 
 
+#: Where a DeepInfra generation result may be fetched from: the provider's own https hosts.
+DEEPINFRA_DOWNLOAD_HOST_SUFFIX = ".deepinfra.com"
+#: The largest generated rollout this adapter downloads.
+DEEPINFRA_DOWNLOAD_MAX_BYTES = 2 * 1024**3
+
+
 def _resolve_deepinfra_download_url(video_url: str) -> str:
+    """The provider's result URL, only over https on a DeepInfra host.
+
+    The URL comes from DeepInfra's JSON response, so a ``file://`` or an internal host
+    there must never be opened (Bandit triage re-review, 2026-11-06).
+    """
     if urllib.parse.urlparse(video_url).scheme:
-        return video_url
-    parsed = urllib.parse.urlparse(_deepinfra_api_base_url())
-    origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
-    return urllib.parse.urljoin(origin or "https://api.deepinfra.com", video_url)
+        resolved = video_url
+    else:
+        parsed = urllib.parse.urlparse(_deepinfra_api_base_url())
+        origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
+        resolved = urllib.parse.urljoin(origin or "https://api.deepinfra.com", video_url)
+    target = urllib.parse.urlparse(resolved)
+    host = (target.hostname or "").lower()
+    if target.scheme != "https" or not (host == DEEPINFRA_DOWNLOAD_HOST_SUFFIX[1:]
+                                        or host.endswith(DEEPINFRA_DOWNLOAD_HOST_SUFFIX)):
+        raise ValueError("deepinfra_download_url_not_allowed")
+    return resolved
 
 
 def _write_deepinfra_visual_quality_report(
