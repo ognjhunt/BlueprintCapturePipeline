@@ -13,7 +13,7 @@ CANDIDATES = ("cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid")
 RUNTIME_MODULES = (
     "cosmos_edge_beta_runtime.py", "cosmos_edge_droid_policy_runtime.py", "cosmos_edge_droid_policy_server.py",
     "cosmos_nano_beta_runtime.py", "cosmos_nano_droid_policy_runtime.py", "cosmos_droid_bundle.py",
-    "cosmos_droid_client_dependencies.py", "cosmos_droid_dependencies.py", "cosmos_droid_source.py", "cosmos_droid_provisioning.py", "local_policy_provisioning.py",
+    "cosmos_droid_client_dependencies.py", "pinned_client_imports.py", "cosmos_droid_dependencies.py", "cosmos_droid_source.py", "cosmos_droid_provisioning.py", "local_policy_provisioning.py",
 )
 IMAGE_DOWNLOAD_ALLOWANCE_BYTES = 64 * 1024**3
 MAXIMUM_OUTPUT_BYTES = 8_000_000_000
