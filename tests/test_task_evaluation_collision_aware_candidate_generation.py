@@ -20,11 +20,6 @@ from blueprint_pipeline.task_evaluation_curobo_candidate_generator import (
     curobo_gpu_runtime_capability_contract,
 )
 import blueprint_pipeline.task_evaluation_curobo_candidate_generator as curobo_adapter
-from blueprint_pipeline.task_evaluation_moveit_task_constructor_candidate_generator import (
-    MOVEIT_TASK_CONSTRUCTOR_BACKEND_IDENTITY,
-    MoveItTaskConstructorCandidateGenerator,
-    moveit_task_constructor_runtime_capability_contract,
-)
 from blueprint_pipeline.task_evaluation_curobo_context import (
     materialize_remote_curobo_context,
 )
@@ -344,36 +339,7 @@ def test_backend_rejects_missing_required_stage(tmp_path: Path) -> None:
         )
 
 
-def test_moveit_requires_separate_exact_runtime_and_emits_same_contract(
-    tmp_path: Path,
-) -> None:
-    with pytest.raises(
-        CollisionAwareCandidateGenerationError,
-        match="moveit_task_constructor_runtime_unavailable",
-    ):
-        MoveItTaskConstructorCandidateGenerator(
-            context=_context(tmp_path), command=None
-        )
-
-    process = _Process(MOVEIT_TASK_CONSTRUCTOR_BACKEND_IDENTITY)
-    generator = MoveItTaskConstructorCandidateGenerator(
-        context=_context(tmp_path),
-        command=("/opt/ros/jazzy/bin/blueprint-mtc-candidate-service",),
-        runner=process,
-    )
-    inventory = generator.generate(
-        source_native_feedback=None,
-        prior_history=[],
-        round_index=0,
-        maximum_candidates=2,
-    )
-    assert inventory["generator_backend"] == MOVEIT_TASK_CONSTRUCTOR_BACKEND_IDENTITY
-    assert inventory["candidates"][0]["candidate_id"].startswith(
-        "moveit_task_constructor_ros2_jazzy-r0-"
-    )
-
-
-def test_runtime_contracts_pin_source_version_license_and_claim_boundary() -> None:
+def test_runtime_contract_pins_source_version_license_and_claim_boundary() -> None:
     curobo = curobo_gpu_runtime_capability_contract()
     assert curobo["backend_identity"] == CUROBO_BACKEND_IDENTITY
     assert curobo["backend_identity"]["source_revision"] == (
@@ -382,13 +348,6 @@ def test_runtime_contracts_pin_source_version_license_and_claim_boundary() -> No
     assert curobo["backend_identity"]["license_expression"] == "Apache-2.0"
     assert curobo["required_capabilities"]["nvidia_gpu"] is True
     assert curobo["claim_boundary"]["native_task_execution_unresolved"] is True
-
-    moveit = moveit_task_constructor_runtime_capability_contract()
-    assert moveit["backend_identity"] == MOVEIT_TASK_CONSTRUCTOR_BACKEND_IDENTITY
-    assert moveit["backend_identity"]["package_version"] == "0.1.4-2"
-    assert moveit["backend_identity"]["license_expression"] == "BSD-3-Clause"
-    assert moveit["provisioning"]["coinstallation_in_current_isaac_image_claimed"] is False
-    assert moveit["provisioning"]["fail_closed_when_process_or_identity_unavailable"] is True
 
 
 def test_remote_curobo_uses_retained_worker_without_allocating(

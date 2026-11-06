@@ -33,7 +33,6 @@ LANE_MODULES = (
     "articulated_render_materials.py",
     "articulated_native_probe.py",
     "articulated_isaac_bundle.py",
-    "agent_enrichment_acceptance.py",
     "replacement_colour_fidelity.py",
 )
 # The older paid lanes were each written against the 840313 can and audited
