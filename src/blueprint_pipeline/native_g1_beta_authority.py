@@ -57,7 +57,9 @@ SOURCE_FIELDS = ("scene_intent_id", "scene_intent_digest", "capture_id", "task_i
                  "task_context_digest", "scene_revision_digest")
 SCOPE = {
     "authority_kind": "composed_internal_development",
-    "authorization_basis": "owner_requested_compatible_policy_simulator_testing_2026_10_30",
+    # Owner decision 2026-11-06: G1 is a screening option for every site and task; the 841757
+    # receipts below still pin the exact model artifacts, not the scope.
+    "authorization_basis": "owner_approved_g1_screening_for_all_sites_and_tasks_2026_11_06",
     "claim_ceiling": "development_only",
     "model_terms_review_reused": True,
     "new_human_review_claimed": False,

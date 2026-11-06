@@ -3,7 +3,7 @@
 The default four-hour/$4 candidate ceiling is the existing diagnostic canary
 envelope. It is a maximum reservation, not a prediction: the canonical allocator
 also accounts for startup, transfer, storage and teardown before provider create.
-Unknown hourly prices never produce quotes. The site's $15 coordinator remains
+Unknown hourly prices never produce quotes. The site's $30 coordinator remains
 the authority over aggregate reservations.
 """
 from __future__ import annotations
@@ -273,13 +273,14 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         key = configured["candidate_id"]
         if key in infeasible:
             continue  # The plan shows its measured reason; nothing is prepared or quoted.
-        # Every candidate but G1's (its own lane, fixed floor) rents on the policy canary session lane.
+        # Every candidate rents on the policy canary session lane but G1's, which is checked on its own lane.
         unrentable = candidate_gpu_blockers(configured)
         if unrentable:
             infeasible[key] = unrentable  # Listed with its reason, never funded: the budget goes on in plan order.
             continue
         try:
-            from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES
+            from .beta_policy_screening_g1 import (BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES,
+                                                   CELLS_PER_SESSION as G1_CELLS_PER_SESSION)
             g1 = key in G1_CANDIDATES
             override = (profile.get("screening_candidates") or {}).get(key)
             model = None
@@ -392,7 +393,8 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                                       "canonical_gpu_canary_hard_cap_including_startup_transfer_storage_teardown"),
                      "valid_until": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
                      "configuration_digest": configured["configuration_digest"],
-                     "scene_revision_digest": inputs["scene_revision_digest"], "episode_count": 10,
+                     "scene_revision_digest": inputs["scene_revision_digest"],
+                     "episode_count": G1_CELLS_PER_SESSION if g1 else 10,
                      "maximum_cost_usd": str(total_cap.quantize(Decimal("0.01"), rounding=ROUND_UP)), "quote_digest": ""}
             quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
             quotes[key] = quote

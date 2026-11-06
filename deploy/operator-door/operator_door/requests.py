@@ -35,6 +35,11 @@ names the approving owner and the evidence; it refunds and settles nothing.
 preview's digest records, one owner confirmation that a published website job's
 success thresholds, exactly as built, are the owner's, through the active
 release. It changes no threshold, starts no compute and moves no money.
+``restore-g1-runtime-source`` (``operate``) plans, or with ``apply`` performs, the
+active release's restore of the shared G1 runtime source packet and its receipt
+from the retained object-store copy. Every identity is pinned in that module; the
+request carries only ``apply``. It overwrites nothing, starts no compute and moves
+no money.
 """
 
 from __future__ import annotations
@@ -95,6 +100,8 @@ _SCOPES = {
     "extend-scene-execution-budget": "operate",
     # One owner confirmation of a published website job's built success thresholds.
     "confirm-owner-success-contract": "operate",
+    # Restores the pinned G1 runtime source packet and receipt from the retained object-store copy.
+    "restore-g1-runtime-source": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -117,12 +124,17 @@ if DISPATCHER_HOLD_ONLY:
     # grant: a preview, then an apply bound to that preview's digest, writing
     # one sealed record that names the owner as approver; it changes no
     # threshold, starts no compute and moves no money. It was added to this
-    # profile in its own commit for the owner's explicit sign-off.
+    # profile in its own commit for the owner's explicit sign-off. The owner
+    # approved (2026-11-06, verbatim: "build a door operation for it next",
+    # then "do all this") the G1 runtime source restore: it restores one
+    # pinned, digest-verified packet and its receipt from the retained
+    # object-store copy to the paths the shared G1 registry already names,
+    # overwrites nothing, starts no compute and moves no money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
-                           "confirm-owner-success-contract"}}
+                           "confirm-owner-success-contract", "restore-g1-runtime-source"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
@@ -534,6 +546,13 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if body["ack"] != OWNER_SUCCESS_ACK:
             raise RequestRefused("owner_success_unacknowledged")
         return {key: body[key] for key in sorted(fields)}
+    if kind == "restore-g1-runtime-source":
+        # No path, URL or digest is a field: the release module pins every identity.
+        _only(body, ("kind", "apply"))
+        apply = body.get("apply", False)
+        if type(apply) is not bool:
+            raise RequestRefused("g1_runtime_source_apply_invalid")
+        return {"kind": kind, "apply": apply}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")

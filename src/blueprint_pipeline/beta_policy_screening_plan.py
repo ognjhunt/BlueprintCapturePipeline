@@ -645,10 +645,12 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             candidates.append(row)
             continue
         try:
+            g1_row = (binding.get("execution_spec") or {}).get("backend") == G1_BACKEND
+            episodes = len(g1_cells(cells)) if g1_row else episodes_per_candidate
             quote = validate_cost_quote(cost_quotes.get(candidate_id, {}),
                                          configuration_digest=candidate["configuration_digest"],
                                          scene_revision_digest=scene["scene_revision_digest"],
-                                         episode_count=episodes_per_candidate, now=current)
+                                         episode_count=episodes, now=current)
         except BetaPolicyScreeningPlanError as exc:
             row.update(status="deferred", blockers=[str(exc)])
             candidates.append(row)
@@ -666,7 +668,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             continue
         frozen = {"admission_digest": binding["admission_digest"],
                   "execution_spec": deepcopy(binding["execution_spec"]), "cost_quote": quote,
-                  "max_cost_usd": quote["maximum_cost_usd"], "episode_count": episodes_per_candidate,
+                  "max_cost_usd": quote["maximum_cost_usd"], "episode_count": episodes,
                   "scenario_cells": g1_cells(cells) if spec["backend"] == G1_BACKEND else deepcopy(cells)}
         if maximum > budget:
             # More than this plan could ever fund, even with nothing else selected.
@@ -823,7 +825,7 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
             waitlist_reasons = ([[WAITLIST_BLOCKER], [JOB_CEILING_DEFERRED]]
                                 if plan.get("budget_basis") == JOB_CEILING_BASIS else [[WAITLIST_BLOCKER]])
             if ((row["blockers"] != [] if row["status"] == "selected" else row["blockers"] not in waitlist_reasons)
-                    or row.get("episode_count") != len(cells) or row.get("scenario_cells") != expected_cells):
+                    or row.get("episode_count") != len(expected_cells) or row.get("scenario_cells") != expected_cells):
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_cells_invalid")
             _digest(row["configuration_digest"], "beta_screening_configuration_invalid")
             spec = validate_execution_descriptor(row.get("execution_spec", {}), candidate_id=row["candidate_id"],
@@ -835,7 +837,7 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
             if (spec["backend"] == FAMILY_BACKEND) is not family:
                 raise BetaPolicyScreeningPlanError("beta_screening_execution_backend_mismatch")
             quote = validate_cost_quote(row.get("cost_quote", {}), configuration_digest=row["configuration_digest"],
-                                         scene_revision_digest=plan["scene_revision_digest"], episode_count=len(cells))
+                                         scene_revision_digest=plan["scene_revision_digest"], episode_count=len(expected_cells))
             if row.get("max_cost_usd") != quote["maximum_cost_usd"]:
                 raise BetaPolicyScreeningPlanError("beta_screening_cost_mismatch")
             if money(row["max_cost_usd"]) < execution_cost_floor(spec):

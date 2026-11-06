@@ -9,6 +9,7 @@ import importlib.util
 import hashlib
 import io
 import json
+import re
 import sys
 import threading
 import time
@@ -848,6 +849,30 @@ def test_client_submits_one_canary_attempt_s_provider_output_resume(door: dict[s
     spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
     assert code == 0 and spooled["request"] == {"kind": "provider-output-resume", "run": "activation-1",
                                                 "attempt": 3, "ingest": True}
+
+
+def test_client_submits_the_g1_runtime_source_restore_as_a_plan_or_an_apply(door: dict[str, Any]) -> None:
+    for argv, apply in ((("restore-g1-runtime-source",), False), (("restore-g1-runtime-source", "--apply"), True)):
+        code, out = _run(*argv)
+        request_id = json.loads(out)["id"]
+        assert re.fullmatch(r"\d{8}T\d{6}Z-restore-g1-runtime-source-[0-9a-f]{8}", request_id)
+        spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
+        assert code == 0 and spooled["request"] == {"kind": "restore-g1-runtime-source", "apply": apply}
+
+
+@pytest.mark.parametrize(("status", "exit_code"), [("planned", 0), ("restored", 0), ("already_restored", 0),
+                                                   ("refused", 1), ("failed", 1)])
+def test_waiting_on_the_g1_runtime_source_restore_exits_by_its_outcome(door: dict[str, Any], status: str,
+                                                                       exit_code: int) -> None:
+    code, out = _run("restore-g1-runtime-source", "--apply")
+    request_id = json.loads(out)["id"]
+    results = door["state"] / "requests" / "results"
+    (results / f"{request_id}.json").write_text(json.dumps({"status": "launched", "unit": "u.service"}))
+    outcome = {"status": status, "code": "g1_runtime_source_object_missing" if status == "refused" else None,
+               "exit_code": 0 if exit_code == 0 else 2}
+    (results / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
+    code, out = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+    assert code == exit_code and json.loads(out)["outcome"] == outcome
 
 
 def test_a_retirement_needs_the_operate_scope(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:

@@ -82,7 +82,7 @@ def test_unstarted_cells_are_individual_void_rows_and_no_query_claim():
             "source": plan["source"], "scenario_plan_digest": plan["scenario_plan_digest"]}}
     rows = [runtime._empty_cell(cell) for cell in authority["cells"]]
     result = runtime._result(authority, rows, stage="policy_dependencies", blockers=["g1_beta_policy_dependencies_failed"])
-    assert len(result["episodes"]) == 10 and result["candidate_policy_queried"] is False
+    assert len(result["episodes"]) == 4 and result["candidate_policy_queried"] is False
     assert all(row["status"] == "not_attempted" and row["reason"] for row in result["episodes"])
     assert "session_closeout" not in result
     assert result["physical_outcome_claimed"] is False
@@ -102,7 +102,7 @@ def test_missing_image_git_retains_each_cell_reason_without_install_or_model_fet
     output.mkdir()
     result = runtime.run_session(tmp_path, output)
     assert result["candidate_policy_queried"] is False
-    assert len(result["episodes"]) == 10
+    assert len(result["episodes"]) == 4
     for row in result["episodes"]:
         assert row["reason"] == "g1_beta_image_git_unavailable"
         assert _episode_outcome(row, candidate_id=DP, contract_digest=spec["task_success_contract_digest"])[1] == row["reason"]

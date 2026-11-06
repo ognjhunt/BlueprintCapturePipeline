@@ -7,6 +7,7 @@
 #   deploy/operator-door/door-retire-scene-workspace.sh
 #   deploy/operator-door/door-restore-scene-workspace.sh
 #   deploy/operator-door/door-provider-output-resume.sh
+#   deploy/operator-door/door-restore-g1-runtime-source.sh
 #   deploy/operator-door/door-selected-handoff.sh
 #   deploy/operator-door/door-extend-scene-execution-window.sh
 #   deploy/operator-door/door-repair-notifier-binding.sh
@@ -306,6 +307,7 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
 @pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh", "door-hold-expire.sh",
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
                                     "door-lane-scratch.sh", "door-provider-output-resume.sh",
+                                    "door-restore-g1-runtime-source.sh",
                                     "door-extend-scene-execution-window.sh", "door-extend-scene-execution-budget.sh",
                                     "door-confirm-owner-success-contract.sh", "install.sh"])
 def test_scripts_parse(script: str) -> None:
@@ -1314,6 +1316,113 @@ def test_provider_output_resume_never_follows_a_link_out_of_the_canary_root(
     rc, outcome, calls = _run("door-provider-output-resume.sh", {**resume_env, "DOOR_RUN": "activation-2"},
                               DOOR_REQUEST_ID=RESUME_ID)
     assert rc == 2 and outcome["code"] == "provider_output_resume_attempt_outside_root" and not calls
+
+
+# --- restore-g1-runtime-source -------------------------------------------------------------------
+
+G1_SOURCE_ID = "20261106T120000Z-restore-g1-runtime-source-0000abcd"
+G1_SOURCE_PYTHON_STUB = r"""#!/bin/bash
+{ echo "restore $*"; echo "cwd $PWD"; echo "pythonpath ${PYTHONPATH:-}"
+  for name in ACCESS_KEY_ID SECRET_ACCESS_KEY ENDPOINT_URL BUCKET REGION; do
+    variable="BLUEPRINT_WAM_OBJECT_STORE_${name}_FILE"; echo "store ${name} ${!variable:-unset}"
+  done
+  echo "ledger ${BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT:-unset}"
+  echo "from-env-file ${BLUEPRINT_FAKE_FROM_ENV_FILE:-unset}"
+  echo "credentials ${GOOGLE_APPLICATION_CREDENTIALS-unset}"; } >> "$STUB_LOG"
+printf '%s\n' "${FAKE_RESTORE:-}"
+exit "${FAKE_TOOL_RC:-0}"
+"""
+
+
+@pytest.fixture()
+def g1_source_env(retire_env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "g1-source-python", G1_SOURCE_PYTHON_STUB)
+    module = tmp_path / "releases" / SHA / "src" / "blueprint_pipeline" / "native_g1_runtime_source_restore.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("# the active release's module\n", encoding="utf-8")
+    values = {key: value for key, value in retire_env.items()
+              if not key.startswith("BLUEPRINT_WAM_OBJECT_STORE_") and key not in {
+                  "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", "GOOGLE_APPLICATION_CREDENTIALS", "DOOR_SCENE_ID"}}
+    return {**values, "DOOR_VENV_PYTHON": str(tmp_path / "g1-source-python"), "DOOR_SERVICE_USER": "blueprint"}
+
+
+_RECEIPT = {"sha256": "sha256:" + "b" * 64, "size_bytes": 44943}
+
+
+@pytest.mark.parametrize(("apply", "result", "status", "code", "rc"), [
+    (None, {"outcome": "planned", "code": None}, "planned", None, 0),
+    ("1", {"outcome": "restored", "code": None, "runtime_source": _RECEIPT}, "restored", None, 0),
+    ("1", {"outcome": "already_restored", "code": None, "runtime_source": _RECEIPT}, "already_restored", None, 0),
+    ("1", {"outcome": "refused", "code": "g1_runtime_source_object_missing"}, "refused",
+     "g1_runtime_source_object_missing", 2),
+    (None, None, "failed", "g1_runtime_source_restore_failed", 1),
+])
+def test_g1_runtime_source_restore_runs_the_release_module_as_the_service_user(
+        g1_source_env: dict[str, str], tmp_path: Path, apply, result, status, code, rc) -> None:
+    extra = {"FAKE_RESTORE": json.dumps(result)} if result is not None else {}
+    if rc:
+        extra["FAKE_TOOL_RC"] = str(rc)
+    if apply:
+        extra["DOOR_APPLY"] = apply
+    done_rc, outcome, calls = _run("door-restore-g1-runtime-source.sh", g1_source_env,
+                                   DOOR_REQUEST_ID=G1_SOURCE_ID, **extra)
+
+    assert (done_rc, outcome["status"], outcome["code"], outcome["exit_code"]) == (rc, status, code, rc)
+    assert calls[:2] == ["setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --",
+                         "umask 0077"]
+    assert calls[2] == "restore -m blueprint_pipeline.native_g1_runtime_source_restore" + (" --apply" if apply else "")
+    secrets = "/etc/blueprint/provider-secrets/digitalocean_spaces_"
+    assert calls[3:] == [f"cwd {tmp_path / 'releases' / SHA}", "pythonpath src",
+                         f"store ACCESS_KEY_ID {secrets}access_key_id",
+                         f"store SECRET_ACCESS_KEY {secrets}secret_access_key",
+                         f"store ENDPOINT_URL {secrets}endpoint_url", f"store BUCKET {secrets}bucket",
+                         f"store REGION {secrets}region",
+                         "ledger /var/lib/blueprint/pipeline-control-plane/disk-reservations",
+                         "from-env-file loaded", "credentials unset"]
+    path = Path(g1_source_env["DOOR_RESULTS_DIR"]) / f"{G1_SOURCE_ID}.g1-runtime-source.json"
+    assert outcome["result"] == str(path) and oct(path.stat().st_mode & 0o777) == oct(0o644)
+    if result is not None:
+        assert json.loads(path.read_text()) == result
+    if status in {"restored", "already_restored"}:
+        assert (outcome["receipt_sha256"], outcome["receipt_size_bytes"]) == (_RECEIPT["sha256"], "44943")
+    else:
+        assert "receipt_sha256" not in outcome
+
+
+@pytest.mark.parametrize(("overrides", "code"), [
+    ({"DOOR_APPLY": "yes"}, "g1_runtime_source_apply_invalid"),
+    ({"DOOR_APPLY": "1; rm -rf /"}, "g1_runtime_source_apply_invalid"),
+    ({"DOOR_SERVICE_USER": "root"}, "g1_runtime_source_user_invalid"),
+])
+def test_g1_runtime_source_restore_rechecks_its_inputs(g1_source_env: dict[str, str], overrides, code) -> None:
+    rc, outcome, calls = _run("door-restore-g1-runtime-source.sh", g1_source_env, DOOR_REQUEST_ID=G1_SOURCE_ID,
+                              **overrides)
+    assert rc == 2 and outcome["code"] == code and not calls
+
+
+def test_g1_runtime_source_restore_names_a_release_without_the_module(g1_source_env: dict[str, str],
+                                                                      tmp_path: Path) -> None:
+    (tmp_path / "releases" / SHA / "src" / "blueprint_pipeline" / "native_g1_runtime_source_restore.py").unlink()
+    rc, outcome, calls = _run("door-restore-g1-runtime-source.sh", g1_source_env, DOOR_REQUEST_ID=G1_SOURCE_ID)
+    assert rc == 2 and outcome["code"] == "g1_runtime_source_release_lacks_module" and not calls
+
+
+def test_g1_runtime_source_restore_refuses_another_kinds_request_id(g1_source_env: dict[str, str]) -> None:
+    rc, _, calls = _run("door-restore-g1-runtime-source.sh", g1_source_env, DOOR_REQUEST_ID=RESUME_ID)
+    assert rc == 2 and not calls and not list(Path(g1_source_env["DOOR_RESULTS_DIR"]).iterdir())
+
+
+def test_g1_runtime_source_restore_reads_the_store_the_launch_dispatcher_binds() -> None:
+    unit = (DOOR.parents[1] / "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service").read_text(
+        encoding="utf-8")
+    script = (DOOR / "door-restore-g1-runtime-source.sh").read_text(encoding="utf-8")
+    bindings = [line.split("=", 1)[1] for line in unit.splitlines()
+                if line.startswith("Environment=BLUEPRINT_WAM_OBJECT_STORE_")]
+    assert len(bindings) == 5
+    for binding in bindings:
+        name, value = binding.split("=", 1)
+        assert f': "${{{name}:={value}}}"' in script, name
 
 
 # --- extend-scene-execution-window ---------------------------------------------------------------

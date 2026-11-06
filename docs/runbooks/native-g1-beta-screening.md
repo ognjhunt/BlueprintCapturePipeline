@@ -50,17 +50,19 @@ policy. `OmniPBR.mdl` remains the declared Kit runtime dependency and is not
 claimed resolved by this host-side test.
 
 The planner composes a machine authority from the unchanged exact model-term
-review and current trusted capture/task authority, within the owner's requested
-internal simulation scope. It records `new_human_review_claimed=false`; it never
+review and current trusted capture/task authority. Its basis is the owner's
+2026-11-06 decision that G1 is a screening option for every site and task. It records `new_human_review_claimed=false`; it never
 changes the old 841757 scene approval. Current consent and task identity are
 reopened at planning and immediately before launch. No additional public-media
 approval is needed for a private task-bound status/count summary. Public media,
 model redistribution, ranking, qualification and physical claims remain false.
 
-All candidates share the persistent $15 site allowance and canonical allocator.
+All candidates share the persistent $30 site allowance (`SITE_LIMIT` in
+`beta_policy_screening_coordinator.py`) and the canonical allocator.
 G1's conservative existing 48 GB memory floor is not a measured requirement for
-every checkpoint. Ten diagnostic cells retain the shared cell IDs and seeds,
-but G1 uses frozen authored geometry and no unimplemented camera/object
+every checkpoint. A G1 session runs the plan's first four cells
+(`CELLS_PER_SESSION`, owner decision 2026-11-06: about four 50-minute cells fit
+the 4 h session). They retain the shared cell IDs and seeds, but G1 uses frozen authored geometry and no unimplemented camera/object
 perturbations. This does not establish robustness across scene variations.
 
 The exact source is HumanoidArena commit
@@ -103,6 +105,40 @@ scene, and this change does not restart that stopped campaign. Current validatio
 uses CPU contract/source tests, not new checkpoint inference or a GPU run.
 
 ## Activate a current site's G1 candidates
+
+First make sure the shared runtime source is on the host. On 2026-11-06 the
+directory the shared registry's `runtime_source_receipt_path` names
+(`/mnt/blueprint-work/g1-cuda-runtime-source-7c1f528-20260926/`) was gone, and
+every candidate ended `g1_shared_source_verification_failed`. The door's
+`restore-g1-runtime-source` puts the packet and its receipt back byte for byte
+from the object-store copy a 2026-09-27 run retained, so the registry binding
+verifies unchanged:
+
+1. The door must run a `main` commit that has the operation
+   (`python3 scripts/operator_door.py upgrade-door <sha on main> --wait`), and the
+   active release must contain `blueprint_pipeline.native_g1_runtime_source_restore`
+   (a deploy of such a commit). Otherwise the request refuses with
+   `kind_unknown` or `g1_runtime_source_release_lacks_module`.
+2. Plan it. The plan only reads and writes nothing but its result:
+   `python3 scripts/operator_door.py restore-g1-runtime-source --wait`. It
+   should end `planned`, with the build record verified, the retained object
+   present at its exact size and digest, enough disk (about 4.9 GB with the
+   margin) and both targets `absent`, or `matches` once restored.
+3. Restore it:
+   `python3 scripts/operator_door.py restore-g1-runtime-source --apply --wait`.
+   The outcome is `restored`, or `already_restored` if a run before it finished.
+   Any other bytes at either target refuse with
+   `g1_runtime_source_target_conflict` and stay untouched.
+4. Use the result's `runtime_source` (`receipt_sha256` and
+   `receipt_size_bytes` in the outcome; the full result is
+   `results/<id>.g1-runtime-source.json`) as the install request's
+   `runtime_source` reference below. The receipt is the build record's exact
+   bytes, `sha256:b303f3017e799a36a2a467de60f235109b1d810a1ef3a87d8d92feb02e6ca5d2`
+   and 44,943 bytes.
+
+It starts no compute and spends nothing beyond one object-store download. A
+refusal names one fixed `g1_runtime_source_*` code; see the beta launch
+tracker's G1 section.
 
 Use the authenticated operator door; activation does not require editing the
 protected registry or logging into the controller:

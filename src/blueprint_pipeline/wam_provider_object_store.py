@@ -32,6 +32,7 @@ from .task_evaluation_configured_scene_object_store import (
     presign_configured_scene_artifact,
     publish_configured_scene_artifact,
 )
+from .wam_cached_dependency_key import cached_dependency_object_key
 
 
 SCHEMA_VERSION = "wam_provider_object_store_staging.v1"
@@ -204,13 +205,7 @@ def stage_cached_runtime_dependency_object_store(
     ensure_dir(job)
     digest = _sha256_file(dependency) if dependency.is_file() else ""
     expected = str(expected_sha256 or "").removeprefix("sha256:")
-    safe_prefix = key_prefix.strip("/ ") or "blueprint/wam-provider"
-    if artifact_kind == "runtime_dependency":
-        key = f"{safe_prefix}/runtime-dependencies/sha256/{expected}.zip"
-    elif artifact_kind == "g1_checkpoint":
-        key = f"{safe_prefix}/g1-checkpoints/sha256/{expected}.bin"
-    else:
-        raise ValueError("cached_dependency_artifact_kind_invalid")
+    key = cached_dependency_object_key(key_prefix, expected, artifact_kind)
     blockers: list[str] = []
     if not dependency.is_file() or not expected or digest != expected:
         blockers.append("runtime_dependency_local_identity_mismatch")
