@@ -9,7 +9,6 @@ TERRAFORM_MAIN = REPO_ROOT / "deploy" / "terraform" / "main.tf"
 TERRAFORM_TFVARS_EXAMPLE = REPO_ROOT / "deploy" / "terraform" / "terraform.tfvars.example"
 ROOT_DOCKERFILE = REPO_ROOT / "Dockerfile"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_live_pipeline_control_plane.sh"
-STAGING_INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_live_pipeline_staging.sh"
 PIPELINE_DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "deploy.sh"
 FULL_TEST_LANE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "full-test-lane.yml"
 CI_REQUIRED_CHECKS_DOC = REPO_ROOT / "docs" / "CI_REQUIRED_CHECKS.md"
@@ -441,14 +440,6 @@ HOST_MEMORY_KEPT = {
     "blueprint-operator-door-runner.service": ("-500", "256M"),
     "blueprint-operator-door-hold-sweep.service": ("-500", "256M"),
 }
-#: Units in deploy/systemd that this host's deploy does not install: GPU workers and their pool, and the isolated
-#: staging intake.
-NOT_ON_THE_CONTROL_PLANE = (
-    "blueprint-production-gpu-campaign-control-plane.service",
-    "blueprint-production-gpu-worker-agent.service",
-    "blueprint-production-gpu-worker-pool.service",
-    "blueprint-pipeline-intake-staging.service",
-)
 
 
 def _directives(unit: str) -> dict[str, list[str]]:
@@ -477,7 +468,7 @@ def test_every_control_plane_unit_is_capped_below_the_host() -> None:
     services = {unit.name for unit in SYSTEMD_DIR.glob("*.service")}
     covered = set(HOST_MEMORY) | set(HOST_MEMORY_KEPT) | set(HOST_SAFETY_GUARD_UNITS)
     assert not set(HOST_MEMORY) & set(HOST_MEMORY_KEPT)
-    assert services == covered | set(NOT_ON_THE_CONTROL_PLANE)
+    assert services == covered
     assert _deployed_services() <= covered
     for unit, (adjust, high, maximum, peak) in HOST_MEMORY.items():
         values = _directives(unit)
@@ -501,41 +492,6 @@ def test_every_control_plane_unit_is_capped_below_the_host() -> None:
         assert values["MemoryMax"] == (["1G"] if unit in {"blueprint-operator-door.service",
                                                           "blueprint-existing-policy-canary-watchdog.service"}
                                        else ["8G"]), unit
-    for unit in NOT_ON_THE_CONTROL_PLANE:
-        assert not {"OOMScoreAdjust", "MemoryHigh"} & set(_directives(unit)), unit
-
-
-def test_isolated_staging_intake_has_separate_identity_state_and_installer() -> None:
-    service = _read("blueprint-pipeline-intake-staging.service")
-    env_example = _read("pipeline-intake-staging.env.example")
-    installer = STAGING_INSTALL_SCRIPT.read_text(encoding="utf-8")
-
-    assert "BlueprintCapturePipeline-staging" in service
-    assert "Environment=PORT=8766" in service
-    assert "ReadWritePaths=/var/lib/blueprint-staging" in service
-    assert "pipeline-intake-staging.env" in service
-    assert "git rev-parse HEAD" in service
-    assert "git status --porcelain" in service
-    assert "BLUEPRINT_SOURCE_COMMIT" in service
-    assert "blueprint_pipeline.production_runtime_env_guard" in service
-    assert "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION" not in service
-    assert "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER" not in service
-
-    assert "BLUEPRINT_SOURCE_COMMIT=" in env_example
-    assert "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN=" in env_example
-    assert "Do not reuse the production value" in env_example
-    assert "PORT=8766" in env_example
-    assert "/var/lib/blueprint-staging" in env_example
-    assert "/var/lib/blueprint/pipeline-control-plane" not in env_example
-    assert "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION" not in env_example
-
-    assert "HEAD must equal origin/main" in installer
-    assert "staging checkout must be clean" in installer
-    assert "safe.directory=${STAGING_REPO}" in installer
-    assert "blueprint-pipeline-intake-staging.service" in installer
-    assert "pipeline-intake-staging.env.example" in installer
-    assert "blueprint-pipeline-intake.service" not in installer
-    assert "blueprint-pubsub-handoff-listener" not in installer
 
 
 def test_pubsub_handoff_listener_has_repeated_deployed_runner():

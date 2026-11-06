@@ -151,7 +151,6 @@ WORKER_UNITS=(
   blueprint-beta-policy-screening.service
   blueprint-embodiment-preparation.service
   blueprint-task-evaluation-launch-reconciler.service
-  blueprint-production-gpu-campaign-control-plane.service
   blueprint-pipeline-control-plane.service
   blueprint-agent-run-dispatcher.service
   blueprint-existing-policy-canary-continuation.service
@@ -167,8 +166,6 @@ WORKER_UNITS=(
 UNITS_LEFT_RUNNING=(
   blueprint-pipeline-intake.service                # by design; queues never move, and a result-cache write mid-move shows up as drift or a stale copy
   blueprint-provider-billing-reconciler.service    # writes billing evidence under gpu_spend_guard only, which never moves
-  blueprint-production-gpu-worker-pool.service     # its only state is production-gpu-worker-pool.sqlite, which never moves
-  blueprint-production-gpu-worker-agent.service    # writes host, cache and warm evidence under /var/lib/blueprint/evidence, which never moves
 )
 
 usage() {

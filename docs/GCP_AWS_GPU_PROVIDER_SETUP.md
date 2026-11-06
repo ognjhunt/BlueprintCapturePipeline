@@ -121,9 +121,10 @@ Toolkit, Python 3, the exact digest-pinned worker image, and matching
 `/etc/blueprint/worker-image-ref`. Customer VM startup performs no ECR login or
 image pull.
 
-The production warm-pool architecture, Packer host-image build, readiness
-contract, and promotion gate are in
-[`docs/runbooks/production-gpu-startup-and-warm-pool.md`](runbooks/production-gpu-startup-and-warm-pool.md).
+The GCP warm pool was retired on 2026-11-06 (its units were never installed on
+the production host). Its former architecture, Packer host-image build,
+readiness contract and promotion gate are kept for history in
+[`docs/archive/runbooks/production-gpu-startup-and-warm-pool.md`](archive/runbooks/production-gpu-startup-and-warm-pool.md).
 
 ## Read-only verification and launch wiring
 
