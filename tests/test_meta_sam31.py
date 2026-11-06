@@ -408,3 +408,70 @@ def test_decoded_mask_cache_is_bound_to_retained_provider_bytes(tmp_path, monkey
     cache_path.write_text(json.dumps(cache))
     with pytest.raises(ValueError, match="retained_tracks_changed"):
         sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("must not purchase a retry"))
+
+
+def test_a_refusal_the_provider_answered_is_dispatched_again_under_a_fresh_reservation(tmp_path, monkeypatch):
+    # capture-5b067498 (2026-11-06): the second target's request named a video upload from an
+    # earlier pass that the provider no longer held, and it answered 404. That is an outcome,
+    # not an uncertainty: the next pass uploads again and reserves the prompt afresh.
+    from urllib.error import HTTPError
+
+    from blueprint_pipeline import website_task_context
+
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    args = inputs(tmp_path)
+    prompts = [{**PROMPT, "prompt_id": f"target-{i}", "text": f"object {i}"} for i in range(2)]
+    args.update(prompts=prompts, admission={}, admission_grant=None, task_context={"capture_id": "fixture"})
+    reservations = []
+
+    def reserve(**kwargs):
+        reservations.append(kwargs)
+        value = {**build_paid_lane_admission(resource_class="evaluator_api"),
+                 "allocation_binding_digest": kwargs["binding_digest"],
+                 "maximum_cost_usd": kwargs["maximum_cost_usd"], "external_disclosure_allowed": True}
+        return value, require_paid_resource_admission(value, resource_class="evaluator_api",
+            expected_schema_version="paid_lane_admission.v1")
+
+    monkeypatch.setattr(website_task_context, "reserve_website_sam_spend", reserve)
+    calls = []
+
+    def refuses_second(request, **kwargs):
+        text = json.loads(request.data)["input"][0]["content"][0]["text"]
+        calls.append(text)
+        if text == "object 1" and calls.count("object 1") == 1:
+            raise HTTPError(sam.ENDPOINT, 404, "Not Found", {}, None)
+        return BytesIO(json.dumps(response()).encode())
+
+    with pytest.raises(ValueError, match="meta_sam_http_404"):
+        sam.run_meta_sam31(**args, opener=refuses_second)
+    result = sam.run_meta_sam31(**args, opener=refuses_second)
+    assert result["status"] == "completed"
+    assert calls == ["object 0", "object 1", "object 1"]
+    # The refused dispatch and the new one are separate reservations; neither replays the other.
+    assert len(reservations) == 2 and reservations[0]["binding_digest"] != reservations[1]["binding_digest"]
+    assert reservations[1]["request_count"] == 1
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+        frame_artifacts=args["frame_artifacts"], prompts=prompts))
+    archived = args["output_root"] / digest[7:] / "refused" / "attempt-1"
+    assert json.loads((archived / "failure-1.json").read_text())["http_status"] == 404
+    assert (archived / "intent-1.json").is_file()
+
+
+def test_an_unanswered_dispatch_still_requires_reconciliation(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    args = inputs(tmp_path)
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+        frame_artifacts=args["frame_artifacts"], prompts=args["prompts"]))
+    root = args["output_root"] / digest[7:]
+    root.mkdir(parents=True)
+    sam.write_json(root / "intent-0.json", {"binding_digest": digest})
+    sam.write_json(root / "failure-0.json", {"http_status": 503, "binding_digest": digest})
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("a 5xx may have been processed"))
+    assert sam.retire_refused_dispatches(root, [0]) == 0
+
+
+def test_the_parser_time_limit_grows_with_the_response():
+    assert sam.parser_timeout_seconds("x" * 1000) == 300
+    assert sam.parser_timeout_seconds("x" * (2 * 1024 * 1024)) == 600
+    assert sam.parser_timeout_seconds("x" * (64 * 1024 * 1024)) == 3600

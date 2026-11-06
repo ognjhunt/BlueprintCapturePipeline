@@ -42,6 +42,58 @@ def _sam_parser_node() -> Path | None:
     return Path(found) if found else None
 
 
+#: The parser decodes every mask of every frame. Its work grows with the response, so its
+#: time limit does too: 300 s per MiB of provider text, at least 300 s and at most an hour.
+#: capture-5b067498 (2026-11-06): a 1.8 MB response for 437 frames at 3840x2160 timed out at
+#: a fixed 300 s on a loaded host, and the same response parsed in a later pass.
+PARSER_SECONDS_PER_MIB = 300
+PARSER_TIMEOUT_BOUNDS_S = (300, 3600)
+
+
+def parser_timeout_seconds(text: str) -> int:
+    size = len(text.encode("utf-8")) / (1024 * 1024)
+    return int(min(PARSER_TIMEOUT_BOUNDS_S[1], max(PARSER_TIMEOUT_BOUNDS_S[0], math.ceil(PARSER_SECONDS_PER_MIB * size))))
+
+
+#: HTTP statuses the provider answers when it refused a request without processing it.
+#: A refusal it answered is a definite outcome, unlike a timeout or a dropped connection.
+REFUSAL_STATUSES = frozenset({400, 401, 403, 404, 409, 413, 415, 422})
+
+
+def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
+    """Archive pending prompts whose last dispatch the provider refused; return this binding's refusal count.
+
+    The provider answered each with a refusal status (``failure-<i>.json``, written only from its
+    HTTP response), so nothing was processed and the prompt is dispatched again, under a new
+    admission digest so the website reserves it afresh and no one-dispatch grant is replayed.
+    A 404 also retires the uploaded video it named (the provider no longer holds that file), so
+    the next dispatch uploads it again. A prompt whose outcome is unknown (an intent with no
+    answered refusal) still requires reconciliation.
+    """
+    archive = Path(root) / "refused"
+    count = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
+    for index in pending:
+        intent, failure = Path(root) / f"intent-{index}.json", Path(root) / f"failure-{index}.json"
+        if not intent.is_file() or not failure.is_file() or intent.is_symlink() or failure.is_symlink():
+            continue
+        try:
+            status = json.loads(failure.read_text()).get("http_status")
+        except ValueError:
+            continue
+        if isinstance(status, bool) or status not in REFUSAL_STATUSES:
+            continue
+        count += 1
+        target = archive / f"attempt-{count}"
+        target.mkdir(parents=True)
+        os.replace(intent, target / intent.name)
+        os.replace(failure, target / failure.name)
+        if status == 404:
+            for name in ("uploaded-video.json", "video-upload-intent.json", "video-cleanup.json"):
+                if (Path(root) / name).is_file():
+                    os.replace(Path(root) / name, target / name)
+    return count
+
+
 def _parse_js_rasters(text: str, accept: Any) -> bool:
     node = _sam_parser_node()
     if node is None:
@@ -54,7 +106,7 @@ def _parse_js_rasters(text: str, accept: Any) -> bool:
         (root / "input.json").write_text(json.dumps({"text": text}))
         result = subprocess.run(
             [str(node), str(runner), str(root / "input.json"), str(root / "rasters.jsonl")],
-            capture_output=True, timeout=300, env={"PATH": "/usr/bin:/bin"}, check=False)
+            capture_output=True, timeout=parser_timeout_seconds(text), env={"PATH": "/usr/bin:/bin"}, check=False)
         if result.stderr.strip() == b"sam31_js_parser_output_malformed":
             raise ValueError("meta_sam_output_malformed")
         if result.returncode or result.stdout or not (root / "rasters.jsonl").is_file():
@@ -387,6 +439,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     root = output_root / digest[7:]
     pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
     retained = bool(prompts) and not pending
+    refused = retire_refused_dispatches(root, pending) if pending and not require_retained_video else 0
     if require_retained_video:
         required = [root / name for name in ("binding.json", "tracks.json")]
         required.extend(root / f"{prefix}-{index}.json" for prefix in ("response", "parsed-response")
@@ -399,9 +452,9 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     # stopped worker may have retained only a prefix of its provider responses;
     # continuing that prefix needs a distinct, bounded grant for the missing
     # prompts rather than redispatching the already reserved parent binding.
-    admission_digest = (digest if len(pending) == len(prompts) else canonical_digest({
+    admission_digest = (digest if len(pending) == len(prompts) and not refused else canonical_digest({
         "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
-        "pending_prompt_indices": pending}))
+        "pending_prompt_indices": pending, **({"refused_dispatches": refused} if refused else {})}))
     image_request = len(frame_registry) == 1
     unit_cost = 0.0025 if image_request else max(50, len(frame_registry)) * PRICE_PER_FRAME_USD
     if not prompts or len({p["prompt_id"] for p in prompts}) != len(prompts):
