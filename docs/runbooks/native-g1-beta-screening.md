@@ -126,10 +126,18 @@ request of each scene intent:
     the bytes `restore-g1-runtime-source` puts back;
   - the Arena robot USD, found as the old manipulation scene plan's
     `robot.usd_path`, against its pinned sha256 and size.
-- With no packet for the current source yet, it first reads the site's
-  consent live, as planning does, then runs `prepare_native_g1_beta_packet`
-  with the builder's own arguments. The packet lands under the site's
-  `native-g1/<base>/<source>/`. A withdrawn consent prepares nothing.
+- It reads the site's consent live, as planning does, before it prepares a
+  packet and again before it writes any row, also when the packet already
+  exists. With no packet for the current source yet, it runs
+  `prepare_native_g1_beta_packet` with the builder's own arguments. The packet
+  lands under the site's `native-g1/<base>/<source>/`.
+- A refused consent (a `beta_screening_*` code, `team_scene_capture_withdrawn`
+  or `native_g1_install_retained_task_consent_invalid`) prepares nothing,
+  writes no row and removes the site's existing row. Its status file then
+  holds only the reason, with no source or candidates. An unanswered check
+  writes nothing new and is tried again on the next pass. Registration never
+  deletes a packet: the operator's withdrawal deletion removes the packets, the
+  row and its status (`website_capture_withdrawal_native_g1`).
 - It writes the service's own row to
   `/var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations/<site_id>.json`
   (`BLUEPRINT_NATIVE_G1_SITE_REGISTRATION_ROOT`). The row has exactly the

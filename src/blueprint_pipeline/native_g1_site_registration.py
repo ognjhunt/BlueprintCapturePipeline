@@ -11,12 +11,15 @@ Inputs resolve as the door's builder resolves them (``native_g1_registration_ins
 packet and task contract from the team registry and the completed source queue
 (``native_g1_registration_contract.site_inputs``); the shared publisher source, runtime source and Arena
 robot USD from the controller-pinned ``config/native_g1_shared_inputs.v1.json`` instead of the historical
-ADP registry. Before it prepares a new packet it reads the site's consent live
-(``beta_policy_screening_worker.require_current_source``); ``prepare_native_g1_beta_packet`` then writes
-the packet under the site's own ``native-g1/<base>/<source>/`` directory. Registration grants no spend
-and claims nothing: planning re-derives every packet and source
-(``beta_policy_screening_g1.candidate_execution_spec``) and re-checks consent live
-(``compose_beta_authority``).
+ADP registry. Before it prepares a new packet, and again before it writes any row, it reads the site's
+consent live (``beta_policy_screening_worker.require_current_source``); ``prepare_native_g1_beta_packet``
+writes the packet under the site's own ``native-g1/<base>/<source>/`` directory. A refusal (a consent
+refusal, :data:`CONSENT_REFUSALS`) prepares nothing, writes no row and removes the site's existing row;
+the status file then records only that reason. An unanswered check writes nothing new and is tried
+again on the next pass. Registration grants no spend and claims nothing: planning re-derives every
+packet and source (``beta_policy_screening_g1.candidate_execution_spec``) and re-checks consent live
+(``compose_beta_authority``). Withdrawal deletion removes the row, its status and the packets
+(``website_capture_withdrawal_native_g1``).
 
 Only privacy, rights and money stop work (AGENTS.md). A G1 problem here is a fixed reason in
 ``<root>/<site_id>.status.json``, never an exception. ``BLUEPRINT_NATIVE_G1_AUTO_REGISTRATION=0`` turns
@@ -52,6 +55,10 @@ RETRY_EVERY_PASS = frozenset({
     "g1_shared_runtime_source_missing", "g1_shared_runtime_source_changed",
     "g1_shared_robot_asset_missing", "g1_beta_preparation_in_progress",
 })
+# Final consent refusals besides every ``beta_screening_*`` code of ``require_current_source``: a capture
+# withdrawn on this host (``resolve_capture_root``) and retained consent the site's inputs refuse
+# (``native_g1_registration_contract.site_inputs``). Each removes the site's row and keeps no customer data.
+CONSENT_REFUSALS = frozenset({"team_scene_capture_withdrawn", "native_g1_install_retained_task_consent_invalid"})
 _CODE = re.compile(r"[a-z][a-z0-9_]{1,127}")
 
 
@@ -63,6 +70,23 @@ class _NotRegistered(Exception):
 
 def _code(exc: BaseException, fallback: str) -> str:
     return str(exc) if _CODE.fullmatch(str(exc)) else fallback
+
+
+def consent_refused(reason: Any) -> bool:
+    """Whether a registration reason is a final consent refusal (the row goes; only the reason is kept)."""
+    return isinstance(reason, str) and (reason.startswith("beta_screening_") or reason in CONSENT_REFUSALS)
+
+
+def _require_current_consent(current: Mapping[str, Any], site_id: str) -> None:
+    """Privacy: read the site's consent live; a refusal is final, an unanswered check is tried again."""
+    from .beta_policy_screening_worker import require_current_source
+    try:
+        require_current_source(current, site_id=site_id)
+    except Exception as exc:  # noqa: BLE001 - a refusal is final; an unanswered check is tried again
+        code = str(exc) if isinstance(exc, ValueError) else ""
+        if _CODE.fullmatch(code) and consent_refused(code):
+            raise _NotRegistered(code) from exc
+        raise _NotRegistered("g1_current_consent_unverified", retry=True) from exc
 
 
 def load_shared_inputs(path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
@@ -216,6 +240,21 @@ def _write(path: Path, value: Mapping[str, Any]) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def _remove(path: Path) -> None:
+    """Remove one row by its own name (a link is removed, never followed); never through a linked root."""
+    if not path.is_absolute() or any(part.is_symlink() for part in path.parents):
+        raise ValueError("g1_site_registration_root_invalid")
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def _read_status(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else {}
@@ -276,14 +315,7 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
         packet_dir = site_root / "native-g1" / base_receipt["receipt_digest"][7:] / canonical_digest(current)[7:]
         if not (packet_dir / PACKET_RECEIPT).exists():
             robot = _robot_record(manifest)
-            from .beta_policy_screening_worker import require_current_source
-            try:  # Privacy: new derived scene data only while the site's consent stands now.
-                require_current_source(current, site_id=site_id)
-            except Exception as exc:  # noqa: BLE001 - a refusal is final; an unanswered check is tried again
-                code = str(exc) if isinstance(exc, ValueError) else ""
-                if code.startswith("beta_screening_") and _CODE.fullmatch(code):
-                    raise _NotRegistered(code) from exc
-                raise _NotRegistered("g1_current_consent_unverified", retry=True) from exc
+            _require_current_consent(current, site_id)  # Privacy: no new derived scene data once withdrawn.
             from .beta_policy_screening_g1_prepare import prepare_native_g1_beta_packet
             try:  # Exactly the door builder's call (native_g1_registration_install._prepare_current_packet).
                 prepare_native_g1_beta_packet(base_packet_record=inputs["base_native_packet"], source=current,
@@ -297,8 +329,17 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
             authority = _navigation_authority(site_root, packet_dir) if goal else None
         except (OSError, ValueError) as exc:
             raise _NotRegistered("g1_current_scene_packet_missing") from exc
+        # Privacy: a row (new or replacing one) only while the site's consent stands now, after any
+        # preparation above, however long it took.
+        _require_current_consent(current, site_id)
     except Exception as exc:  # noqa: BLE001 - a G1 problem never stops the site's other candidates
         refused = exc if isinstance(exc, _NotRegistered) else _NotRegistered("g1_site_registration_failed")
+        if consent_refused(refused.reason):
+            # No row (ensure_site_registration removes the site's old one) and only the refusal is kept:
+            # no source, inputs or candidates. The attempt key (a digest) holds it until something changes.
+            return {"schema_version": STATUS_SCHEMA, "site_id": site_id, "registered_by": "service_automatic",
+                    "status": "not_registered", "reason": refused.reason,
+                    "retry": "on_source_pin_or_release_change", "attempt_key": status.get("attempt_key")}, True
         if not isinstance(exc, _NotRegistered):
             from .bounded_error import error_description
 
@@ -333,6 +374,7 @@ def ensure_site_registration(*, site_id: str, source: Mapping[str, Any], source_
 
     Does nothing while the site's row already names the current source and its files still verify.
     Otherwise prepares the site's G1 packet and writes a new row; another site's file is never written.
+    A consent refusal removes the site's row instead, and keeps removing it while the refusal stands.
     """
     if not reader.auto_registration_enabled():
         return {"status": "disabled"}
@@ -340,11 +382,12 @@ def ensure_site_registration(*, site_id: str, source: Mapping[str, Any], source_
     if path is None or not isinstance(source, Mapping) or set(source) != set(SOURCE_FIELDS):
         return {"status": "not_registered", "reason": "g1_site_identity_invalid"}
     current = {key: source[key] for key in SOURCE_FIELDS}
+    status_path = path.with_name(site_id + ".status.json")
     overlay = reader.site_registration_overlay(site_id, overlay_root)  # None for any unusable row
-    if (overlay is not None and overlay["source"] == current and _records_verify(overlay, Path(manifest_path))
+    if (overlay is not None and not consent_refused(_read_status(status_path).get("reason"))
+            and overlay["source"] == current and _records_verify(overlay, Path(manifest_path))
             and _built_from_base(overlay, _current_base_hex(site_id, current, Path(source_queue)))):
         return {"status": "already_registered"}
-    status_path = path.with_name(site_id + ".status.json")
     try:
         status, record = _register(site_id=site_id, current=current, source_queue=Path(source_queue),
             release=release, path=path, status_path=status_path, manifest_path=Path(manifest_path))
@@ -354,12 +397,19 @@ def ensure_site_registration(*, site_id: str, source: Mapping[str, Any], source_
         status, record = {"schema_version": STATUS_SCHEMA, "site_id": site_id, "registered_by": "service_automatic",
             "source": current, "status": "not_registered", "reason": "g1_site_registration_failed",
             "retry": "next_pass", "error": error_description(exc)}, True
+    if consent_refused(status.get("reason")):
+        try:  # A site whose consent is refused has no G1 registration (its status stays, reason only).
+            _remove(path)
+        except (OSError, ValueError) as exc:
+            status = {**status, "registration_removal_error": type(exc).__name__}
     if record:
         try:
             _record_status(status_path, status)
         except (OSError, ValueError) as exc:
             status = {**status, "status_file_error": type(exc).__name__}
-    return {key: status[key] for key in ("status", "reason", "candidates", "status_file_error") if key in status}
+    return {key: status[key] for key in ("status", "reason", "candidates", "status_file_error",
+                                         "registration_removal_error") if key in status}
 
 
-__all__ = ["MANIFEST_PATH", "RETRY_EVERY_PASS", "ensure_site_registration", "load_shared_inputs"]
+__all__ = ["CONSENT_REFUSALS", "MANIFEST_PATH", "RETRY_EVERY_PASS", "consent_refused", "ensure_site_registration",
+           "load_shared_inputs"]

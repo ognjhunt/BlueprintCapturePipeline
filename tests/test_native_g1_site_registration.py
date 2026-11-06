@@ -59,6 +59,8 @@ def door_world(tmp_path, monkeypatch, **changes):
     kwargs = {"site_id": SITE, "source": dict(retained.request["source"]), "source_queue": tmp_path / "queue",
               "release": "a" * 40, "manifest_path": pinned}
     profile = {**retained.derived, **retained.registry["derived_profiles"]["defaults"]}
+    # The live consent read is the WebApp's (its own tests cover it): granted unless a test says otherwise.
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", lambda *a, **k: {})
     return retained, kwargs, profile, robot
 
 
@@ -110,7 +112,8 @@ def test_a_missing_packet_is_prepared_with_the_builders_own_arguments(tmp_path, 
     monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source",
                         lambda value, *, site_id: checked.append((value, site_id)))
     assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
-    assert checked == [(kwargs["source"], SITE)]  # Consent is read live before any new derived data.
+    # Consent is read live before any new derived data, and again before the row is written.
+    assert checked == [(kwargs["source"], SITE)] * 2
     site = tmp_path / "halves" / SITE
     inputs = contract.common.read(site / "team_scene_inputs.v1.json")
     assert calls == [{"base_packet_record": inputs["base_native_packet"], "source": kwargs["source"], "site_id": SITE,
@@ -136,6 +139,90 @@ def test_withdrawn_or_unverified_consent_prepares_nothing(tmp_path, monkeypatch,
     assert result["status"] == "not_registered" and result["reason"] == reason
     assert status_of()["retry"] == retry and not overlay_path().exists()
     assert not retained.g1_path.parent.exists()
+
+
+def repin_runtime(tmp_path, kwargs):
+    """Pin a rebuilt runtime receipt: the site's row goes stale while its packet stays where it is."""
+    runtime = tmp_path / "shared/runtime/native_task_runtime_source_packet.v1.json"
+    rebuilt = tmp_path / "shared/rebuilt/native_task_runtime_source_packet.v1.json"
+    write(rebuilt, {**json.loads(runtime.read_text()), "development_only": "rebuilt"})
+    value = json.loads(Path(kwargs["manifest_path"]).read_text())
+    value["runtime_source"] = {"path": str(rebuilt), **ref(rebuilt)}
+    write(kwargs["manifest_path"], seal(value, "manifest_digest"))
+
+
+@pytest.mark.parametrize("refusal", ["beta_screening_current_capture_consent_required", "team_scene_capture_withdrawn"])
+def test_a_refused_consent_with_an_existing_packet_writes_no_row_and_removes_the_old_one(
+        tmp_path, monkeypatch, refusal):
+    from blueprint_pipeline.team_scene_capture_root import TeamScenePacketRequestRefused
+
+    retained, kwargs, profile, _ = door_world(tmp_path, monkeypatch)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    old_row = overlay_path().read_bytes()
+    packet = sorted(retained.g1_path.parent.rglob("*"))
+    repin_runtime(tmp_path, kwargs)  # The packet exists: only the row would be written.
+    checks = []
+
+    def withdrawn(value, *, site_id):
+        checks.append(site_id)
+        raise TeamScenePacketRequestRefused(refusal)
+
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", withdrawn)
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared"))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "not_registered", "reason": refusal}
+    assert checks == [SITE] and not overlay_path().exists()
+    assert reader._site_screening_profile(retained.registry, profile) == profile
+    # The status keeps the refusal reason only: no source, inputs, paths or candidates.
+    status = status_of()
+    assert set(status) == {"schema_version", "site_id", "registered_by", "status", "reason", "retry", "attempt_key",
+                           "generated_at"}
+    assert status["reason"] == refusal and status["retry"] == "on_source_pin_or_release_change"
+    text = overlay_path().with_name(f"{SITE}.status.json").read_text()
+    assert kwargs["source"]["capture_id"] not in text and kwargs["source"]["task_context_digest"] not in text
+    # Deleting retained data is the withdrawal deletion's: the packet itself is left as it was.
+    assert sorted(retained.g1_path.parent.rglob("*")) == packet
+    # The refusal stands with no new live read; a row put back meanwhile is removed again, never kept.
+    write(overlay_path(), json.loads(old_row))
+    overlay_path().chmod(0o640)
+    assert registration.ensure_site_registration(**kwargs)["reason"] == refusal
+    assert checks == [SITE] and not overlay_path().exists() and status_of() == status
+
+
+def test_a_refused_retained_consent_removes_the_row(tmp_path, monkeypatch):
+    retained, kwargs, profile, _ = door_world(tmp_path, monkeypatch)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    path = tmp_path / "capture/pipeline/website_task_context.json"
+    context = json.loads(path.read_text())
+    context["capture_rights"] = {**context["capture_rights"], "consent_revoked": True}
+    write(path, seal(context, "context_digest"))
+    result = registration.ensure_site_registration(**kwargs)
+    assert result == {"status": "not_registered", "reason": "native_g1_install_retained_task_consent_invalid"}
+    assert not overlay_path().exists() and "source" not in status_of()
+    assert reader._site_screening_profile(retained.registry, profile) == profile
+
+
+@pytest.mark.parametrize("row", ["stale", "absent"])
+def test_an_unanswered_consent_check_writes_nothing_new_and_is_tried_again(tmp_path, monkeypatch, row):
+    retained, kwargs, _, _ = door_world(tmp_path, monkeypatch)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    old_row = overlay_path().read_bytes()
+    repin_runtime(tmp_path, kwargs)
+    if row == "absent":
+        overlay_path().unlink()
+    checks = []
+
+    def unanswered(value, *, site_id):
+        checks.append(site_id)
+        raise OSError("development_only unreachable")
+
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", unanswered)
+    for attempt in (1, 2):
+        result = registration.ensure_site_registration(**kwargs)
+        assert result["status"] == "not_registered" and result["reason"] == "g1_current_consent_unverified"
+        assert status_of()["retry"] == "next_pass" and len(checks) == attempt
+        # Nothing new: no row written, and a row from before is neither replaced nor removed.
+        assert (overlay_path().read_bytes() == old_row) if row == "stale" else not overlay_path().exists()
+    assert retained.g1_path.exists()
 
 
 def test_registration_is_idempotent_for_an_unchanged_source(tmp_path, monkeypatch):

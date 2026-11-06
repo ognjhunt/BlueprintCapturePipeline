@@ -70,7 +70,8 @@ Built in `native_g1_site_registration` (runbook:
   the profile. It is not `team_scene_packet.record_team_scene`: the pass
   already sees every completed scene, runs again after a restore, and plans in
   the same pass. For a `rigid_pick_place` task the service reads the site's
-  consent live, then runs
+  consent live (before it prepares a packet and again before it writes any
+  row; a refusal writes no row and removes the site's old one), then runs
   `beta_policy_screening_g1_prepare.prepare_native_g1_beta_packet` on the
   site's base packet with the door builder's arguments. It writes under the
   site's own `native-g1/<base>/<source>/` directory. Any other task kind
