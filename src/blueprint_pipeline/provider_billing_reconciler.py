@@ -7,6 +7,7 @@ retains the exact private response bytes, and atomically writes the narrow
 creates, changes, or deletes provider resources. GCP can use a fresh retained
 official project CSV with explicit account and inventory scope. AWS billing
 remains uncovered: automatic paid Cost Explorer queries have been removed.
+RunPod billing is no longer collected: RunPod is retired (2026-11-05).
 """
 
 from __future__ import annotations
@@ -40,11 +41,16 @@ from .vast_official_billing_serialization import (
 
 BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_SCOPE = "blueprint_beta_100_user_cohort"
+#: Known provider ids. RunPod and AWS stay so retained exports still read.
 PROVIDERS = ("runpod", "vast", "digitalocean", "aws", "gcp")
-RUNPOD_BILLING_URL = "https://rest.runpod.io/v1/billing"
 DIGITALOCEAN_API_URL = "https://api.digitalocean.com/v2"
 MAX_PAGES = 100
 AWS_BILLING_UNAVAILABLE_REASON = "aws_billing_unavailable_paid_api_collection_removed"
+#: RunPod is retired (owner decision 2026-11-05): no lane can allocate it, and
+#: its billing request failed on every call (85 of 85 on 2026-11-05), so it is not
+#: requested. The spend guard still inventories RunPod while a key exists; a live
+#: RunPod pod keeps paid admission blocked because this export cannot cover it.
+RUNPOD_BILLING_RETIRED_REASON = "runpod_billing_retired_provider_not_collected"
 #: The longest a caller may ask an existing export to stand in for a refresh.
 #: The spend guard and the paid-spend admission lock both refuse billing
 #: evidence older than 24 hours; an hour keeps any interval far inside that.
@@ -146,7 +152,7 @@ def _request_json(
     transport: Transport,
     audit_rows: list[dict[str, Any]],
 ) -> Any:
-    if not url.startswith((RUNPOD_BILLING_URL, VAST_CHARGES_URL, DIGITALOCEAN_API_URL)):
+    if not url.startswith((VAST_CHARGES_URL, DIGITALOCEAN_API_URL)):
         raise ProviderBillingReconciliationError("provider_billing_endpoint_not_allowlisted")
     request = urllib.request.Request(
         url,
@@ -173,48 +179,6 @@ def _request_json(
     return decoded
 
 
-
-
-def _runpod_total(
-    *,
-    token: str,
-    start_at: datetime,
-    end_at: datetime,
-    timeout: float,
-    transport: Transport,
-    audit_rows: list[dict[str, Any]],
-) -> float:
-    total = 0.0
-    query = {
-        "startTime": start_at.isoformat().replace("+00:00", "Z"),
-        "endTime": end_at.isoformat().replace("+00:00", "Z"),
-        "bucketSize": "year",
-    }
-    for resource in ("pods", "endpoints", "networkvolumes"):
-        url = f"{RUNPOD_BILLING_URL}/{resource}?{urllib.parse.urlencode(query)}"
-        rows = _request_json(
-            provider="runpod",
-            url=url,
-            token=token,
-            timeout=timeout,
-            transport=transport,
-            audit_rows=audit_rows,
-        )
-        if not isinstance(rows, list):
-            raise ProviderBillingReconciliationError(f"runpod_billing_response_invalid:{resource}")
-        for index, row in enumerate(rows):
-            if not isinstance(row, Mapping):
-                raise ProviderBillingReconciliationError(
-                    f"runpod_billing_row_invalid:{resource}:{index}"
-                )
-            total += _money(row.get("amount", 0), field=f"runpod_{resource}_amount")
-            high_performance = row.get("highPerformanceStorageAmount")
-            if high_performance is not None:
-                total += _money(
-                    high_performance,
-                    field=f"runpod_{resource}_high_performance_storage_amount",
-                )
-    return total
 
 
 def _vast_total(
@@ -382,13 +346,18 @@ def reconcile_provider_billing(
     required_provider_ids = requested_required
     if "aws" in required_provider_ids:
         raise ProviderBillingReconciliationError(AWS_BILLING_UNAVAILABLE_REASON)
+    if "runpod" in required_provider_ids:
+        raise ProviderBillingReconciliationError(RUNPOD_BILLING_RETIRED_REASON)
     # Same dispatch seam and call count; the journal survives collector failure/crash.
     evidence_origin = "retained_provider_response" if transport is _default_transport else "development_only"
     transport = MeteredTransport(transport, Path(audit_root).expanduser().resolve().parent / "metered-call-events")
     audit_rows: list[dict[str, Any]] = []
     totals: dict[str, float] = {}
     source_times = [current]
-    optional_provider_failures: dict[str, str] = {"aws": AWS_BILLING_UNAVAILABLE_REASON}
+    optional_provider_failures: dict[str, str] = {
+        "aws": AWS_BILLING_UNAVAILABLE_REASON,
+        "runpod": RUNPOD_BILLING_RETIRED_REASON,
+    }
     security_blockers = (
         "secret_symlink_forbidden:",
         "secret_file_invalid:",
@@ -404,17 +373,6 @@ def reconcile_provider_billing(
                 raise
             optional_provider_failures[provider] = error
 
-    record_provider(
-        "runpod",
-        lambda: _runpod_total(
-            token=_read_secret(secret_root / "runpod_api_key"),
-            start_at=start,
-            end_at=current,
-            timeout=timeout,
-            transport=transport,
-            audit_rows=audit_rows,
-        ),
-    )
     record_provider(
         "vast",
         lambda: _vast_total(
@@ -748,7 +706,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=PROVIDERS,
         help=(
             "make this provider mandatory for the refresh; "
-            "unspecified providers are optional; AWS is unavailable"
+            "unspecified providers are optional; AWS is unavailable; RunPod is retired"
         ),
     )
     parser.add_argument(

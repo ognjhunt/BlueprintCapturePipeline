@@ -113,7 +113,8 @@ def test_native_refresh_after_slow_reconciliation_restores_real_admission(policy
     _clock, events, _client, args = slow_reconciliation
     assert fleet.main(args) == 0
     assert [event for event in events if event[0] == "monthly"] == [("monthly", START), ("monthly", FINISH)]
-    assert [event[0] for event in events] == ["monthly", "runpod", "vast", "digitalocean", "gcp", "monthly"]
+    # No RunPod key here: RunPod is retired, so its inventory is not queried.
+    assert [event[0] for event in events] == ["monthly", "vast", "digitalocean", "gcp", "monthly"]
     report = json.loads(Path(policy["report_path"]).read_text())
     assert report["generated_at"] == FINISH.isoformat()
     assert report["observed_cost_usd"] == "114.61"

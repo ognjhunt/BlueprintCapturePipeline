@@ -406,9 +406,10 @@ def test_existing_reconciler_keeps_call_count_export_and_admission_contract(tmp_
         now=NOW,
         transport=transport,
     )
-    assert len(transport.requests) == 7
-    assert not any("amazonaws.com" in url for url, _ in transport.requests)
-    assert len(read_attempts(tmp_path / "guard" / "metered-call-events")) == 7
+    # Vast (2 pages) and DigitalOcean (2): retired RunPod billing is not requested.
+    assert len(transport.requests) == 4
+    assert not any("amazonaws.com" in url or "runpod" in url for url, _ in transport.requests)
+    assert len(read_attempts(tmp_path / "guard" / "metered-call-events")) == 4
     assert result["daily_spend_snapshot"]["status"] == "written"
     snapshot = json.loads((tmp_path / "guard" / "daily_spend_snapshot.json").read_text())
     assert (

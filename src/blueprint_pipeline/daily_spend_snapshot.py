@@ -450,10 +450,12 @@ def project_daily_snapshot(
                     grain="month",
                     invalid=overlap,
                 )
-    for provider in ("runpod", "vast", "digitalocean"):
+    # RunPod is retired (2026-11-05): its billing is no longer collected, so its
+    # absence is not a gap. A retained RunPod source still parses above.
+    for provider in ("vast", "digitalocean"):
         if provider not in pages:
             gaps.add(f"{provider}_source_missing")
-        elif provider != "runpod" and not any(p["complete"] for p in pages[provider]):
+        elif not any(p["complete"] for p in pages[provider]):
             gaps.add(f"{provider}_pagination_partial_or_unknown")
     # Immutable revisions with a stable source key. Conflicts within one source are unknown.
     by_key: dict[str, dict] = {}

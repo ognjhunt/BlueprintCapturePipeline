@@ -56,7 +56,10 @@ from urllib.parse import urlsplit
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.record_tree_index import Rule, find_records
-from blueprint_pipeline.spend_admission_lock import build_spend_admission_lock
+from blueprint_pipeline.spend_admission_lock import (
+    build_spend_admission_lock,
+    retired_provider_inventory_row,
+)
 
 SCHEMA_VERSION = "gpu_spend_guard.v1"
 SPEND_LEDGER_SCHEMA_VERSION = "gpu_spend_ledger.v1"
@@ -2252,13 +2255,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if not configured and not required_providers:
         required_providers = set(PROVIDERS)
-    runpod_pods, runpod_inventory = _inventory_query(
-        provider="runpod",
-        credential=runpod_key,
-        fetch=fetch_runpod_pods,
-        timeout=args.timeout,
-        required="runpod" in required_providers,
-    )
+    # RunPod is retired (owner decision 2026-11-05). While its key exists the
+    # inventory is still read and required, a free GET that keeps an orphan pod
+    # visible to provider-zero and the reaper. With no key it is recorded as
+    # retired and not required, so the owner can delete the key once the account
+    # is closed; even --require-provider runpod then accepts its absence.
+    if runpod_key:
+        runpod_pods, runpod_inventory = _inventory_query(
+            provider="runpod",
+            credential=runpod_key,
+            fetch=fetch_runpod_pods,
+            timeout=args.timeout,
+            required="runpod" in required_providers,
+        )
+    else:
+        required_providers.discard("runpod")
+        runpod_pods, runpod_inventory = [], retired_provider_inventory_row("runpod")
     vast_instances, vast_inventory = _inventory_query(
         provider="vast",
         credential=vast_key,

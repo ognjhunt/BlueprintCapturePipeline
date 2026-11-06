@@ -132,7 +132,7 @@ def _write_override(
 def _preflight_kwargs() -> dict[str, object]:
     return {
         "lane": "robot_eval_provider_launcher",
-        "provider": "runpod",
+        "provider": "vast",
         "credential_present": True,
         "capacity_evidence": {"available": True, "detail": "capacity"},
         "image_contract": {"image_ref": "repo/image:v1", "pinned": True},
@@ -398,7 +398,8 @@ def test_chokepoint_recomputes_billing_inventory_and_claim_contracts() -> None:
     evidence["billing_reconciliation"]["generated_at"] = (  # type: ignore[index]
         NOW - timedelta(days=2)
     ).isoformat()
-    evidence["provider_inventory"][0]["status"] = "failed"  # type: ignore[index]
+    vast_row = next(row for row in evidence["provider_inventory"] if row["provider"] == "vast")  # type: ignore[union-attr]
+    vast_row["status"] = "failed"
     evidence["claim_boundary"][  # type: ignore[index]
         "billing_export_is_external_input_not_live_api_proof"
     ] = False
@@ -406,15 +407,15 @@ def test_chokepoint_recomputes_billing_inventory_and_claim_contracts() -> None:
     blockers = validate_spend_admission_lock(
         evidence,
         now=NOW,
-        required_provider="runpod",
+        required_provider="vast",
     )
 
     assert "spend_admission_lock_billing_stale_or_invalid_time" in blockers
     assert (
-        "spend_admission_lock_required_provider_inventory_unavailable:runpod"
+        "spend_admission_lock_required_provider_inventory_unavailable:vast"
         in blockers
     )
-    assert "spend_admission_lock_provider_admission_mismatch:runpod" in blockers
+    assert "spend_admission_lock_provider_admission_mismatch:vast" in blockers
     assert "spend_admission_lock_claim_boundary_invalid" in blockers
 
 
@@ -564,3 +565,96 @@ def test_chokepoint_loads_only_permission_safe_runtime_lock(
     assert "spend_admission:spend_admission_lock_permission_unsafe" in (
         unsafe.value.preflight["blockers"]
     )
+
+
+# ------------------------- RunPod retired (2026-11-05) -------------------------
+
+
+def _without_runpod_billing(total: float) -> dict[str, object]:
+    billing = _billing(total)
+    billing["provider_totals_usd"] = {"vast": total, "digitalocean": 0.0}
+    return billing
+
+
+def test_deleted_runpod_key_leaves_vast_and_digitalocean_admission_unchanged() -> None:
+    """With no RunPod key the guard passes no RunPod row; the lock stays open."""
+
+    keyless = [row for row in _inventory() if row["provider"] != "runpod"]
+    evidence = build_spend_admission_lock(
+        fleet_budget=_fleet(42.0), billing_reconciliation=_without_runpod_billing(42.0),
+        instances=[], reap_results=[], inventory_results=keyless, override_path=None, now=NOW,
+    )
+    assert evidence["status"] == "open" and evidence["admission_allowed"] is True
+    assert evidence["billing_covered_provider_ids"] == ["digitalocean", "vast"]
+    assert evidence["billing_uncovered_provider_ids"] == []
+    assert set(evidence["provider_admission"]) == {"digitalocean", "vast"}  # type: ignore[arg-type]
+    assert validate_spend_admission_lock(evidence, now=NOW, required_provider="vast") == []
+    assert validate_spend_admission_lock(evidence, now=NOW, required_provider="runpod") == [
+        "spend_admission_lock_required_provider_retired:runpod"
+    ]
+    # Vast and DigitalOcean stay required exactly as before.
+    for provider in ("vast", "digitalocean"):
+        missing = build_spend_admission_lock(
+            fleet_budget=_fleet(42.0), billing_reconciliation=_without_runpod_billing(42.0),
+            instances=[], reap_results=[], override_path=None, now=NOW,
+            inventory_results=[row for row in keyless if row["provider"] != provider],
+        )
+        assert missing["admission_allowed"] is False
+        assert "provider_inventory_coverage_incomplete" in missing["blockers"]
+
+
+def test_runpod_key_present_is_inventoried_but_retired_not_uncovered() -> None:
+    """While a RunPod key exists its row is required and must succeed. Its billing is
+    no longer collected, so it is refused as retired, never listed as uncovered."""
+
+    evidence = build_spend_admission_lock(
+        fleet_budget=_fleet(42.0), billing_reconciliation=_without_runpod_billing(42.0),
+        instances=[], reap_results=[], inventory_results=_inventory(), override_path=None, now=NOW,
+    )
+    assert evidence["admission_allowed"] is True
+    assert evidence["billing_uncovered_provider_ids"] == []
+    assert evidence["provider_admission"]["runpod"] == {  # type: ignore[index]
+        "admission_allowed": False, "blockers": ["runpod_provider_retired"],
+    }
+    assert validate_spend_admission_lock(evidence, now=NOW, required_provider="vast") == []
+    tampered = json.loads(json.dumps(evidence))
+    tampered["billing_uncovered_provider_ids"] = ["runpod"]
+    assert "spend_admission_lock_billing_uncovered_providers_mismatch" in (
+        validate_spend_admission_lock(tampered, now=NOW, required_provider="vast"))
+    # A failed RunPod query is named on RunPod's row, as any provider's failure is;
+    # it never closes Vast (the guard's own report and provider-zero stay blocked).
+    failed = _inventory()
+    failed[0] = {**failed[0], "status": "failed", "blockers": ["runpod_inventory_query_failed"]}
+    with_failure = build_spend_admission_lock(
+        fleet_budget=_fleet(42.0), billing_reconciliation=_without_runpod_billing(42.0),
+        instances=[], reap_results=[], inventory_results=failed, override_path=None, now=NOW,
+    )
+    assert with_failure["provider_admission"]["vast"]["admission_allowed"] is True  # type: ignore[index]
+    assert with_failure["provider_admission"]["runpod"]["blockers"] == [  # type: ignore[index]
+        "provider_inventory:runpod:runpod_inventory_query_failed",
+        "provider_inventory_not_succeeded:runpod",
+        "runpod_provider_retired",
+    ]
+
+
+def test_retired_provider_absent_accepts_only_the_guards_exact_keyless_row() -> None:
+    from blueprint_pipeline.spend_admission_lock import (
+        provider_zero_required_ids,
+        retired_provider_absent,
+        retired_provider_inventory_row,
+    )
+
+    historical = ("runpod", "vast", "digitalocean")
+    keyless = [retired_provider_inventory_row("runpod"), *_inventory()[1:]]
+    assert retired_provider_absent(keyless, "runpod") is True
+    assert provider_zero_required_ids(keyless, historical) == {"vast", "digitalocean"}
+    for rows in (
+        _inventory(),  # key present: still required
+        _inventory()[1:],  # row missing: still required
+        [{**retired_provider_inventory_row("runpod"), "credential_present": True}, *_inventory()[1:]],
+        [{**retired_provider_inventory_row("runpod"), "blockers": ["x"]}, *_inventory()[1:]],
+        [retired_provider_inventory_row("runpod"), *_inventory()],  # duplicate rows
+    ):
+        assert provider_zero_required_ids(rows, historical) == set(historical)
+    with pytest.raises(ValueError):
+        retired_provider_inventory_row("vast")

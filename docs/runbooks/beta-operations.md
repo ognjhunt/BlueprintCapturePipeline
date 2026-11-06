@@ -156,6 +156,21 @@ raises it to `warning` at most. Neither raises a disk page.
 | World Labs (Atlas) | Prepaid credit: tasks draw from the account balance, 1,000 credits per US dollar in the beta. Automatic recharge and the account's monthly spend limit: owner to confirm. | `world_labs_spend_24h_high`: Blueprint's recorded Atlas purchases in the last 24 h. `world_labs_spend_month_high`: the UTC month to date. | $60 a day. $450 a month. | `BLUEPRINT_WORLD_LABS_SPEND_24H_PAGE_USD`, `BLUEPRINT_WORLD_LABS_SPEND_MONTH_PAGE_USD` |
 | Google Cloud project `blueprint-8c1ca` (Gemini) | A Cloud Billing account that Google charges after use. Payment setup: owner to confirm. | `gcp_spend_month_high`: the budget guard's cost for the month. | 80% of the month's limit: $80 of $100. | `BLUEPRINT_GCP_SPEND_PAGE_FRACTION`, more than 0 and at most 1 |
 
+**RunPod is retired** (owner decision, 2026-11-05). Nothing can start RunPod
+spend: the canonical allocator, the shared paid admission
+(`RUNPOD_PROVIDER_RETIRED` in `src/blueprint_pipeline/paid_resource_admission.py`)
+and the RunPod render launcher refuse with `runpod_provider_retired` before any
+RunPod resource is created. The billing reconciler no longer requests RunPod billing (it had
+failed on every call: 85 of 85 on 2026-11-05). While a RunPod key exists, the
+GPU spend guard still reads the RunPod inventory as a required provider: an
+orphan pod is reaped, and it keeps provider-zero and paid admission closed until
+it is gone. The paid-spend admission lock lists RunPod as retired, not as
+uncovered billing. Owner step: close the RunPod account, then delete the RunPod
+key file (`runpod_api_key` in `/etc/blueprint/provider-secrets`, and the file
+`RUNPOD_API_KEY_FILE` names where an env file sets it). With no key the guard
+records RunPod as retired and not required, and Vast, DigitalOcean and GCP stay
+required exactly as before.
+
 The lines come from the B-03 cost model
 ([`../launch-readiness/2026-11-cost-model.md`](../launch-readiness/2026-11-cost-model.md)):
 

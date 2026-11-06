@@ -1538,6 +1538,8 @@ MAX_RECOVERY_GUARD_AGE_SECONDS = 900
 def _global_guard_proves_zero(report: Mapping[str, Any]) -> bool:
     """Does this guard report prove the whole account is at provider zero?"""
 
+    from .spend_admission_lock import provider_zero_required_ids
+
     rows = report.get("inventory_results")
     required = {
         row.get("provider"): row
@@ -1555,7 +1557,9 @@ def _global_guard_proves_zero(report: Mapping[str, Any]) -> bool:
         # not make an otherwise valid zero unrecognizable merely because this
         # validator predates them.  Every required row, including additions
         # such as AWS, is still required to be succeeded and empty below.
-        and {"runpod", "vast", "digitalocean"}.issubset(required)
+        # RunPod is retired: it leaves the minimum only when the guard recorded
+        # it as retired with no key.
+        and provider_zero_required_ids(rows, ("runpod", "vast", "digitalocean")).issubset(required)
         and all(
             row.get("status") == "succeeded" and row.get("row_count") == 0
             for row in required.values()
