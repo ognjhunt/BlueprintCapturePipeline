@@ -108,14 +108,23 @@ def with_task_source_views(*, survey_path, source_inputs, clean_root, output):
             or candidate.get("binding", {}).get("source_video_digest") != survey.get("source_video_digest")):
         raise ValueError("atlas_source_gap_task_source_views_changed")
     present = {row["frame_id"] for row in survey["frames"]}
+    # The manifest stores image paths relative to its own directory (``_bound_frames`` resolves
+    # them the same way); the gallery opens them from any working directory, so resolve them here.
+    worker = (Path(clean_root) / "source_geometry/worker_inputs").resolve()
     rows = []
     for row in candidate["frames"]:
         if row["frame_id"] in present:
             continue
         if float(row.get("display_rotation_degrees", 0.0)) != float(survey["display_rotation_degrees"]):
             raise ValueError("atlas_source_gap_candidate_capture_mismatch")
-        rows.append({key: row[key] for key in ("frame_id", "timestamp_seconds", "source_image_path",
-                                              "source_image_digest", "width", "height") if key in row})
+        image = Path(row["source_image_path"])
+        image = image if image.is_absolute() else worker / image
+        if (image.is_symlink() or not image.resolve().is_relative_to(worker) or not image.is_file()
+                or _sha256_file(image) != row["source_image_digest"]):
+            raise ValueError("atlas_source_gap_task_source_views_changed")
+        rows.append({**{key: row[key] for key in ("frame_id", "timestamp_seconds", "source_image_digest",
+                                                  "width", "height") if key in row},
+                     "source_image_path": str(image.resolve())})
     if not rows:
         return Path(survey_path)
     views = {"schema_version": "atlas_video_survey.v1", "source_video_digest": survey["source_video_digest"],

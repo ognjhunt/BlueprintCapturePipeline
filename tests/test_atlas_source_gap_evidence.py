@@ -155,9 +155,12 @@ def _clean_plate(tmp_path, ids):
     clean = tmp_path / 'clean_plate'
     (clean / 'source_geometry/worker_inputs').mkdir(parents=True)
     rows = []
+    (clean / 'source_geometry/worker_inputs/observations').mkdir()
     for index, frame_id in enumerate(ids):
-        image = clean / 'source_geometry/worker_inputs' / f'{frame_id}.png'
-        rows.append({'frame_id': frame_id, 'timestamp_seconds': 100.0 + index, 'source_image_path': str(image),
+        image = clean / 'source_geometry/worker_inputs/observations' / f'{index:06d}.png'
+        # Stored relative to the manifest's directory, as prepare_website_geometry_inputs writes it.
+        rows.append({'frame_id': frame_id, 'timestamp_seconds': 100.0 + index,
+                     'source_image_path': f'observations/{index:06d}.png',
                      'source_image_digest': _image(image, 200 + index), 'display_rotation_degrees': 0.0,
                      'width': 8, 'height': 6})
     candidate = {'schema_version': 'x', 'binding': {'source_video_digest': 'sha256:video'},
@@ -190,6 +193,9 @@ def test_a_source_poses_task_source_views_join_the_gallery_survey(tmp_path):
     assert gallery['reviewed_source_frame_ids'] == ['decoded-a', 'decoded-b', 'decoded-task']
     frames = {row['frame_id']: row for row in json.loads(combined.read_text())['frames']}
     assert frames['decoded-b']['source_image_path'] == str(tmp_path / 'decoded-b.png')
+    # The added frame's relative path is resolved against the manifest's directory, from any cwd.
+    assert frames['decoded-task']['source_image_path'] == str(
+        (clean / 'source_geometry/worker_inputs/observations/000001.png').resolve())
     # A pose without task-source views keeps its survey; a changed manifest refuses.
     assert with_task_source_views(survey_path=survey, source_inputs={'binding': {}}, clean_root=clean,
                                   output=tmp_path / 'unused.json') == survey
