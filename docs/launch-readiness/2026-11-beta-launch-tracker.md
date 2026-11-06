@@ -246,6 +246,15 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
 - the runbook's stale $15;
 - a plan to rebuild the runtime source from its build record.
 
+**Progress, 11-06:**
+- WebApp [#1225](https://github.com/ognjhunt/Blueprint-WebApp/pull/1225), merged 14:55Z. The website accepts `development_only_reference` and shows such a row as a development check, never ranked or chosen. Nothing emits the value until the Pipeline change below deploys.
+- In the Pipeline PR from this branch:
+  - the selection marks scored G1 rows `development_only_reference`;
+  - planning checks G1 against its own GPU lane;
+  - the G1 runbook and screening docstrings say $30;
+  - `docs/G1_WEBSITE_ENABLEMENT_PLAN.md` holds the plan: restore or rebuild the runtime source, automatic registration, money, a spawn check, and navigation.
+  - It ships with the first attested deploy after the owner's Bandit review.
+
 ## Operating notes (2026-11-02)
 
 - A second operator (the cloud session) uses the shared `cloud-scene-runs` door token. It deployed `b631b23fa` at 14:05:57Z and `ed6d0befb` at 15:18Z. This session makes no Pipeline deploys while it drives capture-447; merged fixes ship with the next deploy. At 15:32Z no paid launch lock was held.
