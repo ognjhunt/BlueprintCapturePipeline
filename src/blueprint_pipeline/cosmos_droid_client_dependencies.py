@@ -8,6 +8,7 @@ import sys
 import zipfile
 
 from .cosmos_droid_dependencies import verified_dependency_manifest
+from .pinned_client_imports import activate_pinned_packages
 
 
 def activate_client_dependencies(runtime: Path | None = None) -> None:
@@ -46,11 +47,8 @@ def activate_client_dependencies(runtime: Path | None = None) -> None:
     if actual != expected_members:
         raise ValueError("cosmos_policy_client_installation_members_changed")
     sys.dont_write_bytecode = True
-    sys.path.insert(0, str(target))
-    for name in list(sys.modules):
-        if name.split(".")[0] in {"websockets", "msgpack", "openpi_client", "typing_extensions"}:
-            del sys.modules[name]
-    importlib.invalidate_caches()
+    # Isaac's Kit worker resolves its own older websockets ahead of sys.path.
+    activate_pinned_packages(target, ("websockets", "msgpack", "openpi_client", "typing_extensions"))
     websockets = importlib.import_module("websockets")
     if (websockets.__version__ != "16.0"
             or Path(websockets.__file__).resolve().parent != (target / "websockets").resolve()):
