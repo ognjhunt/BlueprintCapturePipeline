@@ -7,7 +7,7 @@ Status: **done** (verified, with evidence) · **in progress** · **owner** (wait
 on an owner decision or action) · **next deploy** (merged, ships with the next
 batched Pipeline deploy) · **not started**.
 
-Last updated: 2026-11-06 15:00Z (library-aisle run section). Earlier header as of 2026-11-03 14:49Z: Pipeline live: `333b1f74a` (11-03 14:29Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
+Last updated: 2026-11-06 22:40Z (library-aisle run and the 11-06 deploys). Pipeline live: `8dc96bee0` (22:32Z). Earlier header as of 2026-11-03 14:49Z: Pipeline live: `333b1f74a` (11-03 14:29Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
 
 ## Library-aisle navigation run (2026-11-06)
 
@@ -83,6 +83,31 @@ The next production job, driven by a cloud session: a navigation task, chosen as
   - The latest allowed expiry for an entry signed today is 2027-02-04.
   - Signed off by the owner at 16:05Z and applied in #3423.
 - **Parked deliveries (owner, 11-06: "yes retire the 7").** The 7 parked preparation deliveries are owner test captures from 10-28/29 whose status read cannot succeed since WebApp #1113. The door operation `retire-parked-delivery` retires them once it is deployed and the door is upgraded (`upgrade-door`). It is general: any delivery parked for a day can be retired, with the owner's approval on its record. Nothing is deleted, and a newer revision starts a new delivery.
+
+## Deploys on 2026-11-06 (library-aisle run)
+
+Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and the library-aisle session.
+
+- `a14db1c2c` (live about 17:18Z; receipt 17:19:40Z; G1 session). It carried #3423 and #3425. The library job was requeued at 17:27Z with `door selected-handoff --atlas-retry` (Atlas revision 4).
+  - It passed the planner review: two more reviews, $0.120 and $0.056.
+  - Then the World Labs source pose ($0.41).
+  - At 18:29Z it failed at the preserved-scene gap review, `atlas_source_gap_capture_identity_invalid`, before any gap purchase. The source pose had also been given the clean plate's 6 task-source frames, which no Atlas survey lists. #3428 fixes it.
+- **Owner, 20:52Z: "deploy today".** This is an off-window exception under D-08, to unblock the library job.
+- `dfd62ff59` (#3426 on top of #3428): **no attestation.** Its conftest change made main run the full suite. Shard 8 failed `test_pinned_client_imports.py::test_openwam_client_wins_over_a_host_importer_that_ignores_sys_path`, an order-dependent test: an earlier test in the shard had already imported `msgpack`. It is not from #3426. Fixed in #3430 (`9bf92f8`, test only, not yet deployed).
+- `8dc96bee0` (22:20:23Z request `20261106T222023Z-deploy-86417da7`, live 22:32:27Z, library-aisle session). main's CI attested it at 22:19Z; it ran only the wide impacted lane.
+  - Before the request: no paid-launch lock held, no activation hold, nothing launching, preparing or running, and no door request pending. The last deploy was `a14db1c` at 17:19Z.
+  - It carried:
+    - #3426: G1 automatic site registration with live consent; G1 copies deleted on withdrawal; the restore's target directory.
+    - #3427: G3, the object's centre within a tolerance; the parked-delivery door fixes.
+    - #3428: the gap review sees every frame the pose was given; navigation parts A1 and A2.
+    - #3429: the G1 whole-body spawn check.
+  - After it: `deployed.blockers: []`, `commit_proven: true`. The G1 session then upgrades the door and runs its G1 restore.
+- At 22:34Z the library job was requeued again (`--atlas-retry`, status digest `sha256:b8fa16e3…`, Atlas revision 5) within its existing grant.
+- **Job spend at 22:33Z, from the door's status read:**
+  - Atlas grant: $0.93 of $25, 8 of 32 requests. That is $0.52 of planner reviews, $0.41 of World Labs source pose, and $0.005 held.
+  - Clean plate: $0.39 held (SAM $0.26, Gemini $0.13).
+  - Intake capture inference: $1.06 known, in a ledger marked `incomplete` with one call of unknown cost.
+  - Known total: about $2.38, against the $115 ceiling.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
