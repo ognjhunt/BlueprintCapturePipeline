@@ -106,8 +106,6 @@ WORKER_UNITS=(
   blueprint-control-plane-release-lifecycle.timer
   blueprint-pubsub-handoff-listener.timer
   blueprint-task-evaluation-scene-progression.timer
-  blueprint-capture-reconstruction-dispatcher.path
-  blueprint-capture-reconstruction-dispatcher.timer
   blueprint-agent-stage-replay.timer
   blueprint-agent-stage-replay.path
   blueprint-completed-replay-cache-gc.timer
@@ -119,7 +117,6 @@ WORKER_UNITS=(
   blueprint-embodiment-preparation.path
   blueprint-embodiment-preparation.timer
   blueprint-task-evaluation-launch-reconciler.timer
-  blueprint-pipeline-control-plane.timer
   blueprint-agent-run-dispatcher.timer
   blueprint-existing-policy-canary-continuation.timer
   blueprint-gpu-spend-guard.timer
@@ -145,7 +142,6 @@ WORKER_UNITS=(
   blueprint-owner-approved-deletion-plan.service
   blueprint-pubsub-handoff-listener.service
   blueprint-task-evaluation-scene-progression.service
-  blueprint-capture-reconstruction-dispatcher.service
   blueprint-agent-stage-replay.service
   blueprint-completed-replay-cache-gc.service
   blueprint-scene-object-discovery.service
@@ -154,8 +150,6 @@ WORKER_UNITS=(
   blueprint-beta-policy-screening.service
   blueprint-embodiment-preparation.service
   blueprint-task-evaluation-launch-reconciler.service
-  blueprint-production-gpu-campaign-control-plane.service
-  blueprint-pipeline-control-plane.service
   blueprint-agent-run-dispatcher.service
   blueprint-existing-policy-canary-continuation.service
   blueprint-existing-policy-canary-watchdog.service
@@ -170,8 +164,6 @@ WORKER_UNITS=(
 UNITS_LEFT_RUNNING=(
   blueprint-pipeline-intake.service                # by design; queues never move, and a result-cache write mid-move shows up as drift or a stale copy
   blueprint-provider-billing-reconciler.service    # writes billing evidence under gpu_spend_guard only, which never moves
-  blueprint-production-gpu-worker-pool.service     # its only state is production-gpu-worker-pool.sqlite, which never moves
-  blueprint-production-gpu-worker-agent.service    # writes host, cache and warm evidence under /var/lib/blueprint/evidence, which never moves
 )
 
 usage() {

@@ -513,7 +513,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.service",
     "blueprint-control-plane-preflight.timer",
-    "blueprint-pipeline-control-plane.service",
     "blueprint-pipeline-intake.service",
     "blueprint-website-atlas-preview.service",
     "blueprint-website-atlas-preview.timer",

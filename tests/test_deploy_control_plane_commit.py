@@ -710,11 +710,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-intake\n",
         encoding="utf-8",
     )
-    control_plane_service = unit_dir / "blueprint-pipeline-control-plane.service"
-    control_plane_service.write_text(
-        "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-control-plane\n",
-        encoding="utf-8",
-    )
     preview_service = unit_dir / "blueprint-website-atlas-preview.service"
     preview_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-website-atlas-preview\n", encoding="utf-8")
     preview_timer = unit_dir / "blueprint-website-atlas-preview.timer"
@@ -806,7 +801,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         capacity_timer,
         preflight_service,
         preflight_timer,
-        control_plane_service,
         intake_service,
         preview_service,
         preview_timer,
@@ -914,7 +908,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.service",
         "blueprint-control-plane-preflight.timer",
-        "blueprint-pipeline-control-plane.service",
         "blueprint-pipeline-intake.service",
         "blueprint-website-atlas-preview.service",
         "blueprint-website-atlas-preview.timer",

@@ -9,7 +9,6 @@ TERRAFORM_MAIN = REPO_ROOT / "deploy" / "terraform" / "main.tf"
 TERRAFORM_TFVARS_EXAMPLE = REPO_ROOT / "deploy" / "terraform" / "terraform.tfvars.example"
 ROOT_DOCKERFILE = REPO_ROOT / "Dockerfile"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_live_pipeline_control_plane.sh"
-STAGING_INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_live_pipeline_staging.sh"
 PIPELINE_DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "deploy.sh"
 FULL_TEST_LANE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "full-test-lane.yml"
 CI_REQUIRED_CHECKS_DOC = REPO_ROOT / "docs" / "CI_REQUIRED_CHECKS.md"
@@ -93,26 +92,16 @@ def test_active_launch_docs_and_generated_commands_do_not_embed_laptop_paths():
 def test_production_systemd_units_set_fail_closed_runtime_posture():
     for unit in (
         "blueprint-pipeline-intake.service",
-        "blueprint-pipeline-control-plane.service",
         "blueprint-pubsub-handoff-listener.service",
-        "blueprint-capture-reconstruction-dispatcher.service",
     ):
         text = _read(unit)
 
         assert re.search(r"/Users/[^/]+/", text) is None
-        if unit in {
-            "blueprint-pipeline-control-plane.service",
-            "blueprint-pubsub-handoff-listener.service",
-        }:
+        if unit == "blueprint-pubsub-handoff-listener.service":
             # The credential EnvironmentFile overrides Environment= and names an
             # archived checkout in BLUEPRINT_PIPELINE_REPO, so the release is
             # located through a unit-owned key and exported to the children.
-            repo_key = (
-                "BLUEPRINT_PUBSUB_HANDOFF_REPO"
-                if unit == "blueprint-pubsub-handoff-listener.service"
-                else "BLUEPRINT_LIVE_CONTROL_PLANE_REPO"
-            )
-            assert f"{repo_key}=/opt/blueprint/task-evaluation-control-plane" in text
+            assert "BLUEPRINT_PUBSUB_HANDOFF_REPO=/opt/blueprint/task-evaluation-control-plane" in text
             assert (
                 "BLUEPRINT_PIPELINE_PYTHON="
                 "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
@@ -131,19 +120,12 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
             assert text.count('cd -P "$${BLUEPRINT_PUBSUB_HANDOFF_REPO}"') == 2
             assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
             assert text.count('export BLUEPRINT_PIPELINE_REPO="$${PWD}"') == 2
-        if unit == "blueprint-pipeline-control-plane.service":
-            assert "Environment=BLUEPRINT_PIPELINE_REPO=" not in text
-            assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
-            assert text.count('cd -P "$${BLUEPRINT_LIVE_CONTROL_PLANE_REPO}"') == 3
-            assert text.count('export BLUEPRINT_PIPELINE_REPO="$${PWD}"') == 3
         assert "BLUEPRINT_LAUNCH_PROOF_MODE=production" in text
         assert "PRIVACY_PIPELINE_ENABLED=true" in text
         assert "PRIVACY_FAIL_CLOSED=true" in text
         assert "PIPELINE_SYNC_REQUIRED=true" in text
         assert "RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true" in text
         assert "blueprint_pipeline.production_runtime_env_guard" in text
-        if unit == "blueprint-pipeline-control-plane.service":
-            assert "BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true" in text
 
 
 def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -> None:
@@ -398,7 +380,6 @@ HOST_MEMORY = {
     "blueprint-team-scene-packet.service": ("200", "4G", "5G", "1.9G"),
     "blueprint-task-evaluation-scene-progression.service": ("200", "4G", "5G", "3.2G"),
     "blueprint-control-plane-storage-gc.service": ("200", "2G", "3G", "722M"),
-    "blueprint-pipeline-control-plane.service": ("200", "2G", "3G", "569M"),
     "blueprint-task-evaluation-launch-preparation.service": ("200", "1G", "2G", "32M"),
     "blueprint-task-evaluation-configured-controls-progression.service": ("200", "1G", "2G", "149M"),
     "blueprint-website-atlas-provider-poll.service": ("200", "1G", "2G", "62M"),
@@ -442,15 +423,6 @@ HOST_MEMORY_KEPT = {
     "blueprint-operator-door-runner.service": ("-500", "256M"),
     "blueprint-operator-door-hold-sweep.service": ("-500", "256M"),
 }
-#: Units in deploy/systemd that this host's deploy does not install: GPU workers and their pool, the isolated
-#: staging intake, and the capture reconstruction queue.
-NOT_ON_THE_CONTROL_PLANE = (
-    "blueprint-production-gpu-campaign-control-plane.service",
-    "blueprint-production-gpu-worker-agent.service",
-    "blueprint-production-gpu-worker-pool.service",
-    "blueprint-pipeline-intake-staging.service",
-    "blueprint-capture-reconstruction-dispatcher.service",
-)
 
 
 def _directives(unit: str) -> dict[str, list[str]]:
@@ -479,7 +451,7 @@ def test_every_control_plane_unit_is_capped_below_the_host() -> None:
     services = {unit.name for unit in SYSTEMD_DIR.glob("*.service")}
     covered = set(HOST_MEMORY) | set(HOST_MEMORY_KEPT) | set(HOST_SAFETY_GUARD_UNITS)
     assert not set(HOST_MEMORY) & set(HOST_MEMORY_KEPT)
-    assert services == covered | set(NOT_ON_THE_CONTROL_PLANE)
+    assert services == covered
     assert _deployed_services() <= covered
     for unit, (adjust, high, maximum, peak) in HOST_MEMORY.items():
         values = _directives(unit)
@@ -503,41 +475,6 @@ def test_every_control_plane_unit_is_capped_below_the_host() -> None:
         assert values["MemoryMax"] == (["1G"] if unit in {"blueprint-operator-door.service",
                                                           "blueprint-existing-policy-canary-watchdog.service"}
                                        else ["8G"]), unit
-    for unit in NOT_ON_THE_CONTROL_PLANE:
-        assert not {"OOMScoreAdjust", "MemoryHigh"} & set(_directives(unit)), unit
-
-
-def test_isolated_staging_intake_has_separate_identity_state_and_installer() -> None:
-    service = _read("blueprint-pipeline-intake-staging.service")
-    env_example = _read("pipeline-intake-staging.env.example")
-    installer = STAGING_INSTALL_SCRIPT.read_text(encoding="utf-8")
-
-    assert "BlueprintCapturePipeline-staging" in service
-    assert "Environment=PORT=8766" in service
-    assert "ReadWritePaths=/var/lib/blueprint-staging" in service
-    assert "pipeline-intake-staging.env" in service
-    assert "git rev-parse HEAD" in service
-    assert "git status --porcelain" in service
-    assert "BLUEPRINT_SOURCE_COMMIT" in service
-    assert "blueprint_pipeline.production_runtime_env_guard" in service
-    assert "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION" not in service
-    assert "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER" not in service
-
-    assert "BLUEPRINT_SOURCE_COMMIT=" in env_example
-    assert "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN=" in env_example
-    assert "Do not reuse the production value" in env_example
-    assert "PORT=8766" in env_example
-    assert "/var/lib/blueprint-staging" in env_example
-    assert "/var/lib/blueprint/pipeline-control-plane" not in env_example
-    assert "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION" not in env_example
-
-    assert "HEAD must equal origin/main" in installer
-    assert "staging checkout must be clean" in installer
-    assert "safe.directory=${STAGING_REPO}" in installer
-    assert "blueprint-pipeline-intake-staging.service" in installer
-    assert "pipeline-intake-staging.env.example" in installer
-    assert "blueprint-pipeline-intake.service" not in installer
-    assert "blueprint-pubsub-handoff-listener" not in installer
 
 
 def test_pubsub_handoff_listener_has_repeated_deployed_runner():
@@ -580,32 +517,30 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
     assert "${HANDOFF_DIR}" in installer
 
 
-def test_capture_reconstruction_queue_retains_dispatch_without_retired_worker_requirement():
-    service = _read("blueprint-capture-reconstruction-dispatcher.service")
-    path = _read("blueprint-capture-reconstruction-dispatcher.path")
-    timer = _read("blueprint-capture-reconstruction-dispatcher.timer")
+def test_capture_reconstruction_dispatcher_stays_retired():
+    """The queue had no consumer after its dispatcher was retired (P-RT-01, H-03); nothing installs or feeds it."""
     env_example = _read("pipeline-control-plane.env.example")
     installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
 
-    assert "capture_reconstruction_launch_dispatcher drain" in service
-    assert "--execute" in service
-    assert "capture-reconstruction-queue/pending" in path
-    assert "Unit=blueprint-capture-reconstruction-dispatcher.service" in path
-    assert "Unit=blueprint-capture-reconstruction-dispatcher.service" in timer
-    assert "OnUnitInactiveSec=1min" in timer
+    for suffix in ("service", "path", "timer"):
+        assert not (SYSTEMD_DIR / f"blueprint-capture-reconstruction-dispatcher.{suffix}").exists()
+    assert "blueprint-capture-reconstruction-dispatcher" not in installer
+    assert "capture-reconstruction-queue" not in installer
     for name in (
         "BLUEPRINT_CAPTURE_RECONSTRUCTION_POLICY_ROOT",
         "BLUEPRINT_CAPTURE_RECONSTRUCTION_QUEUE_ROOT",
         "BLUEPRINT_CAPTURE_RECONSTRUCTION_STATE_ROOT",
         "BLUEPRINT_CAPTURE_RECONSTRUCTION_DERIVED_ROOT",
     ):
-        assert name in env_example
-    assert "blueprint-capture-reconstruction-dispatcher.service" in installer
-    assert "blueprint-capture-reconstruction-dispatcher.path" in installer
-    assert "blueprint-capture-reconstruction-dispatcher.timer" in installer
-    assert "capture-reconstruction-policies" in installer
-    assert "capture-reconstruction-queue/pending" in installer
-    assert "systemctl enable --now blueprint-capture-reconstruction-dispatcher.path" in installer
+        assert name not in env_example
+    listener = (REPO_ROOT / "src/blueprint_pipeline/pubsub_handoff_listener.py").read_text(encoding="utf-8")
+    assert "capture_reconstruction_launch_dispatcher" not in listener
+
+
+def test_installer_binds_the_exact_canonical_worker_wheel_and_hash_pinned_runtime():
+    env_example = _read("pipeline-control-plane.env.example")
+    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
     assert "build_canonical_3dgs_worker_wheel.sh" in installer
     worker_builder = (
         REPO_ROOT / "scripts" / "build_canonical_3dgs_worker_wheel.sh"
@@ -631,11 +566,10 @@ def test_capture_reconstruction_queue_retains_dispatch_without_retired_worker_re
 
 
 def test_control_plane_postcheck_pages_or_fails_blocked_manifests():
-    service = _read("blueprint-pipeline-control-plane.service")
+    """Kept for the host's installed copy of the retired loop until an operator removes it (P-RT-06)."""
     postcheck = _read("blueprint-control-plane-postchecks.sh")
     env_example = _read("pipeline-control-plane.env.example")
 
-    assert "deploy/systemd/blueprint-control-plane-postchecks.sh" in service
     assert "blueprint_pipeline.live_pipeline_proof_audit" in postcheck
     assert "blueprint_pipeline.live_pipeline_manifest_alert" in postcheck
     assert "BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true" in env_example

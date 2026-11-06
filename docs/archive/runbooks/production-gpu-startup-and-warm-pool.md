@@ -1,5 +1,11 @@
 # Production GPU startup and warm-pool runbook
 
+> **SUPERSEDED (2026-11-06):** the GCP warm pool was retired and never ran on
+> the production host. The units, env examples, campaign control plane and
+> image-contract module this runbook installs or runs were removed. Historical
+> reference only; current paid work goes through
+> `blueprint_pipeline.paid_resource_allocator` on Vast.
+
 This is the customer-serving architecture for the GR00T + OSCAR + Isaac lane.
 The older “allocate a generic Ubuntu VM, install the host runtime, pull the
 worker image, then warm everything” flow remains useful release-engineering

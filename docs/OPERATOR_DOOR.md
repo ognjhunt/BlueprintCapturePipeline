@@ -143,6 +143,9 @@ It never returns raw commands or `Environment`, and does not grant file access
 to `/etc/systemd`. This metadata alone does not prove the imported notifier:
 the naturally emitted alert audit owns its source identity and full payload.
 
+The legacy `blueprint-pipeline-control-plane` loop was retired on 2026-11-06
+(P-RT-06): the repository no longer deploys or installs it, and `notifier_binding`
+reads `unknown` once an operator removes the host's unit. Until then,
 `unit repair-notifier-binding blueprint-pipeline-control-plane.service` is a
 fixed migration of the legacy `95-blueprint-active-release.conf` postcheck
 invocation. Supply `--expected-postcheck-sha256` from fresh status and

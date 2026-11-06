@@ -302,7 +302,6 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         completed_ledger = _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'completed', 'updated_at': recovered_at, 'completed_at': recovered_at, 'output_commit_status': 'committed', 'output_commit_path': _listener.JOB_OUTPUT_COMMIT_FILENAME, 'attempt_history': [*previous_history, recovered_record]})
         return {'schema_version': 'v1', 'status': 'skipped_committed_output_recovered', 'queue_disposition': 'terminal_success', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'output_commit': recovered_commit, 'job_ledger': completed_ledger}
     control_plane_staging: dict[str, Any] | None = None
-    reconstruction_enqueue: dict[str, Any] | None = None
     failure_stage = 'stage_handoff_capture'
     try:
         with _listener._JobLeaseHeartbeat(capture_root=capture_root, owner=owner, token=token, lease_seconds=lease_seconds) as lease:
@@ -332,9 +331,6 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                 if control_plane_manifest_path is None:
                     raise _listener.PipelineError('Pub/Sub handoff control-plane staging requires a manifest path.')
                 control_plane_staging = _listener._stage_control_plane_input(handoff=handoff, capture_root=staged_capture_root, manifest_path=control_plane_manifest_path, work_dir=control_plane_work_dir, staged_inputs_path=control_plane_staged_inputs_path, overwrite=overwrite_control_plane_input)
-                failure_stage = 'reconstruction_launch_enqueue'
-                lease.checkpoint(failure_stage)
-                reconstruction_enqueue = _listener._enqueue_capture_reconstruction_if_configured(handoff=handoff, capture_root=staged_capture_root)
             failure_stage = 'run_e2e'
             lease.checkpoint(failure_stage)
             result = run_e2e(**run_kwargs) if run_e2e_enabled or website_capture else {'status': 'skipped', 'reason': 'run_e2e_disabled_after_control_plane_staging'}
@@ -418,7 +414,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             owner=owner, token=token, ledger_update=ledger_update)
     else:
         _listener._finish_job_lease(capture_root, owner=owner, token=token, update=ledger_update)
-    return {'schema_version': 'v1', 'status': 'processed' if terminal_success else 'retryable_blocked', 'queue_disposition': 'terminal_success' if terminal_success else 'retryable', 'blockers': result_blockers, 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'run_e2e': result, 'control_plane_staging': control_plane_staging, 'reconstruction_enqueue': reconstruction_enqueue, 'output_commit': output_commit}
+    return {'schema_version': 'v1', 'status': 'processed' if terminal_success else 'retryable_blocked', 'queue_disposition': 'terminal_success' if terminal_success else 'retryable', 'blockers': result_blockers, 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'run_e2e': result, 'control_plane_staging': control_plane_staging, 'output_commit': output_commit}
 
 
 def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider, max_messages, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, ack_deadline_seconds, max_delivery_attempts):

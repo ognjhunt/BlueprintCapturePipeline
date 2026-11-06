@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Retired with the legacy blueprint-pipeline-control-plane loop (P-RT-06). No
+# unit in this repository runs it. It stays only because the host's installed,
+# no-longer-deployed copy of that unit runs it from the active release until an
+# operator disables and removes the unit, and because the operator door's
+# notifier binding view and repair name it. Delete it with those.
 set -u
 
 repo="${BLUEPRINT_PIPELINE_REPO:-/opt/blueprint/BlueprintCapturePipeline}"

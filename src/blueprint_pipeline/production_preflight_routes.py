@@ -17,7 +17,6 @@ BETA_RIGID_ENTRIES = {
     "blueprint-pipeline-intake.service": "blueprint_pipeline.live_pipeline_intake_service",
     "blueprint-pubsub-handoff-listener.service": "blueprint_pipeline.task_evaluation_scene_retirement_supervisor",
     "blueprint-task-evaluation-scene-progression.service": "blueprint_pipeline.task_evaluation_scene_retirement_supervisor",
-    "blueprint-capture-reconstruction-dispatcher.service": "blueprint_pipeline.capture_reconstruction_launch_dispatcher",
     "blueprint-team-scene-packet.service": "blueprint_pipeline.team_scene_packet_worker",
     "blueprint-rigid-robot-free-probe-runner.service": "blueprint_pipeline.rigid_robot_free_probe_runner",
     "blueprint-beta-policy-screening.service": "blueprint_pipeline.beta_policy_screening_worker",
@@ -33,12 +32,6 @@ _PATHS = {
     ),
     "blueprint-task-evaluation-scene-progression.service": (
         ("", "/etc/blueprint/task-evaluation-scene-progression.json", "read"),
-    ),
-    "blueprint-capture-reconstruction-dispatcher.service": (
-        ("BLUEPRINT_CAPTURE_RECONSTRUCTION_QUEUE_ROOT", f"{ROOT}/capture-reconstruction-queue", "write"),
-        ("BLUEPRINT_CAPTURE_RECONSTRUCTION_STATE_ROOT", f"{ROOT}/capture-reconstruction-runs", "write"),
-        ("BLUEPRINT_CAPTURE_RECONSTRUCTION_DERIVED_ROOT", f"{ROOT}/capture-reconstruction-derived", "write"),
-        ("BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT", "/var/lib/blueprint/pubsub-handoffs", "read"),
     ),
     "blueprint-team-scene-packet.service": (
         ("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", f"{ROOT}/team-scene-packets", "write"),

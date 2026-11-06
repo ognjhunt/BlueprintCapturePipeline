@@ -487,11 +487,10 @@ def test_capture_scope_must_be_exactly_one_of_single_or_partition(tmp_path: Path
         executor.poll_once(client=client, capture_partition_root=tmp_path)
 
 
-def test_installed_dispatcher_and_control_plane_share_the_canonical_inbox() -> None:
+def test_installed_dispatcher_writes_the_canonical_inbox() -> None:
+    """The founder-stopped dispatcher stays installable; its inbox consumer, the legacy loop, is retired (P-RT-06)."""
     repo = Path(__file__).resolve().parents[1]
     dispatcher = (repo / "deploy/systemd/blueprint-agent-run-dispatcher.service").read_text()
-    control_plane = (repo / "deploy/systemd/blueprint-pipeline-control-plane.service").read_text()
-    timer = (repo / "deploy/systemd/blueprint-pipeline-control-plane.timer").read_text()
     env_example = (repo / "deploy/systemd/pipeline-control-plane.env.example").read_text()
     installer = (repo / "scripts/install_live_pipeline_control_plane.sh").read_text()
     assert "EnvironmentFile=/etc/blueprint/pipeline-control-plane.env" in dispatcher
@@ -499,14 +498,12 @@ def test_installed_dispatcher_and_control_plane_share_the_canonical_inbox() -> N
     assert '--inbox-dir "$${BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX}"' in dispatcher
     assert "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT" in dispatcher
     assert "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT=" in env_example
-    assert "blueprint_pipeline.live_pipeline_control_plane" in control_plane
-    assert "OnUnitActiveSec=5min" in timer
     assert (
         "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX=/var/lib/blueprint/pipeline-control-plane/robot-eval-job-requests"
         in env_example
     )
     assert "blueprint-agent-run-dispatcher.timer" in installer
-    assert "blueprint-pipeline-control-plane.timer" in installer
+    assert "blueprint-agent-run-dispatcher.service" in installer
 
 
 @pytest.mark.parametrize("partition", ["", "capture partition"])
