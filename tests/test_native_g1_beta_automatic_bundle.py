@@ -58,6 +58,18 @@ def test_public_beta_launcher_rebuilds_each_new_attempt_at_actual_current_commit
     assert reopened == [candidate["candidate_id"]] * 2
 
 
+def test_a_bundle_staged_before_a_deploy_is_never_reused_after_it(tmp_path, monkeypatch):
+    plan, candidate, reopened, builds = setup(tmp_path, monkeypatch)
+    root = tmp_path / "attempt"
+    prepared = launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=root)
+    monkeypatch.setattr(launch, "current_commit", lambda: "e" * 40)
+    with pytest.raises(ValueError, match="g1_beta_implementation_commit_changed"):
+        launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=root)
+    assert launch._read(root / "prepared.json") == prepared
+    assert not (root / "allocator_launch_intent.json").exists()
+    assert builds == [root / "bundle"] and reopened == [candidate["candidate_id"]]
+
+
 def test_old_release_plan_never_rebuilds_or_relabels_a_current_bundle(tmp_path, monkeypatch):
     plan, candidate, reopened, builds = setup(tmp_path, monkeypatch)
     candidate["execution_spec"]["implementation_commit"] = "0" * 40

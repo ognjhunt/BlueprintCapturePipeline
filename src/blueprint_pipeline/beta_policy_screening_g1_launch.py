@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_beta_session import build_session_authority, PROBE_KIND
@@ -30,20 +29,20 @@ def reopen_candidate(plan, candidate):
 
 def prepare_candidate(*, plan, candidate, attempt_dir):
     from .beta_policy_screening_launch import (_identity, _check_quote, _read, _stage, _write,
-        _record, _validate_prepared)
+        _record, _validate_prepared, current_commit)
     from .native_g1_beta_bundle import build_bundle, load_verified_bundle
     root = Path(attempt_dir).resolve()
     identity = _identity(plan, candidate)
     _check_quote(plan, candidate)
+    execution = candidate["execution_spec"]
+    # Before reuse too: a bundle staged while a deploy built must not launch after the switch.
+    commit = current_commit()
+    if commit != execution["implementation_commit"]:
+        raise ValueError("g1_beta_implementation_commit_changed")
     if (root / "prepared.json").exists():
         prepared = _read(root / "prepared.json")
         _validate_prepared(plan, candidate, root, prepared)
         return prepared
-    execution = candidate["execution_spec"]
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2],
-        capture_output=True, text=True, check=True).stdout.strip()
-    if commit != execution["implementation_commit"]:
-        raise ValueError("g1_beta_implementation_commit_changed")
     native = reopen_candidate(plan, candidate)
     authority = build_session_authority(plan=plan, candidate=candidate, spec=native)
     authority_path = _stage(root / "runtime_inputs/session_authority.json", authority)
