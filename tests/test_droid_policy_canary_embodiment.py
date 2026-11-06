@@ -73,7 +73,15 @@ def test_pick_place_instruction_uses_configured_relation_and_labels() -> None:
             "instruction_subject_label": "open book",
             "visible_target_label": "blue document tray",
         }
-    ) == "Pick up and place the open book into the blue document tray."
+    ) == "Pick up the open book and put it inside the blue document tray."
+    assert concrete_droid_task_instruction(
+        {
+            "manipulation_strategy": "pick_and_place",
+            "destination_relation": "on",
+            "instruction_subject_label": "wooden tray on the dining table",
+            "visible_target_label": "wooden dining table",
+        }
+    ) == "Pick up the wooden tray and place it on the green marked area on the wooden dining table."
 
 
 def test_articulated_instruction_names_the_part_and_opening_action() -> None:

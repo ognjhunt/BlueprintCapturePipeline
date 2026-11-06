@@ -400,7 +400,12 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     if completion_admission is not None:
         base['content_provenance'] = {'basis': 'captured_scene_with_bounded_generated_estimates',
             'completion_admission_digest': completion_admission['digest'], 'generated_geometry_is_estimate': True}
+    # Where the camera walked, in the levelled scene in metres (Y up), in video order: the
+    # filmed route a locomotion task's start and goal can be read from (``website_locomotion_task``).
+    walked = sorted((key, row) for key, row in _cameras(background_pose).items() if str(key).startswith("decoded-"))
+    camera_path = [((lift[:3, :3] @ row[:3, 3] + lift[:3, 3]) * runtime_mpu).tolist() for _, row in walked]
     return {"status": "ready", "base_scene": base, "source_geometry": geometry,
+            "camera_path_levelled_m": camera_path,
             "source_pose_digest": source["digest"], "background_pose_digest": background_pose["digest"],
             **({"subject_origin": result["subject_origin"],
                 "scene_content": ('captured_scene_with_bounded_completion' if completion_admission is not None

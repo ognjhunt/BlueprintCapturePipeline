@@ -1339,7 +1339,8 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
         item.update(status="launching", blockers=[])
     _update(root, plan["campaign_id"], candidate["candidate_id"], launching)
     try:
-        observed = executor.launch_candidate(plan=plan, candidate=candidate, attempt_dir=attempt_dir, prepared=prepared)
+        observed = executor.launch_candidate(plan=plan, candidate=candidate, attempt_dir=attempt_dir,
+                                             prepared=prepared, queue_root=root)
     except Exception:  # noqa: BLE001 - a failed response does not prove a failed allocation
         observed = {"status": "reconciliation_required", "blockers": ["beta_screening_launch_response_unknown"]}
     _observe(root, plan, candidate, observed)

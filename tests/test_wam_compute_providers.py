@@ -734,3 +734,39 @@ def test_run_wam_compute_job_blocks_when_expected_mp4_missing(
     assert result.status == "blocked"
     assert result.output_availability == "zip_present_but_expected_generated_videos_missing"
     assert "zip_present_but_expected_generated_videos_missing" in result.blockers
+
+
+def test_deepinfra_result_urls_are_https_on_deepinfra_hosts_only(monkeypatch) -> None:
+    # The URL comes from DeepInfra's JSON response (Bandit triage re-review, 2026-11-06).
+    from blueprint_pipeline import wam_compute_providers as wam
+
+    assert wam._resolve_deepinfra_download_url("https://storage.deepinfra.com/a.mp4") == \
+        "https://storage.deepinfra.com/a.mp4"
+    assert wam._resolve_deepinfra_download_url("/v1/files/a.mp4").startswith("https://")
+    for url in ("file:///etc/passwd", "http://storage.deepinfra.com/a.mp4", "https://example.com/a.mp4",
+                "https://deepinfra.com.example.net/a.mp4", "ftp://storage.deepinfra.com/a.mp4"):
+        with pytest.raises(ValueError, match="deepinfra_download_url_not_allowed"):
+            wam._resolve_deepinfra_download_url(url)
+
+
+def test_deepinfra_download_stops_at_its_size_cap(tmp_path, monkeypatch) -> None:
+    from io import BytesIO
+
+    from blueprint_pipeline import wam_compute_providers as wam
+
+    monkeypatch.setattr(wam, "DEEPINFRA_DOWNLOAD_MAX_BYTES", 3 * 1024 * 1024)
+
+    class Body(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(wam.urllib.request, "urlopen", lambda url, timeout: Body(b"x" * (4 * 1024 * 1024)))
+    target = tmp_path / "rollout.mp4"
+    with pytest.raises(ValueError, match="deepinfra_download_too_large"):
+        wam._deepinfra_download_file(url="https://storage.deepinfra.com/a.mp4", target_path=target, timeout_seconds=1)
+    assert not target.exists()
+    with pytest.raises(ValueError, match="deepinfra_download_url_not_allowed"):
+        wam._deepinfra_download_file(url="file:///etc/passwd", target_path=target, timeout_seconds=1)

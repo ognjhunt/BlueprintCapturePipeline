@@ -31,6 +31,34 @@ The next production job, driven by a cloud session: a navigation task, chosen as
 - **Intake.** Public site, ops email, 14:44–14:51:48Z. Request `capture-5b067498-c8b3-4549-9da9-ded4c391db1f`, capture `walkthrough-capture-5b067498…`, state `processing_ready`, eligibility `unscreened`. The Atlas preview was queued at 14:44:36Z.
   - The site country was entered as "United States". The clip's real filming location is unknown; the form requires a country.
 - **Expected stop on today's code.** From reading the code, not from a run: the job buys the Atlas planner review, then holds with `website_task_operation_coverage_unresolved` before any World Labs purchase (`website_early_task_hold.hold_after_review`). The hold keeps the job, and a later deploy reopens it without buying the review again.
+- **What the live job did on `9dd4e0dc4`** (JSON and journals read through the door). It stopped twice, and neither stop came from the task kind:
+  - **Atlas preview, failed.** One worker tick ran 14:45:29Z to about 15:50Z, and the job records its start time.
+    - Review 1 cost $0.079 and proposed frames outside the 29-frame survey.
+    - The worker then decoded a 153-frame extended survey as 4K PNGs: about 11 MB and about 30 s per frame, with host load 8.4 on 4 CPUs.
+    - Review 2 cost $0.141. Review 3 cost $0.120 and selected 7 frames, then cited an eighth (`decoded-000000300`) as evidence.
+    - `proposal_review` failed the job with `atlas_automation_frames_not_selected`. Planner spend: $0.339, settled.
+    - Every review read the job correctly: `subject_origin: no_manipulated_subject`, one `navigation` step.
+  - **Clean plate (qualification lane), stopped for reconciliation.**
+    - Gemini's removal plan found 4 targets (left, right and end shelves, and the floor), with 0 to remove and 0 people.
+    - Hosted SAM 3.1 runs one request per target:
+      - 15:01Z: target 0 answered.
+      - 15:06:57Z: its 1.8 MB response timed out in the mask parser (fixed 300 s).
+      - 15:29:14Z: target 1 named the first pass's video upload, and the provider answered HTTP 404.
+      - 15:42:20Z: `meta_sam_submission_requires_reconciliation`.
+  - The host copy's sha256 equals the source (`3f1c177f…`).
+- **Fixes, all general.** Each case in this job is the test, not a special case.
+  - #3419 (merged 15:46Z): one predicate scorer, the task compiler, and behaviour measurements.
+  - WebApp #1226 (merged): no task-kind gate on spend or team evaluation, and an expired owner row raises no ceiling.
+  - #3423 (open):
+    - route by requirement, and compile a locomotion job from its preserved scene;
+    - a hold that names each missing piece (`website_task_runnable_policy_missing`);
+    - G2 prompt;
+    - G7 ceiling re-read before every paid launch;
+    - G4 base height;
+    - re-dispatch a SAM prompt the provider refused, and scale the parser's time limit;
+    - a review-cited frame becomes an input.
+  - None of this is live until the Bandit sign-off. After a deploy, the job resumes through `door selected-handoff --atlas-retry`, an operator requeue within its existing allowance.
+- **Second Bandit packet.** #3422, from another session, lists the 36 expired entries without assessing them. This session's packet assesses all 96. They agree on the gate result.
 - **Bandit triage (owner).** Review packet: [`2026-11-06-bandit-triage-review.md`](2026-11-06-bandit-triage-review.md).
   - Verdicts across the 96 entries: 77 keep, 18 tighten, 1 fix now (`wam_compute_providers.py` `_deepinfra_download_file`), 0 orphaned, 0 new MEDIUM or HIGH.
   - The latest allowed expiry for an entry signed today is 2027-02-04.

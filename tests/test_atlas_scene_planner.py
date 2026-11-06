@@ -984,3 +984,32 @@ def test_dense_review_source_change_refuses_before_any_paid_reservation(tmp_path
     with pytest.raises(ValueError,match="source_changed"):
         planner.review_survey(survey_path=path,task_context={"description":"Read the room"},configuration={"policy":policy},
             output_root=tmp_path/"plans")
+
+
+def test_a_view_the_review_cites_as_evidence_becomes_an_input_unless_it_is_unsafe(tmp_path):
+    # capture-5b067498 (2026-11-06): the third review cited one surveyed frame for a scale
+    # reference that it had not listed, and the whole job failed on it.
+    _, survey, proposal, policy = fixture(tmp_path)
+    proposal["subject_origin"] = "no_manipulated_subject"
+    proposal["coverage_requirements"][0]["role"] = "task_region"
+    proposal["coverage_requirements"][0]["required_frame_ids"] = ["1"]
+    proposal["coverage_requirements"][1]["required_frame_ids"] = ["1"]
+    proposal["anchor_frame_id"] = "1"
+    proposal["unsafe_frame_ids"] = []
+    proposal["automation"] = {"scale_references": [], "objects": [
+        {"target_id": "floor", "label": "floor", "segmentation_prompt": "floor", "disposition": "keep",
+         "regions": [{"frame_id": "0", "box_xywh_normalized": [0, 0, 1, 1]}]}],
+        "removal_instruction": "", "mask_margin_fraction": .01}
+    result = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    assert result["cited_frames_added_to_coverage"] == ["0"]
+    assert {"role": "surrounding_scene", "label": "Views the review cites as evidence",
+            "required_frame_ids": ["0"]} in result["coverage_requirements"]
+    # An unsafe frame is never an input, cited or not.
+    proposal["unsafe_frame_ids"] = ["0"]
+    with pytest.raises(ValueError, match="atlas_automation_frames_not_selected"):
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    # Nor is a frame outside the static intervals.
+    proposal["unsafe_frame_ids"] = []
+    proposal["static_intervals_seconds"] = [[0.5, 1.5]]
+    with pytest.raises(ValueError, match="atlas_automation_frames_not_selected"):
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)

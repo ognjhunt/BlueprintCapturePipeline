@@ -20,6 +20,10 @@ class TaskProfile:
     success_predicate: str
     aliases: tuple[str, ...]
     required_inputs: tuple[str, ...]
+    #: What a robot must be able to do (``task_spec_compiler.requirements``); robot
+    #: and policy choice read this, never the profile id.
+    requires_locomotion: bool = False
+    requires_manipulation: bool = True
 
 
 # First supported profiles. Each names the native adapter that compiles it and
@@ -54,6 +58,21 @@ TASK_PROFILES: tuple[TaskProfile, ...] = (
         required_inputs=("task_success_contract", "native_scene_assets", "native_metric_bindings",
                          "reset_contract", "native_runtime_contract"),
     ) for family, aliases in FAMILY_ALIASES.items()),
+    # Moving the robot itself to a goal region, clear of the scene: the scene is kept as
+    # filmed (no manipulated subject) and success is the compiled spec's predicates
+    # (``task_spec_compiler``: the root reaches and holds the goal, no obstacle contact).
+    TaskProfile(
+        profile_id="goal_region_navigation",
+        native_task_kind="goal_region_navigation",
+        catalog_task_family_id="goal_region_navigation",
+        runtime_adapter="task_spec_compiler",
+        success_predicate="compiled_task_predicates",
+        aliases=("goal_region_navigation", "navigation", "navigate", "point_to_point_navigation",
+                 "mobile_navigation", "locomotion", "walk_to_goal"),
+        required_inputs=("scene_collider", "start_and_goal_anchor_or_filmed_path"),
+        requires_locomotion=True,
+        requires_manipulation=False,
+    ),
 )
 
 

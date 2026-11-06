@@ -127,6 +127,11 @@ def test_named_geometry_contact_and_joint_interval() -> None:
     assert report["outcome"] == "success"  # 0.5 N on the shelf is below its threshold; the floor is not named
     trace[2]["robot_contact_peak_force_n_by_geometry"]["shelf_left"] = 4.0
     assert score_episode(predicates=predicates, samples=trace)["failed_predicates"] == ["shelf_clear"]
+    # A reported touch whose force is missing or not finite is unscored, never read as zero force.
+    for missing in ({"floor": 9.0}, {"shelf_left": float("nan")}):
+        trace[2]["robot_contact_peak_force_n_by_geometry"] = missing
+        report = score_episode(predicates=predicates, samples=trace)
+        assert report["outcome"] is None and "shelf_clear" not in report["failed_predicates"]
 
 
 def test_gripper_behaviour_counts_real_closes_and_distance_to_the_subject() -> None:
@@ -189,18 +194,25 @@ def test_rigid_reports_carry_measured_gripper_behaviour() -> None:
     assert report["measurements"]["gripper_closed"] is False  # the settle-window reading, unchanged
 
 
-def test_specs_with_compiled_predicates_dispatch_to_the_predicate_scorer() -> None:
+def test_a_compiled_spec_dispatches_straight_to_the_predicate_scorer() -> None:
+    # What the compiler writes is what the dispatcher scores: no kind, no renamed field.
     from blueprint_pipeline.adp_task_scoring import TaskNeutralScoringError, score_task_episode_from_spec
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_spec_compiler import compile_task_spec
+    from tests.test_task_spec_compiler import _aisle_brief, _aisle_scene
 
-    predicates = seal_predicates([
-        {"id": "goal", "kind": "region_reached", "subject": {"kind": "robot_root"},
-         "region": {"shape": "disc", "center_world_m": [1.0, 0.0, 0.0], "radius_m": 0.3},
-         "hold_samples": 2, "when": "terminal"}])
-    trace = _root_trace([(0.0, 0.0, 0.8), (1.0, 0.0, 0.8), (1.0, 0.1, 0.8)])
-    report = score_task_episode_from_spec(task_spec={"task_kind": "goal_region_navigation",
-                                                     "success_predicates": predicates}, samples=trace)
+    spec = compile_task_spec(brief=_aisle_brief(), scene=_aisle_scene("validated"),
+                             task_requirements={"locomote": True, "manipulate": False})
+    assert "task_kind" not in spec
+    xs = [0.0, 0.5, 1.0, 1.5, *([2.0] * 10)]
+    trace = [{"step_index": index, "robot_root_position_world_m": [x, -0.05, 0.78],
+              "robot_scene_contact_peak_force_n": 0.0} for index, x in enumerate(xs)]
+    report = score_task_episode_from_spec(task_spec=spec, samples=trace)
     assert report["schema_version"] == "blueprint.task_predicate_score.v1"
     assert report["task_succeeded"] is True
+    with pytest.raises(TaskNeutralScoringError, match="task_spec_digest_invalid"):
+        score_task_episode_from_spec(task_spec={**spec, "sentence": "another task"}, samples=trace)
+    tampered = {**spec, "success": {**spec["success"], "predicates_digest": "x"}}
+    tampered["spec_digest"] = canonical_digest(tampered, digest_field="spec_digest")
     with pytest.raises(TaskNeutralScoringError, match="task_predicates_digest_invalid"):
-        score_task_episode_from_spec(task_spec={"success_predicates": {**predicates, "predicates_digest": "x"}},
-                                     samples=trace)
+        score_task_episode_from_spec(task_spec=tampered, samples=trace)

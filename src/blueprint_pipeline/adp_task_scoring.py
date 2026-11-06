@@ -1316,17 +1316,24 @@ def score_task_episode_from_spec(
 ) -> dict[str, Any]:
     """Dispatch a frozen task spec without scene- or object-name conditionals.
 
-    A spec that carries compiled success predicates (``task_spec_compiler``) is scored
-    by the one predicate scorer, whatever its kind; the kinds below are the specs
-    compiled before predicates existed.
+    A spec compiled from a brief (``task_spec_compiler``, any task, no kind) is scored
+    by the one predicate scorer from its sealed ``success`` predicates; the kinds below
+    are the specs compiled before predicates existed.
     """
 
-    predicates = task_spec.get("success_predicates")
-    if isinstance(predicates, Mapping):
-        from .task_predicates import TaskPredicateError, score_episode
+    try:  # flat provider-bundle layout
+        from task_predicates import COMPILED_TASK_SPEC_SCHEMA, TaskPredicateError, score_episode
+    except ModuleNotFoundError:  # repository package
+        from .task_predicates import COMPILED_TASK_SPEC_SCHEMA, TaskPredicateError, score_episode
+
+    if task_spec.get("schema_version") == COMPILED_TASK_SPEC_SCHEMA:
+        if task_spec.get("spec_digest") != canonical_digest(task_spec, digest_field="spec_digest"):
+            raise TaskNeutralScoringError(["task_spec_digest_invalid"])
+        predicates = task_spec.get("success")
+        if not isinstance(predicates, Mapping):
+            raise TaskNeutralScoringError(["task_spec_success_missing"])
         try:
-            report = score_episode(predicates=predicates, samples=samples,
-                                   behaviour_context=task_spec.get("behaviour_context"))
+            report = score_episode(predicates=predicates, samples=samples)
         except TaskPredicateError as exc:
             raise TaskNeutralScoringError([str(exc)]) from exc
         return {**report, "task_succeeded": report["outcome"] == "success"}

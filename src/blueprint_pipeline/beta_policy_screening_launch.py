@@ -315,8 +315,11 @@ def preflight_candidate_capacity(*, plan: Mapping[str, Any], candidate: Mapping[
 
 
 def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,
-                     prepared: Mapping[str, Any]) -> dict[str, Any]:
-    """Consume a durable local launch intent exactly once before spawning."""
+                     prepared: Mapping[str, Any], queue_root: str | Path | None = None) -> dict[str, Any]:
+    """Consume a durable local launch intent exactly once before spawning.
+
+    ``queue_root`` is the queue that owns the attempt: the job-ceiling check counts its ledger.
+    """
     from .team_candidate_quick10_launch import _process_start_ticks
     from .allocator_invocation import retain_invocation, start_invocation
     root = Path(attempt_dir).resolve()
@@ -351,6 +354,9 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
                 validate_team_candidate_catalog(plan, candidate, native_spec, _read(_bound_path(plan["scene_inputs"])))
         from .beta_policy_screening_worker import require_current_source
         current_source = require_current_source(plan["source"], site_id=plan["site_id"])
+        # Money: the job's ceiling in force now, not the one the plan was sized under.
+        from .beta_policy_screening_job_ceiling import require_current_job_ceiling
+        require_current_job_ceiling(plan, context=current_source, queue_root=queue_root)
         authority = _read(_bound_path(prepared["authority"]))
         bundle = _read(_bound_path(prepared["bundle_receipt"]))
         invocation_binding = {

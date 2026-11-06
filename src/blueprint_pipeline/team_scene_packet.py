@@ -989,6 +989,14 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         start = [float(v) for v in task_spec["start_pose_world"][:3]]
         target = [float(v) for v in task_spec["target_position_world_m"]]
         support_top = float(adapter["source_documents"]["documents"]["support_plane"]["top_z_m"])
+        # The arm's base stands on the surface the object was measured resting on (the scene's own
+        # collider, ``_seated_rigid_adapter``), not on the registered plane above or below it
+        # (capture-447: the base sat at 0.8166 m, the tray rested at 0.8039 m).
+        measured_top = (((definition["task_spec"].get("interaction_affordance") or {}).get("support_alignment")
+                         or {}).get("start_support") or {}).get("collider_top_z_m")
+        if (not isinstance(measured_top, bool) and isinstance(measured_top, (int, float))
+                and math.isfinite(measured_top)):
+            support_top = float(measured_top)
         subject = _read(documents[SOURCE_OBJECT_CONTRACT_PATH], "team_scene_subject_bounds_invalid")
         subject_bounds = object_bounds = (subject.get("aabb_min_xyz_m"), subject.get("aabb_max_xyz_m"))
         destination_support = adapter["source_documents"]["documents"]["definition"].get("destination_support_plane")

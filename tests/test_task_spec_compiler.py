@@ -49,10 +49,10 @@ def test_navigation_brief_compiles_to_locomotion_predicates_with_flagged_guesses
     assert spec["flags"] == ["goal_from_filmed_path", "goal_tolerance_widened_for_unvalidated_scale",
                              "metric_scale_unverified", "start_from_filmed_path"]
     marker = spec["markers"][0]
-    assert marker["radius_m"] == goal["region"]["radius_m"] and marker["colour"] == "yellow"
+    assert marker["radius_m"] == goal["region"]["radius_m"] and marker["colour"] == "green"
     assert marker["sized_from"] == "goal_tolerance" and marker["policy_visible"] is True
     assert spec["instruction"]["canonical"] == (
-        "Move to the yellow marked area before the end bookshelf without touching the shelves on either side.")
+        "Move to the green marked area before the end bookshelf without touching the shelves on either side.")
     assert spec["metric_scale"]["evidence"][0]["source"] == "atlas_scale_review"
 
 
