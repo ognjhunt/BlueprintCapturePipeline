@@ -47,7 +47,8 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
 # The automatic G1 site registration rows (native_g1_site_registration) are named so a deploy provisions
-# their root; the shared G1 inputs it reads (config/native_g1_shared_inputs.v1.json) stay readable.
+# their root. The shared G1 inputs config/native_g1_shared_inputs.v1.json pins are only read, which
+# ProtectSystem=strict allows.
 ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/beta-policy-screening /mnt/blueprint-work/beta-policy-screening-work /var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations
 TasksMax=512
 # Host memory (8.3 GB, no swap): its allocator child's bundle reads at a full
