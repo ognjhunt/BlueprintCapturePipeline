@@ -161,6 +161,39 @@ def test_feet_standing_on_the_floor_within_tolerance_are_clear(tmp_path):
     assert feet["max_sink_m"] == pytest.approx(0.01, abs=0.002)
     assert all(row["gap_m"] == pytest.approx(-0.01, abs=1e-6) for row in feet["soles"].values())
     assert report["stance_selection"]["fallback_used"] is False
+    assert spawn.unsupported_feet(report) == [] and not any("foot_unsupported" in n for n in report["notices"])
+
+
+@pytest.mark.parametrize("lift,floor_found", [(0.05, True), (0.15, False)])
+def test_a_foot_with_no_floor_under_it_is_clear_but_flagged(tmp_path, lift, floor_found):
+    # Soles above the floor: no overlap, but the robot drops (5 cm) or finds no floor within reach (15 cm).
+    report = measure(tmp_path, sole_z=-PELVIS_Z + lift)
+    assert report["status"] == "clear" and report["reason"] is None
+    soles = report["foot_support"]["soles"]
+    assert all((row["floor_z_m"] is not None) is floor_found for row in soles.values())
+    assert spawn.unsupported_feet(report) == ["left_ankle_roll_link", "right_ankle_roll_link"]
+    assert [n for n in report["notices"] if "foot_unsupported" in n] == [
+        "g1_spawn_foot_unsupported:left_ankle_roll_link", "g1_spawn_foot_unsupported:right_ankle_roll_link"]
+
+
+@pytest.mark.parametrize("soles,flags", [
+    ({"left_ankle_roll_link": {"floor_z_m": 0.0459, "gap_m": 0.0014},
+      "right_ankle_roll_link": {"floor_z_m": 0.0459, "gap_m": 0.0014}}, []),
+    # Capture-447's first real reading (2026-11-06): no upward surface within 10 cm under the right sole.
+    ({"left_ankle_roll_link": {"floor_z_m": 0.045931, "gap_m": 0.001437},
+      "right_ankle_roll_link": {"floor_z_m": None, "gap_m": None}}, ["g1_spawn_foot_unsupported"]),
+    ({"left_ankle_roll_link": {"floor_z_m": 0.0, "gap_m": 0.021}}, ["g1_spawn_foot_unsupported"]),
+    (None, []),  # A report with no sole readings says nothing about support.
+])
+def test_planning_flags_an_unsupported_foot_from_the_reports_soles(tmp_path, soles, flags):
+    digest = "sha256:" + "a" * 64
+    value = {"status": "clear", "scene_plan_digest": digest}
+    if soles is not None:
+        value["foot_support"] = {"soles": soles}
+    (tmp_path / spawn.FILENAME).write_text(json.dumps(spawn.seal(value)))
+    assert spawn.spawn_setup_flags(tmp_path, digest) == flags
+    assert spawn.spawn_clearance_status(tmp_path, digest) == "clear"  # A flag, never a gate.
+    assert spawn.spawn_setup_flags(tmp_path, "sha256:" + "b" * 64) == ["g1_spawn_clearance_unmeasured"]
 
 
 def test_feet_sunk_past_the_tolerance_are_overlap_and_lift(tmp_path):
