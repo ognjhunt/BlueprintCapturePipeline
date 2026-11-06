@@ -32,7 +32,7 @@ Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door
 - After `3aa16eda8` went live, cosmos3 launched at 21:42Z on a bundle it had staged at 21:34Z, on `64e25c2cd`, while the deploy was building. Its plan predates revision 1, so its result does not count; it failed to load the policy ($0.60). #3408 closes that gap. The revision-1 re-plan (`screening-acf7fbcd…`, 22:16Z) ran on the fixed gripper:
   - pi05: 9 scored, 0 succeeded, one void episode (joint command out of bounds); $1.39.
   - groot: 10 scored, 0 succeeded; $1.51.
-  - The run data shows the pad readback working: 0.085 m open, 0 m closed. In 18 of 19 episodes the tray never moved and had no robot contact; the gripper closes about 0.2 m from the tray and above it. Every run carries `droid_wrist_task_pixels_below_threshold`.
+  - The run data shows the pad readback working: 0.085 m open, 0 m closed. In 18 of 19 episodes the tray never moved and had no robot contact; the gripper closes over or near the tray's rim, typically about 7 cm above it (measured 11-06, below). Every run carries `droid_wrist_task_pixels_below_threshold`.
   - cosmos3 failed in provisioning, before any policy ran: the cuDNN wheel download hit the total time limit on its machine ($0.54). As a harness failure, it held molmoact2 and the three other pi0 variants (`beta_screening_held_after_launch_failure`).
 
   Site spend: $20.22 of $30.
@@ -49,14 +49,36 @@ Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door
 - `9dd4e0dc4` again (06 07:14Z request, live 07:28:48Z, this session). main's head still has no attestation (Bandit triage, above). Nothing was preparing, launching or running at any site, and the last deploy was this session's 304e8aa at 04:18Z. The changed commit re-plans the held candidates and restores #3408.
 - The re-plan (`screening-f3d50fae…`, 07:35:38Z) launched molmoact2's harness retry first, at 07:37:54Z ($4 reserved; $27.57 of $30 committed). The two pi0 variants wait for its settlement, and pi0_fast is waitlisted on budget. The run should settle around 10:20Z, after the Atlas row expires at 10:16Z. The owner does not want that row extended. Nothing in the coordinator checks it: the pi0 quotes stay valid until 11-07 07:34Z. **owner**: if a candidate can still launch at 10:14Z, this session holds `blueprint-beta-policy-screening.timer` through the door (at most 24 h). That pauses the trigger, not the running job, so no paid run starts after the cutoff. Releasing the hold settles molmoact2 and lets the next pi0 launch.
 - At 10:14Z the door refused that hold with `hold_unit_profile_refused`: this door profile holds only `blueprint-agent-run-dispatcher.timer`. Nothing else was tried. The owner was notified at 10:14Z.
-- molmoact2's retry completed at 10:17Z: 10 scored, 0 succeeded ($1.69; GPU torn down 09:44Z). In all ten episodes the tray never moved and had no robot contact, and the gripper never closed. Flags: `droid_wrist_task_pixels_below_threshold`, `policy_canary_task_semantic_visibility_failed`, and composition/occlusion review on the external and overview cameras. Site spend: $25.26 of $30.
+- molmoact2's retry completed at 10:17Z: 10 scored, 0 succeeded ($1.69; GPU torn down 09:44Z). In all ten episodes the tray never moved and had no robot contact. The gripper stayed open in seven; in the other three it closed 4–10 cm above the tray's rim. Flags: `droid_wrist_task_pixels_below_threshold`, `policy_canary_task_semantic_visibility_failed`, and composition/occlusion review on the external and overview cameras. Site spend: $25.26 of $30.
 - pi0_droid_jointpos_100k_polaris launched at 10:23:01Z ($4 cap, attempt `screen-f7511ceb…`), seven minutes after the Atlas row expired. **owner**: it started after the cutoff the owner set, and this session could not stop it. It is the last run the $30 site limit admits: after it settles, $4 more would exceed $30, so pi0_droid_jointpos_polaris and pi0_fast_droid_jointpos_polaris stay waitlisted.
-- That first attempt found no GPU offer and closed at 10:32Z with no machine ($0). The second (`screen-ace7e697…`) launched at 10:39Z and ran all ten episodes on one Vast GPU, torn down at 12:36Z. It settled at 12:58Z: 10 scored, 0 succeeded ($1.37). In all ten episodes the tray never moved and had no robot contact, and the gripper never closed. The flags are molmoact2's. 60 review videos were retained.
-- capture-447's screening is finished. The website acknowledged the final publication (`screening-f3d50fae…`, revision 18) at 12:57Z, and its outcome is `estimate`: molmoact2 and pi0_droid_jointpos_100k_polaris each scored 0 of 10, likely between 0% and 28% (Wilson 95%). pi05 (0 of 9, 0–30%) and groot (0 of 10) were scored in the earlier run on the same fixed gripper. cosmos3 has no score: it hit 8 harness failures on `policy_load`, at `cosmos_droid_client_dependencies.py:57`. Across the 39 counted episodes the gripper never closed. The tray moved in one: groot pushed it 0.18 m without a grasp (`moved_below_success_contract`). pi0_droid_jointpos_polaris and pi0_fast_droid_jointpos_polaris are deferred with `beta_screening_site_budget_exhausted`. Site spend is $26.63 of $30 with nothing reserved, and the $3.37 left is less than one $4 run, so nothing else starts at this site.
+- That first attempt found no GPU offer and closed at 10:32Z with no machine ($0). The second (`screen-ace7e697…`) launched at 10:39Z and ran all ten episodes on one Vast GPU, torn down at 12:36Z. It settled at 12:58Z: 10 scored, 0 succeeded ($1.37). In all ten episodes the tray never moved and had no robot contact. The gripper closed away from the tray, a median 27 cm from it. The flags are molmoact2's. 60 review videos were retained.
+- capture-447's screening is finished. The website acknowledged the final publication (`screening-f3d50fae…`, revision 18) at 12:57Z, and its outcome is `estimate`: molmoact2 and pi0_droid_jointpos_100k_polaris each scored 0 of 10, likely between 0% and 28% (Wilson 95%). pi05 (0 of 9, 0–30%) and groot (0 of 10) were scored in the earlier run on the same fixed gripper. cosmos3 has no score: it hit 8 harness failures on `policy_load`, at `cosmos_droid_client_dependencies.py:57`. Across the 39 counted episodes the tray moved in one: groot pushed it 0.18 m without a grasp (`moved_below_success_contract`). pi0_droid_jointpos_polaris and pi0_fast_droid_jointpos_polaris are deferred with `beta_screening_site_budget_exhausted`. Site spend is $26.63 of $30 with nothing reserved, and the $3.37 left is less than one $4 run, so nothing else starts at this site.
 - Open after capture-447:
   - **owner**: Bandit triage re-review. Until it is done, no main commit gets an attestation, so #3411 cannot deploy.
-  - Every run carries `droid_wrist_task_pixels_below_threshold`. The last two also carry `policy_canary_task_semantic_visibility_failed`. The wrist camera seeing too little of the tray is the leading lead for why no policy closes on it. That is not yet measured.
   - The cosmos3 `policy_load` precedence check.
+- Wrist-camera study (11-06, from the 39 counted episodes; JSON read through the door only). The wrist camera is not the main reason the policies fail:
+  - **At reset**:
+    - The robot base sits at table height with the tray centre 0.92 m straight ahead; the home grasp point is 0.36 m ahead and 0.34 m up.
+    - From there, the wrist camera sees the tray only in the bottom strip of its image, behind the gripper's own fingers. It saw 0, 86 or 94 tray pixels against a minimum of 120, except at start position 02 (1,943 px, centred).
+    - At the policy's 224 px input, 94 px is about 7 × 0.5 px.
+    - The external camera sees the tray at every start (16,390–18,056 px).
+  - **During the rollout**: every policy moved the arm toward the tray, ending its closest approach 0.21–0.48 m nearer than at reset. Projecting the tray's measured box through each recorded wrist-camera pose puts at least 120 px of it outside the gripper's region in 22–44 of 45 policy steps per episode.
+    - This is geometry, not a rendered count: per-frame segmentation is not recorded.
+  - **The failure is the grasp**:
+    - Of their gripper closes, groot made 13 of 14 over the tray (11 within 4 cm of its rim), pi05 9 of 58 and molmoact2 2 of 3. They close a median 7 cm above the rim (2.3–14.5 cm), on air.
+    - groot's 0.18 m push (episode 02) came from a close about 1 cm from the tray.
+    - molmoact2 kept the gripper open in 7 of 10 episodes.
+    - pi0_droid_jointpos_100k_polaris never went to the tray: its 33 closes were a median 27 cm from it.
+    - pi0's and groot's closest approaches came at start position 02, the one start where the wrist camera sees the tray. pi05's and molmoact2's did not. That is one start, not a measured effect.
+  - **Correction**: the score's `gripper_closed` is evaluated only over the final settle window, and only for tasks that must end closed, so it is always false here. Earlier entries that read it as "the gripper never closed" are corrected above. The 5 uncounted molmoact2 episodes of 04:26Z did keep the gripper fully open (measured).
+  - **Also seen, not measured as causes**:
+    - The prompt the policies get is "Pick up and place the wooden tray on the dining table on the wooden dining table."
+    - The destination marker is a policy-visible flat green disc of 0.39 m radius. Its edge comes within 4–7 cm of the tray's centre, and 31–38% of the tray's footprint sits over it.
+    - The robot base is 1.3 cm above the surface the tray rests on.
+  - **Next**, before any new paid screening:
+    - Check the scene planner's robot placement, so the tray starts nearer the middle of the policy's view.
+    - Check the prompt text.
+    - Check the marker size.
 
 ## Operating notes (2026-11-02)
 
