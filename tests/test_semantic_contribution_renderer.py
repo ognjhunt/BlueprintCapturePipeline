@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
+from blueprint_pipeline.gaussian_splat_decode import SplatData
 from blueprint_pipeline.scene_placement.semantic_contribution_renderer import (
     METHOD_ID,
     METHOD_VERSION,
@@ -343,34 +340,3 @@ def test_abstains_before_unbounded_projected_work() -> None:
         blocker.endswith("projected_pixel_gaussian_pair_limit_exceeded")
         for blocker in result["blockers"]
     )
-
-
-def _write_stage_inputs(tmp_path: Path) -> tuple[dict[str, Path], dict]:
-    request, splat, mapping, source_tracks, cameras = _fixture()
-    paths = {
-        "analysis_splat": tmp_path / "analysis.ply",
-        "gaussian_mapping": tmp_path / "mapping.json",
-        "source_tracks": tmp_path / "source-tracks.json",
-        "camera_records": tmp_path / "cameras.json",
-        "request": tmp_path / "request.json",
-        "output": tmp_path / "result.json",
-    }
-    write_standard_3dgs_ply(splat, paths["analysis_splat"])
-    request["bindings"]["analysis_splat_digest"] = "sha256:" + hashlib.sha256(
-        paths["analysis_splat"].read_bytes()
-    ).hexdigest()
-    payloads = {
-        "gaussian_mapping": mapping,
-        "source_tracks": source_tracks,
-        "camera_records": cameras,
-    }
-    for name, payload in payloads.items():
-        paths[name].write_text(json.dumps(payload), encoding="utf-8")
-    request["input_artifacts"] = {}
-    for name in ("analysis_splat", "gaussian_mapping", "source_tracks", "camera_records"):
-        request["input_artifacts"][name] = {
-            "sha256": "sha256:" + hashlib.sha256(paths[name].read_bytes()).hexdigest(),
-            "size_bytes": paths[name].stat().st_size,
-        }
-    paths["request"].write_text(json.dumps(request), encoding="utf-8")
-    return paths, request

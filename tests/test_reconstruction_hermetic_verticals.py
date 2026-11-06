@@ -399,28 +399,6 @@ def test_iphone_hermetic_vertical_reaches_worker_gate_and_abstains(tmp_path: Pat
     assert report["blockers"] == [profile["expected_terminal_blocker"]]
 
 
-def _lens_calibration(profile: dict, lens_id: str) -> dict:
-    return {
-        "lens_id": lens_id,
-        "intrinsics": {
-            "fx": 1900.0,
-            "fy": 1901.0,
-            "cx": profile["width"] / 2,
-            "cy": profile["height"] / 2,
-            "width": profile["width"],
-            "height": profile["height"],
-        },
-        "distortion": {
-            "model": "opencv_fisheye",
-            "coefficients": [0.01, -0.001, 0.0001, -0.00001],
-        },
-        "valid_pixel_mask_relative_path": f"calibration/{lens_id}-mask.png",
-        "valid_pixel_mask_digest": profile["valid_pixel_mask_digest"],
-        "calibration_source": "official_sdk_sidecar",
-        "calibration_source_digest": profile["calibration_source_digest"],
-    }
-
-
 def test_equirectangular_360_vertical_compiles_shared_center_views_then_abstains(
     tmp_path: Path,
 ) -> None:

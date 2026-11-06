@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import math
-from pathlib import Path
 
 import pytest
 
@@ -441,24 +438,6 @@ def test_nonconvex_support_surface_and_generated_collision_source_fail_closed() 
     _resign_scene(request, scene)
     result = _run(request, obb, scene)
     assert "occupied_primitive_source_class_invalid:target-volume" in result["blockers"]
-
-
-def _write_stage_inputs(root: Path, request: dict, obb: dict, scene: dict) -> dict[str, Path]:
-    payloads = {"oriented_box_result": obb, "collision_scene": scene}
-    request["input_artifacts"] = {}
-    paths: dict[str, Path] = {}
-    for name, payload in payloads.items():
-        path = root / f"{name}.json"
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        paths[name] = path
-        request["input_artifacts"][name] = {
-            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
-            "size_bytes": path.stat().st_size,
-        }
-    paths["request"] = root / "request.json"
-    paths["request"].write_text(json.dumps(request, indent=2), encoding="utf-8")
-    paths["output"] = root / "result.json"
-    return paths
 
 
 def test_input_order_does_not_change_object_metrics() -> None:

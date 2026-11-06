@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
-from pathlib import Path
 
 
 from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
@@ -17,7 +14,6 @@ from blueprint_pipeline.scene_placement.semantic_source_track_import import (
     REQUEST_SCHEMA_VERSION,
     import_semantic_source_tracks,
 )
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 SHA_A = "sha256:" + "a" * 64
@@ -109,24 +105,6 @@ def _rebind_provider(request: dict, provider: dict) -> None:
         {key: value for key, value in provider.items() if key != "result_digest"}
     )
     request["bindings"]["provider_result_digest"] = provider["result_digest"]
-
-
-def _stage_paths(tmp_path: Path, request: dict, provider: dict) -> dict[str, Path]:
-    provider_path = tmp_path / "provider-result.json"
-    provider_path.write_text(json.dumps(provider), encoding="utf-8")
-    request["input_artifacts"] = {
-        "provider_result": {
-            "sha256": "sha256:" + hashlib.sha256(provider_path.read_bytes()).hexdigest(),
-            "size_bytes": provider_path.stat().st_size,
-        }
-    }
-    request_path = tmp_path / "request.json"
-    request_path.write_text(json.dumps(request), encoding="utf-8")
-    return {
-        "request": request_path,
-        "provider": provider_path,
-        "output": tmp_path / "result.json",
-    }
 
 
 def test_imports_compact_tracks_bound_to_retained_frames_pts_and_cameras() -> None:
@@ -299,30 +277,3 @@ def test_track_and_observation_order_does_not_change_normalized_registries() -> 
     assert first_result["bindings"]["frame_masks_digest"] == second_result[
         "bindings"
     ]["frame_masks_digest"]
-
-
-def _terminal_runtime_result_with_legacy_missing_empty_frame() -> dict:
-    request, provider = _fixture()
-    provider["tracks"][0]["observations"] = provider["tracks"][0]["observations"][:1]
-    _rebind_provider(request, provider)
-    normalized = import_semantic_source_tracks(request, provider)
-    normalized["frame_masks"] = normalized["frame_masks"][:1]
-    normalized["bindings"]["frame_masks_digest"] = canonical_json_digest(
-        normalized["frame_masks"]
-    )
-    normalized["result_digest"] = canonical_json_digest(
-        {key: value for key, value in normalized.items() if key != "result_digest"}
-    )
-    runtime = {
-        "schema_version": "semantic_sam31_vast_source_track_result.v1",
-        "status": "passed",
-        "source_track_import_request": request,
-        "provider_result": provider,
-        "normalized_source_tracks": normalized,
-        "blockers": [],
-        "raw_secret_values_recorded": False,
-    }
-    runtime["runtime_result_digest"] = canonical_digest(
-        runtime, digest_field="runtime_result_digest"
-    )
-    return runtime

@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
-from pathlib import Path
 
 import pytest
 
@@ -189,37 +186,6 @@ def _rebind_views(request: dict, views: list[dict]) -> None:
             ]
         )
     request["bindings"]["views_digest"] = canonical_json_digest(views)
-
-
-def _write_stage_inputs(
-    root: Path,
-    request: dict,
-    mapping: list[dict],
-    tracks: list[dict],
-    views: list[dict],
-) -> dict[str, Path]:
-    paths = {
-        "gaussian_mapping": root / "gaussian_mapping.json",
-        "track_registry": root / "track_registry.json",
-        "views": root / "views.json",
-    }
-    payloads = {
-        "gaussian_mapping": mapping,
-        "track_registry": tracks,
-        "views": views,
-    }
-    request["input_artifacts"] = {}
-    for name, path in paths.items():
-        path.write_text(json.dumps(payloads[name], indent=2), encoding="utf-8")
-        request["input_artifacts"][name] = {
-            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
-            "size_bytes": path.stat().st_size,
-        }
-    request_path = root / "request.json"
-    request_path.write_text(json.dumps(request, indent=2), encoding="utf-8")
-    paths["request"] = request_path
-    paths["output"] = root / "result.json"
-    return paths
 
 
 def test_lifts_full_mask_contributions_and_excludes_generated_support() -> None:

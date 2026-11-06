@@ -10,13 +10,6 @@ def retained(tmp_path):
     return fixtures.retained.__wrapped__(tmp_path)
 
 
-def spec(identity="small_box", *, variant_of="source_book"):
-    return {"object_id": identity, "description": "Small blue rigid package", "task_purpose": "Test package pick-and-place size variation",
-            "dimensions_m": [.08, .06, .04], "geometry_features": ["closed rectangular package", "flat grasp faces"],
-            "appearance_requirements": ["blue opaque wrapping"], "material_description": "cardboard with blue wrapping",
-            "appearance": "opaque", "variant_of": variant_of}
-
-
 def context(retained):
     return build_authoring_request(retained.input, retained.source, [retained.image], retained.rights).model_dump(mode="json")
 

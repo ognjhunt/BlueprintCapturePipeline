@@ -5,33 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.gaussian_suppression_volume import (
-    derive_suppression_volume_from_twin,
-)
-from tests.test_gaussian_suppression_volume import (
-    BODY_MAX,
-    BODY_MIN,
-    _members,
-)
-
-
-def _receipt(tmp_path: Path, ply: Path, **overrides):
-    arguments = {
-        "task_id": "refrigerator_upper_door_open",
-        "canonical_ply_path": ply,
-        "body_world_aabb_min_m": BODY_MIN,
-        "body_world_aabb_max_m": BODY_MAX,
-        "articulated_members": _members(),
-        "destination": tmp_path / "receipt.json",
-    }
-    arguments.update(overrides)
-    return derive_suppression_volume_from_twin(**arguments)
 
 
 _LOCAL_EVIDENCE = Path(
     "/Users/nijelhunt_1/workspace/BlueprintValidation/data/adp009a_tranche1_20260804"
 )
-_LOCAL_SCAN = _LOCAL_EVIDENCE / "inpainting_inputs/840796_refrigerator_v2/scene_standard.ply"
 _LOCAL_SEALED_RETAINED = (
     _LOCAL_EVIDENCE
     / "gaussian_excision/840796_v2/target_only_expansion_ladder_v1/rung_01_core95"

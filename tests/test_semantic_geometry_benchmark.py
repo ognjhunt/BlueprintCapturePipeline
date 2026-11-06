@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import math
-from pathlib import Path
 
 import pytest
 
@@ -474,34 +471,3 @@ def test_malformed_ablation_row_and_registry_fail_closed_without_exception() -> 
         request, prediction_result=prediction, ground_truth=ground_truth, ablation_runs=[]
     )
     assert "evaluation_view_registry_invalid" in result["blockers"]
-
-
-def _write_json(path: Path, payload) -> None:
-    path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-
-
-def _stage_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict]:
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    request, prediction, ground_truth, runs = _fixture()
-    paths = {
-        "request": tmp_path / "request.json",
-        "prediction_result": tmp_path / "prediction.json",
-        "ground_truth": tmp_path / "ground_truth.json",
-        "ablation_runs": tmp_path / "ablations.json",
-        "output": tmp_path / "result.json",
-    }
-    for name, payload in (
-        ("prediction_result", prediction),
-        ("ground_truth", ground_truth),
-        ("ablation_runs", runs),
-    ):
-        _write_json(paths[name], payload)
-    request["input_artifacts"] = {
-        name: {
-            "sha256": "sha256:" + hashlib.sha256(paths[name].read_bytes()).hexdigest(),
-            "size_bytes": paths[name].stat().st_size,
-        }
-        for name in ("prediction_result", "ground_truth", "ablation_runs")
-    }
-    _write_json(paths["request"], request)
-    return paths, request

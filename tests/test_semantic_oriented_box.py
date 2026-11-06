@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import math
-from pathlib import Path
 
 import pytest
 
@@ -144,34 +141,6 @@ def _resign_semantic(request: dict, semantic: dict) -> None:
     semantic.pop("result_digest", None)
     semantic["result_digest"] = canonical_json_digest(semantic)
     request["bindings"]["semantic_lifting_result_digest"] = semantic["result_digest"]
-
-
-def _write_stage_inputs(
-    root: Path,
-    request: dict,
-    semantic: dict,
-    mapping: list[dict],
-    points: list[dict],
-) -> dict[str, Path]:
-    payloads = {
-        "semantic_result": semantic,
-        "gaussian_mapping": mapping,
-        "support_points": points,
-    }
-    paths: dict[str, Path] = {}
-    request["input_artifacts"] = {}
-    for name, payload in payloads.items():
-        path = root / f"{name}.json"
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        paths[name] = path
-        request["input_artifacts"][name] = {
-            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
-            "size_bytes": path.stat().st_size,
-        }
-    paths["request"] = root / "request.json"
-    paths["request"].write_text(json.dumps(request, indent=2), encoding="utf-8")
-    paths["output"] = root / "result.json"
-    return paths
 
 
 def test_fits_metric_z_up_eight_corner_box_and_rejects_floater() -> None:
