@@ -29,7 +29,7 @@ from blueprint_pipeline.post_training_data_package import (
     build_post_training_data_package_export,
     main,
 )
-from blueprint_pipeline.output_run_transaction import verify_output_run_commit
+from blueprint_pipeline.core.output_run_transaction import verify_output_run_commit
 
 
 @pytest.fixture(autouse=True)
