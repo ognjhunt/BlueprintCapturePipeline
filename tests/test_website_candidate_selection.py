@@ -106,23 +106,18 @@ def test_no_evaluated_candidate_chooses_nothing_and_keeps_every_reason():
     assert all(row["blockers"] and row["choice_blocker"] == "not_evaluated" for row in value["candidates"])
 
 
-def test_a_scored_g1_humanoid_row_is_listed_but_never_ranked_or_chosen():
-    # G1 runs development-only (ranking_eligible false): even a better score never makes it the choice.
+def test_a_scored_g1_humanoid_row_competes_and_can_be_chosen():
+    # Owner decision 2026-11-06: G1 may be chosen as the winner, like any learned policy.
     rows = [result_row("humanoidarena_dp_g1_dex3_sonic", succeeded=9, scored=10),
             result_row("pi05_droid", succeeded=3, scored=10),
             result_row("humanoidarena_pi05_g1_dex3_sonic", "blocked", blockers=["g1_beta_native_result_missing_or_invalid"])]
     value = choose(rows)
     shown = {row["candidate_id"]: row for row in value["candidates"]}
-    assert value["status"] == "chosen" and value["chosen"]["candidate_id"] == "pi05_droid"
-    assert shown["pi05_droid"]["result_rank"] == 1 and value["tied_with"] == []
-    dp = shown["humanoidarena_dp_g1_dex3_sonic"]
-    assert dp["choice_blocker"] == "development_only_reference" and "result_rank" not in dp
-    assert (dp["episodes_scored"], dp["episodes_succeeded"]) == (10, 9)
+    assert value["status"] == "chosen" and value["chosen"]["candidate_id"] == "humanoidarena_dp_g1_dex3_sonic"
+    assert shown["humanoidarena_dp_g1_dex3_sonic"]["result_rank"] == 1 and shown["pi05_droid"]["result_rank"] == 2
+    assert shown["humanoidarena_dp_g1_dex3_sonic"]["choice_blocker"] is None
     # A G1 row that did not finish keeps the ordinary reason.
     assert shown["humanoidarena_pi05_g1_dex3_sonic"]["choice_blocker"] == "not_evaluated"
-    # Alone, a scored G1 row leaves nothing eligible.
-    alone = choose([result_row("humanoidarena_dp_g1_dex3_sonic", succeeded=9, scored=10)])
-    assert alone["status"] == "no_evaluated_candidate" and alone["chosen"] is None
 
 
 def test_evaluated_candidates_without_a_success_choose_nothing():
