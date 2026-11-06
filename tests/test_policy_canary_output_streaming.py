@@ -467,6 +467,74 @@ def test_an_untyped_failure_after_the_paid_run_still_seals_a_blocked_lane_result
     assert list(lane.ledger.glob("*.json")) == []  # the hold was released
 
 
+def _failing_b2_ranges(lane, *, status, first_failure, failures):
+    """Answer B2 member range requests ``first_failure`` .. ``first_failure + failures - 1`` (1-based,
+    ETag probes excluded) with HTTP ``status``; every other request is served as before."""
+    import urllib.error
+
+    served = {"ranges": 0}
+
+    def route(request, timeout, policy):
+        if (urlparse(request.full_url).hostname == "b2.example.invalid"
+                and request.get_header("Range") not in (None, "bytes=0-0")):
+            served["ranges"] += 1
+            if first_failure <= served["ranges"] < first_failure + failures:
+                raise urllib.error.HTTPError("redacted", status, "injected", {}, None)
+        return lane._route(request, timeout, policy)
+
+    lane.monkeypatch.setattr(transport, "_open_with_policy", route)
+    lane.monkeypatch.setattr(streaming, "INGESTION_RETRY_SLEEP_SECONDS", 0)
+    return served
+
+
+def _ingestion_failures(attempt: Path) -> list[str]:
+    path = attempt / ".provider_output_ingestion" / "failures.jsonl"
+    return [json.loads(line)["code"] for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_a_transient_b2_failure_mid_ingestion_resumes_and_completes(lane):
+    """2026-11-06: one B2 503 after 146 needed members ended capture-447's molmoact2 ingestion and
+    sealed its ten paid episodes as a harness failure. A pass stopped only by a transient transport
+    code now runs again with a fresh URL; members it already verified are never fetched again."""
+    archive, payloads = _small_archive()
+    _failing_b2_ranges(lane, status=503, first_failure=3, failures=1)
+
+    result = lane.run_session(lane.adapter(archive))
+
+    assert result["status"] == "completed", result["blockers"]
+    attempt = Path(result["attempt_root"])
+    assert _ingestion_failures(attempt) == ["provider_output_http_failed"]
+    receipt = json.loads((attempt / ".provider_output_ingestion" / "receipt.json").read_text())
+    assert receipt["status"] == "materialized" and receipt["resumed_member_count"] >= 2
+    index = json.loads((attempt / "provider_output_member_index.v1.json").read_text())
+    rows = {row["path"]: row["size"] for row in index["members"] if row["kind"] == "file"}
+    assert _members(attempt / "immutable_execution") == {
+        path: rows[path] for path in POLICY_CANARY_OUTPUT_CONTRACT.paths(index)}
+    assert result["native_control_result_digest"] == json.loads(payloads[RESULT])["result_digest"]
+    # The refused request never reached B2, and no range was served twice: nothing verified was re-read.
+    spans = [span for _key, span in lane.world.cas.ranged_requests()]
+    assert spans and len(spans) == len(set(spans))
+
+
+@pytest.mark.parametrize(("status", "failures", "passes", "code"), [
+    (503, 99, streaming.INGESTION_RETRY_ATTEMPTS, "provider_output_http_failed"),
+    # Not transient: the archive behind the pinned ETag changed, so it is never fetched again.
+    (412, 1, 1, "provider_output_remote_version_changed"),
+])
+def test_ingestion_retries_are_bounded_and_only_for_transient_codes(lane, status, failures, passes, code):
+    archive, _ = _small_archive()
+    _failing_b2_ranges(lane, status=status, first_failure=1, failures=failures)
+
+    result = lane.run_session(lane.adapter(archive))
+
+    assert result["status"] == "blocked"
+    assert {f"{PREFIX}_provider_output_ingestion_blocked", code} <= set(result["blockers"])
+    attempt = Path(result["attempt_root"])
+    assert _ingestion_failures(attempt) == [code] * passes
+    assert result["archive_durable"] is True and result["native_control_result_path"] is None
+    assert list(lane.ledger.glob("*.json")) == []  # the hold was released
+
+
 def test_ssh_fallback_in_stream_mode_publishes_then_ingests_by_range(lane, tmp_path):
     archive, payloads = _small_archive()
 
