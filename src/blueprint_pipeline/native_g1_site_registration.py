@@ -198,21 +198,32 @@ def _built_from_base(row: Mapping[str, Any], base_hex: str | None) -> bool:
                                         for item in row["screening_candidates"].values())
 
 
+def _packet_dirs(row: Mapping[str, Any] | None) -> list[str]:
+    try:
+        return sorted({str(Path(item["native_g1"]["scene_packet"]["path"]).parent)
+                       for item in (row or {}).get("screening_candidates", {}).values()})
+    except (AttributeError, KeyError, TypeError):
+        return []
+
+
+def _spawn_reports_missing(row: Mapping[str, Any] | None) -> bool:
+    """Whether a registered packet has no spawn report yet (one prepared before the check existed)."""
+    from .native_g1_spawn_clearance import FILENAME
+
+    return any(not (Path(packet) / FILENAME).is_file() for packet in _packet_dirs(row))
+
+
 def _measure_spawns(row: Mapping[str, Any] | None) -> None:
     """Measure each registered packet's G1 spawn once (``native_g1_spawn_clearance``); never raises.
 
     Planning funds no G1 run from a packet whose report reads overlap and flags one without a report as
     unmeasured; a packet prepared before the check existed has none, so this writes it beside the packet.
-    A failure leaves it missing: planning then flags the row and funds it.
+    A failure leaves it missing: planning then flags the row and funds it. A report is new data derived
+    from the site's scene, so every caller reads the site's consent live first (``_require_current_consent``).
     """
     from .native_g1_spawn_clearance import ensure_packet_spawn_clearance
 
-    try:
-        packets = {str(Path(item["native_g1"]["scene_packet"]["path"]).parent)
-                   for item in (row or {}).get("screening_candidates", {}).values()}
-    except (AttributeError, KeyError, TypeError):
-        return
-    for packet in sorted(packets):
+    for packet in _packet_dirs(row):
         try:
             ensure_packet_spawn_clearance(packet)
         except Exception:  # noqa: BLE001 - a G1 problem never stops the site's other candidates
@@ -314,7 +325,19 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
             return {**status, "status": "not_registered", "reason": "team_candidate_registry_not_configured"}, False
         root_row = (registry.get("site_screening_candidates") or {}).get(site_id)
         if isinstance(root_row, Mapping) and root_row.get("source") == current:
-            _measure_spawns(root_row)
+            if _spawn_reports_missing(root_row):
+                # Privacy: a spawn report is new data derived from the site's scene, so only while the
+                # site's consent stands now. A refusal already recorded for this attempt stands unread.
+                prior = _read_status(status_path)
+                if consent_refused(prior.get("reason")) and prior.get("attempt_key") == status["attempt_key"]:
+                    return prior, False
+                try:
+                    _require_current_consent(current, site_id)
+                except _NotRegistered as unconfirmed:
+                    if not unconfirmed.retry:
+                        raise  # A refusal: recorded below like any other.
+                else:  # An unanswered check measures nothing; the next pass asks again.
+                    _measure_spawns(root_row)
             return {**status, "status": "root_registry_row_current", "reason": None, "candidates": {}}, True
         shared = _shared_records(manifest)
         prior = _read_status(status_path)
@@ -387,7 +410,9 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
                 "retry": "on_source_pin_or_release_change", "candidates": results}, True
     row = {"source": current, "screening_candidates": registrations}
     _write(path, row)
-    _measure_spawns(row)  # A packet prepared above has its report already; an older one gets it here.
+    # Consent was read live just above, before the row. A packet prepared above has its report already;
+    # an older one gets it here.
+    _measure_spawns(row)
     return {**status, "status": "registered", "reason": None, "candidates": results}, True
 
 
@@ -411,8 +436,19 @@ def ensure_site_registration(*, site_id: str, source: Mapping[str, Any], source_
     if (overlay is not None and not consent_refused(_read_status(status_path).get("reason"))
             and overlay["source"] == current and _records_verify(overlay, Path(manifest_path))
             and _built_from_base(overlay, _current_base_hex(site_id, current, Path(source_queue)))):
-        _measure_spawns(overlay)
-        return {"status": "already_registered"}
+        if not _spawn_reports_missing(overlay):
+            return {"status": "already_registered"}
+        # Privacy: a spawn report is new data derived from the site's scene, so only while the site's
+        # consent stands now. An unanswered check measures nothing and the next pass asks again; a refusal
+        # goes the whole way below, which records it and removes the row.
+        try:
+            _require_current_consent(current, site_id)
+        except _NotRegistered as unconfirmed:
+            if unconfirmed.retry:
+                return {"status": "already_registered"}
+        else:
+            _measure_spawns(overlay)
+            return {"status": "already_registered"}
     try:
         status, record = _register(site_id=site_id, current=current, source_queue=Path(source_queue),
             release=release, path=path, status_path=status_path, manifest_path=Path(manifest_path))

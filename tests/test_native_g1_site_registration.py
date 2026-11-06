@@ -542,6 +542,68 @@ def test_a_registered_packet_from_before_the_spawn_check_is_measured_on_the_next
     assert not report.exists()
 
 
+
+def test_a_missing_spawn_report_is_measured_only_while_consent_stands(compiled_world, monkeypatch):
+    # A spawn report is new data derived from the site's scene: never written for a withdrawn site.
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    from blueprint_pipeline.team_scene_capture_root import TeamScenePacketRequestRefused
+    kwargs, _, _, _, _ = compiled_world
+    site = kwargs["site_id"]
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    row = json.loads(overlay_path(site).read_text())
+    report = Path(row["screening_candidates"][DP]["native_g1"]["scene_packet"]["path"]).parent / spawn.FILENAME
+    report.unlink()  # As a packet prepared before the check existed has none.
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    monkeypatch.setattr(spawn, "packet_spawn_clearance", lambda _packet: pytest.fail("measured without consent"))
+    # An unanswered check measures nothing and keeps the row; the next pass asks again.
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("unreachable")))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
+    assert overlay_path(site).exists() and not report.exists()
+    # A refusal measures nothing, removes the row and keeps only the reason.
+    refusal = "beta_screening_current_capture_consent_required"
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source",
+                        lambda *a, **k: (_ for _ in ()).throw(TeamScenePacketRequestRefused(refusal)))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "not_registered", "reason": refusal}
+    assert not overlay_path(site).exists() and not report.exists()
+    assert status_of(site)["reason"] == refusal
+
+
+def test_a_current_root_row_is_measured_only_while_consent_stands(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    from blueprint_pipeline.team_scene_capture_root import TeamScenePacketRequestRefused
+    retained, kwargs, _, _ = door_world(tmp_path, monkeypatch)
+    installer.apply(retained.request, **retained.options)
+    measured = []
+    monkeypatch.setattr(spawn, "packet_spawn_clearance",
+                        lambda packet: measured.append(packet) or (_ for _ in ()).throw(OSError("unreadable")))
+    checks = []
+
+    def consent(outcome):
+        def read(value, *, site_id):
+            checks.append(site_id)
+            if outcome is not None:
+                raise outcome
+            return {}
+        return read
+
+    # Granted: the root row's packet, which has no report yet, is measured.
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", consent(None))
+    assert registration.ensure_site_registration(**kwargs)["status"] == "root_registry_row_current"
+    assert checks == [SITE] and len(measured) == 1
+    # Unanswered: nothing measured and the row stays current.
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source",
+                        consent(OSError("unreachable")))
+    assert registration.ensure_site_registration(**kwargs)["status"] == "root_registry_row_current"
+    assert len(checks) == 2 and len(measured) == 1
+    # Refused: nothing measured, the refusal is recorded and stands without another live read.
+    refusal = "beta_screening_current_capture_consent_required"
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source",
+                        consent(TeamScenePacketRequestRefused(refusal)))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "not_registered", "reason": refusal}
+    assert registration.ensure_site_registration(**kwargs)["reason"] == refusal
+    assert len(checks) == 3 and len(measured) == 1
+
 def test_a_changed_source_gets_a_new_packet_and_a_new_row(compiled_world):
     kwargs, profile, registry, _, capture = compiled_world
     registration.ensure_site_registration(**kwargs)
