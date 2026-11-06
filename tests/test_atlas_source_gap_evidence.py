@@ -130,3 +130,69 @@ def test_original_capture_is_shown_as_a_full_frame_not_a_tiny_derived_tile(tmp_p
     images = [Image.open(BytesIO(base64.b64decode(row['image_url'].split(',')[1])))
               for row in content if row['type'] == 'input_image']
     assert images[-1].size == (576, 1024)
+
+
+def _image(path, value):
+    Image.new('RGB', (8, 6), (value, value, value)).save(path)
+    return _sha256_file(path)
+
+
+def _survey(tmp_path, ids, name='survey.json'):
+    rows = []
+    for index, frame_id in enumerate(ids):
+        image = tmp_path / f'{frame_id}.png'
+        rows.append({'frame_id': frame_id, 'timestamp_seconds': float(index), 'source_image_path': str(image),
+                     'source_image_digest': _image(image, 10 + index), 'width': 8, 'height': 6})
+    value = {'schema_version': 'atlas_video_survey.v1', 'source_video_digest': 'sha256:video',
+             'display_rotation_degrees': 0.0, 'heldout_pixels_included': False, 'frames': rows}
+    value['digest'] = canonical_digest(value, digest_field='digest')
+    path = tmp_path / name
+    path.write_text(json.dumps(value))
+    return path
+
+
+def _clean_plate(tmp_path, ids):
+    clean = tmp_path / 'clean_plate'
+    (clean / 'source_geometry/worker_inputs').mkdir(parents=True)
+    rows = []
+    for index, frame_id in enumerate(ids):
+        image = clean / 'source_geometry/worker_inputs' / f'{frame_id}.png'
+        rows.append({'frame_id': frame_id, 'timestamp_seconds': 100.0 + index, 'source_image_path': str(image),
+                     'source_image_digest': _image(image, 200 + index), 'display_rotation_degrees': 0.0,
+                     'width': 8, 'height': 6})
+    candidate = {'schema_version': 'x', 'binding': {'source_video_digest': 'sha256:video'},
+                 'heldout_pixels_included': False, 'frames': rows}
+    candidate['digest'] = canonical_digest(candidate, digest_field='digest')
+    (clean / 'source_geometry/worker_inputs/geometry_inputs.json').write_text(json.dumps(candidate))
+    sources = {'schema_version': 'website_source_frames.v1', 'geometry_input_digest': candidate['digest'],
+               'binding': {'source_video_digest': 'sha256:video'}}
+    sources['digest'] = canonical_digest(sources, digest_field='digest')
+    (clean / 'clean_plate_stage_manifest.json').write_text(json.dumps({'source_frames': sources}))
+    return clean, sources['digest']
+
+
+def test_a_source_poses_task_source_views_join_the_gallery_survey(tmp_path):
+    # capture-5b067498 (2026-11-06): six clean-plate task-source frames conditioned the source pose
+    # but were absent from the gallery survey -> atlas_source_gap_capture_identity_invalid.
+    from blueprint_pipeline.atlas_source_gap_evidence import with_task_source_views
+
+    survey = _survey(tmp_path, ['decoded-a', 'decoded-b'])
+    clean, digest = _clean_plate(tmp_path, ['decoded-b', 'decoded-task'])
+    conditioned = ['decoded-a', 'decoded-task']
+    with pytest.raises(ValueError, match='atlas_source_gap_capture_identity_invalid'):
+        source_gallery(survey_path=survey, source_video_digest='sha256:video', conditioned_frame_ids=conditioned,
+                       root=tmp_path / 'gallery-before')
+    combined = with_task_source_views(survey_path=survey, source_inputs={'binding': {'task_source_frames_digest': digest}},
+                                      clean_root=clean, output=tmp_path / 'with-task.json')
+    gallery, previews = source_gallery(survey_path=combined, source_video_digest='sha256:video',
+                                       conditioned_frame_ids=conditioned, root=tmp_path / 'gallery')
+    # Only the frame the survey lacked is added; the survey's own decoded-b is kept as it was.
+    assert gallery['reviewed_source_frame_ids'] == ['decoded-a', 'decoded-b', 'decoded-task']
+    frames = {row['frame_id']: row for row in json.loads(combined.read_text())['frames']}
+    assert frames['decoded-b']['source_image_path'] == str(tmp_path / 'decoded-b.png')
+    # A pose without task-source views keeps its survey; a changed manifest refuses.
+    assert with_task_source_views(survey_path=survey, source_inputs={'binding': {}}, clean_root=clean,
+                                  output=tmp_path / 'unused.json') == survey
+    with pytest.raises(ValueError, match='atlas_source_gap_task_source_views_changed'):
+        with_task_source_views(survey_path=survey, source_inputs={'binding': {'task_source_frames_digest': 'sha256:x'}},
+                               clean_root=clean, output=tmp_path / 'other.json')

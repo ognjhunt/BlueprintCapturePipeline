@@ -84,6 +84,53 @@ def combine_source_surveys(*, survey_paths, output):
     return output
 
 
+def with_task_source_views(*, survey_path, source_inputs, clean_root, output):
+    """The gallery survey plus the capture's task-source views a source pose was also given.
+
+    ``atlas_source_pose_inputs.task_source_inputs`` adds the clean plate's training-only
+    source frames to a source pose (``object_geometry_only``). Those frames then condition the
+    completion, so the original-capture gallery must hold them too, or no conditioned frame is
+    reviewable (capture-5b067498, 2026-11-06: ``atlas_source_gap_capture_identity_invalid``
+    after six such frames). Only frames the survey lacks are added, from the same verified
+    manifest the pose used. A pose without task-source views returns the survey unchanged.
+    """
+    binding = source_inputs.get("binding") or {}
+    digest = binding.get("task_source_frames_digest")
+    if digest is None:
+        return Path(survey_path)
+    manifest = json.loads((Path(clean_root) / "clean_plate_stage_manifest.json").read_text())
+    sources = manifest.get("source_frames") or {}
+    candidate = json.loads((Path(clean_root) / "source_geometry/worker_inputs/geometry_inputs.json").read_text())
+    survey = json.loads(Path(survey_path).read_text())
+    if (sources.get("digest") != digest or sources.get("digest") != canonical_digest(sources, digest_field="digest")
+            or candidate.get("digest") != sources.get("geometry_input_digest")
+            or candidate.get("heldout_pixels_included") is not False
+            or candidate.get("binding", {}).get("source_video_digest") != survey.get("source_video_digest")):
+        raise ValueError("atlas_source_gap_task_source_views_changed")
+    present = {row["frame_id"] for row in survey["frames"]}
+    rows = []
+    for row in candidate["frames"]:
+        if row["frame_id"] in present:
+            continue
+        if float(row.get("display_rotation_degrees", 0.0)) != float(survey["display_rotation_degrees"]):
+            raise ValueError("atlas_source_gap_candidate_capture_mismatch")
+        rows.append({key: row[key] for key in ("frame_id", "timestamp_seconds", "source_image_path",
+                                              "source_image_digest", "width", "height") if key in row})
+    if not rows:
+        return Path(survey_path)
+    views = {"schema_version": "atlas_video_survey.v1", "source_video_digest": survey["source_video_digest"],
+             "display_rotation_degrees": survey["display_rotation_degrees"], "heldout_pixels_included": False,
+             "frames": rows, "basis": "clean_plate_task_source_views_given_to_the_source_pose",
+             "task_source_frames_digest": digest, "claim_ceiling": "development_only"}
+    views["digest"] = canonical_digest(views, digest_field="digest")
+    views_path = Path(output).with_name("task_source_views_survey.json")
+    if views_path.exists() and json.loads(views_path.read_text()) != views:
+        raise ValueError("atlas_source_gap_full_capture_survey_changed")
+    views_path.parent.mkdir(parents=True, exist_ok=True)
+    views_path.write_text(json.dumps(views, indent=2) + "\n")
+    return combine_source_surveys(survey_paths=[survey_path, views_path], output=output)
+
+
 def source_gallery(*, survey_path, source_video_digest, conditioned_frame_ids, root):
     """Bind the complete supplied candidate survey, not just selected RGBD inputs."""
     from .atlas_scene_preservation import _save_image
