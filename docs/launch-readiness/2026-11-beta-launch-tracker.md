@@ -83,6 +83,9 @@ The next production job, driven by a cloud session: a navigation task, chosen as
   - The latest allowed expiry for an entry signed today is 2027-02-04.
   - Signed off by the owner at 16:05Z and applied in #3423.
 - **Parked deliveries (owner, 11-06: "yes retire the 7").** The 7 parked preparation deliveries are owner test captures from 10-28/29 whose status read cannot succeed since WebApp #1113. The door operation `retire-parked-delivery` retires them once it is deployed and the door is upgraded (`upgrade-door`). It is general: any delivery parked for a day can be retired, with the owner's approval on its record. Nothing is deleted, and a newer revision starts a new delivery.
+  - **Done 22:40–22:45Z on the `8dc96be` door** (the G1 session upgraded it at 22:33Z). All 7 were planned first (`planned`), then applied (`retired`), with the approval recorded as "Owner, 2026-11-06 16:05Z session: yes retire the 7".
+    - 3 had delivery records parked since 11-02. Their status reads were failing with `website_run_closed_by_owner`, `capture_owner_changed` and `task_context_changed`: 05d7f712, 89d24b73 and cd43cdc3.
+    - 4 were orphaned hints whose captures are absent: 36ad8b1d, 6940ee82, 70454ab0 and 8656e744. They were archived under `.website_preparation_pending/retired/`.
 
 ## Deploys on 2026-11-06 (library-aisle run)
 
