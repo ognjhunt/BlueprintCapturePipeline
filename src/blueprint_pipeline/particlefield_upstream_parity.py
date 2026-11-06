@@ -21,7 +21,7 @@ authoring ``ParticleField3DGaussianSplat`` attributes:
 
 Everything here is pinned to :data:`THREEDGRUT_REFERENCE_REVISION`.  It is a
 comparator, not a converter: production assets come from the real transcode
-(:func:`blueprint_pipeline.isaac_nurec_export.transcode_nurec_usdz_to_particlefield`),
+(:mod:`blueprint_pipeline.nvidia_3dgrut_particlefield_transcode`),
 and this model exists so a hermetic test can pin the contract and so a receipt
 can carry per-attribute digests computed the upstream way.
 """

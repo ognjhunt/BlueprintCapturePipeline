@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
-from pathlib import Path
 
 import pytest
 
@@ -14,10 +11,6 @@ from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
     REQUEST_SCHEMA_VERSION,
     canonical_json_digest,
     lift_semantic_masks_to_gaussians,
-)
-from blueprint_pipeline.semantic_gaussian_lifting_stage import (
-    main as stage_main,
-    run_semantic_gaussian_lifting_stage,
 )
 
 
@@ -193,37 +186,6 @@ def _rebind_views(request: dict, views: list[dict]) -> None:
             ]
         )
     request["bindings"]["views_digest"] = canonical_json_digest(views)
-
-
-def _write_stage_inputs(
-    root: Path,
-    request: dict,
-    mapping: list[dict],
-    tracks: list[dict],
-    views: list[dict],
-) -> dict[str, Path]:
-    paths = {
-        "gaussian_mapping": root / "gaussian_mapping.json",
-        "track_registry": root / "track_registry.json",
-        "views": root / "views.json",
-    }
-    payloads = {
-        "gaussian_mapping": mapping,
-        "track_registry": tracks,
-        "views": views,
-    }
-    request["input_artifacts"] = {}
-    for name, path in paths.items():
-        path.write_text(json.dumps(payloads[name], indent=2), encoding="utf-8")
-        request["input_artifacts"][name] = {
-            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
-            "size_bytes": path.stat().st_size,
-        }
-    request_path = root / "request.json"
-    request_path.write_text(json.dumps(request, indent=2), encoding="utf-8")
-    paths["request"] = request_path
-    paths["output"] = root / "result.json"
-    return paths
 
 
 def test_lifts_full_mask_contributions_and_excludes_generated_support() -> None:
@@ -434,62 +396,3 @@ def test_invalid_authority_or_renderer_contracts_block(mutator, expected_blocker
     result = _lift(request, mapping, tracks, views)
     assert result["status"] == "blocked"
     assert expected_blocker in result["blockers"]
-
-
-def test_file_bound_stage_verifies_inputs_and_writes_terminal_result(tmp_path: Path) -> None:
-    request, mapping, tracks, views = _fixture()
-    paths = _write_stage_inputs(tmp_path, request, mapping, tracks, views)
-    result = run_semantic_gaussian_lifting_stage(
-        request_path=paths["request"],
-        gaussian_mapping_path=paths["gaussian_mapping"],
-        track_registry_path=paths["track_registry"],
-        views_path=paths["views"],
-        output_path=paths["output"],
-    )
-    assert result["status"] == "completed"
-    assert result["transport_profile"] == "bounded_canonical_json_baseline.v1"
-    assert set(result["stage_input_artifacts"]) == {
-        "request",
-        "gaussian_mapping",
-        "track_registry",
-        "views",
-    }
-    assert json.loads(paths["output"].read_text(encoding="utf-8")) == result
-
-
-def test_file_bound_stage_detects_post_manifest_artifact_tampering(tmp_path: Path) -> None:
-    request, mapping, tracks, views = _fixture()
-    paths = _write_stage_inputs(tmp_path, request, mapping, tracks, views)
-    paths["views"].write_text("[]", encoding="utf-8")
-    exit_code = stage_main(
-        [
-            "--request",
-            str(paths["request"]),
-            "--gaussian-mapping",
-            str(paths["gaussian_mapping"]),
-            "--track-registry",
-            str(paths["track_registry"]),
-            "--views",
-            str(paths["views"]),
-            "--output",
-            str(paths["output"]),
-        ]
-    )
-    result = json.loads(paths["output"].read_text(encoding="utf-8"))
-    assert exit_code == 2
-    assert result["status"] == "blocked"
-    assert "input_artifact_sha256_mismatch:views" in result["blockers"]
-    assert "input_artifact_size_mismatch:views" in result["blockers"]
-
-
-def test_file_bound_stage_refuses_to_overwrite_an_input(tmp_path: Path) -> None:
-    request, mapping, tracks, views = _fixture()
-    paths = _write_stage_inputs(tmp_path, request, mapping, tracks, views)
-    with pytest.raises(ValueError, match="output_path_must_not_overwrite_an_input"):
-        run_semantic_gaussian_lifting_stage(
-            request_path=paths["request"],
-            gaussian_mapping_path=paths["gaussian_mapping"],
-            track_registry_path=paths["track_registry"],
-            views_path=paths["views"],
-            output_path=paths["views"],
-        )

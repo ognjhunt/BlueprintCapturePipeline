@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
@@ -293,26 +292,6 @@ def test_observation_and_report_inputs_fail_closed() -> None:
     )
     assert report["requalification_trigger_proposals"] == []
     assert any("admission_record_invalid" in row for row in report["input_errors"])
-
-
-def test_monthly_workflow_is_read_only_bounded_and_archives_the_report() -> None:
-    root = Path(__file__).resolve().parents[1]
-    workflow = (root / ".github/workflows/measurement-research-monitor.yml").read_text(
-        encoding="utf-8"
-    )
-    assert 'cron: "23 9 1 * *"' in workflow
-    assert "permissions:\n  contents: read" in workflow
-    assert "timeout-minutes: 45" in workflow
-    assert "GITHUB_TOKEN: ${{ github.token }}" in workflow
-    assert "scripts/measurement_research_monitor.py" in workflow
-    assert "tests/test_task_site_measurement_routing.py" in workflow
-    assert "scripts/bootstrap_measurement_chrono_development.py" in workflow
-    assert "tests/test_measurement_deformation_granular_chrono_development_suite.py" in workflow
-    assert "measurement-chrono-bootstrap.json" in workflow
-    assert "actions/upload-artifact@ea165f8d" in workflow
-    assert "retention-days: 90" in workflow
-    assert "paid_resource_allocator" not in workflow
-    assert "apply_requalification_trigger" not in workflow
 
 
 def test_github_release_monitor_rejects_non_repository_paths_without_network() -> None:

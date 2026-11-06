@@ -171,3 +171,14 @@ def test_tampering_and_unknown_candidates_fail_closed() -> None:
     draft["capabilities"].pop("dynamic_collision_supported")
     with pytest.raises(MeasurementAdapterError, match="fields_incomplete"):
         validate_capability_draft(draft)
+
+
+def test_direct_observation_probe_finds_opencv_without_claiming_qualification() -> None:
+    descriptor = build_measurement_adapter_descriptor("direct-captured-observations")
+    probe = probe_measurement_adapter(descriptor)
+    assert probe["status"] == "available"
+    assert probe["observed_versions"] == ["4.11.0.86"]
+    assert probe["package_imported"] is False
+    assert probe["process_launched"] is False
+    assert probe["qualification_established"] is False
+    assert probe["production_route_eligible"] is False

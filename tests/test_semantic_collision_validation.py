@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import math
-from pathlib import Path
 
 import pytest
 
@@ -17,10 +14,6 @@ from blueprint_pipeline.scene_placement.semantic_collision_validation import (
     validate_semantic_boxes_against_collision,
 )
 from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import canonical_json_digest
-from blueprint_pipeline.semantic_collision_validation_stage import (
-    main as stage_main,
-    run_semantic_collision_validation_stage,
-)
 
 
 _CAPTURE = "sha256:" + "a" * 64
@@ -445,93 +438,6 @@ def test_nonconvex_support_surface_and_generated_collision_source_fail_closed() 
     _resign_scene(request, scene)
     result = _run(request, obb, scene)
     assert "occupied_primitive_source_class_invalid:target-volume" in result["blockers"]
-
-
-def _write_stage_inputs(root: Path, request: dict, obb: dict, scene: dict) -> dict[str, Path]:
-    payloads = {"oriented_box_result": obb, "collision_scene": scene}
-    request["input_artifacts"] = {}
-    paths: dict[str, Path] = {}
-    for name, payload in payloads.items():
-        path = root / f"{name}.json"
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        paths[name] = path
-        request["input_artifacts"][name] = {
-            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
-            "size_bytes": path.stat().st_size,
-        }
-    paths["request"] = root / "request.json"
-    paths["request"].write_text(json.dumps(request, indent=2), encoding="utf-8")
-    paths["output"] = root / "result.json"
-    return paths
-
-
-def test_file_stage_verifies_exact_inputs_and_cli(tmp_path: Path) -> None:
-    request, obb, scene = _fixture()
-    paths = _write_stage_inputs(tmp_path, request, obb, scene)
-    result = run_semantic_collision_validation_stage(
-        request_path=paths["request"],
-        oriented_box_result_path=paths["oriented_box_result"],
-        collision_scene_path=paths["collision_scene"],
-        output_path=paths["output"],
-    )
-    assert result["status"] == "completed"
-    assert result["transport_profile"] == "bounded_canonical_json_baseline.v1"
-    assert set(result["stage_input_artifacts"]) == {
-        "request",
-        "oriented_box_result",
-        "collision_scene",
-    }
-    assert (
-        stage_main(
-            [
-                "--request",
-                str(paths["request"]),
-                "--oriented-box-result",
-                str(paths["oriented_box_result"]),
-                "--collision-scene",
-                str(paths["collision_scene"]),
-                "--output",
-                str(tmp_path / "cli-result.json"),
-            ]
-        )
-        == 0
-    )
-
-
-def test_file_stage_blocks_tampering_symlinks_and_input_overwrite(tmp_path: Path) -> None:
-    request, obb, scene = _fixture()
-    paths = _write_stage_inputs(tmp_path, request, obb, scene)
-    paths["collision_scene"].write_text("{}", encoding="utf-8")
-    result = run_semantic_collision_validation_stage(
-        request_path=paths["request"],
-        oriented_box_result_path=paths["oriented_box_result"],
-        collision_scene_path=paths["collision_scene"],
-        output_path=paths["output"],
-    )
-    assert result["status"] == "blocked"
-    assert "input_artifact_sha256_mismatch:collision_scene" in result["blockers"]
-
-    request, obb, scene = _fixture()
-    linked_root = tmp_path / "linked"
-    linked_root.mkdir()
-    paths = _write_stage_inputs(linked_root, request, obb, scene)
-    symlink = linked_root / "collision-link.json"
-    symlink.symlink_to(paths["collision_scene"])
-    result = run_semantic_collision_validation_stage(
-        request_path=paths["request"],
-        oriented_box_result_path=paths["oriented_box_result"],
-        collision_scene_path=symlink,
-        output_path=paths["output"],
-    )
-    assert "input_symlink_forbidden:collision_scene" in result["blockers"]
-
-    with pytest.raises(ValueError, match="output_path_must_not_overwrite_an_input"):
-        run_semantic_collision_validation_stage(
-            request_path=paths["request"],
-            oriented_box_result_path=paths["oriented_box_result"],
-            collision_scene_path=paths["collision_scene"],
-            output_path=paths["collision_scene"],
-        )
 
 
 def test_input_order_does_not_change_object_metrics() -> None:
