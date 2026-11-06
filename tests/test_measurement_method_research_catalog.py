@@ -160,3 +160,14 @@ def test_catalog_entry_bridges_to_r0_admission_without_eligibility() -> None:
     assert record["stage"] == "R0"
     assert record["production_eligible"] is False
     assert admission_supports_production_route(record) is False
+
+
+def test_mujoco_candidate_requires_q_gran_and_declares_rigid_sphere_limit() -> None:
+    mujoco_candidate = next(
+        row for row in research_intake_catalog() if row["candidate_id"] == "mujoco-3"
+    )
+    assert "Q-GRAN" in mujoco_candidate["required_qualification_protocols"]
+    assert (
+        "rigid_sphere_contact_is_not_dem_or_characterized_granular_authority"
+        in mujoco_candidate["known_limitations"]
+    )
