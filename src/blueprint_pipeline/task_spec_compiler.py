@@ -29,9 +29,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .task_predicates import region_distance, seal_predicates, validate_predicates
+from .task_instruction import object_label, placement_instruction
+from .task_predicates import COMPILED_TASK_SPEC_SCHEMA, region_distance, seal_predicates, validate_predicates
 
-SCHEMA = "blueprint.compiled_task_spec.v1"
+SCHEMA = COMPILED_TASK_SPEC_SCHEMA
 CLAIM_CEILING = "development_only"
 
 #: The scene's metric-scale reading, as the placement and reconstruction steps record it.
@@ -50,10 +51,9 @@ CONTACT_FORCE_THRESHOLD_N = 1.0
 #: Samples the subject must stay in its goal at the end, at the policy's control rate.
 DEFAULT_HOLD_SAMPLES = 10
 MARKER_COLOURS = ("green", "yellow")
-
-_RELATIONS = frozenset({"on", "in", "into", "inside", "onto", "at", "from", "near", "under", "beside", "by",
-                        "next", "with", "behind", "above", "below", "against", "over", "to", "for", "that",
-                        "which", "and", "or"})
+#: One default whatever the task; a policy interface that was trained on another colour
+#: restyles the marker when its packet is rendered. Colour is never keyed on task kind.
+DEFAULT_MARKER_COLOUR = "green"
 
 
 class TaskSpecCompileError(ValueError):
@@ -96,41 +96,12 @@ def requirements(*, locomote: bool, manipulate: bool, reach_m: float | None = No
     return {"locomote": locomote, "manipulate": manipulate, "reach_m": reach_m, "payload_kg": payload_kg}
 
 
-def object_label(label: Any) -> str | None:
-    """A label's object noun phrase, without its location ("tray on the table" -> "tray")."""
-    if not isinstance(label, str) or not label.strip():
-        return None
-    words = label.strip().split()
-    end = next((index for index, word in enumerate(words) if word.lower().strip(",.;:") in _RELATIONS
-                and index > 0), len(words))
-    phrase = " ".join(words[:end]).strip(" ,.;:")
-    phrase = re.sub(r"^(the|a|an)\s+", "", phrase, flags=re.IGNORECASE)
-    return phrase or None
-
-
 def locomotion_instruction(*, colour: str, goal_label: str | None, obstacle_label: str | None) -> str:
     goal = f"the {colour} marked area" + (f" {goal_label.strip()}" if goal_label and goal_label.strip() else "")
     obstacles = obstacle_label.strip() if obstacle_label and obstacle_label.strip() else "anything"
     if obstacles != "anything" and not re.match(r"^(the|a|an)\s", obstacles, flags=re.IGNORECASE):
         obstacles = "the " + obstacles
     return f"Move to {goal} without touching {obstacles}."
-
-
-def placement_instruction(*, subject_label: Any, destination_label: Any, relation: str, colour: str) -> str:
-    """Name the subject once, the destination once, and the marked area the policy can see.
-
-    The subject's own location never leaks into it ("tray on the table" is the tray), so
-    a destination on the surface the subject already stands on is not named twice.
-    """
-    subject = object_label(subject_label)
-    destination = object_label(destination_label)
-    _require(subject is not None, "task_spec_subject_label_missing")
-    _require(relation in ("on", "inside"), "task_spec_destination_relation_invalid")
-    if relation == "inside":
-        _require(destination is not None, "task_spec_destination_label_missing")
-        return f"Pick up the {subject} and put it inside the {destination}."
-    marked = f"the {colour} marked area" + (f" on the {destination}" if destination else "")
-    return f"Pick up the {subject} and place it on {marked}."
 
 
 def goal_radius(*, base_m: float, start: Sequence[float], goal: Sequence[float],
@@ -186,18 +157,27 @@ def _locomotion(brief: Mapping[str, Any], scene: Mapping[str, Any], spec: dict[s
     _require(floor is not None, "task_spec_floor_height_missing")
     path = scene.get("filmed_path_world_m")
     filmed = [_point(row, "task_spec_filmed_path_invalid") for row in path] if path else []
+    # An anchor names where it came from; only a reviewed anchor is not a guess.
     if anchors.get("start_world_m") is not None:
-        start, start_source = _point(anchors["start_world_m"], "task_spec_start_invalid"), "reviewed_anchor"
+        start = _point(anchors["start_world_m"], "task_spec_start_invalid")
+        start_source = str(anchors.get("start_source") or "reviewed_anchor")
     else:
         _require(len(filmed) >= 2, "task_spec_start_unresolved")
         start, start_source = filmed[0], "filmed_path_start"
-        flags.append("start_from_filmed_path")
     if anchors.get("goal_world_m") is not None:
-        goal, goal_source = _point(anchors["goal_world_m"], "task_spec_goal_invalid"), "reviewed_anchor"
+        goal = _point(anchors["goal_world_m"], "task_spec_goal_invalid")
+        goal_source = str(anchors.get("goal_source") or "reviewed_anchor")
     else:
         _require(len(filmed) >= 2, "task_spec_goal_unresolved")
         goal, goal_source = filmed[-1], "filmed_path_endpoint"
+    if start_source != "reviewed_anchor":
+        flags.append("start_from_filmed_path")
+    if goal_source != "reviewed_anchor":
         flags.append("goal_from_filmed_path")
+    if goal_source == "filmed_path_cleared_of_obstacles":
+        flags.append("goal_pulled_back_for_obstacle_clearance")
+    if start_source == "filmed_path_cleared_of_obstacles":
+        flags.append("start_moved_for_obstacle_clearance")
     start, goal = [start[0], start[1], floor], [goal[0], goal[1], floor]
     scale = spec["metric_scale"]["status"]
     radius, radius_flags = goal_radius(base_m=float(brief.get("goal_tolerance_m") or GOAL_RADIUS_MIN_M),
@@ -212,7 +192,7 @@ def _locomotion(brief: Mapping[str, Any], scene: Mapping[str, Any], spec: dict[s
                      "region": {"shape": "disc", "center_world_m": start, "radius_m": START_RADIUS_M},
                      "facing_world_m": goal, "source": start_source}
     goal_region = {"shape": "disc", "center_world_m": goal, "radius_m": radius}
-    colour = brief.get("marker_colour") or "yellow"
+    colour = brief.get("marker_colour") or DEFAULT_MARKER_COLOUR
     _require(colour in MARKER_COLOURS, "task_spec_marker_colour_invalid")
     spec["markers"] = [{"predicate_id": "goal", "shape": "flat_disc", "colour": colour,
                         "position_world_m": goal, "radius_m": radius, "non_colliding": True,
@@ -255,7 +235,7 @@ def _placement(brief: Mapping[str, Any], scene: Mapping[str, Any], spec: dict[st
         flags.append("goal_moved_off_start")
     region = {"shape": "box", "center_world_m": goal,
               "half_extents_m": [tolerance, tolerance, max(0.02, float((subject.get("half_extents_m") or [0, 0, 0.05])[2]))]}
-    colour = brief.get("marker_colour") or "green"
+    colour = brief.get("marker_colour") or DEFAULT_MARKER_COLOUR
     _require(colour in MARKER_COLOURS, "task_spec_marker_colour_invalid")
     spec["start"] = {"subject": {"kind": "object", "object_id": subject_id},
                      "region": {"shape": "disc", "center_world_m": start, "radius_m": max(footprint, 0.01)},

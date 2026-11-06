@@ -139,12 +139,24 @@ def _read(path: Path) -> dict[str, Any]:
     return value
 
 
+#: A parked delivery the owner retired (``website_preparation_delivery_retirement``): terminal for
+#: its revision, never due, retried or counted; a newer producer revision starts a new delivery.
+RETIRED_STATE = "retired"
+RETIRED_REASON = "owner_retired_parked_delivery"
+MAX_RETIREMENT_EVIDENCE = 500
+
+
 def _read_delivery(path: Path) -> dict[str, Any]:
     """Only a valid scheduling record may receive canonical retry bookkeeping."""
     value = _read(path)
     _require(value.get("schema_version") == "website_preparation_status_delivery.v1"
-             and value.get("state") in {"pending", "delivered"}
+             and value.get("state") in {"pending", "delivered", RETIRED_STATE}
              and type(value.get("revision")) is int and value["revision"] > 0)
+    if value["state"] == RETIRED_STATE:
+        retired_at, evidence = value.get("retired_at_epoch"), value.get("retirement_approval_evidence")
+        _require(type(retired_at) in (int, float) and math.isfinite(retired_at) and retired_at >= 0
+                 and value.get("retired_reason") == RETIRED_REASON
+                 and isinstance(evidence, str) and 1 <= len(evidence) <= MAX_RETIREMENT_EVIDENCE)
     validate_selectors(value.get("selectors"))
     for field in ("delivery_attempt_count", "delivery_failure_count"):
         counter = value.get(field, 0)
@@ -431,6 +443,10 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
         _require(type(revision) is int and revision > 0)
         path = root / DELIVERY_FILE
         old = _read_delivery(path) if path.is_file() else {}
+        if old.get("state") == RETIRED_STATE and old.get("revision") == revision:
+            # The owner retired this revision's delivery: it stays retired, and its hint stays gone.
+            update_index(root, old)
+            return
         if old.get("selectors") == selected and old.get("revision") == revision:
             if old.get("state") == "pending" and "pending_since_epoch" not in old:
                 old = {**old, "pending_since_epoch": time.time(), "next_attempt_at_epoch": 0.0}

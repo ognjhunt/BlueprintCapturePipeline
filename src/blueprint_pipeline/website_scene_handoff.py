@@ -355,6 +355,29 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result.update(geometry_backend=atlas["source_geometry"]["geometry_backend"],
                           source_geometry_digest=atlas["source_geometry"]["digest"])
             return retain_gap(gap)
+        from .task_profile_contracts import task_profile_for
+        from .website_task_semantics import effective_task_profile
+        resolved = task_profile_for(effective_task_profile(task_context=context, **semantics_options))
+        if resolved is not None and not resolved.requires_manipulation:
+            # The robot moves itself: the scene stays as filmed, and the task compiles from
+            # its own facts (floor, obstacles, the filmed route). Robot and policy are chosen
+            # by the spec's requirements; with none runnable here the hold names each piece.
+            from .task_spec_compiler import requirements as task_requirements
+            from .website_locomotion_task import SPEC_FILE, compile_locomotion_spec, runnable_policy_gap, scene_facts
+            need = task_requirements(locomote=resolved.requires_locomotion, manipulate=False)
+            facts = scene_facts(base_scene=base, camera_path_levelled_m=atlas.get("camera_path_levelled_m") or [])
+            spec = compile_locomotion_spec(task_context=context, facts=facts, requirements=need)
+            write_json(root / SPEC_FILE, spec)
+            result.update(geometry_backend=atlas["source_geometry"]["geometry_backend"],
+                          source_geometry_digest=atlas["source_geometry"]["digest"],
+                          compiled_task_spec_path=str(root / SPEC_FILE), compiled_task_spec_digest=spec["spec_digest"])
+            held = runnable_policy_gap(task_context=context, requirements=need, spec_digest=spec["spec_digest"],
+                                       task_semantics=semantics_options["task_semantics"],
+                                       source_video_digest=source_video_digest)
+            if held is None:
+                # A runnable policy exists but its execution route is not built: say so, typed.
+                raise ValueError("website_locomotion_task_execution_route_missing")
+            return retain_gap(held)
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile

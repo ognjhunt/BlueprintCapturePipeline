@@ -1879,7 +1879,10 @@
       ],
       "properties": {
         "schema_version": {
-          "const": "task_evaluation_surface_target.v1"
+          "enum": ["task_evaluation_surface_target.v1", "task_evaluation_surface_target.v2"]
+        },
+        "success_rule": {
+          "const": "subject_centre_within_radius"
         },
         "shape": {
           "const": "flat_green_disc"
@@ -1946,7 +1949,13 @@
       "dependentRequired": {
         "placement_relation": ["interior_bounds_world_m"],
         "interior_bounds_world_m": ["placement_relation"]
-      }
+      },
+      "if": {
+        "properties": {"schema_version": {"const": "task_evaluation_surface_target.v2"}},
+        "required": ["schema_version"]
+      },
+      "then": {"required": ["success_rule"]},
+      "else": {"not": {"required": ["success_rule"]}}
     }
   }
 }

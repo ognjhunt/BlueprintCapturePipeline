@@ -366,6 +366,27 @@ def _g1_runtime_source_properties(config: DoorConfig, _request: dict[str, Any]) 
             f"ReadWritePaths=/mnt/blueprint-work {reservations} {Path(config.spool_root) / 'results'}")
 
 
+def _parked_delivery_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_SERVICE_USER": "blueprint",
+            "DOOR_PARKED_DELIVERY_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
+
+
+def _parked_delivery_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
+    """Writes one capture's delivery record, the delivery index beside the captures and its result;
+    no network and every secret hidden. The capture path was validated with the request."""
+    # "-": a capture whose workspace was retired is absent; systemd would refuse to start the unit
+    # (226/NAMESPACE) instead of letting the module retire its orphaned hint.
+    writable = " ".join((f"-{_PUBSUB_HANDOFFS}/{request['capture']}", f"{_PUBSUB_HANDOFFS}/.website_preparation_pending",
+                         str(Path(config.spool_root) / "results")))
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+            "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
+            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
+            f"ReadWritePaths={writable}")
+
+
 @dataclass(frozen=True)
 class _LaunchSpec:
     """How one request kind becomes one transient ``.service`` unit running one installed script."""
@@ -478,6 +499,12 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         "blueprint-operator-door-g1-runtime-source", "door-restore-g1-runtime-source.sh", "2h",
         lambda request: hashlib.sha256(("apply" if request["apply"] else "plan").encode("utf-8")).hexdigest()[:12],
         _g1_runtime_source_environment, _g1_runtime_source_properties),
+    # Named by a hash of the capture and the mode; the approval text never reaches a unit name.
+    "retire-parked-delivery": _LaunchSpec(
+        "blueprint-operator-door-parked-delivery", "door-retire-parked-delivery.sh", "5min",
+        lambda request: hashlib.sha256((request["capture"] + ("/apply" if request["apply"] else "/plan"))
+                                       .encode("utf-8")).hexdigest()[:12],
+        _parked_delivery_environment, _parked_delivery_properties),
     "lane-scratch": _LaunchSpec("blueprint-operator-door-scratch", "door-lane-scratch.sh", "2min",
                                 lambda request: hashlib.sha256((request["lane"] + "/" + request.get("name", ""))
                                                                 .encode("utf-8")).hexdigest()[:12],
@@ -603,7 +630,8 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
     }
     callers = {"extend-scene-execution-window": "scene_window_caller_invalid",
                "extend-scene-execution-budget": "scene_budget_caller_invalid",
-               "confirm-owner-success-contract": "owner_success_caller_invalid"}
+               "confirm-owner-success-contract": "owner_success_caller_invalid",
+               "retire-parked-delivery": "parked_delivery_caller_invalid"}
     if request["kind"] in callers:
         # The authenticated token name, recorded in the extension or confirmation as who asked.
         if not isinstance(requested_by, str) or _CALLER.fullmatch(requested_by) is None:

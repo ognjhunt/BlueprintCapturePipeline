@@ -443,6 +443,18 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
     if automation:
         referenced = {r["frame_id"] for r in automation["scale_references"]}
         referenced |= {r["frame_id"] for obj in automation["objects"] for r in obj["regions"]}
+        # A view the review cites as evidence (a scale reference, an object's region) is an
+        # input: a safe survey frame inside the static intervals that the review cited but did
+        # not list is added as surrounding coverage and flagged, rather than failing the whole
+        # job (capture-5b067498, 2026-11-06: one cited frame of seven failed its third review).
+        # A cited frame that is unsafe, unsurveyed or outside the intervals still refuses.
+        cited = referenced - (required | additional)
+        if cited and cited <= selected and not cited & unsafe:
+            value["coverage_requirements"] = [*value["coverage_requirements"], {
+                "role": "surrounding_scene", "label": "Views the review cites as evidence",
+                "required_frame_ids": sorted(cited)}]
+            required |= cited
+            value["cited_frames_added_to_coverage"] = sorted(cited)
         if not referenced <= required | additional or referenced & unsafe:
             raise ValueError("atlas_automation_frames_not_selected")
     # Hold the required RGBD coverage aside before selecting pose inputs.
@@ -466,6 +478,8 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
             **({"automation": automation, "scale_reference_sources": list(reference_sources)} if automation else {}),
             **{k: value[k] for k in ("scene_state", "static_intervals_seconds", "anchor_frame_id",
                 "coverage_requirements", "uncaptured_regions", "selection_policy")},
+            **({"cited_frames_added_to_coverage": value["cited_frames_added_to_coverage"]}
+               if "cited_frames_added_to_coverage" in value else {}),
             "moving_people_excluded": True, "same_scene_state": True,
             "reviewed_by": "production_agents_sdk:" + policy["model"],
             "review_basis": "model_proposal_not_physical_or_privacy_proof",

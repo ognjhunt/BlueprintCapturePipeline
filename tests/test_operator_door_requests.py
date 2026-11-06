@@ -256,6 +256,37 @@ def test_g1_runtime_source_restore_takes_only_apply() -> None:
         assert caught.value.code == code
 
 
+PARKED_CAPTURE = ("blueprint-8c1ca.appspot.com/scenes/site-capture-36ad8b1d/captures/"
+                  "walkthrough-capture-36ad8b1d")
+
+
+def test_parked_delivery_retirement_takes_one_capture_path_and_the_owner_approval() -> None:
+    """The capture path reaches a unit's writable paths, so only the index's own shape is admitted."""
+    body = {"kind": "retire-parked-delivery", "capture": PARKED_CAPTURE, "approval_evidence": "owner: retire the 7"}
+    assert validate_request(body) == {**body, "apply": False}
+    assert validate_request({**body, "apply": True}) == {**body, "apply": True}
+    assert required_scope("retire-parked-delivery") == "operate"
+    for change, code in (
+            ({"capture": "/var/lib/blueprint/pubsub-handoffs/" + PARKED_CAPTURE}, "parked_delivery_capture_invalid"),
+            ({"capture": PARKED_CAPTURE + "/raw"}, "parked_delivery_capture_invalid"),
+            ({"capture": PARKED_CAPTURE.replace("walkthrough-", "../")}, "parked_delivery_capture_invalid"),
+            ({"capture": "bucket/scenes/site-a/captures/../../x/captures/walkthrough-a"},
+             "parked_delivery_capture_invalid"),
+            ({"capture": PARKED_CAPTURE + " /etc"}, "parked_delivery_capture_invalid"),
+            ({"capture": "bucket/scenes/scene-a/captures/walkthrough-a"}, "parked_delivery_capture_invalid"),
+            ({"capture": None}, "parked_delivery_capture_invalid"),
+            ({"approval_evidence": ""}, "parked_delivery_approval_evidence_invalid"),
+            ({"approval_evidence": " padded"}, "parked_delivery_approval_evidence_invalid"),
+            ({"approval_evidence": "two\nlines"}, "parked_delivery_approval_evidence_invalid"),
+            ({"approval_evidence": "x" * 501}, "parked_delivery_approval_evidence_invalid"),
+            ({"apply": "yes"}, "parked_delivery_apply_invalid"),
+            ({"apply": 1}, "parked_delivery_apply_invalid"),
+            ({"path": "/var/lib/blueprint"}, "request_key_unknown:path")):
+        with pytest.raises(RequestRefused) as caught:
+            validate_request({**body, **change})
+        assert caught.value.code == code
+
+
 def test_door_upgrade_needs_a_commit() -> None:
     assert validate_request({"kind": "door-upgrade", "commit": SHA}) == {"kind": "door-upgrade", "commit": SHA}
     assert required_scope("door-upgrade") == "deploy"

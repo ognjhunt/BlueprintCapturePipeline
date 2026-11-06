@@ -41,6 +41,8 @@ def _subject_label(task_spec: Mapping[str, Any]) -> str:
         or task_spec.get("task_id")
         or "task object"
     ).lower()
+    # Legacy fallback for specs without a subject label (the ADP fixtures); every website
+    # task spec carries ``instruction_subject_label`` and never reaches this.
     if "mug" in identity or "cup" in identity:
         return "mug"
     words = [
@@ -82,9 +84,12 @@ def concrete_droid_task_instruction(task_spec: Mapping[str, Any]) -> str:
     if strategy == "pick_and_place":
         if relation not in {"inside", "on"}:
             raise ValueError("droid_policy_canary_destination_relation_invalid")
-        action = verb or "Pick up and place"
-        preposition = "into" if relation == "inside" else "on"
-        return f"{action} the {subject} {preposition} the {target}."
+        # The subject once, without its own location ("tray on the table" is the tray), and
+        # the marked destination the policy can see (capture-447 read "...the wooden tray
+        # on the dining table on the wooden dining table.").
+        from .task_instruction import placement_instruction
+        return placement_instruction(subject_label=subject, destination_label=target, relation=relation,
+                                     colour="green")
     if not verb:
         verb = "Push" if strategy == "planar_push" else "Move"
     return f"{verb} the {subject} onto the {target}."

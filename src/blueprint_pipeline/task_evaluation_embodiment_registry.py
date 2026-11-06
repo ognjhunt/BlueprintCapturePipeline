@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 from typing import Literal
 
@@ -79,10 +80,18 @@ class EmbodimentProfile:
     status: EmbodimentStatus
     missing: tuple[str, ...] = ()
     reason: str | None = None
+    #: The catalog interfaces' ``robot_profile_id`` values that run on this body.
+    policy_robot_profile_ids: tuple[str, ...] = ()
 
     @property
     def available(self) -> bool:
         return self.status == "runnable"
+
+    def meets(self, requirements: Mapping[str, Any]) -> bool:
+        """Whether this body can do what a compiled task requires: chosen by need, never by task kind."""
+        if requirements.get("locomote") and self.mobility == "fixed":
+            return False
+        return not (requirements.get("manipulate") and self.arm_count < 1)
 
 
 def _arm(embodiment_id: str, robot: str, arm_count: int = 1, **interface) -> EmbodimentProfile:
@@ -136,6 +145,7 @@ EMBODIMENT_REGISTRY: tuple[EmbodimentProfile, ...] = (
         simulator_runtime_id="isaac_native_arena_v1",
         sensor_reference=f"{DROID_ARENA_SOURCE_PATH}@{DROID_ARENA_SOURCE_REVISION}",
         task_profile_ids=FIXED_ARM_TASK_PROFILES, status="runnable",
+        policy_robot_profile_ids=("droid_franka_panda_robotiq_2f85_v1",),
     ),
     EmbodimentProfile(
         embodiment_id=G1_EMBODIMENT_ID,
@@ -147,6 +157,7 @@ EMBODIMENT_REGISTRY: tuple[EmbodimentProfile, ...] = (
         task_profile_ids=("rigid_pick_place",), status="unavailable",
         missing=("verified_site_episode", "reviewed_checkpoint_terms"),
         reason="No production policy-canary profile has executed a verified G1 episode on a site scene, and its checkpoint terms are pending review.",
+        policy_robot_profile_ids=("unitree_g1_dex3_sonic_v1",),
     ),
     EmbodimentProfile(
         embodiment_id="boston_dynamics_atlas",

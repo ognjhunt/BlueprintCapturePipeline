@@ -875,6 +875,33 @@ def test_waiting_on_the_g1_runtime_source_restore_exits_by_its_outcome(door: dic
     assert code == exit_code and json.loads(out)["outcome"] == outcome
 
 
+def test_client_submits_a_parked_delivery_retirement_as_a_plan_or_an_apply(door: dict[str, Any]) -> None:
+    capture = "bucket/scenes/site-a/captures/walkthrough-a"
+    for extra, apply in (((), False), (("--apply",), True)):
+        code, out = _run("retire-parked-delivery", capture, "--approval-evidence", "owner: retire the 7", *extra)
+        request_id = json.loads(out)["id"]
+        assert re.fullmatch(r"\d{8}T\d{6}Z-retire-parked-delivery-[0-9a-f]{8}", request_id)
+        spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
+        assert code == 0 and spooled["request"] == {"kind": "retire-parked-delivery", "capture": capture,
+                                                    "approval_evidence": "owner: retire the 7", "apply": apply}
+
+
+@pytest.mark.parametrize(("status", "exit_code"), [("planned", 0), ("retired", 0), ("already_retired", 0),
+                                                   ("refused", 1), ("failed", 1)])
+def test_waiting_on_a_parked_delivery_retirement_exits_by_its_outcome(door: dict[str, Any], status: str,
+                                                                      exit_code: int) -> None:
+    code, out = _run("retire-parked-delivery", "bucket/scenes/site-a/captures/walkthrough-a",
+                     "--approval-evidence", "owner", "--apply")
+    request_id = json.loads(out)["id"]
+    results = door["state"] / "requests" / "results"
+    (results / f"{request_id}.json").write_text(json.dumps({"status": "launched", "unit": "u.service"}))
+    outcome = {"status": status, "code": "parked_delivery_not_parked" if status == "refused" else None,
+               "exit_code": 0 if exit_code == 0 else 2}
+    (results / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
+    code, out = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+    assert code == exit_code and json.loads(out)["outcome"] == outcome
+
+
 def test_a_retirement_needs_the_operate_scope(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run("retire-scene-workspace", "site-capture-1")[0] == 3
