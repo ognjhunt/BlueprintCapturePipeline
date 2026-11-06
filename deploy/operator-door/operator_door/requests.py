@@ -40,6 +40,12 @@ active release's restore of the shared G1 runtime source packet and its receipt
 from the retained object-store copy. Every identity is pinned in that module; the
 request carries only ``apply``. It overwrites nothing, starts no compute and moves
 no money.
+``retire-parked-delivery`` (``operate``) plans, or with ``apply`` performs, the
+active release's owner-approved retirement of one parked website preparation
+delivery (``website_preparation_delivery_retirement``): one capture-relative path
+of the shape the delivery index keys, and the owner's approval text. It moves
+that delivery's record to its terminal ``retired`` state, keeping every field;
+it changes nothing else, deletes nothing, starts no compute and moves no money.
 """
 
 from __future__ import annotations
@@ -102,6 +108,8 @@ _SCOPES = {
     "confirm-owner-success-contract": "operate",
     # Restores the pinned G1 runtime source packet and receipt from the retained object-store copy.
     "restore-g1-runtime-source": "operate",
+    # Retires one parked website preparation delivery on the owner's recorded approval.
+    "retire-parked-delivery": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -129,12 +137,17 @@ if DISPATCHER_HOLD_ONLY:
     # then "do all this") the G1 runtime source restore: it restores one
     # pinned, digest-verified packet and its receipt from the retained
     # object-store copy to the paths the shared G1 registry already names,
-    # overwrites nothing, starts no compute and moves no money.
+    # overwrites nothing, starts no compute and moves no money. The owner
+    # approved (2026-11-06, verbatim: "yes retire the 7") retiring the parked
+    # preparation deliveries: one parked delivery's record moves to its
+    # terminal state with that approval on it; nothing is deleted, no compute
+    # starts and no money moves.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
-                           "confirm-owner-success-contract", "restore-g1-runtime-source"}}
+                           "confirm-owner-success-contract", "restore-g1-runtime-source",
+                           "retire-parked-delivery"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
@@ -142,6 +155,11 @@ ACTIVATION_HOLD_OVERRIDE = re.compile(r"[a-z0-9][a-z0-9_:.-]{0,63}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]")
+# A capture's path under the handoff storage root, the shape the preparation delivery index keys
+# (website_preparation_delivery_retirement.CAPTURE_PATH): it reaches a unit's writable paths.
+_DELIVERY_CAPTURE = re.compile(
+    r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]/scenes/site-[A-Za-z0-9][A-Za-z0-9._-]{0,122}"
+    r"/captures/(?:walkthrough|supplement)-[A-Za-z0-9][A-Za-z0-9._-]{0,114}")
 _REQUEST_ID = re.compile(
     r"[0-9]{8}T[0-9]{6}Z-(" + "|".join(re.escape(kind) for kind in sorted(_SCOPES)) + r")-[0-9a-f]{8}"
 )
@@ -553,6 +571,18 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if type(apply) is not bool:
             raise RequestRefused("g1_runtime_source_apply_invalid")
         return {"kind": kind, "apply": apply}
+    if kind == "retire-parked-delivery":
+        _only(body, ("kind", "capture", "approval_evidence", "apply"))
+        capture, evidence, apply = body.get("capture"), body.get("approval_evidence"), body.get("apply", False)
+        if (not isinstance(capture, str) or not _DELIVERY_CAPTURE.fullmatch(capture)
+                or ".." in capture.split("/")):
+            raise RequestRefused("parked_delivery_capture_invalid")
+        if (not isinstance(evidence, str) or evidence != evidence.strip()
+                or not 1 <= len(evidence) <= 500 or not evidence.isprintable()):
+            raise RequestRefused("parked_delivery_approval_evidence_invalid")
+        if type(apply) is not bool:
+            raise RequestRefused("parked_delivery_apply_invalid")
+        return {"kind": kind, "capture": capture, "approval_evidence": evidence, "apply": apply}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")

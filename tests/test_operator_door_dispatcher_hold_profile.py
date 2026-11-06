@@ -35,7 +35,7 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "restore-g1-runtime-source"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "restore-g1-runtime-source", "retire-parked-delivery"}
 # The owner-approved, time-only scene window extension passes the fence.
 assert r.required_scope("extend-scene-execution-window") == "operate"
 assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")
@@ -70,6 +70,15 @@ assert r.validate_request({"kind":"restore-g1-runtime-source", "apply":True}) ==
 try: r.validate_request({"kind":"restore-g1-runtime-source", "apply":True, "path":"/mnt/blueprint-work"})
 except r.RequestRefused as e: assert e.code == "request_key_unknown:path"
 else: raise AssertionError("caller path admitted for the G1 runtime source restore")
+# So does the owner-approved retirement of one parked preparation delivery, as plan and as apply.
+assert r.required_scope("retire-parked-delivery") == "operate"
+assert r.validate_request_id("20261106T000000Z-retire-parked-delivery-0123abcd")
+parked = {"kind":"retire-parked-delivery", "capture":"bucket/scenes/site-a/captures/walkthrough-a", "approval_evidence":"owner"}
+assert r.validate_request(parked) == {**parked, "apply":False}
+assert r.validate_request({**parked, "apply":True}) == {**parked, "apply":True}
+try: r.validate_request({**parked, "capture":"bucket/scenes/site-a/captures/walkthrough-a/../../../x"})
+except r.RequestRefused as e: assert e.code == "parked_delivery_capture_invalid"
+else: raise AssertionError("an unsafe capture path admitted for a parked delivery retirement")
 assert r.required_scope("public-embodiment-preparation") == "operate"
 assert r.validate_request_id("20261029T000000Z-public-embodiment-preparation-0123abcd")
 commit = "a" * 40

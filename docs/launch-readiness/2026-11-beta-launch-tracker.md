@@ -63,6 +63,7 @@ The next production job, driven by a cloud session: a navigation task, chosen as
   - Verdicts across the 96 entries: 77 keep, 18 tighten, 1 fix now (`wam_compute_providers.py` `_deepinfra_download_file`), 0 orphaned, 0 new MEDIUM or HIGH.
   - The latest allowed expiry for an entry signed today is 2027-02-04.
   - Nothing in `docs/bandit_triage.json` is changed until the owner signs off.
+- **Parked deliveries (owner, 11-06: "yes retire the 7").** The 7 parked preparation deliveries are owner test captures from 10-28/29 whose status read cannot succeed since WebApp #1113. The door operation `retire-parked-delivery` retires them once it is deployed and the door is upgraded (`upgrade-door`). It is general: any delivery parked for a day can be retired, with the owner's approval on its record. Nothing is deleted, and a newer revision starts a new delivery.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
