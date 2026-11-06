@@ -51,7 +51,7 @@ NAVIGATION_PIPELINE_PIECES = (
     "arena_navigation_scene_runtime",             # scene plan, runtime and readback without a task object
     "g1_navigation_preparation",                  # G1 stance at the compiled start, cells, registration
 )
-BUILT_NAVIGATION_PIECES = frozenset({"navigation_task_spec_from_compiled_spec"})
+BUILT_NAVIGATION_PIECES = frozenset({"navigation_task_spec_from_compiled_spec", "navigation_scene_assets"})
 NAVIGATION_TASK_FILE = "navigation_task_spec.json"
 
 
@@ -187,8 +187,14 @@ def _policy_serves(row: Mapping[str, Any], requirements: Mapping[str, Any],
 
 
 def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, Any] | None = None,
-                     served: Mapping[str, Mapping[str, bool]] | None = None) -> dict[str, Any]:
-    """Bodies and policies that could do this job, each with what it still lacks here."""
+                     served: Mapping[str, Mapping[str, bool]] | None = None,
+                     built_pieces: frozenset[str] | None = None) -> dict[str, Any]:
+    """Bodies and policies that could do this job, each with what it still lacks here.
+
+    ``built_pieces`` is what exists for this job (the code's ``BUILT_NAVIGATION_PIECES`` less any
+    that failed for it); it is recorded so the hold contract re-checks the same pieces.
+    """
+    built = BUILT_NAVIGATION_PIECES if built_pieces is None else frozenset(built_pieces)
     from .task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY
 
     served = policy_requirements_served() if served is None else served
@@ -203,12 +209,13 @@ def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, A
         if body is None or not (row.get("eligibility") or {}).get("enabled") or not _policy_serves(row, requirements, served):
             continue
         missing = [*(f"embodiment:{item}" for item in body.missing),
-                   *(f"pipeline:{piece}" for piece in NAVIGATION_PIPELINE_PIECES if piece not in BUILT_NAVIGATION_PIECES)] \
+                   *(f"pipeline:{piece}" for piece in NAVIGATION_PIPELINE_PIECES if piece not in built)] \
             if requirements.get("locomote") else [*(f"embodiment:{item}" for item in body.missing)]
         missing += [f"catalog:{code}" for code in (row.get("eligibility") or {}).get("blockers") or []]
         policies.append({"candidate_id": row["candidate_id"], "embodiment_id": body.embodiment_id,
                          "runnable": not missing, "missing": missing})
     return {"requirements": dict(requirements),
+            **({"navigation_pieces_built": sorted(built)} if requirements.get("locomote") else {}),
             "embodiments": [{"embodiment_id": row.embodiment_id, "robot": row.robot, "mobility": row.mobility,
                              "status": row.status, "missing": list(row.missing)} for row in bodies],
             "policies": policies}

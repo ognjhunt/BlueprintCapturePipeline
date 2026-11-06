@@ -12,6 +12,7 @@ from blueprint_pipeline.task_profile_contracts import task_profile_for
 from blueprint_pipeline.task_spec_compiler import requirements
 from blueprint_pipeline.task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY
 from blueprint_pipeline.website_locomotion_task import (
+    BUILT_NAVIGATION_PIECES,
     HOLD_CODE,
     compile_locomotion_spec,
     obstacle_distance,
@@ -139,8 +140,12 @@ def test_the_hold_names_each_missing_piece_and_is_re_derived(tmp_path) -> None:
     context = _context()
     gap = runnable_policy_gap(task_context=context, requirements=WALK, spec_digest="sha256:" + "c" * 64)
     assert gap["code"] == HOLD_CODE and gap["job_disposition"] == "held_for_preparation"
-    assert {"pipeline:navigation_scene_assets", "pipeline:arena_navigation_scene_runtime",
-            "pipeline:g1_navigation_preparation"} <= set(gap["missing"])
+    assert {"pipeline:arena_navigation_scene_runtime", "pipeline:g1_navigation_preparation"} <= set(gap["missing"])
+    assert "pipeline:navigation_scene_assets" not in gap["missing"]
+    assert gap["runnable_options"]["navigation_pieces_built"] == sorted(BUILT_NAVIGATION_PIECES)
+    # A job whose scene files could not be authored names that piece itself.
+    failed = runnable_options(WALK, built_pieces=BUILT_NAVIGATION_PIECES - {"navigation_scene_assets"})
+    assert all("pipeline:navigation_scene_assets" in row["missing"] for row in failed["policies"])
     assert "Unitree G1" in gap["reason"]
     handoff = {"schema_version": "website_scene_handoff.v1", "scene_id": "site-a", "capture_id": "walkthrough-a",
                "status": "needs_input", "blockers": [HOLD_CODE], "simulator_ready": False,
