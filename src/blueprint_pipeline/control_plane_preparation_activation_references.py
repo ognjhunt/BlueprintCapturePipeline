@@ -61,7 +61,7 @@ _STRUCTURED = {
     "task": "identity destination subject definition success_criteria execution surface_target",
     "task.subject": "identity asset physics_validation rights_admission source_object",
     "task.destination": "identity asset rights_admission static_qualification native_import_qualification geometry placement_qualification native_probe pose_world",
-    "task.surface_target": "surface_position_world_m", "task.destination.pose_world": "position_world_m orientation_xyzw",
+    "task.surface_target": "surface_position_world_m interior_bounds_world_m", "task.destination.pose_world": "position_world_m orientation_xyzw",
     "task.destination.native_probe": "placement_support_scene_prim_paths qualification_limits",
     "task.destination.native_probe.qualification_limits": "minimum_camera_pixels",
     "runtime": "identity entrypoint health_protocol requirements network secret_refs mounts",
@@ -75,6 +75,15 @@ _STRUCTURED = {
     "references": "host_source_readback",
     "result": "references blockers policy_run_plan task_success_contract episode_interpretation_authority episode_interpretation_source_rights_admission construction_output_identity",
 }
+
+
+#: Every field a sealed surface target can carry (``task_evaluation_surface_target`` v1 and v2: the
+#: G3 ``success_rule``, and an ``inside`` placement's relation and interior bounds). An unlisted field
+#: defers the record as ``unsupported_metadata_shape`` (2026-11-06: v2 targets blocked retirement).
+SURFACE_TARGET_FIELDS = (
+    "schema_version shape non_colliding visible_label radius_m surface_position_world_m support_prim_path "
+    "support_source_instance_id maximum_tilt_rad stable_seconds maximum_linear_speed_m_s "
+    "maximum_angular_speed_rad_s target_digest success_rule placement_relation interior_bounds_world_m")
 
 
 class PreparationActivationReferenceError(ValueError):
@@ -633,7 +642,7 @@ class _Interpretation:
         if "configured_scene_revision_digest" in task:
             self.selector(doc, "task.configured_scene_revision_digest", task["configured_scene_revision_digest"])
         if "surface_target" in task:
-            target = self.shape(doc, task["surface_target"], "task.surface_target", "schema_version shape non_colliding visible_label radius_m surface_position_world_m support_prim_path support_source_instance_id maximum_tilt_rad stable_seconds maximum_linear_speed_m_s maximum_angular_speed_rad_s target_digest")
+            target = self.shape(doc, task["surface_target"], "task.surface_target", SURFACE_TARGET_FIELDS)
             self.selector(doc, "task.surface_target.target_digest", target.get("target_digest"))
         if "destination" in task:
             destination = self.shape(doc, task["destination"], "task.destination", "schema_version identity relation visible_label asset rights_admission static_qualification native_import_qualification geometry placement_qualification native_probe pose_world provider_disclosure_allowed")

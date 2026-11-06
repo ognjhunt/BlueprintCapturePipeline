@@ -32,9 +32,9 @@ from typing import Any
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
+from .website_locomotion_hold import HOLD_CODE, runnable_policy_gap_from_options
 
 FACTS_SCHEMA = "website_locomotion_scene_facts.v1"
-HOLD_CODE = "website_task_runnable_policy_missing"
 SPEC_FILE = "compiled_task_spec.json"
 #: Clearance a standing robot needs from any obstacle when its body declares no footprint.
 ROBOT_CLEARANCE_RADIUS_M = 0.35
@@ -42,6 +42,17 @@ ROBOT_CLEARANCE_RADIUS_M = 0.35
 OBSTACLE_BAND_M = (0.05, 1.9)
 #: The Pipeline pieces a locomotion policy still needs beyond a registered body and policy.
 NAVIGATION_SCENE_PACKET = "navigation_scene_packet_from_compiled_spec"
+#: The pieces a G1 navigation run needs beyond the compiled spec, in build order
+#: (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md). A hold names each one not yet built, so it
+#: shrinks as each lands and never claims a route that does not exist.
+NAVIGATION_PIPELINE_PIECES = (
+    "navigation_task_spec_from_compiled_spec",   # website_navigation_packet (built)
+    "navigation_scene_assets",                    # Isaac appearance/collision for a scene kept as filmed
+    "arena_navigation_scene_runtime",             # scene plan, runtime and readback without a task object
+    "g1_navigation_preparation",                  # G1 stance at the compiled start, cells, registration
+)
+BUILT_NAVIGATION_PIECES = frozenset({"navigation_task_spec_from_compiled_spec", "navigation_scene_assets"})
+NAVIGATION_TASK_FILE = "navigation_task_spec.json"
 
 
 def _sha256(path: Path) -> str:
@@ -176,8 +187,14 @@ def _policy_serves(row: Mapping[str, Any], requirements: Mapping[str, Any],
 
 
 def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, Any] | None = None,
-                     served: Mapping[str, Mapping[str, bool]] | None = None) -> dict[str, Any]:
-    """Bodies and policies that could do this job, each with what it still lacks here."""
+                     served: Mapping[str, Mapping[str, bool]] | None = None,
+                     built_pieces: frozenset[str] | None = None) -> dict[str, Any]:
+    """Bodies and policies that could do this job, each with what it still lacks here.
+
+    ``built_pieces`` is what exists for this job (the code's ``BUILT_NAVIGATION_PIECES`` less any
+    that failed for it); it is recorded so the hold contract re-checks the same pieces.
+    """
+    built = BUILT_NAVIGATION_PIECES if built_pieces is None else frozenset(built_pieces)
     from .task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY
 
     served = policy_requirements_served() if served is None else served
@@ -191,12 +208,14 @@ def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, A
         body = by_profile.get((row.get("interface") or {}).get("robot_profile_id"))
         if body is None or not (row.get("eligibility") or {}).get("enabled") or not _policy_serves(row, requirements, served):
             continue
-        missing = [*(f"embodiment:{item}" for item in body.missing), f"pipeline:{NAVIGATION_SCENE_PACKET}"] \
+        missing = [*(f"embodiment:{item}" for item in body.missing),
+                   *(f"pipeline:{piece}" for piece in NAVIGATION_PIPELINE_PIECES if piece not in built)] \
             if requirements.get("locomote") else [*(f"embodiment:{item}" for item in body.missing)]
         missing += [f"catalog:{code}" for code in (row.get("eligibility") or {}).get("blockers") or []]
         policies.append({"candidate_id": row["candidate_id"], "embodiment_id": body.embodiment_id,
                          "runnable": not missing, "missing": missing})
     return {"requirements": dict(requirements),
+            **({"navigation_pieces_built": sorted(built)} if requirements.get("locomote") else {}),
             "embodiments": [{"embodiment_id": row.embodiment_id, "robot": row.robot, "mobility": row.mobility,
                              "status": row.status, "missing": list(row.missing)} for row in bodies],
             "policies": policies}
@@ -208,22 +227,9 @@ def runnable_policy_gap(*, task_context: Mapping[str, Any], requirements: Mappin
                         options: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     """The typed hold when no policy can run this compiled task here; ``None`` when one can."""
     options = dict(options) if options is not None else runnable_options(requirements)
-    if any(row["runnable"] for row in options["policies"]):
-        return None
-    missing = sorted({item for row in options["policies"] for item in row["missing"]}) or ["policy_for_requirements"]
-    bodies = ", ".join(f"{row['robot']} ({row['status']})" for row in options["embodiments"]) or "none listed"
-    names = ", ".join(row["candidate_id"] for row in options["policies"]) or "none in the catalog"
-    return {
-        "code": HOLD_CODE, "task_family": task_context.get("task_family") or "general_task",
-        "task_context_digest": task_context["context_digest"], "job_disposition": "held_for_preparation",
-        "description": task_context.get("description"), "compiled_task_spec_digest": spec_digest,
-        "runnable_options": options, "missing": missing,
-        "reason": ("The task is compiled and its scene is kept. No robot policy can run it here yet. "
-                   f"Bodies that can do it: {bodies}. Policies for them: {names}. Missing: {', '.join(missing)}."),
-        "claim_boundary": "Blueprint integration gap only; no finding that robot teams cannot perform the job.",
-        **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
-           if task_semantics is not None else {}),
-    }
+    return runnable_policy_gap_from_options(task_context=task_context, requirements=requirements,
+                                            spec_digest=spec_digest, options=options, task_semantics=task_semantics,
+                                            source_video_digest=source_video_digest)
 
 
 def retained_spec(root: Path) -> dict[str, Any] | None:
@@ -235,7 +241,8 @@ def retained_spec(root: Path) -> dict[str, Any] | None:
 
 
 __all__ = [
-    "HOLD_CODE", "NAVIGATION_SCENE_PACKET", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec",
+    "BUILT_NAVIGATION_PIECES", "HOLD_CODE", "NAVIGATION_PIPELINE_PIECES", "NAVIGATION_SCENE_PACKET",
+    "NAVIGATION_TASK_FILE", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec",
     "obstacle_distance", "policy_requirements_served", "retained_spec", "runnable_options", "runnable_policy_gap",
     "scene_facts",
 ]

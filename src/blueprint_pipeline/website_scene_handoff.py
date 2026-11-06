@@ -368,12 +368,38 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             facts = scene_facts(base_scene=base, camera_path_levelled_m=atlas.get("camera_path_levelled_m") or [])
             spec = compile_locomotion_spec(task_context=context, facts=facts, requirements=need)
             write_json(root / SPEC_FILE, spec)
+            if need["locomote"]:
+                # The G1 checkpoints' goal and scene task, made from the compiled spec
+                # (website_navigation_packet); the hold below names what is still unbuilt.
+                from .website_locomotion_task import NAVIGATION_TASK_FILE
+                from .website_navigation_packet import navigation_task_spec
+                navigation = navigation_task_spec(spec, task_context=context)
+                write_json(root / NAVIGATION_TASK_FILE, navigation)
+                result.update(navigation_task_spec_path=str(root / NAVIGATION_TASK_FILE),
+                              navigation_task_spec_digest=navigation["task_spec_digest"])
+                # The scene as filmed, as Isaac files, on the controller and with no spend
+                # (website_navigation_scene_assets). A failure is this job's missing piece.
+                from .website_locomotion_task import BUILT_NAVIGATION_PIECES
+                from .website_navigation_scene_assets import FILE as ASSETS_FILE, navigation_scene_assets
+                built = set(BUILT_NAVIGATION_PIECES)
+                try:
+                    assets = navigation_scene_assets(base_scene=base, output_root=root / "navigation_scene")
+                except (ValueError, OSError) as exc:
+                    built.discard("navigation_scene_assets")
+                    result["navigation_scene_assets_error"] = str(exc)[:300]
+                else:
+                    write_json(root / ASSETS_FILE, assets)
+                    result.update(navigation_scene_assets_path=str(root / ASSETS_FILE),
+                                  navigation_scene_assets_digest=assets["digest"])
             result.update(geometry_backend=atlas["source_geometry"]["geometry_backend"],
                           source_geometry_digest=atlas["source_geometry"]["digest"],
                           compiled_task_spec_path=str(root / SPEC_FILE), compiled_task_spec_digest=spec["spec_digest"])
+            from .website_locomotion_task import runnable_options
             held = runnable_policy_gap(task_context=context, requirements=need, spec_digest=spec["spec_digest"],
                                        task_semantics=semantics_options["task_semantics"],
-                                       source_video_digest=source_video_digest)
+                                       source_video_digest=source_video_digest,
+                                       options=runnable_options(need, built_pieces=frozenset(built))
+                                       if need["locomote"] else None)
             if held is None:
                 # A runnable policy exists but its execution route is not built: say so, typed.
                 raise ValueError("website_locomotion_task_execution_route_missing")
