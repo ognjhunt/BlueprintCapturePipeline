@@ -60,7 +60,12 @@ NAVIGATION_TASK_KIND = "goal_region_navigation"
 NAVIGATION_SAMPLE_BINDING = {
     "schema_version": "native_navigation_task_sample_binding.v1",
     "subject": "robot_root",
-    "fields": ["step_index", "root_position_world_m", "robot_scene_contact_peak_force_n"],
+    "fields": ["step_index", "root_position_world_m"],
+    # Present on a step whose planned robot_scene_contact sensors were read; the excluded
+    # bodies are the sealed feet, which the force does not cover.
+    "contact_fields": ["robot_scene_contact_peak_force_n", "robot_scene_contact_excluded_bodies"],
+    # Present instead, with the readback's error codes, on a step whose sensors could not be read.
+    "contact_unread_flag": "robot_scene_contact_unread",
 }
 TASK_KINDS = ("rigid_pick_place", "articulated_open_close", *FAMILY_TASK_KINDS, NAVIGATION_TASK_KIND)
 SCENARIO_CONTEXT_KINDS = ("construction_canary", "evaluation_cell")

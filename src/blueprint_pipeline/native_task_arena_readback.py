@@ -1091,8 +1091,13 @@ class NativeNavigationArenaReadback:
             )
         self._ground_support = frozenset(ground or ())
 
-    def read_robot_scene_contact(self) -> dict[str, float]:
-        """``{"robot_scene_contact_peak_force_n": N}`` over non-support bodies, or ``{}``."""
+    def read_robot_scene_contact(self) -> dict[str, Any]:
+        """The peak robot-scene force over every body but the sealed feet, or ``{}``.
+
+        The feet are named with the value (``robot_scene_contact_excluded_bodies``): the filmed
+        room is one collider, so a foot that kicks a shelf base reads as support, and a result
+        must say that its "no contact" does not cover the feet.
+        """
 
         scene_names = self._built.contact_sensor_names.get("robot_scene_contact")
         if not self._sensor_bodies and not scene_names:
@@ -1129,7 +1134,10 @@ class NativeNavigationArenaReadback:
                 peak,
                 *(math.sqrt(sum(component * component for component in vector)) for vector in vectors),
             )
-        return {"robot_scene_contact_peak_force_n": peak}
+        return {
+            "robot_scene_contact_peak_force_n": peak,
+            "robot_scene_contact_excluded_bodies": sorted(self._ground_support),
+        }
 
 
 class NativeRigidTaskArenaReadback:

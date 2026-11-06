@@ -425,7 +425,10 @@ def run_g1_built_scene_policy_episode(
         if navigation_scene:
             # Robot-scene contact on every body but the feet, from the plan's existing
             # robot_scene_contact sensors; absent when the plan has none.
-            from .native_task_arena_readback import NativeNavigationArenaReadback
+            from .native_task_arena_readback import (
+                NativeNavigationArenaReadback,
+                NativeTaskArenaReadbackError,
+            )
 
             contact_readback = NativeNavigationArenaReadback(built)
 
@@ -436,7 +439,12 @@ def run_g1_built_scene_policy_episode(
                 "root_position_world_m": state["root_position_world_m"],
             }
             if contact_readback is not None:
-                sample.update(contact_readback.read_robot_scene_contact())
+                try:
+                    sample.update(contact_readback.read_robot_scene_contact())
+                except NativeTaskArenaReadbackError as exc:
+                    # Flagged, not fatal: the step has no force, so no_contact is unscored
+                    # (never clear) while the root-position goal still scores.
+                    sample["robot_scene_contact_unread"] = list(exc.errors)
             return sample
 
         task_prompt = goal["task_instruction"]

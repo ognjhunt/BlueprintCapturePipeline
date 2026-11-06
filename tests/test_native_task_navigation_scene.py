@@ -365,11 +365,11 @@ def test_the_runtime_builds_the_navigation_scene_and_it_reads_back(tmp_path: Pat
     # Readback needs no object pose: the live scene holds only the sensors.
     feet_only = dataclasses.replace(built, env=SimpleNamespace(scene=_scene(plan, {path: [0.0, 0.0, 400.0] for path in FEET})))
     assert NativeNavigationArenaReadback(feet_only).read_robot_scene_contact() == {
-        "robot_scene_contact_peak_force_n": 0.0}
+        "robot_scene_contact_peak_force_n": 0.0, "robot_scene_contact_excluded_bodies": sorted(FEET)}
     torso = dataclasses.replace(built, env=SimpleNamespace(scene=_scene(
         plan, {**{path: [0.0, 0.0, 400.0] for path in FEET}, TORSO: [3.0, 4.0, 0.0]})))
     assert NativeNavigationArenaReadback(torso).read_robot_scene_contact() == {
-        "robot_scene_contact_peak_force_n": 5.0}
+        "robot_scene_contact_peak_force_n": 5.0, "robot_scene_contact_excluded_bodies": sorted(FEET)}
     missing = dataclasses.replace(built, env=SimpleNamespace(scene={}))
     with pytest.raises(NativeTaskArenaReadbackError, match="contact_sensor_missing:robot_scene_contact"):
         NativeNavigationArenaReadback(missing).read_robot_scene_contact()
@@ -410,10 +410,10 @@ def _readback_built(*, sensors: bool, forces: dict | None = None, task_kind: str
 def test_foot_contact_is_support_and_any_other_body_counts() -> None:
     feet = {path: [0.0, 0.0, 650.0] for path in FEET}
     assert NativeNavigationArenaReadback(_readback_built(sensors=True, forces=feet)).read_robot_scene_contact() == {
-        "robot_scene_contact_peak_force_n": 0.0}
+        "robot_scene_contact_peak_force_n": 0.0, "robot_scene_contact_excluded_bodies": sorted(FEET)}
     torso = {**feet, TORSO: [0.0, 12.0, 0.0]}
     assert NativeNavigationArenaReadback(_readback_built(sensors=True, forces=torso)).read_robot_scene_contact() == {
-        "robot_scene_contact_peak_force_n": 12.0}
+        "robot_scene_contact_peak_force_n": 12.0, "robot_scene_contact_excluded_bodies": sorted(FEET)}
 
 
 def test_no_planned_sensors_means_no_contact_field() -> None:
@@ -451,7 +451,8 @@ _GOAL_TASK = {
 
 
 def _run_navigation(tmp_path: Path, monkeypatch, *, task_kind: str, sensors: bool,
-                    candidate: str = "humanoidarena_dp_g1_dex3_sonic_vision_navi") -> dict:
+                    candidate: str = "humanoidarena_dp_g1_dex3_sonic_vision_navi",
+                    torso_force_at_step: dict | None = None) -> dict:
     from blueprint_pipeline import native_g1_joint_episode_environment as g1_environment
     from blueprint_pipeline import native_g1_run_preflight
     from blueprint_pipeline.native_g1_shared_scene_episode import run_g1_built_scene_policy_episode
@@ -477,6 +478,8 @@ def _run_navigation(tmp_path: Path, monkeypatch, *, task_kind: str, sensors: boo
         def data(self):
             if self.path in FEET:
                 force = [0.0, 0.0, 500.0]
+            elif self.path == TORSO and torso_force_at_step and scene.step in torso_force_at_step:
+                force = torso_force_at_step[scene.step]
             else:
                 force = [0.0, 7.0 if self.path == TORSO and scene.step == 2 else 0.0, 0.0]
             return SimpleNamespace(force_matrix_w=[[[force]]])
@@ -507,6 +510,49 @@ def test_the_navigation_sampler_records_off_foot_contact_each_step(tmp_path: Pat
     samples = [trace["initial_task_sample"], *(row["task_sample"] for row in trace["steps"])]
     assert [sample["robot_scene_contact_peak_force_n"] for sample in samples] == [0.0, 0.0, 7.0]
     assert [sample["step_index"] for sample in samples] == [0, 1, 2]
+    # Every measured step names the feet it left out.
+    assert all(sample["robot_scene_contact_excluded_bodies"] == sorted(FEET) for sample in samples)
+
+
+def test_an_unreadable_contact_step_is_flagged_and_the_episode_keeps_going(tmp_path: Path, monkeypatch) -> None:
+    trace = _run_navigation(tmp_path, monkeypatch, task_kind=NAVIGATION_TASK_KIND, sensors=True,
+                            torso_force_at_step={1: [float("nan"), 0.0, 0.0]})
+    samples = [trace["initial_task_sample"], *(row["task_sample"] for row in trace["steps"])]
+    assert [sample["step_index"] for sample in samples] == [0, 1, 2]
+    assert all("root_position_world_m" in sample for sample in samples)
+    unread = samples[1]
+    assert "robot_scene_contact_peak_force_n" not in unread
+    assert unread["robot_scene_contact_unread"] == [
+        f"native_task_arena_force_matrix_invalid:robot_scene_contact:{_sensor_id_for(TORSO)}"]
+    assert samples[2]["robot_scene_contact_peak_force_n"] == 7.0 and "robot_scene_contact_unread" not in samples[2]
+
+
+def _sensor_id_for(path: str) -> str:
+    rows = _readback_built(sensors=True).plan["articulation"]["contact_sensors"]
+    return next(row["sensor_instance_id"] for row in rows if row["prim_path"] == path)
+
+
+def test_no_contact_says_which_bodies_it_does_not_cover_and_an_unread_step_is_unscored() -> None:
+    from blueprint_pipeline.task_predicates import score_episode, seal_predicates
+
+    predicates = seal_predicates([{"id": "no_shelf_contact", "kind": "no_contact", "geometry": "scene_obstacles",
+                                   "contact_force_threshold_n": 5.0}])
+    measured = [{"step_index": index, "robot_scene_contact_peak_force_n": 0.0,
+                 "robot_scene_contact_excluded_bodies": sorted(FEET)} for index in range(3)]
+    (scored,) = score_episode(predicates=predicates, samples=measured)["predicate_results"]
+    assert scored["status"] == "scored" and scored["satisfied"] is True
+    assert scored["excluded_robot_bodies"] == sorted(FEET)
+    # A trace with no exclusion (a fixed-base arm, say) reads as before.
+    plain = [{key: value for key, value in sample.items() if key != "robot_scene_contact_excluded_bodies"}
+             for sample in measured]
+    (as_before,) = score_episode(predicates=predicates, samples=plain)["predicate_results"]
+    assert "excluded_robot_bodies" not in as_before and as_before["satisfied"] is True
+    unread = [measured[0], {"step_index": 1, "robot_scene_contact_unread": ["native_task_arena_force_matrix_invalid:x"]},
+              measured[2]]
+    report = score_episode(predicates=predicates, samples=unread)
+    assert report["predicate_results"][0] == {"id": "no_shelf_contact", "kind": "no_contact", "status": "unscored",
+                                              "missing_readback": "robot_contact"}
+    assert report["outcome"] is None and report["unscored_predicates"] == ["no_shelf_contact"]
 
 
 @pytest.mark.parametrize("task_kind,sensors", [(NAVIGATION_TASK_KIND, False), ("rigid_pick_place", True)])
