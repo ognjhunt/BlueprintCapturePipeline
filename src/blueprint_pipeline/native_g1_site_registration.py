@@ -11,10 +11,12 @@ Inputs resolve as the door's builder resolves them (``native_g1_registration_ins
 packet and task contract from the team registry and the completed source queue
 (``native_g1_registration_contract.site_inputs``); the shared publisher source, runtime source and Arena
 robot USD from the controller-pinned ``config/native_g1_shared_inputs.v1.json`` instead of the historical
-ADP registry. ``prepare_native_g1_beta_packet`` writes the packet under the site's own
-``native-g1/<base>/<source>/`` directory. Registration grants no spend and claims nothing: planning
-re-derives every packet and source (``beta_policy_screening_g1.candidate_execution_spec``) and re-checks
-consent live (``compose_beta_authority``).
+ADP registry. Before it prepares a new packet it reads the site's consent live
+(``beta_policy_screening_worker.require_current_source``); ``prepare_native_g1_beta_packet`` then writes
+the packet under the site's own ``native-g1/<base>/<source>/`` directory. Registration grants no spend
+and claims nothing: planning re-derives every packet and source
+(``beta_policy_screening_g1.candidate_execution_spec``) and re-checks consent live
+(``compose_beta_authority``).
 
 Only privacy, rights and money stop work (AGENTS.md). A G1 problem here is a fixed reason in
 ``<root>/<site_id>.status.json``, never an exception. ``BLUEPRINT_NATIVE_G1_AUTO_REGISTRATION=0`` turns
@@ -126,16 +128,24 @@ def _robot_record(manifest: Mapping[str, Any]) -> dict[str, Any]:
         raise _NotRegistered("g1_shared_robot_asset_changed") from exc
 
 
-def _records_verify(row: Mapping[str, Any]) -> bool:
+def _records_verify(row: Mapping[str, Any], manifest_path: Path) -> bool:
+    """Every record still names its file's bytes, and the shared ones are still the pinned ones."""
     contract, seen = _contract(), {}
     try:
+        manifest = load_shared_inputs(manifest_path)
+        pinned = manifest["runtime_source"]
         for item in row["screening_candidates"].values():
-            for record in item["native_g1"].values():
+            records = item["native_g1"]
+            if (records["publisher_source"]["path"] != manifest["publisher_source"]["path"]
+                    or records["runtime_source"] != {key: pinned[key] for key in ("path", "sha256", "size_bytes")}):
+                return False
+            for record in records.values():
                 path = record["path"]
-                seen.setdefault(path, contract.file_record(Path(path)))
+                if path not in seen:
+                    seen[path] = contract.file_record(Path(path))
                 if seen[path] != dict(record):
                     return False
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    except (_NotRegistered, OSError, ValueError, KeyError, TypeError, AttributeError):
         return False
     return bool(seen)
 
@@ -242,6 +252,14 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
         packet_dir = site_root / "native-g1" / base_receipt["receipt_digest"][7:] / canonical_digest(current)[7:]
         if not (packet_dir / PACKET_RECEIPT).exists():
             robot = _robot_record(manifest)
+            from .beta_policy_screening_worker import require_current_source
+            try:  # Privacy: new derived scene data only while the site's consent stands now.
+                require_current_source(current, site_id=site_id)
+            except Exception as exc:  # noqa: BLE001 - a refusal is final; an unanswered check is tried again
+                code = str(exc) if isinstance(exc, ValueError) else ""
+                if code.startswith("beta_screening_") and _CODE.fullmatch(code):
+                    raise _NotRegistered(code) from exc
+                raise _NotRegistered("g1_current_consent_unverified", retry=True) from exc
             from .beta_policy_screening_g1_prepare import prepare_native_g1_beta_packet
             try:  # Exactly the door builder's call (native_g1_registration_install._prepare_current_packet).
                 prepare_native_g1_beta_packet(base_packet_record=inputs["base_native_packet"], source=current,
@@ -299,7 +317,7 @@ def ensure_site_registration(*, site_id: str, source: Mapping[str, Any], source_
         return {"status": "not_registered", "reason": "g1_site_identity_invalid"}
     current = {key: source[key] for key in SOURCE_FIELDS}
     overlay = reader.site_registration_overlay(site_id, overlay_root)  # None for any unusable row
-    if overlay is not None and overlay["source"] == current and _records_verify(overlay):
+    if overlay is not None and overlay["source"] == current and _records_verify(overlay, Path(manifest_path)):
         return {"status": "already_registered"}
     status_path = path.with_name(site_id + ".status.json")
     try:

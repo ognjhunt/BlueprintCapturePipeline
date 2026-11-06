@@ -57,9 +57,8 @@ Then stop reading the historical ADP registry. Add a controller-owned manifest,
 (`native_g1_registration_install.py` L62-77) still reads the shared registry.
 Moving it to the manifest changes the registration contract under
 `deploy/operator-door/`, so that part ships with a door upgrade. The robot
-USD's directory is pinned as `g1-841757-development/manipulation`, the
-shared registry's `manipulation_packet_dir` as this plan reads it; the host
-was not read to confirm it.
+USD is looked up under `g1-841757-development/manipulation/`. That this is
+the shared registry's `manipulation_packet_dir` was not checked on the host.
 
 ## 2. Automatic registration for pick-and-place sites (done 2026-11-06)
 
@@ -70,7 +69,8 @@ Built in `native_g1_site_registration` (runbook:
   (`beta_policy_screening_worker.enqueue_prepared_scenes`), before it reads
   the profile. It is not `team_scene_packet.record_team_scene`: the pass
   already sees every completed scene, runs again after a restore, and plans in
-  the same pass. For a `rigid_pick_place` task the service runs
+  the same pass. For a `rigid_pick_place` task the service reads the site's
+  consent live, then runs
   `beta_policy_screening_g1_prepare.prepare_native_g1_beta_packet` on the
   site's base packet with the door builder's arguments. It writes under the
   site's own `native-g1/<base>/<source>/` directory. Any other task kind

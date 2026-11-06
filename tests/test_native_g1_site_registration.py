@@ -106,12 +106,36 @@ def test_a_missing_packet_is_prepared_with_the_builders_own_arguments(tmp_path, 
         shutil.copytree(kept, packet)
 
     monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", prepared)
+    checked = []
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source",
+                        lambda value, *, site_id: checked.append((value, site_id)))
     assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    assert checked == [(kwargs["source"], SITE)]  # Consent is read live before any new derived data.
     site = tmp_path / "halves" / SITE
     inputs = contract.common.read(site / "team_scene_inputs.v1.json")
     assert calls == [{"base_packet_record": inputs["base_native_packet"], "source": kwargs["source"], "site_id": SITE,
         "output_root": site, "robot_asset_record": contract.file_record(robot),
         "task_success_contract": inputs["task_success_contract"]}]
+
+
+@pytest.mark.parametrize("raised,reason,retry", [
+    (ValueError("beta_screening_current_capture_consent_required"), "beta_screening_current_capture_consent_required",
+     "on_source_pin_or_release_change"),
+    (OSError("development_only unreachable"), "g1_current_consent_unverified", "next_pass"),
+])
+def test_withdrawn_or_unverified_consent_prepares_nothing(tmp_path, monkeypatch, raised, reason, retry):
+    retained, kwargs, profile, _ = door_world(tmp_path, monkeypatch)
+    shutil.rmtree(retained.g1_path.parent)
+
+    def withdrawn(value, *, site_id):
+        raise raised
+
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", withdrawn)
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared"))
+    result = registration.ensure_site_registration(**kwargs)
+    assert result["status"] == "not_registered" and result["reason"] == reason
+    assert status_of()["retry"] == retry and not overlay_path().exists()
+    assert not retained.g1_path.parent.exists()
 
 
 def test_registration_is_idempotent_for_an_unchanged_source(tmp_path, monkeypatch):
@@ -135,6 +159,16 @@ def test_a_changed_record_is_registered_again(tmp_path, monkeypatch):
     overlay_path().chmod(0o640)
     assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
     assert json.loads(overlay_path().read_text()) == first
+    # A newly pinned runtime receipt replaces a row whose old receipt still verifies.
+    runtime = tmp_path / "shared/runtime/native_task_runtime_source_packet.v1.json"
+    rebuilt = tmp_path / "shared/rebuilt/native_task_runtime_source_packet.v1.json"
+    write(rebuilt, {**json.loads(runtime.read_text()), "development_only": "rebuilt"})
+    value = json.loads(Path(kwargs["manifest_path"]).read_text())
+    value["runtime_source"] = {"path": str(rebuilt), **ref(rebuilt)}
+    write(kwargs["manifest_path"], seal(value, "manifest_digest"))
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    row = json.loads(overlay_path().read_text())
+    assert row["screening_candidates"][PI]["native_g1"]["runtime_source"] == contract.file_record(rebuilt)
 
 
 @pytest.mark.parametrize("fault,reason", [
@@ -348,6 +382,8 @@ def compiled_world(prepared_scene, tmp_path, monkeypatch):  # noqa: F811 - the i
                              robot_dir=tmp_path / "shared/manipulation")
     kwargs = {"site_id": site, "source": source, "source_queue": tmp_path / "queue", "release": "a" * 40,
               "manifest_path": pinned}
+    # The live consent read is the WebApp's; its own tests cover it.
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", lambda *a, **k: {})
     return kwargs, {**derived, **defaults}, registry, args, capture
 
 
