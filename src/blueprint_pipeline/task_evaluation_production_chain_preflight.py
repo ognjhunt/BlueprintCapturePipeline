@@ -1590,9 +1590,11 @@ def provider_credit_check(
 
     Vast stops every instance when the account balance crosses its threshold, so an attempt
     that starts on thin credit is torn down mid-episode and loses its evidence.  The guard in
-    ``provider_credit_admission`` is opt-in by environment; production must turn it on in every
-    unit that reaches the adapter.  The read here is the same GET the guard performs, done before
-    a submission so a thin account is named here rather than at the first paid attempt.
+    ``provider_credit_admission`` is on by default (only ``false``/``0`` opts out); every unit
+    that reaches the adapter still sets it explicitly, and this check refuses one that does not,
+    so an opt-out is always visible in the unit.  The read here is the same GET the guard
+    performs, done before a submission so a thin account is named here rather than at the first
+    paid attempt.
     """
 
     from .provider_credit_admission import ENABLED_ENV, RESERVE_ENV, WARNING_ENV, observe_vast_credit

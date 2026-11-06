@@ -80,7 +80,8 @@ What frequent states mean:
 
 What breaks: Vast stops every instance when the account balance runs out
 (`PAGE_ALERT_CODES` in `src/blueprint_pipeline/control_plane_capacity_controller.py`).
-Every unit that can allocate Vast runs with `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true`
+The credit guard is on by default in code; only `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=false`
+(or `0`) turns it off. Every unit that can allocate Vast also sets `=true` explicitly
 (`PAID_ALLOCATION_UNITS` in
 `src/blueprint_pipeline/task_evaluation_production_chain_preflight.py`; the chain
 preflight refuses one without it). That includes the rigid robot-free probe runner

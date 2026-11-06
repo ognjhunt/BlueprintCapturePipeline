@@ -353,7 +353,7 @@ def test_early_credit_guard_is_read_only_and_admits_only_funded_runs(
 ) -> None:
     from blueprint_pipeline import gpu_render_providers, provider_credit_admission
 
-    monkeypatch.delenv(provider_credit_admission.ENABLED_ENV, raising=False)
+    monkeypatch.setenv(provider_credit_admission.ENABLED_ENV, "false")
     monkeypatch.setattr(
         gpu_render_providers.VastRenderProvider,
         "_key",
@@ -361,7 +361,6 @@ def test_early_credit_guard_is_read_only_and_admits_only_funded_runs(
     )
     assert lane._early_provider_credit_blockers(9.0) == []
 
-    monkeypatch.setenv(provider_credit_admission.ENABLED_ENV, "true")
     monkeypatch.setattr(gpu_render_providers.VastRenderProvider, "_key", lambda _self: "fake-key")
     observed = []
 
@@ -372,8 +371,16 @@ def test_early_credit_guard_is_read_only_and_admits_only_funded_runs(
     monkeypatch.setattr(
         provider_credit_admission, "configured_vast_credit_admission", credit_check
     )
-    assert lane._early_provider_credit_blockers(9.0) == ["provider_credit_insufficient"]
-    assert observed == [("fake-key", 9.0)]
+    # P-D01: the unset default checks credit exactly as the unit's explicit "true".
+    for setting in (None, "true"):
+        if setting is None:
+            monkeypatch.delenv(provider_credit_admission.ENABLED_ENV)
+        else:
+            monkeypatch.setenv(provider_credit_admission.ENABLED_ENV, setting)
+        assert lane._early_provider_credit_blockers(9.0) == ["provider_credit_insufficient"]
+    assert observed == [("fake-key", 9.0), ("fake-key", 9.0)]
+    monkeypatch.setenv(provider_credit_admission.ENABLED_ENV, "typo")
+    assert lane._early_provider_credit_blockers(9.0) == ["provider_credit_guard_config_invalid"]
 
 
 def test_paid_g1_refuses_missing_private_checkpoint_cache_before_provider(

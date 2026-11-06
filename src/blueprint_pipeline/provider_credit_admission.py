@@ -91,11 +91,28 @@ def credit_admission(
             "observation": dict(observation), "credit_reserved": False}
 
 
+def credit_guard_setting() -> str:
+    """``enabled``, ``disabled`` or ``invalid``; the guard is on unless a unit opts out.
+
+    The default is on (P-D01, 2026-11-05) so a new unit that reaches a Vast
+    launcher fails safe. Only an explicit ``false`` or ``0`` turns it off; an
+    unset or empty value means on, and any other value is a config error that
+    refuses the launch.
+    """
+
+    value = os.getenv(ENABLED_ENV, "true").strip().lower()
+    if value in {"true", "1", ""}:
+        return "enabled"
+    if value in {"false", "0"}:
+        return "disabled"
+    return "invalid"
+
+
 def configured_vast_credit_admission(*, api_key: str, required_usd: float) -> dict[str, Any]:
-    enabled = os.getenv(ENABLED_ENV, "false").strip().lower()
-    if enabled in {"false", "0", ""}:
+    setting = credit_guard_setting()
+    if setting == "disabled":
         return {"status": "not_configured", "blockers": []}
-    if enabled not in {"true", "1"}:
+    if setting == "invalid":
         return {"status": "blocked", "blockers": ["provider_credit_guard_config_invalid"]}
     try:
         reserve = float(os.getenv(RESERVE_ENV, "1"))
