@@ -192,3 +192,51 @@ def test_the_command_prints_a_typed_result_and_exits_by_outcome(tmp_path, monkey
     assert retirement.main(["--capture", "bad", "--approval-evidence", EVIDENCE]) == 2
     assert json.loads(capsys.readouterr().out) == {"schema_version": retirement.SCHEMA, "outcome": "refused",
                                                    "code": "parked_delivery_capture_invalid"}
+
+
+def _orphan(storage, number=0, *, parked_for=8 * DAY):
+    """A parked hint whose capture workspace was retired: the hint is all that is left."""
+    import shutil
+
+    root = _parked(storage, number, parked_for=parked_for)
+    hint = _hint(storage, root)
+    assert hint is not None
+    shutil.rmtree(root)
+    return root
+
+
+def test_an_orphaned_parked_hint_is_planned_then_archived_never_deleted(tmp_path):
+    # 2026-11-06: four of the seven parked deliveries pointed at captures whose workspaces were gone.
+    root = _orphan(tmp_path)
+    assert index.due(tmp_path, now=NOW, limit=5)[1]["parked_count"] == 1
+    plan = _retire(tmp_path, root)
+    assert plan["outcome"] == "planned" and plan["capture_absent"] is True
+    assert _hint(tmp_path, root) is not None
+    done = _retire(tmp_path, root, apply=True, door_caller="operator-1",
+                   door_request_id="20261106T170000Z-retire-parked-delivery-0123abcd")
+    assert done["outcome"] == "retired" and done["capture_absent"] is True
+    assert _hint(tmp_path, root) is None and not root.exists()
+    assert index.due(tmp_path, now=NOW, limit=5)[1]["parked_count"] == 0
+    key = __import__("hashlib").sha256(_relative(tmp_path, root).encode()).hexdigest()
+    archived = json.loads((tmp_path / index.DIRECTORY / retirement.ORPHAN_DIRECTORY / f"{key}.json").read_text())
+    assert archived["hint"]["capture_relative_path"] == _relative(tmp_path, root)
+    assert (archived["retired_reason"], archived["retirement_approval_evidence"], archived["retired_by_door_caller"]) == (
+        retirement.ORPHAN_REASON, EVIDENCE, "operator-1")
+    # Idempotent: a second apply finds it archived.
+    assert _retire(tmp_path, root, apply=True)["outcome"] == "already_retired"
+
+
+def test_an_orphaned_hint_must_still_be_parked_for_a_day_and_its_capture_still_absent(tmp_path):
+    root = _orphan(tmp_path, parked_for=DAY / 2)
+    with pytest.raises(retirement.DeliveryRetirementRefused, match="parked_delivery_parked_under_a_day"):
+        _retire(tmp_path, root, apply=True)
+    assert _hint(tmp_path, root) is not None
+    other = _synthetic_pending(tmp_path, 3, now=NOW)  # a live hint whose capture is then removed
+    import shutil
+    shutil.rmtree(other)
+    with pytest.raises(retirement.DeliveryRetirementRefused, match="parked_delivery_not_parked"):
+        _retire(tmp_path, other, apply=True)
+    missing = tmp_path / _relative(tmp_path, root).replace("walkthrough-", "walkthrough-x")
+    with pytest.raises(retirement.DeliveryRetirementRefused, match="parked_delivery_capture_absent"):
+        retirement.retire_parked_delivery(storage_root=tmp_path, capture_relative_path=_relative(tmp_path, missing),
+                                          approval_evidence=EVIDENCE, now=NOW, apply=True)

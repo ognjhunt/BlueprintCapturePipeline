@@ -375,7 +375,9 @@ def _parked_delivery_environment(config: DoorConfig, request: dict[str, Any]) ->
 def _parked_delivery_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
     """Writes one capture's delivery record, the delivery index beside the captures and its result;
     no network and every secret hidden. The capture path was validated with the request."""
-    writable = " ".join((f"{_PUBSUB_HANDOFFS}/{request['capture']}", f"{_PUBSUB_HANDOFFS}/.website_preparation_pending",
+    # "-": a capture whose workspace was retired is absent; systemd would refuse to start the unit
+    # (226/NAMESPACE) instead of letting the module retire its orphaned hint.
+    writable = " ".join((f"-{_PUBSUB_HANDOFFS}/{request['capture']}", f"{_PUBSUB_HANDOFFS}/.website_preparation_pending",
                          str(Path(config.spool_root) / "results")))
     return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
             "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
@@ -628,7 +630,8 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
     }
     callers = {"extend-scene-execution-window": "scene_window_caller_invalid",
                "extend-scene-execution-budget": "scene_budget_caller_invalid",
-               "confirm-owner-success-contract": "owner_success_caller_invalid"}
+               "confirm-owner-success-contract": "owner_success_caller_invalid",
+               "retire-parked-delivery": "parked_delivery_caller_invalid"}
     if request["kind"] in callers:
         # The authenticated token name, recorded in the extension or confirmation as who asked.
         if not isinstance(requested_by, str) or _CALLER.fullmatch(requested_by) is None:

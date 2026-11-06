@@ -108,6 +108,12 @@ def retire_parked_delivery(*, storage_root: Path, capture_relative_path: str, ap
     result: dict[str, Any] = {"schema_version": SCHEMA, "capture_relative_path": capture_relative_path,
                               "apply": apply}
     with _existing_job_ledger_lock(root) as lock_state:
+        if lock_state == "capture_absent":
+            # The capture's workspace is gone (retired, 2026-11-06: four of the seven), so only its
+            # parked index hint is left. That hint is archived instead; see _retire_orphaned_hint.
+            return _retire_orphaned_hint(Path(storage_root), capture_relative_path, evidence=evidence,
+                                         apply=apply, door_caller=door_caller, door_request_id=door_request_id,
+                                         now=now, result=result)
         _refuse(lock_state == "ledger_present", f"parked_delivery_{lock_state}")
         path = root / DELIVERY_FILE
         _refuse(path.is_file() and not path.is_symlink(), "parked_delivery_record_missing")
@@ -141,6 +147,67 @@ def retire_parked_delivery(*, storage_root: Path, capture_relative_path: str, ap
         after = path.read_bytes()
     return {**result, "outcome": "retired", "record_sha256": "sha256:" + hashlib.sha256(after).hexdigest(),
             "delivery": _summary(retired)}
+
+
+DIRECTORY_NAME = ".website_preparation_pending"
+ORPHAN_SCHEMA = "website_preparation_delivery_orphan_retirement.v1"
+ORPHAN_REASON = "owner_retired_orphaned_parked_delivery"
+#: Retired orphan hints are kept here, beside the index; the index scan reads only top-level hints.
+ORPHAN_DIRECTORY = "retired"
+
+
+def _retire_orphaned_hint(storage_root: Path, relative: str, *, evidence: str, apply: bool,
+                          door_caller: str | None, door_request_id: str | None, now: float,
+                          result: dict[str, Any]) -> dict[str, Any]:
+    """A parked hint whose capture no longer exists: archive it with the approval, never delete it.
+
+    With no capture there is no delivery record to move, and no status read can succeed, so the
+    hint would retry every six hours and count as parked forever. Under the index lock it must
+    still be the same capture's hint, parked for at least a day, and the capture must still be
+    absent. The archive keeps the whole hint, plus when, why, on whose approval and through which
+    door request. A restored workspace whose record is still pending makes a new hint, which can be
+    retired again.
+    """
+    from .common import write_json
+    from .website_preparation_delivery_index import SCHEMA_VERSION, _locked
+    from .website_preparation_status import PARK_AFTER_SECONDS, PARKED_REASON
+
+    key = hashlib.sha256(relative.encode()).hexdigest()
+    with _locked(storage_root) as directory:
+        archive = directory / ORPHAN_DIRECTORY / f"{key}.json"
+        hint_path = directory / f"{key}.json"
+        if not hint_path.exists() and archive.is_file() and not archive.is_symlink():
+            return {**result, "outcome": "already_retired", "capture_absent": True}
+        _refuse(hint_path.is_file() and not hint_path.is_symlink(), "parked_delivery_capture_absent")
+        try:
+            hint = json.loads(hint_path.read_text())
+        except (ValueError, OSError):
+            raise DeliveryRetirementRefused("parked_delivery_hint_invalid") from None
+        _refuse(isinstance(hint, dict) and hint.get("schema_version") == SCHEMA_VERSION
+                and hint.get("capture_relative_path") == relative, "parked_delivery_hint_invalid")
+        parked_at = hint.get("parked_at_epoch")
+        _refuse(type(parked_at) in (int, float) and math.isfinite(parked_at) and parked_at >= 0,
+                "parked_delivery_not_parked")
+        _refuse(now - parked_at >= PARK_AFTER_SECONDS, "parked_delivery_parked_under_a_day")
+        _refuse(not (storage_root / relative).exists(), "parked_delivery_capture_reappeared")
+        record = {"schema_version": ORPHAN_SCHEMA, "capture_relative_path": relative, "hint": hint,
+                  "parked_reason_assumed": PARKED_REASON, "capture_absent": True, "retired_at_epoch": now,
+                  "retired_reason": ORPHAN_REASON, "retirement_approval_evidence": evidence}
+        if door_caller is not None:
+            record["retired_by_door_caller"] = door_caller
+        if door_request_id is not None:
+            record["retirement_door_request_id"] = door_request_id
+        summary = {**result, "capture_absent": True, "hint": {k: hint[k] for k in (
+            "revision", "pending_since_epoch", "parked_at_epoch") if k in hint}}
+        if not apply:
+            return {**summary, "outcome": "planned",
+                    "would_archive_to": f"{DIRECTORY_NAME}/{ORPHAN_DIRECTORY}/{key}.json"}
+        archive.parent.mkdir(mode=0o700, exist_ok=True)
+        _refuse(not archive.parent.is_symlink(), "parked_delivery_archive_unsafe")
+        write_json(archive, record)
+        hint_path.unlink()
+    return {**summary, "outcome": "retired", "archive_sha256": "sha256:" + hashlib.sha256(
+        archive.read_bytes()).hexdigest()}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
