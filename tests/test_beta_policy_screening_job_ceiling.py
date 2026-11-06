@@ -388,3 +388,46 @@ def test_a_frozen_website_plan_closes_its_queued_scripted_baselines_before_spend
     assert backend.launches == 5
     assert {rows[key]["status"] for key in set(rows) - set(scripted)} == {"running"}
     assert after["revision"] > publication["revision"]
+
+
+def _committed_queue(tmp_path, monkeypatch, *, remaining=9):
+    """A queue whose plan has reserved its first candidate (committed, not yet published)."""
+    monkeypatch.setattr(coordinator, "_quote_current", lambda candidate: True)
+    value = ceiling_plan(remaining, count=4)
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+    first = next(row for row in value["candidates"] if row["status"] == "selected")
+    attempt = coordinator._reserve(tmp_path, value, first)
+    assert attempt is not None
+    return value
+
+
+def test_a_launch_rereads_the_job_ceiling_in_force_now(tmp_path, monkeypatch):
+    value = _committed_queue(tmp_path, monkeypatch)
+    read = []
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary",
+                        lambda **kwargs: read.append(kwargs) or ceiling_summary(9))
+    summary = job_ceiling.require_current_job_ceiling(value, context={}, capture_root=tmp_path, queue_root=tmp_path)
+    assert summary["remaining_cost_usd"] == 9 and len(read) == 1
+
+
+def test_a_lapsed_money_authority_stops_a_launch_before_spawn(tmp_path, monkeypatch):
+    # capture-447 (11-06): the owner's row expired; the plan's figure must not stay in force.
+    value = _committed_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", lambda **kwargs: ceiling_summary(1))
+    with pytest.raises(ValueError, match="beta_screening_job_ceiling_exceeded"):
+        job_ceiling.require_current_job_ceiling(value, context={}, capture_root=tmp_path, queue_root=tmp_path)
+    # Once the WebApp's figure already counts the reservation, only new spend is compared.
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", lambda **kwargs: ceiling_summary(1, screening=2))
+    assert job_ceiling.require_current_job_ceiling(value, context={}, capture_root=tmp_path, queue_root=tmp_path)
+
+    def unreadable(**kwargs):
+        raise ValueError(job_ceiling.UNAVAILABLE)
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", unreadable)
+    with pytest.raises(ValueError, match="website_job_ceiling_unavailable"):
+        job_ceiling.require_current_job_ceiling(value, context={}, capture_root=tmp_path, queue_root=tmp_path)
+
+
+def test_a_plan_without_a_website_job_ceiling_has_none_to_reread(tmp_path, monkeypatch):
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary",
+                        lambda **kwargs: pytest.fail("no website ceiling to read"))
+    assert job_ceiling.require_current_job_ceiling({"site_id": SITE}, context={}, queue_root=tmp_path) is None

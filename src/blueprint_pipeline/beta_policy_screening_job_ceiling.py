@@ -118,6 +118,45 @@ def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any]
     return build_job_ceiling_screening_plan(catalog, scene, job_ceiling=record, **options)
 
 
+EXCEEDED = "beta_screening_job_ceiling_exceeded"
+
+
+def require_current_job_ceiling(plan: Mapping[str, Any], *, context: Mapping[str, Any],
+                                capture_root: str | Path | None = None,
+                                queue_root: str | Path | None = None) -> dict[str, Any] | None:
+    """Before a paid launch: the job's ceiling in force now still covers what this queue committed.
+
+    A plan is sized once (``plan_within_job_ceiling``), but its money authority can end
+    later: an owner row expires, a grant is withdrawn, other ledgers spend. Reading the
+    ceiling again here makes that end a stop before spawn, for every candidate of every
+    plan, instead of the plan's original figure staying in force (capture-447, 11-06:
+    a run launched seven minutes after the owner's $130 row expired). Unreadable is a
+    stop too (``website_job_ceiling_unavailable``). A plan made without a website job
+    ceiling has none to re-read and returns ``None``.
+    """
+    from .beta_policy_screening_coordinator import _amount, _budget, _ledger, _lock, _root
+
+    if not plan.get("website_job_ceiling"):
+        return None
+    if capture_root is None:
+        from .team_scene_packet_worker import resolve_capture_root
+        capture_root = resolve_capture_root(plan["source"])
+    summary = read_job_ceiling_summary(context=context, capture_root=capture_root)
+    published = summary.get("screening_cost_usd")
+    remaining = summary.get("remaining_cost_usd")
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
+           for value in (published, remaining)):
+        raise ValueError(UNAVAILABLE)
+    root = _root(queue_root)
+    with _lock(root):
+        committed = _amount(_budget(_ledger(root), plan["site_id"])["committed_upper_bound_usd"])
+    # What the WebApp's figure cannot see yet: commitments since its last accepted publication.
+    unseen = max(Decimal(0), committed - Decimal(str(published)))
+    if Decimal(str(remaining)) < unseen:
+        raise ValueError(EXCEEDED)
+    return summary
+
+
 def site_screening_remaining(queue_root: str | Path, *, site_id: str) -> str:
     """What the site's screening allowance has left after every commitment, as funding counts it."""
     from .beta_policy_screening_coordinator import SITE_LIMIT, _amount, _budget, _ledger, _lock, _root
@@ -128,5 +167,5 @@ def site_screening_remaining(queue_root: str | Path, *, site_id: str) -> str:
     return f"{max(Decimal(0), SITE_LIMIT - committed):.2f}"
 
 
-__all__ = ["UNAVAILABLE", "local_screening_holds", "plan_within_job_ceiling", "read_job_ceiling_summary",
-           "site_screening_remaining"]
+__all__ = ["EXCEEDED", "UNAVAILABLE", "local_screening_holds", "plan_within_job_ceiling", "read_job_ceiling_summary",
+           "require_current_job_ceiling", "site_screening_remaining"]
