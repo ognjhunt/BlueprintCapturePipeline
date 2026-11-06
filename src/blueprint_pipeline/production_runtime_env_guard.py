@@ -84,8 +84,6 @@ CONTROL_PLANE_ENTRYPOINTS = (
     # so an idle tick does not load it; proving it here keeps a broken install
     # from reaching the first handoff.
     "blueprint_pipeline.run_e2e",
-    "blueprint_pipeline.capture_reconstruction_launch_dispatcher",
-    "blueprint_pipeline.capture_reconstruction_postshot_allocator",
     "blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup",
     "blueprint_pipeline.task_evaluation_launch_dispatcher",
     "blueprint_pipeline.task_evaluation_launch_preparation_worker",

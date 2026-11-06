@@ -95,7 +95,6 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
         "blueprint-pipeline-intake.service",
         "blueprint-pipeline-control-plane.service",
         "blueprint-pubsub-handoff-listener.service",
-        "blueprint-capture-reconstruction-dispatcher.service",
     ):
         text = _read(unit)
 
@@ -442,14 +441,13 @@ HOST_MEMORY_KEPT = {
     "blueprint-operator-door-runner.service": ("-500", "256M"),
     "blueprint-operator-door-hold-sweep.service": ("-500", "256M"),
 }
-#: Units in deploy/systemd that this host's deploy does not install: GPU workers and their pool, the isolated
-#: staging intake, and the capture reconstruction queue.
+#: Units in deploy/systemd that this host's deploy does not install: GPU workers and their pool, and the isolated
+#: staging intake.
 NOT_ON_THE_CONTROL_PLANE = (
     "blueprint-production-gpu-campaign-control-plane.service",
     "blueprint-production-gpu-worker-agent.service",
     "blueprint-production-gpu-worker-pool.service",
     "blueprint-pipeline-intake-staging.service",
-    "blueprint-capture-reconstruction-dispatcher.service",
 )
 
 
@@ -580,32 +578,30 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
     assert "${HANDOFF_DIR}" in installer
 
 
-def test_capture_reconstruction_queue_retains_dispatch_without_retired_worker_requirement():
-    service = _read("blueprint-capture-reconstruction-dispatcher.service")
-    path = _read("blueprint-capture-reconstruction-dispatcher.path")
-    timer = _read("blueprint-capture-reconstruction-dispatcher.timer")
+def test_capture_reconstruction_dispatcher_stays_retired():
+    """The queue had no consumer after its dispatcher was retired (P-RT-01, H-03); nothing installs or feeds it."""
     env_example = _read("pipeline-control-plane.env.example")
     installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
 
-    assert "capture_reconstruction_launch_dispatcher drain" in service
-    assert "--execute" in service
-    assert "capture-reconstruction-queue/pending" in path
-    assert "Unit=blueprint-capture-reconstruction-dispatcher.service" in path
-    assert "Unit=blueprint-capture-reconstruction-dispatcher.service" in timer
-    assert "OnUnitInactiveSec=1min" in timer
+    for suffix in ("service", "path", "timer"):
+        assert not (SYSTEMD_DIR / f"blueprint-capture-reconstruction-dispatcher.{suffix}").exists()
+    assert "blueprint-capture-reconstruction-dispatcher" not in installer
+    assert "capture-reconstruction-queue" not in installer
     for name in (
         "BLUEPRINT_CAPTURE_RECONSTRUCTION_POLICY_ROOT",
         "BLUEPRINT_CAPTURE_RECONSTRUCTION_QUEUE_ROOT",
         "BLUEPRINT_CAPTURE_RECONSTRUCTION_STATE_ROOT",
         "BLUEPRINT_CAPTURE_RECONSTRUCTION_DERIVED_ROOT",
     ):
-        assert name in env_example
-    assert "blueprint-capture-reconstruction-dispatcher.service" in installer
-    assert "blueprint-capture-reconstruction-dispatcher.path" in installer
-    assert "blueprint-capture-reconstruction-dispatcher.timer" in installer
-    assert "capture-reconstruction-policies" in installer
-    assert "capture-reconstruction-queue/pending" in installer
-    assert "systemctl enable --now blueprint-capture-reconstruction-dispatcher.path" in installer
+        assert name not in env_example
+    listener = (REPO_ROOT / "src/blueprint_pipeline/pubsub_handoff_listener.py").read_text(encoding="utf-8")
+    assert "capture_reconstruction_launch_dispatcher" not in listener
+
+
+def test_installer_binds_the_exact_canonical_worker_wheel_and_hash_pinned_runtime():
+    env_example = _read("pipeline-control-plane.env.example")
+    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
     assert "build_canonical_3dgs_worker_wheel.sh" in installer
     worker_builder = (
         REPO_ROOT / "scripts" / "build_canonical_3dgs_worker_wheel.sh"

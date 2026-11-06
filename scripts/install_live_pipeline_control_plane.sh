@@ -18,7 +18,6 @@ CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT="${CONFIGURED_CONTROLS_AUTOSTART_INTEN
 CONFIGURED_CONTROLS_WEBAPP_SECRET="${CONFIGURED_CONTROLS_WEBAPP_SECRET:-${PROVIDER_SECRETS_DIR}/blueprint_task_evaluation_launch_submit_secret}"
 TASK_EVALUATION_INPUT_ROOT="${TASK_EVALUATION_INPUT_ROOT:-/var/lib/blueprint/task-evaluation-inputs}"
 WORK_VOLUME_ROOT="${WORK_VOLUME_ROOT:-/mnt/blueprint-work}"
-CAPTURE_RECONSTRUCTION_POLICY_DIR="${CAPTURE_RECONSTRUCTION_POLICY_DIR:-${ENV_DIR}/capture-reconstruction-policies}"
 CADDY_SITE_FILE="${CADDY_SITE_FILE:-/etc/caddy/Caddyfile}"
 SERVICE_USER="${SERVICE_USER:-blueprint}"
 SERVICE_GROUP="${SERVICE_GROUP:-blueprint}"
@@ -50,7 +49,6 @@ Environment overrides:
   LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
   TASK_EVALUATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs
   WORK_VOLUME_ROOT=/mnt/blueprint-work
-  CAPTURE_RECONSTRUCTION_POLICY_DIR=/etc/blueprint/capture-reconstruction-policies
   CADDY_SITE_FILE=/etc/caddy/Caddyfile
   SERVICE_USER=blueprint
   SERVICE_GROUP=blueprint
@@ -1224,8 +1222,6 @@ run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
   "${CREDENTIALS_DIR}"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${LAUNCH_PROFILE_DIR}"
-run install -d -m 0750 -o root -g "${SERVICE_GROUP}" \
-  "${CAPTURE_RECONSTRUCTION_POLICY_DIR}"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}" \
   "${STATE_DIR}/robot-eval-job-requests" \
@@ -1354,13 +1350,6 @@ else
   test "$(stat -c '%U:%G:%a' "${CONFIGURED_CONTROLS_WEBAPP_SECRET}")" = \
     "root:${SERVICE_GROUP}:440"
 fi
-run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
-  "${STATE_DIR}/capture-reconstruction-queue/pending" \
-  "${STATE_DIR}/capture-reconstruction-queue/processing" \
-  "${STATE_DIR}/capture-reconstruction-queue/completed" \
-  "${STATE_DIR}/capture-reconstruction-queue/blocked" \
-  "${STATE_DIR}/capture-reconstruction-runs" \
-  "${STATE_DIR}/capture-reconstruction-derived"
 # Older units ran as root. Migrate only the two explicitly bounded runtime
 # trees before installing the hardened service-user units. GNU chown's
 # --no-dereference keeps a symlink itself in scope instead of following it to
@@ -1474,15 +1463,6 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pubsub-handoff-listener.timer" \
   "${SYSTEMD_DIR}/blueprint-pubsub-handoff-listener.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-capture-reconstruction-dispatcher.service" \
-  "${SYSTEMD_DIR}/blueprint-capture-reconstruction-dispatcher.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-capture-reconstruction-dispatcher.path" \
-  "${SYSTEMD_DIR}/blueprint-capture-reconstruction-dispatcher.path"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-capture-reconstruction-dispatcher.timer" \
-  "${SYSTEMD_DIR}/blueprint-capture-reconstruction-dispatcher.timer"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-gpu-spend-guard.service" \
   "${SYSTEMD_DIR}/blueprint-gpu-spend-guard.service"
@@ -1776,8 +1756,6 @@ systemctl daemon-reload
 if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-pipeline-control-plane.timer
   systemctl enable --now blueprint-pubsub-handoff-listener.timer
-  systemctl enable --now blueprint-capture-reconstruction-dispatcher.path
-  systemctl enable --now blueprint-capture-reconstruction-dispatcher.timer
   systemctl enable --now blueprint-provider-billing-reconciler.timer
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
@@ -1809,7 +1787,6 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
 else
   echo "installed; enable timer with: systemctl enable --now blueprint-pipeline-control-plane.timer"
   echo "enable handoff listener with: systemctl enable --now blueprint-pubsub-handoff-listener.timer"
-  echo "enable capture reconstruction queue with: systemctl enable --now blueprint-capture-reconstruction-dispatcher.path"
   echo "enable billing reconciliation with: systemctl enable --now blueprint-provider-billing-reconciler.timer"
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"

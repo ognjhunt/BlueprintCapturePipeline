@@ -106,8 +106,6 @@ WORKER_UNITS=(
   blueprint-control-plane-release-lifecycle.timer
   blueprint-pubsub-handoff-listener.timer
   blueprint-task-evaluation-scene-progression.timer
-  blueprint-capture-reconstruction-dispatcher.path
-  blueprint-capture-reconstruction-dispatcher.timer
   blueprint-agent-stage-replay.timer
   blueprint-agent-stage-replay.path
   blueprint-completed-replay-cache-gc.timer
@@ -145,7 +143,6 @@ WORKER_UNITS=(
   blueprint-owner-approved-deletion-plan.service
   blueprint-pubsub-handoff-listener.service
   blueprint-task-evaluation-scene-progression.service
-  blueprint-capture-reconstruction-dispatcher.service
   blueprint-agent-stage-replay.service
   blueprint-completed-replay-cache-gc.service
   blueprint-scene-object-discovery.service

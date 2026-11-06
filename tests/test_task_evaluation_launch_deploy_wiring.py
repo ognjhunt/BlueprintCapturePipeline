@@ -22,8 +22,6 @@ def test_shell_wrapped_production_unit_commands_parse_before_deploy() -> None:
         ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStartPre"),
         ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStart"),
         ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStartPost"),
-        ("deploy/systemd/blueprint-capture-reconstruction-dispatcher.service", "ExecStart"),
-        ("deploy/systemd/blueprint-capture-reconstruction-dispatcher.service", "ExecStartPre"),
         ("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service", "ExecStart"),
         ("deploy/systemd/blueprint-task-evaluation-launch-reconciler.service", "ExecStart"),
         ("deploy/systemd/blueprint-task-evaluation-launch-supervisor.service", "ExecStart"),

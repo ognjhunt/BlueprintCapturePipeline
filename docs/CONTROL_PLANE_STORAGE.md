@@ -1013,9 +1013,8 @@ scene only when everything in it can come back and nothing can still need it.
 4. nothing in the tree changed for 48 hours (`recently_active`);
 5. no live storage pin names it, lies inside it or contains it (`pinned`);
 6. no pending or processing queue message names the scene, across the reclaim
-   timer's queues plus `sam31-preparation-executions`,
-   `task-evaluation-scene-configuration-activation-intents` and
-   `capture-reconstruction-queue` (`queue_referenced`);
+   timer's queues plus `sam31-preparation-executions` and
+   `task-evaluation-scene-configuration-activation-intents` (`queue_referenced`);
 7. no live process holds it (`in_use`; an unreadable process table counts as in use);
 8. no scene intent that can still run resolves a website source registered inside
    it (`open_scene_intent:<intent>`). An intent is finished once its progression
