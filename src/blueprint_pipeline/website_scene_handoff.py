@@ -368,6 +368,15 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             facts = scene_facts(base_scene=base, camera_path_levelled_m=atlas.get("camera_path_levelled_m") or [])
             spec = compile_locomotion_spec(task_context=context, facts=facts, requirements=need)
             write_json(root / SPEC_FILE, spec)
+            if need["locomote"]:
+                # The G1 checkpoints' goal and scene task, made from the compiled spec
+                # (website_navigation_packet); the hold below names what is still unbuilt.
+                from .website_locomotion_task import NAVIGATION_TASK_FILE
+                from .website_navigation_packet import navigation_task_spec
+                navigation = navigation_task_spec(spec, task_context=context)
+                write_json(root / NAVIGATION_TASK_FILE, navigation)
+                result.update(navigation_task_spec_path=str(root / NAVIGATION_TASK_FILE),
+                              navigation_task_spec_digest=navigation["task_spec_digest"])
             result.update(geometry_backend=atlas["source_geometry"]["geometry_backend"],
                           source_geometry_digest=atlas["source_geometry"]["digest"],
                           compiled_task_spec_path=str(root / SPEC_FILE), compiled_task_spec_digest=spec["spec_digest"])

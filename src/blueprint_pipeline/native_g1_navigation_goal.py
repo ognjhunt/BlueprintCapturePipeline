@@ -20,6 +20,16 @@ SCHEMA_VERSION = "native_g1_navigation_goal.v1"
 SCORE_SCHEMA_VERSION = "native_g1_navigation_goal_score.v1"
 AUTHORITY_SCHEMA_VERSION = "native_g1_navigation_goal_authority.v1"
 PUBLISHED_TASK_INSTRUCTION = "Avoid obstacles and move to the yellow marked area."
+#: A navigation goal rides on a rigid task's scene (the published HSI setup) or on its own
+#: navigation scene, compiled from the site's brief (``website_navigation_packet``).
+NAVIGATION_TASK_KIND = "goal_region_navigation"
+GOAL_HOST_TASK_KINDS = frozenset({"rigid_pick_place", NAVIGATION_TASK_KIND})
+#: Owner decision 4 (2026-11-06 15:07Z): the site's confirmed brief plus a machine-composed
+#: authority replace the named human reviewer and team, recorded as a disclosed assumption.
+MACHINE_AUTHORITY_SCHEMA_VERSION = "native_g1_navigation_goal_authority.v2"
+GOAL_BASIS_SCHEMA_VERSION = "native_g1_navigation_goal_basis.v1"
+MACHINE_AUTHORITY_BASIS = "owner_decision_2026_11_06_confirmed_brief_and_machine_composed_goal"
+MACHINE_AUTHORITY_COMPOSER = "blueprint_task_spec_compiler"
 
 
 def validate_g1_navigation_goal(task_spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -37,7 +47,7 @@ def validate_g1_navigation_goal(task_spec: Mapping[str, Any]) -> dict[str, Any]:
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         raise ValueError("g1_navigation_goal_invalid") from exc
     if (
-        task_spec.get("task_kind") != "rigid_pick_place"
+        task_spec.get("task_kind") not in GOAL_HOST_TASK_KINDS
         or goal.get("schema_version") != SCHEMA_VERSION
         or goal.get("task_instruction") != PUBLISHED_TASK_INSTRUCTION
         or marker.get("schema_version") != "native_task_target_marker.v1"
@@ -72,8 +82,14 @@ def validate_g1_navigation_goal(task_spec: Mapping[str, Any]) -> dict[str, Any]:
 def validate_g1_navigation_goal_authority(
     value: Mapping[str, Any] | None, *, plan: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Bind team-confirmed goal arrival to one sealed G1 task/site scene."""
+    """Bind team-confirmed goal arrival to one sealed G1 task/site scene.
 
+    A ``v2`` authority (a navigation scene compiled from the site's confirmed brief)
+    is checked by ``validate_machine_composed_goal_authority``.
+    """
+
+    if isinstance(value, Mapping) and value.get("schema_version") == MACHINE_AUTHORITY_SCHEMA_VERSION:
+        return validate_machine_composed_goal_authority(value, plan=plan)
     try:
         authority = json.loads(json.dumps(value, allow_nan=False))
         if (
@@ -156,6 +172,106 @@ def seal_g1_navigation_goal_authority(
         authority, digest_field="authority_digest"
     )
     return validate_g1_navigation_goal_authority(authority, plan=plan)
+
+
+def _goal_basis(task_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """What a compiled navigation goal was made from: the site's brief and the compiled spec."""
+    basis = task_spec.get("navigation_goal_basis")
+    if (not isinstance(basis, Mapping)
+            or set(basis) != {"schema_version", "site_id", "compiled_task_spec_digest", "task_context_digest",
+                              "disclosed_assumptions"}
+            or basis["schema_version"] != GOAL_BASIS_SCHEMA_VERSION
+            or not all(isinstance(basis[key], str) and basis[key].strip()
+                       for key in ("site_id", "compiled_task_spec_digest", "task_context_digest"))
+            or not isinstance(basis["disclosed_assumptions"], list)
+            or not all(isinstance(item, str) and item for item in basis["disclosed_assumptions"])):
+        raise ValueError("g1_navigation_goal_basis_invalid")
+    return dict(basis)
+
+
+def _machine_scope(plan: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if (plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
+            or plan.get("task_kind") != NAVIGATION_TASK_KIND
+            or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"):
+        raise ValueError("scene_plan_mismatch")
+    task_spec = plan["task_spec"]
+    goal = validate_g1_navigation_goal(task_spec)
+    basis = _goal_basis(task_spec)
+    scope = {"site_id": basis["site_id"], "task_id": plan["task_id"], "scene_plan_digest": plan["plan_digest"],
+             "compiled_task_spec_digest": basis["compiled_task_spec_digest"],
+             "task_context_digest": basis["task_context_digest"]}
+    return goal, basis, scope
+
+
+def _confirmed_brief(brief: Any, *, basis: Mapping[str, Any]) -> dict[str, Any]:
+    """The site's own confirmation of the brief the goal was compiled from; unconfirmed refuses."""
+    if (not isinstance(brief, Mapping) or set(brief) != {"context_digest", "description", "confirmed", "confirmed_at"}
+            or brief["confirmed"] is not True
+            or not isinstance(brief["confirmed_at"], str) or not brief["confirmed_at"].strip()
+            or not isinstance(brief["description"], str) or not brief["description"].strip()
+            or brief["context_digest"] != basis["task_context_digest"]):
+        raise ValueError("g1_navigation_goal_brief_not_confirmed")
+    return dict(brief)
+
+
+def validate_machine_composed_goal_authority(value: Mapping[str, Any] | None, *,
+                                             plan: Mapping[str, Any]) -> dict[str, Any]:
+    """Owner decision 4: a confirmed brief plus a machine-composed goal stands in for a named reviewer."""
+    try:
+        authority = json.loads(json.dumps(value, allow_nan=False))
+        goal, basis, scope = _machine_scope(plan)
+        if (not isinstance(authority, dict)
+                or set(authority) != {"schema_version", "status", "claim_ceiling", "scope", "goal", "goal_digest",
+                                      "brief", "authority_basis", "composed_by", "human_reviewer",
+                                      "disclosed_assumptions", "reviewed_criterion", "obstacle_clearance_scored",
+                                      "physical_outcome_claimed", "authority_digest"}
+                or authority["schema_version"] != MACHINE_AUTHORITY_SCHEMA_VERSION
+                or authority["status"] != "confirmed_for_development_simulation"
+                or authority["claim_ceiling"] != "development_only"
+                or authority["scope"] != scope
+                or authority["goal"] != goal
+                or authority["goal_digest"] != cross_runtime_canonical_digest(goal)
+                or authority["authority_basis"] != MACHINE_AUTHORITY_BASIS
+                or authority["composed_by"] != MACHINE_AUTHORITY_COMPOSER
+                or authority["human_reviewer"] is not None
+                or authority["disclosed_assumptions"] != basis["disclosed_assumptions"]
+                or authority["reviewed_criterion"] != "root_xy_goal_arrival_and_terminal_hold"
+                or authority["obstacle_clearance_scored"] is not False
+                or authority["physical_outcome_claimed"] is not False
+                or authority["authority_digest"] != cross_runtime_canonical_digest(
+                    authority, digest_field="authority_digest")):
+            raise ValueError("invalid")
+        _confirmed_brief(authority["brief"], basis=basis)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError("g1_navigation_goal_authority_invalid") from exc
+    return authority
+
+
+def compose_g1_navigation_goal_authority(*, plan: Mapping[str, Any], brief: Mapping[str, Any]) -> dict[str, Any]:
+    """Compose the goal authority for a navigation scene from the site's confirmed brief.
+
+    No human reviewer is named or claimed. Refuses an unconfirmed brief
+    (``g1_navigation_goal_brief_not_confirmed``) or a plan that is not a G1 navigation scene.
+    """
+    goal, basis, scope = _machine_scope(plan)
+    authority = {
+        "schema_version": MACHINE_AUTHORITY_SCHEMA_VERSION,
+        "status": "confirmed_for_development_simulation",
+        "claim_ceiling": "development_only",
+        "scope": scope,
+        "goal": goal,
+        "goal_digest": cross_runtime_canonical_digest(goal),
+        "brief": _confirmed_brief(brief, basis=basis),
+        "authority_basis": MACHINE_AUTHORITY_BASIS,
+        "composed_by": MACHINE_AUTHORITY_COMPOSER,
+        "human_reviewer": None,
+        "disclosed_assumptions": list(basis["disclosed_assumptions"]),
+        "reviewed_criterion": "root_xy_goal_arrival_and_terminal_hold",
+        "obstacle_clearance_scored": False,
+        "physical_outcome_claimed": False,
+    }
+    authority["authority_digest"] = cross_runtime_canonical_digest(authority, digest_field="authority_digest")
+    return validate_machine_composed_goal_authority(authority, plan=plan)
 
 
 def score_g1_navigation_episode(

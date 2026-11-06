@@ -132,11 +132,12 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
                     type(handoff["provider_mutation_performed"]) is not bool)):
             return False
     elif code == "website_task_runnable_policy_missing":
-        # ``website_locomotion_task.runnable_policy_gap``: the job's own resolved profile needs
-        # no manipulation, and the current catalog and registry still run no policy for it.
-        # Re-derived here, so a newly runnable body or policy releases the hold.
+        # ``website_locomotion_hold``: the job's own resolved profile needs no manipulation, and the
+        # options the handoff recorded run no policy for it. Re-derived from those options, so this
+        # contract never imports the robot or policy inventory; the handoff recomputes the options
+        # live, which is what releases the hold once a body or policy becomes runnable.
         from .task_spec_compiler import requirements
-        from .website_locomotion_task import runnable_policy_gap
+        from .website_locomotion_hold import runnable_policy_gap_from_options
         from .website_task_semantics import effective_task_profile
         try:
             semantics = gap.get("task_semantics") if family == "general_task" else None
@@ -145,9 +146,12 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
             if profile is None or profile.requires_manipulation:
                 return False
             need = requirements(locomote=profile.requires_locomotion, manipulate=False)
-            if (gap != runnable_policy_gap(task_context=task_context, requirements=need,
-                                           spec_digest=gap.get("compiled_task_spec_digest"),
-                                           task_semantics=semantics, source_video_digest=gap.get("source_video_digest"))
+            recorded = gap.get("runnable_options")
+            if (not isinstance(recorded, Mapping)
+                    or gap != runnable_policy_gap_from_options(task_context=task_context, requirements=need,
+                                                               spec_digest=gap.get("compiled_task_spec_digest"),
+                                                               options=recorded, task_semantics=semantics,
+                                                               source_video_digest=gap.get("source_video_digest"))
                     or handoff.get("compiled_task_spec_digest") != gap.get("compiled_task_spec_digest")):
                 return False
         except (ValueError, TypeError, KeyError):
