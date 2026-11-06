@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,13 @@ _BINDING_FIELDS = ("identity_document", "result_document", "run_id", "runtime_in
 # pass the finite upload forecast already bound into their spending admission.
 OUTPUT_ARCHIVE_MAXIMUM_BYTES = 8_000_000_000
 PRESIGN_EXPIRATION_SECONDS = 3600
+# Selective ingestion resumes in place (a verified member is never fetched again, a partial one
+# from its offset), so a pass that a transient B2 transport failure stopped is run again with a
+# fresh URL, as promotion's steps are. 2026-11-06: capture-447's molmoact2 run stopped on one
+# ``provider_output_http_failed`` after 146 of its needed members, with the archive durable, and
+# its ten paid episodes counted as a harness failure.
+INGESTION_RETRY_ATTEMPTS = 3
+INGESTION_RETRY_SLEEP_SECONDS = 2.0
 # Replaced by tests (Linux CI runs with fake disk usage).
 disk_usage_provider: Callable[[Any], Any] = shutil.disk_usage
 
@@ -218,12 +226,14 @@ def ingest_needed_members(
     ``needed_set``, ``ingestion``, ``member_view_path`` and the stream blocker
     as ``reason``. ``result_path`` is set only once ingestion is materialized
     and its view descriptor written; without ``result_name`` (a resume) no
-    result is read. Never raises: the paid run is over, so any other failure
+    result is read. A pass stopped only by transient transport codes is run
+    again, up to ``INGESTION_RETRY_ATTEMPTS`` passes in all, resuming where it
+    stopped. Never raises: the paid run is over, so any other failure
     is ``<prefix>_provider_output_ingestion_failed:<Type>`` with
     ``archive_durable`` kept (review minor 7).
     """
     from .provider_output_member_view import ProviderOutputMemberViewError, write_member_view_descriptor
-    from .provider_output_promotion import INDEX_FILENAME
+    from .provider_output_promotion import INDEX_FILENAME, TRANSIENT_CODES
     from .provider_output_range_ingestion import (
         CasArchiveSource,
         ProviderOutputIngestionError,
@@ -277,14 +287,21 @@ def ingest_needed_members(
             reference = index["archive"]["durable_reference"]
             source = CasArchiveSource(reference, presign=lambda: presign_configured_scene_artifact(
                 reference=reference, expiration_seconds=PRESIGN_EXPIRATION_SECONDS))
-            try:
-                receipt = ingest_selected_members(
-                    source=source, index=index, selection=selection, members_root=attempt_root / EVIDENCE_DIRNAME,
-                    metadata_root=attempt_root / INGESTION_DIRNAME, reserve=reserve,
-                    disk_usage_provider=lambda path: disk_usage_provider(path),
-                    native_inventory_binding=inventory_binding)
-            except ProviderOutputIngestionError as exc:
-                return blocked(f"{blocker_prefix}_provider_output_ingestion_blocked", str(exc))
+            for attempt in range(1, INGESTION_RETRY_ATTEMPTS + 1):
+                try:
+                    receipt = ingest_selected_members(
+                        source=source, index=index, selection=selection,
+                        members_root=attempt_root / EVIDENCE_DIRNAME,
+                        metadata_root=attempt_root / INGESTION_DIRNAME, reserve=reserve,
+                        disk_usage_provider=lambda path: disk_usage_provider(path),
+                        native_inventory_binding=inventory_binding)
+                except ProviderOutputIngestionError as exc:
+                    return blocked(f"{blocker_prefix}_provider_output_ingestion_blocked", str(exc))
+                codes = set(receipt.get("blockers") or ())
+                if (receipt.get("status") != "blocked" or not codes or not codes <= TRANSIENT_CODES
+                        or attempt == INGESTION_RETRY_ATTEMPTS):
+                    break
+                time.sleep(INGESTION_RETRY_SLEEP_SECONDS * attempt)
         outcome["ingestion"] = _ingestion_summary(receipt, receipt_path)
         if receipt.get("status") != "materialized":
             return blocked(f"{blocker_prefix}_provider_output_ingestion_blocked", *receipt.get("blockers") or [])
