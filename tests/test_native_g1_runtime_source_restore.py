@@ -2,6 +2,7 @@
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/native_g1_runtime_source_restore.py
+#   src/blueprint_pipeline/wam_cached_dependency_key.py
 #   src/blueprint_pipeline/wam_provider_object_store.py
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from blueprint_pipeline import native_g1_runtime_source_restore as restore
 from blueprint_pipeline import wam_provider_object_store as object_store
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_runtime_source_packet import MANIFEST_SCHEMA_VERSION, SCHEMA_VERSION
+from blueprint_pipeline.wam_cached_dependency_key import cached_dependency_object_key
 
 Usage = namedtuple("Usage", "total used free")
 REGISTRY_RECEIPT = ("/mnt/blueprint-work/g1-cuda-runtime-source-7c1f528-20260926/"
@@ -91,7 +93,7 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     raw = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
     build = work / "g1-runtime-source-build.json"
     build.write_bytes(raw)
-    key = object_store.cached_dependency_object_key(restore.OBJECT_KEY_PREFIX, _sha(packet), "runtime_dependency")
+    key = cached_dependency_object_key(restore.OBJECT_KEY_PREFIX, _sha(packet), "runtime_dependency")
     pins = restore.Pins(
         work_root=work, build_record=build, build_record_sha256=_sha(raw), build_record_size_bytes=len(raw),
         receipt_digest=record["receipt_digest"], target_dir=target, packet_sha256=_sha(packet),
@@ -146,12 +148,38 @@ def test_production_pins_name_the_registry_binding_and_the_retained_cache_key() 
 
 def test_the_cached_dependency_key_is_the_staging_scheme() -> None:
     sha = "ab" * 32
-    assert object_store.cached_dependency_object_key("/p/q/ ", "sha256:" + sha) == \
+    assert cached_dependency_object_key("/p/q/ ", "sha256:" + sha) == \
         f"p/q/runtime-dependencies/sha256/{sha}.zip"
-    assert object_store.cached_dependency_object_key("", sha, "g1_checkpoint") == \
+    assert cached_dependency_object_key("", sha, "g1_checkpoint") == \
         f"blueprint/wam-provider/g1-checkpoints/sha256/{sha}.bin"
     with pytest.raises(ValueError, match="cached_dependency_artifact_kind_invalid"):
-        object_store.cached_dependency_object_key("p", sha, "other")
+        cached_dependency_object_key("p", sha, "other")
+
+
+def test_the_restore_reads_the_key_the_runtime_dependency_cache_writes(world: dict[str, Any], tmp_path: Path,
+                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("boto3")
+    dependency = tmp_path / "native_task_runtime_sources.zip"
+    dependency.write_bytes(world["packet"])
+    seen: list[str] = []
+
+    class Cache:
+        def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
+            seen.append(Key)
+            return {"ContentLength": len(world["packet"]),
+                    "Metadata": {"sha256": _sha(world["packet"]).removeprefix("sha256:")}}
+
+        def generate_presigned_url(self, *_args: Any, **_kwargs: Any) -> str:
+            return "https://store.example.test/signed"
+
+    monkeypatch.setattr(object_store, "s3_compatible_client", lambda _sdk, **_kwargs: Cache())
+    staged = object_store.stage_cached_runtime_dependency_object_store(
+        job_dir=tmp_path / "job", dependency_path=dependency, expected_sha256=_sha(world["packet"]),
+        key_prefix=restore.OBJECT_KEY_PREFIX, expiration_seconds=60)
+
+    assert staged["status"] == "completed" and staged["cache_hit"] is True
+    assert seen == [world["key"]] == [restore.object_key(world["pins"])]
+    assert staged["content_addressed_key_sha256"] == world["pins"].object_key_sha256
 
 
 def test_a_plan_checks_everything_and_writes_nothing(world: dict[str, Any]) -> None:

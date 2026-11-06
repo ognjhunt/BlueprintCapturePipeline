@@ -46,6 +46,7 @@ from .native_task_runtime_source_packet import (
     NativeTaskRuntimeSourcePacketError,
     verify_native_task_runtime_source_packet,
 )
+from .wam_cached_dependency_key import cached_dependency_object_key
 
 
 SCHEMA_VERSION = "native_g1_runtime_source_restore.v1"
@@ -179,7 +180,7 @@ def read_build_record(pins: Pins) -> bytes:
 def object_key(pins: Pins) -> str:
     """The retained copy's key, by the cache's own scheme; never recorded."""
 
-    key = object_store.cached_dependency_object_key(OBJECT_KEY_PREFIX, pins.packet_sha256, ARTIFACT_KIND)
+    key = cached_dependency_object_key(OBJECT_KEY_PREFIX, pins.packet_sha256, ARTIFACT_KIND)
     _require(hashlib.sha256(key.encode("utf-8")).hexdigest() == pins.object_key_sha256,
              "g1_runtime_source_object_key_changed")
     return key

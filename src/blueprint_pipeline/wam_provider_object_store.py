@@ -32,6 +32,7 @@ from .task_evaluation_configured_scene_object_store import (
     presign_configured_scene_artifact,
     publish_configured_scene_artifact,
 )
+from .wam_cached_dependency_key import cached_dependency_object_key
 
 
 SCHEMA_VERSION = "wam_provider_object_store_staging.v1"
@@ -173,24 +174,6 @@ def _sha256_file(path: Path, *, _cache_use=None) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def cached_dependency_object_key(
-    key_prefix: str, expected_sha256: str, artifact_kind: str = "runtime_dependency"
-) -> str:
-    """The content-addressed key one immutable dependency is cached under.
-
-    The run's key prefix, the dependency's sha256 and its kind name the object;
-    ``native_g1_runtime_source_restore`` reads a retained copy back by the same key.
-    """
-
-    expected = str(expected_sha256 or "").removeprefix("sha256:")
-    safe_prefix = key_prefix.strip("/ ") or "blueprint/wam-provider"
-    if artifact_kind == "runtime_dependency":
-        return f"{safe_prefix}/runtime-dependencies/sha256/{expected}.zip"
-    if artifact_kind == "g1_checkpoint":
-        return f"{safe_prefix}/g1-checkpoints/sha256/{expected}.bin"
-    raise ValueError("cached_dependency_artifact_kind_invalid")
 
 
 def stage_cached_runtime_dependency_object_store(
