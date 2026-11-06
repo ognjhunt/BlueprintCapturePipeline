@@ -87,7 +87,7 @@ Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door
     - A tray-top point 0.45 m ahead appears at row 391 of 720, above the gripper's own pixels, which start at row 432. At 0.55 m it appears at row 518. Beyond about 0.75 m it is below the frame.
     - The pick and the place are 0.45 m apart. A stance 0.5 m from the midpoint of that line, facing it, would put both 0.55 m from the base, if the table allows it.
   - **Next**, before any new paid screening:
-    - Check the scene planner's robot placement, so the tray starts nearer the middle of the policy's view and the place is within reach. Run the free CPU arm-path check on the new plan; it should read `clear`.
+    - Check the scene planner's robot placement, so the tray starts nearer the middle of the policy's view and the place is within reach. Run the free CPU arm-path check on the new plan and record its result beside the run. A `flagged` result is evidence, not a stop: the code keeps it advisory (`rigid_carry_verdict`), because a policy may hold the tray in a way the scripted carry did not try.
     - Check the prompt text.
     - Check the marker size.
     - Carry the scene's arm-path flags into the screening run summary, beside `observation_quality_flags`, as a flag and not a gate.
