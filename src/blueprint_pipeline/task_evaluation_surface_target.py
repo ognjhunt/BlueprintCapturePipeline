@@ -1,7 +1,20 @@
 """One registered non-colliding region on an existing support (ADP-009D).
 
-The same immutable region drives marker placement and whole-object scoring.
-It supplies no destination asset or native qualification claim.
+The same immutable region drives marker placement and scoring. It supplies no
+destination asset or native qualification claim.
+
+Two success rules, each sealed in the target it scores:
+
+- ``task_evaluation_surface_target.v1``: every rotated collider-bound corner of
+  the subject ends inside the disc. The disc must be wider than the subject, so
+  its marker is larger than the object and can lie under the object's start.
+  Every target sealed before 2026-11-06 is v1 and keeps scoring exactly this way.
+- ``task_evaluation_surface_target.v2`` (``success_rule``
+  ``subject_centre_within_radius``; owner decision 2026-11-06, G3): the centre of
+  the subject's rotated collider bounds ends within the disc's radius. The disc is
+  a tolerance, not a container, so it is sized to the tolerance and kept clear of
+  the start footprint. A container (``inside``) still requires the whole volume
+  inside its interior.
 """
 from __future__ import annotations
 
@@ -12,6 +25,9 @@ from itertools import product
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 SCHEMA = "task_evaluation_surface_target.v1"
+SCHEMA_V2 = "task_evaluation_surface_target.v2"
+#: v2's sealed success rule: the subject's centre ends within the disc's radius.
+CENTRE_RULE = "subject_centre_within_radius"
 #: A subject resting on a surface this far from the region's height (the floor
 #: under a desk) is not in the region, whatever its plan position.
 INITIAL_REGION_HEIGHT_TOLERANCE_M = 0.05
@@ -52,9 +68,13 @@ def validate_surface_target(value):
               "maximum_tilt_rad", "stable_seconds", "maximum_linear_speed_m_s",
               "maximum_angular_speed_rad_s", "target_digest"}
     container_fields = {"placement_relation", "interior_bounds_world_m"}
-    require(isinstance(value, Mapping) and (set(value) == fields or set(value) == fields | container_fields),
-            "surface_target_invalid")
-    require(value["schema_version"] == SCHEMA and value["shape"] == "flat_green_disc"
+    require(isinstance(value, Mapping), "surface_target_invalid")
+    if value.get("schema_version") == SCHEMA_V2:
+        # v2 seals its rule in the target; v1 has none and keeps whole-footprint containment.
+        require(value.get("success_rule") == CENTRE_RULE, "surface_target_invalid")
+        fields = fields | {"success_rule"}
+    require(set(value) == fields or set(value) == fields | container_fields, "surface_target_invalid")
+    require(value["schema_version"] in {SCHEMA, SCHEMA_V2} and value["shape"] == "flat_green_disc"
             and value["non_colliding"] is True and bool(value["visible_label"])
             and isinstance(value["support_prim_path"], str)
             and value["support_prim_path"].startswith("/")
@@ -84,6 +104,11 @@ def validate_surface_target(value):
                         and position[i] + value["radius_m"] <= interior["maximum"][i] for i in (0, 1)),
                 "surface_target_interior_region_invalid")
     return dict(value)
+
+
+def centre_rule(value):
+    """Whether a (validated) target scores the subject's centre within its radius (v2)."""
+    return value.get("schema_version") == SCHEMA_V2 and value.get("success_rule") == CENTRE_RULE
 
 
 def surface_target_for_web(value):
@@ -137,6 +162,18 @@ def minimum_container_carry_height(task_spec, *, clearance_m):
     return float(rim) - bottom + clearance_m
 
 
+def region_clear_of_start(start_min, start_max, centre, radius):
+    """Whether a disc lies wholly off the start footprint (plan rectangle ``start_min``..``start_max``).
+
+    The v2 start rule: the disc is a small tolerance around the goal, so it must not
+    lie even partly under the subject, where the policy could not see it and a short
+    nudge could satisfy it.
+    """
+    dx = max(start_min[0] - centre[0], 0.0, centre[0] - start_max[0])
+    dy = max(start_min[1] - centre[1], 0.0, centre[1] - start_max[1])
+    return math.hypot(dx, dy) > radius
+
+
 def region_excludes_start(start_min, start_max, centre, radius):
     """Whether the start cannot already satisfy the region: its centre lies outside the disc.
 
@@ -151,22 +188,29 @@ def region_excludes_start(start_min, start_max, centre, radius):
 
 
 def derive_surface_target(*, destination, support, source_min, source_max, support_instance_id,
-                          start_support=None, height_tolerance_m=SUPPORT_HEIGHT_TOLERANCE_M):
+                          start_support=None, height_tolerance_m=SUPPORT_HEIGHT_TOLERANCE_M, success_rule=None):
     """The region on ``support``; ``start_support`` is the subject's own surface when it differs.
 
     ``height_tolerance_m`` widens the region-to-support-top check only for an
     estimated support, to the placement uncertainty its region was found within.
+    ``success_rule`` ``CENTRE_RULE`` seals a v2 target (the subject's centre within
+    the radius; the disc clear of the start footprint); None seals v1 (the whole
+    footprint inside a disc wider than the subject).
     """
+    require(success_rule in {None, CENTRE_RULE}, "surface_target_success_rule_invalid")
     require(destination.get("kind") == "green_region" and destination.get("relation") in {"on", "inside"}
             and destination.get("orientation_xyzw") == [0, 0, 0, 1],
             "surface_target_destination_invalid")
-    value = {"schema_version": SCHEMA, "shape": "flat_green_disc", "non_colliding": True,
+    value = {"schema_version": SCHEMA if success_rule is None else SCHEMA_V2, "shape": "flat_green_disc",
+             "non_colliding": True,
              "visible_label": destination["visible_label"], "radius_m": destination["radius_m"],
              "surface_position_world_m": list(destination["position_world_m"]),
              "support_prim_path": support["sage_prim_path"],
              "support_source_instance_id": str(support_instance_id),
              "maximum_tilt_rad": math.radians(15), "stable_seconds": 1.0,
              "maximum_linear_speed_m_s": 0.02, "maximum_angular_speed_rad_s": 0.1}
+    if success_rule is not None:
+        value["success_rule"] = success_rule
     if destination["relation"] == "inside":
         value.update(placement_relation="inside", interior_bounds_world_m=destination.get("interior_bounds_world_m"))
     # A task may admit the full tilt domain (pi) when absolute orientation is
@@ -189,9 +233,15 @@ def derive_surface_target(*, destination, support, source_min, source_max, suppo
             "surface_target_outside_support")
     level = (start_support is None or abs(start_support["bounds_max_xyz_m"][2] - p[2])
              <= INITIAL_REGION_HEIGHT_TOLERANCE_M)
-    require(not level or region_excludes_start(source_min, source_max, p, radius), "surface_target_initial_overlap")
-    require(math.hypot(*[(source_max[i] - source_min[i]) / 2 for i in (0, 1)]) < radius,
-            "surface_target_subject_does_not_fit")
+    if success_rule is None:
+        require(not level or region_excludes_start(source_min, source_max, p, radius), "surface_target_initial_overlap")
+        require(math.hypot(*[(source_max[i] - source_min[i]) / 2 for i in (0, 1)]) < radius,
+                "surface_target_subject_does_not_fit")
+    else:
+        # Only the centre must reach the disc, so the subject need not fit it; the disc
+        # must lie wholly off the start footprint, or the task could begin (nearly) done.
+        require(not level or region_clear_of_start(source_min, source_max, p, radius),
+                "surface_target_initial_overlap")
     if "interior_bounds_world_m" in value:
         require(source_max[2] - source_min[2] < value["interior_bounds_world_m"]["maximum"][2] - p[2],
                 "surface_target_subject_does_not_fit_interior")
@@ -256,7 +306,9 @@ def bind_native_surface_target(*, task_spec, target, static, support,
     corners = [_rotate([c[i] - offset[i] for i in range(3)], [-q[0], -q[1], -q[2], q[3]])
                for c in product(*zip(lower, upper, strict=True))]
     radius = target["radius_m"]
-    require(max(math.hypot(*c[:2]) for c in corners) < radius,
+    # v1 scores whole-footprint containment, so the qualified collider must fit the disc;
+    # v2 scores the centre only, and the disc is a tolerance smaller than the subject.
+    require(centre_rule(target) or max(math.hypot(*c[:2]) for c in corners) < radius,
             "surface_target_native_subject_does_not_fit")
     p = target["surface_position_world_m"]
     goal = [p[0], p[1], p[2] - min(c[2] for c in corners)]
@@ -289,8 +341,11 @@ def score_surface_target(*, target, bounds, samples, frequency_hz, minimum_lift_
     """Use retained native poses, contact, gripper state and elapsed simulation time.
 
     Differencing actual poses gives independent velocity evidence, including the
-    transition into the stable window. Every rotated collider-bound corner must
-    fit the disk. Missing/nonfinite readback is invalid, never a successful pose.
+    transition into the stable window. A v1 target needs every rotated
+    collider-bound corner inside the disc (``whole_footprint_contained``); a v2
+    target needs the centre of those bounds within the radius
+    (``subject_centre_within_radius``). Missing/nonfinite readback is invalid,
+    never a successful pose.
     """
     from .adp_rigid_retreat_scoring import _rotate, _vector
 
@@ -301,7 +356,8 @@ def score_surface_target(*, target, bounds, samples, frequency_hz, minimum_lift_
             "surface_target_native_bounds_invalid")
     corners = list(product(*zip(lower, upper, strict=True)))
     count = math.ceil(target["stable_seconds"] * frequency_hz) + 1
-    result = {"readback_complete": True, "whole_footprint_contained": False,
+    placed = "subject_centre_within_radius" if centre_rule(target) else "whole_footprint_contained"
+    result = {"readback_complete": True, placed: False,
               "upright": False, "stable_velocity": False, "lifted_clear": False,
               "initially_outside": False, "supported_and_released": False, "marker_pose_matches": False}
     poses = []
@@ -326,8 +382,10 @@ def score_surface_target(*, target, bounds, samples, frequency_hz, minimum_lift_
            for p in marker_poses):
         return {**result, "readback_complete": False, "satisfied": False}
     result["marker_pose_matches"] = True
-    # AABB is a conservative native collider envelope, so full footprint
-    # containment cannot be manufactured by a center-point-only test.
+    # v1: the AABB is a conservative native collider envelope, so full footprint
+    # containment cannot be manufactured by a center-point-only test. v2 scores
+    # the centre by its sealed rule. Either way the subject's centre must start
+    # outside the disc on the same level, or the task began complete.
     initial = poses[0][2]
     level = abs(min(p[2] for p in initial) - center[2]) <= INITIAL_REGION_HEIGHT_TOLERANCE_M
     result["initially_outside"] = not level or region_excludes_start(
@@ -335,8 +393,13 @@ def score_surface_target(*, target, bounds, samples, frequency_hz, minimum_lift_
     result["lifted_clear"] = any(min(p[2] for p in world) >= center[2] + minimum_lift_m
                                   and row.get("task_contact_active") is True for row, _, world in poses)
     window = poses[-count:]
-    result["whole_footprint_contained"] = all(math.dist(p[:2], center[:2]) <= radius + 1e-12
-                                               for _, _, world in window for p in world)
+    if centre_rule(target):
+        # The centre of the rotated collider bounds: the mean of their eight world corners.
+        result[placed] = all(math.dist([sum(p[i] for p in world) / len(world) for i in (0, 1)], center[:2])
+                             <= radius + 1e-12 for _, _, world in window)
+    else:
+        result[placed] = all(math.dist(p[:2], center[:2]) <= radius + 1e-12
+                             for _, _, world in window for p in world)
     if "interior_bounds_world_m" in target:
         interior = target["interior_bounds_world_m"]
         result["whole_volume_contained"] = all(

@@ -129,19 +129,20 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
 
 
 def legacy_native_surface_target(preparation, *, subject=None, development=None, relative_error=0.0):
-    """Native submission's region derivation verbatim from main at b7fe1cdfe, before the shared admission.
+    """Native submission's region derivation from main at b7fe1cdfe, with the rules added since.
 
     The oracle the shared admission (website_surface_target_admission) must
-    match bit for bit, so a retained target's digest stays valid. Preparations
-    here need no same-surface relocation; that step did not change. A nonzero
-    ``relative_error`` applies the one rule added since: an estimated
-    subject's region also holds its largest admitted replacement.
+    match bit for bit. Preparations here need no same-surface relocation; that
+    step did not change. Since the owner's G3 switch (2026-11-06) the region is
+    v2: a 5 cm centre tolerance whatever the subject's size, kept clear of the
+    start footprint widened by ``relative_error`` (the largest admitted
+    replacement).
     """
     import math
     from blueprint_pipeline import task_evaluation_scene_configuration_submission_records as records
     from blueprint_pipeline.task_evaluation_scene_configuration_submission_inputs import require
-    from blueprint_pipeline.task_evaluation_surface_target import SUPPORT_HEIGHT_TOLERANCE_M, derive_surface_target
-    from blueprint_pipeline.website_support_geometry import DESTINATION_MARGIN_M
+    from blueprint_pipeline.task_evaluation_surface_target import (CENTRE_RULE, SUPPORT_HEIGHT_TOLERANCE_M,
+                                                                   derive_surface_target)
     owner_task, scene_id = preparation["intake_request"]["task"], "legacy-oracle"
     subject = preparation["subject"] if subject is None else subject
     lower, upper = subject["aabb_min_xyz"], subject["aabb_max_xyz"]
@@ -163,23 +164,23 @@ def legacy_native_surface_target(preparation, *, subject=None, development=None,
             instance_id="website-destination-support", semantic_label=surface["description"],
             sage_prim_path="/Root", bounds_min=surface["aabb_min_xyz"], bounds_max=surface["aabb_max_xyz"])
         start_support = support_record
-    radius = math.hypot(*[(upper[i] - lower[i]) / 2 for i in (0, 1)]) + DESTINATION_MARGIN_M
-    if relative_error:
-        radius = math.hypot(*[(upper[i] - lower[i]) / 2 * (1 + relative_error) for i in (0, 1)]) + DESTINATION_MARGIN_M
+    middle = [(lower[i] + upper[i]) / 2 for i in range(3)]
+    start_min = [middle[i] - (middle[i] - lower[i]) * (1 + relative_error) if i != 2 else lower[i] for i in range(3)]
+    start_max = [middle[i] + (upper[i] - middle[i]) * (1 + relative_error) if i != 2 else upper[i] for i in range(3)]
     uncertainty = preparation["coordinate_frame"].get("placement_uncertainty_m")
     estimated = (not development and type(uncertainty) in (int, float) and math.isfinite(uncertainty))
-    return derive_surface_target(destination={**destination, "kind": "green_region", "radius_m": radius},
-        support=target_support, source_min=lower, source_max=upper,
+    return derive_surface_target(destination={**destination, "kind": "green_region", "radius_m": 0.05},
+        support=target_support, source_min=start_min, source_max=start_max,
         support_instance_id=target_support["publisher_instance_id"], start_support=start_support,
-        height_tolerance_m=max(SUPPORT_HEIGHT_TOLERANCE_M, uncertainty) if estimated else SUPPORT_HEIGHT_TOLERANCE_M)
+        height_tolerance_m=max(SUPPORT_HEIGHT_TOLERANCE_M, uncertainty) if estimated else SUPPORT_HEIGHT_TOLERANCE_M,
+        success_rule=CENTRE_RULE)
 
 
 def assert_target_sealed_as_before(kwargs):
-    """The materialized region equals the pre-refactor derivation from the same retained inputs.
+    """The materialized region equals the oracle derivation from the same retained inputs, bit for bit.
 
-    Built to size (development, designed), bit for bit. An estimated subject's
-    region differs only in its radius, widened by the replacement's recorded
-    size tolerance, and so its seal.
+    A v2 region is a centre tolerance: an estimated subject's replacement size
+    tolerance only widens the start footprint it must clear, never the region.
     """
     from blueprint_pipeline.task_evaluation_surface_target import surface_target_for_web
     from blueprint_pipeline.website_development_test import environment
@@ -195,8 +196,7 @@ def assert_target_sealed_as_before(kwargs):
                                           development=environment(preparation), relative_error=tolerance)
     if estimated:
         before = legacy_native_surface_target(preparation, subject=runtime["subject"], development=None)
-        assert tolerance == 0.25 and legacy["radius_m"] > before["radius_m"]
-        assert {key for key in before if before[key] != legacy[key]} == {"radius_m", "target_digest"}
+        assert tolerance == 0.25 and legacy == before and legacy["radius_m"] == 0.05
     template = json.loads((root / "configuration/task.json").read_text())
     assert "destination_relocation" not in template
     assert template["surface_target"] == legacy
@@ -236,14 +236,16 @@ REGION_CASES = {
     "nonfinite_uncertainty": {"placement_uncertainty_m": float("nan"),
                               "destination": {"position_world_m": [0.4, 0.0, 0.74]}},
     "uncertainty_below_5mm": {"placement_uncertainty_m": 0.001},
-    "off_support": {"destination": {"position_world_m": [0.95, 0.0, 0.75]}},
+    "off_support": {"destination": {"position_world_m": [0.97, 0.0, 0.75]}},
     "under_subject": {"destination": {"position_world_m": [-0.55, 0.0, 0.75]}},
     "level_surface_under_subject": {"destination": {"position_world_m": [-0.55, 0.0, 0.76], "support": LEVEL_SURFACE}},
     "another_surface": {"destination": {"position_world_m": [0.6, 0.0, 0.45], "support": ANOTHER_SURFACE}},
     "inside": {"destination": CAVITY},
     "taller_than_cavity": {"destination": CAVITY, "subject": {"aabb_max_xyz": [-0.5, 0.04, 1.2]}},
     "explicit_tilt": {"destination": {"success": {"maximum_tilt_rad": 3.141592653589793}}},
-    "larger_than_any_region": {"subject": {"aabb_min_xyz": [-0.9, -0.45, 0.75], "aabb_max_xyz": [-0.1, 0.45, 0.89]}},
+    # v1 refused it: no disc of at most 0.5 m holds it. v2 scores its centre, so it gets the 5 cm region.
+    "larger_than_any_v1_region": {"subject": {"aabb_min_xyz": [-0.9, -0.45, 0.75],
+                                              "aabb_max_xyz": [-0.1, 0.45, 0.89]}},
 }
 
 
@@ -271,10 +273,10 @@ def test_the_shared_admission_seals_the_native_region_bit_for_bit():
         if isinstance(expected, dict):
             assert actual["target_digest"] == expected["target_digest"], name
         outcomes.add("admitted" if isinstance(actual, dict) else actual)
-    # Not vacuous: admitted regions and each refusal a website region can reach.
+    # Not vacuous: admitted regions and each refusal a website region can reach. A v2 region is 5 cm
+    # whatever the subject, so no subject is too large for one (v1's surface_target_digest_invalid).
     assert outcomes == {"admitted", "surface_target_support_height_mismatch", "surface_target_outside_support",
-                        "surface_target_initial_overlap", "surface_target_subject_does_not_fit_interior",
-                        "surface_target_digest_invalid"}
+                        "surface_target_initial_overlap", "surface_target_subject_does_not_fit_interior"}
 
 
 def test_captured_container_preserves_inside_bounds_through_the_native_submission(tmp_path, monkeypatch):
@@ -295,11 +297,18 @@ def test_captured_container_preserves_inside_bounds_through_the_native_submissio
     assert template["destination_support_plane"]["source_face_indices"]
     schemas = Path(__file__).parents[1] / "docs/schemas"
     for name in ("task_evaluation_launch_preparation_request.v1", "task_evaluation_configured_scene_revision.v1",
-                 "task_evaluation_retained_source_scene_preparation.v1", "task_evaluation_retained_source_astra_scene_preparation.v1",
                  "rigid_task_success_contract.v1"):
         schema = json.loads((schemas / (name + ".schema.json")).read_text())
         errors = list(jsonschema.Draft202012Validator({"$ref": "#/$defs/surface_target", "$defs": schema["$defs"]}).iter_errors(target))
         assert not errors, [(list(error.path), error.message) for error in errors]
+    # The retained-source schemas are frozen by digest for historical requests only
+    # (validate_retained_preparation_request never admits new execution): they keep v1.
+    assert target["schema_version"] == "task_evaluation_surface_target.v2"
+    for name in ("task_evaluation_retained_source_scene_preparation.v1",
+                 "task_evaluation_retained_source_astra_scene_preparation.v1"):
+        schema = json.loads((schemas / (name + ".schema.json")).read_text())
+        assert list(jsonschema.Draft202012Validator({"$ref": "#/$defs/surface_target",
+                                                     "$defs": schema["$defs"]}).iter_errors(target))
 
 
 @pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
@@ -860,9 +869,9 @@ def test_a_designed_subject_reaches_construction_as_supplied_geometry_with_no_pr
 @pytest.mark.parametrize("recorded_before_this_rule", [False, True])
 def test_a_destination_moved_by_a_smaller_clearance_than_its_region_is_moved_again(
         tmp_path, monkeypatch, recorded_before_this_rule):
-    """capture-447ae4f4: the region holds the largest replacement qualification admits; so must the move."""
+    """capture-447ae4f4: the region clears the largest replacement qualification admits; so must the move."""
     from blueprint_pipeline import website_task_preparation as preparation_module
-    from blueprint_pipeline.website_surface_target_admission import website_target_radius
+    from blueprint_pipeline.website_surface_target_admission import website_target_radius, website_target_reach
     from tests.test_website_task_preparation import UNDER_THE_SUBJECT
     with monkeypatch.context() as before:
         if recorded_before_this_rule:
@@ -881,14 +890,15 @@ def test_a_destination_moved_by_a_smaller_clearance_than_its_region_is_moved_aga
     materialize_website_submission(**kwargs)
     template = json.loads((kwargs["staging_root"] / "configuration/task.json").read_text())
     subject = json.loads(Path(kwargs["task"]["runtime_inputs"]["path"]).read_text())["subject"]
-    radius = website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
-    assert template["surface_target"]["radius_m"] == radius
+    reach = website_target_reach(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
+    assert template["surface_target"]["radius_m"] == website_target_radius()
+    assert template["surface_target"]["success_rule"] == "subject_centre_within_radius"
     if not recorded_before_this_rule:
-        # Moved at preparation by this radius already: sealed where it was prepared.
+        # Moved at preparation by this clearance already: sealed where it was prepared.
         assert clearances == [] and "destination_relocation" not in template
         assert template["surface_target"]["surface_position_world_m"] == prepared["destination"]["position_world_m"]
         return
     mpu = prepared["coordinate_frame"]["declared_meters_per_unit"]
-    assert clearances == [pytest.approx(radius / mpu, rel=1e-9)]
+    assert clearances == [pytest.approx(reach / mpu, rel=1e-9)]
     assert template["destination_relocation"] == {**prepared["destination_relocation"],
                                                   "applied_at": "native_submission", "replacement_size_tolerance": 0.25}

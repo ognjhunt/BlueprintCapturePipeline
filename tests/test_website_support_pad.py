@@ -157,6 +157,16 @@ def _qualified(spec: dict[str, Any], *, yaw: float) -> dict[str, Any]:
     return value
 
 
+def _inside_convex(polygon, point, tolerance=1e-6) -> bool:
+    """Whether ``point`` lies in a counter-clockwise convex ``polygon`` (within ``tolerance``)."""
+    count = len(polygon)
+    for index in range(count):
+        a, b = polygon[index], polygon[(index + 1) % count]
+        if (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0]) < -tolerance:
+            return False
+    return True
+
+
 def test_the_sealed_success_plane_and_window_are_the_ones_native_submission_seals() -> None:
     preparation = _preparation()
     task = source.rigid_support_task(preparation)
@@ -174,10 +184,21 @@ def test_the_sealed_success_plane_and_window_are_the_ones_native_submission_seal
     rest = PLANE + ESTIMATED_HEIGHT / 2.0
     assert spec["support_height_interval_m"] == pytest.approx([rest - 0.005, rest + 0.005])
     assert spec["reset_translation_tolerance_m"] == 0.002 and spec["reset_orientation_tolerance_rad"] == 0.01
-    # The region's footprint at the start holds any admitted replacement at any yaw: the disc's own radius.
-    radius = sealed["radius_m"]
-    assert radius > math.hypot(*HALF)
-    assert region["subject_collision_bounds_scoring_frame_m"]["maximum"][:2] == [radius, radius]
+    # The disc is the v2 centre tolerance (G3), smaller than the tray; the region's footprint holds any
+    # admitted replacement at any yaw, around the start and about every centre the disc accepts.
+    assert sealed["radius_m"] == 0.05 and sealed["success_rule"] == "subject_centre_within_radius"
+    lower, upper = preparation["subject"]["aabb_min_xyz"], preparation["subject"]["aabb_max_xyz"]
+    reach = math.hypot(*[(upper[axis] - lower[axis]) / 2 * 1.25 for axis in (0, 1)])
+    assert reach > math.hypot(*HALF)
+    assert region["subject_collision_bounds_scoring_frame_m"]["maximum"][:2] == [reach, reach]
+    polygon = pad.pad_region(region, support_bounds=support_plane)
+    disc = sealed["surface_position_world_m"]
+    # The pad holds a replacement whose centre ends anywhere in the disc, at any yaw.
+    corners = [[disc[0] + (0.05 + reach) * math.cos(a), disc[1] + (0.05 + reach) * math.sin(a)]
+               for a in [k * math.pi / 8 for k in range(16)]]
+    low, high = support_plane["bounds_min_xyz_m"], support_plane["bounds_max_xyz_m"]
+    assert all(_inside_convex(polygon, point) for point in corners
+               if low[0] <= point[0] <= high[0] and low[1] <= point[1] <= high[1])
 
 
 def test_capture_447s_table_is_sealed_flat_at_its_success_plane_and_the_room_around_it_as_scanned(tmp_path) -> None:

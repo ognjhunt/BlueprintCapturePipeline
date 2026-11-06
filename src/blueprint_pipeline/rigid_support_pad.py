@@ -249,11 +249,13 @@ def pad_region(task_spec: Mapping[str, Any], *, support_bounds: Mapping[str, Any
                margin_m: float = PAD_MARGIN_M) -> np.ndarray:
     """The plan region the support is flat over: start footprint, goal footprint anywhere in the region, between.
 
-    The goal area is the success document's own target disc when it has one: it
-    holds every placement the scorer accepts (whole-subject containment), and the
-    website preparation placed it on the support's outline, not merely in its
-    bounding box (capture-447ae4f4's oval table). Without one, the success region
-    grown by the footprint's half-diagonal (any yaw). A counter-clockwise convex
+    The goal area is the success document's own target disc when it has one. A
+    v1 disc holds every placement the scorer accepts (whole-subject containment),
+    and the website preparation placed it on the support's outline, not merely in
+    its bounding box (capture-447ae4f4's oval table). A v2 disc holds only the
+    accepted centres (``subject_centre_within_radius``), so it is grown by the
+    footprint's half-diagonal (any yaw). Without one, the success region grown the
+    same way. A counter-clockwise convex
     polygon in world xy, inside the registered support's plan bounds when given
     (``bounds_min_xyz_m``/``bounds_max_xyz_m``).
     """
@@ -271,6 +273,9 @@ def pad_region(task_spec: Mapping[str, Any], *, support_bounds: Mapping[str, Any
     except (KeyError, TypeError, ValueError):
         radius = None
     if disc is not None and radius is not None and math.isfinite(radius) and radius > 0:
+        if surface.get("success_rule") == "subject_centre_within_radius":  # type: ignore[union-attr]
+            # Only the centre must be in the disc: a footprint around any accepted centre, at any yaw.
+            radius += float(np.max(np.linalg.norm(_plan_corners(bounds, [0.0, 0.0, 0.0, 1.0]), axis=1))) + margin_m
         # A polygon holding the disc (its sides touch it).
         sides = DISC_SIDES
         corner = radius / math.cos(math.pi / sides)

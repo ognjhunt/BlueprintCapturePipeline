@@ -368,3 +368,142 @@ def test_native_bind_uses_the_estimated_supports_admission_tolerance():
         with pytest.raises(ValueError, match="height_tolerance_invalid"):
             bind_native_surface_target(task_spec=spec, target=target_fixture(), static=static, support=support,
                                        height_tolerance_m=tolerance)
+
+
+# --- v2: the subject's centre within the radius (owner decision 2026-11-06, G3) -----------------
+
+
+def v2_target(**overrides):
+    """A 3 cm centre tolerance at (0.4, 0): smaller than the 8 x 6 cm subject."""
+    from blueprint_pipeline.task_evaluation_surface_target import CENTRE_RULE
+    destination = {"kind": "green_region", "relation": "on", "visible_label": "green spot",
+                   "position_world_m": [0.4, 0.0, 0.75], "orientation_xyzw": [0, 0, 0, 1],
+                   "radius_m": 0.03, **overrides}
+    return derive_surface_target(destination=destination,
+        support={"sage_prim_path": "/Room/Table", "bounds_min_xyz_m": [-1, -1, 0],
+                 "bounds_max_xyz_m": [1, 1, 0.75]},
+        source_min=[-0.04, -0.03, 0.75], source_max=[0.04, 0.03, 0.89], support_instance_id="table-17",
+        success_rule=CENTRE_RULE)
+
+
+def score_v2(rows, *, bounds=BOUNDS, target=None):
+    return score_surface_target(target=target or v2_target(), bounds=bounds, samples=rows,
+                                frequency_hz=15, minimum_lift_m=0.05)
+
+
+def test_v1_targets_keep_their_schema_rule_and_seal():
+    from blueprint_pipeline.task_evaluation_surface_target import SCHEMA, centre_rule
+    target = target_fixture()
+    assert target["schema_version"] == SCHEMA and "success_rule" not in target and not centre_rule(target)
+    # v1 still needs a disc wider than the subject, and still scores the whole footprint.
+    with pytest.raises(ValueError, match="surface_target_subject_does_not_fit"):
+        target_fixture(radius_m=0.03)
+    result = score(episode())
+    assert result["whole_footprint_contained"] and "subject_centre_within_radius" not in result
+
+
+def test_the_v2_rule_is_sealed_in_the_target():
+    from blueprint_pipeline.task_evaluation_surface_target import CENTRE_RULE, SCHEMA, SCHEMA_V2, centre_rule
+    target = v2_target()
+    assert target["schema_version"] == SCHEMA_V2 and target["success_rule"] == CENTRE_RULE and centre_rule(target)
+    assert validate_surface_target(surface_target_for_web(target))["success_rule"] == CENTRE_RULE
+    without_rule = {key: value for key, value in target.items() if key != "success_rule"}
+    for tampered in (without_rule, {**target, "schema_version": SCHEMA}, {**target, "success_rule": "anything"}):
+        tampered = dict(tampered)
+        tampered["target_digest"] = canonical_digest(tampered, digest_field="target_digest")
+        with pytest.raises(ValueError, match="surface_target_invalid"):
+            validate_surface_target(tampered)
+    # The rule is part of the seal: dropping it from a sealed v2 target cannot pass as v1.
+    with pytest.raises(ValueError):
+        validate_surface_target({**without_rule, "schema_version": SCHEMA})
+    with pytest.raises(ValueError, match="surface_target_success_rule_invalid"):
+        derive_surface_target(destination={"kind": "green_region", "relation": "on", "visible_label": "x",
+                                           "position_world_m": [0.4, 0, 0.75], "orientation_xyzw": [0, 0, 0, 1],
+                                           "radius_m": .03},
+                              support={"sage_prim_path": "/R", "bounds_min_xyz_m": [-1, -1, 0],
+                                       "bounds_max_xyz_m": [1, 1, .75]},
+                              source_min=[-.04, -.03, .75], source_max=[.04, .03, .89], support_instance_id="t",
+                              success_rule="whole_footprint")
+
+
+def test_v2_passes_a_centred_object_wider_than_its_disc_and_fails_an_off_centre_one():
+    rows = episode()
+    result = score_v2(rows)
+    assert result["satisfied"] and result["subject_centre_within_radius"]
+    assert "whole_footprint_contained" not in result
+    # The 8 cm wide object reaches 6.5 cm past the 3 cm disc; its centre, 2.5 cm off, is inside.
+    for row in rows[3:]:
+        row["task_object_pose_world"][0] = 0.425
+    assert score_v2(rows)["satisfied"]
+    # Its centre 3.5 cm off: outside, whatever else holds.
+    for row in rows[3:]:
+        row["task_object_pose_world"][0] = 0.435
+    result = score_v2(rows)
+    assert not result["subject_centre_within_radius"] and not result["satisfied"]
+    assert result["upright"] and result["supported_and_released"] and result["readback_complete"]
+
+
+def test_v2_centre_is_the_collider_bounds_centre_not_the_pose_origin():
+    # Bounds offset 2 cm along x from the pose origin: the pose at 0.4 puts the centre at 0.42 (inside),
+    # the pose at 0.415 puts it at 0.435 (outside).
+    shifted = {"minimum": [-0.02, -0.03, -0.07], "maximum": [0.06, 0.03, 0.07]}
+    rows = episode()
+    assert score_v2(rows, bounds=shifted)["subject_centre_within_radius"]
+    for row in rows[3:]:
+        row["task_object_pose_world"][0] = 0.415
+    assert not score_v2(rows, bounds=shifted)["subject_centre_within_radius"]
+
+
+def test_v2_start_rule_keeps_the_disc_off_the_start_footprint():
+    from blueprint_pipeline.task_evaluation_surface_target import region_clear_of_start
+    # The subject spans x -0.04..0.04: a 3 cm disc at 0.06 reaches under it, one at 0.08 does not.
+    with pytest.raises(ValueError, match="surface_target_initial_overlap"):
+        v2_target(position_world_m=[0.06, 0.0, 0.75])
+    assert v2_target(position_world_m=[0.08, 0.0, 0.75])["radius_m"] == 0.03
+    assert not region_clear_of_start([-.04, -.03], [.04, .03], [.06, 0], .03)
+    assert region_clear_of_start([-.04, -.03], [.04, .03], [.06, .06], .03)  # past the corner
+    # The scorer: a centre that starts inside the disc began complete.
+    rows = episode()
+    for row in rows[:1]:
+        row["task_object_pose_world"][:3] = [0.41, 0.0, 0.82]
+    assert not score_v2(rows)["initially_outside"] and not score_v2(rows)["satisfied"]
+
+
+def test_v2_binds_a_qualified_collider_larger_than_its_disc():
+    spec = {"interaction_affordance": {"asset_root_from_scoring_frame": {
+        "position_m": [0, 0, .07], "orientation_xyzw": [0, 0, 0, 1]}},
+        "destination_position_tolerance_m": .02, "control_frequency_hz": 15}
+    static = {"observed_structure": {"collision_bounds_body_frame_m": {
+        "minimum": [-.04, -.03, 0], "maximum": [.2, .03, .14]}}}
+    support = {"sage_prim_path": "/Room/Table", "top_z_m": .75}
+    target = v2_target()
+    bound = bind_native_surface_target(task_spec=spec, target=target, static=static, support=support)
+    assert bound["surface_target"] == target
+    assert bound["visible_target_marker"]["radius_m"] == 0.03  # the marker is the tolerance, not the object
+
+
+def test_canonical_scorer_scores_a_v2_target_end_to_end():
+    from blueprint_pipeline.adp_task_scoring import (
+        _compatibility_rigid_success_criteria, score_task_episode_from_spec, seal_rigid_task_success_contract,
+    )
+    from tests.test_adp_task_scoring import _rigid_v2_spec, _rigid_v2_sample
+    spec = _rigid_v2_spec()
+    target = v2_target()
+    spec.update(surface_target=target, visible_target_marker=marker_for_surface_target(target),
+        subject_collision_bounds_scoring_frame_m=BOUNDS, control_frequency_hz=15,
+        start_pose_world=[0, 0, .82, 0, 0, 0, 1], minimum_lift_m=.05,
+        target_position_world_m=[.4, 0, .82], minimum_translation_m=.2, settle_window_samples=16,
+        support_height_interval_m=[.815, .825], destination_position_bounds_world_m={
+            "minimum": [.37, -.03, .815], "maximum": [.43, .03, .825]})
+    criteria = _compatibility_rigid_success_criteria(spec)
+    criteria["surface_target"] = target
+    spec["task_success_contract"] = seal_rigid_task_success_contract(task_spec=spec, site_id="fixture",
+        task_id="fixture", author_source="task_owner", author_id="fixture", confirmation_status="confirmed",
+        confirmed_by_team_id="fixture", criteria=criteria)
+    rows = [{**_rigid_v2_sample(row["step_index"], row["task_object_pose_world"][:3]), **row} for row in episode()]
+    report = score_task_episode_from_spec(task_spec=spec, samples=rows)
+    assert report["task_succeeded"] is True, report
+    assert report["surface_target_measurements"]["subject_centre_within_radius"] is True
+    for row in rows[3:]:
+        row["task_object_pose_world"][0] = 0.435
+    assert score_task_episode_from_spec(task_spec=spec, samples=rows)["task_succeeded"] is False

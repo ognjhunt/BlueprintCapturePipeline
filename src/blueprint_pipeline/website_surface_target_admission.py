@@ -6,10 +6,14 @@ prepared rather than hours later. On capture-447ae4f4, preparation reported
 intake_ready at 03:39Z; evaluation preparation refused the same geometry at
 05:01Z, because only native submission ran ``derive_surface_target``.
 
-Pure: no file, collider or provider access. For a subject built to size the
-region and its digest are exactly the ones native submission sealed before this
-module existed; an estimated subject's region also holds the largest
-replacement static qualification admits (``website_target_radius``).
+Pure: no file, collider or provider access.
+
+Since the owner's G3 switch (2026-11-06) every website region is a v2 target
+(``task_evaluation_surface_target``): the subject's centre must end within
+``WEBSITE_TARGET_TOLERANCE_M`` of the region's centre, so the disc is that
+tolerance, not wider than the object, and it is kept clear of the start
+footprint by ``website_target_reach``. Regions sealed before stay v1 and keep
+scoring whole-footprint containment.
 """
 from __future__ import annotations
 
@@ -17,8 +21,13 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .task_evaluation_surface_target import SUPPORT_HEIGHT_TOLERANCE_M, derive_surface_target, require
-from .website_support_geometry import DESTINATION_MARGIN_M, REGION_EDGE_ROUNDING_M, SupportOutline
+from .task_evaluation_surface_target import CENTRE_RULE, SUPPORT_HEIGHT_TOLERANCE_M, derive_surface_target, require
+from .website_support_geometry import REGION_EDGE_ROUNDING_M, SupportOutline
+
+#: How far the subject's centre may end from the region's centre: the disc's radius
+#: (owner decision 2026-11-06, G3: score the centre within a tolerance). The owner chose
+#: the rule; 5 cm is the harness's default, not a number the owner set.
+WEBSITE_TARGET_TOLERANCE_M = 0.05
 
 #: How the native request names the website's surfaces; the region is bound to these.
 SUPPORT_PRIM_PATH = "/Root"
@@ -53,21 +62,31 @@ def preparation_size_tolerance(preparation: Mapping[str, Any]) -> float:
         development=preparation.get("development_test") is not None)
 
 
-def website_target_radius(lower: Sequence[float], upper: Sequence[float], *, relative_error: float,
-                          up: int = 2, meters_per_unit: float = 1.0) -> float:
-    """The one target-disc radius: it holds the subject, or its largest admitted replacement, at any yaw.
+def website_target_radius(*, meters_per_unit: float = 1.0) -> float:
+    """The one target-disc radius: the tolerance the subject's centre must end within.
 
-    The plan half-diagonal of the estimate with each half scaled by
-    ``1 + relative_error``, plus the margin. Admission, every relocation
-    clearance, the start rule, the scorer and native bind read this radius
-    (capture-447ae4f4: a replacement 3.3% larger than a 31x52 cm tray's
-    estimate was refused at bind, after the scene configuration was paid for).
-    Simulator frame by default; ``up`` and ``meters_per_unit`` give it in
-    runtime units. With ``relative_error`` zero it is exactly the radius before.
+    Whatever the subject's size: the disc no longer has to hold the object, so a
+    larger replacement does not widen it. Simulator metres by default;
+    ``meters_per_unit`` gives it in runtime units.
+    """
+    return WEBSITE_TARGET_TOLERANCE_M / meters_per_unit
+
+
+def website_target_reach(lower: Sequence[float], upper: Sequence[float], *, relative_error: float,
+                         up: int = 2, meters_per_unit: float = 1.0) -> float:
+    """How far from the region's centre an accepted subject's footprint can reach.
+
+    The plan half-diagonal of the estimate, each half scaled by ``1 + relative_error``
+    (the largest replacement static qualification admits, at any yaw), plus the
+    radius. A start centre farther than this keeps the whole disc off the start
+    footprint, so every relocation clearance and the start rule read it
+    (capture-447ae4f4: a replacement 3.3% larger than a 31x52 cm tray's estimate
+    was refused at bind, after the scene configuration was paid for). Simulator
+    frame by default; ``up`` and ``meters_per_unit`` give it in runtime units.
     """
     scale = 1.0 + _checked_tolerance(relative_error)
     return (math.hypot(*[(upper[axis] - lower[axis]) / 2 * scale for axis in range(3) if axis != up])
-            + DESTINATION_MARGIN_M / meters_per_unit)
+            + website_target_radius(meters_per_unit=meters_per_unit))
 
 
 def _surface(instance_id: str, bounds: Mapping[str, Any]) -> dict[str, Any]:
@@ -90,7 +109,9 @@ def admit_surface_target(*, destination: Mapping[str, Any], support: Mapping[str
     under the subject (``aabb_min_xyz``/``aabb_max_xyz``). A captured support's
     top is known only to its ``placement_uncertainty_m``; an authored
     development surface keeps the 5 mm check. ``relative_error`` is the
-    subject's ``replacement_size_tolerance``. ``support_outline`` is the
+    subject's ``replacement_size_tolerance``: the start footprint the disc must
+    stay clear of is widened by it in plan, so a larger qualified replacement
+    cannot start over the disc. ``support_outline`` is the
     region's surface itself (``SupportOutline.in_frame``): the region must lie
     wholly on it, not only in its bounding box (capture-447ae4f4: an oval
     table). Preparation, which holds the collider, passes it and records a
@@ -111,12 +132,18 @@ def admit_surface_target(*, destination: Mapping[str, Any], support: Mapping[str
     if (not development_support and isinstance(placement_uncertainty_m, (int, float))
             and not isinstance(placement_uncertainty_m, bool) and math.isfinite(placement_uncertainty_m)):
         tolerance = max(SUPPORT_HEIGHT_TOLERANCE_M, float(placement_uncertainty_m))
+    scale = 1.0 + _checked_tolerance(relative_error)
+    middle = [(float(a) + float(b)) / 2 for a, b in zip(subject_min, subject_max, strict=True)]
+    # The largest admitted replacement's start footprint (plan axes only; the height keeps the estimate's).
+    start_min = [m - (m - float(a)) * scale if axis != 2 else float(a)
+                 for axis, (m, a) in enumerate(zip(middle, subject_min, strict=True))]
+    start_max = [m + (float(b) - m) * scale if axis != 2 else float(b)
+                 for axis, (m, b) in enumerate(zip(middle, subject_max, strict=True))]
     target = derive_surface_target(
-        destination={**destination, "kind": "green_region", "radius_m": website_target_radius(
-            subject_min, subject_max, relative_error=relative_error)},
-        support=target_support, source_min=subject_min, source_max=subject_max,
+        destination={**destination, "kind": "green_region", "radius_m": website_target_radius()},
+        support=target_support, source_min=start_min, source_max=start_max,
         support_instance_id=target_support["publisher_instance_id"], start_support=start_support,
-        height_tolerance_m=tolerance)
+        height_tolerance_m=tolerance, success_rule=CENTRE_RULE)
     if support_outline is not None:
         # Twice placement's rounding allowance: converting a placed region to this frame cannot refuse it.
         require(support_outline.holds(target["surface_position_world_m"][:2], target["radius_m"],
@@ -139,7 +166,7 @@ def submission_relocates_destination(preparation: Mapping[str, Any], destination
     return (destination.get("support") is None and destination.get("relation") == "on"
             and (recorded is not None and recorded.get("replacement_size_tolerance", 0.0) < size_tolerance
                  or not destination_clear_of_start(subject_min, subject_max, destination["position_world_m"], up=2,
-                     clearance=website_target_radius(subject_min, subject_max, relative_error=size_tolerance))))
+                     clearance=website_target_reach(subject_min, subject_max, relative_error=size_tolerance))))
 
 
 def sealed_surface_target(preparation: Mapping[str, Any], *, destination: Mapping[str, Any],
