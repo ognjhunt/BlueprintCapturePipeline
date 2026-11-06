@@ -514,11 +514,19 @@ def test_legal_hold_and_missing_tombstone_refuse(world, tmp_path):
         deletion.plan_withdrawal_deletion(capture_root=fresh, **world["resolution"])
 
 
+def test_the_withdrawal_command_points_delete_at_its_own_command(world, monkeypatch, capsys):
+    # The intake's withdrawal route imports website_capture_withdrawal; deletion stays out of it.
+    monkeypatch.setattr(sys, "argv", ["website_capture_withdrawal", "delete", "--capture-root", str(world["capture"])])
+    with pytest.raises(SystemExit):
+        withdrawal.main()
+    assert "python -m blueprint_pipeline.website_capture_withdrawal_deletion" in capsys.readouterr().err
+
+
 def test_cli_delete_is_a_dry_run_unless_applied_with_authorization(world, tmp_path, monkeypatch, capsys):
     roots = []
     for root in world["resolution"]["run_roots"]:
         roots += ["--run-root", str(root)]
-    argv = ["website_capture_withdrawal", "delete", "--capture-root", str(world["capture"]), *roots,
+    argv = ["website_capture_withdrawal_deletion", "--capture-root", str(world["capture"]), *roots,
             "--intent-root", str(world["resolution"]["intent_root"]),
             "--binding-root", str(world["resolution"]["binding_root"]),
             "--screening-queue-root", str(world["resolution"]["screening_queue_root"]),
@@ -527,7 +535,7 @@ def test_cli_delete_is_a_dry_run_unless_applied_with_authorization(world, tmp_pa
             "--team-scene-halves-root", str(world["resolution"]["team_scene_halves_root"])]
     before = _snapshot(tmp_path)
     monkeypatch.setattr(sys, "argv", argv)
-    withdrawal.main()
+    deletion.main()
     printed = json.loads(capsys.readouterr().out)
     assert printed["mode"] == "dry_run" and printed["plan"]["schema_version"] == deletion.PLAN_SCHEMA
     # Without --object-store the B2 copies cannot be deleted and the offloaded run cannot be read.
@@ -537,5 +545,5 @@ def test_cli_delete_is_a_dry_run_unless_applied_with_authorization(world, tmp_pa
     assert _snapshot(tmp_path) == before
     monkeypatch.setattr(sys, "argv", [*argv, "--apply", "--expected-plan-digest", printed["plan"]["digest"]])
     with pytest.raises(deletion.WithdrawalDeletionError, match="explicit_authorization_required"):
-        withdrawal.main()
+        deletion.main()
     assert _snapshot(tmp_path) == before

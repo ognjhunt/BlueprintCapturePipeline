@@ -771,6 +771,22 @@ def add_cli_arguments(parser: Any) -> None:
     parser.add_argument("--authorize-complete-deletion", action="store_true")
 
 
+
+def main(argv: Any = None) -> None:
+    """``python -m blueprint_pipeline.website_capture_withdrawal_deletion``: a dry run unless ``--apply``.
+
+    Its own command, so the intake's withdrawal route (``website_capture_withdrawal``) never imports
+    this module, which reaches the screening ledger and the paid launch path.
+    """
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--capture-root", type=Path, required=True)
+    parser.add_argument("--expected-plan-digest")
+    parser.add_argument("--bucket", help="Existing operator-authorized source bucket for an exact cloud plan")
+    add_cli_arguments(parser)
+    print(json.dumps(run_cli(parser.parse_args(argv)), indent=2))
+
+
 __all__ = [
     "DEFAULT_RUN_ROOTS",
     "PLAN_SCHEMA",
@@ -780,3 +796,7 @@ __all__ = [
     "apply_withdrawal_deletion",
     "plan_withdrawal_deletion",
 ]
+
+
+if __name__ == "__main__":
+    main()
