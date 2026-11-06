@@ -7,7 +7,34 @@ Status: **done** (verified, with evidence) · **in progress** · **owner** (wait
 on an owner decision or action) · **next deploy** (merged, ships with the next
 batched Pipeline deploy) · **not started**.
 
-Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
+Last updated: 2026-11-06 15:00Z (library-aisle run section). Earlier header as of 2026-11-03 14:49Z: Pipeline live: `333b1f74a` (11-03 14:29Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
+
+## Library-aisle navigation run (2026-11-06)
+
+The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.
+
+- **Clip and rights.** Pexels 854533, "Video Inside A Library", uploaded by Pixabay and dated 2016-10-30.
+  - The 4K rendition measured 49,023,833 bytes, sha256 `3f1c177f586ca2b7b29a4c7e1e7bfca52afe159e4aac270408dd5c405c76e1c0`, 17.49 s, 3840×2160, 25 fps, 437 frames.
+  - The page's license line reads "License: Free", linked to Pexels' Creative Commons page. It does not print "CC0".
+  - Pexels terms §4 say CC0 items are marked "CC0" on the page, and §5 says other items are marked "Pexels License"; this page shows neither marker.
+  - Terms §8 forbid data extraction "for all unauthorised purposes, including … machine learning".
+  - The owner approved the clip with that evidence. The owner also believes capture-447's clip came from Pexels; if it was under the standard Pexels License, the same §8 question applies to it. Noted, not acted on.
+- **Money, owner approval before 14:44Z ("yes i approve everything").** Hard ceiling $115, expected $15–35:
+  - Atlas $40. The job's automatic grant is $25 / 32 requests.
+  - Upstream $5.
+  - Scene $40. Intake set $20; it is raised only when a stage needs it.
+  - Preparation attempts 16 → 32, one-shot. Applied at 14:53Z, amendment `sha256:99ab7973…`.
+  - Screening $30, the existing site limit.
+  - Cloud Run $0.
+  - A $30 Vast top-up is the owner's action and is still pending; credit is $7.07 against the $11 floor.
+  - Standing approvals reconfirmed: merge when CI is green, deploy within D-08, GPU screening runs up to $4 each, site limit $30.
+- **Intake.** Public site, ops email, 14:44–14:51:48Z. Request `capture-5b067498-c8b3-4549-9da9-ded4c391db1f`, capture `walkthrough-capture-5b067498…`, state `processing_ready`, eligibility `unscreened`. The Atlas preview was queued at 14:44:36Z.
+  - The site country was entered as "United States". The clip's real filming location is unknown; the form requires a country.
+- **Expected stop on today's code.** From reading the code, not from a run: the job buys the Atlas planner review, then holds with `website_task_operation_coverage_unresolved` before any World Labs purchase (`website_early_task_hold.hold_after_review`). The hold keeps the job, and a later deploy reopens it without buying the review again.
+- **Bandit triage (owner).** Review packet: [`2026-11-06-bandit-triage-review.md`](2026-11-06-bandit-triage-review.md).
+  - Verdicts across the 96 entries: 77 keep, 18 tighten, 1 fix now (`wam_compute_providers.py` `_deepinfra_download_file`), 0 orphaned, 0 new MEDIUM or HIGH.
+  - The latest allowed expiry for an entry signed today is 2027-02-04.
+  - Nothing in `docs/bandit_triage.json` is changed until the owner signs off.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 

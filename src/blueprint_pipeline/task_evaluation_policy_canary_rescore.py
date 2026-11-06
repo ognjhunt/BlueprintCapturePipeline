@@ -37,6 +37,7 @@ _SCORER_SOURCES = (
     "src/blueprint_pipeline/adp_task_scoring.py",
     "src/blueprint_pipeline/adp009d_task_scoring.py",
     "src/blueprint_pipeline/adp_rigid_task_scoring.py",
+    "src/blueprint_pipeline/task_predicates.py",
     "src/blueprint_pipeline/adp_rigid_retreat_scoring.py",
     "src/blueprint_pipeline/task_evaluation_surface_target.py",
     "src/blueprint_pipeline/articulation_graph_contract.py",

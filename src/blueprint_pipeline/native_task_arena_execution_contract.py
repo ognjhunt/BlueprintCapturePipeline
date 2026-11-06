@@ -127,6 +127,8 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "adp_task_scoring.py",
     "adp_articulated_task_success_contract.py",
     "adp_rigid_task_scoring.py",
+    # adp_task_scoring and adp_rigid_task_scoring score compiled predicates and behaviour lazily.
+    "task_predicates.py",
     "adp_rigid_retreat_scoring.py",
     "task_evaluation_surface_target.py",
     "native_rigid_episode_telemetry.py",
@@ -304,7 +306,7 @@ RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES = (
     "adp009d_contact_envelope.py", "adp009d_droid_action_execution.py", "adp009d_droid_observation.py", "adp009d_groot_worker_identity.py",
     "adp009d_isaac_episode_adapter.py", "adp009d_newton_gripper_drive.py",
     "adp009d_physics_backend_comparison.py", "adp009d_task_scoring.py", "adp_rigid_retreat_scoring.py",
-    "adp_rigid_task_scoring.py", "adp_task_scoring.py", "articulation_graph_contract.py",
+    "adp_rigid_task_scoring.py", "adp_task_scoring.py", "task_predicates.py", "articulation_graph_contract.py",
     "adp009d_policy_episode.py", "adp009d_policy_episode_evidence.py", "adp009d_policy_episode_native_validation.py",
     "beta_robolab_runtime.py", "droid_policy_bridge.py",
     "decision_evidence_contracts.py", "droid_policy_canary_embodiment.py", "episode_visual_evidence.py", "franka_kinematics.py",
