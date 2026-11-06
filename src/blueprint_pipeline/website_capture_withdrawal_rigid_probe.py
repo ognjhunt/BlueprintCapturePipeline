@@ -22,8 +22,14 @@ Anything else waits, by name: a reservation with no settlement (``settlement_pen
 yet, held because its teardown is unproven, or refused by the WebApp), an allocator still running or
 of unknown fate, a settlement record that is unreadable, unsealed or names another attempt, an
 unreadable attempt record, and a work directory that is not where the runner puts it, not mounted,
-or not named by any attempt. A waiting job stays whole, is named in ``remaining``, keeps the deletion
-incomplete and never blocks the rest of it.
+or not named by any attempt. A waiting job stays whole and is named in ``remaining``.
+
+The deletion waits while any of the site's probe money may still settle (owner decision, 2026-11-06:
+"make the deletion wait until probe runs settle"). Settlement reads the capture's retained task
+context, which this deletion removes, so a hold left unsettled by it could never be settled afterwards.
+Every waiting reason but ``work_dir_unbound`` (bulk no queue attempt names, from which nothing is ever
+settled) puts the job in ``unresolved`` as ``rigid_probe_money_not_final``, and apply refuses until the
+runner has settled it and the deletion is planned again.
 
 For a job whose money is final, each attempt's derived bytes are planned with an inventory and its
 digest: its work directory's ``bundle/``, every archive under its ``allocator/``, the extracted
@@ -223,6 +229,11 @@ def plan_job(job: Path, work_root: Path | None) -> dict[str, Any]:
     return {"job": str(job), "final": not waiting, "attempts": rows if not waiting else [], "waiting": waiting}
 
 
+#: Waiting reasons from which no money can ever be settled; every other one holds the deletion.
+NO_MONEY_REASONS = frozenset({"work_dir_unbound"})
+MONEY_NOT_FINAL = _PREFIX + "rigid_probe_money_not_final"
+
+
 def plan_probe_jobs(root: Path, work_root: Path | None, keys: set[str],
                     unresolved: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """(the jobs whose money is final, with their derived bytes; the jobs that wait, with why)."""
@@ -246,6 +257,9 @@ def plan_probe_jobs(root: Path, work_root: Path | None, keys: set[str],
             unresolved.append({"path": str(job), "reason": _PREFIX + "record_unreadable"})
             continue
         (final if planned["final"] else waiting).append(planned)
+        if any(row["reason"] not in NO_MONEY_REASONS for row in planned["waiting"]):
+            # Its settlement still reads the capture's task context: the deletion waits for it.
+            unresolved.append({"path": str(job), "reason": MONEY_NOT_FINAL})
     work_jobs = Path(work_root) / JOBS_DIRECTORY if work_root else None
     if work_jobs is not None and work_jobs.is_dir() and not work_jobs.is_symlink():
         # Bulk of a job the queue no longer has: nothing ties it to its money.
