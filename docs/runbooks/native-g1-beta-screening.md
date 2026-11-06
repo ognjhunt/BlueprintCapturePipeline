@@ -57,7 +57,8 @@ reopened at planning and immediately before launch. No additional public-media
 approval is needed for a private task-bound status/count summary. Public media,
 model redistribution, ranking, qualification and physical claims remain false.
 
-All candidates share the persistent $15 site allowance and canonical allocator.
+All candidates share the persistent $30 site allowance (`SITE_LIMIT` in
+`beta_policy_screening_coordinator.py`) and the canonical allocator.
 G1's conservative existing 48 GB memory floor is not a measured requirement for
 every checkpoint. Ten diagnostic cells retain the shared cell IDs and seeds,
 but G1 uses frozen authored geometry and no unimplemented camera/object
@@ -103,6 +104,14 @@ scene, and this change does not restart that stopped campaign. Current validatio
 uses CPU contract/source tests, not new checkpoint inference or a GPU run.
 
 ## Activate a current site's G1 candidates
+
+As of 2026-11-06 activation cannot succeed: the shared registry's
+`runtime_source_receipt_path`
+(`/mnt/blueprint-work/g1-cuda-runtime-source-7c1f528-20260926/`) no longer
+exists on the host. Every candidate would end
+`g1_shared_source_verification_failed` until that `unitree_g1` runtime source
+packet is restored or rebuilt and the registry points at it. See the beta
+launch tracker's G1 section.
 
 Use the authenticated operator door; activation does not require editing the
 protected registry or logging into the controller:
