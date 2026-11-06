@@ -68,17 +68,29 @@ Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door
     - Of their gripper closes, groot made 13 of 14 over the tray (11 within 4 cm of its rim), pi05 9 of 58 and molmoact2 2 of 3. They close a median 7 cm above the rim (2.3–14.5 cm), on air.
     - groot's 0.18 m push (episode 02) came from a close about 1 cm from the tray.
     - molmoact2 kept the gripper open in 7 of 10 episodes.
-    - pi0_droid_jointpos_100k_polaris never went to the tray: its 33 closes were a median 27 cm from it.
+    - pi0_droid_jointpos_100k_polaris went to the tray once: in episode 02 its grasp point closed 2.4 cm above the tray's box, over its footprint (step 264). In the other nine its nearest approach was 13–31 cm, and its 33 closes were a median 27 cm from the tray.
     - pi0's and groot's closest approaches came at start position 02, the one start where the wrist camera sees the tray. pi05's and molmoact2's did not. That is one start, not a measured effect.
   - **Correction**: the score's `gripper_closed` is evaluated only over the final settle window, and only for tasks that must end closed, so it is always false here. Earlier entries that read it as "the gripper never closed" are corrected above. The 5 uncounted molmoact2 episodes of 04:26Z did keep the gripper fully open (measured).
   - **Also seen, not measured as causes**:
     - The prompt the policies get is "Pick up and place the wooden tray on the dining table on the wooden dining table."
     - The destination marker is a policy-visible flat green disc of 0.39 m radius. Its edge comes within 4–7 cm of the tray's centre, and 31–38% of the tray's footprint sits over it.
     - The robot base is 1.3 cm above the surface the tray rests on.
+  - **Reach** (second pass, 11-06; JSON only). The place is likely beyond the arm, and the pipeline flagged it before any paid run:
+    - The scene's CPU check `native_task_robot_arm_path_clearance.v1.json` is `flagged` in all four counted attempts (plan `ccebae51…`): `scripted_carry_path_not_found`, advisory `robot_rigid_pick_place_unreachable:carry`. The scripted pick-and-place found no path past sample 15 of 42.
+    - At the place, the task's grasp contact is 1.086 m from the shoulder, beyond the arm's reach bound of 0.990 m. At the pick it is 0.970 m.
+    - Some point of the tray is inside the bound at both ends (0.735 m at the pick, 0.729 m at the place), so a policy holding the near rim is not ruled out. The bound is a triangle-inequality maximum, so being inside it does not prove a point is reachable.
+    - That flag is not in the screening ledger or any run summary, so it was not visible beside the results.
+    - Measured in the runs: the destination marker's centre is 1.04 m from the robot base, horizontally, and the nearest point of the 10 cm destination box is 0.97 m. No policy took its grasp point more than 0.81 m from the base in any of the 39 episodes.
+    - The gripper opens to 0.104 m between its pads, and the tray's narrowest side is 0.313 m, so the tray can only be held by its rim.
+  - **Placement numbers**, for the check below:
+    - At the DROID home pose, the centre of the wrist image looks at the table 0.43 m ahead of the base.
+    - A tray-top point 0.45 m ahead appears at row 391 of 720, above the gripper's own pixels, which start at row 432. At 0.55 m it appears at row 518. Beyond about 0.75 m it is below the frame.
+    - The pick and the place are 0.45 m apart. A stance 0.5 m from the midpoint of that line, facing it, would put both 0.55 m from the base, if the table allows it.
   - **Next**, before any new paid screening:
-    - Check the scene planner's robot placement, so the tray starts nearer the middle of the policy's view.
+    - Check the scene planner's robot placement, so the tray starts nearer the middle of the policy's view and the place is within reach. Run the free CPU arm-path check on the new plan and record its result beside the run. A `flagged` result is evidence, not a stop: the code keeps it advisory (`rigid_carry_verdict`), because a policy may hold the tray in a way the scripted carry did not try.
     - Check the prompt text.
     - Check the marker size.
+    - Carry the scene's arm-path flags into the screening run summary, beside `observation_quality_flags`, as a flag and not a gate.
 
 ## Operating notes (2026-11-02)
 
