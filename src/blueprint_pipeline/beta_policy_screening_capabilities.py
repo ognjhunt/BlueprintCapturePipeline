@@ -3,7 +3,7 @@
 The default four-hour/$4 candidate ceiling is the existing diagnostic canary
 envelope. It is a maximum reservation, not a prediction: the canonical allocator
 also accounts for startup, transfer, storage and teardown before provider create.
-Unknown hourly prices never produce quotes. The site's $15 coordinator remains
+Unknown hourly prices never produce quotes. The site's $30 coordinator remains
 the authority over aggregate reservations.
 """
 from __future__ import annotations
@@ -273,7 +273,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         key = configured["candidate_id"]
         if key in infeasible:
             continue  # The plan shows its measured reason; nothing is prepared or quoted.
-        # Every candidate but G1's (its own lane, fixed floor) rents on the policy canary session lane.
+        # Every candidate rents on the policy canary session lane but G1's, which is checked on its own lane.
         unrentable = candidate_gpu_blockers(configured)
         if unrentable:
             infeasible[key] = unrentable  # Listed with its reason, never funded: the budget goes on in plan order.

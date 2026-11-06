@@ -83,3 +83,23 @@ def test_published_state_marks_only_measured_geometry_as_measured():
                         "blockers": sorted([INFEASIBLE_BLOCKER, "team_embodiment_station_out_of_reach"])}
     unrentable = _initial_state({"status": "infeasible", "blockers": [gpu.GPU_MEMORY_FLOOR_UNRENTABLE]})
     assert unrentable == {"status": "unavailable", "blockers": [gpu.GPU_MEMORY_FLOOR_UNRENTABLE]}
+
+
+def test_g1_is_measured_on_its_own_lane_and_refused_when_no_part_meets_it(monkeypatch):
+    from blueprint_pipeline.beta_policy_candidate_catalog import catalog_candidate, load_default_catalog
+    from blueprint_pipeline.native_g1_beta_session import MIN_GPU_RAM_MB, offer_hardware
+
+    lane = offer_hardware()
+    assert (lane["min_gpu_ram_mb"], lane["provider_bundle_kind"]) == (MIN_GPU_RAM_MB, "native_g1_beta_screening")
+    assert gpu.rentable_parts(None, lane=lane) == ["L40", "L40S", "RTX 6000 Ada", "RTX 6000Ada", "RTX A6000"]
+    g1 = catalog_candidate(load_default_catalog(), "humanoidarena_dp_g1_dex3_sonic")
+    assert gpu.candidate_gpu_blockers(g1) == []
+    # With every 48 GB part out of the described market, G1 is refused at planning instead of searching.
+    monkeypatch.setattr(gpu, "RT_GPU_PARTS", {name: (memory, capability) for name, (memory, capability)
+                                              in gpu.RT_GPU_PARTS.items() if memory < 48})
+    monkeypatch.setattr(gpu_selection_policy, "ISAAC_RT_GPU_KEYWORDS",
+                        tuple(keyword for keyword in gpu_selection_policy.ISAAC_RT_GPU_KEYWORDS
+                              if any(keyword in name.upper() for name in gpu.RT_GPU_PARTS)))
+    assert gpu.candidate_gpu_blockers(g1) == [gpu.GPU_MEMORY_FLOOR_UNRENTABLE]
+    disabled = {**g1, "eligibility": {**g1["eligibility"], "enabled": False}}
+    assert gpu.candidate_gpu_blockers(disabled) == []

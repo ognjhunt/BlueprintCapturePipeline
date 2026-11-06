@@ -10,6 +10,9 @@ search for offers until its slot closes, holding a reservation from the site's
 budget the whole time. It is listed ``infeasible`` with this module's reason
 instead, and the budget goes to the next candidate in plan order.
 
+G1's four candidates rent on their own lane (``native_g1_beta_session.offer_hardware``:
+the same RT-only rule at its 48,000 MB floor), and are checked against that lane.
+
 The verdict reads the allocator's own predicates and lane values, applied to
 public part specifications. It is a refusal only when every part the lane's RT
 keywords match is described here; a keyword with no described part leaves the
@@ -49,11 +52,13 @@ RT_GPU_PARTS: dict[str, tuple[int, int]] = {
 CEILING_LIFTED = 0
 
 
-def rentable_parts(minimum_gpu_memory_gb: Any, *, max_compute_cap: Any = None) -> list[str] | None:
+def rentable_parts(minimum_gpu_memory_gb: Any, *, max_compute_cap: Any = None,
+                   lane: Mapping[str, Any] | None = None) -> list[str] | None:
     """Described parts the screening lane would rent for this floor; ``None`` when its market is not fully described.
 
     The lane's compute-capability ceiling is its own, which ``BLUEPRINT_VAST_MAX_COMPUTE_CAP`` in the running
-    process may move; ``max_compute_cap`` sets it explicitly instead (``CEILING_LIFTED`` for none).
+    process may move; ``max_compute_cap`` sets it explicitly instead (``CEILING_LIFTED`` for none). ``lane``
+    names another lane's filters (G1's); its own memory floor then applies and ``minimum_gpu_memory_gb`` is unused.
     """
     from . import vast_compute_capability as vcc
     from .gpu_selection_policy import (
@@ -66,8 +71,9 @@ def rentable_parts(minimum_gpu_memory_gb: Any, *, max_compute_cap: Any = None) -
     from .policy_canary_session_bundle_identity import minimum_gpu_ram_mb
     from .vast_provider_adapter import _is_isaac_provider_bundle
 
-    declared = {} if minimum_gpu_memory_gb is None else {"minimum_gpu_memory_gb": minimum_gpu_memory_gb}
-    lane = policy_canary_session_offer_hardware(minimum_gpu_ram_mb(declared))
+    if lane is None:
+        declared = {} if minimum_gpu_memory_gb is None else {"minimum_gpu_memory_gb": minimum_gpu_memory_gb}
+        lane = policy_canary_session_offer_hardware(minimum_gpu_ram_mb(declared))
     if not _is_isaac_provider_bundle(lane["provider_bundle_kind"]):
         return None  # Without the RT requirement the lane's market is open, and unknown stays unknown.
     names = [name.upper() for name in RT_GPU_PARTS]
@@ -101,16 +107,21 @@ def gpu_infeasible_blockers(runtime: Any, *, max_compute_cap: Any = None) -> lis
 def candidate_gpu_blockers(candidate: Mapping[str, Any], *, max_compute_cap: Any = None) -> list[str]:
     """``gpu_infeasible_blockers`` for a catalog candidate as screening planning applies it.
 
-    G1's candidates rent on their own lane, and a disabled candidate keeps its own reason; neither is
-    measured here. Planning (``beta_policy_screening_capabilities``) and the website robot fit precheck
+    G1's candidates are measured against their own lane's filters; a disabled candidate keeps its own
+    reason and is not measured here. Planning (``beta_policy_screening_capabilities``) and the website robot fit precheck
     (``website_robot_fit_precheck``) both read this one rule. Planning takes the ceiling of the process
     it runs in; the precheck, which runs in another, passes ``CEILING_LIFTED``: a floor no part meets
     even then cannot be met under any ceiling the screening lane is configured with.
     """
     from .beta_policy_screening_g1 import CANDIDATES as G1_LANE_CANDIDATES
 
-    if candidate["candidate_id"] in G1_LANE_CANDIDATES or candidate["eligibility"]["enabled"] is not True:
+    if candidate["eligibility"]["enabled"] is not True:
         return []
+    if candidate["candidate_id"] in G1_LANE_CANDIDATES:
+        from .native_g1_beta_session import offer_hardware
+
+        parts = rentable_parts(None, max_compute_cap=max_compute_cap, lane=offer_hardware())
+        return [GPU_MEMORY_FLOOR_UNRENTABLE] if parts == [] else []
     return gpu_infeasible_blockers(candidate["runtime"], max_compute_cap=max_compute_cap)
 
 
