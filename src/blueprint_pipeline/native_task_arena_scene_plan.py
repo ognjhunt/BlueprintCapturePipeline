@@ -52,6 +52,25 @@ from .usd_binary_read_cache import readable
 
 SCHEMA_VERSION = "native_task_arena_scene_plan.v1"
 ENV_ROOT = "{ENV_REGEX_NS}"
+NAVIGATION_TASK_KIND = "goal_region_navigation"
+#: The robot bodies a walking embodiment stands on. A walking robot always touches the floor and a
+#: filmed room is one collider, so their contact with the scene is support, not an obstacle hit.
+#: Each name must resolve to exactly one rigid body of the sealed robot asset, or the plan refuses.
+#: unitree_g1: the foot is ``*_ankle_roll_link`` (``official_g1_policy_handoff.FOOT_BODY_NAMES``) and
+#: ``*_ankle_pitch_link`` is the ankle link just above it; both are the pinned Arena G1 asset's
+#: ``_ankle_`` links, the same group ``native_g1_arena_robot_configuration`` gives one actuator set.
+GROUND_SUPPORT_BODY_NAMES: dict[str, tuple[str, ...]] = {
+    "unitree_g1": (
+        "left_ankle_pitch_link",
+        "left_ankle_roll_link",
+        "right_ankle_pitch_link",
+        "right_ankle_roll_link",
+    ),
+}
+GROUND_SUPPORT_RULE_SOURCE = (
+    "native_task_arena_scene_plan.GROUND_SUPPORT_BODY_NAMES: feet (ankle roll) and ankle (pitch) links "
+    "of the sealed robot asset"
+)
 
 
 class NativeTaskArenaScenePlanError(ValueError):
@@ -818,6 +837,85 @@ def _graph_articulation_plan(
     }
 
 
+def _navigation_articulation_plan(
+    contract: Mapping[str, Any], *, scene_collision_asset_path: Path | None
+) -> dict[str, Any]:
+    """Robot-scene contact for a scene kept as filmed: no task object, joints or support.
+
+    The sensors are the rigid path's ``robot_scene_contact`` sensors exactly: one per protected
+    robot body, filtered on the scene's exact collision bodies. The plan also seals which of those
+    bodies the robot stands on, by ``GROUND_SUPPORT_BODY_NAMES``, so the readback can leave the
+    feet out of the obstacle-contact force without deciding anything itself.
+    """
+
+    if scene_collision_asset_path is None:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_scene_collision_asset_missing"]
+        )
+    # The runtime spawns the yellow goal disc from this goal; without it the robot sees no goal.
+    from .native_g1_navigation_goal import validate_g1_navigation_goal
+
+    try:
+        validate_g1_navigation_goal(contract.get("task_spec") or {})
+    except ValueError as exc:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_navigation_goal_invalid"]
+        ) from exc
+    robot_id = str((contract.get("robot") or {}).get("robot_id") or "")
+    names = GROUND_SUPPORT_BODY_NAMES.get(robot_id)
+    if names is None:
+        raise NativeTaskArenaScenePlanError(
+            [f"native_task_arena_navigation_ground_support_rule_missing:{robot_id}"]
+        )
+    scene_contact_body_paths = _exact_scene_contact_body_paths(scene_collision_asset_path)
+    try:
+        robot_contact_topology = resolve_native_task_robot_contact_topology(
+            robot_id, contract["robot"]
+        )
+    except (KeyError, NativeTaskRobotContactTopologyError) as exc:
+        errors = (
+            list(exc.errors)
+            if isinstance(exc, NativeTaskRobotContactTopologyError)
+            else ["native_task_robot_contact_topology_unavailable"]
+        )
+        raise NativeTaskArenaScenePlanError(errors) from exc
+    protected = list(robot_contact_topology["protected_collision_body_paths"])
+    ground_support: list[str] = []
+    for name in names:
+        matches = [path for path in protected if PurePosixPath(path).name == name]
+        if len(matches) != 1:
+            raise NativeTaskArenaScenePlanError(
+                [f"native_task_arena_navigation_ground_support_body_unresolved:{name}"]
+            )
+        ground_support.append(matches[0])
+    if not set(protected) - set(ground_support):
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_navigation_obstacle_contact_bodies_missing"]
+        )
+    return {
+        "task_joint_reset_positions_rad": {},
+        "task_joint_prim_paths": {},
+        "task_joint_roles": {},
+        "contact_sensors": [
+            {
+                "sensor_instance_id": f"robot_scene_contact__{index:02d}",
+                "logical_sensor_id": "robot_scene_contact",
+                "prim_path": body_path,
+                "filter_prim_paths_expr": list(scene_contact_body_paths),
+            }
+            for index, body_path in enumerate(protected)
+        ],
+        "robot_contact_topology": robot_contact_topology,
+        "scene_contact_body_paths": scene_contact_body_paths,
+        "ground_support_robot_body_paths": sorted(ground_support),
+        "ground_support_rule": {
+            "robot_id": robot_id,
+            "body_names": list(names),
+            "source": GROUND_SUPPORT_RULE_SOURCE,
+        },
+    }
+
+
 def _articulation_plan(
     contract: Mapping[str, Any],
     *,
@@ -826,6 +924,10 @@ def _articulation_plan(
     task_support_asset_path: Path | None = None,
 ) -> dict[str, Any]:
     task_kind = contract["task_kind"]
+    if task_kind == NAVIGATION_TASK_KIND:
+        return _navigation_articulation_plan(
+            contract, scene_collision_asset_path=scene_collision_asset_path
+        )
     if task_kind != "articulated_open_close":
         task_spec = contract["task_spec"]
         subject = next(
@@ -1609,12 +1711,21 @@ def materialize_native_task_arena_scene_plan(
         ),
         None,
     )
-    scenario_parameter_applications = _apply_scenario_parameters(
-        objects=objects,
-        cameras=cameras,
-        bindings=list(contract["scenario"].get("parameter_bindings") or []),
-        task_object_asset_path=task_object_asset_path,
-    )
+    if contract["task_kind"] == NAVIGATION_TASK_KIND:
+        # Every scenario parameter today moves or re-materials the task object, which a
+        # navigation scene does not have.
+        if contract["scenario"].get("parameter_bindings"):
+            raise NativeTaskArenaScenePlanError(
+                ["native_task_arena_navigation_scenario_parameters_unsupported"]
+            )
+        scenario_parameter_applications: list[dict[str, Any]] = []
+    else:
+        scenario_parameter_applications = _apply_scenario_parameters(
+            objects=objects,
+            cameras=cameras,
+            bindings=list(contract["scenario"].get("parameter_bindings") or []),
+            task_object_asset_path=task_object_asset_path,
+        )
     effective_contract = json.loads(json.dumps(contract))
     staged_by_asset_id = {row["asset_id"]: row for row in objects}
     for row in effective_contract["objects"]:

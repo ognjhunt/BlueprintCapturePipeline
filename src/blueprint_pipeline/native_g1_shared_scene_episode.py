@@ -21,6 +21,7 @@ from .episode_visual_evidence import (
     persist_multicamera_observation,
 )
 from .native_g1_navigation_goal import (
+    NAVIGATION_TASK_KIND,
     score_g1_navigation_episode,
     validate_g1_navigation_goal,
 )
@@ -389,11 +390,20 @@ def run_g1_built_scene_policy_episode(
     from .native_g1_run_preflight import preflight_g1_shared_scene_run
 
     plan = getattr(built, "plan", None)
+    # A navigation scene (no task object) runs only the navigation checkpoints.
+    navigation_scene = (
+        isinstance(plan, Mapping) and plan.get("task_kind") == NAVIGATION_TASK_KIND
+    )
     if (
         not isinstance(plan, Mapping)
         or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
-        or plan.get("task_kind") != "rigid_pick_place"
-        or candidate_id not in G1_BOX_CANDIDATES | G1_NAVIGATION_CANDIDATES
+        or not (
+            (
+                plan.get("task_kind") == "rigid_pick_place"
+                and candidate_id in G1_BOX_CANDIDATES | G1_NAVIGATION_CANDIDATES
+            )
+            or (navigation_scene and candidate_id in G1_NAVIGATION_CANDIDATES)
+        )
     ):
         raise ValueError("g1_built_scene_policy_configuration_invalid")
     preflight = preflight_g1_shared_scene_run(**preflight_inputs)
@@ -411,13 +421,23 @@ def run_g1_built_scene_policy_episode(
     )
     if candidate_id in G1_NAVIGATION_CANDIDATES:
         goal = validate_g1_navigation_goal(plan["task_spec"])
+        contact_readback = None
+        if navigation_scene:
+            # Robot-scene contact on every body but the feet, from the plan's existing
+            # robot_scene_contact sensors; absent when the plan has none.
+            from .native_task_arena_readback import NativeNavigationArenaReadback
+
+            contact_readback = NativeNavigationArenaReadback(built)
 
         def read_task_sample() -> dict[str, Any]:
             state = environment.read_state()
-            return {
+            sample = {
                 "step_index": state["step_index"],
                 "root_position_world_m": state["root_position_world_m"],
             }
+            if contact_readback is not None:
+                sample.update(contact_readback.read_robot_scene_contact())
+            return sample
 
         task_prompt = goal["task_instruction"]
     else:
