@@ -314,7 +314,7 @@
           "const": "blueprint.beta_policy_screening_execution.v1"
         },
         "setup_quality_flags": {
-          "description": "Typed setup flags that travel with a funded row and its result, e.g. g1_spawn_clearance_unmeasured; never a blocker.",
+          "description": "Typed setup flags that travel with a funded row and its result, e.g. g1_spawn_clearance_unmeasured or g1_spawn_foot_unsupported; never a blocker.",
           "items": {
             "pattern": "^[a-z][a-z0-9_]{1,127}$",
             "type": "string"

@@ -22,7 +22,10 @@ makes the reading ``unmeasured`` with its reason. Only a measured overlap protec
 no G1 row whose packet reads ``overlap`` (``g1_spawn_overlap``), as ``require_scene_physics_admission``
 refuses an arm packet with rest overlap, since a run that starts inside the room cannot measure the
 policy. ``unmeasured``, or no report at all, is a flag (``g1_spawn_clearance_unmeasured``) carried in the
-row's ``setup_quality_flags`` and its result summary; the row is still bound and quoted.
+row's ``setup_quality_flags`` and its result summary; the row is still bound and quoted. A foot with
+no floor found under its sole within ``SOLE_SEARCH_M``, or a sole more than ``FOOT_SUPPORT_TOLERANCE_M``
+above it, is flagged the same way (``g1_spawn_foot_unsupported``): a hole or steep patch in a scanned
+floor is not an overlap, but the robot may tip or drop at spawn.
 Nothing here runs a simulator, calls a provider or changes an input file.
 """
 from __future__ import annotations
@@ -61,6 +64,10 @@ SCHEMA_VERSION = "native_g1_spawn_clearance.v1"
 FILENAME = SCHEMA_VERSION + ".json"
 OVERLAP_REASON = "g1_spawn_overlap"
 UNMEASURED_REASON = "g1_spawn_clearance_unmeasured"
+#: A foot with no floor found under its sole, or a sole above the floor by more than the support tolerance:
+#: the robot may tip or drop at spawn. The overlap measure cannot see a missing floor, so this is a flag the
+#: row carries (``setup_quality_flags``), never a gate.
+UNSUPPORTED_FOOT_REASON = "g1_spawn_foot_unsupported"
 CLAIM_BOUNDARY = ("cpu_geometry_at_the_reset_pose_only: the G1 USD's colliders against sampled static scene "
                   "collision before the first physics step; no simulator ran; nothing about contact after "
                   "spawn, balance, reach or the task")
@@ -201,7 +208,26 @@ def _measure(placed: list, triangles: np.ndarray, spacing: float, unreadable: li
                              "max_sink_m": round(float(sink[support].max()), 6) if support.any() else 0.0,
                              "lift_m": round(sunk, 6), "soles": soles},
             "unreadable_colliders": unreadable, "background_triangles_reached": int(len(near)),
-            "background_samples": int(len(points)), "notices": notices, **_tolerances(spacing)}
+            "background_samples": int(len(points)),
+            "notices": notices + [f"{UNSUPPORTED_FOOT_REASON}:{name}" for name in _unsupported(soles)],
+            **_tolerances(spacing)}
+
+
+def _unsupported(soles: Mapping[str, Any]) -> list[str]:
+    """The feet with no floor found under the sole, or a sole above the floor beyond the support tolerance."""
+    out = []
+    for name, sole in sorted(soles.items()):
+        gap = sole.get("gap_m") if isinstance(sole, Mapping) else None
+        if (not isinstance(sole, Mapping) or sole.get("floor_z_m") is None
+                or not isinstance(gap, (int, float)) or gap > FOOT_SUPPORT_TOLERANCE_M):
+            out.append(name)
+    return out
+
+
+def unsupported_feet(report: Mapping[str, Any]) -> list[str]:
+    """The report's unsupported feet, from its sole readings (so a report written before the flag counts)."""
+    soles = (report.get("foot_support") or {}).get("soles") if isinstance(report.get("foot_support"), Mapping) else None
+    return _unsupported(soles) if isinstance(soles, Mapping) else []
 
 
 def _measure_stances(model: Any, reset: Mapping[str, float], poses: Sequence[Mapping[str, Any]],
@@ -349,6 +375,28 @@ def ensure_packet_spawn_clearance(packet_dir: str | Path) -> dict[str, Any]:
     return report
 
 
+def _plan_report(packet_dir: str | Path, plan_digest: str) -> dict[str, Any] | None:
+    """The packet's sealed report of this plan that reads clear or overlap; None for anything else."""
+    path = Path(packet_dir) / FILENAME
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
+            or value.get("report_digest") != canonical_digest(value, digest_field="report_digest")
+            or value.get("scene_plan_digest") != plan_digest or value.get("status") not in ("clear", "overlap")):
+        return None
+    return value
+
+
+def spawn_setup_flags(packet_dir: str | Path, plan_digest: str) -> list[str]:
+    """The flags a funded row carries from its packet's spawn check: unmeasured, or an unsupported foot."""
+    report = _plan_report(packet_dir, plan_digest)
+    if report is None:
+        return [UNMEASURED_REASON]
+    return [UNSUPPORTED_FOOT_REASON] if unsupported_feet(report) else []
+
+
 def spawn_clearance_status(packet_dir: str | Path, plan_digest: str) -> str:
     """What planning reads for this packet: ``clear`` or ``overlap`` from a sealed report of the plan.
 
@@ -356,16 +404,8 @@ def spawn_clearance_status(packet_dir: str | Path, plan_digest: str) -> str:
     ``unmeasured``. Only ``overlap`` refuses money (``OVERLAP_REASON``); ``unmeasured`` travels with
     the row and its result as ``UNMEASURED_REASON`` in ``setup_quality_flags``.
     """
-    path = Path(packet_dir) / FILENAME
-    try:
-        value = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
-    except (OSError, ValueError):
-        return "unmeasured"
-    if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
-            or value.get("report_digest") != canonical_digest(value, digest_field="report_digest")
-            or value.get("scene_plan_digest") != plan_digest or value.get("status") not in ("clear", "overlap")):
-        return "unmeasured"
-    return value["status"]
+    report = _plan_report(packet_dir, plan_digest)
+    return "unmeasured" if report is None else report["status"]
 
 
 def main(argv: Sequence[str] | None = None) -> int:

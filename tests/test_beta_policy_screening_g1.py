@@ -438,6 +438,19 @@ def test_an_unmeasured_spawn_is_a_flag_not_a_refusal(tmp_path, monkeypatch, repo
     assert g1.setup_quality_flags(spec) == []
 
 
+def test_an_unsupported_foot_is_a_flag_not_a_refusal(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, native, _, _, _ = builder_inputs(tmp_path, monkeypatch)
+    packet = tmp_path / "native"
+    value = spawn.seal({"status": "clear", "scene_plan_digest": native["plan_digest"], "foot_support": {"soles": {
+        "left_ankle_roll_link": {"floor_z_m": 0.0, "gap_m": 0.001},
+        "right_ankle_roll_link": {"floor_z_m": None, "gap_m": None}}}})
+    (packet / spawn.FILENAME).write_text(json.dumps(value))
+    spec = g1.candidate_execution_spec(**kwargs)  # Still bound and quoted.
+    assert g1.validate_execution_spec(spec) == spec
+    assert g1.setup_quality_flags(spec) == ["g1_spawn_foot_unsupported"]
+
+
 def test_an_overlapping_g1_row_is_listed_with_its_reason_and_never_funded():
     catalog = load_default_catalog()
     value = build_screening_plan(catalog, scene(), campaign_id="spawn-overlap", now=NOW,

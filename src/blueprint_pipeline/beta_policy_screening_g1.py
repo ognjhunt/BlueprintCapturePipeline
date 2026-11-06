@@ -245,11 +245,12 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
 
 
 def setup_quality_flags(spec: Mapping[str, Any]) -> list[str]:
-    """Typed flags a funded G1 row carries into its plan descriptor and result: a spawn not measured."""
+    """Typed flags a funded G1 row carries into its plan descriptor and result: a spawn not measured, or
+    a foot with no floor under it (``native_g1_spawn_clearance.spawn_setup_flags``). Never a refusal."""
     from .beta_policy_screening_launch import _bound_path
-    from .native_g1_spawn_clearance import UNMEASURED_REASON, spawn_clearance_status
+    from .native_g1_spawn_clearance import spawn_setup_flags
     packet = _bound_path(spec["native_g1"]["scene_packet"]).parent
-    return [UNMEASURED_REASON] if spawn_clearance_status(packet, spec["scene_plan_digest"]) == "unmeasured" else []
+    return sorted(set(spawn_setup_flags(packet, spec["scene_plan_digest"])))
 
 
 def _sealed(value: Any, schema: str, digest_field: str) -> dict[str, Any]:
