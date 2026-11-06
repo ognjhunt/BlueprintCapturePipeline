@@ -633,7 +633,7 @@ class _Interpretation:
         if "configured_scene_revision_digest" in task:
             self.selector(doc, "task.configured_scene_revision_digest", task["configured_scene_revision_digest"])
         if "surface_target" in task:
-            target = self.shape(doc, task["surface_target"], "task.surface_target", "schema_version shape non_colliding visible_label radius_m surface_position_world_m support_prim_path support_source_instance_id maximum_tilt_rad stable_seconds maximum_linear_speed_m_s maximum_angular_speed_rad_s target_digest")
+            target = self.shape(doc, task["surface_target"], "task.surface_target", "schema_version shape success_rule non_colliding visible_label radius_m surface_position_world_m support_prim_path support_source_instance_id maximum_tilt_rad stable_seconds maximum_linear_speed_m_s maximum_angular_speed_rad_s target_digest")
             self.selector(doc, "task.surface_target.target_digest", target.get("target_digest"))
         if "destination" in task:
             destination = self.shape(doc, task["destination"], "task.destination", "schema_version identity relation visible_label asset rights_admission static_qualification native_import_qualification geometry placement_qualification native_probe pose_world provider_disclosure_allowed")
