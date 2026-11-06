@@ -104,6 +104,73 @@ Pi returned no actions before timeout. Those results do not transfer to another
 scene, and this change does not restart that stopped campaign. Current validation
 uses CPU contract/source tests, not new checkpoint inference or a GPU run.
 
+## Automatic registration (the default)
+
+The owner's standing approval (2026-11-06, beta launch tracker, G1 section,
+answer 2) lets the service register each site by itself, with no per-site
+person. Each pass of the screening worker (`beta_policy_screening_worker`)
+calls `native_g1_site_registration.ensure_site_registration` for a website
+site (`site-…`) before it reads the site's profile, for the newest completed
+request of each scene intent:
+
+- Only a `rigid_pick_place` task is registered. Any other kind records
+  `g1_beta_native_rigid_task_required`.
+- The site's base packet and task contract resolve exactly as in the door's
+  builder: `native_g1_registration_contract.site_inputs` reads the team
+  registry and the completed source queue.
+- The shared inputs come from the controller's pinned
+  `config/native_g1_shared_inputs.v1.json`, not from the historical ADP
+  registry. Each is measured when it is used:
+  - the publisher source stage receipt, against its pinned `receipt_digest`;
+  - the runtime source receipt, against its pinned sha256 and size, which are
+    the bytes `restore-g1-runtime-source` puts back;
+  - the Arena robot USD, found as the old manipulation scene plan's
+    `robot.usd_path`, against its pinned sha256 and size.
+- It reads the site's consent live, as planning does, before it prepares a
+  packet and again before it writes any row, also when the packet already
+  exists. With no packet for the current source yet, it runs
+  `prepare_native_g1_beta_packet` with the builder's own arguments. The packet
+  lands under the site's `native-g1/<base>/<source>/`.
+- A refused consent (a `beta_screening_*` code, `team_scene_capture_withdrawn`
+  or `native_g1_install_retained_task_consent_invalid`) prepares nothing,
+  writes no row and removes the site's existing row. Its status file then
+  holds only the reason, with no source or candidates. An unanswered check
+  writes nothing new and is tried again on the next pass. Registration never
+  deletes a packet: the operator's withdrawal deletion removes the packets, the
+  row and its status (`website_capture_withdrawal_native_g1`).
+- It writes the service's own row to
+  `/var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations/<site_id>.json`
+  (`BLUEPRINT_NATIVE_G1_SITE_REGISTRATION_ROOT`). The row has exactly the
+  shape of `site_screening_candidates.<site_id>`, is replaced atomically and is
+  mode 0640. `<site_id>.status.json` beside it records `registered_by:
+  service_automatic`, the standing `authorization_reference`, the time, and
+  `registered` or `unavailable` with a reason for each candidate.
+- Navigation rows are registered only when the base task has a navigation goal
+  and the site holds exactly one goal authority for the G1 scene. Until then
+  they keep `g1_current_navigation_goal_authority_missing`.
+
+`team_candidate_registry_reader._site_screening_profile` uses the root
+registry's row while it names the current source. Otherwise it reads the
+service row with the same checks. That row must also be a regular,
+non-symlink file directly under the root, owned by root or the service user
+and writable by no one else; anything else is ignored. A new row changes the
+catalog revision (`beta_policy_screening_g1_catalog`), so the site plans again
+by itself. An unchanged source with files that still verify does nothing.
+
+Planning stays the verifier (`candidate_execution_spec` and
+`compose_beta_authority`), and registration grants no spend. A failure is a
+fixed reason in the status file and never stops the site or its other
+candidates. Shared-input reasons, and a preparation already running, are tried
+again on the next pass. Every other reason waits for a new source, pin or
+release.
+
+`BLUEPRINT_NATIVE_G1_AUTO_REGISTRATION=0` turns it off in the process that has
+it set: that process neither registers nor reads service rows. The screening
+unit reads `/etc/blueprint/pipeline-control-plane.env`.
+
+The door's `install-native-g1-policies` below stays for manual or override use.
+Its root registry row wins while it names the current source.
+
 ## Activate a current site's G1 candidates
 
 First make sure the shared runtime source is on the host. On 2026-11-06 the
@@ -134,7 +201,10 @@ verifies unchanged:
    `results/<id>.g1-runtime-source.json`) as the install request's
    `runtime_source` reference below. The receipt is the build record's exact
    bytes, `sha256:b303f3017e799a36a2a467de60f235109b1d810a1ef3a87d8d92feb02e6ca5d2`
-   and 44,943 bytes.
+   and 44,943 bytes. The pinned `config/native_g1_shared_inputs.v1.json`
+   names the same bytes, so after the restore the service registers each
+   pick-and-place site on its next screening pass. The install request below
+   is needed only for manual or override use.
 
 It starts no compute and spends nothing beyond one object-store download. A
 refusal names one fixed `g1_runtime_source_*` code; see the beta launch
@@ -163,7 +233,7 @@ accepted in this request. It has no budget field and grants no provider spend.
 A null scene reference asks the service user to prepare the current site's
 packet using the reviewed recipe. It resolves the current base packet and task
 contract from the protected team registry and the existing completed source
-queue. Shared publisher/runtime locators come exclusively from
+queue. On this door path, shared publisher/runtime locators come exclusively from
 `/var/lib/blueprint/task-evaluation-inputs/g1-team-campaign-registry.json`.
 The historical binding supplies shared source and exact robot model bytes;
 its old task, scene approval and navigation authority are not transferred.

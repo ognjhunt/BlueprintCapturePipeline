@@ -157,6 +157,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_INPUTS}/completed-scene-preparation-inputs", "work", "blueprint", "mixed owner-scoped materialized preparation work; report only"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),
+    StorageRoot(f"{_CONTROL_PLANE}/native-g1-site-registrations", "work", "blueprint", "the screening service's automatic G1 site registration rows and their status; planning reads them, the next pass rewrites one"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-policy-runs", "work", "blueprint", "owner-scoped team policy run intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/team-evaluations", "work", "blueprint", "team evaluation run queue; each entry points to its run's job directory"),
     StorageRoot(f"{_CONTROL_PLANE}/rigid-robot-free-probes", "work", "blueprint", "rigid robot-free probe queue and its capped attempts (inputs, authority, allocator receipts; bundle and allocator job directory unless staged on rigid-robot-free-probe-work)"),

@@ -102,7 +102,6 @@ from __future__ import annotations
 import argparse
 import builtins
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -123,6 +122,7 @@ from .team_scene_capture_root import (  # noqa: F401
     WEBSITE_TASK_PREFIX,
     TeamScenePacketRequestRefused,
     _read_json,
+    capture_key,
     resolve_capture_root,
 )
 
@@ -652,12 +652,6 @@ def request_key(request: Mapping[str, Any]) -> str:
 
     return canonical_digest({"capture_id": request["capture_id"],
                              "scene_revision_digest": request["scene_revision_digest"]})[7:39]
-
-
-def capture_key(capture_root: Path) -> str:
-    """The name the team registry files this capture's derived row under."""
-
-    return hashlib.sha256(str(capture_root).encode()).hexdigest()[:32]
 
 
 def validated_request(value: Any) -> dict[str, Any]:

@@ -128,6 +128,22 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                           "capture_id": request["capture_id"], "task_id": request["task_id"],
                           "task_context_digest": retained["context_digest"],
                           "scene_revision_digest": request["scene_revision_digest"]}
+                if newest.get(request["intent_id"]) == ("processed", path.name):
+                    # The owner's standing approval (2026-11-06): the service registers the site's G1
+                    # candidates itself, before the profile is read. A new row changes the catalog's
+                    # revision (beta_policy_screening_g1_catalog), so the campaign id below is new and the
+                    # site plans again. A G1 problem is recorded, never a stop for this site.
+                    try:
+                        from .native_g1_site_registration import ensure_site_registration
+
+                        registered = ensure_site_registration(site_id=str(retained.get("scene_id") or ""),
+                            source=source, source_queue=packet_root, release=packet_release)
+                        if registered.get("status") == "registered":
+                            outcome["g1_registration"] = {"status": "registered"}
+                    except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a site
+                        from .bounded_error import error_description
+
+                        outcome["g1_registration"] = {"status": "failed", "error": error_description(exc)}
                 profile = profile_for_capture(capture)
                 if not profile:
                     raise ValueError("beta_screening_scene_profile_unavailable")

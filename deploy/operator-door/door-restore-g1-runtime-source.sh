@@ -49,6 +49,18 @@ export BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE \
 cd -P "$DOOR_CONTROL_PLANE_REPO" || door_fail control_plane_release_missing
 # An active release older than the module cannot run it: say so instead of failing opaquely.
 [ -f src/blueprint_pipeline/native_g1_runtime_source_restore.py ] || door_fail g1_runtime_source_release_lacks_module
+# The service user cannot create a directory at the root-owned top of the work mount, so on apply this
+# root script creates the one pinned target directory, owned by the service user (0750). It never follows
+# a link, and an existing directory is left to the module, which locks and verifies it.
+target_dir="${DOOR_G1_RUNTIME_SOURCE_DIR:-/mnt/blueprint-work/g1-cuda-runtime-source-7c1f528-20260926}"
+if [ "${DOOR_APPLY:-}" = 1 ]; then
+  if [ -L "$target_dir" ]; then door_fail g1_runtime_source_target_conflict; fi
+  if [ ! -e "$target_dir" ]; then
+    install -d -o "$DOOR_SERVICE_USER" -g "$DOOR_SERVICE_USER" -m 0750 "$target_dir" \
+      || door_fail g1_runtime_source_target_dir_unavailable
+  fi
+  if [ ! -d "$target_dir" ] || [ -L "$target_dir" ]; then door_fail g1_runtime_source_target_conflict; fi
+fi
 result="$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.g1-runtime-source.json"
 args=()
 if [ "${DOOR_APPLY:-}" = 1 ]; then args+=(--apply); fi

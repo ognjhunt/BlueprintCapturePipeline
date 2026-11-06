@@ -778,13 +778,15 @@ def _environment(staged: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
     from .rigid_robot_free_probe_runner import QUEUE_ENV as PROBE_ENV
     from .rigid_robot_free_probe_runner import WORK_ENV as PROBE_WORK_ENV
     from .task_evaluation_scene_intent_contracts import ROOT_ENV as INTENT_ROOT_ENV
-    from .team_candidate_registry_reader import REGISTRY_ENV
+    from .team_candidate_registry_reader import REGISTRY_ENV, SITE_REGISTRATION_ROOT_ENV
     from .team_scene_packet_worker import CAPTURE_PARTITION_ENV, QUEUE_ROOT_ENV as PACKET_ENV
 
     # The team compile reads the request's own intent (an owner's success confirmation lives there).
     values = {PACKET_ENV: str(staged["packet_queue"]), PROBE_ENV: str(staged["probe_queue"]),
               SCREENING_ENV: str(staged["screening_queue"]), ENABLE_ENV: "1",
-              INTENT_ROOT_ENV: str(staged["intent_copy"].parent)}
+              INTENT_ROOT_ENV: str(staged["intent_copy"].parent),
+              # The screening worker's automatic G1 registration writes its service rows here, never on the host's.
+              SITE_REGISTRATION_ROOT_ENV: str(Path(staged["screening_queue"]).parent / "native-g1-site-registrations")}
     if staged["partition"] is not None:
         values[CAPTURE_PARTITION_ENV] = str(staged["partition"])
     if staged["registry_copy"] is not None:

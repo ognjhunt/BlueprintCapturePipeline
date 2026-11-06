@@ -3,8 +3,11 @@
 The HTTP handoff never deletes bytes. Operator cleanup uses a retained plan and
 does not assert that cloud storage, provider copies or delivered copies vanished.
 ADP-010/day-14: immutable capture rights remain authoritative after withdrawal.
-``delete`` (website_capture_withdrawal_deletion) extends one operator deletion
-to every copy the Pipeline controls: launch runs, their evidence and B2 offload.
+``python -m blueprint_pipeline.website_capture_withdrawal_deletion`` extends one
+operator deletion to every copy the Pipeline controls: launch runs, their evidence
+and B2 offload. It is its own command, never reached from here: the intake's HTTP
+withdrawal route imports this module, and the deletion reaches the screening
+ledger and the paid launch path (tests/test_live_pipeline_import_isolation.py).
 """
 from __future__ import annotations
 
@@ -480,12 +483,10 @@ def main() -> None:
     parser.add_argument("--authorize-local-deletion", action="store_true")
     parser.add_argument("--bucket", help="Existing operator-authorized source bucket for an exact cloud plan")
     parser.add_argument("--authorize-cloud-deletion", action="store_true")
-    from .website_capture_withdrawal_deletion import add_cli_arguments, run_cli
-    add_cli_arguments(parser)
     args = parser.parse_args()
     if args.operation == "delete":
-        result = run_cli(args)
-    elif args.operation in {"cloud-plan", "cloud-apply"}:
+        parser.error("delete is its own command: python -m blueprint_pipeline.website_capture_withdrawal_deletion")
+    if args.operation in {"cloud-plan", "cloud-apply"}:
         if not args.bucket:
             parser.error("--bucket is required for explicit cloud cleanup")
         storage = GoogleWebsiteCleanupStorage(args.bucket)

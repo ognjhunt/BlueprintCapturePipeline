@@ -386,10 +386,13 @@ def test_fresh_deploy_provisions_screening_sandbox_before_timer_can_start(tmp_pa
     assert target.is_dir() and target.stat().st_mode & 0o777 == 0o750
     work = host / "mnt/blueprint-work/beta-policy-screening-work"
     assert work.is_dir() and work.stat().st_mode & 0o777 == 0o750
+    registrations = host / "var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations"
+    assert registrations.is_dir() and registrations.stat().st_mode & 0o777 == 0o750
     assert receipt["created"] == [{"unit": units[0], "path": path, "mode": "0750",
         "owner_uid": os.getuid(), "owner_gid": os.getgid()} for path in (
         "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening",
-        "/mnt/blueprint-work/beta-policy-screening-work")]
+        "/mnt/blueprint-work/beta-policy-screening-work",
+        "/var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations")]
     repeated = deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
         units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
     assert repeated["created"] == []
