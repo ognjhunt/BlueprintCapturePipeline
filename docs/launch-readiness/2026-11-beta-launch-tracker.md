@@ -347,6 +347,28 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - `docs/G1_WEBSITE_ENABLEMENT_PLAN.md` holds the plan: restore or rebuild the runtime source, automatic registration, money, a spawn check, and navigation.
   - It ships with the first attested deploy after the owner's Bandit review.
 - Automatic G1 registration (owner answer 2): the screening worker registers each pick-and-place site itself into a service-owned overlay from the pinned `config/native_g1_shared_inputs.v1.json`; planning stays the verifier. It registers nothing until the runtime source is restored and the change is deployed.
+- [#3420](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3420) merged (92de2d9): the owner's decisions, the `restore-g1-runtime-source` door operation, and the Bandit triage renewal. The owner chose to renew all 96 entries; each now reads reviewed 2026-11-06, expiring 2027-02-04.
+- [#3424](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3424) merged (3f2ceb6), on the owner's "make g1 eligible to be chosen as the winner too". A scored G1 row now competes like any learned policy and can be chosen; the `development_only_reference` marking from #3420 is gone. The claim ceiling stays `development_only`.
+- Door and deploy, from the door's request log:
+  - 16:31:42Z: `door-upgrade` to 92de2d9.
+  - 17:04:34Z: `deploy` of a14db1c, the receipt at 17:19:40Z. It ran outside the 15:00Z window, on the owner's explicit "do all this", with no paid stage active, 2 h after the 15:00Z deploy.
+  - 17:20:18Z: `door-upgrade` to a14db1c.
+- Runtime source restore:
+  - The plan (17:21:04Z) passed: the object is present, its sha and size match, and 34 GB is free against 4.9 GB needed.
+  - The apply (17:21:38Z) refused, because the service user cannot create the target directory under the root-owned `/mnt/blueprint-work`. Nothing was copied.
+  - The fix (the door script creates only the pinned directory, as root) is in #3426 and needs a door upgrade.
+- [#3426](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3426) (open) holds automatic registration plus four more changes:
+  - **Privacy:** consent is read live before every registration row, and a refusal removes the row. Withdrawal deletion now deletes the site's registration files and G1 packets (`website_capture_withdrawal_native_g1`).
+  - **Main's reds, carried so its full suite can pass:**
+    - #3427's `success_rule` is now admitted by the retirement observer.
+    - #3428's hold split, ported.
+    - Withdrawal deletion is now its own command (`python -m blueprint_pipeline.website_capture_withdrawal_deletion`), so the intake no longer reaches the hot lane. That had been red in the nightly since 11-04.
+- **Privacy finding (owner's call):** withdrawal deletion has never deleted a site's compiled team scene halves (`task-evaluation-inputs/team-scene-halves`). These hold collision and appearance data derived from the capture.
+  - The root was neither scanned nor named as left in place, so earlier receipts were silent about it.
+  - The receipt now names the site's halves as `remaining`, and the deletion reads as incomplete while they exist.
+  - Deleting them also removes the team registry rows that point at them, so it waits for the owner.
+- Scene retirement leaves the G1 overlay row and `native-g1/` packets in place. That is storage, not privacy, because withdrawal now deletes both. It is a follow-up.
+- Spawn check: built on its own branch, with its own PR after #3426. A measured overlap blocks a G1 row (`g1_spawn_overlap`); anything unmeasured is a flag. The flag stays in the ledger and is never published, so the WebApp needs no change.
 
 ## Operating notes (2026-11-02)
 

@@ -13,7 +13,8 @@ Nothing here widens a cap, grant, TTL, retry limit or allowance.
 
 The guarantees that stay unchanged in every step:
 
-- the `development_only` claim ceiling and `ranking_eligible=false`;
+- the `development_only` claim ceiling (a scored G1 row competes and can be chosen since #3424, on the
+  owner's 2026-11-06 request);
 - one allocation per session, with no retry inside it;
 - the independent watchdog and scoped closeout;
 - the controller's own re-score;
@@ -116,9 +117,10 @@ Built in `native_g1_site_registration` (runbook:
 ## 4. Task page
 
 - **Done here:**
-  - the selection marks a scored G1 row `development_only_reference`, so it is
-    listed but never ranked or chosen;
-  - the WebApp labels it a development check ([#1225](https://github.com/ognjhunt/Blueprint-WebApp/pull/1225)).
+  - a scored G1 row competes like any learned policy and can be chosen
+    ([#3424](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3424), owner's request, 2026-11-06).
+    The `development_only_reference` marking #3420 added is gone. The WebApp still accepts and labels that
+    value ([#1225](https://github.com/ognjhunt/Blueprint-WebApp/pull/1225)), but nothing emits it.
 - **Still open:** the specific `g1_beta_result_*` reason should reach the ledger
   instead of the generic `g1_beta_native_result_missing_or_invalid`
   (`beta_policy_screening_launch.py:568-575`).
@@ -130,8 +132,10 @@ Built in `native_g1_site_registration` (runbook:
   - then the robot left the workspace, with the book untouched.
 
   Add a free CPU check to the packet recipe: G1's collision bodies at the
-  prepared stance must clear the scene's colliders. Record the result beside
-  the run as a flag, not a gate.
+  prepared stance must clear the scene's colliders. Built on its own branch
+  (`native_g1_spawn_clearance`), with its own PR after #3426. A measured
+  overlap refuses the row (`g1_spawn_overlap`), and an unmeasured check is a
+  `setup_quality_flags` flag that stays in the ledger.
 - **Prompt.** The manipulation checkpoints were trained on HOI_pp_box ("Move
   the box from the table onto the shelf."). The worker sends the site's own
   sentence. π0.5 reads language. Whether DP does is not verified. Record which
