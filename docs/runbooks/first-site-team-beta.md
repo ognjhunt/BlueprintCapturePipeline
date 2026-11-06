@@ -101,10 +101,25 @@ registry's `derived_profiles.root` (`--team-registry`), its requests and statuse
 in `team-scene-packets` (`--team-scene-packet-queue-root`), and its entries in
 `rigid-robot-free-probes` (`--rigid-probe-queue-root`). It refuses while a
 request is still in `processing/` (`team_scene_packet_in_flight`) or a worker run
-holds the queue (`team_scene_packets_busy`); run it again once that clears. The
-receipt names, without deleting them, the root-owned registry rows that name the
-site and the capture's probe jobs, which keep bundles built from the half and
-their money records.
+holds the queue (`team_scene_packets_busy`); run it again once that clears.
+
+The capture's probe jobs follow the owner's rule of 2026-11-06, "delete once
+settled". Once every attempt of a job is settled (the runner wrote its
+`rigid_robot_free_probe_spend_settlement.json`), was never funded, or never
+launched, the deletion removes the bytes built from the half:
+- the attempt's sealed bundle;
+- its probe input;
+- the run's output archive and its extraction, under the probe work root
+  (`--rigid-probe-work-root`).
+
+It keeps the settlement, reservation, admission, allocator result, teardown,
+budget-ledger and avoidlist records, which settlement replays from. A job with a
+reservation not yet settled (or held), an allocator still running, or a
+settlement that does not read stays whole. The receipt names it, the deletion
+reads as not complete, and a later run deletes it once it settles. The receipt
+also names, without writing them, the root-owned registry rows that name the
+site.
+
 
 ## Connect the team's own robot and policy
 

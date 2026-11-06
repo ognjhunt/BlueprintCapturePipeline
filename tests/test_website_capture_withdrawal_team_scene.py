@@ -57,6 +57,67 @@ def _registry(path: Path, derived: Path, *, profiles: list[dict[str, Any]] | Non
     path.chmod(0o644)
 
 
+def probe_attempt(queue: Path, work_root: Path, job: str, index: int, *, capture: str, money: str) -> dict[str, Any]:
+    """One rigid probe attempt as the runner and the allocator leave it on the host; synthetic bytes only.
+
+    The queue keeps its records and its probe input; the work volume keeps its sealed bundle and the
+    allocator job directory, where the Vast adapter's teardown manifest, adapter result and budget
+    ledger sit beside the run's output archive and its extraction. ``money`` is ``settled``,
+    ``pending`` (reserved and run, not settled), ``unfunded`` (the allocator ended, nothing reserved)
+    or ``running`` (launched, no result yet).
+    """
+    from blueprint_pipeline import rigid_robot_free_probe_runner as runner
+    from blueprint_pipeline import rigid_robot_free_probe_settlement as settlement
+    from tests.test_rigid_robot_free_probe_settlement import evidence
+
+    attempt = queue / "jobs" / job / "attempts" / f"{index:02d}"
+    work = work_root / "jobs" / job / "attempts" / f"{index:02d}"
+    allocator = work / "allocator"
+    base._write(attempt / runner.ATTEMPT_FILENAME, {"attempt_id": f"{job}-a{index:02d}", "argv": [],
+                                                    "authority_digest": "sha256:" + "a" * 64, "work_dir": str(work),
+                                                    "staged_at_iso": "2026-11-06T10:00:00+00:00"})
+    base._write(attempt / runner.INPUTS_FILENAME, {"capture_root": capture, "scene_plan": {"development_only": True}})
+    base._write(attempt / runner.INTENT_FILENAME, {"observed_at_iso": "2026-11-06T10:00:01+00:00"})
+    bulk = [base._write(work / "bundle" / "native_task_arena_bundle.zip", PLACEHOLDER),
+            base._write(work / "bundle" / runner.BUNDLE_RECEIPT_FILENAME, {"bundle_sha256": "sha256:" + "b" * 64})]
+    records = [attempt / runner.ATTEMPT_FILENAME, attempt / runner.INTENT_FILENAME]
+    if money == "running":
+        return {"attempt": attempt, "work": work, "bulk": [*bulk, attempt / runner.INPUTS_FILENAME],
+                "records": records}
+    binding = {"probe_kind": "rigid-robot-free-probe", "capture_root": capture, "attempt": f"{job}-{index}"}
+    admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted", "allocation_binding": binding,
+                 "allocation_binding_digest": canonical_digest(binding), "website_preparation_admission_digest": None}
+    result: dict[str, Any] = {"schema_version": "rigid_robot_free_probe_vast_run.v1", "status": "blocked",
+                              "blockers": ["rigid_robot_free_probe_paid_budget_blocked"],
+                              "provider_mutations_performed": 0}
+    if money in ("settled", "pending"):
+        funding = {"allocation_binding_digest": admission["allocation_binding_digest"], "blockers": [],
+                   "expires_at_epoch": 1794324997, "maximum_cost_usd": 1, "provider": "vast", "request_count": 1,
+                   "resource_class": "gpu_render", "schema_version": "paid_lane_admission.v1", "status": "admitted",
+                   "task_context_digest": "sha256:" + "5" * 64}
+        records.append(base._write(allocator / settlement.FUNDING_FILENAME, funding))
+        admission["website_preparation_admission_digest"] = canonical_digest(funding)
+        result = {"schema_version": "rigid_robot_free_probe_vast_run.v1", "status": "completed", "blockers": [],
+                  "bundle_sha256": "sha256:" + "b" * 64, **evidence(allocator, instance=59000000 + index,
+                                                                     estimate=0.2)}
+        run = allocator / "attempts/attempt_001"
+        records += [Path(result["teardown_manifest_path"]), Path(result["adapter_result_path"]),
+                    run / "vast_provider_run/vast_budget_ledger.json",
+                    base._write(allocator / "adp_arena_vast_result.json", result),
+                    base._write(run / "artifact_manifest.json", {"artifacts": [], "development_only": True})]
+        bulk += [base._write(run / "vast_provider_run/vast_provider_runtime_output.zip", PLACEHOLDER),
+                 base._write(run / "immutable_execution" / "rigid_robot_free_probe_result.v1.json",
+                             {"development_only": "a synthetic trace, not a scene's"})]
+    records += [base._write(attempt / "paid_admission.json", admission),
+                base._write(attempt / runner.RESULT_FILENAME, result)]
+    if money == "settled":
+        record = _sealed({"schema_version": settlement.SETTLEMENT_SCHEMA, "status": "settled",
+                          "attempt": attempt.name, "settled_cost_usd": 0.2, "reserved_maximum_cost_usd": 1.0},
+                         "record_digest")
+        records.append(base._write(attempt / settlement.SETTLEMENT_FILENAME, record))
+    return {"attempt": attempt, "work": work, "bulk": [*bulk, attempt / runner.INPUTS_FILENAME], "records": records}
+
+
 @pytest.fixture
 def team(world, tmp_path):
     resolution = world["resolution"]
@@ -106,13 +167,19 @@ def team(world, tmp_path):
     lock = base._write(queue / ".lock", b"")  # every worker run creates and holds it
     probe_entries = [base._write(probes / "pending" / f"{key}.json", {"capture_root": capture}),
                      base._write(probes / "done" / f"{'c' * 32}.json", {"capture_root": "/elsewhere/captures/c"})]
+    # The capture's probe job: one settled run, and one refused before anything was reserved.
+    work_root = Path(resolution["rigid_probe_work_root"])
     job = probes / "jobs" / f"{key}-0123456789abcdef"
-    base._write(job / "attempts/00/rigid_robot_free_probe_attempt.json", {"attempt_id": "development"})
+    settled = probe_attempt(probes, work_root, job.name, 0, capture=capture, money="settled")
+    unfunded = probe_attempt(probes, work_root, job.name, 1, capture=capture, money="unfunded")
     other_probe = base._write(probes / "pending" / f"{'d' * 32}.json", {"capture_root": OTHER_CAPTURE})
+    other_job = probe_attempt(probes, work_root, f"{'d' * 32}-0123456789abcdef", 0, capture=OTHER_CAPTURE,
+                              money="settled")
     return {"halves": halves, "queue": queue, "probes": probes, "derived": derived, "key": key, "capture": capture,
             "older": older, "newer": newer, "by_records": by_records, "theirs": theirs, "unrelated": unrelated,
             "rows": rows, "other_rows": other_rows, "records": records, "other_records": other_records,
-            "lock": lock, "probe_entries": probe_entries, "job": job, "other_probe": other_probe}
+            "lock": lock, "probe_entries": probe_entries, "job": job, "work_root": work_root,
+            "probe_attempts": [settled, unfunded], "other_probe": other_probe, "other_job": other_job}
 
 
 def test_plan_then_apply_deletes_the_sites_halves_and_every_record_pointing_at_them(world, team, tmp_path):
@@ -131,14 +198,19 @@ def test_plan_then_apply_deletes_the_sites_halves_and_every_record_pointing_at_t
     assert [row[0] for row in section["derived_profile_rows"]] == sorted(map(str, team["rows"]))
     assert [row[0] for row in section["packet_queue_records"]] == sorted(map(str, team["records"]))
     assert [row[0] for row in section["probe_entries"]] == sorted(map(str, team["probe_entries"]))
-    assert section["probe_jobs_remaining"] == [str(team["job"])]
+    # Its probe job's money is final, so the copies built from the half are planned; its records are not.
+    [job] = section["probe_jobs_final"]
+    assert job["job"] == str(team["job"]) and section["probe_jobs_waiting"] == []
+    assert [row["money"] for row in job["attempts"]] == ["settled", "never_funded"]
 
     receipt = base._apply(world, plan, cloud_storage=gcs, uncovered_roots=())
+    copies = [path for attempt in team["probe_attempts"] for path in attempt["bulk"]]
     gone = [team["halves"] / team["key"], team["halves"] / ("c" * 32), *team["rows"], *team["records"],
-            *team["probe_entries"]]
+            *team["probe_entries"], *copies]
     assert not any(path.exists() for path in gone)
     kept = [team["theirs"], team["unrelated"], *team["other_rows"], *team["other_records"], team["other_probe"],
-            team["job"], team["lock"]]
+            team["lock"], *(path for attempt in team["probe_attempts"] for path in attempt["records"]),
+            *team["other_job"]["bulk"], *team["other_job"]["records"]]
     assert all(path.exists() for path in kept)
     deleted = receipt["deleted"]["team_scene"]
     assert deleted["halves"] == [row["directory"] for row in section["halves"]]
@@ -146,14 +218,11 @@ def test_plan_then_apply_deletes_the_sites_halves_and_every_record_pointing_at_t
     assert deleted["derived_profile_rows"] == sorted(map(str, team["rows"]))
     assert deleted["packet_queue_records"] == sorted(map(str, team["records"]))
     assert deleted["probe_entries"] == sorted(map(str, team["probe_entries"]))
+    assert sum(row["files_deleted"] for row in deleted["probe_bulk"]) == len(copies)
     holders = {row["holder"]: row for row in receipt["remaining"]}
-    assert "team_scene_halves" not in holders
-    # The probe's jobs keep bundles built from the half and their money records: named, and not complete.
-    assert holders["rigid_robot_free_probe_jobs"]["paths"] == [str(team["job"])]
-    assert receipt["pipeline_controlled_deletion_complete"] is False
-    shutil.rmtree(team["job"])
-    plan = base._plan(world, cloud_storage=gcs, uncovered_roots=())
-    assert plan["unresolved"] == [] and not team_scene.incomplete(plan["team_scene"])
+    assert "team_scene_halves" not in holders and "rigid_robot_free_probe_jobs_waiting" not in holders
+    assert holders["rigid_robot_free_probe_money_records"]["jobs"] == [str(team["job"])]
+    assert receipt["pipeline_controlled_deletion_complete"] is True
 
 
 @pytest.mark.parametrize("fault,reason", [

@@ -21,10 +21,12 @@ that are gone:
   ``pending/``, ``processed/``, ``holds/`` (with its ``settled/`` and ``superseded/``) and
   ``status/``, with any write temporary that names either;
 - the rigid robot-free probe queue's ``pending/`` and ``done/`` entry for each planned
-  half's capture key. The probe's jobs (``jobs/<capture key>-*``) keep sealed bundles built
-  from the half's packet and the website-grant hold records their settlement reads. This
-  deletion does not remove them; the receipt names each one, and the deletion is not
-  complete while any remain.
+  half's capture key, and, once a probe job's money is final, the copies each of its attempts
+  keeps: the sealed bundle built from the half's packet, the probe input and the run's output
+  (``website_capture_withdrawal_rigid_probe``; the owner's rule of 2026-11-06, "delete once
+  settled"). The job's money and hold records stay, and settlement replays from them. A job
+  whose money is not final stays whole; the receipt names it, and the deletion is not complete
+  while one remains.
 
 These fail closed into ``unresolved``: a half, row or record that also names another site;
 a link, a special file or an unreadable entry; a registry that is not operator-owned, not
@@ -34,9 +36,10 @@ in flight, possibly on the remote lane, which could land a new half.
 ``plan_team_scene`` reads only. A half's inventory leaves out the ``native-g1/`` namespaces
 ``website_capture_withdrawal_native_g1`` plans, because that module removes them first.
 ``apply_team_scene`` runs while the deletion holds the packet queue's lock
-(``hold_packet_queue``; ``team_scene_packets_busy`` while a worker run holds it). It checks
-every record's identity and every half's whole inventory again. Then it removes the
-records that point at the halves, and the halves last. Records here carry paths, sizes,
+(``hold_packet_queue``; ``team_scene_packets_busy`` while a worker run holds it) and each
+settled probe job's runner lock. It checks every record's identity, each settled probe job
+and every half's whole inventory again. Then it removes the records that point at the
+halves, the settled probe copies, and the halves last. Records here carry paths, sizes,
 inode numbers and counts only, never what a file holds.
 """
 from __future__ import annotations
@@ -51,10 +54,13 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
+from . import website_capture_withdrawal_rigid_probe as rigid_probe
 from .decision_evidence_contracts import canonical_digest
 from .rigid_robot_free_probe_queue_root import DEFAULT_QUEUE as _PROBE_QUEUE
-from .rigid_robot_free_probe_queue_root import ENTRY_DIRECTORIES, JOBS_DIRECTORY
+from .rigid_robot_free_probe_queue_root import DEFAULT_WORK_ROOT as _PROBE_WORK_ROOT
+from .rigid_robot_free_probe_queue_root import ENTRY_DIRECTORIES
 from .rigid_robot_free_probe_queue_root import QUEUE_ENV as _PROBE_QUEUE_ENV
+from .rigid_robot_free_probe_queue_root import WORK_ENV as _PROBE_WORK_ENV
 from .team_candidate_registry_reader import (
     REGISTRY_ENV,
     REGISTRY_SCHEMA,
@@ -65,10 +71,11 @@ from .team_scene_capture_root import DEFAULT_QUEUE_ROOT as _PACKET_QUEUE
 from .team_scene_capture_root import HOLDS_DIRNAME, QUEUE_ROOT_ENV, TEMPORARY_PREFIX, TEMPORARY_SUFFIX
 
 # The units' values, unless set here too: the registry every team unit reads
-# (blueprint-embodiment-preparation.service), and the two queues' roots.
+# (blueprint-embodiment-preparation.service), the two queues' roots and the probe's bulk volume.
 DEFAULT_REGISTRY = Path(os.environ.get(REGISTRY_ENV) or "/etc/blueprint/team-evaluation-registry.json")
 DEFAULT_PACKET_QUEUE_ROOT = Path(os.environ.get(QUEUE_ROOT_ENV) or _PACKET_QUEUE)
 DEFAULT_PROBE_QUEUE_ROOT = Path(os.environ.get(_PROBE_QUEUE_ENV) or _PROBE_QUEUE)
+DEFAULT_PROBE_WORK_ROOT = Path(os.environ.get(_PROBE_WORK_ENV) or _PROBE_WORK_ROOT)
 _PREFIX = "website_withdrawal_deletion_"
 # A request the worker has claimed is in processing/; these two states and holds/ are at rest.
 _AT_REST = ("pending", "processed")
@@ -265,8 +272,8 @@ def _packet_records(root: Path, vocabulary: set[bytes], request_id: str,
     return [_identity(path) for path in sorted(planned, key=str)]
 
 
-def _probe(root: Path, keys: set[str], unresolved: list[dict[str, Any]]) -> tuple[list[list[Any]], list[str]]:
-    """Each planned half's probe entries to delete, and the probe jobs left with their bundles and money."""
+def _probe_entries(root: Path, keys: set[str], unresolved: list[dict[str, Any]]) -> list[list[Any]]:
+    """Each planned half's pending and done probe entry."""
     entries = []
     for directory in ENTRY_DIRECTORIES:
         for key in sorted(keys):
@@ -277,10 +284,7 @@ def _probe(root: Path, keys: set[str], unresolved: list[dict[str, Any]]) -> tupl
                 unresolved.append({"path": str(path), "reason": _PREFIX + "unsafe_entry"})
                 continue
             entries.append(_identity(path))
-    jobs = root / JOBS_DIRECTORY
-    left = sorted(str(job) for job in jobs.iterdir() if any(job.name.startswith(key + "-") for key in keys)) \
-        if jobs.is_dir() and not jobs.is_symlink() else []
-    return sorted(entries), left
+    return sorted(entries)
 
 
 def _root(value: Path | None, unresolved: list[dict[str, Any]]) -> Path | None:
@@ -296,8 +300,8 @@ def _root(value: Path | None, unresolved: list[dict[str, Any]]) -> Path | None:
 def plan_team_scene(identity: Mapping[str, str], intents: list[str], *, capture_ids: set[str],
                     capture_keys: set[str], native_g1: Mapping[str, Any], halves_root: Path | None,
                     registry: Path | None, packet_queue_root: Path | None, probe_queue_root: Path | None,
-                    unresolved: list[dict[str, Any]]) -> dict[str, Any]:
-    """The site's halves and every record pointing at them; reads only."""
+                    unresolved: list[dict[str, Any]], probe_work_root: Path | None = None) -> dict[str, Any]:
+    """The site's halves, every record pointing at them and the probe copies built from them; reads only."""
     seeds = {identity["scene_id"], *capture_ids, *intents}
     vocabulary = {token.encode() for token in seeds}
     request_id = identity["request_id"]
@@ -305,9 +309,10 @@ def plan_team_scene(identity: Mapping[str, str], intents: list[str], *, capture_
         "halves_root": str(halves_root) if halves_root else None,
         "packet_queue_root": str(packet_queue_root) if packet_queue_root else None,
         "probe_queue_root": str(probe_queue_root) if probe_queue_root else None,
+        "probe_work_root": str(probe_work_root) if probe_work_root else None,
         **_registry(registry, vocabulary, identity, unresolved),
         "halves": [], "derived_profile_rows": [], "packet_queue_records": [], "probe_entries": [],
-        "probe_jobs_remaining": []}
+        "probe_jobs_final": [], "probe_jobs_waiting": []}
     halves = _root(halves_root, unresolved)
     if halves is not None:
         first: dict[str, list[str]] = {}
@@ -326,7 +331,10 @@ def plan_team_scene(identity: Mapping[str, str], intents: list[str], *, capture_
         section["packet_queue_records"] = _packet_records(packets, pointing, request_id, unresolved)
     probes = _root(probe_queue_root, unresolved)
     if probes is not None:
-        section["probe_entries"], section["probe_jobs_remaining"] = _probe(probes, keys, unresolved)
+        work = _root(probe_work_root, unresolved)
+        section["probe_entries"] = _probe_entries(probes, keys, unresolved)
+        section["probe_jobs_final"], section["probe_jobs_waiting"] = rigid_probe.plan_probe_jobs(
+            probes, work, keys, unresolved)
     return section
 
 
@@ -366,10 +374,11 @@ def _unchanged(row: list[Any]) -> bool:
 
 
 def apply_team_scene(section: Mapping[str, Any]) -> dict[str, Any]:
-    """Remove exactly the reviewed records, then the reviewed halves; refuse anything that changed.
+    """Remove exactly the reviewed records, the settled probe copies, then the halves; refuse any change.
 
     Runs after ``apply_native_g1``, so each half is checked whole: a G1 namespace written since the
-    plan is in it and refuses.
+    plan is in it and refuses. Each settled probe job is held under its runner's lock and planned
+    again before anything goes.
     """
     from .website_capture_withdrawal_deletion import _inventory, _require
 
@@ -380,14 +389,18 @@ def apply_team_scene(section: Mapping[str, Any]) -> dict[str, Any]:
         return (not _unsafe_root(directory) and directory.is_dir()
                 and canonical_digest({"rows": _inventory(directory)}) == row["inventory_digest"])
 
-    # Everything is checked before anything goes, then each again just before it goes.
-    _require(all(_unchanged(row) for row in records), "team_scene_record_changed")
-    _require(all(half_unchanged(row) for row in section["halves"]), "team_scene_half_changed")
-    removed = []
-    for row in records:  # The pointers first: an interrupted run leaves halves nothing names.
-        _require(_unchanged(row), "team_scene_record_changed")
-        Path(row[0]).unlink()
-        removed.append(row[0])
+    work_root = Path(section["probe_work_root"]) if section["probe_work_root"] else None
+    with ExitStack() as locks:
+        # Everything is checked before anything goes, then each again just before it goes.
+        _require(all(_unchanged(row) for row in records), "team_scene_record_changed")
+        rigid_probe.verify_jobs(locks, section["probe_jobs_final"], work_root)
+        _require(all(half_unchanged(row) for row in section["halves"]), "team_scene_half_changed")
+        removed = []
+        for row in records:  # The pointers first: an interrupted run leaves halves nothing names.
+            _require(_unchanged(row), "team_scene_record_changed")
+            Path(row[0]).unlink()
+            removed.append(row[0])
+        probe_bulk = rigid_probe.remove_jobs(section["probe_jobs_final"])
     halves = []
     for row in section["halves"]:
         _require(half_unchanged(row), "team_scene_half_changed")
@@ -398,7 +411,8 @@ def apply_team_scene(section: Mapping[str, Any]) -> dict[str, Any]:
     return {"halves": halves, "half_files_deleted": sum(row["file_count"] for row in section["halves"]),
             "derived_profile_rows": [path for path in removed if path in paths],
             "probe_entries": [path for path in removed if path in entries],
-            "packet_queue_records": [path for path in removed if path not in paths | entries]}
+            "packet_queue_records": [path for path in removed if path not in paths | entries],
+            "probe_bulk": probe_bulk}
 
 
 def _not_scanned(section: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -411,7 +425,9 @@ def _not_scanned(section: Mapping[str, Any]) -> list[dict[str, Any]]:
             ("packet_queue_root", "team_scene_packet_queue_not_scanned", "no team scene packet queue was "
              "named for this deletion, so no request or status for the site was found"),
             ("probe_queue_root", "rigid_robot_free_probe_queue_not_scanned", "no rigid robot-free probe queue "
-             "was named for this deletion, so no probe entry or job for the site was found")):
+             "was named for this deletion, so no probe entry or job for the site was found"),
+            ("probe_work_root", "rigid_robot_free_probe_work_root_not_scanned", "no rigid robot-free probe work "
+             "root was named for this deletion, so a probe bundle no attempt record names was not looked for")):
         if section[field] is None:
             rows.append({"holder": holder, "reason": reason})
     return rows
@@ -420,7 +436,7 @@ def _not_scanned(section: Mapping[str, Any]) -> list[dict[str, Any]]:
 def incomplete(section: Mapping[str, Any]) -> bool:
     """Whether a half, a copy built from one, or a record pointing at one may still exist after this run."""
     return bool(_not_scanned(section) or section["operator_profile_rows"] or section["operator_site_screening_row"]
-                or section["probe_jobs_remaining"])
+                or section["probe_jobs_waiting"])
 
 
 def remaining(section: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -434,14 +450,23 @@ def remaining(section: Mapping[str, Any]) -> list[dict[str, Any]]:
                      "site_screening_candidates": section["operator_site_screening_row"],
                      "reason": "the root-owned operator registry names the site; this deletion never writes it. "
                                "Its readers refuse a half that is gone; remove the rows through the door"})
-    if section["probe_jobs_remaining"]:
-        rows.append({"holder": "rigid_robot_free_probe_jobs", "paths": list(section["probe_jobs_remaining"]),
-                     "reason": "each probe attempt keeps a sealed bundle built from the half's native task packet "
-                               "(its bulk may be beside it under rigid-robot-free-probe-work/jobs/) and the "
-                               "website-grant hold records its settlement reads; withdrawal deletion v1 does not "
-                               "remove them"})
+    if section["probe_jobs_waiting"]:
+        rows.append({"holder": "rigid_robot_free_probe_jobs_waiting",
+                     "jobs": [{"job": row["job"], "attempts": list(row["waiting"])}
+                              for row in section["probe_jobs_waiting"]],
+                     "reason": "a probe job's money is not final (a reservation not settled yet or held, an "
+                               "allocator running or of unknown fate, an unreadable settlement or attempt record, a "
+                               "work directory not mounted or not tied to an attempt); it stays whole, bundle "
+                               "built from the half included, until a later deletion run finds it settled"})
+    if section["probe_jobs_final"]:
+        rows.append({"holder": "rigid_robot_free_probe_money_records",
+                     "jobs": [row["job"] for row in section["probe_jobs_final"]],
+                     "reason": "the settled probe jobs' settlement, reservation, admission, allocator result, "
+                               "teardown, budget-ledger and avoidlist records stay: amounts, ids, statuses, paths "
+                               "and digests, which the settlement replays from; their bundles, probe inputs and "
+                               "run outputs were deleted"})
     return rows
 
 
-__all__ = ["DEFAULT_PACKET_QUEUE_ROOT", "DEFAULT_PROBE_QUEUE_ROOT", "DEFAULT_REGISTRY", "apply_team_scene",
-           "hold_packet_queue", "incomplete", "plan_team_scene", "remaining"]
+__all__ = ["DEFAULT_PACKET_QUEUE_ROOT", "DEFAULT_PROBE_QUEUE_ROOT", "DEFAULT_PROBE_WORK_ROOT", "DEFAULT_REGISTRY",
+           "apply_team_scene", "hold_packet_queue", "incomplete", "plan_team_scene", "remaining"]

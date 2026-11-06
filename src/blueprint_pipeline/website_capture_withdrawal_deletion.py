@@ -35,8 +35,10 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
 - the site's compiled team scene halves and every record pointing at them: the
   team registry's derived-profile rows, the team scene packet queue's requests
   and statuses, and the rigid probe queue's entries
-  (``website_capture_withdrawal_team_scene``). The probe's jobs, which keep
-  bundles built from a half and their money records, are named as remaining;
+  (``website_capture_withdrawal_team_scene``). A probe job's bundles, probe
+  inputs and run outputs are deleted once its money is final, and its money
+  records stay (``website_capture_withdrawal_rigid_probe``); a job still waiting
+  on its money is named as remaining;
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
 
 The plan reads every run's JSON records once (streamed, any size), so it is an
@@ -481,7 +483,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                              team_scene_halves_root: Path | None = native_g1.DEFAULT_HALVES_ROOT,
                              team_registry: Path | None = team_scene.DEFAULT_REGISTRY,
                              team_scene_packet_queue_root: Path | None = team_scene.DEFAULT_PACKET_QUEUE_ROOT,
-                             rigid_probe_queue_root: Path | None = team_scene.DEFAULT_PROBE_QUEUE_ROOT
+                             rigid_probe_queue_root: Path | None = team_scene.DEFAULT_PROBE_QUEUE_ROOT,
+                             rigid_probe_work_root: Path | None = team_scene.DEFAULT_PROBE_WORK_ROOT
                              ) -> dict[str, Any]:
     """Resolve every Pipeline-controlled copy of the site; reads only (the GCS plan is the existing one)."""
 
@@ -544,7 +547,7 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
         identity, lineage["intents"], capture_ids=native_g1._site_capture_ids(site, identity),
         capture_keys=native_g1._site_capture_keys(site, identity), native_g1=g1, halves_root=team_scene_halves_root,
         registry=team_registry, packet_queue_root=team_scene_packet_queue_root,
-        probe_queue_root=rigid_probe_queue_root, unresolved=unresolved)
+        probe_queue_root=rigid_probe_queue_root, probe_work_root=rigid_probe_work_root, unresolved=unresolved)
     uris = sorted({uri for run in runs for uri in run["object_uris"]}
                   | {uri for attempt in screened["attempts"] for uri in attempt["object_uris"]}
                   | ({workspace["archive_uri"]} if workspace["archive_uri"] else set())
@@ -767,7 +770,8 @@ def run_cli(args: Any) -> dict[str, Any]:
                   "native_g1_registration_root": args.native_g1_registration_root,
                   "team_scene_halves_root": args.team_scene_halves_root, "team_registry": args.team_registry,
                   "team_scene_packet_queue_root": args.team_scene_packet_queue_root,
-                  "rigid_probe_queue_root": args.rigid_probe_queue_root}
+                  "rigid_probe_queue_root": args.rigid_probe_queue_root,
+                  "rigid_probe_work_root": args.rigid_probe_work_root}
     if not args.apply:
         return {"mode": "dry_run", "plan": plan_withdrawal_deletion(capture_root=args.capture_root, **resolution)}
     return apply_withdrawal_deletion(capture_root=args.capture_root, expected_plan_digest=args.expected_plan_digest
@@ -796,6 +800,8 @@ def add_cli_arguments(parser: Any) -> None:
                         help="The team scene packet queue holding each capture's requests and statuses")
     parser.add_argument("--rigid-probe-queue-root", type=Path, default=team_scene.DEFAULT_PROBE_QUEUE_ROOT,
                         help="The rigid robot-free probe queue holding each capture's probe entries and jobs")
+    parser.add_argument("--rigid-probe-work-root", type=Path, default=team_scene.DEFAULT_PROBE_WORK_ROOT,
+                        help="The rigid robot-free probe bulk volume holding each attempt's bundle and run output")
     parser.add_argument("--scan-offloaded-archives", action="store_true",
                         help="Read offloaded run archives whose pointer cannot show their site")
     parser.add_argument("--apply", action="store_true", help="Delete; without it the deletion is a dry run")
