@@ -137,7 +137,8 @@ request of each scene intent:
   holds only the reason, with no source or candidates. An unanswered check
   writes nothing new and is tried again on the next pass. Registration never
   deletes a packet: the operator's withdrawal deletion removes the packets, the
-  row and its status (`website_capture_withdrawal_native_g1`).
+  row and its status (`website_capture_withdrawal_native_g1`), then the team
+  scene halves the packets sit in (`website_capture_withdrawal_team_scene`).
 - It writes the service's own row to
   `/var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations/<site_id>.json`
   (`BLUEPRINT_NATIVE_G1_SITE_REGISTRATION_ROOT`). The row has exactly the

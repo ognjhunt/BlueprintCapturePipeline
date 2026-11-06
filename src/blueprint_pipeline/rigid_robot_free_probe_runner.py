@@ -134,6 +134,8 @@ from .rigid_robot_free_probe_lane import (
     MAX_HOURLY_RATE_USD,
     lane_enabled,
 )
+# Re-exported: withdrawal deletion reads the queue's layout without this module's paid launch path.
+from .rigid_robot_free_probe_queue_root import DEFAULT_QUEUE, QUEUE_ENV
 from .rigid_robot_free_probe_settlement import (
     SETTLEMENT_FILENAME,
     attempt_machine_avoidlist,
@@ -143,8 +145,6 @@ from .rigid_robot_free_probe_settlement import (
 )
 from .rigid_robot_free_probe_worker import INPUTS_FILENAME, RESULT_SCHEMA_VERSION, TRACE_FILENAME
 
-QUEUE_ENV = "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE"
-DEFAULT_QUEUE = "/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes"
 # The bulk volume a new attempt stages its sealed bundle and allocator job directory under (the
 # unit sets /mnt/blueprint-work/rigid-robot-free-probe-work). The queue, its ledgers, the attempt
 # records and the allocator receipts stay in the queue root. Unset keeps everything there, as

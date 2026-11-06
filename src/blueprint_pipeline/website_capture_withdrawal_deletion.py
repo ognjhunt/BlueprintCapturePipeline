@@ -31,8 +31,12 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   a later run. Ledger rows, and so the site budget, are never touched;
 - the service's own G1 site registration row and status, and the ``native-g1/``
   scene packets prepared from the site's team scene halves
-  (``website_capture_withdrawal_native_g1``); the halves themselves are named as
-  remaining;
+  (``website_capture_withdrawal_native_g1``);
+- the site's compiled team scene halves and every record pointing at them: the
+  team registry's derived-profile rows, the team scene packet queue's requests
+  and statuses, and the rigid probe queue's entries
+  (``website_capture_withdrawal_team_scene``). The probe's jobs, which keep
+  bundles built from a half and their money records, are named as remaining;
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
 
 The plan reads every run's JSON records once (streamed, any size), so it is an
@@ -66,6 +70,7 @@ from typing import Any, BinaryIO
 from . import website_capture_withdrawal as withdrawal
 from . import website_capture_withdrawal_native_g1 as native_g1
 from . import website_capture_withdrawal_screening as screening
+from . import website_capture_withdrawal_team_scene as team_scene
 from .control_plane_storage_roots import roots_of_class
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
@@ -473,7 +478,11 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                              screening_queue_root: Path | None = screening.DEFAULT_QUEUE_ROOT,
                              screening_work_root: Path | None = screening.DEFAULT_WORK_ROOT,
                              native_g1_registration_root: Path | None = native_g1.DEFAULT_REGISTRATION_ROOT,
-                             team_scene_halves_root: Path | None = native_g1.DEFAULT_HALVES_ROOT) -> dict[str, Any]:
+                             team_scene_halves_root: Path | None = native_g1.DEFAULT_HALVES_ROOT,
+                             team_registry: Path | None = team_scene.DEFAULT_REGISTRY,
+                             team_scene_packet_queue_root: Path | None = team_scene.DEFAULT_PACKET_QUEUE_ROOT,
+                             rigid_probe_queue_root: Path | None = team_scene.DEFAULT_PROBE_QUEUE_ROOT
+                             ) -> dict[str, Any]:
     """Resolve every Pipeline-controlled copy of the site; reads only (the GCS plan is the existing one)."""
 
     site, identity = _site_identity(Path(capture_root))
@@ -531,6 +540,11 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                                                       site_root=site)
     g1 = native_g1.plan_native_g1(identity, lineage["intents"], site=site, unresolved=unresolved,
                                   registration_root=native_g1_registration_root, halves_root=team_scene_halves_root)
+    team = team_scene.plan_team_scene(
+        identity, lineage["intents"], capture_ids=native_g1._site_capture_ids(site, identity),
+        capture_keys=native_g1._site_capture_keys(site, identity), native_g1=g1, halves_root=team_scene_halves_root,
+        registry=team_registry, packet_queue_root=team_scene_packet_queue_root,
+        probe_queue_root=rigid_probe_queue_root, unresolved=unresolved)
     uris = sorted({uri for run in runs for uri in run["object_uris"]}
                   | {uri for attempt in screened["attempts"] for uri in attempt["object_uris"]}
                   | ({workspace["archive_uri"]} if workspace["archive_uri"] else set())
@@ -563,7 +577,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
         "legal_hold": identity["legal_hold"], "site_root": str(site),
         "scene_files": {"count": len(local), "digest": canonical_digest({"rows": [
             [row["path"], row["size"], row["inode"], row["mtime_ns"]] for row in local]})},
-        "scene_workspace": workspace, "runs": runs, "screening": screened, "native_g1": g1, "objects": objects,
+        "scene_workspace": workspace, "runs": runs, "screening": screened, "native_g1": g1, "team_scene": team,
+        "objects": objects,
         "object_bucket": getattr(object_store, "bucket", None),
         "cloud_plan_digest": cloud["digest"] if cloud else None,
         "cloud_bucket": cloud["bucket"] if cloud else None,
@@ -596,6 +611,7 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
                                 "not capture bytes, and stay as audit"})
     remaining.extend(screening.remaining(plan["screening"]))
     remaining.extend(native_g1.remaining(plan["native_g1"]))
+    remaining.extend(team_scene.remaining(plan["team_scene"]))
     return remaining
 
 
@@ -607,7 +623,9 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     publish a new copy between this plan's object listing and its deletion; a step
     in progress refuses (``atlas_preview_busy``) and the operator retries. It holds
     each capture's screening review-video retention lock the same way
-    (``review_videos_busy``), so no video is copied in while the site is deleted.
+    (``review_videos_busy``), so no video is copied in while the site is deleted,
+    and the team scene packet queue's lock (``team_scene_packets_busy``), so no
+    worker run compiles a half or writes a derived row or status meanwhile.
     The screening deletes come first, after their re-plan under the screening
     coordinator's ledger lock, which is released before any of them
     (``website_capture_withdrawal_screening.apply_screening``).
@@ -647,6 +665,8 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise WithdrawalDeletionError("website_withdrawal_deletion_review_videos_busy") from None
+        team_scene.hold_packet_queue(locks, resolution.get("team_scene_packet_queue_root",
+                                                           team_scene.DEFAULT_PACKET_QUEUE_ROOT))
         return _apply_withdrawal_deletion(capture_root=capture_root, expected_plan_digest=expected_plan_digest,
                                           **resolution)
 
@@ -689,6 +709,8 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                 target.unlink(missing_ok=True)
             deleted["files"].append(path)
     g1_deleted = native_g1.apply_native_g1(plan["native_g1"])
+    # After the G1 namespaces inside them: each half is then checked whole before it goes.
+    team_deleted = team_scene.apply_team_scene(plan["team_scene"])
     workspace = plan["scene_workspace"]
     for path in workspace["retiring_leftovers"]:
         shutil.rmtree(path)
@@ -716,13 +738,14 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                     "capture_source_bucket_prefix": f"scenes/{plan['scene_id']}/" if cloud_storage else None,
                     "beta_screening": screening.receipt_section(plan["screening"], removed, store,
                                                                 screening_objects),
-                    "native_g1": g1_deleted},
+                    "native_g1": g1_deleted, "team_scene": team_deleted},
         "remaining": remaining,
         # A deferred screening attempt is covered but not yet deleted.
         "covered_copies_deleted": not plan["screening"]["deferred"],
         "pipeline_controlled_deletion_complete": (not plan["uncovered_pipeline_roots"] and cloud_storage is not None
                                                   and not screening.incomplete(plan["screening"])
-                                                  and not native_g1.incomplete(plan["native_g1"])),
+                                                  and not native_g1.incomplete(plan["native_g1"])
+                                                  and not team_scene.incomplete(plan["team_scene"])),
         "provider_copies_deleted": False, "physical_erasure_proven": False,
         "applied_at_iso": datetime.now(timezone.utc).isoformat(),
     }
@@ -742,7 +765,9 @@ def run_cli(args: Any) -> dict[str, Any]:
                   "scan_offloaded_archives": args.scan_offloaded_archives,
                   "screening_queue_root": args.screening_queue_root, "screening_work_root": args.screening_work_root,
                   "native_g1_registration_root": args.native_g1_registration_root,
-                  "team_scene_halves_root": args.team_scene_halves_root}
+                  "team_scene_halves_root": args.team_scene_halves_root, "team_registry": args.team_registry,
+                  "team_scene_packet_queue_root": args.team_scene_packet_queue_root,
+                  "rigid_probe_queue_root": args.rigid_probe_queue_root}
     if not args.apply:
         return {"mode": "dry_run", "plan": plan_withdrawal_deletion(capture_root=args.capture_root, **resolution)}
     return apply_withdrawal_deletion(capture_root=args.capture_root, expected_plan_digest=args.expected_plan_digest
@@ -764,7 +789,13 @@ def add_cli_arguments(parser: Any) -> None:
     parser.add_argument("--native-g1-registration-root", type=Path, default=native_g1.DEFAULT_REGISTRATION_ROOT,
                         help="The screening service's G1 site registration rows and their status")
     parser.add_argument("--team-scene-halves-root", type=Path, default=native_g1.DEFAULT_HALVES_ROOT,
-                        help="Compiled team scene halves holding each half's native-g1 G1 packets")
+                        help="Compiled team scene halves (each with its native-g1 G1 packets)")
+    parser.add_argument("--team-registry", type=Path, default=team_scene.DEFAULT_REGISTRY,
+                        help="The operator team registry whose derived_profiles.root holds the rows naming each half")
+    parser.add_argument("--team-scene-packet-queue-root", type=Path, default=team_scene.DEFAULT_PACKET_QUEUE_ROOT,
+                        help="The team scene packet queue holding each capture's requests and statuses")
+    parser.add_argument("--rigid-probe-queue-root", type=Path, default=team_scene.DEFAULT_PROBE_QUEUE_ROOT,
+                        help="The rigid robot-free probe queue holding each capture's probe entries and jobs")
     parser.add_argument("--scan-offloaded-archives", action="store_true",
                         help="Read offloaded run archives whose pointer cannot show their site")
     parser.add_argument("--apply", action="store_true", help="Delete; without it the deletion is a dry run")

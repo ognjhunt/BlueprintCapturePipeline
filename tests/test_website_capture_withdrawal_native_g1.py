@@ -69,7 +69,7 @@ def g1(world):
             "by_key": by_key, "by_records": by_records, "theirs": theirs}
 
 
-def test_withdrawal_deletes_the_sites_g1_rows_and_packets_and_names_its_halves(world, g1, tmp_path):
+def test_withdrawal_deletes_the_sites_g1_rows_and_packets_and_then_its_halves(world, g1, tmp_path):
     from tests.test_website_capture_withdrawal_deletion import FakeGcs, _apply, _plan, _snapshot
 
     before = _snapshot(tmp_path)
@@ -81,21 +81,21 @@ def test_withdrawal_deletes_the_sites_g1_rows_and_packets_and_names_its_halves(w
     assert [row[0] for row in section["registration_files"]] == sorted(map(str, g1["files"]))
     assert {row["directory"]: row["bound_by"] for row in section["packet_namespaces"]} == {
         **{str(path): "capture_key" for path in g1["by_key"]}, str(g1["by_records"]): "records"}
-    assert section["team_scene_halves_remaining"] == sorted([str(g1["halves"] / g1["key"]),
-                                                             str(g1["halves"] / ("c" * 32))])
+    # The halves around the packets are the team scene section's: each is checked whole once its packets go.
+    assert [row["directory"] for row in plan["team_scene"]["halves"]] == sorted([
+        str(g1["halves"] / g1["key"]), str(g1["halves"] / ("c" * 32))])
     receipt = _apply(world, plan, cloud_storage=gcs, uncovered_roots=())
     assert not any(path.exists() for path in [*g1["files"], *g1["by_key"], g1["by_records"]])
     # Another site's rows (also one whose id this site's id prefixes) and packets are untouched.
     assert all(path.exists() for path in g1["others"]) and (g1["theirs"] / ("b" * 64)).is_dir()
-    # The halves around the packets stay, and the receipt says so.
-    assert (g1["by_key"][0].parent / "team_scene_inputs.v1.json").exists()
+    assert not (g1["halves"] / g1["key"]).exists() and not (g1["halves"] / ("c" * 32)).exists()
     deleted = receipt["deleted"]["native_g1"]
     assert deleted["registration_files"] == sorted(map(str, g1["files"]))
     assert sorted(deleted["packet_namespaces"]) == sorted(map(str, [*g1["by_key"], g1["by_records"]]))
     assert deleted["packet_files_deleted"] == 5 + 3 + 5  # two complete packets and one killed preparation
-    holders = {row["holder"]: row for row in receipt["remaining"]}
-    assert holders["team_scene_halves"]["paths"] == section["team_scene_halves_remaining"]
-    assert receipt["pipeline_controlled_deletion_complete"] is False
+    assert receipt["deleted"]["team_scene"]["halves"] == [row["directory"] for row in plan["team_scene"]["halves"]]
+    assert "team_scene_halves" not in {row["holder"] for row in receipt["remaining"]}
+    assert receipt["pipeline_controlled_deletion_complete"] is True
 
 
 def test_the_rows_and_packet_a_real_registration_writes_are_the_ones_found(tmp_path, monkeypatch):

@@ -19,9 +19,10 @@ two kinds of copy the run roots and the screening ledger do not reach:
 
 ``plan_native_g1`` reads only; ``apply_native_g1`` checks each inventory and
 file identity again and removes exactly what the reviewed plan named. The
-compiled team scene half around a namespace is not deleted here: ``remaining``
-names each of the site's half directories still present. Records here carry
-paths, sizes, inode numbers and counts only, never what a file holds.
+compiled team scene half around a namespace, and every record pointing at it,
+are ``website_capture_withdrawal_team_scene``'s: it removes the half once these
+namespaces are gone. Records here carry paths, sizes, inode numbers and counts
+only, never what a file holds.
 """
 from __future__ import annotations
 
@@ -83,28 +84,32 @@ def _namespaces(root: Path, unresolved: list[dict[str, Any]]) -> list[Path]:
     return sorted(found)
 
 
+def _site_capture_ids(site: Path, identity: Mapping[str, str]) -> set[str]:
+    """The site's walkthrough capture and every capture directory still under it."""
+    captures = site / "captures"
+    return {identity["capture_id"]} | ({path.name for path in captures.iterdir() if path.is_dir()}
+                                       if captures.is_dir() and not captures.is_symlink() else set())
+
+
 def _site_capture_keys(site: Path, identity: Mapping[str, str]) -> set[str]:
     """The half directories the team worker files the site's captures under, also once the captures are gone."""
     # Not the worker: it reaches the paid launch path, which the intake must not import.
     from .team_scene_capture_root import capture_key
 
-    captures = site / "captures"
-    names = {identity["capture_id"]} | ({path.name for path in captures.iterdir() if path.is_dir()}
-                                        if captures.is_dir() and not captures.is_symlink() else set())
-    return {capture_key((captures / name).resolve()) for name in names}
+    return {capture_key((site / "captures" / name).resolve()) for name in _site_capture_ids(site, identity)}
 
 
 def plan_native_g1(identity: Mapping[str, str], intents: list[str], *, site: Path,
                    registration_root: Path | None, halves_root: Path | None,
                    unresolved: list[dict[str, Any]]) -> dict[str, Any]:
-    """The site's G1 registration files and packet namespaces, and its team scene halves left in place."""
+    """The site's G1 registration files and the G1 packet namespaces inside its team scene halves."""
     from .website_capture_withdrawal_deletion import (
         _SCANNED_SUFFIXES, WithdrawalDeletionError, _inventory, _Scan, _scan_files,
     )
     section: dict[str, Any] = {
         "registration_root": str(registration_root) if registration_root else None,
         "halves_root": str(halves_root) if halves_root else None,
-        "registration_files": [], "packet_namespaces": [], "team_scene_halves_remaining": []}
+        "registration_files": [], "packet_namespaces": []}
     if registration_root is not None and Path(registration_root).is_dir():
         section["registration_files"] = _registration_files(Path(registration_root), identity["scene_id"], unresolved)
     if halves_root is None or not Path(halves_root).is_dir():
@@ -115,7 +120,6 @@ def plan_native_g1(identity: Mapping[str, str], intents: list[str], *, site: Pat
         return section
     keys = _site_capture_keys(site, identity)
     seeds = {identity["scene_id"], identity["capture_id"], *intents}
-    halves = {halves_root / key for key in keys if (halves_root / key).is_dir()}
     for namespace in _namespaces(halves_root, unresolved):
         half = halves_root / namespace.relative_to(halves_root).parts[0]
         scan = _Scan({token.encode() for token in seeds}, identity["request_id"])
@@ -133,11 +137,9 @@ def plan_native_g1(identity: Mapping[str, str], intents: list[str], *, site: Pat
         if scan.other_sites:
             unresolved.append({"path": str(namespace), "reason": _PREFIX + "native_g1_names_another_site"})
             continue
-        halves.add(half)
         section["packet_namespaces"].append({"directory": str(namespace), "bound_by": bound_by,
                                              "inventory_digest": canonical_digest({"rows": inventory}),
                                              "file_count": len(inventory)})
-    section["team_scene_halves_remaining"] = sorted(str(path) for path in halves)
     return section
 
 
@@ -169,9 +171,8 @@ def apply_native_g1(section: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def incomplete(section: Mapping[str, Any]) -> bool:
-    """Whether a G1 copy, or the team scene half it came from, may still exist after this run."""
-    return (section["registration_root"] is None or section["halves_root"] is None
-            or bool(section["team_scene_halves_remaining"]))
+    """Whether a G1 copy may still exist after this run: a root this deletion was not given."""
+    return section["registration_root"] is None or section["halves_root"] is None
 
 
 def remaining(section: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -182,10 +183,6 @@ def remaining(section: Mapping[str, Any]) -> list[dict[str, Any]]:
     if section["halves_root"] is None:
         rows.append({"holder": "native_g1_packets_not_scanned",
                      "reason": "no team scene halves root was named for this deletion, so no G1 packet was found"})
-    if section["team_scene_halves_remaining"]:
-        rows.append({"holder": "team_scene_halves", "paths": list(section["team_scene_halves_remaining"]),
-                     "reason": "the site's compiled team scene halves hold scene data derived from the capture; "
-                               "withdrawal deletion v1 deletes only their native-g1 G1 packets"})
     return rows
 
 

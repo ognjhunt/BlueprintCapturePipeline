@@ -227,3 +227,15 @@ def test_withdrawal_g1_deletion_does_not_import_the_team_scene_worker() -> None:
     direct = _local_imported_modules(PKG_DIR / "website_capture_withdrawal_native_g1.py")
     assert "team_scene_capture_root" in direct
     assert not direct.intersection(HOT_LANE_MODULES | {"team_scene_packet_worker", "beta_policy_screening_launch"})
+
+
+def test_withdrawal_team_scene_deletion_reads_the_queues_layout_from_light_modules() -> None:
+    # It deletes a withdrawn site's team scene halves and their records (2026-11-06). The queues' layout
+    # comes from the modules split out of the worker and the probe runner, never from them: both reach
+    # the paid launch path.
+    direct = _local_imported_modules(PKG_DIR / "website_capture_withdrawal_team_scene.py")
+    assert {"team_scene_capture_root", "rigid_robot_free_probe_queue_root"} <= direct
+    assert not direct.intersection(HOT_LANE_MODULES | {
+        "team_scene_packet_worker", "beta_policy_screening_launch", "rigid_robot_free_probe_runner",
+        "team_candidate_quick10_registry", "paid_resource_allocator"})
+    assert not _transitive_local_modules(("rigid_robot_free_probe_queue_root",))
