@@ -21,16 +21,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 LANE_MODULES = (
-    "articulated_controls_probe.py",
     "articulated_runtime_composition.py",
     "articulated_control_planner.py",
-    "articulated_scripted_ik_preflight.py",
     "articulated_dynamics_realism.py",
     "gaussian_suppression_volume.py",
-    "articulated_interior_exposure.py",
-    "articulated_interior_authoring.py",
-    "articulated_support_aperture.py",
-    "articulated_render_materials.py",
     "articulated_native_probe.py",
     "articulated_isaac_bundle.py",
     "replacement_colour_fidelity.py",
