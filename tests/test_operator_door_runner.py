@@ -1318,6 +1318,39 @@ def test_g1_runtime_source_restore_launches_the_release_module(config: DoorConfi
     assert _result(config, request_id)["status"] == "launched"
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_parked_delivery_retirement_launches_the_release_module(config: DoorConfig, apply: bool) -> None:
+    """One 5 min unit named by a hash of the capture and the mode, with no network and every secret
+    hidden; only that capture, the delivery index beside the captures and the result are writable."""
+    capture = "bucket/scenes/site-a/captures/walkthrough-a"
+    body = {"kind": "retire-parked-delivery", "capture": capture, "approval_evidence": "owner: retire the 7",
+            "apply": apply}
+    request_id = _spooled(config, body)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    label = hashlib.sha256((capture + ("/apply" if apply else "/plan")).encode()).hexdigest()[:12]
+    unit = f"blueprint-operator-door-parked-delivery-{label}-{request_id[-8:]}.service"
+    assert call[1] == f"--unit={unit}" and "owner" not in unit
+    assert "--property=RuntimeMaxSec=5min" in call
+    for sandbox in ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+                    "ProtectHome=yes", "UMask=0077", "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX"):
+        assert f"--property={sandbox}" in call, sandbox
+    results = str(Path(config.spool_root) / "results")
+    assert (f"--property=ReadWritePaths=/var/lib/blueprint/pubsub-handoffs/{capture} "
+            f"/var/lib/blueprint/pubsub-handoffs/.website_preparation_pending {results}") in call
+    [hidden] = [value.removeprefix("--property=InaccessiblePaths=").split() for value in call
+                if value.startswith("--property=InaccessiblePaths=")]
+    assert hidden == [f"-{path}" for path in config.hidden_paths]
+    assert "--setenv=DOOR_SERVICE_USER=blueprint" in call
+    [request] = [value.removeprefix("--setenv=DOOR_PARKED_DELIVERY_REQUEST=") for value in call
+                 if value.startswith("--setenv=DOOR_PARKED_DELIVERY_REQUEST=")]
+    assert json.loads(request) == body
+    assert call[-1] == "/opt/blueprint/operator-door/door-retire-parked-delivery.sh"
+    assert _result(config, request_id)["status"] == "launched"
+
+
 def test_canonical_provenance_is_staged_private_and_not_in_environment(config: DoorConfig) -> None:
     from tests.test_operator_door_requests import _canonical_provenance
 

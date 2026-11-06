@@ -8,6 +8,7 @@
 #   deploy/operator-door/door-restore-scene-workspace.sh
 #   deploy/operator-door/door-provider-output-resume.sh
 #   deploy/operator-door/door-restore-g1-runtime-source.sh
+#   deploy/operator-door/door-retire-parked-delivery.sh
 #   deploy/operator-door/door-selected-handoff.sh
 #   deploy/operator-door/door-extend-scene-execution-window.sh
 #   deploy/operator-door/door-repair-notifier-binding.sh
@@ -308,6 +309,7 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
                                     "door-lane-scratch.sh", "door-provider-output-resume.sh",
                                     "door-restore-g1-runtime-source.sh",
+                                    "door-retire-parked-delivery.sh",
                                     "door-extend-scene-execution-window.sh", "door-extend-scene-execution-budget.sh",
                                     "door-confirm-owner-success-contract.sh", "install.sh"])
 def test_scripts_parse(script: str) -> None:
@@ -1423,6 +1425,84 @@ def test_g1_runtime_source_restore_reads_the_store_the_launch_dispatcher_binds()
     for binding in bindings:
         name, value = binding.split("=", 1)
         assert f': "${{{name}:={value}}}"' in script, name
+
+
+# --- retire-parked-delivery ----------------------------------------------------------------------
+
+PARKED_ID = "20261106T120000Z-retire-parked-delivery-0000abcd"
+PARKED_REQUEST = json.dumps({"apply": True, "approval_evidence": "owner: retire the 7",
+                             "capture": "bucket/scenes/site-a/captures/walkthrough-a",
+                             "kind": "retire-parked-delivery"}, sort_keys=True)
+PARKED_PYTHON_STUB = r"""#!/bin/bash
+{ echo "retire $*"; echo "cwd $PWD"; echo "pythonpath ${PYTHONPATH:-}"
+  echo "storage ${BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT:-unset}"
+  echo "from-env-file ${BLUEPRINT_FAKE_FROM_ENV_FILE:-unset}"
+  echo "credentials ${GOOGLE_APPLICATION_CREDENTIALS-unset}"; } >> "$STUB_LOG"
+printf '%s\n' "${FAKE_RETIRE:-}"
+exit "${FAKE_TOOL_RC:-0}"
+"""
+
+
+@pytest.fixture()
+def parked_delivery_env(retire_env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "parked-python", PARKED_PYTHON_STUB)
+    module = tmp_path / "releases" / SHA / "src" / "blueprint_pipeline" / "website_preparation_delivery_retirement.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("# the active release's module\n", encoding="utf-8")
+    values = {key: value for key, value in retire_env.items()
+              if key not in {"BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT", "GOOGLE_APPLICATION_CREDENTIALS", "DOOR_SCENE_ID"}}
+    return {**values, "DOOR_VENV_PYTHON": str(tmp_path / "parked-python"), "DOOR_SERVICE_USER": "blueprint",
+            "DOOR_PARKED_DELIVERY_REQUEST": PARKED_REQUEST, "DOOR_REQUESTED_BY": "operator-1"}
+
+
+@pytest.mark.parametrize(("result", "status", "code", "rc"), [
+    ({"outcome": "planned", "code": None}, "planned", None, 0),
+    ({"outcome": "retired", "code": None}, "retired", None, 0),
+    ({"outcome": "already_retired", "code": None}, "already_retired", None, 0),
+    ({"outcome": "refused", "code": "parked_delivery_not_parked"}, "refused", "parked_delivery_not_parked", 2),
+    (None, "failed", "parked_delivery_retirement_failed", 1),
+])
+def test_parked_delivery_retirement_runs_the_release_module_as_the_service_user(
+        parked_delivery_env: dict[str, str], tmp_path: Path, result, status, code, rc) -> None:
+    extra = {"FAKE_RETIRE": json.dumps(result)} if result is not None else {}
+    if rc:
+        extra["FAKE_TOOL_RC"] = str(rc)
+    done_rc, outcome, calls = _run("door-retire-parked-delivery.sh", parked_delivery_env, DOOR_REQUEST_ID=PARKED_ID, **extra)
+
+    assert (done_rc, outcome["status"], outcome["code"], outcome["exit_code"]) == (rc, status, code, rc)
+    assert calls[:2] == ["setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --",
+                         "umask 0077"]
+    assert calls[2] == ("retire -m blueprint_pipeline.website_preparation_delivery_retirement "
+                        f"--request-json {PARKED_REQUEST} --door-caller operator-1 --door-request-id {PARKED_ID}")
+    assert calls[3:] == [f"cwd {tmp_path / 'releases' / SHA}", "pythonpath src",
+                         "storage /var/lib/blueprint/pubsub-handoffs", "from-env-file loaded", "credentials unset"]
+    path = Path(parked_delivery_env["DOOR_RESULTS_DIR"]) / f"{PARKED_ID}.parked-delivery.json"
+    assert outcome["result"] == str(path) and oct(path.stat().st_mode & 0o777) == oct(0o644)
+    if result is not None:
+        assert json.loads(path.read_text()) == result
+
+
+@pytest.mark.parametrize(("overrides", "code"), [
+    ({"DOOR_SERVICE_USER": "root"}, "parked_delivery_user_invalid"),
+    ({"DOOR_REQUESTED_BY": "a b"}, "parked_delivery_caller_invalid"),
+    ({"DOOR_REQUESTED_BY": "$(id)"}, "parked_delivery_caller_invalid"),
+])
+def test_parked_delivery_retirement_rechecks_its_inputs(parked_delivery_env: dict[str, str], overrides, code) -> None:
+    rc, outcome, calls = _run("door-retire-parked-delivery.sh", parked_delivery_env, DOOR_REQUEST_ID=PARKED_ID, **overrides)
+    assert rc == 2 and outcome["code"] == code and not calls
+
+
+def test_parked_delivery_retirement_names_a_release_without_the_module(parked_delivery_env: dict[str, str],
+                                                                       tmp_path: Path) -> None:
+    (tmp_path / "releases" / SHA / "src" / "blueprint_pipeline" / "website_preparation_delivery_retirement.py").unlink()
+    rc, outcome, calls = _run("door-retire-parked-delivery.sh", parked_delivery_env, DOOR_REQUEST_ID=PARKED_ID)
+    assert rc == 2 and outcome["code"] == "parked_delivery_release_lacks_module" and not calls
+
+
+def test_parked_delivery_retirement_refuses_another_kinds_request_id(parked_delivery_env: dict[str, str]) -> None:
+    rc, _, calls = _run("door-retire-parked-delivery.sh", parked_delivery_env, DOOR_REQUEST_ID=RESUME_ID)
+    assert rc == 2 and not calls and not list(Path(parked_delivery_env["DOOR_RESULTS_DIR"]).iterdir())
 
 
 # --- extend-scene-execution-window ---------------------------------------------------------------

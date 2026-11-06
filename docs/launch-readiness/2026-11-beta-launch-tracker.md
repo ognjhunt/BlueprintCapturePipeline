@@ -49,20 +49,33 @@ The next production job, driven by a cloud session: a navigation task, chosen as
 - **Fixes, all general.** Each case in this job is the test, not a special case.
   - #3419 (merged 15:46Z): one predicate scorer, the task compiler, and behaviour measurements.
   - WebApp #1226 (merged): no task-kind gate on spend or team evaluation, and an expired owner row raises no ceiling.
-  - #3423 (open):
+  - #3423 (merged 16:46Z as `02668f5`):
     - route by requirement, and compile a locomotion job from its preserved scene;
     - a hold that names each missing piece (`website_task_runnable_policy_missing`);
     - G2 prompt;
     - G7 ceiling re-read before every paid launch;
     - G4 base height;
     - re-dispatch a SAM prompt the provider refused, and scale the parser's time limit;
-    - a review-cited frame becomes an input.
-  - None of this is live until the Bandit sign-off. After a deploy, the job resumes through `door selected-handoff --atlas-retry`, an operator requeue within its existing allowance.
+    - a review-cited frame becomes an input;
+    - Codex review fixes: the launch money check counts the owning queue and the whole ceiling, compiled specs dispatch to the predicate scorer, and a forceless named contact is unscored;
+    - the owner's Bandit sign-off and the [51] DeepInfra download fix.
+  - Replay before merge (AGENTS.md), on `6429be8`, paying nothing. Inputs were the job's JSON records and this session's own download of the source clip; no frames were copied off the host. The failed Atlas job is retried in the overlay and advances from `queued` into `plan`, with `would_buy: []`. It then stops at `missing_input`, the survey's decoded frame `decoded-000000000.png`. The next planner review is a new attempt, because its inputs now include the cited frames.
+  - Why capture-447 did not hit either stop, from its retained records:
+    - Its two completed Atlas reviews cited only the 2 frames each selected.
+    - Its clip was 1080p (a 5.8 MB upload). SAM answered 76 KB and 232 KB, both parsed within 35 s, and its second prompt went out 28 s after the upload.
+    - Here the clip is 4K (a 30.8 MB upload). The first answer was 1.8 MB and decoded to 518 MB, with a peak of 4.6 GB of memory. The second prompt went out 28 min after the upload. The 404 record holds only the status; an expired upload is the likeliest cause.
+  - It goes live with the batched deploy (D-08), which the G1 session requests once main's CI attests the merge. After it, the job resumes through `door selected-handoff --atlas-retry`, an operator requeue within its existing allowance.
+- **Owner decisions, 16:05Z** ("Bandit OK as recommended", "switch G3", "yes retire the 7", "yes standard - rights are okay"):
+  - Bandit: applied in #3423 (above).
+  - G3: the arm rule becomes "the object's centre within a tolerance" in a new surface-target schema, so earlier results still score as before (follow-up PR).
+  - Parked deliveries: see below.
+  - Rights: clips under the standard Pexels License are cleared for this work. That covers capture-447's clip and the alternates, Pexels 4294436 (warehouse) and 3773483 (kitchen). The §8 note above is settled by this ruling.
 - **Second Bandit packet.** #3422, from another session, lists the 36 expired entries without assessing them. This session's packet assesses all 96. They agree on the gate result.
 - **Bandit triage (owner).** Review packet: [`2026-11-06-bandit-triage-review.md`](2026-11-06-bandit-triage-review.md).
   - Verdicts across the 96 entries: 77 keep, 18 tighten, 1 fix now (`wam_compute_providers.py` `_deepinfra_download_file`), 0 orphaned, 0 new MEDIUM or HIGH.
   - The latest allowed expiry for an entry signed today is 2027-02-04.
-  - Nothing in `docs/bandit_triage.json` is changed until the owner signs off.
+  - Signed off by the owner at 16:05Z and applied in #3423.
+- **Parked deliveries (owner, 11-06: "yes retire the 7").** The 7 parked preparation deliveries are owner test captures from 10-28/29 whose status read cannot succeed since WebApp #1113. The door operation `retire-parked-delivery` retires them once it is deployed and the door is upgraded (`upgrade-door`). It is general: any delivery parked for a day can be retired, with the owner's approval on its record. Nothing is deleted, and a newer revision starts a new delivery.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 

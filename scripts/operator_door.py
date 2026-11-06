@@ -20,6 +20,8 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py retire-scene-workspace <scene_id> [--bucket B] [--apply] --wait
     python3 scripts/operator_door.py legacy-owner-census --wait
     python3 scripts/operator_door.py restore-g1-runtime-source [--apply] --wait
+    python3 scripts/operator_door.py retire-parked-delivery <bucket>/scenes/site-*/captures/<capture> \
+        --approval-evidence "<owner approval>" [--apply] --wait
     python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
         --expires-at 2026-11-07T10:30:00Z --authorization-reference "<owner approval>" --wait   # plan only
     python3 scripts/operator_door.py extend-scene-execution-window ... --apply --ack extend-scene-execution-window --wait
@@ -76,7 +78,7 @@ MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
                 "legacy_owner_census_observed", "repaired", "extended", "already_covered", "superseded",
-                "confirmed", "already_confirmed", "already_restored"}
+                "confirmed", "already_confirmed", "already_restored", "already_retired"}
 GITHUB_API = "https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline"
 # The only job that attests a main commit. Its success is what a deploy's verification needs.
 ATTESTING_JOB = "SBOM, license, and provenance contract"
@@ -940,6 +942,14 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     )
     g1_source.add_argument("--apply", action="store_true", help="restore; without this only a plan is made")
     _add_wait(g1_source, 2 * 3600 + 600)
+    parked = commands.add_parser(
+        "retire-parked-delivery",
+        help="plan an owner-approved retirement of one parked website preparation delivery; --apply retires it",
+    )
+    parked.add_argument("capture", help="<bucket>/scenes/site-*/captures/<capture>, as the delivery index names it")
+    parked.add_argument("--approval-evidence", required=True, help="names the owner's approval (<= 500 chars)")
+    parked.add_argument("--apply", action="store_true", help="retire it; without this only a plan is made")
+    _add_wait(parked, 600)
     resume = commands.add_parser(
         "provider-output-resume",
         help="resume one streamed policy-canary attempt's promotion, cleanup and (--ingest) ingestion",
@@ -1076,6 +1086,9 @@ def run(args: argparse.Namespace) -> int:
         return _submit({"kind": "legacy-owner-census"}, args)
     elif command == "restore-g1-runtime-source":
         return _submit({"kind": "restore-g1-runtime-source", "apply": args.apply}, args)
+    elif command == "retire-parked-delivery":
+        return _submit({"kind": "retire-parked-delivery", "capture": args.capture,
+                        "approval_evidence": args.approval_evidence, "apply": args.apply}, args)
     elif command == "extend-scene-execution-window":
         return _submit(_scene_window_body(args), args)
     elif command == "extend-scene-execution-budget":
