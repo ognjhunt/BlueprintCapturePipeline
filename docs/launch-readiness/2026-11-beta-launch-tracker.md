@@ -363,12 +363,13 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - #3427's `success_rule` is now admitted by the retirement observer.
     - #3428's hold split, ported.
     - Withdrawal deletion is now its own command (`python -m blueprint_pipeline.website_capture_withdrawal_deletion`), so the intake no longer reaches the hot lane. That had been red in the nightly since 11-04.
-- **Privacy finding (owner's call):** withdrawal deletion has never deleted a site's compiled team scene halves (`task-evaluation-inputs/team-scene-halves`). These hold collision and appearance data derived from the capture.
-  - The root was neither scanned nor named as left in place, so earlier receipts were silent about it.
-  - The receipt now names the site's halves as `remaining`, and the deletion reads as incomplete while they exist.
-  - Deleting them also removes the team registry rows that point at them, so it waits for the owner.
+- **Privacy finding, decided by the owner:** withdrawal deletion had never deleted a site's compiled team scene halves (`task-evaluation-inputs/team-scene-halves`). These hold collision and appearance data derived from the capture, and earlier receipts were silent about them.
+  - The owner decided "yes delete the team scene halves on withdrawal too". Withdrawal now deletes the site's halves and every record pointing at them (`website_capture_withdrawal_team_scene`): the team registry's derived rows, the team scene packet queue's records, and the probe queue's entries.
+  - Probe copies: each robot-free probe run keeps a sealed bundle built from the half. The owner chose "Delete once settled", so withdrawal deletes a run's bundle and output once its money is final, and keeps the records settlement replays from (`website_capture_withdrawal_rigid_probe`). An unsettled run is left whole and named, and the deletion reads as incomplete.
+  - Still open: a funded probe run that has not settled when the deletion runs can never settle afterwards, because the scene-file deletion (older than this work) removes the capture's task context that settlement reads. Its $1 hold stays at full on the site's grant. That over-counts spend and never under-counts it.
+- Spawn check merged ([#3429](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3429), 8dc96be). Before funding, Codex's review added a live consent read ahead of measuring an older packet.
+- 8dc96be (#3426, #3428, #3429) deploy requested by the library-aisle session at 22:20:23Z, after main's attestation at 22:19Z. dfd62ff got no attestation because of an order-dependent pinned-client test, fixed in #3430.
 - Scene retirement leaves the G1 overlay row and `native-g1/` packets in place. That is storage, not privacy, because withdrawal now deletes both. It is a follow-up.
-- Spawn check: built on its own branch, with its own PR after #3426. A measured overlap blocks a G1 row (`g1_spawn_overlap`); anything unmeasured is a flag. The flag stays in the ledger and is never published, so the WebApp needs no change.
 
 ## Operating notes (2026-11-02)
 
