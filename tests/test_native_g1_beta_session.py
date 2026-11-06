@@ -24,6 +24,7 @@ def inputs(tmp_path, monkeypatch):
         task_success_contract_digest=spec["task_success_contract_digest"], minimum_gpu_memory_gb=48)
     binding.update(backend=g1.BACKEND, runtime_digest=spec["runtime_identity_digest"], admission_digest=canonical_digest(execution))
     quote["valid_until"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    quote["episode_count"] = g1.CELLS_PER_SESSION
     quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
     current = scene()
     current.update(**spec["source"], site_id=spec["site_id"], scene_id=spec["site_id"],
@@ -38,7 +39,7 @@ def test_session_is_exact_selected_candidate_budget_and_one_shot(tmp_path, monke
     plan, candidate, spec = inputs(tmp_path, monkeypatch)
     authority = session.build_session_authority(plan=plan, candidate=candidate, spec=spec)
     assert authority["candidate_ids"] == [DP]
-    assert len(authority["cells"]) == 10
+    assert len(authority["cells"]) == g1.CELLS_PER_SESSION == 4
     assert authority["resource_name"] == session.RESOURCE_PREFIX + authority["run_id"]
     assert len(authority["run_id"]) == 32
     receipt = session.consume_session_authority_once(authority, consumption_path=tmp_path / "consumed.json", now=100)

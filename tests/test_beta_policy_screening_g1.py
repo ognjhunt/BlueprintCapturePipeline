@@ -123,6 +123,9 @@ def g1_plan(*, maximum="4.00"):
         binding["execution_spec"]["backend"] = g1.BACKEND
         binding["execution_spec"]["minimum_gpu_memory_gb"] = 48
         binding["admission_digest"] = canonical_digest(binding["execution_spec"])
+        # A G1 session runs the plan's first CELLS_PER_SESSION cells, and its quote says so.
+        quote = {**quote, "episode_count": g1.CELLS_PER_SESSION}
+        quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
         bindings[candidate["candidate_id"]] = binding
         quotes[candidate["candidate_id"]] = quote
     return build_screening_plan(catalog, scene(), campaign_id="g1-screening", now=NOW,
@@ -139,7 +142,8 @@ def test_four_candidates_have_individual_budget_outcomes_and_explicit_frozen_res
         assert row["execution_evidence_kind"] == "learned_policy"
         assert {c["family"] for c in row["scenario_cells"]} == {"canonical_anchor"}
         assert all(c["resolved_scenario"]["parameters"] == {} for c in row["scenario_cells"])
-        assert [c["seed"] for c in row["scenario_cells"]] == [c["seed"] for c in plan["scenario_cells"]]
+        assert row["episode_count"] == len(row["scenario_cells"]) == g1.CELLS_PER_SESSION == 4
+        assert [c["seed"] for c in row["scenario_cells"]] == [c["seed"] for c in plan["scenario_cells"][:4]]
     assert validate_screening_plan(plan) == plan
     schema = json.loads((g1.REPOSITORY / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
     Draft202012Validator(schema).validate(plan)
@@ -232,9 +236,9 @@ def test_failed_native_task_is_learned_execution_without_success_or_media_public
     from blueprint_pipeline.beta_policy_screening_result import candidate_result_summary, _publication_execution_evidence
     plan, candidate, result = session_result()
     summary = candidate_result_summary(result, plan=plan, candidate=candidate)
-    assert summary["episodes_scored"] == summary["episodes_failed"] == 10
+    assert summary["episodes_scored"] == summary["episodes_failed"] == g1.CELLS_PER_SESSION
     assert summary["episodes_succeeded"] == 0 and summary["success_rate"] == 0
-    assert summary["learned_policy_rollout_count"] == 10 and summary["candidate_policy_queried"] is True
+    assert summary["learned_policy_rollout_count"] == g1.CELLS_PER_SESSION and summary["candidate_policy_queried"] is True
     assert _publication_execution_evidence(candidate, summary)["action_source"] == "learned_policy"
     assert not {"trace", "query_checkpoints", "worker_result", "media_artifacts", "task_prompt"} & summary.keys()
 
@@ -278,9 +282,9 @@ def test_partial_returned_actions_survive_timeout_as_void_not_task_failure():
         row.pop("trace")
     reseal(result, "result_digest")
     summary = g1.summarize_result(result, plan=plan, candidate=candidate)
-    assert summary["episodes_void"] == 10
+    assert summary["episodes_void"] == g1.CELLS_PER_SESSION
     assert summary["episodes_scored"] == 0 and summary["success_rate"] is None
-    assert summary["candidate_policy_queried"] is True and summary["learned_policy_rollout_count"] == 10
+    assert summary["candidate_policy_queried"] is True and summary["learned_policy_rollout_count"] == g1.CELLS_PER_SESSION
     assert {row["reason"] for row in summary["episode_outcomes"]} == {"g1_beta_native_worker_deadline"}
     for row in result["episodes"]:
         row["query_checkpoints"] = []
@@ -476,7 +480,7 @@ def test_scored_isaac_close_recovery_requires_retained_preclose_and_observed_zer
         process_exit_evidence={"returncode": 0, "preclose_digest": preclose["preclose_digest"]})
     reseal(worker, "result_digest")
     reseal(result, "result_digest")
-    assert g1.summarize_result(result, plan=plan, candidate=candidate)["episodes_failed"] == 10
+    assert g1.summarize_result(result, plan=plan, candidate=candidate)["episodes_failed"] == g1.CELLS_PER_SESSION
     for change in ("wrong_exit", "missing_preclose", "changed_preclose"):
         invalid = deepcopy(result)
         episode = invalid["episodes"][0]

@@ -50,8 +50,8 @@ policy. `OmniPBR.mdl` remains the declared Kit runtime dependency and is not
 claimed resolved by this host-side test.
 
 The planner composes a machine authority from the unchanged exact model-term
-review and current trusted capture/task authority, within the owner's requested
-internal simulation scope. It records `new_human_review_claimed=false`; it never
+review and current trusted capture/task authority. Its basis is the owner's
+2026-11-06 decision that G1 is a screening option for every site and task. It records `new_human_review_claimed=false`; it never
 changes the old 841757 scene approval. Current consent and task identity are
 reopened at planning and immediately before launch. No additional public-media
 approval is needed for a private task-bound status/count summary. Public media,
@@ -60,8 +60,9 @@ model redistribution, ranking, qualification and physical claims remain false.
 All candidates share the persistent $30 site allowance (`SITE_LIMIT` in
 `beta_policy_screening_coordinator.py`) and the canonical allocator.
 G1's conservative existing 48 GB memory floor is not a measured requirement for
-every checkpoint. Ten diagnostic cells retain the shared cell IDs and seeds,
-but G1 uses frozen authored geometry and no unimplemented camera/object
+every checkpoint. A G1 session runs the plan's first four cells
+(`CELLS_PER_SESSION`, owner decision 2026-11-06: about four 50-minute cells fit
+the 4 h session). They retain the shared cell IDs and seeds, but G1 uses frozen authored geometry and no unimplemented camera/object
 perturbations. This does not establish robustness across scene variations.
 
 The exact source is HumanoidArena commit

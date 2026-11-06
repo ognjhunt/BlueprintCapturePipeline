@@ -82,9 +82,14 @@ def catalog_candidates() -> list[dict[str, Any]]:
     return rows
 
 
+#: Cells per G1 session (owner decision 2026-11-06): a cell takes up to 50 min measured (55 min cap), so
+#: about four fit the 4 h session; the plan's first cells, with their shared ids and seeds.
+CELLS_PER_SESSION = 4
+
+
 def frozen_cells(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
-    for ordinal, cell in enumerate(cells):
+    for ordinal, cell in enumerate(cells[:CELLS_PER_SESSION]):
         scenario = {"family": "canonical_anchor", "ordinal": ordinal, "parameters": {}}
         digest = canonical_digest(scenario)
         result.append(validate_frozen_cell({**cell, "family": "canonical_anchor", "resolved_scenario": scenario,

@@ -1,10 +1,15 @@
 # G1 humanoid on any website job: plan
 
 Status: plan, 2026-11-06. The audit behind it is in the beta launch tracker,
-section "G1 humanoid on website screening (audit, 2026-11-06)". Pieces marked
-**owner** wait on an owner decision that the tracker lists. Nothing here
-widens a cap, grant, TTL, retry limit or allowance, or reuses the 841757
-rights approval outside its scope.
+section "G1 humanoid on website screening (audit, 2026-11-06)".
+
+The owner answered all four decisions at 15:07Z the same day:
+- G1 is a screening option for every site and task;
+- registration has one standing approval;
+- $4 cap, $0.80/h and 4 h, with 4 cells per session, inside the $30 site budget;
+- the site's confirmed brief is the navigation goal's authority.
+
+Nothing here widens a cap, grant, TTL, retry limit or allowance.
 
 The guarantees that stay unchanged in every step:
 
@@ -49,7 +54,7 @@ that manifest. The registration contract keeps verifying every file it names.
 The contract lives under `deploy/operator-door/`, so this part ships with a
 door upgrade.
 
-## 2. Automatic registration for pick-and-place sites (**owner**: decision 2)
+## 2. Automatic registration for pick-and-place sites (approved 2026-11-06)
 
 - **Hook.** When `team_scene_packet.record_team_scene` marks a website scene
   `completed` (`team_scene_packet.py:1268-1291`) and the task is
@@ -70,23 +75,21 @@ door upgrade.
 
   `compose_beta_authority` re-checks consent live. A changed context gets a new
   packet directory and a new catalog identity, so the site re-plans by itself.
-- **Authorization.** The owner's choice is one of:
-  - a standing reference recorded once in config, which the overlay copies;
-  - per site, the existing door request kept as a one-tap step.
+- **Authorization.** One standing reference, recorded once in config, which
+  the overlay copies: the owner's 2026-11-06 decision. All four candidates are
+  covered. Navigation rows still need §6.
 
-  The candidate list is limited to what decision 1 approves (DP only if π0.5
-  stays held).
-
-## 3. Money (**owner**: decision 3)
+## 3. Money (approved 2026-11-06)
 
 - **Done here:** planning checks G1 against its own lane's GPU filters (48,000
   MB, RT only) instead of skipping it.
-- **To add once the numbers are approved:**
-  - G1's own cap, TTL and cells per session, read from the profile and kept
-    inside the existing bounds (cap ≤ $15, rate × TTL ≤ cap, 1,800–14,400 s);
-  - quotes listing the cells that fit;
-  - a plan that says when G1 does not fit the site's remainder. The existing
-    `site_screening_budget_insufficient` deferral already holds it back.
+- **Done here:** a G1 session runs the plan's first 4 cells
+  (`beta_policy_screening_g1.CELLS_PER_SESSION`), and its quote and plan row
+  say 4 episodes.
+- **No code change needed for the rest:** the approved cap, rate and TTL
+  ($4, $0.80/h, 4 h) are the existing defaults. A G1 quote larger than the
+  site's remainder is already deferred with
+  `site_screening_budget_insufficient`.
 - **Measured basis:**
   - setup about 12 min, at most 50 min per cell, so about 4 cells in 4 h;
   - A6000 at $0.40–0.60/h today;
@@ -119,7 +122,7 @@ door upgrade.
   place is also beyond a fixed arm's reach. A new pick-and-place site is the
   better first proof, unless the owner raises capture-447's allowance.
 
-## 6. Navigation (plan; **owner**: decision 4)
+## 6. Navigation (plan; goal authority approved 2026-11-06)
 
 Mobile jobs stop before the scene build today. To make them reach G1:
 
@@ -162,3 +165,10 @@ Order:
 - 1 → 2 → 5 (spawn check) → the first manipulation proof;
 - 3 and 4 in parallel with them;
 - then 6.
+
+## 7. Still stale
+
+The G1 catalog rows' `license_note` still reads "reviewed for internal
+development". Rewording it changes every G1 configuration digest, so it goes
+in with the next catalog revision, the one that moves the navigation rows
+(§6.4).
