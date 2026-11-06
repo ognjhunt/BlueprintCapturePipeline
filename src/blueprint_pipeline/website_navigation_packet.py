@@ -27,22 +27,15 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_navigation_goal import (
+    ACCEPTANCE_RADIUS_BOUNDS_M,
+    DEFAULT_EPISODE_SECONDS,
+    G1_CONTROL_FREQUENCY_HZ,
     GOAL_BASIS_SCHEMA_VERSION,
     NAVIGATION_TASK_KIND,
-    PUBLISHED_TASK_INSTRUCTION,
-    SCHEMA_VERSION as GOAL_SCHEMA_VERSION,
-    validate_g1_navigation_goal,
+    goal_from_compiled_spec,
 )
 
 TASK_SPEC_SCHEMA = "blueprint.website_navigation_task_spec.v1"
-#: The G1 navigation checkpoints' validated goal envelope (``validate_g1_navigation_goal``).
-ACCEPTANCE_RADIUS_BOUNDS_M = (0.1, 0.5)
-HEIGHT_DRIFT_BOUNDS_M = (0.05, 0.5)
-SETTLE_SAMPLE_BOUNDS = (2, 100)
-#: The G1 lane's control rate (``beta_policy_screening_g1_prepare``: 50 Hz policy, 200 Hz physics).
-G1_CONTROL_FREQUENCY_HZ = 50.0
-#: Without a time limit in the brief, an episode may last this long.
-DEFAULT_EPISODE_SECONDS = 60.0
 
 
 class WebsiteNavigationPacketError(ValueError):
@@ -52,17 +45,6 @@ class WebsiteNavigationPacketError(ValueError):
 def _require(condition: bool, code: str) -> None:
     if not condition:
         raise WebsiteNavigationPacketError(code)
-
-
-def _clamp(value: float, bounds: Sequence[float]) -> float:
-    return float(min(max(value, bounds[0]), bounds[1]))
-
-
-def _predicate(spec: Mapping[str, Any], kind: str, *, predicate_id: str | None = None) -> dict[str, Any]:
-    rows = [row for row in spec["success"]["predicates"] if row.get("kind") == kind
-            and (predicate_id is None or row.get("id") == predicate_id)]
-    _require(len(rows) == 1, f"website_navigation_spec_{kind}_missing")
-    return dict(rows[0])
 
 
 def _compiled(spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -79,45 +61,17 @@ def _compiled(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def g1_navigation_goal_from_spec(spec: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """The G1 checkpoints' goal for a compiled navigation spec, and what had to be assumed for it."""
-    spec = _compiled(spec)
-    goal_row = _predicate(spec, "region_reached", predicate_id="goal")
-    region = goal_row["region"]
-    _require(region.get("shape") == "disc" and goal_row.get("subject") == {"kind": "robot_root"},
-             "website_navigation_goal_region_unsupported")
-    centre = [float(value) for value in region["center_world_m"]]
-    compiled_radius = float(region["radius_m"])
-    radius = _clamp(compiled_radius, ACCEPTANCE_RADIUS_BOUNDS_M)
-    upright = _predicate(spec, "height_stable")
-    drift = _clamp(float(upright["max_drift_m"]), HEIGHT_DRIFT_BOUNDS_M)
-    hold = int(goal_row.get("hold_samples") or SETTLE_SAMPLE_BOUNDS[0])
-    settle = int(_clamp(hold, SETTLE_SAMPLE_BOUNDS))
-    assumptions = [
-        "goal_marker_restyled_flat_yellow_disc_for_the_checkpoints_trained_prompt",
-        "instruction_is_the_checkpoints_trained_prompt_not_the_site_sentence",
-        f"settle_window_is_{settle}_samples_at_{G1_CONTROL_FREQUENCY_HZ:g}_hz",
-    ]
-    if not math.isclose(radius, compiled_radius):
-        assumptions.append(f"acceptance_radius_clamped_from_{compiled_radius:.3f}m_to_{radius:.3f}m")
-    if not math.isclose(drift, float(upright["max_drift_m"])):
-        assumptions.append(f"root_height_drift_clamped_to_{drift:.3f}m")
-    if settle != hold:
-        assumptions.append(f"settle_window_clamped_from_{hold}_samples")
-    assumptions.extend(f"compiled:{flag}" for flag in spec["flags"])
-    goal = {
-        "schema_version": GOAL_SCHEMA_VERSION,
-        "center_world_m": centre,
-        "acceptance_radius_m": radius,
-        "max_root_height_drift_m": drift,
-        "settle_window_samples": settle,
-        "task_instruction": PUBLISHED_TASK_INSTRUCTION,
-        "visible_target_marker": {
-            "schema_version": "native_task_target_marker.v1", "shape": "flat_yellow_disc", "non_colliding": True,
-            "surface_position_world_m": list(centre), "radius_m": radius,
-        },
-    }
-    validate_g1_navigation_goal({"task_kind": NAVIGATION_TASK_KIND, "g1_navigation_goal": goal})
-    return goal, assumptions
+    """The G1 checkpoints' goal for a compiled navigation spec, and what had to be assumed for it.
+
+    The spec is validated here; the derivation itself is ``goal_from_compiled_spec``, the same one
+    the authority validator re-runs, so the two can never disagree.
+    """
+    try:
+        return goal_from_compiled_spec(_compiled(spec))
+    except ValueError as exc:
+        if isinstance(exc, WebsiteNavigationPacketError):
+            raise
+        raise WebsiteNavigationPacketError(str(exc)) from exc
 
 
 def navigation_goal_basis(spec: Mapping[str, Any], *, task_context: Mapping[str, Any],
@@ -145,8 +99,6 @@ def navigation_task_spec(spec: Mapping[str, Any], *, task_context: Mapping[str, 
     facing = spec["start"].get("facing_world_m") or goal["center_world_m"]
     limits = [row for row in spec["success"]["predicates"] if row.get("kind") == "time_limit"]
     seconds = (int(limits[0]["max_steps"]) / G1_CONTROL_FREQUENCY_HZ) if limits else DEFAULT_EPISODE_SECONDS
-    if not limits:
-        assumptions = [*assumptions, f"episode_limit_defaulted_to_{DEFAULT_EPISODE_SECONDS:g}s"]
     value = {
         "schema_version": TASK_SPEC_SCHEMA,
         "task_kind": NAVIGATION_TASK_KIND,
