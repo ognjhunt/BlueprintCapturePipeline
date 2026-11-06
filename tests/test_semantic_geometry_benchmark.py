@@ -16,10 +16,6 @@ from blueprint_pipeline.scene_placement.semantic_geometry_benchmark import (
     REQUEST_SCHEMA_VERSION,
     benchmark_semantic_geometry,
 )
-from blueprint_pipeline.semantic_geometry_benchmark_stage import (
-    main as stage_main,
-    run_semantic_geometry_benchmark_stage,
-)
 
 
 _CAPTURE = "sha256:" + "a" * 64
@@ -509,78 +505,3 @@ def _stage_fixture(tmp_path: Path) -> tuple[dict[str, Path], dict]:
     }
     _write_json(paths["request"], request)
     return paths, request
-
-
-def test_file_stage_binds_exact_artifacts_and_cli(tmp_path: Path) -> None:
-    paths, _ = _stage_fixture(tmp_path)
-    result = run_semantic_geometry_benchmark_stage(
-        request_path=paths["request"],
-        prediction_result_path=paths["prediction_result"],
-        ground_truth_path=paths["ground_truth"],
-        ablation_runs_path=paths["ablation_runs"],
-        output_path=paths["output"],
-    )
-
-    assert result["status"] == "completed"
-    assert result["transport_profile"] == "bounded_canonical_json_baseline.v1"
-    assert set(result["stage_input_artifacts"]) == {
-        "request",
-        "prediction_result",
-        "ground_truth",
-        "ablation_runs",
-    }
-    assert json.loads(paths["output"].read_text(encoding="utf-8")) == result
-
-    second_output = tmp_path / "result_cli.json"
-    assert (
-        stage_main(
-            [
-                "--request",
-                str(paths["request"]),
-                "--prediction-result",
-                str(paths["prediction_result"]),
-                "--ground-truth",
-                str(paths["ground_truth"]),
-                "--ablation-runs",
-                str(paths["ablation_runs"]),
-                "--output",
-                str(second_output),
-            ]
-        )
-        == 0
-    )
-
-
-def test_file_stage_rejects_tampering_symlinks_and_input_overwrite(tmp_path: Path) -> None:
-    paths, _ = _stage_fixture(tmp_path)
-    paths["prediction_result"].write_text("{}\n", encoding="utf-8")
-    result = run_semantic_geometry_benchmark_stage(
-        request_path=paths["request"],
-        prediction_result_path=paths["prediction_result"],
-        ground_truth_path=paths["ground_truth"],
-        ablation_runs_path=paths["ablation_runs"],
-        output_path=paths["output"],
-    )
-    assert result["status"] == "blocked"
-    assert "input_artifact_sha256_mismatch:prediction_result" in result["blockers"]
-
-    paths, _ = _stage_fixture(tmp_path / "symlink_case")
-    link = tmp_path / "prediction_link.json"
-    link.symlink_to(paths["prediction_result"])
-    result = run_semantic_geometry_benchmark_stage(
-        request_path=paths["request"],
-        prediction_result_path=link,
-        ground_truth_path=paths["ground_truth"],
-        ablation_runs_path=paths["ablation_runs"],
-        output_path=paths["output"],
-    )
-    assert "input_symlink_forbidden:prediction_result" in result["blockers"]
-
-    with pytest.raises(ValueError, match="output_path_must_not_overwrite_an_input"):
-        run_semantic_geometry_benchmark_stage(
-            request_path=paths["request"],
-            prediction_result_path=paths["prediction_result"],
-            ground_truth_path=paths["ground_truth"],
-            ablation_runs_path=paths["ablation_runs"],
-            output_path=paths["ground_truth"],
-        )

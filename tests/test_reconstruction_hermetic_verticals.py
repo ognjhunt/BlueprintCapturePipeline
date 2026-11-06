@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -22,11 +21,6 @@ from blueprint_pipeline.equirectangular_virtual_rig import (
 )
 from blueprint_pipeline.native_360_normalization import (
     build_native_360_probe_receipt,
-    normalize_native_360_capture,
-)
-from blueprint_pipeline.native_360_frame_dataset import (
-    compile_native_360_grouped_frame_dataset,
-    decode_native_360_lens_observations,
 )
 from blueprint_pipeline.reconstruction_frame_dataset import (
     compile_frozen_frame_dataset,
@@ -34,10 +28,6 @@ from blueprint_pipeline.reconstruction_frame_dataset import (
 from blueprint_pipeline.reconstruction_terminal_report import (
     RECONSTRUCTION_REPORT_REQUEST_SCHEMA_VERSION,
     generate_reconstruction_terminal_report,
-)
-from blueprint_pipeline.reconstruction_validation_contracts import (
-    CAMERA_RIG_VALIDATION_REQUEST_SCHEMA_VERSION,
-    validate_camera_rig,
 )
 
 
@@ -429,217 +419,6 @@ def _lens_calibration(profile: dict, lens_id: str) -> dict:
         "calibration_source": "official_sdk_sidecar",
         "calibration_source_digest": profile["calibration_source_digest"],
     }
-
-
-def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path) -> None:
-    spec = _spec()
-    profile = spec["camera_360_native"]
-    capture_root = tmp_path / "native360"
-    source = capture_root / "native/capture.insv"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(b"immutable-hermetic-dual-fisheye-container")
-    for lens_id in ("front", "rear"):
-        mask = capture_root / f"calibration/{lens_id}-mask.png"
-        mask.parent.mkdir(parents=True, exist_ok=True)
-        mask.write_bytes(b"hermetic-native-mask-fixture")
-    source_digest = _file_digest(source)
-    metadata = {
-        "schema_version": "native_360_camera_metadata.v1",
-        "source_capture_digest": profile["source_capture_digest"],
-        "camera_model": profile["camera_model"],
-        "capture_mode": "dual_fisheye_video",
-        "firmware_version": "fixture-1",
-        "coordinate_frame_declaration": {
-            "units": "meters",
-            "handedness": "right_handed",
-            "camera_axes": "+x right, +y down, +z forward",
-            "rig_frame": "front_lens_optical_center",
-        },
-        "segments": [
-            {
-                "sequence_index": 0,
-                "segment_id": "segment-0000",
-                "files": [
-                    {
-                        "relative_path": "native/capture.insv",
-                        "original_filename": "capture.insv",
-                        "size_bytes": source.stat().st_size,
-                        "digest": source_digest,
-                        "lens_streams": [
-                            {"lens_id": "front", "stream_index": 0},
-                            {"lens_id": "rear", "stream_index": 1},
-                        ],
-                    }
-                ],
-            }
-        ],
-        "lens_calibrations": [
-            _lens_calibration(profile, "front"),
-            _lens_calibration(profile, "rear"),
-        ],
-        "rig_extrinsics": {
-            "T_front_rear": [
-                [1.0, 0.0, 0.0, 0.06],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            "transform_semantics": "rear_camera_from_front_rig",
-            "translation_units": "meters",
-            "calibration_source": "official_sdk_sidecar",
-            "calibration_source_digest": profile["calibration_source_digest"],
-        },
-        "imu": {"status": "unavailable"},
-        "gyro": {"status": "unavailable"},
-    }
-    receipt = build_native_360_probe_receipt(
-        source_file_digest=source_digest,
-        runtime_identity="ffprobe-hermetic-fixture",
-        runtime_digest=spec["runtime_digest"],
-        streams=[
-            {
-                "stream_index": stream_index,
-                "media_type": "video",
-                "codec_name": "hevc",
-                "width": profile["width"],
-                "height": profile["height"],
-                "time_base": "1/90000",
-                "pts_seconds": profile["lens_pts_seconds"],
-                "metadata": {"lens": lens_id},
-            }
-            for stream_index, lens_id in enumerate(("front", "rear"))
-        ],
-        format_metadata={
-            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
-            "compatible_processing_lane": (
-                "camera_360_native_candidate_requires_calibration"
-            ),
-            "processing_lane_claim_ceiling": "container_stream_topology_only",
-            "capture_profile_fully_validated": False,
-        },
-    )
-    normalized = normalize_native_360_capture(
-        capture_root=capture_root,
-        output_root=tmp_path / "native360-output",
-        intake_id="hermetic-native-360",
-        capture_digest=profile["source_capture_digest"],
-        camera_metadata=metadata,
-        probe_receipts_by_path={"native/capture.insv": receipt},
-        source_commit_sha=spec["source_commit_sha"],
-        implementation_digest=spec["implementation_digest"],
-        authority_used=spec["authority"],
-        timestamp=spec["timestamp"],
-        maximum_source_bytes=1024,
-    )
-    artifact_root = next((tmp_path / "native360-output").glob("native_360_normalization_*"))
-    rig = json.loads((artifact_root / "camera_360_rig_declaration.json").read_text())
-    binding = json.loads((artifact_root / "dual_fisheye_stream_binding.json").read_text())
-    rig_result = validate_camera_rig(
-        {
-            "schema_version": CAMERA_RIG_VALIDATION_REQUEST_SCHEMA_VERSION,
-            "source_capture_digest": profile["source_capture_digest"],
-            "native_360_normalization_digest": normalized["native_360_normalization_digest"],
-            "rig_declaration": rig,
-            "dual_fisheye_binding": binding,
-            "agent_may_change_calibration": False,
-            "timestamp": spec["timestamp"],
-        }
-    )
-    dataset_root = tmp_path / "native360-dataset"
-    ffmpeg_fixture = tmp_path / "ffmpeg-hermetic-fixture"
-    ffmpeg_fixture.write_bytes(b"ffmpeg-hermetic-fixture")
-
-    def decode_runner(argv, _timeout, _maximum_output):
-        command = list(argv)
-        if "-version" in command:
-            return subprocess.CompletedProcess(
-                command, 0, b"ffmpeg version hermetic-fixture\n", b""
-            )
-        stream_index = int(command[command.index("-map") + 1].split(":")[1])
-        Image.fromarray(
-            np.full(
-                (profile["height"], profile["width"]),
-                48 if stream_index == 0 else 192,
-                dtype=np.uint8,
-            )
-        ).save(command[-1])
-        return subprocess.CompletedProcess(command, 0, b"", b"")
-
-    decode_manifest = decode_native_360_lens_observations(
-        capture_root=capture_root,
-        artifact_root=dataset_root,
-        capture_digest=profile["source_capture_digest"],
-        normalization_result=normalized,
-        rig_declaration=rig,
-        dual_fisheye_binding=binding,
-        implementation_digest=spec["implementation_digest"],
-        source_commit_sha=spec["source_commit_sha"],
-        authority_used=spec["authority"],
-        timestamp=spec["timestamp"],
-        ffmpeg_executable=ffmpeg_fixture,
-        runner=decode_runner,
-    )
-    dataset = compile_native_360_grouped_frame_dataset(
-        artifact_root=dataset_root,
-        intake_id="hermetic-native-360",
-        capture_digest=profile["source_capture_digest"],
-        normalization_result=normalized,
-        rig_declaration=rig,
-        dual_fisheye_binding=binding,
-        lens_decode_manifest=decode_manifest,
-        decoded_lens_frames=decode_manifest["frames"],
-        runtime_identity=decode_manifest["runtime_identity"],
-        runtime_digest=decode_manifest["runtime_digest"],
-        implementation_digest=spec["implementation_digest"],
-        source_commit_sha=spec["source_commit_sha"],
-        authority_used=spec["authority"],
-        timestamp=spec["timestamp"],
-    )
-    profile_validation = build_capture_profile_validation(
-        source_capture_digest=profile["source_capture_digest"],
-        declared_capture_authority_profile="camera_360_native",
-        probe_receipts=[receipt],
-        native_normalization_result=normalized,
-        source_commit_sha=spec["source_commit_sha"],
-        implementation_digest=spec["implementation_digest"],
-        timestamp=spec["timestamp"],
-    )
-    report = _terminal_report(
-        spec=spec,
-        profile="camera_360_native",
-        source_digest=profile["source_capture_digest"],
-        split_digest=dataset["train_heldout_split_digest"],
-        input_digests=[
-            normalized["native_360_normalization_digest"],
-            dataset["dataset_manifest_digest"],
-        ],
-        recorded_output_digests=[
-            rig_result["camera_rig_validation_result_digest"],
-            dataset["dataset_manifest_digest"],
-        ],
-        blocker=profile["expected_terminal_blocker"],
-        ceilings=_ceilings(decoded=True, calibrated=False),
-        calibration_status={
-            "status": "fixed_native_rig_validated",
-            "camera_rig_validation_result_digest": rig_result[
-                "camera_rig_validation_result_digest"
-            ],
-            "metric_scale_established": False,
-        },
-        capture_profile_validation=profile_validation,
-    )
-
-    assert normalized["status"] == "normalized"
-    assert dataset["candidate_dataset_contains_hidden_heldout_pixels"] is False
-    assert dataset["camera_calibration_binding"] == {
-        "camera_360_rig_declaration_digest": rig["rig_declaration_digest"]
-    }
-    assert rig_result["status"] == "validated"
-    assert rig_result["camera_trajectory_proven"] is False
-    assert rig_result["metric_scale_proven"] is False
-    assert report["decision"] == "abstention"
-    assert report["evidence_ceilings"]["decoded_observation_availability"] is True
-    assert report["evidence_ceilings"]["calibrated_camera_trajectory"] is False
 
 
 def test_equirectangular_360_vertical_compiles_shared_center_views_then_abstains(

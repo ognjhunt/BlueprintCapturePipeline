@@ -24,9 +24,6 @@ from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
     canonical_json_digest,
     lift_semantic_masks_to_gaussians,
 )
-from blueprint_pipeline.semantic_contribution_renderer_stage import (
-    run_semantic_contribution_renderer_stage,
-)
 
 
 SHA_A = "sha256:" + "a" * 64
@@ -377,75 +374,3 @@ def _write_stage_inputs(tmp_path: Path) -> tuple[dict[str, Path], dict]:
         }
     paths["request"].write_text(json.dumps(request), encoding="utf-8")
     return paths, request
-
-
-def test_file_stage_verifies_standard_ply_and_emits_replayable_receipt(tmp_path: Path) -> None:
-    paths, _request = _write_stage_inputs(tmp_path)
-
-    result = run_semantic_contribution_renderer_stage(
-        request_path=paths["request"],
-        analysis_splat_path=paths["analysis_splat"],
-        gaussian_mapping_path=paths["gaussian_mapping"],
-        source_tracks_path=paths["source_tracks"],
-        camera_records_path=paths["camera_records"],
-        output_path=paths["output"],
-    )
-
-    assert result["status"] == "completed"
-    assert result["stage_input_artifacts"]["analysis_splat"]["sha256"].startswith(
-        "sha256:"
-    )
-    assert result["transport_profile"] == "bounded_canonical_json_reference.v1"
-    assert json.loads(paths["output"].read_text(encoding="utf-8")) == result
-
-
-def test_file_stage_fails_closed_on_stale_splat_digest(tmp_path: Path) -> None:
-    paths, request = _write_stage_inputs(tmp_path)
-    request["bindings"]["analysis_splat_digest"] = SHA_D
-    paths["request"].write_text(json.dumps(request), encoding="utf-8")
-
-    result = run_semantic_contribution_renderer_stage(
-        request_path=paths["request"],
-        analysis_splat_path=paths["analysis_splat"],
-        gaussian_mapping_path=paths["gaussian_mapping"],
-        source_tracks_path=paths["source_tracks"],
-        camera_records_path=paths["camera_records"],
-        output_path=paths["output"],
-    )
-
-    assert result["status"] == "blocked"
-    assert "analysis_splat_binding_digest_mismatch" in result["blockers"]
-
-
-def test_file_stage_fails_closed_on_tampered_camera_artifact(tmp_path: Path) -> None:
-    paths, _request = _write_stage_inputs(tmp_path)
-    paths["camera_records"].write_text(
-        paths["camera_records"].read_text(encoding="utf-8") + "\n",
-        encoding="utf-8",
-    )
-
-    result = run_semantic_contribution_renderer_stage(
-        request_path=paths["request"],
-        analysis_splat_path=paths["analysis_splat"],
-        gaussian_mapping_path=paths["gaussian_mapping"],
-        source_tracks_path=paths["source_tracks"],
-        camera_records_path=paths["camera_records"],
-        output_path=paths["output"],
-    )
-
-    assert result["status"] == "blocked"
-    assert "input_artifact_size_mismatch:camera_records" in result["blockers"]
-    assert "input_artifact_sha256_mismatch:camera_records" in result["blockers"]
-
-
-def test_file_stage_rejects_output_overwriting_an_input(tmp_path: Path) -> None:
-    paths, _request = _write_stage_inputs(tmp_path)
-    with pytest.raises(ValueError, match="output_path_must_not_overwrite_an_input"):
-        run_semantic_contribution_renderer_stage(
-            request_path=paths["request"],
-            analysis_splat_path=paths["analysis_splat"],
-            gaussian_mapping_path=paths["gaussian_mapping"],
-            source_tracks_path=paths["source_tracks"],
-            camera_records_path=paths["camera_records"],
-            output_path=paths["camera_records"],
-        )

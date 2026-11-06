@@ -16,10 +16,6 @@ from blueprint_pipeline.scene_placement.semantic_oriented_box import (
     REQUEST_SCHEMA_VERSION,
     fit_semantic_oriented_boxes,
 )
-from blueprint_pipeline.semantic_oriented_box_stage import (
-    main as stage_main,
-    run_semantic_oriented_box_stage,
-)
 
 
 _CAPTURE = "sha256:" + "a" * 64
@@ -335,62 +331,3 @@ def test_support_point_digest_and_coordinate_validation_fail_closed() -> None:
     result = _fit(request, semantic, mapping, points)
     assert result["status"] == "blocked"
     assert "support_points_not_canonical_json" in result["blockers"]
-
-
-def test_file_stage_verifies_inputs_and_writes_result(tmp_path: Path) -> None:
-    request, semantic, mapping, points = _fixture()
-    paths = _write_stage_inputs(tmp_path, request, semantic, mapping, points)
-    result = run_semantic_oriented_box_stage(
-        request_path=paths["request"],
-        semantic_result_path=paths["semantic_result"],
-        gaussian_mapping_path=paths["gaussian_mapping"],
-        support_points_path=paths["support_points"],
-        output_path=paths["output"],
-    )
-    assert result["status"] == "completed"
-    assert result["transport_profile"] == "bounded_canonical_json_baseline.v1"
-    assert set(result["stage_input_artifacts"]) == {
-        "request",
-        "semantic_result",
-        "gaussian_mapping",
-        "support_points",
-    }
-    assert json.loads(paths["output"].read_text(encoding="utf-8")) == result
-
-
-def test_file_stage_detects_tampering_and_returns_blocked(tmp_path: Path) -> None:
-    request, semantic, mapping, points = _fixture()
-    paths = _write_stage_inputs(tmp_path, request, semantic, mapping, points)
-    paths["support_points"].write_text("[]", encoding="utf-8")
-    exit_code = stage_main(
-        [
-            "--request",
-            str(paths["request"]),
-            "--semantic-result",
-            str(paths["semantic_result"]),
-            "--gaussian-mapping",
-            str(paths["gaussian_mapping"]),
-            "--support-points",
-            str(paths["support_points"]),
-            "--output",
-            str(paths["output"]),
-        ]
-    )
-    result = json.loads(paths["output"].read_text(encoding="utf-8"))
-    assert exit_code == 2
-    assert result["status"] == "blocked"
-    assert "input_artifact_sha256_mismatch:support_points" in result["blockers"]
-    assert "input_artifact_size_mismatch:support_points" in result["blockers"]
-
-
-def test_file_stage_refuses_input_overwrite(tmp_path: Path) -> None:
-    request, semantic, mapping, points = _fixture()
-    paths = _write_stage_inputs(tmp_path, request, semantic, mapping, points)
-    with pytest.raises(ValueError, match="output_path_must_not_overwrite_an_input"):
-        run_semantic_oriented_box_stage(
-            request_path=paths["request"],
-            semantic_result_path=paths["semantic_result"],
-            gaussian_mapping_path=paths["gaussian_mapping"],
-            support_points_path=paths["support_points"],
-            output_path=paths["support_points"],
-        )

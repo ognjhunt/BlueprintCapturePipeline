@@ -29,9 +29,6 @@ from blueprint_pipeline.scene_placement.semantic_source_track_import import (
     MASK_ENCODING,
     import_semantic_source_tracks,
 )
-from blueprint_pipeline.semantic_source_track_stage import (
-    run_semantic_source_track_stage,
-)
 
 
 SHA_A = "sha256:" + "a" * 64
@@ -545,11 +542,9 @@ def test_stage_hash_verifies_frames_and_feeds_existing_import_stage(tmp_path: Pa
     assert result["provider_result_artifact"]["sha256"] == (
         "sha256:" + hashlib.sha256(provider_path.read_bytes()).hexdigest()
     )
-    normalized_path = tmp_path / "normalized.json"
-    normalized = run_semantic_source_track_stage(
-        request_path=import_path,
-        provider_result_path=provider_path,
-        output_path=normalized_path,
+    normalized = import_semantic_source_tracks(
+        json.loads(import_path.read_text(encoding="utf-8")),
+        json.loads(provider_path.read_text(encoding="utf-8")),
     )
     assert normalized["status"] == "completed"
     assert normalized["claim_ceiling"] == "source_bound_2d_mask_tracks_only"

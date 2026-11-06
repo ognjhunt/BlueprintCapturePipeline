@@ -7,7 +7,6 @@ import hashlib
 import json
 from pathlib import Path
 
-import pytest
 
 from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
     canonical_json_digest,
@@ -17,11 +16,6 @@ from blueprint_pipeline.scene_placement.semantic_source_track_import import (
     PROVIDER_RESULT_SCHEMA_VERSION,
     REQUEST_SCHEMA_VERSION,
     import_semantic_source_tracks,
-)
-from blueprint_pipeline.semantic_source_track_stage import (
-    main as semantic_source_track_stage_main,
-    run_semantic_source_track_stage,
-    run_semantic_source_track_terminal_reimport,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -307,64 +301,6 @@ def test_track_and_observation_order_does_not_change_normalized_registries() -> 
     ]["frame_masks_digest"]
 
 
-def test_file_stage_hash_verifies_provider_and_writes_compact_result(tmp_path) -> None:
-    request, provider = _fixture()
-    paths = _stage_paths(tmp_path, request, provider)
-
-    result = run_semantic_source_track_stage(
-        request_path=paths["request"],
-        provider_result_path=paths["provider"],
-        output_path=paths["output"],
-    )
-
-    assert result["status"] == "completed"
-    assert result["transport_profile"] == "bounded_compact_probability_rle.v1"
-    assert result["stage_input_artifacts"]["provider_result"]["sha256"] == (
-        request["input_artifacts"]["provider_result"]["sha256"]
-    )
-    assert json.loads(paths["output"].read_text(encoding="utf-8")) == result
-
-
-def test_file_stage_tampering_returns_terminal_blocked_artifact(tmp_path) -> None:
-    request, provider = _fixture()
-    paths = _stage_paths(tmp_path, request, provider)
-    paths["provider"].write_text(json.dumps({**provider, "tracks": []}), encoding="utf-8")
-
-    result = run_semantic_source_track_stage(
-        request_path=paths["request"],
-        provider_result_path=paths["provider"],
-        output_path=paths["output"],
-    )
-
-    assert result["status"] == "blocked"
-    assert "input_artifact_size_mismatch:provider_result" in result["blockers"]
-    assert "input_artifact_sha256_mismatch:provider_result" in result["blockers"]
-    assert result["physics_ready"] is False
-    assert result["comparative_policy_ranking_verdict"] == "thesis_not_supported"
-
-
-def test_file_stage_refuses_input_overwrite_and_symlink_output(tmp_path) -> None:
-    request, provider = _fixture()
-    paths = _stage_paths(tmp_path, request, provider)
-    with pytest.raises(ValueError, match="output_path_must_not_overwrite_an_input"):
-        run_semantic_source_track_stage(
-            request_path=paths["request"],
-            provider_result_path=paths["provider"],
-            output_path=paths["provider"],
-        )
-
-    real_output = tmp_path / "real-output.json"
-    real_output.write_text("{}", encoding="utf-8")
-    symlink_output = tmp_path / "output-link.json"
-    symlink_output.symlink_to(real_output)
-    with pytest.raises(ValueError, match="output_symlink_forbidden"):
-        run_semantic_source_track_stage(
-            request_path=paths["request"],
-            provider_result_path=paths["provider"],
-            output_path=symlink_output,
-        )
-
-
 def _terminal_runtime_result_with_legacy_missing_empty_frame() -> dict:
     request, provider = _fixture()
     provider["tracks"][0]["observations"] = provider["tracks"][0]["observations"][:1]
@@ -390,62 +326,3 @@ def _terminal_runtime_result_with_legacy_missing_empty_frame() -> dict:
         runtime, digest_field="runtime_result_digest"
     )
     return runtime
-
-
-def test_terminal_reimport_cli_restores_valid_empty_frame_and_retains_receipt(
-    tmp_path,
-) -> None:
-    runtime_path = tmp_path / "provider-runtime-result.json"
-    runtime = _terminal_runtime_result_with_legacy_missing_empty_frame()
-    runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
-    output_path = tmp_path / "normalized-current.json"
-    receipt_path = tmp_path / "terminal-reimport-receipt.json"
-
-    assert (
-        semantic_source_track_stage_main(
-            [
-                "--terminal-runtime-result",
-                str(runtime_path),
-                "--source-commit-sha",
-                "a" * 40,
-                "--output",
-                str(output_path),
-                "--receipt-output",
-                str(receipt_path),
-            ]
-        )
-        == 0
-    )
-
-    result = json.loads(output_path.read_text(encoding="utf-8"))
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    assert [row["source_frame_id"] for row in result["frame_masks"]] == [
-        "frame-1",
-        "frame-2",
-    ]
-    assert result["frame_masks"][1]["track_masks"] == []
-    assert result["frame_masks"][1]["mask_artifact_digest"] == canonical_json_digest(
-        []
-    )
-    assert result["terminal_reimport"]["paid_resource_allocated"] is False
-    assert receipt["status"] == "ready"
-    assert receipt["normalized_result"]["frame_count"] == 2
-    assert receipt["normalized_result"]["result_digest"] == result["result_digest"]
-    assert receipt["receipt_digest"] == canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
-
-
-def test_terminal_reimport_rejects_tampered_runtime_receipt(tmp_path) -> None:
-    runtime_path = tmp_path / "provider-runtime-result.json"
-    runtime = _terminal_runtime_result_with_legacy_missing_empty_frame()
-    runtime["status"] = "failed"
-    runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="terminal_reimport_runtime_result_invalid"):
-        run_semantic_source_track_terminal_reimport(
-            terminal_runtime_result_path=runtime_path,
-            source_commit_sha="a" * 40,
-            output_path=tmp_path / "normalized-current.json",
-            receipt_output_path=tmp_path / "terminal-reimport-receipt.json",
-        )

@@ -27,7 +27,6 @@ LANE_MODULES = (
     "articulated_scripted_ik_preflight.py",
     "articulated_dynamics_realism.py",
     "gaussian_suppression_volume.py",
-    "gaussian_suppression_render.py",
     "articulated_interior_exposure.py",
     "articulated_interior_authoring.py",
     "articulated_support_aperture.py",

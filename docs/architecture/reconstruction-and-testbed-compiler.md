@@ -391,7 +391,7 @@ probing and receipt compilation only. It is not representative Insta360 media
 and proves no native stream topology, embedded metadata, calibration, or 360
 route qualification.
 
-`native_360_frame_dataset.py` binds already-decoded lens images back to the
+`native_360_frame_dataset.py` (removed 2026-11-05: no production path reached it; see git history) binds already-decoded lens images back to the
 validated source path, source digest, declared stream index, decoded index, and
 per-lens PTS in the dual-fisheye binding. The shared frozen dataset kernel now
 supports optional physical-camera and synchronized-observation-group identities:
@@ -438,7 +438,7 @@ produce one strictly increasing capture timeline, and the shared compiler freeze
 front/rear pairs atomically without hidden-view leakage. This is contract and
 local-executor evidence only, not representative Insta360 qualification.
 
-`native_360_pose_request.py` closes the deterministic handoff from that frozen
+`native_360_pose_request.py` (removed 2026-11-05: no production path reached it; see git history) closes the deterministic handoff from that frozen
 dataset to the existing registered pose worker. It reproduces the camera-rig
 validation result, binds the dataset, split, all retained source digests, rig
 calibration, stream binding, worker image and source SHA, build/smoke receipts,
@@ -640,7 +640,7 @@ independently validates both the archive and returned receipt and still requires
 its separate numeric spend/TTL envelope, watchdog, teardown, and provider-zero
 proof. A build receipt remains below the GPU runtime-smoke and scientific gates.
 
-`reconstruction_worker_build_receipt_normalization.py` closes the evidence seam
+`reconstruction_worker_build_receipt_normalization.py` (removed 2026-11-05: no production path reached it; see git history) closes the evidence seam
 between that shared CPU builder and the stable worker contract consumed by pose
 and training request compilation. It accepts only a ready, canonical, untampered
 v2 packet; a digest- and registry-repository-bound remote build receipt; the
@@ -654,7 +654,7 @@ therefore proves only exact image construction plus CPU-builder teardown, never
 GPU compatibility, reconstruction quality, Isaac compatibility, physical
 success, or deployment readiness.
 
-After the Vast-first runtime smoke, `reconstruction_worker_smoke_receipt.py`
+After the Vast-first runtime smoke, `reconstruction_worker_smoke_receipt.py` (removed 2026-11-05: no production path reached it; see git history)
 normalizes the digest-bound healthcheck, execution, teardown, provider-zero, and
 paid-authority records into the canonical
 `reconstruction_worker_smoke_test_receipt.v1` consumed by the training-request
