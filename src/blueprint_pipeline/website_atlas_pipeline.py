@@ -347,6 +347,16 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     if source_pose["status"] == "processing":
         return source_pose
     source_root, _ = prepare_source_pose(pose_root)
+    if source_survey_path is not None:
+        # The gallery must also hold the task-source views this source pose was given.
+        from .atlas_source_gap_evidence import with_task_source_views
+        from .atlas_video_inputs import GEOMETRY_INPUTS_FILE
+        retained_inputs = source_root / GEOMETRY_INPUTS_FILE
+        source_survey_path = with_task_source_views(
+            survey_path=source_survey_path,
+            source_inputs=json.loads(retained_inputs.read_text()) if retained_inputs.is_file() else {},
+            clean_root=pose_root.parent.parent / "clean_plate",
+            output=output_root / "capture_source_survey_with_task_views.json")
     if not (source_root / "atlas_posed_rgbd_result.json").is_file():
         return {"status": "needs_input", "stage": "source_pose", "source_pose": source_pose,
                 "reason": source_pose.get("reason", "atlas_source_pose_unavailable"),
