@@ -6,7 +6,7 @@
 
 **Goal:** make the control-plane host unable to block deploys, the listener, teardown or paid
 scene chains on disk space, by implementing
-[`docs/CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md`](../../../CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md)
+[`docs/CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md`](../../../../CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md)
 (the "design doc") phases 1, 2 and 4 in code, plus the queue-with-ETA part of phase 3.
 
 **Architecture:** object storage is the system of record and host disk is a cache. Every

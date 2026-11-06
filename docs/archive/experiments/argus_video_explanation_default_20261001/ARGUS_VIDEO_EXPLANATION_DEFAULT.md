@@ -97,7 +97,7 @@ and fixtures; none is labelled an existing real episode.
 
 The source pin, Apache-2.0 license, adapted/vanilla prompts, current grader
 source closure, inventory, two-run remote trace and deferred cost proposal are
-in [the original packet](../argus_shadow_20261001/ARGUS_SHADOW_OFFLINE_COMPARISON.md).
+in [the original packet](../../../experiments/argus_shadow_20261001/ARGUS_SHADOW_OFFLINE_COMPARISON.md).
 Argus source remains pinned to
 `6c99686a3d93027c517f02f37f24b5b68532e12a`. No upstream software is installed
 or executed; optional hand-pose components with noncommercial terms are unused.
