@@ -106,13 +106,39 @@ uses CPU contract/source tests, not new checkpoint inference or a GPU run.
 
 ## Activate a current site's G1 candidates
 
-As of 2026-11-06 activation cannot succeed: the shared registry's
-`runtime_source_receipt_path`
-(`/mnt/blueprint-work/g1-cuda-runtime-source-7c1f528-20260926/`) no longer
-exists on the host. Every candidate would end
-`g1_shared_source_verification_failed` until that `unitree_g1` runtime source
-packet is restored or rebuilt and the registry points at it. See the beta
-launch tracker's G1 section.
+First make sure the shared runtime source is on the host. On 2026-11-06 the
+directory the shared registry's `runtime_source_receipt_path` names
+(`/mnt/blueprint-work/g1-cuda-runtime-source-7c1f528-20260926/`) was gone, and
+every candidate ended `g1_shared_source_verification_failed`. The door's
+`restore-g1-runtime-source` puts the packet and its receipt back byte for byte
+from the object-store copy a 2026-09-27 run retained, so the registry binding
+verifies unchanged:
+
+1. The door must run a `main` commit that has the operation
+   (`python3 scripts/operator_door.py upgrade-door <sha on main> --wait`), and the
+   active release must contain `blueprint_pipeline.native_g1_runtime_source_restore`
+   (a deploy of such a commit). Otherwise the request refuses with
+   `kind_unknown` or `g1_runtime_source_release_lacks_module`.
+2. Plan it. The plan only reads and writes nothing but its result:
+   `python3 scripts/operator_door.py restore-g1-runtime-source --wait`. It
+   should end `planned`, with the build record verified, the retained object
+   present at its exact size and digest, enough disk (about 4.9 GB with the
+   margin) and both targets `absent`, or `matches` once restored.
+3. Restore it:
+   `python3 scripts/operator_door.py restore-g1-runtime-source --apply --wait`.
+   The outcome is `restored`, or `already_restored` if a run before it finished.
+   Any other bytes at either target refuse with
+   `g1_runtime_source_target_conflict` and stay untouched.
+4. Use the result's `runtime_source` (`receipt_sha256` and
+   `receipt_size_bytes` in the outcome; the full result is
+   `results/<id>.g1-runtime-source.json`) as the install request's
+   `runtime_source` reference below. The receipt is the build record's exact
+   bytes, `sha256:b303f3017e799a36a2a467de60f235109b1d810a1ef3a87d8d92feb02e6ca5d2`
+   and 44,943 bytes.
+
+It starts no compute and spends nothing beyond one object-store download. A
+refusal names one fixed `g1_runtime_source_*` code; see the beta launch
+tracker's G1 section.
 
 Use the authenticated operator door; activation does not require editing the
 protected registry or logging into the controller:

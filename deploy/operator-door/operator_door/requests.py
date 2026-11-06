@@ -35,6 +35,11 @@ names the approving owner and the evidence; it refunds and settles nothing.
 preview's digest records, one owner confirmation that a published website job's
 success thresholds, exactly as built, are the owner's, through the active
 release. It changes no threshold, starts no compute and moves no money.
+``restore-g1-runtime-source`` (``operate``) plans, or with ``apply`` performs, the
+active release's restore of the shared G1 runtime source packet and its receipt
+from the retained object-store copy. Every identity is pinned in that module; the
+request carries only ``apply``. It overwrites nothing, starts no compute and moves
+no money.
 """
 
 from __future__ import annotations
@@ -95,6 +100,8 @@ _SCOPES = {
     "extend-scene-execution-budget": "operate",
     # One owner confirmation of a published website job's built success thresholds.
     "confirm-owner-success-contract": "operate",
+    # Restores the pinned G1 runtime source packet and receipt from the retained object-store copy.
+    "restore-g1-runtime-source": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -534,6 +541,13 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if body["ack"] != OWNER_SUCCESS_ACK:
             raise RequestRefused("owner_success_unacknowledged")
         return {key: body[key] for key in sorted(fields)}
+    if kind == "restore-g1-runtime-source":
+        # No path, URL or digest is a field: the release module pins every identity.
+        _only(body, ("kind", "apply"))
+        apply = body.get("apply", False)
+        if type(apply) is not bool:
+            raise RequestRefused("g1_runtime_source_apply_invalid")
+        return {"kind": kind, "apply": apply}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")

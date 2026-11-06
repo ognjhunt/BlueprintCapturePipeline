@@ -31,14 +31,17 @@ identity is known from the build record
 - IsaacLab `ffff603e…` (tree `2f82f1af…`) plus Arena;
 - 81 dependency wheels, profile `unitree_g1`.
 
-Two ways back, both CPU only and both needing host access the door does not
-offer, so each needs the owner:
+Two ways back, both CPU only:
 
-- **Restore (byte-identical).** The 09-27 run retained a content-addressed
-  object-store copy for reuse (key `561630a4…`). Copy it back with its receipt,
-  and the existing registry binding verifies unchanged. Cost: 4.6 GB on
-  `/mnt/blueprint-work` (82.8% used).
-- **Rebuild.** Run
+- **Restore (byte-identical), now a door operation.** The 09-27 run retained a
+  content-addressed object-store copy for reuse (key `561630a4…`).
+  `python3 scripts/operator_door.py restore-g1-runtime-source --wait` plans it and
+  `--apply` copies it back with its receipt, so the existing registry binding
+  verifies unchanged (procedure: `docs/runbooks/native-g1-beta-screening.md`,
+  "Activate a current site's G1 candidates"). It needs a door upgrade and a
+  deploy of a `main` commit that has it. Cost: 4.6 GB on `/mnt/blueprint-work`
+  (82.8% used), checked against the disk budget first.
+- **Rebuild.** Needs host access the door does not offer, so it needs the owner. Run
   `python -m blueprint_pipeline.native_task_runtime_source_packet --runtime-profile unitree_g1 --output-dir <dir> --isaaclab-repo <IsaacLab at ffff603e> --arena-repo <Arena at its pinned commit> --dependency-wheel-dir <the 81 wheels>`.
   The digest changes, so the new receipt must be pinned.
 
