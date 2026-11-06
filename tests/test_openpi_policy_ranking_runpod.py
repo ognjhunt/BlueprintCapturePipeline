@@ -27,6 +27,9 @@ from blueprint_pipeline.openpi_policy_ranking_runpod import (
 from blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap import POLICY_IDS
 from blueprint_pipeline.openpi_policy_ranking_gpu_job import FROZEN_VARIANTS
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
+import pytest
+
+pytestmark = pytest.mark.usefixtures("legacy_runpod_mechanics")  # RunPod retired 2026-11-05; see conftest
 
 
 def _completed_output_archive() -> bytes:

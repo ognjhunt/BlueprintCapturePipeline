@@ -31,6 +31,10 @@ utilization, poor usage attribution, a container runtime store over 20 GiB,
 release-retirement attention, and unreported break-glass notes. A new page fingerprint posts immediately; a persisting page repeats
 hourly. The webhook must reach a person, not merely accept a request.
 
+Provider funding in the capacity report is Vast only. RunPod is retired
+(2026-11-05): it has no balance to read and no lane can allocate it; see section
+2a of [`beta-operations.md`](beta-operations.md).
+
 The scene-intake HTTP route accepts a signed intent even if launch preparation
 is short of space and returns `capacity.state=queued_for_capacity`. Execution
 still waits at the whole-chain admission gate. `capacity_wait` records the

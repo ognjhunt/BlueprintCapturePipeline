@@ -380,3 +380,34 @@ def test_signed_pipeline_intake_only_stages_the_release_request_before_worker_di
     assert calls == [[
         "systemctl", "start", "--no-block", "blueprint-task-evaluation-terminal-resource-release.service",
     ]]
+
+
+def test_provider_zero_accepts_a_retired_keyless_runpod_but_nothing_less() -> None:
+    """RunPod is retired (2026-11-05). After its key is deleted the guard records it as
+    retired and not required; the release then needs Vast and DigitalOcean only. Any
+    other missing or failed RunPod row still refuses."""
+
+    from blueprint_pipeline.spend_admission_lock import retired_provider_inventory_row
+
+    def report(runpod_row):
+        rows = [row for row in (runpod_row,) if row is not None] + [
+            {"provider": provider, "status": "succeeded", "row_count": 0, "required": True}
+            for provider in ("vast", "digitalocean")
+        ]
+        required = sorted(row["provider"] for row in rows if row.get("required") is True)
+        return {
+            "schema_version": "gpu_spend_guard.v1", "provider_zero_verified": True,
+            "live_instance_count": 0, "total_burn_per_hour_usd": 0.0, "inventory_results": rows,
+            "provider_zero": {"status": "verified", "required_provider_ids": required,
+                              "global_live_instance_count": 0,
+                              "global_total_burn_per_hour_usd": 0.0, "blockers": []},
+        }
+
+    verified = release_module._provider_zero_report_verified
+    assert verified(report(retired_provider_inventory_row("runpod"))) is True
+    assert verified(report({"provider": "runpod", "status": "succeeded", "row_count": 0,
+                            "required": True})) is True
+    assert verified(report(None)) is False
+    assert verified(report({**retired_provider_inventory_row("runpod"), "credential_present": True})) is False
+    assert verified(report({"provider": "runpod", "status": "succeeded", "row_count": 1,
+                            "required": True})) is False

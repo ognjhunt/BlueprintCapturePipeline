@@ -14,6 +14,10 @@ from .common import write_json
 
 REQUIRED_PROVIDERS = ("runpod", "vast", "digitalocean")
 SCHEMA_VERSION = "gpu_spend_guard.v1"
+#: RunPod is retired (2026-11-05). With no RunPod key it is recorded as retired
+#: and leaves the required scope, exactly as the spend guard records it; with a
+#: key it is queried and required as before.
+RETIRED_CREDENTIAL_ABSENT = "retired_credential_absent"
 
 
 def build_provider_zero_receipt(
@@ -31,8 +35,17 @@ def build_provider_zero_receipt(
     inventory_results: list[dict[str, Any]] = []
     instances: list[dict[str, Any]] = []
     blockers: list[str] = []
+    from .spend_admission_lock import RETIRED_PROVIDERS, retired_provider_inventory_row
+
+    required_provider_ids: list[str] = []
     for provider in REQUIRED_PROVIDERS:
         observed = dict(inventories.get(provider) or {})
+        if provider in RETIRED_PROVIDERS and observed == {
+            "provider": provider, "status": RETIRED_CREDENTIAL_ABSENT,
+        }:
+            inventory_results.append(retired_provider_inventory_row(provider))
+            continue
+        required_provider_ids.append(provider)
         resources = observed.get("resources")
         api_confirmed = observed.get("api_confirmed") is True
         source_blockers = [
@@ -97,7 +110,7 @@ def build_provider_zero_receipt(
         "provider_zero_verified": not blockers,
         "provider_zero": {
             "status": "verified" if not blockers else "blocked",
-            "required_provider_ids": list(REQUIRED_PROVIDERS),
+            "required_provider_ids": required_provider_ids,
             "global_live_instance_count": len(instances),
             "global_total_burn_per_hour_usd": 0.0 if not instances else None,
             "blockers": sorted(set(blockers)),
@@ -118,11 +131,15 @@ def collect_provider_zero_receipt() -> dict[str, Any]:
     """Query the supported provider APIs without performing any mutation."""
 
     from .gpu_render_providers import get_render_provider
+    from .spend_admission_lock import RETIRED_PROVIDERS
 
-    inventories = {
-        provider: get_render_provider(provider).billable_inventory(name_prefix="")
-        for provider in REQUIRED_PROVIDERS
-    }
+    inventories = {}
+    for provider in REQUIRED_PROVIDERS:
+        adapter = get_render_provider(provider)
+        if provider in RETIRED_PROVIDERS and adapter.available().get("available") is not True:
+            inventories[provider] = {"provider": provider, "status": RETIRED_CREDENTIAL_ABSENT}
+        else:
+            inventories[provider] = adapter.billable_inventory(name_prefix="")
     return build_provider_zero_receipt(inventories)
 
 

@@ -20,6 +20,8 @@ from blueprint_pipeline.groot_oscar_runpod_carrier_volume import (
     RUNTIME_SOURCE_RELEASE_VERIFICATION_SCHEMA_VERSION,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_runpod_mechanics")  # RunPod retired 2026-11-05; see conftest
+
 
 RELEASE_REF = "docker.io/blueprint/release@sha256:" + "1" * 64
 CARRIER_REF = PERSISTENT_CARRIER_IMAGE_REF

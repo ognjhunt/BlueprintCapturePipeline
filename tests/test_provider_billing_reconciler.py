@@ -11,6 +11,7 @@ from botocore.credentials import Credentials
 
 from blueprint_pipeline.provider_billing_reconciler import (
     AWS_BILLING_UNAVAILABLE_REASON,
+    RUNPOD_BILLING_RETIRED_REASON,
     ProviderBillingReconciliationError,
     reconcile_provider_billing,
 )
@@ -52,13 +53,7 @@ class _Transport:
         parsed = urlsplit(request.full_url)
         query = parse_qs(parsed.query)
         if parsed.netloc == "rest.runpod.io":
-            resource = parsed.path.rsplit("/", 1)[-1]
-            rows = {
-                "pods": [{"amount": 3.25}],
-                "endpoints": [],
-                "networkvolumes": [{"amount": 0.5, "highPerformanceStorageAmount": 0.25}],
-            }[resource]
-            return json.dumps(rows).encode()
+            raise AssertionError("retired RunPod billing request forbidden")
         if parsed.netloc == "console.vast.ai":
             if "after_token" not in query:
                 payload = {
@@ -121,7 +116,6 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
 
     assert result["status"] == "reconciled"
     assert result["provider_totals_usd"] == {
-        "runpod": 4.0,
         "vast": 5.5,
         "digitalocean": 8.0,
     }
@@ -136,7 +130,7 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
     }
     source = json.loads(Path(result["source_receipt_path"]).read_text())
     assert source["status"] == "reconciled"
-    assert len(source["sources"]) == 7
+    assert len(source["sources"]) == 4
     assert all(Path(row["retained_path"]).is_file() for row in source["sources"])
     assert all(row["response_digest"].startswith("sha256:") for row in source["sources"])
     assert all(
@@ -191,7 +185,8 @@ def test_existing_digest_object_with_wrong_bytes_blocks_reconciliation(
 ) -> None:
     audit_root = tmp_path / "audit"
     audit_root.mkdir(mode=0o700)
-    payload = json.dumps([{"amount": 3.25}]).encode()
+    # The first Vast charges page, which every run requests.
+    payload = json.dumps({"success": True, "results": [{"amount": 4.0}], "next_token": "page-two"}).encode()
     hexadecimal = hashlib.sha256(payload).hexdigest()
     object_parent = audit_root / "objects" / "sha256" / hexadecimal[:2]
     object_parent.mkdir(parents=True, mode=0o700)
@@ -322,10 +317,11 @@ def test_automatic_aws_billing_removed_without_starving_other_providers(tmp_path
         **_aws_kwargs(secrets),
     )
     assert result["status"] == "reconciled"
-    assert result["covered_provider_ids"] == ["digitalocean", "runpod", "vast"]
-    assert result["uncovered_provider_ids"] == ["aws", "gcp"]
+    assert result["covered_provider_ids"] == ["digitalocean", "vast"]
+    assert result["uncovered_provider_ids"] == ["aws", "gcp", "runpod"]
     assert result["optional_provider_failures"] == {
         "aws": AWS_BILLING_UNAVAILABLE_REASON, "gcp": "gcp_billing_report_unconfigured",
+        "runpod": RUNPOD_BILLING_RETIRED_REASON,
     }
     assert "aws" not in json.loads(export.read_text())["provider_totals_usd"]
     assert not any("amazonaws.com" in url for url, _header in transport.requests)
@@ -382,12 +378,13 @@ def test_optional_digitalocean_failure_does_not_block_vast_export(
     )
 
     assert result["status"] == "reconciled"
-    assert result["covered_provider_ids"] == ["runpod", "vast"]
-    assert result["uncovered_provider_ids"] == ["aws", "digitalocean", "gcp"]
+    assert result["covered_provider_ids"] == ["vast"]
+    assert result["uncovered_provider_ids"] == ["aws", "digitalocean", "gcp", "runpod"]
     assert result["optional_provider_failures"] == {
         "digitalocean": "provider_billing_request_failed",
         "aws": AWS_BILLING_UNAVAILABLE_REASON,
         "gcp": "gcp_billing_report_unconfigured",
+        "runpod": RUNPOD_BILLING_RETIRED_REASON,
     }
     assert "vast" in json.loads(export.read_text())["provider_totals_usd"]
 
@@ -555,3 +552,41 @@ def test_observer_receives_the_same_expanded_audit_root_as_journal(tmp_path, mon
     result = reconcile_provider_billing(secrets_dir=_secrets(tmp_path), billing_export_path=tmp_path / "billing.json", audit_root="~/billing-audit", start_at="2026-01-01T00:00:00Z", now=NOW, transport=_Transport())
     assert result["status"] == "reconciled"
     assert observed == [audit.resolve()]
+
+
+def test_retired_runpod_billing_is_never_requested_even_with_its_key(tmp_path: Path) -> None:
+    """RunPod is retired (2026-11-05): its billing call failed on every request and no
+    lane can allocate it, so it is not requested, whether or not its key exists."""
+
+    for keep_key in (True, False):
+        root = tmp_path / ("with-key" if keep_key else "without-key")
+        root.mkdir()
+        secrets = _secrets(root)
+        if not keep_key:
+            (secrets / "runpod_api_key").unlink()
+        transport = _Transport()
+        result = reconcile_provider_billing(
+            secrets_dir=secrets, billing_export_path=root / "export.json", audit_root=root / "audit",
+            start_at="2026-01-01T00:00:00Z", now=NOW, transport=transport, **_aws_kwargs(secrets),
+        )
+        assert result["status"] == "reconciled"
+        assert not any("runpod" in url for url, _header in transport.requests)
+        assert "runpod" not in result["provider_totals_usd"]
+        assert result["optional_provider_failures"]["runpod"] == RUNPOD_BILLING_RETIRED_REASON
+        receipt = json.loads(Path(result["source_receipt_path"]).read_text())
+        assert all(row["provider"] != "runpod" for row in receipt["sources"])
+
+
+def test_required_runpod_billing_fails_without_requests_or_replacing_prior_export(tmp_path: Path) -> None:
+    secrets = _secrets(tmp_path)
+    export = tmp_path / "provider_billing_export.json"
+    export.write_text("sentinel\n", encoding="utf-8")
+    transport = _Transport()
+    with pytest.raises(ProviderBillingReconciliationError, match=RUNPOD_BILLING_RETIRED_REASON):
+        reconcile_provider_billing(
+            secrets_dir=secrets, billing_export_path=export, audit_root=tmp_path / "audit",
+            start_at="2026-01-01T00:00:00Z", now=NOW, transport=transport,
+            required_providers=("runpod",), **_aws_kwargs(secrets),
+        )
+    assert transport.requests == []
+    assert export.read_text(encoding="utf-8") == "sentinel\n"

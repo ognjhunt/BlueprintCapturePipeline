@@ -38,6 +38,8 @@ from .task_evaluation_terminal_resource_release_contract import (  # noqa: F401
 _TERMINAL_STATUSES = frozenset(
     {"stopped", "exited", "failed", "destroyed", "deleted", "inactive", "completed"}
 )
+#: Asked of the spend guard. RunPod is retired: the guard drops it from the
+#: required scope only when no RunPod key exists (``retired_provider_absent``).
 _REQUIRED_PROVIDERS = ("runpod", "vast", "digitalocean")
 
 
@@ -125,11 +127,14 @@ def _provider_zero_report_verified(report: Mapping[str, Any]) -> bool:
         for row in rows
         if isinstance(row, Mapping)
     }
+    from .spend_admission_lock import provider_zero_required_ids
+
+    required_providers = provider_zero_required_ids(rows, _REQUIRED_PROVIDERS)
     required_rows = [
         row
         for row in rows
         if isinstance(row, Mapping)
-        and _string(row.get("provider")) in _REQUIRED_PROVIDERS
+        and _string(row.get("provider")) in required_providers
     ]
     return bool(
         report.get("schema_version") == "gpu_spend_guard.v1"
@@ -137,8 +142,8 @@ def _provider_zero_report_verified(report: Mapping[str, Any]) -> bool:
         and report.get("live_instance_count") == 0
         and report.get("total_burn_per_hour_usd") in (0, 0.0)
         and provider_zero.get("status") == "verified"
-        and set(required_ids) == set(_REQUIRED_PROVIDERS)
-        and len(required_rows) == len(_REQUIRED_PROVIDERS)
+        and set(required_ids) == required_providers
+        and len(required_rows) == len(required_providers)
         and provider_zero.get("global_live_instance_count") == 0
         and provider_zero.get("global_total_burn_per_hour_usd") in (0, 0.0)
         and provider_zero.get("blockers") == []
@@ -147,7 +152,7 @@ def _provider_zero_report_verified(report: Mapping[str, Any]) -> bool:
             and inventory.get("status") == "succeeded"
             and inventory.get("row_count") == 0
             and inventory.get("required") is True
-            for provider in _REQUIRED_PROVIDERS
+            for provider in required_providers
         )
     )
 

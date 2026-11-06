@@ -41,6 +41,48 @@ def test_transport_diagnostics_never_include_secret():
     assert "test-secret" not in json.dumps(row)
 
 
+@pytest.mark.parametrize("credit_usd, status", [(3.0, "admitted"), (2.99, "blocked")])
+def test_unset_guard_decides_exactly_as_the_unit_enabled_guard(monkeypatch, credit_usd, status):
+    """P-D01: a unit that never sets the flag gets the same funding decision as the
+    eleven allocator units that set it to true."""
+
+    observe = credit.observe_vast_credit
+    monkeypatch.setattr(credit, "observe_vast_credit", lambda **_kw: observe(
+        api_key="k", request=lambda **kw: (200, {"credit": credit_usd})))
+
+    def decide(setting):
+        if setting is None:
+            monkeypatch.delenv(credit.ENABLED_ENV, raising=False)
+        else:
+            monkeypatch.setenv(credit.ENABLED_ENV, setting)
+        return credit.configured_vast_credit_admission(api_key="k", required_usd=2)
+
+    unset, empty, enabled = decide(None), decide(""), decide("true")
+    monkeypatch.delenv(credit.ENABLED_ENV)
+    for result in (unset, empty, enabled):
+        assert result["status"] == status
+        assert result["blockers"] == ([] if status == "admitted" else ["provider_credit_insufficient"])
+    assert credit.credit_guard_setting() == "enabled"
+
+
+def test_only_an_explicit_false_or_zero_turns_the_guard_off(monkeypatch):
+    monkeypatch.setattr(credit, "observe_vast_credit",
+                        lambda **_kw: pytest.fail("an opted-out guard read the balance"))
+    for value in ("false", "0", " FALSE "):
+        monkeypatch.setenv(credit.ENABLED_ENV, value)
+        assert credit.credit_guard_setting() == "disabled"
+        assert credit.configured_vast_credit_admission(api_key="k", required_usd=2) == {
+            "status": "not_configured", "blockers": []}
+    for value in ("true", "1", "", "  "):
+        monkeypatch.setenv(credit.ENABLED_ENV, value)
+        assert credit.credit_guard_setting() == "enabled"
+    monkeypatch.delenv(credit.ENABLED_ENV)
+    assert credit.credit_guard_setting() == "enabled"
+    for value in ("typo", "no", "off"):
+        monkeypatch.setenv(credit.ENABLED_ENV, value)
+        assert credit.credit_guard_setting() == "invalid"
+
+
 def test_production_guard_is_fail_closed_on_bad_config(monkeypatch):
     monkeypatch.setenv(credit.ENABLED_ENV, "typo")
     assert credit.configured_vast_credit_admission(api_key="k", required_usd=2)["status"] == "blocked"

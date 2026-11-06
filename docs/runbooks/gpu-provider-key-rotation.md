@@ -10,10 +10,22 @@ Covered provider credentials:
 
 | Provider | Default local key file | File env override | Inline env accepted by adapters |
 | --- | --- | --- | --- |
-| RunPod | `~/.blueprint-secrets/runpod_api_key` | `RUNPOD_API_KEY_FILE` | `RUNPOD_API_KEY` |
+| RunPod (retired) | `~/.blueprint-secrets/runpod_api_key` | `RUNPOD_API_KEY_FILE` | `RUNPOD_API_KEY` |
 | Vast.ai | `~/.blueprint-secrets/vast_api_key` | `VAST_API_KEY_FILE` | `VAST_API_KEY` |
 | Lambda Cloud | `~/.blueprint-secrets/lambda_api_key` | `LAMBDA_API_KEY_FILE` | `LAMBDA_API_KEY` |
 | DigitalOcean | `~/.blueprint-secrets/digitalocean_api_token` | `DIGITALOCEAN_TOKEN_FILE`, `DIGITALOCEAN_API_TOKEN_FILE` | `DIGITALOCEAN_ACCESS_TOKEN`, `DIGITALOCEAN_API_TOKEN` |
+
+RunPod is retired (owner decision, 2026-11-05). No lane can allocate it: the
+canonical allocator, the shared paid admission and the RunPod render launcher
+refuse with `runpod_provider_retired`, and the billing reconciler no longer
+requests RunPod billing. The only reader left is the GPU spend guard, which
+still lists RunPod pods (a free read) and reaps an orphan while a RunPod key
+exists. Do not rotate the RunPod key. The owner step is: close the RunPod
+account, then delete the key file (`runpod_api_key` in the provider secrets
+directory, `BLUEPRINT_GPU_PROVIDER_SECRETS_DIR` on the host, and the file
+`RUNPOD_API_KEY_FILE` names where an env file sets it). With no key the guard
+records RunPod as retired and not required, so nothing fails closed. A RunPod
+row in this manifest then reports a missing key; that is expected.
 
 The manifest helper checks local configuration and the rotation ledger only. A
 passing manifest proves that local key material is present and has fresh

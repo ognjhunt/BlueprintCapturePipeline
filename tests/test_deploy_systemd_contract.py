@@ -1199,9 +1199,10 @@ def test_website_capture_worker_loads_deployed_geometry_runtime(monkeypatch):
 
 
 def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read_credit():
-    """The per-attempt credit guard and the hourly credit alert are opt-in in code
-    (BLUEPRINT_VAST_CREDIT_GUARD_ENABLED); production turns them on in the unit files
-    that reach the Vast adapter, and the chain preflight refuses a paid unit without it."""
+    """The per-attempt credit guard and the hourly credit alert are on by default in code
+    (BLUEPRINT_VAST_CREDIT_GUARD_ENABLED; only false/0 opts out). The unit files that
+    reach the Vast adapter still set it explicitly, and the chain preflight refuses a
+    paid unit without it, so an opt-out is always visible."""
 
     from blueprint_pipeline.task_evaluation_production_chain_preflight import PAID_ALLOCATION_UNITS
 

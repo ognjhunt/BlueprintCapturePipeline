@@ -13,6 +13,12 @@ on every start. Provider APIs commonly return identical cumulative response byte
 historically each refresh wrote another full copy under
 `gpu_spend_guard/billing-audit/<timestamp>/`.
 
+RunPod billing is no longer requested (RunPod retired, 2026-11-05). New source
+receipts list `runpod` under `uncovered_provider_ids`, with
+`optional_provider_failures.runpod = runpod_billing_retired_provider_not_collected`,
+the same way AWS is recorded. Retained RunPod responses stay where they are and
+stay readable; this procedure treats them like any other retained response.
+
 The reconciler now keeps the evidence contract unchanged:
 
 - every `blueprint.provider_billing_source_receipt.v1` remains immutable;

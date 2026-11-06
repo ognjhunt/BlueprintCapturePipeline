@@ -493,6 +493,7 @@ def _ready_runpod_request(path: Path) -> Path:
     return path
 
 
+@pytest.mark.usefixtures("legacy_runpod_mechanics")
 def test_provider_adapters_log_blocked_completed_and_redacted_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

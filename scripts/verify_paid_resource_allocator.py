@@ -31,6 +31,14 @@ LEGACY_BUILD_SCRIPTS = (
 )
 RELEASE_WORKFLOW = ROOT / ".github/workflows/groot-oscar-thin-release.yml"
 MUTATION_SURFACE_MANIFEST = ROOT / "docs/architecture/paid-resource-mutation-surfaces.json"
+SHARED_ADMISSION = ROOT / "src/blueprint_pipeline/paid_resource_admission.py"
+#: RunPod is retired (owner decision 2026-11-05): every shared admission entry that
+#: can open paid work must apply the RunPod refusal.
+RUNPOD_RETIREMENT_ADMISSION_ENTRIES = (
+    "require_paid_resource_budget",
+    "require_paid_resource_admission",
+    "build_paid_lane_admission",
+)
 AGENTS = ROOT / "AGENTS.md"
 REMOTE_CPU_ALLOCATOR = ROOT / "src/blueprint_pipeline/remote_cpu_job_allocator.py"
 CLOUD_RUN_JOBS_CLIENT = ROOT / "src/blueprint_pipeline/cloud_run_jobs_client.py"
@@ -627,10 +635,24 @@ def _verify_mutation_surface_contract() -> list[str]:
     return blockers
 
 
+def _runpod_retirement_blockers(path: Path = SHARED_ADMISSION) -> list[str]:
+    """The shared admission keeps RunPod retired at every entry that can open paid work."""
+
+    source = path.read_text(encoding="utf-8")
+    calls = _function_calls(path)
+    if "RUNPOD_PROVIDER_RETIRED = True" not in source or any(
+        "runpod_retirement_blockers" not in calls.get(entry, set())
+        for entry in RUNPOD_RETIREMENT_ADMISSION_ENTRIES
+    ):
+        return ["runpod_retirement_admission_refusal_missing"]
+    return []
+
+
 def verify() -> list[str]:
     blockers: list[str] = [
         *_verify_mutation_surface_contract(),
         *_verify_operator_docs(),
+        *_runpod_retirement_blockers(),
     ]
     canonical = CANONICAL.read_text(encoding="utf-8")
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
@@ -646,6 +668,8 @@ def verify() -> list[str]:
 
     if "run_builder(" not in canonical or "run_canary(" not in canonical:
         blockers.append("canonical_allocator_missing_adapter_route")
+    if "runpod_allocator_request_blockers(args)" not in canonical:
+        blockers.append("canonical_allocator_runpod_retirement_refusal_missing")
     if "legacy_cpu_builder_launcher_disabled" not in cpu:
         blockers.append("legacy_cpu_builder_not_hard_disabled")
     if "legacy_gpu_canary_launcher_disabled" not in gpu:
