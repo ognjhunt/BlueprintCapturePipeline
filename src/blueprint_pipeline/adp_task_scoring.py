@@ -1314,8 +1314,22 @@ def score_rigid_task_episode(
 def score_task_episode_from_spec(
     *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
-    """Dispatch a frozen task spec without scene- or object-name conditionals."""
+    """Dispatch a frozen task spec without scene- or object-name conditionals.
 
+    A spec that carries compiled success predicates (``task_spec_compiler``) is scored
+    by the one predicate scorer, whatever its kind; the kinds below are the specs
+    compiled before predicates existed.
+    """
+
+    predicates = task_spec.get("success_predicates")
+    if isinstance(predicates, Mapping):
+        from .task_predicates import TaskPredicateError, score_episode
+        try:
+            report = score_episode(predicates=predicates, samples=samples,
+                                   behaviour_context=task_spec.get("behaviour_context"))
+        except TaskPredicateError as exc:
+            raise TaskNeutralScoringError([str(exc)]) from exc
+        return {**report, "task_succeeded": report["outcome"] == "success"}
     kind = task_spec.get("task_kind")
     if kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
         return score_articulated_task_episode(task_spec=task_spec, samples=samples)

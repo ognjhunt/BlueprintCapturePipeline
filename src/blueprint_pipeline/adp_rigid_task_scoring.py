@@ -1126,9 +1126,24 @@ def score_rigid_task_episode(
             "native_safety_readback_complete": safety_complete,
             "native_safety_ok": safety_ok,
         },
+        # What the robot did, from the same samples: every real gripper close (width below
+        # 0.04 m), where it happened and how near the subject's box, and the closest approach.
+        # ``measurements.gripper_closed`` reads only the settle window of a must-end-closed task.
+        "behaviour": _behaviour(spec, samples),
         "learned_judge_consulted": False,
         "candidate_policy_queried_by_scorer": False,
         "report_digest": "",
     }
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
+
+
+def _behaviour(spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    from .task_predicates import episode_behaviour
+
+    bounds = spec.get("subject_collision_bounds_scoring_frame_m")
+    context = ({"subject_bounds_local_m": bounds, "subject_pose_field": "task_scoring_pose_world"}
+               if isinstance(bounds, Mapping) and all(
+                   isinstance(sample, Mapping) and sample.get("task_scoring_pose_world") is not None
+                   for sample in samples) else {})
+    return episode_behaviour(samples=samples, context=context)

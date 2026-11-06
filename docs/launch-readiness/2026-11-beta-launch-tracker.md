@@ -7,7 +7,34 @@ Status: **done** (verified, with evidence) · **in progress** · **owner** (wait
 on an owner decision or action) · **next deploy** (merged, ships with the next
 batched Pipeline deploy) · **not started**.
 
-Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
+Last updated: 2026-11-06 15:00Z (library-aisle run section). Earlier header as of 2026-11-03 14:49Z: Pipeline live: `333b1f74a` (11-03 14:29Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
+
+## Library-aisle navigation run (2026-11-06)
+
+The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.
+
+- **Clip and rights.** Pexels 854533, "Video Inside A Library", uploaded by Pixabay and dated 2016-10-30.
+  - The 4K rendition measured 49,023,833 bytes, sha256 `3f1c177f586ca2b7b29a4c7e1e7bfca52afe159e4aac270408dd5c405c76e1c0`, 17.49 s, 3840×2160, 25 fps, 437 frames.
+  - The page's license line reads "License: Free", linked to Pexels' Creative Commons page. It does not print "CC0".
+  - Pexels terms §4 say CC0 items are marked "CC0" on the page, and §5 says other items are marked "Pexels License"; this page shows neither marker.
+  - Terms §8 forbid data extraction "for all unauthorised purposes, including … machine learning".
+  - The owner approved the clip with that evidence. The owner also believes capture-447's clip came from Pexels; if it was under the standard Pexels License, the same §8 question applies to it. Noted, not acted on.
+- **Money, owner approval before 14:44Z ("yes i approve everything").** Hard ceiling $115, expected $15–35:
+  - Atlas $40. The job's automatic grant is $25 / 32 requests.
+  - Upstream $5.
+  - Scene $40. Intake set $20; it is raised only when a stage needs it.
+  - Preparation attempts 16 → 32, one-shot. Applied at 14:53Z, amendment `sha256:99ab7973…`.
+  - Screening $30, the existing site limit.
+  - Cloud Run $0.
+  - A $30 Vast top-up is the owner's action and is still pending; credit is $7.07 against the $11 floor.
+  - Standing approvals reconfirmed: merge when CI is green, deploy within D-08, GPU screening runs up to $4 each, site limit $30.
+- **Intake.** Public site, ops email, 14:44–14:51:48Z. Request `capture-5b067498-c8b3-4549-9da9-ded4c391db1f`, capture `walkthrough-capture-5b067498…`, state `processing_ready`, eligibility `unscreened`. The Atlas preview was queued at 14:44:36Z.
+  - The site country was entered as "United States". The clip's real filming location is unknown; the form requires a country.
+- **Expected stop on today's code.** From reading the code, not from a run: the job buys the Atlas planner review, then holds with `website_task_operation_coverage_unresolved` before any World Labs purchase (`website_early_task_hold.hold_after_review`). The hold keeps the job, and a later deploy reopens it without buying the review again.
+- **Bandit triage (owner).** Review packet: [`2026-11-06-bandit-triage-review.md`](2026-11-06-bandit-triage-review.md).
+  - Verdicts across the 96 entries: 77 keep, 18 tighten, 1 fix now (`wam_compute_providers.py` `_deepinfra_download_file`), 0 orphaned, 0 new MEDIUM or HIGH.
+  - The latest allowed expiry for an entry signed today is 2027-02-04.
+  - Nothing in `docs/bandit_triage.json` is changed until the owner signs off.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
@@ -53,9 +80,10 @@ Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door
 - pi0_droid_jointpos_100k_polaris launched at 10:23:01Z ($4 cap, attempt `screen-f7511ceb…`), seven minutes after the Atlas row expired. **owner**: it started after the cutoff the owner set, and this session could not stop it. It is the last run the $30 site limit admits: after it settles, $4 more would exceed $30, so pi0_droid_jointpos_polaris and pi0_fast_droid_jointpos_polaris stay waitlisted.
 - That first attempt found no GPU offer and closed at 10:32Z with no machine ($0). The second (`screen-ace7e697…`) launched at 10:39Z and ran all ten episodes on one Vast GPU, torn down at 12:36Z. It settled at 12:58Z: 10 scored, 0 succeeded ($1.37). In all ten episodes the tray never moved and had no robot contact. The gripper closed away from the tray, a median 27 cm from it. The flags are molmoact2's. 60 review videos were retained.
 - capture-447's screening is finished. The website acknowledged the final publication (`screening-f3d50fae…`, revision 18) at 12:57Z, and its outcome is `estimate`: molmoact2 and pi0_droid_jointpos_100k_polaris each scored 0 of 10, likely between 0% and 28% (Wilson 95%). pi05 (0 of 9, 0–30%) and groot (0 of 10) were scored in the earlier run on the same fixed gripper. cosmos3 has no score: it hit 8 harness failures on `policy_load`, at `cosmos_droid_client_dependencies.py:57`. Across the 39 counted episodes the tray moved in one: groot pushed it 0.18 m without a grasp (`moved_below_success_contract`). pi0_droid_jointpos_polaris and pi0_fast_droid_jointpos_polaris are deferred with `beta_screening_site_budget_exhausted`. Site spend is $26.63 of $30 with nothing reserved, and the $3.37 left is less than one $4 run, so nothing else starts at this site.
+- #3416 (merged 13:54Z, not deployed) fixes the cosmos3 `policy_load` check. Isaac Kit's fast importer resolved Kit's own older websockets ahead of `sys.path`, so the pinned 16.0 client lost inside the Kit worker; the same install passed in the bare `python.sh` provisioning process. A finder at `sys.meta_path[0]` is now the only source of the pinned names, for Cosmos and OpenWAM. cosmos3 is out of retries at capture-447, so a re-screen there is an owner money decision.
+- `a5b47bd11` (06 15:00:59Z request, the 15:00Z window, this session): **blocked** at 15:08:34Z, `deploy_scene_retirement_runtime_unproven` (`ci_finished_without_attestation`). Nothing was paused (`provider_mutation_performed: false`); `9dd4e0dc4` stays live. Before it, nothing held a paid-launch lock, no activation hold was set, nothing was launching or running, and no other deploy was pending. It would have carried #3407, #3409–#3418, and #3411 and #3416 among them. main's CI for `3d1cd4dd2` and `a5b47bd11` fails only the Bandit gate (its "Scan and enforce expiring triage" step), so the provenance job that attests is skipped. On `3d1cd4dd2` that gate lists 36 blockers, all `triage_expired` (high 0, medium 96), and no new finding; the 36 expired entries are B108 ×18, B103 ×11, B102 ×4, B104 ×2 and B608 ×1. `9dd4e0dc4` is still the newest attested commit, so `--latest-attested` has nothing newer to ship.
 - Open after capture-447:
-  - **owner**: Bandit triage re-review. Until it is done, no main commit gets an attestation, so #3411 cannot deploy.
-  - The cosmos3 `policy_load` precedence check.
+  - **owner**: Bandit triage re-review: the 36 entries in `docs/bandit_triage.json` that expired 11-05 (60 more expire 11-12), listed for review in [`../audits/2026-11-06-bandit-triage-expired.md`](../audits/2026-11-06-bandit-triage-expired.md). Until it is done, no main commit gets an attestation, so #3411 and #3416 cannot deploy.
 - Wrist-camera study (11-06, from the 39 counted episodes; JSON read through the door only). The wrist camera is not the main reason the policies fail:
   - **At reset**:
     - The robot base sits at table height with the tray centre 0.92 m straight ahead; the home grasp point is 0.36 m ahead and 0.34 m up.
