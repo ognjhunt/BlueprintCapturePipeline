@@ -487,7 +487,7 @@ def _retain(plan, candidate, prepared, adapter, attempt_dir, capture_root, disk_
     from .provider_output_range_ingestion import FLOOR_BYTES
 
     if capture_root is None:
-        from .team_scene_packet_worker import resolve_capture_root
+        from .team_scene_capture_root import resolve_capture_root
         capture_root = resolve_capture_root(plan["source"])  # refuses a withdrawn capture
     capture_root = Path(capture_root)
     lane_root = Path(str(adapter.get("attempt_root") or ""))
