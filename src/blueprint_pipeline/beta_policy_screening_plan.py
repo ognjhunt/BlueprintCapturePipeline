@@ -167,7 +167,9 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
     required = {"schema_version", "candidate_id", "policy_execution_spec", "checkpoint_inventory",
                 "configuration_digest", "runtime_digest", "backend", "max_hourly_rate_usd",
                 "hard_ttl_seconds", "implementation_commit", "task_success_contract_digest"}
-    if (set(result) - required - {"machine_avoidlist_path", "credential_file", "team_robot_model", "minimum_gpu_memory_gb"} - _HOSTED_COST_FIELDS
+    optional = {"machine_avoidlist_path", "credential_file", "team_robot_model", "minimum_gpu_memory_gb",
+                "setup_quality_flags"}
+    if (set(result) - required - optional - _HOSTED_COST_FIELDS
             or required - set(result)
             or result["schema_version"] != EXECUTION_SCHEMA_VERSION
             or result["backend"] not in {"robolab.v1", FAMILY_BACKEND, G1_BACKEND}
@@ -181,6 +183,11 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
         _receipt(result["checkpoint_inventory"])
     if "team_robot_model" in result:
         _receipt(result["team_robot_model"])
+    # Typed setup flags that travel with a funded row (``beta_policy_screening_g1.setup_quality_flags``).
+    flags = result.get("setup_quality_flags", ["absent"])
+    if (not isinstance(flags, list) or not flags or flags != sorted(set(flags))
+            or not all(isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code) for code in flags)):
+        raise BetaPolicyScreeningPlanError("beta_screening_setup_quality_flags_invalid")
     if "minimum_gpu_memory_gb" in result:
         memory = result["minimum_gpu_memory_gb"]
         if type(memory) not in (int, float) or not 0 < memory <= 1024:

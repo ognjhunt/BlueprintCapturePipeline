@@ -2,6 +2,9 @@
 
 This is CPU preparation from retained scene geometry. Stance and camera setup
 are disclosed simulation assumptions, not capture measurements or task success.
+The whole body at the chosen stance is measured against the room on CPU
+(``native_g1_spawn_clearance``), a clearing stance replaces one that overlaps,
+and the report is kept beside the packet for planning to read.
 No model, network, simulator, allocation or human-review action occurs here.
 """
 from __future__ import annotations
@@ -148,9 +151,40 @@ def g1_stance_search(*, collision_path: Path, collision_sha256: str, offset: lis
     return stances, chosen, stance_reach
 
 
+def g1_spawn_stance(stances: list[dict[str, Any]], chosen: int, stance_reach: dict[str, Any], *,
+                    robot_asset: Path, joint_reset_positions: Mapping[str, float], collision_path: Path,
+                    offset: list[float], start: Any, target: Any) -> tuple[int, dict[str, Any], dict[str, Any]]:
+    """The searched stance whose whole body starts clear of the room (``native_g1_spawn_clearance``).
+
+    The reach-chosen one unless its body overlaps the scene collision; then the first other stance that
+    clears, those in nominal arm span first, each in the search's order; with none, the chosen one and
+    its overlap. Returns the stance index, its reach record and the measurement.
+    """
+    from .native_g1_scene_reach_probe import g1_stance_static_reach
+    from .native_g1_spawn_clearance import choose_spawn_stance
+
+    reach: dict[int, dict[str, Any] | None] = {}
+
+    def reach_at(index: int) -> dict[str, Any] | None:
+        if index not in reach:
+            try:
+                _, record = g1_stance_static_reach([stances[index]], start=start, target=target, task_hand=TASK_HAND)
+                reach[index] = {**record, "clear_stances_measured": len(stances), "chosen_rank": index}
+            except (KeyError, TypeError, ValueError):
+                reach[index] = None
+        return reach[index]
+
+    order = sorted((index for index in range(len(stances)) if index != chosen),
+                   key=lambda index: not (reach_at(index) or {}).get("within_nominal_arm_span"))
+    used, clearance = choose_spawn_stance(robot_usd=robot_asset, joint_reset_positions=joint_reset_positions,
+        stances=stances, chosen=chosen, fallback_order=order, background_usd=collision_path,
+        background_pose_world={"position_world_m": offset, "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]})
+    return used, (stance_reach if used == chosen else reach_at(used) or stance_reach), clearance
+
+
 def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: Path,
              evidence_root: Path, source: Mapping[str, Any], site_id: str,
-             task_success_contract: Mapping[str, Any]) -> tuple[dict, dict]:
+             task_success_contract: Mapping[str, Any]) -> tuple[dict, dict, dict]:
     from .adp_task_scoring import validate_rigid_task_success_contract
     from .native_g1_arena_robot_configuration import build_pinned_g1_arena_robot_configuration
     from .native_task_robot_contact_topology import _asset_rigid_body_paths
@@ -183,10 +217,24 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
     stances, chosen, stance_reach = g1_stance_search(
         collision_path=collision, collision_sha256=collision_digest, offset=offset,
         start=task["start_pose_world"][:3], target=task["target_position_world_m"], bounds=bounds)
-    stance = stances[chosen]
-    pose = {"position_world_m": stance["position_world_m"], "orientation_xyzw": stance["orientation_xyzw"]}
+
+    def pose_of(stance):
+        return {"position_world_m": stance["position_world_m"], "orientation_xyzw": stance["orientation_xyzw"]}
+
     robot = build_pinned_g1_arena_robot_configuration(asset=robot_asset, evidence_root=evidence_root,
-        base_pose_world=pose, task_hand=TASK_HAND)
+        base_pose_world=pose_of(stances[chosen]), task_hand=TASK_HAND)
+    # The footprint search clears the floor only; the whole body at the reset pose is measured here.
+    used, stance_reach, clearance = g1_spawn_stance(stances, chosen, stance_reach, robot_asset=robot_asset,
+        joint_reset_positions=robot["joint_reset_positions_rad"], collision_path=collision, offset=offset,
+        start=task["start_pose_world"][:3], target=task["target_position_world_m"])
+    stance = stances[used]
+    pose = pose_of(stance)
+    if used != chosen:
+        robot = build_pinned_g1_arena_robot_configuration(asset=robot_asset, evidence_root=evidence_root,
+            base_pose_world=pose, task_hand=TASK_HAND)
+    from .native_g1_spawn_clearance import binding
+    clearance.update(binding(robot_usd_sha256=robot["usd_sha256"], scene_collision_sha256=collision_digest,
+        base_pose_world=pose, joint_reset_positions=robot["joint_reset_positions_rad"]))
     if HEAD_CAMERA["parent_prim_path"] not in _asset_rigid_body_paths(robot_asset):
         raise ValueError("g1_beta_preparation_head_body_missing")
     overview = [row for row in original.get("cameras", []) if row.get("role") == "overview"]
@@ -242,7 +290,7 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
             "source_scene_plan_digest": base_receipt["arena_scene_plan_digest"],
             "assumptions": assumptions})
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
-    return request, assumptions
+    return request, assumptions, clearance
 
 
 @read_scoped
@@ -254,6 +302,7 @@ def prepare_native_g1_beta_packet(*, base_packet_record: Mapping[str, Any], sour
     The stance search and the packet read the base packet's scene collider through one read scope: a USDA
     text room is read into a binary copy each reader opens (``usd_binary_read_cache``), not parsed per open.
     """
+    from . import native_g1_spawn_clearance as spawn
     from .native_g1_arena_robot_configuration import G1_USD_SHA256, G1_USD_SIZE_BYTES
     from .native_task_arena_bundle import verify_native_task_arena_packet
     from .native_task_arena_packet import materialize_native_task_arena_packet
@@ -283,7 +332,7 @@ def prepare_native_g1_beta_packet(*, base_packet_record: Mapping[str, Any], sour
             _preserve_incomplete(destination)
         robot_asset = evidence / "robot" / robot_source.name
         _copy(robot_source, robot_asset, sha256=robot_asset_record["sha256"], size_bytes=robot_asset_record["size_bytes"])
-        request, assumptions = _request(base_root=base_root, base_receipt=receipt, robot_asset=robot_asset,
+        request, assumptions, clearance = _request(base_root=base_root, base_receipt=receipt, robot_asset=robot_asset,
             evidence_root=evidence, source=source, site_id=site_id, task_success_contract=task_success_contract)
         if destination.exists():
             _, prior, _ = verify_native_task_arena_packet(destination)
@@ -293,6 +342,12 @@ def prepare_native_g1_beta_packet(*, base_packet_record: Mapping[str, Any], sour
             prior = materialize_native_task_arena_packet(request=request, evidence_root=evidence, output_dir=destination)
             verify_native_task_arena_packet(destination)
         packet = _record(destination / "native_task_arena_packet_receipt.v1.json")
+        # Beside the packet, not in its sealed request: the door's registration pins that request's assumptions.
+        # A read error is not kept: the site's next registration pass measures the packet itself.
+        spawn_path = destination / spawn.FILENAME
+        if not spawn_path.exists() and not clearance["retryable"]:
+            write_once(spawn_path, spawn.seal({**clearance, "scene_plan_digest": prior["arena_scene_plan_digest"]}))
+        spawn_report = _read(spawn_path) if spawn_path.exists() else clearance
         result = {"schema_version": SCHEMA, "status": "prepared_not_executed", "recipe_id": RECIPE,
             "source": dict(source), "site_id": site_id, "base_packet": dict(base_packet_record),
             "scene_packet": packet, "assumptions": assumptions, "scene_plan_digest": prior["arena_scene_plan_digest"],
@@ -300,7 +355,11 @@ def prepare_native_g1_beta_packet(*, base_packet_record: Mapping[str, Any], sour
                 "humanoidarena_dp_g1_dex3_sonic_vision_navi", "humanoidarena_pi05_g1_dex3_sonic_vision_navi")},
             "candidate_policy_queried": False, "simulator_executed": False, "provider_allocations_performed": 0,
             "new_human_review_claimed": False, "current_consent_revalidated": False,
-            "claim_ceiling": "development_only"}
+            "claim_ceiling": "development_only",
+            "spawn_clearance": {"status": spawn_report["status"], "max_depth_m": spawn_report["max_depth_m"],
+                "fallback_used": spawn_report["stance_selection"]["fallback_used"],
+                "report": _record(spawn_path) if spawn_path.exists() else None,
+                "disclosed_assumption": spawn.DISCLOSED_ASSUMPTION}}
         result["preparation_digest"] = canonical_digest(result, digest_field="preparation_digest")
         write_once(destination / FILENAME, result)
         return {**result, "preparation_receipt": _record(destination / FILENAME)}

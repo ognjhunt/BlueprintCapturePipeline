@@ -217,6 +217,12 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
         validate_g1_navigation_goal_authority(_read(_bound_path(records["navigation_authority"])), plan=g1)
     elif task.get("g1_navigation_goal") is not None:
         raise ValueError("g1_beta_manipulation_policy_task_mismatch")
+    # Money: no G1 run starts with its body measured inside the room, as no arm run starts from rest
+    # overlap (scene_physics_preflight.require_scene_physics_admission). Unmeasured is only a flag
+    # (setup_quality_flags).
+    from .native_g1_spawn_clearance import OVERLAP_REASON, spawn_clearance_status
+    if spawn_clearance_status(packet_root, g1["plan_digest"]) == "overlap":
+        raise ValueError(OVERLAP_REASON)
     verify_g1_publisher_source(_bound_path(records["publisher_source"]).parent)
     runtime = verify_native_task_runtime_source_packet(_bound_path(records["runtime_source"]))
     if runtime.get("runtime_profile") != "unitree_g1" or runtime.get("redistribution_permitted") is not True:
@@ -236,6 +242,14 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
     spec["runtime_identity_digest"] = canonical_digest(spec["runtime_identity"])
     spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
     return validate_execution_spec(spec, candidate_id=candidate_id)
+
+
+def setup_quality_flags(spec: Mapping[str, Any]) -> list[str]:
+    """Typed flags a funded G1 row carries into its plan descriptor and result: a spawn not measured."""
+    from .beta_policy_screening_launch import _bound_path
+    from .native_g1_spawn_clearance import UNMEASURED_REASON, spawn_clearance_status
+    packet = _bound_path(spec["native_g1"]["scene_packet"]).parent
+    return [UNMEASURED_REASON] if spawn_clearance_status(packet, spec["scene_plan_digest"]) == "unmeasured" else []
 
 
 def _sealed(value: Any, schema: str, digest_field: str) -> dict[str, Any]:
@@ -390,4 +404,7 @@ def summarize_result(value: Mapping[str, Any], *, plan: Mapping[str, Any],
         "session_result_digest": result["result_digest"], "episode_outcomes": outcomes,
         "execution_evidence_kind": "learned_policy", "action_source": "learned_policy",
         "scripted_rollout_count": 0, "learned_policy_rollout_count": learned,
-        "scripted_controller_invoked": False, "candidate_policy_queried": learned > 0}
+        "scripted_controller_invoked": False, "candidate_policy_queried": learned > 0,
+        # The plan row's setup flags travel with its estimate (ledger), as observation flags do.
+        **({"setup_quality_flags": list(execution["setup_quality_flags"])}
+           if execution.get("setup_quality_flags") else {})}

@@ -113,7 +113,7 @@ def test_worker_requires_actual_preflight_checkpoint_and_reviewed_sonic(monkeypa
         _rights_review(row, preflight=preflight)
 
 
-def g1_plan(*, maximum="4.00"):
+def g1_plan(*, maximum="4.00", flags=None):
     catalog = load_default_catalog()
     catalog = seal_catalog({**catalog, "candidates": [r for r in catalog["candidates"] if r["candidate_id"] in g1.CANDIDATES]})
     bindings, quotes = {}, {}
@@ -122,6 +122,8 @@ def g1_plan(*, maximum="4.00"):
         binding["backend"] = g1.BACKEND
         binding["execution_spec"]["backend"] = g1.BACKEND
         binding["execution_spec"]["minimum_gpu_memory_gb"] = 48
+        if flags is not None:  # As planning adds them (beta_policy_screening_g1.setup_quality_flags).
+            binding["execution_spec"]["setup_quality_flags"] = list(flags)
         binding["admission_digest"] = canonical_digest(binding["execution_spec"])
         # A G1 session runs the plan's first CELLS_PER_SESSION cells, and its quote says so.
         quote = {**quote, "episode_count": g1.CELLS_PER_SESSION}
@@ -177,9 +179,9 @@ def test_corrected_g1_registration_changes_campaign_inventory_identity():
     assert first["candidates"] == second["candidates"] == catalog["candidates"]
 
 
-def session_result():
+def session_result(flags=None):
     """Synthetic contract fixture, never retained as a real simulator result."""
-    plan = g1_plan()
+    plan = g1_plan(flags=flags)
     candidate = plan["candidates"][0]
     episodes = []
     for cell in candidate["scenario_cells"]:
@@ -314,6 +316,14 @@ def test_partial_actions_without_exact_loaded_checkpoint_are_not_published(mutat
         g1.summarize_result(result, plan=plan, candidate=candidate)
 
 
+def spawn_report(packet, plan, status="clear"):
+    """The packet's sealed spawn check (native_g1_spawn_clearance), as preparation writes it."""
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    value = spawn.seal({"status": status, "scene_plan_digest": plan["plan_digest"]})
+    (packet / spawn.FILENAME).write_text(json.dumps(value))
+    return value
+
+
 def builder_inputs(tmp_path, monkeypatch):
     """Mock only existing file-closure verification, never task binding checks."""
     from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
@@ -346,6 +356,7 @@ def builder_inputs(tmp_path, monkeypatch):
         "task_spec": task, "robot": robot,
         "cameras": [{"role": "head", "policy_input": True, "intrinsics": {"width": 640, "height": 480}}]}, "plan_digest")
     (native / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(native_scene))
+    spawn_report(native, native_scene)
     publisher, runtime = tmp_path / "publisher.json", tmp_path / "runtime.json"
     publisher.write_text("{}")
     runtime.write_text("{}")
@@ -398,6 +409,59 @@ def test_registration_cannot_repurpose_an_unrelated_g1_scene(tmp_path, monkeypat
     with pytest.raises(ValueError, match=reason):
         g1.candidate_execution_spec(**kwargs)
     assert calls == []
+
+
+def test_a_packet_whose_g1_spawns_inside_the_room_gets_no_spec(tmp_path, monkeypatch):
+    kwargs, native, _, _, calls = builder_inputs(tmp_path, monkeypatch)
+    spawn_report(tmp_path / "native", native, status="overlap")
+    # A fixed reason, before any consent read or authority: planning quotes and funds nothing for it.
+    with pytest.raises(ValueError, match="^g1_spawn_overlap$"):
+        g1.candidate_execution_spec(**kwargs)
+    assert calls == []
+
+
+@pytest.mark.parametrize("report", ["unmeasured", "missing", "other_plan"])
+def test_an_unmeasured_spawn_is_a_flag_not_a_refusal(tmp_path, monkeypatch, report):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, native, _, _, calls = builder_inputs(tmp_path, monkeypatch)
+    packet = tmp_path / "native"
+    if report == "missing":
+        (packet / spawn.FILENAME).unlink()
+    elif report == "other_plan":
+        spawn_report(packet, {"plan_digest": OTHER})
+    else:
+        spawn_report(packet, native, status=report)
+    spec = g1.candidate_execution_spec(**kwargs)
+    assert g1.validate_execution_spec(spec) == spec and calls == [(source(), "site-current")]
+    assert g1.setup_quality_flags(spec) == ["g1_spawn_clearance_unmeasured"]
+    spawn_report(packet, native)
+    assert g1.setup_quality_flags(spec) == []
+
+
+def test_an_overlapping_g1_row_is_listed_with_its_reason_and_never_funded():
+    catalog = load_default_catalog()
+    value = build_screening_plan(catalog, scene(), campaign_id="spawn-overlap", now=NOW,
+        capabilities={"candidate_blockers": {DP: ["g1_spawn_overlap"]}})
+    rows = {r["candidate_id"]: r for r in value["candidates"]}
+    assert rows[DP]["status"] == "unavailable" and "g1_spawn_overlap" in rows[DP]["blockers"]
+    assert "cost_quote" not in rows[DP]
+
+
+def test_a_flagged_g1_row_is_funded_and_its_flag_reaches_the_result():
+    flags = ["g1_spawn_clearance_unmeasured"]
+    plan = g1_plan(flags=flags)
+    row = plan["candidates"][0]
+    assert row["status"] == "selected" and row["execution_spec"]["setup_quality_flags"] == flags
+    assert validate_screening_plan(plan) == plan
+    schema = json.loads((g1.REPOSITORY / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
+    Draft202012Validator(schema).validate(plan)
+    plan, candidate, result = session_result(flags=flags)
+    assert g1.summarize_result(result, plan=plan, candidate=candidate)["setup_quality_flags"] == flags
+    plan, candidate, result = session_result()
+    assert "setup_quality_flags" not in g1.summarize_result(result, plan=plan, candidate=candidate)
+    for invalid in (["G1"], [], ["b_flag", "a_flag"]):
+        assert all(row["status"] == "unavailable" and "beta_screening_setup_quality_flags_invalid" in row["blockers"]
+                   for row in g1_plan(flags=invalid)["candidates"])
 
 
 def test_cell_derivation_keeps_geometry_contract_and_original_review_frozen(monkeypatch):

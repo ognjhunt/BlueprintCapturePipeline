@@ -373,6 +373,12 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                           "hard_ttl_seconds": ttl, "implementation_commit": commit, **hosted_settings}
             if model is not None:
                 descriptor["team_robot_model"] = model
+            if g1:
+                # A spawn the CPU check could not measure is flagged, never refused (only an overlap is).
+                from .beta_policy_screening_g1 import setup_quality_flags
+                spawn_flags = setup_quality_flags(spec)
+                if spawn_flags:
+                    descriptor["setup_quality_flags"] = spawn_flags
             minimum_memory = configured["runtime"]["minimum_gpu_memory_gb"]
             if minimum_memory is not None:
                 descriptor["minimum_gpu_memory_gb"] = minimum_memory

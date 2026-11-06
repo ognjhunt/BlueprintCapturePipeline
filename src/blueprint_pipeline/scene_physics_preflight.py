@@ -119,6 +119,7 @@ class AssetModel:
     joints: tuple[Joint, ...]
     mounted: bool  # the root body is fixed to the world by an authored joint
     skipped_colliders: tuple[str, ...] = ()  # flat or empty hulls: no volume to overlap
+    unreadable_colliders: tuple[str, ...] = ()  # ``lenient_shapes``: a type this module has no solid for
 
 
 def _rigid(matrix: np.ndarray, code: str) -> tuple[np.ndarray, np.ndarray]:
@@ -169,8 +170,16 @@ def _hull(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
     return planes, vertices, float(np.linalg.norm(vertices, axis=1).max())
 
 
-def load_asset_model(usd_path: str | Path) -> AssetModel:
-    """Read bodies, solid colliders and joints of an articulated asset (Z up, metres)."""
+def load_asset_model(usd_path: str | Path, *, instance_proxies: bool = False,
+                     lenient_shapes: bool = False) -> AssetModel:
+    """Read bodies, solid colliders and joints of an articulated asset (Z up, metres).
+
+    ``instance_proxies`` also reads prims inside instanced prototypes: a robot imported with
+    instanceable collision meshes keeps its colliders there (``native_g1_spawn_clearance``).
+    ``lenient_shapes`` reads a capsule as its bounding cylinder (it holds the capsule, so an
+    overlap is never missed) and lists a collider of any other unsupported type in
+    ``unreadable_colliders`` instead of refusing the asset.
+    """
     from pxr import Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.Open(str(usd_path))
@@ -184,7 +193,7 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
     if not np.allclose(_rigid(world_from_root, "scene_physics_asset_frame_invalid")[1], 1.0, atol=1e-6):
         raise ScenePhysicsPreflightError("scene_physics_asset_scale_unsupported:" + str(root.GetPath()))
     root_from_world = np.linalg.inv(world_from_root)
-    prims = list(Usd.PrimRange(root))
+    prims = list(Usd.PrimRange(root, Usd.TraverseInstanceProxies()) if instance_proxies else Usd.PrimRange(root))
     bodies = {str(p.GetPath()): p for p in prims if p.HasAPI(UsdPhysics.RigidBodyAPI)}
     if not bodies:
         raise ScenePhysicsPreflightError("scene_physics_asset_bodies_missing")
@@ -200,7 +209,7 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
             raise ScenePhysicsPreflightError("scene_physics_collider_without_body")
         return best
 
-    colliders, skipped = [], []
+    colliders, skipped, unreadable = [], [], []
     for prim in prims:
         if not prim.HasAPI(UsdPhysics.CollisionAPI):
             continue
@@ -213,8 +222,9 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
         if prim.IsA(UsdGeom.Cube):
             half = 0.5 * float(UsdGeom.Cube(prim).GetSizeAttr().Get()) * scale
             colliders.append(Collider(path, body, "box", frame, half_extents=half, bound_radius=float(np.linalg.norm(half))))
-        elif prim.IsA(UsdGeom.Cylinder):
-            cylinder = UsdGeom.Cylinder(prim)
+        elif prim.IsA(UsdGeom.Cylinder) or lenient_shapes and prim.IsA(UsdGeom.Capsule):
+            capsule = prim.IsA(UsdGeom.Capsule)
+            cylinder = UsdGeom.Capsule(prim) if capsule else UsdGeom.Cylinder(prim)
             axis = "XYZ".index(str(cylinder.GetAxisAttr().Get()))
             radial = [i for i in range(3) if i != axis]
             if not math.isclose(scale[radial[0]], scale[radial[1]], rel_tol=1e-6):
@@ -227,6 +237,8 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
                 align[:3, :3] = np.array([[1.0, 0, 0], [0, 0, -1.0], [0, 1.0, 0]])
             radius = float(cylinder.GetRadiusAttr().Get()) * float(scale[radial[0]])
             half_height = 0.5 * float(cylinder.GetHeightAttr().Get()) * float(scale[axis])
+            if capsule:  # The caps, each a hemisphere beyond the height, inside the bounding cylinder.
+                half_height += float(cylinder.GetRadiusAttr().Get()) * float(max(scale))
             colliders.append(Collider(path, body, "cylinder", frame @ align, radius=radius, half_height=half_height,
                                       bound_radius=math.hypot(radius, half_height)))
         elif prim.IsA(UsdGeom.Sphere):
@@ -242,6 +254,8 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
                 skipped.append(path)
                 continue
             colliders.append(Collider(path, body, "hull", frame, planes=planes, vertices=vertices, bound_radius=bound))
+        elif lenient_shapes:
+            unreadable.append(path)
         else:
             raise ScenePhysicsPreflightError("scene_physics_collider_type_unsupported:" + prim.GetTypeName())
 
@@ -286,7 +300,8 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
     roots = [b for b in bodies if b not in children]
     if len(roots) != 1:
         raise ScenePhysicsPreflightError("scene_physics_asset_root_ambiguous")
-    return AssetModel(roots[0], asset_from_body, tuple(colliders), tuple(joints), mounted, tuple(skipped))
+    return AssetModel(roots[0], asset_from_body, tuple(colliders), tuple(joints), mounted, tuple(skipped),
+                      tuple(unreadable))
 
 
 def body_poses(model: AssetModel, joint_values: Mapping[str, float] | None = None) -> dict[str, np.ndarray]:
