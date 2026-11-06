@@ -11,7 +11,10 @@ The rule:
 
 1. Eligible: published ``completed`` with at least one scored episode, from a
    learned policy. A scripted simulator-state baseline reads state no deployed
-   robot has, so it stays a listed reference and is never the choice.
+   robot has, so it stays a listed reference and is never the choice. A
+   development-only row (the G1 humanoid's ``native_g1.v1`` backend, run under
+   a ``development_only`` claim ceiling with ``ranking_eligible`` false) is
+   listed with its result but is never ranked or chosen.
 2. Order: higher success rate, then more scored episodes, then fewer void
    episodes, then the plan's order (the intake ranking), then identifier.
 3. The first is chosen when it succeeded at least once; candidates equal to it
@@ -41,6 +44,7 @@ SELECTION_DIRECTORY = "selections"
 ACKNOWLEDGED_DIRECTORY = "acknowledged"
 CATALOG_FILENAME = "effective_catalog.json"
 SCRIPTED = "scripted_simulator_state_baseline"
+DEVELOPMENT_ONLY = "development_only_reference"
 TERMINAL = frozenset({"completed", "blocked"})
 
 
@@ -67,6 +71,13 @@ def _partner(catalog_row: Mapping[str, Any] | None, published: Mapping[str, Any]
             "related_teams": list(body.get("related_teams") or []), "partner_blockers": blockers}
 
 
+def _development_only(candidate_id: str, catalog_row: Mapping[str, Any] | None) -> bool:
+    """A row whose claim ceiling is ``development_only``: never ranked against the others or chosen."""
+    from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES
+
+    return candidate_id in G1_CANDIDATES or ((catalog_row or {}).get("runtime") or {}).get("backend") == G1_BACKEND
+
+
 def select_candidate(*, publication: Mapping[str, Any], plan: Mapping[str, Any],
                      catalog: Mapping[str, Any] | None, catalog_basis: str,
                      support: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -82,6 +93,8 @@ def select_candidate(*, publication: Mapping[str, Any], plan: Mapping[str, Any],
         blocker = (None if published["status"] == "completed" and published["episodes_scored"] > 0 and kind != SCRIPTED
                    else "scripted_baseline_reference_only" if published["status"] == "completed" and kind == SCRIPTED
                    else "no_scored_episodes" if published["status"] == "completed" else "not_evaluated")
+        if blocker is None and _development_only(key, by_id.get(key)):
+            blocker = DEVELOPMENT_ONLY
         row = {"candidate_id": key, "display_name": published["display_name"], "priority_rank": index + 1,
                "plan_status": plan_row["status"], "result_status": published["status"],
                "blockers": list(published["blockers"]) or list(plan_row["blockers"]),
