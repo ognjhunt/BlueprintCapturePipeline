@@ -9,6 +9,7 @@ every name here, so its callers are unchanged.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Mapping
@@ -21,6 +22,12 @@ from .decision_evidence_contracts import canonical_digest
 CAPTURE_PARTITION_ENV = "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT"
 # A website scene's task is "website-" plus its task context digest (website_task_preparation).
 WEBSITE_TASK_PREFIX = "website-"
+
+
+def capture_key(capture_root: Path) -> str:
+    """The name the team registry files this capture's derived row under (and its half's directory)."""
+
+    return hashlib.sha256(str(capture_root).encode()).hexdigest()[:32]
 
 
 class TeamScenePacketRequestRefused(ValueError):

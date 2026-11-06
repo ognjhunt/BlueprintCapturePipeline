@@ -218,3 +218,12 @@ def test_candidate_readiness_preview_reads_only_the_shared_catalog() -> None:
         reachable = _transitive_local_modules((seed,))
         assert {"beta_policy_effective_catalog", "team_candidate_registry_reader"} <= reachable, seed
         assert not reachable & SHARED_CATALOG_FORBIDDEN, (seed, sorted(reachable & SHARED_CATALOG_FORBIDDEN))
+
+
+def test_withdrawal_g1_deletion_does_not_import_the_team_scene_worker() -> None:
+    # The intake's withdrawal route imports it. It once took capture_key from the team scene
+    # worker, which reaches the paid launch path (2026-11-06). Its own imports stay light; the
+    # control-plane test above covers what withdrawal deletion reaches as a whole.
+    direct = _local_imported_modules(PKG_DIR / "website_capture_withdrawal_native_g1.py")
+    assert "team_scene_capture_root" in direct
+    assert not direct.intersection(HOT_LANE_MODULES | {"team_scene_packet_worker", "beta_policy_screening_launch"})

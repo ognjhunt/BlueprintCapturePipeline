@@ -85,7 +85,8 @@ def _namespaces(root: Path, unresolved: list[dict[str, Any]]) -> list[Path]:
 
 def _site_capture_keys(site: Path, identity: Mapping[str, str]) -> set[str]:
     """The half directories the team worker files the site's captures under, also once the captures are gone."""
-    from .team_scene_packet_worker import capture_key
+    # Not the worker: it reaches the paid launch path, which the intake must not import.
+    from .team_scene_capture_root import capture_key
 
     captures = site / "captures"
     names = {identity["capture_id"]} | ({path.name for path in captures.iterdir() if path.is_dir()}
