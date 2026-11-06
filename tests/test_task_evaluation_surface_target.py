@@ -480,6 +480,17 @@ def test_v2_binds_a_qualified_collider_larger_than_its_disc():
     bound = bind_native_surface_target(task_spec=spec, target=target, static=static, support=support)
     assert bound["surface_target"] == target
     assert bound["visible_target_marker"]["radius_m"] == 0.03  # the marker is the tolerance, not the object
+    # The collider centre is 8 cm off the scoring origin; the commanded origin is shifted back so the
+    # scored centre (the bounds' centre) lands on the disc, and the destination bounds move with it.
+    lower, upper = (bound["subject_collision_bounds_scoring_frame_m"][key] for key in ("minimum", "maximum"))
+    middle = [(lower[i] + upper[i]) / 2 for i in (0, 1)]
+    goal = bound["target_position_world_m"]
+    assert [goal[i] + middle[i] for i in (0, 1)] == pytest.approx(target["surface_position_world_m"][:2])
+    assert middle[0] == pytest.approx(0.08)
+    box = bound["destination_position_bounds_world_m"]
+    assert all(box["minimum"][i] <= goal[i] <= box["maximum"][i] for i in range(3))
+    assert all(box["minimum"][i] + middle[i] <= target["surface_position_world_m"][i] <= box["maximum"][i] + middle[i]
+               for i in (0, 1))
 
 
 def test_canonical_scorer_scores_a_v2_target_end_to_end():

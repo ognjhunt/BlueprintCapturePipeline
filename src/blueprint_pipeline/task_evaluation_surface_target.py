@@ -312,6 +312,12 @@ def bind_native_surface_target(*, task_spec, target, static, support,
             "surface_target_native_subject_does_not_fit")
     p = target["surface_position_world_m"]
     goal = [p[0], p[1], p[2] - min(c[2] for c in corners)]
+    if centre_rule(target):
+        # v2 scores the centre of the collider bounds, not the scoring origin: command the origin
+        # so that centre lands on the disc at the destination orientation (identity). Otherwise an
+        # origin offset larger than the tolerance makes the commanded goal unscorable.
+        middle = [(min(c[i] for c in corners) + max(c[i] for c in corners)) / 2 for i in (0, 1)]
+        goal = [p[0] - middle[0], p[1] - middle[1], goal[2]]
     if "interior_bounds_world_m" in target:
         interior = target["interior_bounds_world_m"]
         require(all(interior["minimum"][i] - (0.005 if i == 2 else 0.0) <= goal[i] + c[i]
