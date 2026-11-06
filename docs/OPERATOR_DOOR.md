@@ -276,6 +276,13 @@ writes one sealed record naming the owner as approver. It changes no
 threshold, starts no compute and moves no money. It was added to the profile
 in its own commit for the owner's explicit sign-off.
 
+The profile also admits `restore-g1-runtime-source` (below). The owner approved
+it on 2026-11-06 ("build a door operation for it next", then "do all this"):
+it restores one pinned, digest-verified packet and its receipt from the
+retained object-store copy to the paths the shared G1 registry already names,
+overwrites nothing, starts no compute and moves no money. It was added to the
+profile in its own commit.
+
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |

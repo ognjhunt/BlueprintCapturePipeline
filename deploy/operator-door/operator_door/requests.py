@@ -124,12 +124,17 @@ if DISPATCHER_HOLD_ONLY:
     # grant: a preview, then an apply bound to that preview's digest, writing
     # one sealed record that names the owner as approver; it changes no
     # threshold, starts no compute and moves no money. It was added to this
-    # profile in its own commit for the owner's explicit sign-off.
+    # profile in its own commit for the owner's explicit sign-off. The owner
+    # approved (2026-11-06, verbatim: "build a door operation for it next",
+    # then "do all this") the G1 runtime source restore: it restores one
+    # pinned, digest-verified packet and its receipt from the retained
+    # object-store copy to the paths the shared G1 registry already names,
+    # overwrites nothing, starts no compute and moves no money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
-                           "confirm-owner-success-contract"}}
+                           "confirm-owner-success-contract", "restore-g1-runtime-source"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
