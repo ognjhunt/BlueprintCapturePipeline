@@ -201,9 +201,9 @@ def _built_from_base(row: Mapping[str, Any], base_hex: str | None) -> bool:
 def _measure_spawns(row: Mapping[str, Any] | None) -> None:
     """Measure each registered packet's G1 spawn once (``native_g1_spawn_clearance``); never raises.
 
-    Planning funds no G1 run from a packet without a clear report, and a packet prepared before the check
-    existed has none: this writes it beside the packet. A failure leaves it missing, which planning reads
-    as unmeasured.
+    Planning funds no G1 run from a packet whose report reads overlap and flags one without a report as
+    unmeasured; a packet prepared before the check existed has none, so this writes it beside the packet.
+    A failure leaves it missing: planning then flags the row and funds it.
     """
     from .native_g1_spawn_clearance import ensure_packet_spawn_clearance
 

@@ -15,11 +15,14 @@ a sole at most ``FOOT_SUPPORT_TOLERANCE_M`` below an upward-facing surface stand
 penetration beyond the arm check's rest tolerance is overlap, and so is a sole sunk further. As in the
 arm check, a collider wholly behind a surface that crosses none of it is not seen.
 
-``status`` is ``clear``, ``overlap`` or ``unmeasured``. A body with no collider in the USD is listed in
-``unmeasured_bodies`` and the spawn is then never called clear; an input the check cannot read is
-``unmeasured`` with its reason. Planning funds no G1 row whose packet reads anything but ``clear``
-(``beta_policy_screening_g1.candidate_execution_spec``), as ``require_scene_physics_admission`` refuses
-an arm packet it blocks or cannot measure: a run that starts inside the room cannot measure the policy.
+``status`` is ``clear``, ``overlap`` or ``unmeasured``. A body with no collider prim has no contact in
+the engine either: it is listed in ``bodies_without_colliders`` and changes nothing. A capsule is read as
+its bounding cylinder. A collider of a shape the measure has no solid for, or an input it cannot read,
+makes the reading ``unmeasured`` with its reason. Only a measured overlap protects money: planning funds
+no G1 row whose packet reads ``overlap`` (``g1_spawn_overlap``), as ``require_scene_physics_admission``
+refuses an arm packet with rest overlap, since a run that starts inside the room cannot measure the
+policy. ``unmeasured``, or no report at all, is a flag (``g1_spawn_clearance_unmeasured``) carried in the
+row's ``setup_quality_flags`` and its result summary; the row is still bound and quoted.
 Nothing here runs a simulator, calls a provider or changes an input file.
 """
 from __future__ import annotations
@@ -64,7 +67,7 @@ CLAIM_BOUNDARY = ("cpu_geometry_at_the_reset_pose_only: the G1 USD's colliders a
 DISCLOSED_ASSUMPTION = ("G1 spawn clearance: the robot USD's colliders measured on CPU at the reset pose against "
                         "the scene's static collision; a foot up to 2 cm into an upward-facing surface reads as "
                         "standing on it, anything else inside the room as overlap; planning funds no G1 run "
-                        "unless it reads clear. No simulator ran.")
+                        "that reads overlap and flags one it could not measure. No simulator ran.")
 #: The G1's soles (``official_g1_policy_handoff.FOOT_BODY_NAMES``).
 FOOT_BODIES = ("left_ankle_roll_link", "right_ankle_roll_link")
 #: A sole this far below an upward-facing surface stands on it. The stance puts the pelvis at the G1's
@@ -99,12 +102,13 @@ def _unmeasured(reason: str, spacing: float, *, error: BaseException | None = No
     # A read error may pass: such a report is never kept (``retryable``), so the next pass measures again.
     return {"status": "unmeasured", "reason": reason, "retryable": isinstance(error, OSError), "max_depth_m": None,
             "overlapping_points": None, "worst_bodies": [], "clearing_push": None, "foot_support": None,
-            "unmeasured_bodies": [], "skipped_colliders": [], "background_samples": 0, "notices": [],
-            **_tolerances(spacing), **extra}
+            "bodies_without_colliders": {"names": [], "count": 0}, "unreadable_colliders": [],
+            "skipped_colliders": [], "background_samples": 0, "notices": [], **_tolerances(spacing), **extra}
 
 
 def _model(robot_usd: str | Path, reset: Mapping[str, float]):
-    model = load_asset_model(robot_usd, instance_proxies=True)
+    # A capsule is read as its bounding cylinder; any other shape the measure has no solid for is listed.
+    model = load_asset_model(robot_usd, instance_proxies=True, lenient_shapes=True)
     movable = {joint.joint_id for joint in model.joints if joint.kind != "fixed"}
     unmatched = sorted(set(reset) - movable)
     if unmatched:
@@ -128,7 +132,7 @@ def _near(triangles: np.ndarray, centre: np.ndarray, radius: float) -> np.ndarra
     return triangles[np.linalg.norm(centroids - centre, axis=1) <= radius + reach]
 
 
-def _measure(placed: list, triangles: np.ndarray, spacing: float, unmeasured_bodies: list[str]) -> dict[str, Any]:
+def _measure(placed: list, triangles: np.ndarray, spacing: float, unreadable: list[str]) -> dict[str, Any]:
     """One stance: background inside the body's solids, the feet's floor contact set apart as support."""
     from scipy.spatial import cKDTree
 
@@ -183,10 +187,12 @@ def _measure(placed: list, triangles: np.ndarray, spacing: float, unmeasured_bod
     worst = sorted(({"body": body, **row} for body, row in by_body.items()),
                    key=lambda row: (-row["max_depth_m"], row["body"]))[:WORST_BODIES]
     overlap = bool(inside.any() or sunk)
-    status = "overlap" if overlap else "unmeasured" if unmeasured_bodies else "clear"
+    # A measured overlap stands whatever else could not be read; a clear reading needs every collider read.
+    status = "overlap" if overlap else "unmeasured" if unreadable else "clear"
     return {"status": status,
-            "reason": OVERLAP_REASON if overlap else "g1_spawn_bodies_without_colliders" if unmeasured_bodies else None,
-            "retryable": False, "max_depth_m": round(max(0.0, summary["max_depth_m"], sunk), 6), "overlapping_points": int(inside.sum()),
+            "reason": OVERLAP_REASON if overlap else "g1_spawn_colliders_unreadable" if unreadable else None,
+            "retryable": False, "max_depth_m": round(max(0.0, summary["max_depth_m"], sunk), 6),
+            "overlapping_points": int(inside.sum()),
             "worst_bodies": [{**row, "max_depth_m": round(row["max_depth_m"], 6)} for row in worst],
             "clearing_push": {"distance_m": round(push["distance_m"], 6),
                               "direction_world": [round(v, 6) for v in push["direction_world"]]},
@@ -194,20 +200,26 @@ def _measure(placed: list, triangles: np.ndarray, spacing: float, unmeasured_bod
             "foot_support": {"bodies_found": feet, "points": int(support.sum()),
                              "max_sink_m": round(float(sink[support].max()), 6) if support.any() else 0.0,
                              "lift_m": round(sunk, 6), "soles": soles},
-            "unmeasured_bodies": unmeasured_bodies, "background_triangles_reached": int(len(near)),
+            "unreadable_colliders": unreadable, "background_triangles_reached": int(len(near)),
             "background_samples": int(len(points)), "notices": notices, **_tolerances(spacing)}
 
 
 def _measure_stances(model: Any, reset: Mapping[str, float], poses: Sequence[Mapping[str, Any]],
                      background_usd: str | Path, background_pose_world: Mapping[str, Any] | None,
                      spacing: float) -> list[dict[str, Any]]:
-    """Each pose's measurement, the background read once for all of them."""
+    """Each pose's measurement, the background read once for all of them.
+
+    A body with no collider prim has no contact in the engine either: it is listed and skipped.
+    """
     covered = {collider.body for collider in model.colliders}
-    unmeasured = sorted(body.rsplit("/", 1)[-1] for body in model.asset_from_body if body not in covered)
-    skipped = list(model.skipped_colliders)
-    if not model.colliders:
-        return [_unmeasured("g1_spawn_robot_colliders_absent", spacing, unmeasured_bodies=unmeasured,
-                            skipped_colliders=skipped) for _ in poses]
+    unreadable = list(model.unreadable_colliders)
+    covered |= {body for body in model.asset_from_body for path in unreadable if path.startswith(body + "/")}
+    bare = sorted(body.rsplit("/", 1)[-1] for body in model.asset_from_body if body not in covered)
+    common = {"skipped_colliders": list(model.skipped_colliders), "unreadable_colliders": unreadable,
+              "bodies_without_colliders": {"names": bare, "count": len(bare)}}
+    if not model.colliders:  # Nothing measured: none at all, or none readable.
+        reason = "g1_spawn_colliders_unreadable" if unreadable else "g1_spawn_robot_colliders_absent"
+        return [_unmeasured(reason, spacing, **common) for _ in poses]
     placements = [_placements(model, reset, pose) for pose in poses]
     centres = np.asarray([world[:3, 3] for placed in placements for _, world in placed])
     centre = centres.mean(axis=0)
@@ -217,15 +229,14 @@ def _measure_stances(model: Any, reset: Mapping[str, float], poses: Sequence[Map
             background_usd, centre=centre, radius=radius,
             world_from_stage=None if background_pose_world is None else _pose_matrix(background_pose_world))
     except Exception as exc:  # noqa: BLE001 - an unreadable room is unmeasured, never a failed preparation
-        return [_unmeasured(_code(exc, "g1_spawn_background_unreadable"), spacing, error=exc,
-                            skipped_colliders=skipped) for _ in poses]
+        return [_unmeasured(_code(exc, "g1_spawn_background_unreadable"), spacing, error=exc, **common)
+                for _ in poses]
     rows = []
     for placed in placements:
         try:
-            rows.append({**_measure(placed, triangles, spacing, unmeasured), "skipped_colliders": skipped})
+            rows.append({**_measure(placed, triangles, spacing, unreadable), **common})
         except Exception as exc:  # noqa: BLE001 - e.g. more background samples than one check may hold
-            rows.append(_unmeasured(_code(exc, "g1_spawn_measurement_failed"), spacing, error=exc,
-                                    skipped_colliders=skipped))
+            rows.append(_unmeasured(_code(exc, "g1_spawn_measurement_failed"), spacing, error=exc, **common))
     return rows
 
 
@@ -338,18 +349,23 @@ def ensure_packet_spawn_clearance(packet_dir: str | Path) -> dict[str, Any]:
     return report
 
 
-def spawn_clearance_blocker(packet_dir: str | Path, plan: Mapping[str, Any]) -> str | None:
-    """Planning's reason to fund no run from this packet: ``None`` only for a sealed clear report of ``plan``."""
+def spawn_clearance_status(packet_dir: str | Path, plan_digest: str) -> str:
+    """What planning reads for this packet: ``clear`` or ``overlap`` from a sealed report of the plan.
+
+    Anything else (no report, another plan's, a changed one, or one that could not measure) is
+    ``unmeasured``. Only ``overlap`` refuses money (``OVERLAP_REASON``); ``unmeasured`` travels with
+    the row and its result as ``UNMEASURED_REASON`` in ``setup_quality_flags``.
+    """
     path = Path(packet_dir) / FILENAME
     try:
         value = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
     except (OSError, ValueError):
-        return UNMEASURED_REASON
+        return "unmeasured"
     if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
             or value.get("report_digest") != canonical_digest(value, digest_field="report_digest")
-            or value.get("scene_plan_digest") != plan.get("plan_digest")):
-        return UNMEASURED_REASON
-    return None if value.get("status") == "clear" else OVERLAP_REASON if value.get("status") == "overlap" else UNMEASURED_REASON
+            or value.get("scene_plan_digest") != plan_digest or value.get("status") not in ("clear", "overlap")):
+        return "unmeasured"
+    return value["status"]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -365,7 +381,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"status": "refused", "error": _code(exc, type(exc).__name__)}))
         return 1
     print(json.dumps({key: report.get(key) for key in ("status", "reason", "max_depth_m", "worst_bodies",
-                                                         "clearing_push", "unmeasured_bodies", "report_digest")},
+                                                         "clearing_push", "unreadable_colliders",
+                                                         "bodies_without_colliders", "report_digest")},
                      sort_keys=True))
     return {"clear": 0, "overlap": 2}.get(report["status"], 3)
 

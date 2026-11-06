@@ -133,9 +133,10 @@ Built in `native_g1_site_registration` (runbook:
   (`native_g1_spawn_clearance`, the arm check's rest-overlap measure). A
   stance whose body overlaps is replaced by the first searched stance that
   clears. The report, `native_g1_spawn_clearance.v1.json`, sits beside the
-  packet. At the owner's request it also protects money, as arm rest overlap
-  does: planning funds no G1 row whose packet reads `overlap`
-  (`g1_spawn_overlap`) or has no clear reading (`g1_spawn_clearance_unmeasured`).
+  packet. A measured overlap protects money, as arm rest overlap does: planning
+  funds no G1 row whose packet reads `overlap` (`g1_spawn_overlap`). A reading
+  it could not take is a flag, not a gate: the row is funded and carries
+  `g1_spawn_clearance_unmeasured` in `setup_quality_flags` to its result.
   Runbook: [native-g1-beta-screening.md](runbooks/native-g1-beta-screening.md#spawn-check).
   Not yet run on the real 38 MB Arena USD, so how its colliders load is unverified.
 - **Prompt.** The manipulation checkpoints were trained on HOI_pp_box ("Move

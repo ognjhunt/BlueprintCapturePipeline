@@ -203,29 +203,28 @@ def test_with_no_clearing_stance_the_packet_is_written_with_overlap_and_never_fu
 
 
 @pytest.mark.parametrize("prepared_scene", [_unarticulated_asset], indirect=True)
-def test_a_robot_usd_the_check_cannot_read_is_unmeasured_and_never_funded(prepared_scene, tmp_path, monkeypatch):
+def test_a_robot_usd_the_check_cannot_read_is_unmeasured_and_flagged_not_refused(prepared_scene, tmp_path, monkeypatch):
     args, _, _ = prepared_scene
     result = prepare.prepare_native_g1_beta_packet(**args)  # Still prepared: the packet and its receipt.
     root = Path(result["scene_packet"]["path"]).parent
     report = json.loads((root / spawn.FILENAME).read_text())
     assert report["status"] == "unmeasured" and report["reason"].startswith("scene_physics_")
-    with pytest.raises(ValueError, match="^g1_spawn_clearance_unmeasured$"):
-        _dp_spec(args, result, tmp_path, monkeypatch)
+    spec = _dp_spec(args, result, tmp_path, monkeypatch)  # Only a measured overlap refuses money.
+    assert g1.setup_quality_flags(spec) == ["g1_spawn_clearance_unmeasured"]
 
 
-def test_a_packet_without_its_spawn_report_is_unmeasured_until_measured_from_the_packet(prepared_scene, tmp_path, monkeypatch):
+def test_a_packet_without_its_spawn_report_is_flagged_until_measured_from_the_packet(prepared_scene, tmp_path, monkeypatch):
     args, _, _ = prepared_scene
     result = prepare.prepare_native_g1_beta_packet(**args)
     root = Path(result["scene_packet"]["path"]).parent
     original = json.loads((root / spawn.FILENAME).read_text())
     (root / spawn.FILENAME).unlink()  # A packet prepared before the check existed.
-    with pytest.raises(ValueError, match="^g1_spawn_clearance_unmeasured$"):
-        _dp_spec(args, result, tmp_path, monkeypatch)
+    assert g1.setup_quality_flags(_dp_spec(args, result, tmp_path, monkeypatch)) == ["g1_spawn_clearance_unmeasured"]
     measured = spawn.ensure_packet_spawn_clearance(root)
     assert measured["status"] == original["status"] == "clear"
     assert measured["scene_plan_digest"] == original["scene_plan_digest"]
     assert measured["stance_selection"]["source"] == "packet_robot_base_pose"
-    assert _dp_spec(args, result, tmp_path, monkeypatch)["candidate_id"] == g1.CANDIDATES[0]
+    assert g1.setup_quality_flags(_dp_spec(args, result, tmp_path, monkeypatch)) == []
 
 
 def test_corrected_source_context_uses_distinct_immutable_packet(prepared_scene):
@@ -334,9 +333,9 @@ def test_retained_packet_with_receipt_is_never_replaced_on_validation_failure(pr
     assert not list(final.parent.glob("." + final.name + ".incomplete-*"))
 
 
-@pytest.mark.parametrize("spawn_inside_room", [True, False])
+@pytest.mark.parametrize("spawn_reading", ["overlap", "clear", "missing"])
 def test_planning_funds_no_g1_row_whose_packet_spawns_inside_the_room(prepared_scene, tmp_path, monkeypatch,
-                                                                       spawn_inside_room):
+                                                                       spawn_reading):
     from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
     from blueprint_pipeline.beta_policy_screening_capabilities import build_planning_inputs
     from blueprint_pipeline.beta_policy_screening_launch import _write
@@ -346,9 +345,11 @@ def test_planning_funds_no_g1_row_whose_packet_spawns_inside_the_room(prepared_s
     from blueprint_pipeline.team_candidate_quick10_registry import scene_facts
 
     args, request, _ = prepared_scene
-    if spawn_inside_room:
+    if spawn_reading == "overlap":
         _inside_the_table(monkeypatch, keep_searched=False)
     result = prepare.prepare_native_g1_beta_packet(**args)
+    if spawn_reading == "missing":
+        (Path(result["scene_packet"]["path"]).parent / spawn.FILENAME).unlink()
     dp = g1.CANDIDATES[0]
     [inputs_path] = args["output_root"].glob("team_scene_inputs.v1.json")
     profile = {"capture_root": str(tmp_path / "capture"), "scene_id": args["site_id"], "task_id": request["task_id"],
@@ -375,10 +376,13 @@ def test_planning_funds_no_g1_row_whose_packet_spawns_inside_the_room(prepared_s
     plan = build_screening_plan(catalog, planning["scene"], capabilities=capabilities,
                                 cost_quotes=planning["cost_quotes"], campaign_id="g1-spawn")
     row = next(row for row in plan["candidates"] if row["candidate_id"] == dp)
-    if spawn_inside_room:
+    if spawn_reading == "overlap":  # The only spawn reason that refuses money.
         assert capabilities["candidate_blockers"][dp] == ["g1_spawn_overlap"]
         assert dp not in capabilities["candidate_bindings"] and dp not in planning["cost_quotes"]
         assert row["status"] == "unavailable" and "g1_spawn_overlap" in row["blockers"] and "cost_quote" not in row
-    else:
-        assert dp not in capabilities["candidate_blockers"] and dp in planning["cost_quotes"]
-        assert row["status"] == "selected"
+        return
+    # Clear, or not measured: bound, quoted and selected; an unmeasured spawn travels as a flag.
+    assert dp not in capabilities["candidate_blockers"] and dp in planning["cost_quotes"]
+    assert row["status"] == "selected"
+    flags = row["execution_spec"].get("setup_quality_flags")
+    assert flags == (["g1_spawn_clearance_unmeasured"] if spawn_reading == "missing" else None)

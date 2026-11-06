@@ -535,7 +535,7 @@ def test_a_registered_packet_from_before_the_spawn_check_is_measured_on_the_next
     assert measured["status"] == kept["status"] == "clear"
     assert measured["scene_plan_digest"] == kept["scene_plan_digest"]
     assert measured["stance_selection"]["source"] == "packet_robot_base_pose"
-    # A measurement that fails leaves the row registered, and planning reads the packet as unmeasured.
+    # A measurement that fails leaves the row registered; planning then flags the packet as unmeasured.
     report.unlink()
     monkeypatch.setattr(spawn, "packet_spawn_clearance", lambda _packet: (_ for _ in ()).throw(OSError("injected")))
     assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}

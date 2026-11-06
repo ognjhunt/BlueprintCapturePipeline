@@ -18,12 +18,13 @@ FOOT_HALF = (0.1, 0.04, 0.02)
 
 
 def g1_like_asset(path: Path, *, sole_z: float = -PELVIS_Z, soles: str = "box", bare: tuple[str, ...] = (),
-                  instanced_pelvis: bool = False) -> Path:
+                  instanced_pelvis: bool = False, pelvis_shape: str = "box") -> Path:
     """A G1-shaped articulation: the 43 named revolute joints, each carrying one body with a solid collider.
 
-    The pelvis (the root) is a 20 x 30 x 20 cm box at the origin; each foot's sole is ``sole_z`` below it,
-    a 20 x 8 x 4 cm box or (``soles="spheres"``) four 5 mm spheres at its corners; every other body is a
-    2 cm sphere inside the trunk. Bodies named in ``bare`` get no collider.
+    The pelvis (the root) is a 20 x 30 x 20 cm box at the origin, or (``pelvis_shape``) a capsule of radius
+    10 cm or a cone; each foot's sole is ``sole_z`` below it, a 20 x 8 x 4 cm box or (``soles="spheres"``)
+    four 5 mm spheres at its corners; every other body is a 2 cm sphere inside the trunk. Bodies named in
+    ``bare`` get no collider.
     """
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
@@ -60,6 +61,12 @@ def g1_like_asset(path: Path, *, sole_z: float = -PELVIS_Z, soles: str = "box", 
         holder = stage.DefinePrim("/G1/pelvis/collisions", "Xform")
         holder.GetReferences().AddInternalReference(prototype.GetPath())
         holder.SetInstanceable(True)
+    elif pelvis_shape in ("capsule", "cone"):
+        shape = (UsdGeom.Capsule if pelvis_shape == "capsule" else UsdGeom.Cone).Define(stage, "/G1/pelvis/collision")
+        shape.GetRadiusAttr().Set(0.1)
+        shape.GetHeightAttr().Set(0.1)
+        shape.GetAxisAttr().Set("Z")
+        UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
     elif "pelvis" not in bare:
         box("/G1/pelvis/collision", (0.1, 0.15, 0.1))
     for index, joint_name in enumerate(PROTOCOL_V4_FULL_JOINT_ORDER):
@@ -141,7 +148,8 @@ def test_a_body_box_inside_a_wall_is_overlap_with_its_depth_and_shortest_push(tm
     push = report["clearing_push"]
     assert push["distance_m"] == pytest.approx(0.05, abs=0.004) and push["direction_world"][0] < -0.98
     assert report["overlap_tolerance_m"] == 0.005 and report["foot_support_tolerance_m"] == spawn.FOOT_SUPPORT_TOLERANCE_M
-    assert report["unmeasured_bodies"] == [] and json.loads(json.dumps(report, allow_nan=False)) == report
+    assert report["bodies_without_colliders"] == {"names": [], "count": 0} and report["unreadable_colliders"] == []
+    assert json.loads(json.dumps(report, allow_nan=False)) == report
 
 
 def test_feet_standing_on_the_floor_within_tolerance_are_clear(tmp_path):
@@ -171,12 +179,36 @@ def test_sole_colliders_wholly_under_the_floor_are_still_seen(tmp_path):
     assert report["clearing_push"]["direction_world"] == [0.0, 0.0, 1.0]
 
 
-def test_a_body_without_colliders_is_unmeasured_never_clear(tmp_path):
+def test_a_body_without_collider_prims_is_listed_and_changes_nothing(tmp_path):
+    # No collider prim, no contact in the engine either: it cannot start inside the room.
     report = measure(tmp_path, bare=("head_link",))
-    assert report["status"] == "unmeasured" and report["unmeasured_bodies"] == ["head_link"]
-    assert report["reason"] == "g1_spawn_bodies_without_colliders"
-    # An overlap elsewhere is still an overlap.
+    assert report["status"] == "clear" and report["reason"] is None
+    assert report["bodies_without_colliders"] == {"names": ["head_link"], "count": 1}
+    assert report["unreadable_colliders"] == []
     assert measure(tmp_path / "wall", wall_x=0.05, bare=("head_link",))["status"] == "overlap"
+
+
+def test_a_capsule_is_read_as_its_bounding_cylinder(tmp_path):
+    from blueprint_pipeline.scene_physics_preflight import ScenePhysicsPreflightError
+
+    report = measure(tmp_path, wall_x=0.05, pelvis_shape="capsule")
+    # Radius 10 cm about the pelvis axis: the wall at x = 5 cm is 5 cm inside it.
+    assert report["status"] == "overlap" and report["unreadable_colliders"] == []
+    assert report["worst_bodies"][0]["body"] == "pelvis"
+    assert report["worst_bodies"][0]["max_depth_m"] == pytest.approx(0.05, abs=0.004)
+    [capsule] = [c for c in load_asset_model(tmp_path / "g1.usda", lenient_shapes=True).colliders if c.body == "/G1/pelvis"]
+    assert capsule.kind == "cylinder" and capsule.half_height == pytest.approx(0.15)  # 5 cm half height + 10 cm cap
+    with pytest.raises(ScenePhysicsPreflightError, match="collider_type_unsupported:Capsule"):
+        load_asset_model(tmp_path / "g1.usda")  # The arm check is unchanged.
+
+
+def test_a_collider_of_a_shape_with_no_solid_is_unmeasured_and_an_overlap_elsewhere_still_counts(tmp_path):
+    report = measure(tmp_path, pelvis_shape="cone")
+    assert report["status"] == "unmeasured" and report["reason"] == "g1_spawn_colliders_unreadable"
+    assert report["unreadable_colliders"] == ["/G1/pelvis/collision"]
+    assert "pelvis" not in report["bodies_without_colliders"]["names"]
+    # The feet still cross a wall at x = 5 cm: a measured overlap stands.
+    assert measure(tmp_path / "wall", wall_x=0.05, pelvis_shape="cone")["status"] == "overlap"
 
 
 def test_an_unreadable_robot_usd_is_unmeasured_by_name(tmp_path):
@@ -228,17 +260,16 @@ def sealed_report(plan_digest: str, status: str = "clear") -> dict:
     return spawn.seal({"status": status, "scene_plan_digest": plan_digest})
 
 
-@pytest.mark.parametrize("case,reason", [
-    ("clear", None), ("overlap", "g1_spawn_overlap"), ("unmeasured", "g1_spawn_clearance_unmeasured"),
-    ("missing", "g1_spawn_clearance_unmeasured"), ("other_plan", "g1_spawn_clearance_unmeasured"),
-    ("tampered", "g1_spawn_clearance_unmeasured"),
+@pytest.mark.parametrize("case,reading", [
+    ("clear", "clear"), ("overlap", "overlap"), ("unmeasured", "unmeasured"), ("missing", "unmeasured"),
+    ("other_plan", "unmeasured"), ("tampered", "unmeasured"),
 ])
-def test_planning_reads_only_a_sealed_clear_report_of_this_plan_as_fundable(tmp_path, case, reason):
-    plan = {"plan_digest": "sha256:" + "a" * 64}
+def test_planning_reads_overlap_only_from_a_sealed_report_of_this_plan(tmp_path, case, reading):
+    digest = "sha256:" + "a" * 64
     if case != "missing":
-        value = sealed_report("sha256:" + "b" * 64 if case == "other_plan" else plan["plan_digest"],
+        value = sealed_report("sha256:" + "b" * 64 if case == "other_plan" else digest,
                               case if case in ("overlap", "unmeasured") else "clear")
         if case == "tampered":
             value["max_depth_m"] = 0.0  # Any change after sealing.
         (tmp_path / spawn.FILENAME).write_text(json.dumps(value))
-    assert spawn.spawn_clearance_blocker(tmp_path, plan) == reason
+    assert spawn.spawn_clearance_status(tmp_path, digest) == reading
