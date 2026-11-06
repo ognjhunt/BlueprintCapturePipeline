@@ -208,8 +208,11 @@ def _compile(tmp_path: Path, monkeypatch: Any, **extra: Any) -> dict[str, Any]:
 def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_path, monkeypatch) -> None:
     record = _compile(tmp_path, monkeypatch)
     station = record["robot_station"]
-    # The mount is level with the support, on floor clear of the table by the pedestal's clearance.
-    assert station["position_world_m"][2] == pytest.approx(SUPPORT_TOP)
+    # The mount is level with the surface the tray was measured resting on (the room collider's
+    # top, the disc's height), not the registered plane 1.5 cm above it, on floor clear of the
+    # table by the pedestal's clearance (capture-447: base 0.8166 m, tray on 0.8039 m).
+    assert station["position_world_m"][2] == pytest.approx(DISC[2], abs=1e-6)
+    assert station["position_world_m"][2] < SUPPORT_TOP
     assert not _in_oval(footprint_samples(station, grow_m=PEDESTAL_CLEARANCE_M)).any(), station["position_world_m"]
     assert station["search"]["obstacle_clearance_m"] == PEDESTAL_CLEARANCE_M
     assert station["room_mesh_clearance"]["room_mesh_prims"] == ["/Root/mesh_0000_GLTF"]
