@@ -1344,7 +1344,41 @@ def g1_source_env(retire_env: dict[str, str], tmp_path: Path) -> dict[str, str]:
     values = {key: value for key, value in retire_env.items()
               if not key.startswith("BLUEPRINT_WAM_OBJECT_STORE_") and key not in {
                   "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", "GOOGLE_APPLICATION_CREDENTIALS", "DOOR_SCENE_ID"}}
-    return {**values, "DOOR_VENV_PYTHON": str(tmp_path / "g1-source-python"), "DOOR_SERVICE_USER": "blueprint"}
+    target = tmp_path / "work" / "g1-runtime-source"
+    target.mkdir(parents=True)
+    return {**values, "DOOR_VENV_PYTHON": str(tmp_path / "g1-source-python"), "DOOR_SERVICE_USER": "blueprint",
+            "DOOR_G1_RUNTIME_SOURCE_DIR": str(target)}
+
+
+INSTALL_STUB = r"""#!/bin/bash
+echo "install $*" >> "$STUB_LOG"
+mkdir -p "${@: -1}"
+"""
+
+
+def test_g1_runtime_source_apply_creates_only_the_pinned_target_directory_as_root(
+        g1_source_env: dict[str, str], tmp_path: Path) -> None:
+    # The service user cannot create a directory at the root-owned top of the work mount (PermissionError
+    # on the first production apply), so the root script creates it for that user; a plan creates nothing.
+    _write_stub(tmp_path / "stubs" / "install", INSTALL_STUB)
+    absent = tmp_path / "work" / "absent-target"
+    environment = {**g1_source_env, "DOOR_G1_RUNTIME_SOURCE_DIR": str(absent)}
+    restored = {"FAKE_RESTORE": json.dumps({"outcome": "restored", "code": None, "runtime_source": _RECEIPT})}
+    rc, outcome, calls = _run("door-restore-g1-runtime-source.sh", environment, DOOR_REQUEST_ID=G1_SOURCE_ID,
+                              DOOR_APPLY="1", **restored)
+    assert (rc, outcome["status"]) == (0, "restored") and absent.is_dir()
+    assert calls[0] == f"install -d -o blueprint -g blueprint -m 0750 {absent}" and calls[1].startswith("setpriv ")
+    Path(g1_source_env["STUB_LOG"]).unlink()
+    absent.rmdir()
+    rc, outcome, calls = _run("door-restore-g1-runtime-source.sh", environment, DOOR_REQUEST_ID=G1_SOURCE_ID,
+                              FAKE_RESTORE=json.dumps({"outcome": "planned", "code": None}))
+    assert outcome["status"] == "planned" and not absent.exists() and not any(c.startswith("install") for c in calls)
+    linked = tmp_path / "work" / "linked-target"
+    linked.symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    Path(g1_source_env["STUB_LOG"]).unlink()
+    rc, outcome, calls = _run("door-restore-g1-runtime-source.sh", {**environment, "DOOR_G1_RUNTIME_SOURCE_DIR": str(linked)},
+                              DOOR_REQUEST_ID=G1_SOURCE_ID, DOOR_APPLY="1", **restored)
+    assert rc == 2 and outcome["code"] == "g1_runtime_source_target_conflict" and not calls
 
 
 _RECEIPT = {"sha256": "sha256:" + "b" * 64, "size_bytes": 44943}
