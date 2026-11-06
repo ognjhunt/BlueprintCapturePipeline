@@ -171,6 +171,26 @@ unit reads `/etc/blueprint/pipeline-control-plane.env`.
 The door's `install-native-g1-policies` below stays for manual or override use.
 Its root registry row wins while it names the current source.
 
+### Spawn check
+
+The 2026-09-27 DP trial began with the G1 inside the room's geometry and blew
+up at spawn. The packet recipe now measures the whole body on CPU before any
+spend (`native_g1_spawn_clearance`). It poses the Arena USD's colliders at the
+packet's reset joints, with the pelvis at the stance. It then measures them
+against the scene collision with the arm check's rest-overlap measure
+(`scene_physics_preflight`). A sole up to 2 cm into an upward-facing surface
+is standing. Anything else inside the room is overlap. A body with no collider
+makes the reading `unmeasured`, never `clear`. If the searched stance
+overlaps, preparation takes the first other searched stance that clears; with
+none it keeps the overlap. The report, `native_g1_spawn_clearance.v1.json`,
+sits beside the packet, and the preparation receipt carries a
+`spawn_clearance` line. Planning gives a G1 row `g1_spawn_overlap` or
+`g1_spawn_clearance_unmeasured` and funds nothing for it unless the report
+reads `clear` for that packet's plan. Registration writes the report for a
+packet prepared before the check. To read one by hand (CPU only):
+`python -m blueprint_pipeline.native_g1_spawn_clearance --packet <packet dir>`
+(add `--write` to keep it).
+
 ## Activate a current site's G1 candidates
 
 First make sure the shared runtime source is on the host. On 2026-11-06 the

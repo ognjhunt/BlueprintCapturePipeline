@@ -169,8 +169,12 @@ def _hull(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
     return planes, vertices, float(np.linalg.norm(vertices, axis=1).max())
 
 
-def load_asset_model(usd_path: str | Path) -> AssetModel:
-    """Read bodies, solid colliders and joints of an articulated asset (Z up, metres)."""
+def load_asset_model(usd_path: str | Path, *, instance_proxies: bool = False) -> AssetModel:
+    """Read bodies, solid colliders and joints of an articulated asset (Z up, metres).
+
+    ``instance_proxies`` also reads prims inside instanced prototypes: a robot imported with
+    instanceable collision meshes keeps its colliders there (``native_g1_spawn_clearance``).
+    """
     from pxr import Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.Open(str(usd_path))
@@ -184,7 +188,7 @@ def load_asset_model(usd_path: str | Path) -> AssetModel:
     if not np.allclose(_rigid(world_from_root, "scene_physics_asset_frame_invalid")[1], 1.0, atol=1e-6):
         raise ScenePhysicsPreflightError("scene_physics_asset_scale_unsupported:" + str(root.GetPath()))
     root_from_world = np.linalg.inv(world_from_root)
-    prims = list(Usd.PrimRange(root))
+    prims = list(Usd.PrimRange(root, Usd.TraverseInstanceProxies()) if instance_proxies else Usd.PrimRange(root))
     bodies = {str(p.GetPath()): p for p in prims if p.HasAPI(UsdPhysics.RigidBodyAPI)}
     if not bodies:
         raise ScenePhysicsPreflightError("scene_physics_asset_bodies_missing")

@@ -217,6 +217,12 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
         validate_g1_navigation_goal_authority(_read(_bound_path(records["navigation_authority"])), plan=g1)
     elif task.get("g1_navigation_goal") is not None:
         raise ValueError("g1_beta_manipulation_policy_task_mismatch")
+    # Money: no G1 run starts with its body inside the room, as no arm run starts from rest overlap
+    # (scene_physics_preflight.require_scene_physics_admission); unmeasured is refused the same way.
+    from .native_g1_spawn_clearance import spawn_clearance_blocker
+    spawn_blocker = spawn_clearance_blocker(packet_root, g1)
+    if spawn_blocker is not None:
+        raise ValueError(spawn_blocker)
     verify_g1_publisher_source(_bound_path(records["publisher_source"]).parent)
     runtime = verify_native_task_runtime_source_packet(_bound_path(records["runtime_source"]))
     if runtime.get("runtime_profile") != "unitree_g1" or runtime.get("redistribution_permitted") is not True:

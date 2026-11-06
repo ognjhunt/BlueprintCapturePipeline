@@ -521,6 +521,27 @@ def test_a_real_pick_and_place_site_gets_a_row_planning_verifies(compiled_world,
     assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
 
 
+def test_a_registered_packet_from_before_the_spawn_check_is_measured_on_the_next_pass(compiled_world, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, _, _, _, _ = compiled_world
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    report = Path(row["screening_candidates"][DP]["native_g1"]["scene_packet"]["path"]).parent / spawn.FILENAME
+    kept = json.loads(report.read_text())
+    report.unlink()  # As a packet prepared before the check existed has none.
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
+    measured = json.loads(report.read_text())
+    assert measured["status"] == kept["status"] == "clear"
+    assert measured["scene_plan_digest"] == kept["scene_plan_digest"]
+    assert measured["stance_selection"]["source"] == "packet_robot_base_pose"
+    # A measurement that fails leaves the row registered, and planning reads the packet as unmeasured.
+    report.unlink()
+    monkeypatch.setattr(spawn, "packet_spawn_clearance", lambda _packet: (_ for _ in ()).throw(OSError("injected")))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
+    assert not report.exists()
+
+
 def test_a_changed_source_gets_a_new_packet_and_a_new_row(compiled_world):
     kwargs, profile, registry, _, capture = compiled_world
     registration.ensure_site_registration(**kwargs)

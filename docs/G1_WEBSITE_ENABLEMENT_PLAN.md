@@ -13,8 +13,7 @@ Nothing here widens a cap, grant, TTL, retry limit or allowance.
 
 The guarantees that stay unchanged in every step:
 
-- the `development_only` claim ceiling (a scored G1 row competes and can be chosen since #3424, on the
-  owner's 2026-11-06 request);
+- the `development_only` claim ceiling and `ranking_eligible=false`;
 - one allocation per session, with no retry inside it;
 - the independent watchdog and scoped closeout;
 - the controller's own re-score;
@@ -71,8 +70,7 @@ Built in `native_g1_site_registration` (runbook:
   the profile. It is not `team_scene_packet.record_team_scene`: the pass
   already sees every completed scene, runs again after a restore, and plans in
   the same pass. For a `rigid_pick_place` task the service reads the site's
-  consent live (before it prepares a packet and again before it writes any
-  row; a refusal writes no row and removes the site's old one), then runs
+  consent live, then runs
   `beta_policy_screening_g1_prepare.prepare_native_g1_beta_packet` on the
   site's base packet with the door builder's arguments. It writes under the
   site's own `native-g1/<base>/<source>/` directory. Any other task kind
@@ -117,25 +115,29 @@ Built in `native_g1_site_registration` (runbook:
 ## 4. Task page
 
 - **Done here:**
-  - a scored G1 row competes like any learned policy and can be chosen
-    ([#3424](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3424), owner's request, 2026-11-06).
-    The `development_only_reference` marking #3420 added is gone. The WebApp still accepts and labels that
-    value ([#1225](https://github.com/ognjhunt/Blueprint-WebApp/pull/1225)), but nothing emits it.
+  - the selection marks a scored G1 row `development_only_reference`, so it is
+    listed but never ranked or chosen;
+  - the WebApp labels it a development check ([#1225](https://github.com/ognjhunt/Blueprint-WebApp/pull/1225)).
 - **Still open:** the specific `g1_beta_result_*` reason should reach the ledger
   instead of the generic `g1_beta_native_result_missing_or_invalid`
   (`beta_policy_screening_launch.py:568-575`).
 
 ## 5. Before the first paid G1 run
 
-- **Spawn check.** The 09-27 DP trial was a physics blow-up at spawn:
+- **Spawn check (built 2026-11-06).** The 09-27 DP trial was a physics blow-up at spawn:
   - robot–background contact forces of 104–8,677 N in the first 0.18 s;
   - then the robot left the workspace, with the book untouched.
 
-  Add a free CPU check to the packet recipe: G1's collision bodies at the
-  prepared stance must clear the scene's colliders. Built on its own branch
-  (`native_g1_spawn_clearance`), with its own PR after #3426. A measured
-  overlap refuses the row (`g1_spawn_overlap`), and an unmeasured check is a
-  `setup_quality_flags` flag that stays in the ledger.
+  The packet recipe now measures G1's collision bodies at the prepared stance
+  and reset joints against the scene's static collision on CPU
+  (`native_g1_spawn_clearance`, the arm check's rest-overlap measure). A
+  stance whose body overlaps is replaced by the first searched stance that
+  clears. The report, `native_g1_spawn_clearance.v1.json`, sits beside the
+  packet. At the owner's request it also protects money, as arm rest overlap
+  does: planning funds no G1 row whose packet reads `overlap`
+  (`g1_spawn_overlap`) or has no clear reading (`g1_spawn_clearance_unmeasured`).
+  Runbook: [native-g1-beta-screening.md](runbooks/native-g1-beta-screening.md#spawn-check).
+  Not yet run on the real 38 MB Arena USD, so how its colliders load is unverified.
 - **Prompt.** The manipulation checkpoints were trained on HOI_pp_box ("Move
   the box from the table onto the shelf."). The worker sends the site's own
   sentence. π0.5 reads language. Whether DP does is not verified. Record which

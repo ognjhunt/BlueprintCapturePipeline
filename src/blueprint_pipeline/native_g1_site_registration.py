@@ -198,6 +198,27 @@ def _built_from_base(row: Mapping[str, Any], base_hex: str | None) -> bool:
                                         for item in row["screening_candidates"].values())
 
 
+def _measure_spawns(row: Mapping[str, Any] | None) -> None:
+    """Measure each registered packet's G1 spawn once (``native_g1_spawn_clearance``); never raises.
+
+    Planning funds no G1 run from a packet without a clear report, and a packet prepared before the check
+    existed has none: this writes it beside the packet. A failure leaves it missing, which planning reads
+    as unmeasured.
+    """
+    from .native_g1_spawn_clearance import ensure_packet_spawn_clearance
+
+    try:
+        packets = {str(Path(item["native_g1"]["scene_packet"]["path"]).parent)
+                   for item in (row or {}).get("screening_candidates", {}).values()}
+    except (AttributeError, KeyError, TypeError):
+        return
+    for packet in sorted(packets):
+        try:
+            ensure_packet_spawn_clearance(packet)
+        except Exception:  # noqa: BLE001 - a G1 problem never stops the site's other candidates
+            continue
+
+
 def _navigation_authority(site_root: Path, packet_dir: Path) -> dict[str, Any] | None:
     """Exactly one goal authority for this G1 scene in the site's own tree, else None."""
     contract = _contract()
@@ -293,6 +314,7 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
             return {**status, "status": "not_registered", "reason": "team_candidate_registry_not_configured"}, False
         root_row = (registry.get("site_screening_candidates") or {}).get(site_id)
         if isinstance(root_row, Mapping) and root_row.get("source") == current:
+            _measure_spawns(root_row)
             return {**status, "status": "root_registry_row_current", "reason": None, "candidates": {}}, True
         shared = _shared_records(manifest)
         prior = _read_status(status_path)
@@ -363,7 +385,9 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
     if not registrations:
         return {**status, "status": "not_registered", "reason": "g1_no_candidate_registered",
                 "retry": "on_source_pin_or_release_change", "candidates": results}, True
-    _write(path, {"source": current, "screening_candidates": registrations})
+    row = {"source": current, "screening_candidates": registrations}
+    _write(path, row)
+    _measure_spawns(row)  # A packet prepared above has its report already; an older one gets it here.
     return {**status, "status": "registered", "reason": None, "candidates": results}, True
 
 
@@ -387,6 +411,7 @@ def ensure_site_registration(*, site_id: str, source: Mapping[str, Any], source_
     if (overlay is not None and not consent_refused(_read_status(status_path).get("reason"))
             and overlay["source"] == current and _records_verify(overlay, Path(manifest_path))
             and _built_from_base(overlay, _current_base_hex(site_id, current, Path(source_queue)))):
+        _measure_spawns(overlay)
         return {"status": "already_registered"}
     try:
         status, record = _register(site_id=site_id, current=current, source_queue=Path(source_queue),

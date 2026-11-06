@@ -314,6 +314,14 @@ def test_partial_actions_without_exact_loaded_checkpoint_are_not_published(mutat
         g1.summarize_result(result, plan=plan, candidate=candidate)
 
 
+def spawn_report(packet, plan, status="clear"):
+    """The packet's sealed spawn check (native_g1_spawn_clearance), as preparation writes it."""
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    value = spawn.seal({"status": status, "scene_plan_digest": plan["plan_digest"]})
+    (packet / spawn.FILENAME).write_text(json.dumps(value))
+    return value
+
+
 def builder_inputs(tmp_path, monkeypatch):
     """Mock only existing file-closure verification, never task binding checks."""
     from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
@@ -346,6 +354,7 @@ def builder_inputs(tmp_path, monkeypatch):
         "task_spec": task, "robot": robot,
         "cameras": [{"role": "head", "policy_input": True, "intrinsics": {"width": 640, "height": 480}}]}, "plan_digest")
     (native / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(native_scene))
+    spawn_report(native, native_scene)
     publisher, runtime = tmp_path / "publisher.json", tmp_path / "runtime.json"
     publisher.write_text("{}")
     runtime.write_text("{}")
@@ -398,6 +407,36 @@ def test_registration_cannot_repurpose_an_unrelated_g1_scene(tmp_path, monkeypat
     with pytest.raises(ValueError, match=reason):
         g1.candidate_execution_spec(**kwargs)
     assert calls == []
+
+
+@pytest.mark.parametrize("report,reason", [
+    ("overlap", "g1_spawn_overlap"), ("unmeasured", "g1_spawn_clearance_unmeasured"),
+    ("missing", "g1_spawn_clearance_unmeasured"), ("other_plan", "g1_spawn_clearance_unmeasured"),
+])
+def test_a_packet_whose_g1_spawns_inside_the_room_or_is_unmeasured_gets_no_spec(tmp_path, monkeypatch, report, reason):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, native, _, _, calls = builder_inputs(tmp_path, monkeypatch)
+    packet = tmp_path / "native"
+    if report == "missing":
+        (packet / spawn.FILENAME).unlink()
+    elif report == "other_plan":
+        spawn_report(packet, {"plan_digest": OTHER})
+    else:
+        spawn_report(packet, native, status=report)
+    # A fixed reason, before any consent read or authority: planning quotes and funds nothing for it.
+    with pytest.raises(ValueError, match="^" + reason + "$"):
+        g1.candidate_execution_spec(**kwargs)
+    assert calls == []
+
+
+def test_an_overlapping_g1_row_is_listed_with_its_reason_and_never_funded():
+    catalog = load_default_catalog()
+    value = build_screening_plan(catalog, scene(), campaign_id="spawn-overlap", now=NOW,
+        capabilities={"candidate_blockers": {DP: ["g1_spawn_overlap"], PI: ["g1_spawn_clearance_unmeasured"]}})
+    rows = {r["candidate_id"]: r for r in value["candidates"]}
+    assert rows[DP]["status"] == rows[PI]["status"] == "unavailable"
+    assert "g1_spawn_overlap" in rows[DP]["blockers"] and "g1_spawn_clearance_unmeasured" in rows[PI]["blockers"]
+    assert "cost_quote" not in rows[DP] and "cost_quote" not in rows[PI]
 
 
 def test_cell_derivation_keeps_geometry_contract_and_original_review_frozen(monkeypatch):

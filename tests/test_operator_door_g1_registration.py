@@ -384,10 +384,20 @@ print(json.dumps(result))
 from tests.test_beta_policy_screening_g1_prepare import prepared_scene  # noqa: E402,F401
 
 
-def test_service_prepares_real_cpu_packet_and_root_independently_accepts_it(prepared_scene, tmp_path, monkeypatch):  # noqa: F811
-    """Real USD/stance/materialization with declared synthetic robot identity."""
+@pytest.mark.parametrize("spawn_fallback", [False, True])
+def test_service_prepares_real_cpu_packet_and_root_independently_accepts_it(prepared_scene, tmp_path, monkeypatch,  # noqa: F811
+                                                                            spawn_fallback):
+    """Real USD/stance/materialization with declared synthetic robot identity.
+
+    With ``spawn_fallback`` the searched stance starts inside the room and the spawn check takes another;
+    the door's registration contract accepts that packet unchanged.
+    """
     from blueprint_pipeline.native_g1_arena_robot_configuration import build_pinned_g1_arena_robot_configuration
+    from blueprint_pipeline.native_g1_spawn_clearance import FILENAME as SPAWN_FILENAME
+    from tests.test_beta_policy_screening_g1_prepare import _inside_the_table
     args, _original, inputs = prepared_scene
+    if spawn_fallback:
+        _inside_the_table(monkeypatch, keep_searched=True)
     base_path = Path(args["base_packet_record"]["path"])
     base_receipt, base_request, base_scene = contract.packet(base_path)
     profile = contract.common.read(PROFILE_ROOT / "native_g1_registration_profile.json")
@@ -428,6 +438,8 @@ def test_service_prepares_real_cpu_packet_and_root_independently_accepts_it(prep
     contract.verify_scene(contract.file_record(packet_path), candidate_id=DP, profile=profile,
         source=args["source"], site_id=args["site_id"], inputs=inputs, base_receipt=base_receipt,
         base_request=base_request, base_scene=base_scene)
+    spawn = json.loads((packet_path.parent / SPAWN_FILENAME).read_text())
+    assert spawn["status"] == "clear" and spawn["stance_selection"]["fallback_used"] is spawn_fallback
     before = packet_path.read_bytes()
     builder._prepare_current_packet(req, {}, profile_root=profile_root,
         shared_registry_path=shared_path, source_queue=tmp_path / "unused")
