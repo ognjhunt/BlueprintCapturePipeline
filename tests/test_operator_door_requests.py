@@ -236,6 +236,26 @@ def test_provider_output_resume_names_one_canary_attempt() -> None:
         assert caught.value.code == code
 
 
+def test_g1_runtime_source_restore_takes_only_apply() -> None:
+    """Every path, digest and object identity is pinned in the release module, never a field."""
+    assert validate_request({"kind": "restore-g1-runtime-source"}) == {"kind": "restore-g1-runtime-source",
+                                                                       "apply": False}
+    assert validate_request({"kind": "restore-g1-runtime-source", "apply": True}) == {
+        "kind": "restore-g1-runtime-source", "apply": True}
+    assert required_scope("restore-g1-runtime-source") == "operate"
+    for body, code in (
+            ({"kind": "restore-g1-runtime-source", "apply": "yes"}, "g1_runtime_source_apply_invalid"),
+            ({"kind": "restore-g1-runtime-source", "apply": 1}, "g1_runtime_source_apply_invalid"),
+            ({"kind": "restore-g1-runtime-source", "apply": None}, "g1_runtime_source_apply_invalid"),
+            ({"kind": "restore-g1-runtime-source", "path": "/mnt/blueprint-work/x"}, "request_key_unknown:path"),
+            ({"kind": "restore-g1-runtime-source", "apply": True, "packet_sha256": "sha256:" + "a" * 64},
+             "request_key_unknown:packet_sha256"),
+            ({"kind": "restore-g1-runtime-source", "url": "https://example.test/x"}, "request_key_unknown:url")):
+        with pytest.raises(RequestRefused) as caught:
+            validate_request(body)
+        assert caught.value.code == code
+
+
 def test_door_upgrade_needs_a_commit() -> None:
     assert validate_request({"kind": "door-upgrade", "commit": SHA}) == {"kind": "door-upgrade", "commit": SHA}
     assert required_scope("door-upgrade") == "deploy"

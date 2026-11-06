@@ -345,6 +345,27 @@ def _output_resume_properties(config: DoorConfig, _request: dict[str, Any]) -> t
             f"ReadWritePaths={_canary_root(config)} {reservations} {results}")
 
 
+def _g1_runtime_source_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+              "DOOR_SERVICE_USER": "blueprint"}
+    if request["apply"]:
+        values["DOOR_APPLY"] = "1"
+    return values
+
+
+def _g1_runtime_source_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """It downloads one retained object, so it keeps the network and the provider secrets
+    the object store needs; every other secret stays hidden. It writes the restored packet
+    under the work root, its disk hold in the ledger and its result."""
+    hidden = [path for path in config.hidden_paths if path != "/etc/blueprint/provider-secrets"]
+    reservations = str(Path(config.control_plane_state) / "disk-reservations")
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in hidden),
+            f"ReadWritePaths=/mnt/blueprint-work {reservations} {Path(config.spool_root) / 'results'}")
+
+
 @dataclass(frozen=True)
 class _LaunchSpec:
     """How one request kind becomes one transient ``.service`` unit running one installed script."""
@@ -452,6 +473,11 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         "blueprint-operator-door-owner-success", "door-confirm-owner-success-contract.sh", "5min",
         lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
         _owner_success_environment, _scene_budget_properties),
+    # Named by a hash of the mode: the request has no other field. One 4.6 GB download: at most 2 h.
+    "restore-g1-runtime-source": _LaunchSpec(
+        "blueprint-operator-door-g1-runtime-source", "door-restore-g1-runtime-source.sh", "2h",
+        lambda request: hashlib.sha256(("apply" if request["apply"] else "plan").encode("utf-8")).hexdigest()[:12],
+        _g1_runtime_source_environment, _g1_runtime_source_properties),
     "lane-scratch": _LaunchSpec("blueprint-operator-door-scratch", "door-lane-scratch.sh", "2min",
                                 lambda request: hashlib.sha256((request["lane"] + "/" + request.get("name", ""))
                                                                 .encode("utf-8")).hexdigest()[:12],

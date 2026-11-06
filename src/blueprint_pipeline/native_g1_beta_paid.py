@@ -13,7 +13,7 @@ from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_beta_bundle import load_verified_bundle
-from .native_g1_beta_session import (MAX_OUTPUT_BYTES, PROBE_KIND, PROVIDER_KIND, RESOURCE_PREFIX,
+from .native_g1_beta_session import (MAX_OUTPUT_BYTES, MIN_GPU_RAM_MB, PROBE_KIND, PROVIDER_KIND, RESOURCE_PREFIX,
     RESULT_FILENAME, consume_session_authority_once, validate_session_authority)
 from .native_g1_paid_campaign import (_controller_release_authority, _early_spend_lock_blockers,
     _early_provider_credit_blockers, _hold_pre_stage_launch_gate)
@@ -175,7 +175,7 @@ def dispatch_session(args, *, control_identity, control_blockers, control_rechec
                     container_image=NATIVE_TASK_ARENA_IMAGE, provider_bundle_kind=PROVIDER_KIND,
                     result_schema_version=RESULT_SCHEMA, instance_label_prefix=RESOURCE_PREFIX,
                     instance_label_exact=authority["resource_name"], blocker_prefix="native_g1_beta",
-                    min_gpu_ram_mb=48_000, candidate_policy_query_expected=True, require_independent_watchdog=True,
+                    min_gpu_ram_mb=MIN_GPU_RAM_MB, candidate_policy_query_expected=True, require_independent_watchdog=True,
                     allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
                     expected_provider_download_bytes=bundle["transfer_quote"]["expected_provider_download_bytes"],
                     expected_provider_upload_bytes=bundle["transfer_quote"]["expected_provider_upload_bytes"],

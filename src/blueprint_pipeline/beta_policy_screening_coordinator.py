@@ -6,7 +6,7 @@ without its reservation. The expensive worker lives behind the existing
 allocator bridge; this coordinator never invokes a provider API. Ambiguous
 launches retain their reservation and are reconciled, never retried blindly.
 
-The standing allowance is USD 15 for the stable website site submission,
+The standing allowance is USD 30 (``SITE_LIMIT``) for the stable website site submission,
 shared across candidate sets and scene revisions. Once allocation is observed,
 the entire reserved upper bound is conservatively charged until the attempt
 settles: once its own records prove the run is over and bound to it, it counts

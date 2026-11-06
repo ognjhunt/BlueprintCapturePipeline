@@ -4,7 +4,7 @@ Owner decision 2026-10-30 (WebApp #1168): one dollar ceiling per website job,
 $40 by default, across Atlas, upstream, native construction and screening. The
 WebApp refuses preparation spend and scene intakes past it, but this queue
 reserves screening without asking the WebApp, so the plan is where screening
-stops: each new plan's budget is the smaller of the $15 site allowance and what
+stops: each new plan's budget is the smaller of the $30 site allowance and what
 the ceiling leaves, read once over the existing signed transport. Plans already
 built are never resized.
 

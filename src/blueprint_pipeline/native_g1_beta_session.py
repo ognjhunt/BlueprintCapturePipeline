@@ -21,6 +21,15 @@ SCHEMA = "native_g1_beta_session_authority.v1"
 BUNDLE_SCHEMA = "native_g1_beta_provider_bundle.v1"
 PROBE_KIND = "native-g1-beta-screening"
 PROVIDER_KIND = "native_g1_beta_screening"
+#: The G1 lane's memory floor; the paid step rents with it and planning checks it (``beta_policy_screening_gpu``).
+MIN_GPU_RAM_MB = 48_000
+
+
+def offer_hardware() -> dict:
+    """The hardware filters the G1 beta lane rents under (``native_g1_beta_paid``); ``None`` keeps the
+    transport's own default: the Isaac rendering policy and the TensorRT-buildable compute ceiling."""
+    return {"provider_bundle_kind": PROVIDER_KIND, "min_gpu_ram_mb": MIN_GPU_RAM_MB,
+            "min_compute_cap": 0, "max_compute_cap": None, "gpu_selection_policy": None}
 RUN_KIND = "blueprint_beta_screening"
 RESULT_SCHEMA = "native_g1_beta_session_result.v1"
 RESULT_FILENAME = RESULT_SCHEMA + ".json"

@@ -19,6 +19,7 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py release-hold blueprint-scene-progression.timer
     python3 scripts/operator_door.py retire-scene-workspace <scene_id> [--bucket B] [--apply] --wait
     python3 scripts/operator_door.py legacy-owner-census --wait
+    python3 scripts/operator_door.py restore-g1-runtime-source [--apply] --wait
     python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
         --expires-at 2026-11-07T10:30:00Z --authorization-reference "<owner approval>" --wait   # plan only
     python3 scripts/operator_door.py extend-scene-execution-window ... --apply --ack extend-scene-execution-window --wait
@@ -75,7 +76,7 @@ MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
                 "legacy_owner_census_observed", "repaired", "extended", "already_covered", "superseded",
-                "confirmed", "already_confirmed"}
+                "confirmed", "already_confirmed", "already_restored"}
 GITHUB_API = "https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline"
 # The only job that attests a main commit. Its success is what a deploy's verification needs.
 ATTESTING_JOB = "SBOM, license, and provenance contract"
@@ -932,6 +933,13 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     _add_wait(confirmation, 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
+    g1_source = commands.add_parser(
+        "restore-g1-runtime-source",
+        help="plan the shared G1 runtime source packet's restore from its retained object-store copy; "
+             "--apply restores it",
+    )
+    g1_source.add_argument("--apply", action="store_true", help="restore; without this only a plan is made")
+    _add_wait(g1_source, 2 * 3600 + 600)
     resume = commands.add_parser(
         "provider-output-resume",
         help="resume one streamed policy-canary attempt's promotion, cleanup and (--ingest) ingestion",
@@ -1066,6 +1074,8 @@ def run(args: argparse.Namespace) -> int:
         return _submit(body, args)
     elif command == "legacy-owner-census":
         return _submit({"kind": "legacy-owner-census"}, args)
+    elif command == "restore-g1-runtime-source":
+        return _submit({"kind": "restore-g1-runtime-source", "apply": args.apply}, args)
     elif command == "extend-scene-execution-window":
         return _submit(_scene_window_body(args), args)
     elif command == "extend-scene-execution-budget":

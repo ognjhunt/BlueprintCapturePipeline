@@ -1286,6 +1286,38 @@ def test_provider_output_resume_launches_the_release_module(config: DoorConfig) 
     assert _result(config, plain)["status"] == "launched"
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_g1_runtime_source_restore_launches_the_release_module(config: DoorConfig, apply: bool) -> None:
+    """One 2 h unit named by a hash of the mode: the network and the object store's provider
+    secrets stay, every other hidden path is hidden, and only the work root, the disk ledger
+    and the result are writable."""
+    request_id = _spooled(config, {"kind": "restore-g1-runtime-source", "apply": apply})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    label = hashlib.sha256(b"apply" if apply else b"plan").hexdigest()[:12]
+    unit = f"blueprint-operator-door-g1-runtime-source-{label}-{request_id[-8:]}.service"
+    assert call[1] == f"--unit={unit}" and "deploy" not in unit
+    assert "--property=RuntimeMaxSec=2h" in call and "--property=TimeoutStartSec=2h" in call
+    for sandbox in ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+                    "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077"):
+        assert f"--property={sandbox}" in call, sandbox
+    assert not any("PrivateNetwork" in value or "RestrictAddressFamilies" in value for value in call)
+    results = str(Path(config.spool_root) / "results")
+    assert (f"--property=ReadWritePaths=/mnt/blueprint-work "
+            f"/var/lib/blueprint/pipeline-control-plane/disk-reservations {results}") in call
+    [hidden] = [value.removeprefix("--property=InaccessiblePaths=").split() for value in call
+                if value.startswith("--property=InaccessiblePaths=")]
+    assert hidden == [f"-{path}" for path in config.hidden_paths if path != "/etc/blueprint/provider-secrets"]
+    for value in ("DOOR_SERVICE_USER=blueprint", "DOOR_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane"):
+        assert f"--setenv={value}" in call, value
+    assert [value for value in call if value.startswith("--setenv=DOOR_APPLY")] == (
+        ["--setenv=DOOR_APPLY=1"] if apply else [])
+    assert call[-1] == "/opt/blueprint/operator-door/door-restore-g1-runtime-source.sh"
+    assert _result(config, request_id)["status"] == "launched"
+
+
 def test_canonical_provenance_is_staged_private_and_not_in_environment(config: DoorConfig) -> None:
     from tests.test_operator_door_requests import _canonical_provenance
 

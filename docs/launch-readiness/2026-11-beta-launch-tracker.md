@@ -268,11 +268,36 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
    - It would be recorded as a disclosed assumption, still `development_only`.
    - That requirement protects task truth, not privacy, rights or money.
 
+**Owner answers, 11-06 15:07Z (09:07 CST), in this session:**
+1. **Rights.** The owner's words: "sept 25 is out of date - we're being far too strict/have far too many rules - g1 should be an option to choose to eval for all sites/tasks".
+   - This session reads it as: all four G1 candidates, DP and π0.5, are approved for private screening on every site and task.
+   - The authority's `authorization_basis` is now `owner_approved_g1_screening_for_all_sites_and_tasks_2026_11_06`.
+   - The 841757 receipts still pin the exact model artifacts.
+   - Public media, model redistribution, ranking, qualification and physical claims stay false; the owner did not change them.
+2. **Registration:** approved. One standing approval; the service registers each site by itself.
+3. **Money:** approved.
+   - $4 cap, $0.80/h and 4 h for G1, with 4 cells per session.
+   - G1 shares the $30 site budget, with no increase.
+   - The owner tops up Vast.
+   - The first proof is the next new pick-and-place site.
+4. **Navigation goal:** approved. The site's confirmed task brief replaces the named human reviewer, recorded as a disclosed assumption and still `development_only`.
+- **Runtime source:** "approve the rest" is read as approving the byte-identical restore, this session's stated preference.
+- **"All tasks" is not yet true in code.** The G1 packet recipe and the runtime support only `rigid_pick_place`. Navigation is Phase D of the plan, and other task families (articulated, pouring and so on) have no G1 recipe yet.
+
 **Next, without waiting on the decisions:**
 - the G1 money check at planning;
 - the development-only choice blocker (WebApp first, then the Pipeline);
 - the runbook's stale $15;
 - a plan to rebuild the runtime source from its build record.
+
+**Progress, 11-06:**
+- WebApp [#1225](https://github.com/ognjhunt/Blueprint-WebApp/pull/1225), merged 14:55Z. The website accepts `development_only_reference` and shows such a row as a development check, never ranked or chosen. Nothing emits the value until the Pipeline change below deploys.
+- In the Pipeline PR from this branch:
+  - the selection marks scored G1 rows `development_only_reference`;
+  - planning checks G1 against its own GPU lane;
+  - the G1 runbook and screening docstrings say $30;
+  - `docs/G1_WEBSITE_ENABLEMENT_PLAN.md` holds the plan: restore or rebuild the runtime source, automatic registration, money, a spawn check, and navigation.
+  - It ships with the first attested deploy after the owner's Bandit review.
 
 ## Operating notes (2026-11-02)
 
