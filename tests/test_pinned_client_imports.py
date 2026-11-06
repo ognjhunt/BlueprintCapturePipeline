@@ -44,15 +44,26 @@ class HostFastImporter:
         return None
 
 
+def _drop_pinned_modules() -> None:
+    for name in [name for name in sys.modules if name.partition(".")[0] in PINNED]:
+        del sys.modules[name]
+
+
 @pytest.fixture
 def isolated_imports(monkeypatch):
+    """Each test starts with none of the pinned names imported, as a fresh worker does.
+
+    Without the first drop, a copy another test in the same process had already
+    imported (``msgpack`` from the test venv, say) answers ``import`` before any
+    finder runs, so the outcome depended on test order.
+    """
     saved = {name: module for name, module in sys.modules.items() if name.partition(".")[0] in PINNED}
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
     monkeypatch.setattr(sys, "dont_write_bytecode", sys.dont_write_bytecode)
+    _drop_pinned_modules()
     yield
-    for name in [name for name in sys.modules if name.partition(".")[0] in PINNED]:
-        del sys.modules[name]
+    _drop_pinned_modules()
     sys.modules.update(saved)
 
 
