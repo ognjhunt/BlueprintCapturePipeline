@@ -192,7 +192,10 @@ def world(tmp_path):
                   "binding_root": control / "website-source-bindings",
                   "object_store": deletion.B2ObjectVersions(store, BUCKET), "uncovered_roots": (uncovered,),
                   "scan_offloaded_archives": True, "screening_queue_root": control / "beta-policy-screening",
-                  "screening_work_root": tmp_path / "work/beta-policy-screening-work"}
+                  "screening_work_root": tmp_path / "work/beta-policy-screening-work",
+                  # Named but absent until a test writes the site's G1 registration or a team scene half.
+                  "native_g1_registration_root": control / "native-g1-site-registrations",
+                  "team_scene_halves_root": inputs / "team-scene-halves"}
     return {"capture": capture, "site": capture.parents[1], "store": store, "resolution": resolution,
             "construction": construction, "canary": canary, "other": other, "launches": launches,
             "prepared": prepared / intent_id, "review": review, "offloaded": offloaded, "workspace": workspace,
@@ -519,7 +522,9 @@ def test_cli_delete_is_a_dry_run_unless_applied_with_authorization(world, tmp_pa
             "--intent-root", str(world["resolution"]["intent_root"]),
             "--binding-root", str(world["resolution"]["binding_root"]),
             "--screening-queue-root", str(world["resolution"]["screening_queue_root"]),
-            "--screening-work-root", str(world["resolution"]["screening_work_root"])]
+            "--screening-work-root", str(world["resolution"]["screening_work_root"]),
+            "--native-g1-registration-root", str(world["resolution"]["native_g1_registration_root"]),
+            "--team-scene-halves-root", str(world["resolution"]["team_scene_halves_root"])]
     before = _snapshot(tmp_path)
     monkeypatch.setattr(sys, "argv", argv)
     withdrawal.main()
