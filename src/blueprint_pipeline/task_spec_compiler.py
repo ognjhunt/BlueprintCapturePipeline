@@ -30,9 +30,9 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .task_instruction import object_label, placement_instruction
-from .task_predicates import region_distance, seal_predicates, validate_predicates
+from .task_predicates import COMPILED_TASK_SPEC_SCHEMA, region_distance, seal_predicates, validate_predicates
 
-SCHEMA = "blueprint.compiled_task_spec.v1"
+SCHEMA = COMPILED_TASK_SPEC_SCHEMA
 CLAIM_CEILING = "development_only"
 
 #: The scene's metric-scale reading, as the placement and reconstruction steps record it.

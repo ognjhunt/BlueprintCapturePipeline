@@ -427,6 +427,25 @@ def test_a_lapsed_money_authority_stops_a_launch_before_spawn(tmp_path, monkeypa
         job_ceiling.require_current_job_ceiling(value, context={}, capture_root=tmp_path, queue_root=tmp_path)
 
 
+def test_a_published_reservation_past_a_lowered_ceiling_stops_the_launch(tmp_path, monkeypatch):
+    # The reservation ($2) is already in the WebApp's figure, so nothing is unseen, but an owner
+    # row expired after it was published: the job's total ($3) is now above its ceiling ($1).
+    value = _committed_queue(tmp_path, monkeypatch)
+    lowered = {**ceiling_summary(0, screening=2, maximum=1), "preparation_cost_usd": 1,
+               "reserved_or_settled_cost_usd": 3, "remaining_cost_usd": 0}
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", lambda **kwargs: lowered)
+    with pytest.raises(ValueError, match="beta_screening_job_ceiling_exceeded"):
+        job_ceiling.require_current_job_ceiling(value, context={}, capture_root=tmp_path, queue_root=tmp_path)
+    # At exactly the ceiling, the published reservation may still launch.
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", lambda **kwargs: {**lowered, "maximum_cost_usd": 3})
+    assert job_ceiling.require_current_job_ceiling(value, context={}, capture_root=tmp_path, queue_root=tmp_path)
+    # A summary without the whole is unreadable, not unlimited.
+    partial = {key: item for key, item in lowered.items() if key != "reserved_or_settled_cost_usd"}
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", lambda **kwargs: partial)
+    with pytest.raises(ValueError, match="website_job_ceiling_unavailable"):
+        job_ceiling.require_current_job_ceiling(value, context={}, capture_root=tmp_path, queue_root=tmp_path)
+
+
 def test_a_plan_without_a_website_job_ceiling_has_none_to_reread(tmp_path, monkeypatch):
     monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary",
                         lambda **kwargs: pytest.fail("no website ceiling to read"))

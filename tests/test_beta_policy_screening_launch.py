@@ -245,6 +245,30 @@ def test_current_source_refusal_never_spawns_and_stays_proven_unallocated(tmp_pa
     assert launch.reconcile_candidate(**kwargs) == first
 
 
+def test_the_money_check_before_spawn_counts_the_queue_that_owns_the_launch(tmp_path, monkeypatch):
+    # A custom queue's $2 reservation must not be checked against the (empty) default queue.
+    from blueprint_pipeline import team_candidate_quick10_launch as native
+    from blueprint_pipeline import beta_policy_screening_job_ceiling as job_ceiling
+    from blueprint_pipeline import beta_policy_screening_worker as service
+
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
+    monkeypatch.setattr(launch, "_check_quote", lambda *args: None)
+    monkeypatch.setattr(service, "require_current_source", lambda *args, **kwargs: {})
+    seen = []
+
+    def check(plan, *, context, queue_root=None, **kwargs):
+        seen.append(queue_root)
+        raise ValueError(job_ceiling.EXCEEDED)
+    monkeypatch.setattr(job_ceiling, "require_current_job_ceiling", check)
+    monkeypatch.setattr(native, "_start_allocator", lambda *args, **kwargs: pytest.fail("must not spawn"))
+    queue = tmp_path / "custom-queue"
+    result = launch.launch_candidate(plan={"source": {}, "site_id": "site-request1"}, candidate={},
+                                     attempt_dir=tmp_path / "attempt", prepared={"prepared_digest": "sha256:" + "a" * 64},
+                                     queue_root=queue)
+    assert seen == [queue]
+    assert result["status"] == "blocked" and result["provider_allocation_performed"] is False
+
+
 @pytest.mark.parametrize("field,value", [("control_hz", 30), ("image_height", 225),
     ("robot_profile_id", "another_robot"), ("camera_roles", ["external"]),
     ("normalization_digest", "sha256:" + "d" * 64)])

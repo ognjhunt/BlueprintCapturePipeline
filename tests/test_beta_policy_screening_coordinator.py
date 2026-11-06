@@ -150,6 +150,19 @@ def test_site_budget_is_shared_across_scene_revisions_and_uncertain_launches(tmp
     assert publication(tmp_path, "campaign-2")["candidates"][0]["status"] == "waitlisted"
 
 
+def test_a_launch_is_told_which_queue_owns_it(tmp_path):
+    # The launch's money check counts this queue's commitments, not the default queue's.
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    seen = []
+
+    class Recording(Backend):
+        def launch_candidate(self, **kwargs):
+            seen.append(kwargs.get("queue_root"))
+            return super().launch_candidate(**kwargs)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=Recording())
+    assert seen == [tmp_path]
+
+
 def test_no_allocation_requires_explicit_proof_to_release(tmp_path):
     coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
     backend = Backend({"status": "blocked", "provider_zero_verified": True,

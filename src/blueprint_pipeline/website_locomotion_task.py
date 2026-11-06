@@ -74,7 +74,10 @@ def obstacle_distance(point_xy: Sequence[float], triangles_xy: np.ndarray) -> fl
         return (v[:, 0] - u[:, 0]) * (w[:, 1] - u[:, 1]) - (v[:, 1] - u[:, 1]) * (w[:, 0] - u[:, 0])
 
     d1, d2, d3 = cross(a, b, p), cross(b, c, p), cross(c, a, p)
-    inside = ~(((d1 < 0) | (d2 < 0) | (d3 < 0)) & ((d1 > 0) | (d2 > 0) | (d3 > 0)))
+    # A vertical face projects to a segment (zero area): every point on its line would pass the
+    # sign test, so such a triangle is never "inside" and its edge distance stands.
+    area = np.abs(cross(a, b, c))
+    inside = (area > 1e-12) & ~(((d1 < 0) | (d2 < 0) | (d3 < 0)) & ((d1 > 0) | (d2 > 0) | (d3 > 0)))
     edges = np.minimum(np.minimum(_segment_distance(p, a, b), _segment_distance(p, b, c)), _segment_distance(p, c, a))
     return float(np.min(np.where(inside, 0.0, edges)))
 

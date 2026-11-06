@@ -76,6 +76,16 @@ def test_scene_facts_read_floor_obstacles_and_route_from_the_collider(tmp_path) 
         scene_facts(base_scene=base, camera_path_levelled_m=path)
 
 
+def test_a_vertical_face_is_a_segment_not_its_whole_line() -> None:
+    # A wall's triangle projects onto a line segment; points on that line beyond it are not inside.
+    wall = np.array([[[0.0, 10.0], [0.0, 11.0], [0.0, 10.0]]])
+    assert obstacle_distance([0.0, 0.0], wall) == pytest.approx(10.0)
+    assert obstacle_distance([0.0, 10.5], wall) == pytest.approx(0.0)
+    assert obstacle_distance([0.3, 10.5], wall) == pytest.approx(0.3)
+    floor_tile = np.array([[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]])
+    assert obstacle_distance([0.2, 0.2], floor_tile) == 0.0
+
+
 def test_the_goal_is_pulled_back_until_a_robot_can_stand_clear_and_every_guess_is_flagged(tmp_path) -> None:
     base, path = _corridor(tmp_path)
     spec = compile_locomotion_spec(task_context=_context(), facts=scene_facts(base_scene=base, camera_path_levelled_m=path),

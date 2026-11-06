@@ -142,17 +142,21 @@ def require_current_job_ceiling(plan: Mapping[str, Any], *, context: Mapping[str
         from .team_scene_packet_worker import resolve_capture_root
         capture_root = resolve_capture_root(plan["source"])
     summary = read_job_ceiling_summary(context=context, capture_root=capture_root)
-    published = summary.get("screening_cost_usd")
-    remaining = summary.get("remaining_cost_usd")
+    figures = [summary.get(key) for key in ("screening_cost_usd", "remaining_cost_usd", "maximum_cost_usd",
+                                            "reserved_or_settled_cost_usd")]
     if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
-           for value in (published, remaining)):
+           for value in figures):
         raise ValueError(UNAVAILABLE)
+    published, remaining, maximum, accounted = (Decimal(str(value)) for value in figures)
     root = _root(queue_root)
     with _lock(root):
         committed = _amount(_budget(_ledger(root), plan["site_id"])["committed_upper_bound_usd"])
     # What the WebApp's figure cannot see yet: commitments since its last accepted publication.
-    unseen = max(Decimal(0), committed - Decimal(str(published)))
-    if Decimal(str(remaining)) < unseen:
+    unseen = max(Decimal(0), committed - published)
+    # The remaining figure floors at zero, so a job already past a lowered ceiling (an owner row
+    # expired after this reservation was published) reads as zero left and zero unseen. Compare
+    # the whole: everything the WebApp counts plus what it cannot see, against the ceiling now.
+    if remaining < unseen or accounted + unseen > maximum:
         raise ValueError(EXCEEDED)
     return summary
 

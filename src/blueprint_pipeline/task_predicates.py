@@ -25,9 +25,14 @@ from collections.abc import Mapping, Sequence
 from itertools import pairwise
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+try:  # flat provider-bundle layout
+    from decision_evidence_contracts import canonical_digest
+except ModuleNotFoundError:  # repository package
+    from .decision_evidence_contracts import canonical_digest
 
 SPEC_SCHEMA = "blueprint.task_predicates.v1"
+#: A whole task spec compiled from a brief (``task_spec_compiler``); its predicates are under ``success``.
+COMPILED_TASK_SPEC_SCHEMA = "blueprint.compiled_task_spec.v1"
 REPORT_SCHEMA = "blueprint.task_predicate_score.v1"
 BEHAVIOUR_SCHEMA = "blueprint.episode_behaviour.v1"
 
@@ -273,7 +278,11 @@ def _contact_with(sample: Mapping[str, Any], geometry: Any, threshold: float) ->
     forces = sample.get("robot_contact_peak_force_n_by_geometry")
     hits = {item for item in touched if isinstance(item, str)} & set(geometry)
     if isinstance(forces, Mapping):
-        return any((_finite(forces.get(item)) or 0.0) >= threshold for item in hits)
+        # A reported touch without its force cannot be compared with the threshold: unscored, never "clear".
+        measured = [_finite(forces.get(item)) for item in sorted(hits)]
+        if any(force is None for force in measured):
+            return None
+        return any(force >= threshold for force in measured)  # type: ignore[operator]
     return bool(hits)
 
 
