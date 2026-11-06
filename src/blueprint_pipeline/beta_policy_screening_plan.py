@@ -67,6 +67,8 @@ DEFAULT_EPISODES = 10
 JOB_CEILING_BASIS = "website_job_ceiling"
 #: A catalog row switched off: disabled in the catalog, or a scripted baseline on a website job.
 DISABLED_BLOCKER = "candidate_disabled"
+#: What a robot × route template carries until a partner's artifact for it is registered.
+ROUTE_TEMPLATE_BLOCKER = "prepared_robot_policy_registration_missing"
 JOB_CEILING_SCHEMA_VERSION = "beta_policy_screening_job_ceiling.v1"
 JOB_CEILING_SUMMARY_SCHEMA = "website_job_ceiling.v1"
 JOB_CEILING_DEFERRED = "website_job_ceiling_insufficient"
@@ -404,6 +406,32 @@ def website_switched_off(candidate: Mapping[str, Any]) -> bool:
     return candidate["policy"]["kind"] == "scripted"
 
 
+def website_route_template(candidate: Mapping[str, Any]) -> bool:
+    """A robot × route placeholder that no deployment company's artifact is registered for yet.
+
+    The row names a robot and a route a partner would supply (a custom checkpoint, a planning
+    endpoint, a skill trace or a controller), with no runtime, interface or supported task, so
+    nothing can run it. Registering the partner's artifact replaces the row
+    (``beta_policy_effective_catalog.catalog_for_profile``): it then has a runtime, or a failed
+    registration's own reason in place of the placeholder's, and a website plan lists it again.
+    """
+    deployment = candidate.get("deployment") or {}
+    return (deployment.get("relationship") == "planning_candidate" and candidate["runtime"] is None
+            and ROUTE_TEMPLATE_BLOCKER in candidate["eligibility"]["blockers"])
+
+
+def website_never_planned(candidate: Mapping[str, Any]) -> bool:
+    """A catalog row a new website campaign leaves out of its plan (owner decision 2026-11-05).
+
+    A scripted baseline (``website_switched_off``) or a robot × route template
+    (``website_route_template``) can never run on a website job, so listing it only adds an
+    ``unavailable`` row to the site's result. The row stays in the catalog under its id; internal
+    plans and re-plans of earlier campaigns still list it. Leaving it out removes no money: such a
+    row is never quoted, reserved or funded on a website job.
+    """
+    return website_switched_off(candidate) or website_route_template(candidate)
+
+
 def catalog_blockers(candidate: Mapping[str, Any], task_kind: str, *, website: bool = False) -> list[str]:
     """What the catalog row alone refuses for ``task_kind``: before any runtime binding, credential or quote.
 
@@ -497,9 +525,14 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     still decides every reservation.
 
     ``website``: a website job's plan (``build_job_ceiling_screening_plan``). A scripted
-    baseline is listed ``unavailable`` (``candidate_disabled``) and never funded there
-    (``website_switched_off``), so the site's money only goes to policies that can give it
-    an estimate.
+    baseline is never funded there (``website_switched_off``), so the site's money only goes
+    to policies that can give it an estimate. Without ``candidate_ids`` (a new campaign) the
+    plan leaves out every row that can never run on a website job (``website_never_planned``:
+    scripted baselines and robot × route templates). With ``candidate_ids`` (a re-plan, which
+    names its predecessor's unspent rows) it plans exactly those, so a campaign made before
+    that change keeps listing its scripted rows ``unavailable`` (``candidate_disabled``) and
+    its templates with their reasons, as it did. Neither changes what any other row is quoted,
+    funded, waitlisted or deferred at: those rows are never quoted.
 
     ``priority`` (the job's intake ranking) sets the order the budget is spent
     in; unranked candidates follow by identifier, learned policies before
@@ -551,7 +584,14 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     by_id = {row["candidate_id"]: row for row in catalog["candidates"]}
     if isinstance(candidate_ids, (str, bytes)):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_selection_invalid")
-    requested = list(candidate_ids) if candidate_ids is not None else sorted(by_id)
+    if candidate_ids is not None:
+        requested = list(candidate_ids)  # Exactly these: a re-plan names its predecessor's unspent rows.
+    else:
+        requested = sorted(by_id)
+        if website:
+            # A new website campaign plans only rows that can run there. With none left, every
+            # row is listed with its reason as before, so the job still sees why nothing ran.
+            requested = [key for key in requested if not website_never_planned(by_id[key])] or requested
     if (not requested or any(not isinstance(row, str) or not _CANDIDATE_ID.fullmatch(row) for row in requested)
             or len(set(requested)) != len(requested)):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_selection_invalid")
@@ -926,10 +966,10 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
 
 
 __all__ = ["PLAN_SCHEMA_VERSION", "QUOTE_SCHEMA_VERSION", "EXECUTION_SCHEMA_VERSION", "CLAIM_CEILING",
-           "DISABLED_BLOCKER", "SITE_BUDGET_USD", "CAMPAIGN_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
+           "DISABLED_BLOCKER", "ROUTE_TEMPLATE_BLOCKER", "SITE_BUDGET_USD", "CAMPAIGN_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
            "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "TASK_KIND_BLOCKERS", "WAITLISTED",
            "WAITLIST_BLOCKER", "BetaPolicyScreeningPlanError", "build_job_ceiling_screening_plan",
            "build_screening_plan", "catalog_blockers",
            "execution_cost_floor", "job_ceiling_record", "money", "screening_cells", "validate_cost_quote",
            "validate_execution_descriptor",
-           "validate_screening_plan", "website_switched_off"]
+           "validate_screening_plan", "website_never_planned", "website_route_template", "website_switched_off"]

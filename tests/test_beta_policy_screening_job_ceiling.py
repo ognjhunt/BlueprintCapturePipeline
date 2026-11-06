@@ -18,9 +18,10 @@ from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
 from blueprint_pipeline import beta_policy_screening_job_ceiling as job_ceiling
 from blueprint_pipeline import beta_policy_screening_worker as worker
 from blueprint_pipeline import website_task_context
+from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
 from blueprint_pipeline.beta_policy_screening_plan import (
     JOB_CEILING_DEFERRED, BetaPolicyScreeningPlanError, build_job_ceiling_screening_plan, build_screening_plan,
-    job_ceiling_record, validate_screening_plan,
+    job_ceiling_record, validate_screening_plan, website_never_planned,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_beta_policy_screening_plan import NOW, inputs, plan, reseal, scene
@@ -156,7 +157,17 @@ def test_ceiling_only_relabels_budget_deferrals_and_keeps_other_reasons():
         "groot_n17_droid", "pi05_droid"}
     unfunded = [row for row in rows.values() if row["status"] != "selected"]
     assert unfunded and all(JOB_CEILING_DEFERRED not in row["blockers"] for row in unfunded)
-    assert _unbased(value) == {**_unbased(plan()), "budget_usd": "9.00"}
+    internal = {**_unbased(plan()), "budget_usd": "9.00"}
+    # A new website campaign leaves out the rows that can never run there; every row it plans
+    # is the internal plan's, unchanged.
+    never = {row["candidate_id"] for row in load_default_catalog()["candidates"] if website_never_planned(row)}
+    assert never and never.isdisjoint(rows)
+    assert _unbased(value) == {**internal, "candidates": [row for row in internal["candidates"]
+                                                          if row["candidate_id"] not in never]}
+    # A re-plan names its rows and plans exactly those.
+    everything = ceiling_plan(9, count=2, candidate_ids=sorted(
+        row["candidate_id"] for row in load_default_catalog()["candidates"]))
+    assert _unbased(everything) == internal
 
 
 def test_unpublished_and_unreserved_screening_on_the_site_counts_against_the_ceiling(tmp_path):
@@ -288,12 +299,23 @@ def scripted_catalog(count=8, scripted=4, maximum="2.00"):
 
 
 def test_a_website_plan_never_funds_a_scripted_baseline():
-    """Owner 2026-11-04: controls removed; a scripted run never says which policy can do the site's task."""
+    """Owner 2026-11-04: controls removed; a scripted run never says which policy can do the site's task.
+
+    Owner 2026-11-05: a new website campaign leaves them out of its plan. A re-plan names its
+    predecessor's rows, so a campaign made before that keeps listing them unavailable.
+    """
     catalog, capabilities, quotes, scripted = scripted_catalog()
     record = job_ceiling_record(ceiling_summary(40), local_holds_usd=Decimal(0), read_at=READ_AT)
-    value = build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=record, campaign_id="campaign1",
+    fresh = build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=record, campaign_id="campaign1",
                                              capabilities=capabilities, cost_quotes=quotes, now=NOW)
+    assert not {row["candidate_id"] for row in fresh["candidates"]} & set(scripted)
+    value = build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=record, campaign_id="campaign1",
+                                             capabilities=capabilities, cost_quotes=quotes, now=NOW,
+                                             candidate_ids=sorted(row["candidate_id"] for row in catalog["candidates"]))
     rows = {row["candidate_id"]: row for row in value["candidates"]}
+    # Every row the new campaign plans is the re-plan's row, byte for byte, and the money is the same.
+    assert fresh["candidates"] == [row for row in value["candidates"] if row["candidate_id"] not in scripted]
+    assert (fresh["budget_usd"], fresh["maximum_planned_cost_usd"]) == (value["budget_usd"], value["maximum_planned_cost_usd"])
     for key in scripted:
         assert rows[key] == {"candidate_id": key, "display_name": rows[key]["display_name"],
                              "configuration_digest": rows[key]["configuration_digest"],
@@ -312,16 +334,22 @@ def test_a_website_plan_never_funds_a_scripted_baseline():
         "selected", "selected", "selected", "waitlisted"]
 
 
-def test_only_scripted_baselines_left_plans_nothing_and_still_publishes(tmp_path):
-    """capture-447 2026-11-04: every learned policy out of reach left three scripted arms funded."""
+@pytest.mark.parametrize("replan", [False, True])
+def test_only_scripted_baselines_left_plans_nothing_and_still_publishes(tmp_path, replan):
+    """capture-447 2026-11-04: every learned policy out of reach left three scripted arms funded.
+
+    A new campaign leaves the scripted rows out; a re-plan that names them lists them unavailable.
+    """
     catalog, capabilities, quotes, scripted = scripted_catalog(count=6)
     learned = sorted({row["candidate_id"] for row in catalog["candidates"]} - set(scripted))
     capabilities["candidate_infeasible"] = {key: ["robot_reach_insufficient:place:1.107m_vs_0.990m"] for key in learned}
     record = job_ceiling_record(ceiling_summary(40), local_holds_usd=Decimal(0), read_at=READ_AT)
     value = build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=record, campaign_id="campaign1",
-                                             capabilities=capabilities, cost_quotes=quotes, now=NOW)
+                                             capabilities=capabilities, cost_quotes=quotes, now=NOW,
+                                             **({"candidate_ids": learned + scripted} if replan else {}))
     assert value["maximum_planned_cost_usd"] == "0.00"
-    assert {row["status"] for row in value["candidates"]} == {"infeasible", "unavailable"}
+    assert {row["status"] for row in value["candidates"]} == ({"infeasible", "unavailable"} if replan else {"infeasible"})
+    assert [row["candidate_id"] for row in value["candidates"]] == learned + (scripted if replan else [])
     coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
     assert publication["status"] == "blocked" and publication["budget"]["committed_upper_bound_usd"] == "0"
