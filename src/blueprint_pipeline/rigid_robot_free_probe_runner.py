@@ -134,6 +134,19 @@ from .rigid_robot_free_probe_lane import (
     MAX_HOURLY_RATE_USD,
     lane_enabled,
 )
+# Re-exported: withdrawal deletion reads the queue's layout without this module's paid launch path.
+from .rigid_robot_free_probe_queue_root import (
+    ATTEMPT_FILENAME,
+    DEFAULT_QUEUE,
+    INTENT_FILENAME,
+    JOB_LOCK_FILENAME,
+    PROCESS_FILENAME,
+    QUEUE_ENV,
+    RESULT_FILENAME,
+    SPAWN_FAILED_FILENAME,
+    WORK_DIR_FIELD,
+    WORK_ENV,
+)
 from .rigid_robot_free_probe_settlement import (
     SETTLEMENT_FILENAME,
     attempt_machine_avoidlist,
@@ -143,25 +156,17 @@ from .rigid_robot_free_probe_settlement import (
 )
 from .rigid_robot_free_probe_worker import INPUTS_FILENAME, RESULT_SCHEMA_VERSION, TRACE_FILENAME
 
-QUEUE_ENV = "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE"
-DEFAULT_QUEUE = "/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes"
-# The bulk volume a new attempt stages its sealed bundle and allocator job directory under (the
-# unit sets /mnt/blueprint-work/rigid-robot-free-probe-work). The queue, its ledgers, the attempt
+# WORK_ENV is the bulk volume a new attempt stages its sealed bundle and allocator job directory under
+# (the unit sets /mnt/blueprint-work/rigid-robot-free-probe-work). The queue, its ledgers, the attempt
 # records and the allocator receipts stay in the queue root. Unset keeps everything there, as
-# before; an attempt records where its bulk went, so a later setting never moves an existing one.
-WORK_ENV = "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_WORK_ROOT"
-WORK_DIR_FIELD = "work_dir"
+# before; an attempt records where its bulk went (WORK_DIR_FIELD), so a later setting never moves an
+# existing one.
 ENTRY_SCHEMA = "blueprint.rigid_robot_free_probe_queue_entry.v1"
 TERMINAL_SCHEMA = "blueprint.rigid_robot_free_probe_terminal.v1"
 INGEST_SCHEMA = "blueprint.rigid_robot_free_probe_ingest.v1"
 TERMINAL_FILENAME = "rigid_robot_free_probe_terminal.json"
 INGEST_FILENAME = "rigid_robot_free_probe_ingest.json"
 AUTHORITY_FILENAME = "rigid_robot_free_probe_authority.v1.json"
-ATTEMPT_FILENAME = "rigid_robot_free_probe_attempt.json"
-INTENT_FILENAME = "allocator_launch_intent.json"
-PROCESS_FILENAME = "allocator_process.json"
-SPAWN_FAILED_FILENAME = "allocator_spawn_failed.json"
-RESULT_FILENAME = "allocator_result.json"
 MAX_FUNDED_ATTEMPTS = 2
 MAX_UNFUNDED_ATTEMPTS = 4
 # Nothing will be wanted of these captures under their current profile. A missing profile is
@@ -1116,7 +1121,7 @@ def _process_entry(root: Path, item: Path, hooks: Mapping[str, Callable[..., Any
         return {"status": "deferred", "capture_root": state.get("capture_root"), "reason": state["status"]}
     job = _job_dir(root, state)
     job.mkdir(parents=True, exist_ok=True, mode=0o750)
-    with (job / "runner.lock").open("a", encoding="utf-8") as lock:
+    with (job / JOB_LOCK_FILENAME).open("a", encoding="utf-8") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

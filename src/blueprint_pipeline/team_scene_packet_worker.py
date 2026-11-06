@@ -115,10 +115,16 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-# Re-exported: callers import these from the worker. The capture lookup lives in a module
-# the CPU-only intake can import without the paid launch path (see team_scene_capture_root).
+# Re-exported: callers import these from the worker. The capture lookup and the queue's layout live in a
+# module the CPU-only intake and withdrawal deletion import without the paid launch path (see
+# team_scene_capture_root).
 from .team_scene_capture_root import (  # noqa: F401
     CAPTURE_PARTITION_ENV,
+    HOLDS_DIRNAME,
+    QUEUE_ROOT_ENV,
+    QUEUE_STATES,
+    TEMPORARY_PREFIX,
+    TEMPORARY_SUFFIX,
     WEBSITE_TASK_PREFIX,
     TeamScenePacketRequestRefused,
     _read_json,
@@ -129,7 +135,6 @@ from .team_scene_capture_root import (  # noqa: F401
 REQUEST_SCHEMA = "blueprint.team_scene_packet_request.v1"
 STATUS_SCHEMA = "blueprint.team_scene_packet_status.v1"
 RUN_SCHEMA = "blueprint.team_scene_packet_queue_run.v1"
-QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
 SCENARIO_ID = "nominal"
 PACKET_INPUT_FIELDS = ("droid_profile_path", "droid_profile_digest", "runtime_source_receipt_path", "output_root")
 # Published beside the revision (task_evaluation_scene_configuration_publication), where
@@ -138,10 +143,6 @@ CONFIGURED_BUNDLE_FILENAME = "configured_scene_bundle.v1.zip"
 REQUEST_FIELDS = frozenset({"schema_version", "intent_id", "intent_digest", "capture_id", "task_id",
                             "source_launch_root", "launch_receipt_digest", "scene_revision_digest",
                             "robot_free_readiness_status", "request_digest"})
-QUEUE_STATES = ("pending", "processing", "processed", "status")
-# A request whose scene preparation retained a decided failed probe receipt: never compiled, only read by the
-# screening pass to hold the website job by name.
-HOLDS_DIRNAME = "holds"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _ATTEMPT = re.compile(r"[0-9a-f]{16}-[0-9a-f]{8}")
@@ -202,7 +203,7 @@ def _seal(value: Mapping[str, Any], field: str) -> dict[str, Any]:
 
 def _temporary(directory: Path, value: Mapping[str, Any]) -> Path:
     # Never named *.json, so no queue glob can see a half-written file.
-    with tempfile.NamedTemporaryFile("w", dir=directory, prefix=".team-scene-", suffix=".tmp",
+    with tempfile.NamedTemporaryFile("w", dir=directory, prefix=TEMPORARY_PREFIX, suffix=TEMPORARY_SUFFIX,
                                      delete=False, encoding="utf-8") as stream:
         temporary = Path(stream.name)
         try:

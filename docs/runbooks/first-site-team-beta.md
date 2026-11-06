@@ -91,6 +91,36 @@ as the service account; the path unit then runs those requests again. A
 retry reuses a scene half already recorded at the same revision. Scenes that
 completed before this worker was deployed queued nothing.
 
+When a site withdraws, the worker refuses its capture by name
+(`team_scene_capture_withdrawn`, or `team_scene_capture_root_missing` once the
+capture is deleted), so nothing compiles its half again. The operator's
+withdrawal deletion (`python -m blueprint_pipeline.website_capture_withdrawal_deletion`)
+then removes the site's half directories under `team-scene-halves`, and with
+them every record that points at them: the capture's derived row in the
+registry's `derived_profiles.root` (`--team-registry`), its requests and statuses
+in `team-scene-packets` (`--team-scene-packet-queue-root`), and its entries in
+`rigid-robot-free-probes` (`--rigid-probe-queue-root`). It refuses while a
+request is still in `processing/` (`team_scene_packet_in_flight`) or a worker run
+holds the queue (`team_scene_packets_busy`); run it again once that clears.
+
+The capture's probe jobs follow the owner's rule of 2026-11-06, "delete once
+settled". Once every attempt of a job is settled (the runner wrote its
+`rigid_robot_free_probe_spend_settlement.json`), was never funded, or never
+launched, the deletion removes the bytes built from the half:
+- the attempt's sealed bundle;
+- its probe input;
+- the run's output archive and its extraction, under the probe work root
+  (`--rigid-probe-work-root`).
+
+It keeps the settlement, reservation, admission, allocator result, teardown,
+budget-ledger and avoidlist records, which settlement replays from. A job with a
+reservation not yet settled (or held), an allocator still running, or a
+settlement that does not read stays whole. The receipt names it, the deletion
+reads as not complete, and a later run deletes it once it settles. The receipt
+also names, without writing them, the root-owned registry rows that name the
+site.
+
+
 ## Connect the team's own robot and policy
 
 The current qualified route uses the team's declared, verified robot model.

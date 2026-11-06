@@ -227,3 +227,22 @@ def test_withdrawal_g1_deletion_does_not_import_the_team_scene_worker() -> None:
     direct = _local_imported_modules(PKG_DIR / "website_capture_withdrawal_native_g1.py")
     assert "team_scene_capture_root" in direct
     assert not direct.intersection(HOT_LANE_MODULES | {"team_scene_packet_worker", "beta_policy_screening_launch"})
+
+
+def test_withdrawal_team_scene_deletion_reads_the_queues_layout_from_light_modules() -> None:
+    # It deletes a withdrawn site's team scene halves and their records (2026-11-06). The queues' layout
+    # comes from the modules split out of the worker and the probe runner, never from them: both reach
+    # the paid launch path.
+    # Its probe part reads the money records' names from the same light module, never the runner, the
+    # lane or the settlement code it must not change.
+    forbidden = HOT_LANE_MODULES | {
+        "team_scene_packet_worker", "beta_policy_screening_launch", "rigid_robot_free_probe_runner",
+        "rigid_robot_free_probe_lane", "rigid_robot_free_probe_settlement", "team_candidate_quick10_registry",
+        "paid_resource_allocator"}
+    for module, light in (("website_capture_withdrawal_team_scene",
+                           {"team_scene_capture_root", "rigid_robot_free_probe_queue_root"}),
+                          ("website_capture_withdrawal_rigid_probe", {"rigid_robot_free_probe_queue_root"})):
+        direct = _local_imported_modules(PKG_DIR / f"{module}.py")
+        assert light <= direct, module
+        assert not direct.intersection(forbidden), (module, sorted(direct & forbidden))
+    assert not _transitive_local_modules(("rigid_robot_free_probe_queue_root",))

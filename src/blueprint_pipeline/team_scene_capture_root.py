@@ -3,8 +3,10 @@
 Split out of ``team_scene_packet_worker`` so a CPU-only reader can resolve a capture
 without importing the worker, which reaches the paid launch path. The intake's review
 video route is such a reader, and ``tests/test_live_pipeline_import_isolation.py`` keeps
-the GPU and provider modules out of the intake's import graph. The worker re-exports
-every name here, so its callers are unchanged.
+the GPU and provider modules out of the intake's import graph. The worker's queue layout
+is here too, for withdrawal deletion, which removes a withdrawn site's requests and
+statuses without the worker. The worker re-exports every name here, so its callers are
+unchanged.
 """
 
 from __future__ import annotations
@@ -22,6 +24,14 @@ from .decision_evidence_contracts import canonical_digest
 CAPTURE_PARTITION_ENV = "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT"
 # A website scene's task is "website-" plus its task context digest (website_task_preparation).
 WEBSITE_TASK_PREFIX = "website-"
+# The team scene packet queue (team_scene_packet_worker): where it is, its request states and the status
+# directory, and the never-compiled requests a decided failed probe receipt holds.
+QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
+DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/team-scene-packets"
+QUEUE_STATES = ("pending", "processing", "processed", "status")
+HOLDS_DIRNAME = "holds"
+# A queue record is staged as ``.team-scene-*.tmp`` beside its destination, never named *.json.
+TEMPORARY_PREFIX, TEMPORARY_SUFFIX = ".team-scene-", ".tmp"
 
 
 def capture_key(capture_root: Path) -> str:

@@ -83,6 +83,7 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, packet_inputs: bo
                       "context_digest")
     (capture / "pipeline" / "website_task_context.json").write_text(json.dumps(context))
     monkeypatch.setenv(worker.CAPTURE_PARTITION_ENV, str(partition))
+    monkeypatch.setenv("BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE", str(tmp_path / "rigid-robot-free-probes"))
     operator = tmp_path / "operator"
     operator.mkdir()
     (operator / "salt.key").write_text("k" * 48)
