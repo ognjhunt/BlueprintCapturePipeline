@@ -67,9 +67,16 @@ The next production job, driven by a cloud session: a navigation task, chosen as
   - It goes live with the batched deploy (D-08), which the G1 session requests once main's CI attests the merge. After it, the job resumes through `door selected-handoff --atlas-retry`, an operator requeue within its existing allowance.
 - **Owner decisions, 16:05Z** ("Bandit OK as recommended", "switch G3", "yes retire the 7", "yes standard - rights are okay"):
   - Bandit: applied in #3423 (above).
-  - G3: the arm rule becomes "the object's centre within a tolerance" in a new surface-target schema, so earlier results still score as before (follow-up PR).
+  - G3: the arm rule becomes "the object's centre within a tolerance" in a new surface-target schema, so earlier results still score as before (next item).
   - Parked deliveries: see below.
   - Rights: clips under the standard Pexels License are cleared for this work. That covers capture-447's clip and the alternates, Pexels 4294436 (warehouse) and 3773483 (kitchen). The §8 note above is settled by this ruling.
+- **G3, owner switched it on 11-06 ("switch G3").** The arm placement success rule was "every corner of the object inside the disc", which forced a disc bigger than the object (capture-447: 76 cm across on a 1.3 m table, partly under the tray's start). It is now "the object's centre ends within the disc's radius". Every website region sealed from now on is `task_evaluation_surface_target.v2` (`success_rule: subject_centre_within_radius`):
+  - The disc is a 5 cm tolerance. The owner chose the rule, not the 5 cm: that is the harness default (`WEBSITE_TARGET_TOLERANCE_M`).
+  - The disc is kept wholly off the start footprint of the largest admitted replacement (`website_target_reach`).
+  - That replacement, centred on the disc at any yaw, must also lie on the surface.
+  - A container keeps whole-volume containment.
+  - Targets sealed before stay v1 and rescore exactly as before.
+  - The WebApp must accept v2 before a Pipeline release emits it (WebApp #1228).
 - **Second Bandit packet.** #3422, from another session, lists the 36 expired entries without assessing them. This session's packet assesses all 96. They agree on the gate result.
 - **Bandit triage (owner).** Review packet: [`2026-11-06-bandit-triage-review.md`](2026-11-06-bandit-triage-review.md).
   - Verdicts across the 96 entries: 77 keep, 18 tighten, 1 fix now (`wam_compute_providers.py` `_deepinfra_download_file`), 0 orphaned, 0 new MEDIUM or HIGH.

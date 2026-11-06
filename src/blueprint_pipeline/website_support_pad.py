@@ -33,9 +33,10 @@ measurements):
   same function, the same inputs. A preparation whose destination submission
   would move first is left to the team half, by name;
 - the region holds every replacement static qualification admits, at any yaw:
-  around the start, the square of the target disc's radius (the radius holds
-  the largest admitted replacement's footprint: ``website_target_radius``),
-  and the target disc itself. So a team half's own region, read with the
+  around the start, the square of the largest admitted replacement's plan
+  half-diagonal, and around the target disc that footprint about every centre
+  the scorer accepts (a v2 disc holds the centre only:
+  ``rigid_support_pad.pad_region``). So a team half's own region, read with the
   qualified replacement, lies inside it, and its pad finds nothing to move;
 - the success window and the start are the ones the native bind derives
   (``bind_native_surface_target``) from the subject's estimated bounds, with
@@ -54,6 +55,7 @@ why, and the job goes on; the team half models the support again either way.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 from collections.abc import Mapping
@@ -115,8 +117,10 @@ def task_specs(preparation: Mapping[str, Any], task: Mapping[str, Any]) -> tuple
         _estimated_support_height_tolerance,
     )
     from .task_evaluation_surface_target import bind_native_surface_target
+    from .task_evaluation_surface_target import centre_rule
     from .website_surface_target_admission import (
         SUPPORT_PRIM_PATH,
+        preparation_size_tolerance,
         sealed_surface_target,
         submission_relocates_destination,
     )
@@ -151,10 +155,14 @@ def task_specs(preparation: Mapping[str, Any], task: Mapping[str, Any]) -> tuple
     spec.update(start_pose_world=[*centre, 0.0, 0.0, 0.0, 1.0],
                 reset_translation_tolerance_m=RESET_TRANSLATION_TOLERANCE_M,
                 reset_orientation_tolerance_rad=RESET_ORIENTATION_TOLERANCE_RAD)
-    radius = float(target["radius_m"])
+    # A v1 disc's radius holds the largest replacement's footprint; a v2 disc is only the
+    # centre tolerance, so the square is that footprint's own plan half-diagonal.
+    scale = 1.0 + preparation_size_tolerance(preparation)
+    half = (float(target["radius_m"]) if not centre_rule(target)
+            else math.hypot(*[(upper[axis] - lower[axis]) / 2 * scale for axis in (0, 1)]))
     scoring = spec["subject_collision_bounds_scoring_frame_m"]
     region = {**spec, "subject_collision_bounds_scoring_frame_m": {
-        "minimum": [-radius, -radius, scoring["minimum"][2]], "maximum": [radius, radius, scoring["maximum"][2]]}}
+        "minimum": [-half, -half, scoring["minimum"][2]], "maximum": [half, half, scoring["maximum"][2]]}}
     return spec, region, support_plane
 
 

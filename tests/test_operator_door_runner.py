@@ -1338,8 +1338,11 @@ def test_parked_delivery_retirement_launches_the_release_module(config: DoorConf
                     "ProtectHome=yes", "UMask=0077", "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX"):
         assert f"--property={sandbox}" in call, sandbox
     results = str(Path(config.spool_root) / "results")
-    assert (f"--property=ReadWritePaths=/var/lib/blueprint/pubsub-handoffs/{capture} "
+    # The capture path is optional ("-"): a retired workspace leaves only its hint (2026-11-06, 226/NAMESPACE).
+    assert (f"--property=ReadWritePaths=-/var/lib/blueprint/pubsub-handoffs/{capture} "
             f"/var/lib/blueprint/pubsub-handoffs/.website_preparation_pending {results}") in call
+    # The script records who asked; the runner must pass the authenticated caller (2026-11-06: it did not).
+    assert "--setenv=DOOR_REQUESTED_BY=cloud" in call
     [hidden] = [value.removeprefix("--property=InaccessiblePaths=").split() for value in call
                 if value.startswith("--property=InaccessiblePaths=")]
     assert hidden == [f"-{path}" for path in config.hidden_paths]

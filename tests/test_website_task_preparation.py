@@ -1319,7 +1319,8 @@ def _on_another_level_surface(monkeypatch):
 
 
 @pytest.mark.parametrize("case, code", [
-    # The footprint rests on the surface near its edge; the region holding it at any yaw does not.
+    # The footprint rests on the surface at its edge (within the support search's window); the 5 cm
+    # disc about its centre reaches past the surface's bounds.
     ("region_off_its_support", "surface_target_outside_support"),
     # The region's centre lies under the subject, on a second surface level with its own.
     ("centre_under_the_subject", "surface_target_initial_overlap"),
@@ -1331,7 +1332,7 @@ def test_a_region_evaluation_would_refuse_is_recorded_at_preparation_and_the_job
     from tests.test_website_native_submission import legacy_native_surface_target
     args = _arguments(tmp_path)
     if case == "region_off_its_support":
-        _destination_bounds(args, [0.4, 0.48, 1.12], [0.6, 0.5, 1.14])
+        _destination_bounds(args, [0.4, 0.48, 1.10], [0.6, 0.5, 1.12])
     else:
         _on_another_level_surface(monkeypatch)
         _destination_bounds(args, [0.10, 0.48, 1.56], [0.165, 0.5, 1.61])
@@ -1368,16 +1369,17 @@ def test_a_region_evaluation_admits_leaves_the_preparation_unchanged(tmp_path, m
 
 
 #: Destinations grounded as the whole surface the cup rests on. The first's centre lies
-#: under the cup; the second's 10.5 cm from its centre, clear of the 9.2 cm disc that
-#: holds the estimate, inside the 11.3 cm one that holds a 25% larger replacement.
+#: under the cup; the second's 14.1 cm from its centre: beyond the 13.2 cm reach that keeps
+#: the 5 cm disc off the estimate's footprint, within the 15.3 cm one for a 25% larger
+#: replacement (``website_target_reach``).
 UNDER_THE_SUBJECT = ([-0.19, 0.48, 1.34], [0.46, 0.5, 1.84])
-INSIDE_ONLY_THE_LARGER_DISC = ([-0.25, 0.48, 1.25], [0.4, 0.5, 1.75])
+BETWEEN_THE_TWO_REACHES = ([-0.27, 0.48, 1.22], [0.38, 0.5, 1.72])
 
 
-def test_a_relocated_destination_clears_the_region_that_holds_the_largest_admitted_replacement(tmp_path, monkeypatch):
-    """capture-447ae4f4: relocation, admission, the scorer and native bind read one radius."""
-    from blueprint_pipeline.website_surface_target_admission import website_target_radius
-    args = _destination_bounds(_arguments(tmp_path), *INSIDE_ONLY_THE_LARGER_DISC)
+def test_a_relocated_destination_clears_the_largest_admitted_replacement(tmp_path, monkeypatch):
+    """capture-447ae4f4: relocation and admission keep the disc off the largest replacement's start footprint."""
+    from blueprint_pipeline.website_surface_target_admission import website_target_radius, website_target_reach
+    args = _destination_bounds(_arguments(tmp_path), *BETWEEN_THE_TWO_REACHES)
     with monkeypatch.context() as before_this_rule:
         before_this_rule.setattr(preparation, "replacement_size_tolerance", lambda **_: 0.0)
         before = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "before"})
@@ -1393,14 +1395,15 @@ def test_a_relocated_destination_clears_the_region_that_holds_the_largest_admitt
     assert value["status"] == "intake_ready" and value["blockers"] == []
     assert value["authoring_inputs"]["metric_envelope"]["maximum_dimension_relative_error"] == 0.25
     assert value["destination_relocation"]["replacement_size_tolerance"] == 0.25
-    assert "surface_target_admission" not in value  # admitted with the larger region
+    assert "surface_target_admission" not in value  # admitted: the disc clears the larger footprint
     subject, mpu = value["subject"], value["coordinate_frame"]["declared_meters_per_unit"]
-    radius = website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
-    assert radius > website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0)
-    # The clearance is that radius in runtime units, and the moved centre lies outside it.
-    assert clearances == [pytest.approx(radius / mpu, rel=1e-9)]
+    reach = website_target_reach(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
+    assert reach > website_target_reach(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0)
+    assert reach > website_target_radius() == 0.05
+    # The clearance is that reach in runtime units, and the moved centre lies beyond it.
+    assert clearances == [pytest.approx(reach / mpu, rel=1e-9)]
     start = [(subject["aabb_min_xyz"][i] + subject["aabb_max_xyz"][i]) / 2 for i in (0, 1)]
-    assert math.dist(start, value["destination"]["position_world_m"][:2]) > radius
+    assert math.dist(start, value["destination"]["position_world_m"][:2]) > reach
     # An older preparation is moved at native submission by the same rule and the same clearance.
     for name, record in (("base_scene.json", args["base_scene"]), ("task_masks.geometry.json", args["task_masks"])):
         (args["output_root"] / name).write_text(json.dumps(record))
@@ -1411,20 +1414,26 @@ def test_a_relocated_destination_clears_the_region_that_holds_the_largest_admitt
 
 
 #: A destination grounded 8.7 cm inside the wedge-shaped floor's slanted side: inside the floor's
-#: bounding box, the 11.3 cm region holding the cup's largest admitted replacement reaches past it.
+#: bounding box, the cup's largest admitted replacement centred there (10.3 cm at any yaw) reaches past it.
 NEAR_THE_SLANTED_SIDE = ([0.6, 0.48, 1.2], [0.84, 0.5, 1.4])
 
 
 def _region_outline(value, collision_mesh_path):
-    """The preparation's support surface in the simulator frame, and its region's radius."""
-    from blueprint_pipeline.website_surface_target_admission import website_target_radius
+    """The preparation's support surface in the simulator frame, and the radius that must lie on it.
+
+    v2 (G3): the larger of the 5 cm disc and the largest admitted replacement centred on it, at any yaw
+    (``website_support_geometry.on_surface_radius``).
+    """
+    from blueprint_pipeline.website_support_geometry import on_surface_radius
+    from blueprint_pipeline.website_surface_target_admission import website_target_radius, website_target_reach
     frame = value["coordinate_frame"]
     collider = trimesh.load(collision_mesh_path, force="mesh", process=False)
     outline = preparation.support_outline(collider, value["support"], up=1,
         meters_per_unit=frame["declared_meters_per_unit"],
         placement_residual_m=frame["placement_uncertainty_m"]).in_frame(frame["runtime_to_simulator"])
     subject = value["subject"]
-    return outline, website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
+    reach = website_target_reach(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
+    return outline, on_surface_radius(reach, website_target_radius())
 
 
 def test_a_grounded_region_reaching_past_its_surface_moves_to_the_nearest_spot_on_it(tmp_path, monkeypatch):

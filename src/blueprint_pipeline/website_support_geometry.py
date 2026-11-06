@@ -562,19 +562,19 @@ def same_support_surface(first: dict[str, Any], second: dict[str, Any]) -> bool:
 
 def destination_clear_of_start(start_min: Sequence[float], start_max: Sequence[float],
                                centre: Sequence[float], *, up: int, clearance: float) -> bool:
-    """Whether a target disc of radius ``clearance`` at ``centre`` excludes the start's centre.
+    """Whether ``centre`` lies farther than ``clearance`` from the start's centre, in plan.
 
-    The same rule as ``surface_target_initial_overlap``
-    (``task_evaluation_surface_target.region_excludes_start``) in this frame:
-    otherwise the task could begin complete.
+    With ``clearance`` a v1 disc's radius it is ``surface_target_initial_overlap``
+    (``task_evaluation_surface_target.region_excludes_start``) in this frame. With
+    the website's ``website_target_reach`` (the replacement's half-diagonal plus a
+    v2 disc's radius) it keeps that disc wholly off the start footprint at any yaw
+    (``region_clear_of_start``). Otherwise the task could begin complete.
     """
     plan = [axis for axis in range(3) if axis != up]
     middle = [(float(start_min[axis]) + float(start_max[axis])) / 2 for axis in plan]
     return math.dist(middle, [float(centre[axis]) for axis in plan]) > clearance
 
 
-#: The target disc's radius beyond the subject's half-diagonal (the website task's green region).
-DESTINATION_MARGIN_M = 0.01
 #: A relocated disc left tangent to its surface's bounds is moved this far inside them, so the
 #: runtime-to-simulator conversion cannot round it past the edge the admission checks
 #: (capture-447ae4f4 at the replacement's 0.25 size tolerance: 5.6e-17 m past, refused).
@@ -779,7 +779,7 @@ def _first_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
     """The footprint ``lower``..``upper`` moved over a plan grid, farthest from or nearest to where it is.
 
     Each candidate keeps the footprint inside ``region`` and the target disc
-    inside the support's bounds, passes ``admissible`` (a plan test), and
+    (radius ``clearance``) inside the support's bounds, passes ``admissible`` (a plan test), and
     must rest on the same surface by ``support_under`` against real
     triangles. Returns ``(centre, support)`` in runtime units, or None.
     """
@@ -817,32 +817,50 @@ def _first_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
     return None
 
 
+def on_surface_radius(clearance: float, radius: float | None) -> float:
+    """The disc about a destination's centre that must lie wholly on its surface.
+
+    v1 (``radius`` None): the target disc itself, of radius ``clearance``, which holds
+    the subject. v2: the larger of the disc (the centre tolerance) and the largest
+    admitted replacement at any yaw centred on it, whose half-diagonal is
+    ``clearance - radius`` (``website_target_reach``).
+    """
+    return clearance if radius is None else max(radius, clearance - radius)
+
+
 def farthest_supported_destination(mesh: Any, start_min: Sequence[float], start_max: Sequence[float],
                                    region_min: Sequence[float], region_max: Sequence[float],
                                    start_support: dict[str, Any], *, up: int, meters_per_unit: float,
                                    up_sign: int = 1, placement_residual_m: float | None = None,
-                                   clearance: float, outline: SupportOutline | None = None) -> Destination | None:
+                                   clearance: float, outline: SupportOutline | None = None,
+                                   radius: float | None = None) -> Destination | None:
     """The start footprint moved as far from the start as its own surface and ``region`` allow.
 
     Only for a destination grounded as the very surface the subject rests on
     (capture-447ae4f4: the whole dining table for "the other end of the same
-    table", whose centre lay under the tray). Each candidate keeps the target
-    disc of radius ``clearance`` clear of the start and the footprint inside
-    ``region``, and must rest on the same surface by ``support_under``.
+    table", whose centre lay under the tray). Each candidate's centre is farther
+    than ``clearance`` from the start's, which keeps the target disc off the
+    start footprint, keeps the footprint inside ``region``, and must rest on the
+    same surface by ``support_under``.
 
-    The scorer accepts the subject wherever its whole footprint lies in the
-    disc, and those footprints together cover the disc: every point of it is
-    somewhere an accepted subject rests. So the farthest spot whose whole disc
-    lies on the surface (``support_outline``, or the given ``outline`` of
-    ``start_support``) is taken. Where the disc fits nowhere on it, the rule
-    before this one places it (the footprint alone over the surface's faces),
-    with ``region_on_surface`` False for the admission to flag. None when
-    neither places one.
+    A v1 target disc (``radius`` not given) has radius ``clearance`` and holds
+    the whole subject: every point of it is somewhere an accepted subject rests.
+    A v2 disc has radius ``radius`` and holds only the accepted centres;
+    ``clearance`` is then ``website_target_reach`` (the largest admitted
+    replacement's half-diagonal plus ``radius``), and that replacement, centred
+    on the disc at any yaw, must lie on the surface too (``on_surface_radius``).
+    So the farthest spot whose disc lies on the surface (``support_outline``, or
+    the given ``outline`` of ``start_support``) is taken. Where it fits nowhere
+    on it, the rule before this one places it (the footprint alone over the
+    surface's faces), with ``region_on_surface`` False for the admission to
+    flag. None when neither places one.
     """
+    disc = clearance if radius is None else radius
+    on_surface = on_surface_radius(clearance, radius)
     start_min, start_max = np.asarray(start_min, dtype=float), np.asarray(start_max, dtype=float)
     plan = [axis for axis in range(3) if axis != up]
     common = {"up": up, "meters_per_unit": meters_per_unit, "up_sign": up_sign,
-              "placement_residual_m": placement_residual_m, "clearance": clearance, "farthest": True}
+              "placement_residual_m": placement_residual_m, "clearance": disc, "farthest": True}
 
     def clear(centre: np.ndarray) -> bool:
         return destination_clear_of_start(start_min, start_max, centre, up=up, clearance=clearance)
@@ -854,7 +872,7 @@ def farthest_supported_destination(mesh: Any, start_min: Sequence[float], start_
         rounding = REGION_EDGE_ROUNDING_M / meters_per_unit
         found = _first_supported(mesh, start_min, start_max, region_min, region_max, start_support,
                                  steps=REGION_GRID_STEPS, **common, admissible=lambda centre: clear(centre)
-                                 and outline.holds(centre[plan], clearance, tolerance=rounding))
+                                 and outline.holds(centre[plan], on_surface, tolerance=rounding))
         if found is not None:
             return Destination(*found, True)
     over = _footprint_over_surface(outline, (start_max - start_min) / 2, plan=plan)
@@ -869,26 +887,31 @@ def nearest_supported_destination(mesh: Any, lower: Sequence[float], upper: Sequ
                                   support: dict[str, Any], *, up: int, meters_per_unit: float, up_sign: int = 1,
                                   placement_residual_m: float | None = None, clearance: float,
                                   outline: SupportOutline, start_min: Sequence[float] | None = None,
-                                  start_max: Sequence[float] | None = None) -> Destination | None:
+                                  start_max: Sequence[float] | None = None,
+                                  radius: float | None = None) -> Destination | None:
     """The grounded footprint ``lower``..``upper`` moved the least that puts its whole target disc on ``support``.
 
-    For a destination whose disc of radius ``clearance`` reaches past its
-    surface (``outline``, of ``support``) where it was grounded: within
-    ``region`` and, with the start on the same surface, clear of it. None
-    when the disc fits nowhere there: the grounded spot then stands, and the
+    For a destination whose disc (``on_surface_radius``: a v1 disc of radius
+    ``clearance``, or a v2 disc of radius ``radius`` and the largest admitted
+    replacement centred on it) reaches past its surface (``outline``, of
+    ``support``) where it was grounded: within ``region`` and, with the start on
+    the same surface, its centre farther than ``clearance`` from the start's.
+    None when it fits nowhere there: the grounded spot then stands, and the
     admission flags it.
     """
     plan = [axis for axis in range(3) if axis != up]
     rounding = REGION_EDGE_ROUNDING_M / meters_per_unit
+    disc = clearance if radius is None else radius
+    on_surface = on_surface_radius(clearance, radius)
 
     def admissible(centre: np.ndarray) -> bool:
         return ((start_min is None or destination_clear_of_start(start_min, start_max, centre, up=up,
                                                                  clearance=clearance))
-                and outline.holds(centre[plan], clearance, tolerance=rounding))
+                and outline.holds(centre[plan], on_surface, tolerance=rounding))
 
     found = _first_supported(mesh, lower, upper, region_min, region_max, support, up=up,
                              meters_per_unit=meters_per_unit, up_sign=up_sign,
-                             placement_residual_m=placement_residual_m, clearance=clearance,
+                             placement_residual_m=placement_residual_m, clearance=disc,
                              steps=REGION_GRID_STEPS, admissible=admissible, farthest=False)
     return None if found is None else Destination(*found, True)
 

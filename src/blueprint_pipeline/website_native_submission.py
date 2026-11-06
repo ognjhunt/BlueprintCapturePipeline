@@ -202,7 +202,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         website["cad_evidence"] = refs[PREFIX + ".cad_evidence"]
     subject = runtime["subject"]
     lower, upper = subject["aabb_min_xyz"], subject["aabb_max_xyz"]
-    from .task_evaluation_surface_target import surface_execution_limits, surface_target_for_web
+    from .task_evaluation_surface_target import centre_rule, surface_execution_limits, surface_target_for_web
     from .website_surface_target_admission import (DESTINATION_SUPPORT_INSTANCE_ID, SUPPORT_INSTANCE_ID,
                                                    SUPPORT_PRIM_PATH, sealed_surface_target,
                                                    submission_relocates_destination)
@@ -314,6 +314,10 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     if not articulated:
         template["success"]["surface_target"] = target
         success["surface_target"] = target
+        if centre_rule(target):
+            # G3 (2026-11-06): the subject's centre is scored within the region, not its whole footprint.
+            template["success"]["whole_subject_containment_required"] = False
+            success["whole_subject_containment_required"] = False
     selection_ref = stage.json("configuration/subject.json", {
         "schema_version": "task_evaluation_source_object_selection.v1", "scene_id": scene_id,
         "status": "frozen_before_scene_configuration_run",

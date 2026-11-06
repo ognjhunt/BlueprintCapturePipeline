@@ -35,12 +35,13 @@ from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_context_contracts import GEOMETRY_ONLY_BLOCKER
 from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
-from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start,
+from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start, on_surface_radius,
                                        farthest_supported_destination, footprint_at, ground_on_observed_floor,
                                        nearest_supported_destination, same_support_surface,
                                        supported_destination_near_place, support_outline, support_under)
 from .website_surface_target_admission import (admit_surface_target, preparation_size_tolerance,
-                                               replacement_size_tolerance, website_target_radius)
+                                               replacement_size_tolerance, website_target_radius,
+                                               website_target_reach)
 
 
 class RegistrationRefusal(ValueError):
@@ -758,11 +759,12 @@ def relocated_destination(preparation: Mapping[str, Any], preparation_path: Path
     low, high = _runtime_bounds(rows[0]["estimated_visible_bounds"],
                                 np.asarray(preparation["registration"]["source_to_runtime"], dtype=np.float64))
     tolerance = preparation_size_tolerance(preparation)
-    clearance = website_target_radius(subject_min, subject_max, relative_error=tolerance, up=up, meters_per_unit=mpu)
+    clearance = website_target_reach(subject_min, subject_max, relative_error=tolerance, up=up, meters_per_unit=mpu)
     collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, preparation["support"],
         up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
-        placement_residual_m=frame.get("placement_uncertainty_m"))
+        placement_residual_m=frame.get("placement_uncertainty_m"),
+        radius=website_target_radius(meters_per_unit=mpu))
     if moved is None:
         return None
     # Moved at preparation with a smaller clearance: the grounded centre is the one it recorded.
@@ -1288,9 +1290,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 distinct_support = interior["floor"]
                 contact_bound = True
         elif support is not None:
-            # The one target radius (holds the largest admitted replacement): every clearance below uses it.
-            clearance = website_target_radius(subject_min, subject_max, relative_error=size_tolerance,
-                                              up=up, meters_per_unit=mpu)
+            # The disc is the centre tolerance (``radius``); every start clearance below is the
+            # reach of an accepted footprint (the largest admitted replacement plus the radius),
+            # which keeps the disc wholly off the start.
+            radius = website_target_radius(meters_per_unit=mpu)
+            clearance = website_target_reach(subject_min, subject_max, relative_error=size_tolerance,
+                                             up=up, meters_per_unit=mpu)
             whole_position, region_bounds = list(position), None
             if named_place is not None:
                 # The task named a place on this surface: it is set down at that place's
@@ -1346,7 +1351,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     # can lie under the subject: the task would start complete.
                     moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, support,
                         up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
-                        placement_residual_m=residual, outline=outline)
+                        placement_residual_m=residual, outline=outline, radius=radius)
                     if moved is None:
                         blockers.append("task_destination_overlaps_start")
                     else:
@@ -1356,14 +1361,16 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       "grounded_centre_world_m": stated, "harness_choice": True,
                                       **({} if moved.region_on_surface else {"region_on_support_surface": False}),
                                       **recorded_tolerance}
-                elif outline is not None and not outline.holds(np.asarray(position)[plan_axes], clearance,
+                elif outline is not None and not outline.holds(np.asarray(position)[plan_axes],
+                                                               on_surface_radius(clearance, radius),
                                                                tolerance=REGION_EDGE_ROUNDING_M / mpu):
                     # Grounded where its region reaches past the surface's edge: the nearest
                     # spot where it does not. None leaves it, and the admission flags it.
                     moved = nearest_supported_destination(collider, destination_min, destination_max, low, high,
                         region_support, up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
                         placement_residual_m=residual, outline=outline,
-                        start_min=subject_min if same_surface else None, start_max=subject_max if same_surface else None)
+                        start_min=subject_min if same_surface else None, start_max=subject_max if same_surface else None,
+                        radius=radius)
                     if moved is not None:
                         position = moved.centre
                         relocation = {"reason": "grounded_region_reached_past_its_surface",
