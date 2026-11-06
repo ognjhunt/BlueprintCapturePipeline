@@ -42,6 +42,9 @@ Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door
   - #3406: this tracker's previous entry.
 
   The Atlas $130 row expires 11-06 10:16Z; every paid screening run must start before then.
+- The re-plan (`screening-050fe4a7…`, 03:27Z) launched cosmos3 alone at 03:29Z. Its run failed at 03:55Z with `policy_canary_session_setup_failed:policy_load` ($1.45). That is the same check as its 21:42Z run: `cosmos_droid_client_dependencies.py:57`, `cosmos_policy_client_dependency_precedence_invalid`. cosmos3 now has 8 harness failures at this site, past `HARNESS_RETRY_LIMIT` (7), so it is not planned again. Its failure held molmoact2 and the three pi0 variants. Site spend: $21.67 of $30.
+- `5e826deba` (06 03:57Z request): **blocked**, `deploy_scene_retirement_runtime_unproven` (`ci_finished_without_attestation`). main's CI for it failed the Bandit gate. 36 entries in `docs/bandit_triage.json` expired on 11-05 (`triage_expired`), and 60 more expire 11-12; their owner is @ognjhunt. **owner**: until they are re-reviewed, no new main commit gets a source attestation, so none can deploy. 9dd4e0dc's CI passed at 11-05 21:59Z, before the expiry.
+- `304e8aa97` (06 04:05Z request, live 04:18:11Z, this session). This is the last main commit with an attestation that is not live. Nothing was preparing, launching or running at any site, and the last deploy was this session's. The changed commit re-plans the four held candidates without cosmos3. It rolls back #3408 only, which guards bundles staged during a deploy's build; none was staged. #3408 returns with the next attested deploy.
 
 ## Operating notes (2026-11-02)
 
