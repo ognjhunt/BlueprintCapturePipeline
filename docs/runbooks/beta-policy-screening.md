@@ -26,6 +26,20 @@ rights, adapter or credentials remain individual reasons. See
 authority and result boundaries.
 Catalog entries alone never authorize a run.
 
+A new website campaign plans only the rows that can run on a website job
+(owner decision 2026-11-05, `beta_policy_screening_plan.website_never_planned`).
+It leaves out the scripted baselines, which a website job never funds, and the
+robot × route templates. A template is a `planning_candidate` row with no
+runtime that still carries `prepared_robot_policy_registration_missing`. With
+the shipped catalog that is 82 of 136 rows (24 scripted, 58 templates), so a
+website plan lists 54. Once a partner's artifact is registered for a template,
+its effective row has a runtime, or the registration's own failure reason, and
+it is planned again. The catalog keeps every row and id, and internal plans
+still list them all. A re-plan lists exactly the unspent rows of the plan it
+replaces, so a campaign planned before this change keeps its rows until its
+chain ends. No money changes: a left-out row is never quoted, reserved or
+funded.
+
 Scripted simulator-state baselines retain a separate execution identity in
 publication v2. Their candidate rows include `execution_evidence_kind` set to
 `scripted_simulator_state_baseline`, `action_source` set to
@@ -113,7 +127,7 @@ on an operator launching the probe or copying its trace separately.
 7. A durable outbox sends signed publications to WebApp's existing internal
    Pipeline API. Its consumer independently binds results to the current job,
    capture and completed scene revision. Existing site and admin pages show
-   every candidate, result, blocker and budget.
+   every planned candidate, result, blocker and budget.
 
 The stable site key is `site-<website_request_id>` across recaptures and scene
 revisions. A catalog change, restart or new campaign never resets its budget.
