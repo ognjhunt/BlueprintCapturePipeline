@@ -142,10 +142,30 @@ def test_registration_is_idempotent_for_an_unchanged_source(tmp_path, monkeypatc
     _, kwargs, _, _ = door_world(tmp_path, monkeypatch)
     assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
     row, status = overlay_path().read_bytes(), status_of()
-    monkeypatch.setattr(builder.contract, "site_inputs", lambda *a, **k: pytest.fail("resolved again"))
+    # The current base packet is resolved to confirm the row is still its own; nothing is prepared or written.
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
     for _ in range(2):
         assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
     assert overlay_path().read_bytes() == row and status_of() == status
+
+
+def test_a_recompiled_base_packet_with_the_same_source_is_registered_again(tmp_path, monkeypatch):
+    # A recompiled team scene keeps the six-field source but has a new base receipt: the old row would
+    # fail g1_beta_source_scene_derivation_mismatch at planning, so the fast path must not keep it.
+    _, kwargs, _, _ = door_world(tmp_path, monkeypatch)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    row = json.loads(overlay_path().read_text())
+    base = registration._current_base_hex(SITE, kwargs["source"], kwargs["source_queue"])
+    assert base and all(f"/native-g1/{base}/" in item["native_g1"]["scene_packet"]["path"]
+                        for item in row["screening_candidates"].values())
+    assert registration._built_from_base(row, base) and not registration._built_from_base(row, None)
+    assert not registration._built_from_base(row, "0" * 64)
+    attempts = []
+    monkeypatch.setattr(registration, "_current_base_hex", lambda *_a, **_k: "0" * 64)
+    monkeypatch.setattr(registration, "_register", lambda **arguments: attempts.append(arguments) or (
+        {"status": "registered", "candidates": {}}, False))
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    assert len(attempts) == 1 and attempts[0]["current"] == kwargs["source"]
 
 
 def test_a_changed_record_is_registered_again(tmp_path, monkeypatch):

@@ -150,6 +150,30 @@ def _records_verify(row: Mapping[str, Any], manifest_path: Path) -> bool:
     return bool(seen)
 
 
+def _current_base_hex(site_id: str, current: Mapping[str, Any], source_queue: Path) -> str | None:
+    """The site's current base packet receipt digest (hex), or ``None`` when it cannot be resolved now."""
+    try:
+        registry = reader.load_registry()
+        if registry is None:
+            return None
+        _root, _inputs, base_receipt, _request, _scene = _contract().site_inputs(
+            {"source": dict(current), "site_id": site_id}, registry, source_queue=source_queue)
+        return str(base_receipt["receipt_digest"])[7:]
+    except Exception:  # noqa: BLE001 - unresolvable now: the full path records why
+        return None
+
+
+def _built_from_base(row: Mapping[str, Any], base_hex: str | None) -> bool:
+    """Every packet in the row was prepared from this base packet (its ``native-g1/<base>/`` directory).
+
+    A recompiled team scene keeps its six-field source but gets a new base receipt; the row prepared from
+    the old one would fail ``g1_beta_source_scene_derivation_mismatch`` at planning, so it is replaced.
+    """
+    marker = f"/native-g1/{base_hex}/"
+    return base_hex is not None and all(marker in item["native_g1"]["scene_packet"]["path"]
+                                        for item in row["screening_candidates"].values())
+
+
 def _navigation_authority(site_root: Path, packet_dir: Path) -> dict[str, Any] | None:
     """Exactly one goal authority for this G1 scene in the site's own tree, else None."""
     contract = _contract()
@@ -317,7 +341,8 @@ def ensure_site_registration(*, site_id: str, source: Mapping[str, Any], source_
         return {"status": "not_registered", "reason": "g1_site_identity_invalid"}
     current = {key: source[key] for key in SOURCE_FIELDS}
     overlay = reader.site_registration_overlay(site_id, overlay_root)  # None for any unusable row
-    if overlay is not None and overlay["source"] == current and _records_verify(overlay, Path(manifest_path)):
+    if (overlay is not None and overlay["source"] == current and _records_verify(overlay, Path(manifest_path))
+            and _built_from_base(overlay, _current_base_hex(site_id, current, Path(source_queue)))):
         return {"status": "already_registered"}
     status_path = path.with_name(site_id + ".status.json")
     try:
