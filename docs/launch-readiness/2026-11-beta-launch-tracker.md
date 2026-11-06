@@ -92,6 +92,160 @@ Last updated: 2026-11-03 14:49Z. Pipeline live: `333b1f74a` (11-03 14:29Z). Door
     - Check the marker size.
     - Carry the scene's arm-path flags into the screening run summary, beside `observation_quality_flags`, as a flag and not a gate.
 
+## G1 humanoid on website screening (audit, 2026-11-06)
+
+This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repos). It read the code at `7f8728b` and read the host through the door between 14:26Z and 14:50Z. Nothing was launched, registered or paid.
+
+**Where it stands.** The four HumanoidArena G1 rows have never run on the website path. In all 24 campaigns in the ledger (all capture-447), every G1 row is `unavailable` with `g1_beta_scene_packet_missing` and `runtime_candidate_binding_missing`. Both codes have one cause: the site has no G1 registration. The first is raised at `beta_policy_screening_capabilities.py:292-293`; with no binding, the plan then adds the second (`beta_policy_screening_plan.py:469-470`).
+
+**What is built** (code and CPU tests only):
+- planning;
+- the automatic packet recipe;
+- the one-shot paid session;
+- the independent watchdog and scoped closeout;
+- the controller's re-score;
+- the `learned_policy` summary.
+
+`test_beta_policy_screening_g1.py`, `test_beta_policy_screening_g1_prepare.py` and `test_operator_door_g1_registration.py` give 69 passed and 1 skipped (the skip needs an unprivileged fixture owner).
+
+**What stops it, in order:**
+1. **Nothing registers a website site.**
+   - The only writer of `site_screening_candidates` is the door installer (`deploy/operator-door/operator_door/native_g1_registration.py:67-77`), and it needs a person's `authorization_reference`.
+   - The natural automatic hook is `team_scene_packet.record_team_scene` (`team_scene_packet.py:1268-1291`). It runs as `blueprint`, which cannot write the root-owned `/etc/blueprint/team-evaluation-registry.json`.
+2. **New: the shared G1 runtime source is gone from the host.**
+   - The shared registry (`g1-team-campaign-registry.json`, `sha256:16fa2ace…`) points at `/mnt/blueprint-work/g1-cuda-runtime-source-7c1f528-20260926/native_task_runtime_source_packet.v1.json`, and the door returns `not_found` for that directory.
+   - Only its build record remains: `g1-cuda-runtime-source-7c1f528-20260926-build.json`, a 4,638,507,022-byte packet with sha `8128c868…`.
+   - The two G1 retirement records (09-27 and 10-23) do not list it, so how it was removed is unknown.
+   - Until it is rebuilt or restored, every registration ends `g1_shared_source_verification_failed`, the manual door install included (`native_g1_registration_contract.py:449-466`).
+   - The publisher source (receipt `4170b783…`) and the 38,195,671-byte robot USD are still present.
+3. **No money check for G1 at planning.**
+   - `candidate_gpu_blockers` skips G1 (`beta_policy_screening_gpu.py:110,112`), and no candidate gets a rate check before launch.
+   - G1 takes the profile's shared cap, rate and TTL. The site overlay accepts only `native_g1` per row, so there is no G1-specific setting.
+4. **Rights:** see the owner decisions below.
+5. **Only rigid pick-and-place can reach G1.**
+   - Mobile and navigation jobs are held before the scene build (`website_early_task_hold.py:94-114`).
+   - On the website, mobile wording is more than a hint: `websiteSceneSponsorship.ts:240` gives such a job preparation spend but no execution grant (`website_scene_site_not_qualified`).
+6. **A scored G1 row would be ranked.**
+   - `website_candidate_selection.py:82-84` does not look at `ranking_eligible`, so a completed G1 row could be shown as chosen in simulation.
+   - The WebApp's `choice_blocker` enum (`betaCandidateSelection.ts:38`) has no development-only value.
+   - The task page shows no development-only boundary on any row.
+7. **One generic error after the run.** `beta_policy_screening_launch.py:568-575` turns every `g1_beta_result_*` reason into `g1_beta_native_result_missing_or_invalid`.
+
+**Corrections to the 11-06 map.** The rest of it checked out.
+- The fit precheck maps `articulated_open_close` too (`website_robot_fit_precheck.py:68`).
+- The site overlay compares 4 of the 6 source fields (`team_candidate_registry_reader.py:116-119`); `capabilities.py:287` checks all six.
+- The registration contract and installer live in `deploy/operator-door/operator_door/`, not `src/`. A change to them needs a door upgrade.
+- In `beta_policy_screening_g1_launch.py`, the gpu-canary arguments are at lines 64-68 and `join_result` at 78-107.
+- The launch credit check needs the cap plus $1 (`provider_credit_admission.py:87`), which is $5 for a $4 cap. The $7.07 balance admits one G1 launch; $11 is the page line, not a launch floor.
+- At planning the G1 quote is just the cap.
+  - The 200 GB disk and the transfer quote are set when the bundle is prepared.
+  - When an offer is chosen, compute plus 200 GB of storage must fit the hourly rate, and rate × minutes plus transfer must fit the cap (`vast_provider_adapter.py:1553-1555, 1816-1819`).
+- 841757 is fixed in three places on the beta path:
+  - the model-terms review receipt (`beta_policy_screening_g1.py:219`, `native_g1_beta_authority.py:38-43, 80`);
+  - the authorization basis string (`native_g1_beta_authority.py:60`);
+  - the tokenizer fallback folder (`native_g1_beta_tokenizer.py:19`).
+- The ADP team campaigns have 11 dispatch records under `/mnt/blueprint-work/pipeline-control-plane/native-g1-team-campaign-work/`. None completed. Besides the blockers already listed they include `vast_cuda_runtime_host_image_incompatible` and `vast_paid_launch_lock_busy`.
+- `g1_provider_manipulation_pair_blocked` comes from the ADP pair runner (`native_g1_provider_runtime.py:450`): a pair fails unless both of its candidates complete. It cannot occur on the beta path:
+  - the beta runtime never imports that runner (`native_g1_beta_bundle.py:23, 54, 60`);
+  - the beta lane skips the policy-query checks (`adp_isaac_lab_arena_vast.py:1169`).
+
+**The 09-27 DP trial, measured.** Read from `controller-fe6061cc-blueprint-run-20260927d3`, JSON and logs only.
+- **Machine and money:**
+  - one RTX A6000 at $0.5485/h, live 4,988 s (83 min);
+  - Vast's posted charge was $0.903: GPU $0.675, disk $0.097, bandwidth $0.131;
+  - provider zero was confirmed;
+  - its limits were the ADP lane's: $5 cap, $1.25/h, 4 h.
+- **Setup:** about 12 min, from instance start at 23:17:24Z to the first worker at 23:29:05Z. It downloaded all four checkpoints (about 20.8 GB), 4.4 GB of runtime dependencies and the 339 MB bundle.
+- **DP cell:**
+  - the worker started at 23:29:05Z and reached its episode about 6.8 min later (cold Kit);
+  - the next worker started at 00:18:48Z, so one 150-query episode (60 s simulated) with its media took at most 50 min;
+  - the per-query records carry no wall-clock time, so the episode alone is not measured.
+- **π0.5 cell:**
+  - with Kit warm it reached its episode in about 1.5 min;
+  - the run's output was 2.39 GB.
+- **Why DP failed.** This was not a measurement of the policy:
+  - Robot–background contact forces of 104–8,677 N appear in steps 1–9 (0.02–0.18 s), with the contact pair not identified.
+  - From step 8 to the end the robot was outside the workspace.
+  - The book never moved (translation 1.4 × 10⁻⁸ m, lift 0.9 mm), and task contact force stayed 0.
+  - At its second query the policy already saw a state far outside its training range (raw values −37 to +22).
+  - The retreat clearance reads −17.6 km.
+  - That is a physics blow-up at spawn. The score's `collision_or_containment_failure` does not show it.
+- **Prompt mismatch:** the policy got the site's sentence ("Pick up the open book…"). The checkpoint's trained prompt, which the server logs as its default route, is "Move the box from the table onto the shelf."
+- **π0.5 result:**
+  - its weights loaded ("All keys loaded successfully!");
+  - it received its first query with 12.5% of state values outside the normalization range;
+  - it returned no action before the worker's timeout;
+  - the cause is not proven.
+
+**Estimated cost and time per G1 beta session:**
+- Setup: about 10–12 min.
+- Cells: at most 50 min each, measured once; the code caps a cell at 55 min (`native_g1_beta_runtime.py:314`).
+- A 4 h session therefore fits about 4 cells, not the 10 the plan lists. The session also stops at the first cell that does not complete (L319-322).
+- At today's A6000 prices ($0.46–0.60/h with 200 GB disk), a full 4 h session costs about $1.9–2.4 plus about $0.1 transfer, under the $4 cap.
+
+**Vast today** (14:32Z; free public offer search, verified on-demand, single GPU; nothing created):
+- 48 GB RT parts the lane accepts:
+  - RTX A6000: 4 offers at $0.40–0.51/h base, 2 of them with ≥ 200 GB disk;
+  - RTX 6000 Ada: 2 offers at $0.51–0.53/h, both under 200 GB disk;
+  - L40 and L40S: none.
+- RTX PRO 6000 starts at $0.97/h.
+- $0.80/h rents, but the pool is thin.
+
+**Tokenizer folder:**
+- The door refuses the folder and every receipt with "tokenizer" in its name (`secret_name_refused`).
+- The only door code that checks those six files is inside `install-public-trlc-policy`, which also installs TRLC, so it is not a read-only check.
+- Planning is the sanctioned check: once π0.5 has a registration, its row shows `g1_beta_selected_pi_tokenizer_unavailable`, `…_invalid`, or nothing.
+- Not verified today.
+
+**Host:**
+- Disk headroom is `ok`, with 38.7 GB available above the floor and no refused roles.
+- `/var/lib/blueprint` is 86.7% used and `/mnt/blueprint-work` 82.8%.
+- A G1 collection reserves 4 × 4 GiB plus the bundle (`native_g1_beta_paid.py:97-104`).
+- Rebuilding the runtime source needs about 4.6 GB more.
+
+**Where to watch a G1 run.** All reads are JSON or text through the door.
+- Queue: `/var/lib/blueprint/pipeline-control-plane/beta-policy-screening/`, holding `screening_ledger.v1.json`, `plans/`, `publications/<campaign>.json` and `attempts/<id>.attempt_dir.json`.
+- Attempt `A`: `/mnt/blueprint-work/beta-policy-screening-work/attempts/screen-<id>/`:
+  - `runtime_inputs/session_authority.json`;
+  - `bundle/native_g1_beta_provider_bundle.v1.json`;
+  - `prepared.json`, `paid_admission.json` and `allocator_result.json`;
+  - `provider_absence/<digest>.json` (the scoped closeout).
+- Provider run: `A/allocator/attempts/attempt_001/`:
+  - `vast_provider_run/vast_onstart_container.log`, `vast_budget_ledger.json` and `vast_runtime_phase_log.jsonl`;
+  - `independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json` (a legacy name);
+  - `immutable_execution/native_g1_beta_session_result.v1.json`;
+  - per cell: `cells/<cell_id>/episode/native_g1_shared_scene_episode_trace.v1.json` and `query_checkpoints/`.
+- Read behaviour from the trace and the score's `event_ledger` (contacts, forces, workspace steps, object motion), not from the outcome string.
+
+**Owner decisions, asked 11-06** (each with this session's recommendation):
+1. **Rights scope.**
+   - The 09-25 approval covers internal development simulation of scene 841757 only. Its non-scope excludes a production profile.
+   - Recommendation: decide model by model.
+     - DP: HumanoidArena source MIT, ModelScope label Apache 2.0, SONIC weights under the NVIDIA Open Model License. If you are satisfied with those terms for private customer-site screening (a private count summary, no media, no redistribution), approve DP.
+     - π0.5: hold it. Its config says `license: null`, its `pi05_base` terms are inherited, and its tokenizer is the gated Gemma one.
+   - **Until you answer, no G1 launch for a customer site.**
+2. **Who registers a site.** Recommendation: one standing approval, recorded once and scoped by decision 1, so the service registers each pick-and-place site after its scene packet completes.
+   - Registration grants no spend.
+   - Planning and launch still re-check consent live.
+   - The alternative keeps a one-tap door request per site.
+3. **Money.**
+   - Recommendation:
+     - keep the $4 cap, $0.80/h and a 4 h TTL for G1;
+     - plan 4 cells per session instead of 10;
+     - G1 shares the $30 site budget, with no increase.
+   - Top up Vast to clear the $11 page; $7.07 covers one $4 launch at a time.
+   - For the first proof, capture-447 has $3.37 left, less than one G1 run. Recommendation: the next new pick-and-place site rather than raising capture-447.
+4. **Navigation goal authority.** Recommendation: yes.
+   - Let the site's confirmed task brief plus a machine-composed authority replace the named `human_reviewer` / `confirmed_by_team_id`.
+   - It would be recorded as a disclosed assumption, still `development_only`.
+   - That requirement protects task truth, not privacy, rights or money.
+
+**Next, without waiting on the decisions:**
+- the G1 money check at planning;
+- the development-only choice blocker (WebApp first, then the Pipeline);
+- the runbook's stale $15;
+- a plan to rebuild the runtime source from its build record.
+
 ## Operating notes (2026-11-02)
 
 - A second operator (the cloud session) uses the shared `cloud-scene-runs` door token. It deployed `b631b23fa` at 14:05:57Z and `ed6d0befb` at 15:18Z. This session makes no Pipeline deploys while it drives capture-447; merged fixes ship with the next deploy. At 15:32Z no paid launch lock was held.
