@@ -308,11 +308,44 @@ def _reason(error: BaseException) -> str:
     return text if re.fullmatch(r"[a-z][a-z0-9_.:-]{0,159}", text) else type(error).__name__
 
 
+def _withdrawn_from_view(archive: Mapping[str, Any]) -> bool:
+    """An archive taken back, or still being taken back: never current, never read."""
+    return archive.get("retracted") is True or archive.get("retraction") == "pending"
+
+
+def _retraction_pending(manifest: Mapping[str, Any]) -> bool:
+    archive = manifest.get("archive")
+    return isinstance(archive, Mapping) and archive.get("retraction") == "pending" and isinstance(archive.get("uri"), str)
+
+
+def _finish_retraction(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
+    """Delete a pending retraction's archive; on failure it stays pending for the next pass."""
+    archive = manifest["archive"]
+    try:
+        retract(archive["uri"])
+    except Exception as error:  # noqa: BLE001 - storage errors retry on the next pass
+        manifest["archive"] = {**archive, "retraction_error": _reason(error),
+                               "retraction_attempts": int(archive.get("retraction_attempts") or 0) + 1}
+        write_json(manifest_path, manifest)
+        return False
+    manifest["archive"] = {**{key: value for key, value in archive.items()
+                              if key not in {"retraction", "retraction_error"}}, "retracted": True}
+    write_json(manifest_path, manifest)
+    return True
+
+
+def _take_back(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
+    """Record the retraction before deleting, so a failed deletion is retried, never forgotten."""
+    manifest["archive"] = {**manifest["archive"], "retraction": "pending"}
+    write_json(manifest_path, manifest)
+    return _finish_retraction(manifest, manifest_path, retract)
+
+
 def _current(manifest: Mapping[str, Any], revision: str, preview: Path) -> bool:
     built, archive = manifest.get("preview") or {}, manifest.get("archive") or {}
     return (manifest.get("schema_version") == MANIFEST_SCHEMA and manifest.get("scene_revision") == revision
             and not preview.is_symlink() and preview.is_file() and preview.stat().st_size == built.get("size_bytes")
-            and archive.get("digest") == built.get("digest") and archive.get("retracted") is not True
+            and archive.get("digest") == built.get("digest") and not _withdrawn_from_view(archive)
             and (manifest.get("delivered") or {}).get("preview_digest") == manifest.get("preview_digest"))
 
 
@@ -326,17 +359,27 @@ def publish_scene_preview(capture_root: Path, *, now: Callable[[], float] = time
 
     Returns ``{"status": ...}``: ``current``, ``published``, ``no_viewable_scene``,
     ``withdrawn``, ``refused`` (rights, with a reason), ``busy`` or ``failed`` (retried by
-    the next pass). Typed refusals never raise; nothing here pays for anything.
+    the next pass). Typed refusals never raise; nothing here pays for anything. An archive
+    whose retraction is pending is deleted first, before any withdrawal or rights return,
+    and every pass retries it until it is gone.
     """
     root = Path(capture_root)
     identity = _identity(root)
+    directory = root.joinpath(*DIRECTORY)
+    manifest_path, preview_path = directory / MANIFEST_FILE, directory / PREVIEW_FILE
+    if _retraction_pending(_read(manifest_path)):
+        try:
+            with preview_lock(root):
+                manifest = _read(manifest_path)
+                if _retraction_pending(manifest) and not _finish_retraction(manifest, manifest_path, retract):
+                    return {"status": "failed", "reason": "website_scene_preview_retraction_pending"}
+        except ScenePreviewBusy:
+            return {"status": "busy"}
     if capture_withdrawn(root):
         return {"status": "withdrawn"}
     # Read-only first: a capture with nothing to show gets no lock file or directory.
     if scene_source(root) is None:
         return {"status": "no_viewable_scene"}
-    directory = root.joinpath(*DIRECTORY)
-    manifest_path, preview_path = directory / MANIFEST_FILE, directory / PREVIEW_FILE
     try:
         with preview_lock(root):
             source = scene_source(root)
@@ -367,25 +410,21 @@ def publish_scene_preview(capture_root: Path, *, now: Callable[[], float] = time
             if capture_withdrawn(root):
                 return {"status": "withdrawn"}
             stored = manifest.get("archive") or {}
-            if stored.get("digest") != built["digest"] or stored.get("retracted") is True:
+            if stored.get("digest") != built["digest"] or _withdrawn_from_view(stored):
                 manifest["archive"] = archive(preview_path, identity=identity)
                 if manifest["archive"]["digest"] != built["digest"]:
                     raise ValueError("website_scene_preview_archive_mismatch")
                 write_json(manifest_path, manifest)
             # A withdrawal that landed during the upload takes the copy back at once.
             if capture_withdrawn(root):
-                retract(manifest["archive"]["uri"])
-                manifest["archive"] = {**manifest["archive"], "retracted": True}
-                write_json(manifest_path, manifest)
+                _take_back(manifest, manifest_path, retract)
                 return {"status": "withdrawn"}
             try:
                 deliver(record, identity=identity)
             except Exception as error:  # noqa: BLE001 - classified below; the archive stands only with rights
                 reason = _reason(error)
                 if _RIGHTS_REFUSALS.search(str(error)):
-                    retract(manifest["archive"]["uri"])
-                    manifest["archive"] = {**manifest["archive"], "retracted": True}
-                    write_json(manifest_path, manifest)
+                    _take_back(manifest, manifest_path, retract)
                     return {"status": "refused", "reason": reason}
                 manifest["last_delivery_error"] = reason
                 write_json(manifest_path, manifest)
@@ -447,7 +486,7 @@ def open_scene_preview(*, request_id: str, capture_id: str, digest: str, storage
             manifest = _read(roots[0].joinpath(*DIRECTORY) / MANIFEST_FILE)
             archive = manifest.get("archive") or {}
             if (capture_withdrawn(roots[0]) or manifest.get("schema_version") != MANIFEST_SCHEMA
-                    or archive.get("digest") != digest or archive.get("retracted") is True):
+                    or archive.get("digest") != digest or _withdrawn_from_view(archive)):
                 raise ScenePreviewUnavailable("website_scene_preview_unavailable")
     from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
     from .task_evaluation_configured_scene_object_store import _artifact_object_store_client, _object_missing

@@ -255,6 +255,60 @@ def test_a_withdrawal_that_lands_during_the_upload_takes_the_copy_back(capture):
     assert manifest["archive"]["retracted"] is True
 
 
+def _flaky_retraction(world, failures: int):
+    """A B2 deletion that fails ``failures`` times, then succeeds."""
+    attempts = []
+
+    def retract(uri):
+        attempts.append(uri)
+        if len(attempts) <= failures:
+            raise RuntimeError("synthetic transient storage failure https://b2.invalid/signed?X-Amz-Signature=x")
+        world.retracted.append(uri)
+    world.retract = retract
+    return attempts
+
+
+def test_a_failed_take_back_after_withdrawal_is_retried_by_later_passes(capture):
+    # Codex P1 on #3459: a transient deletion failure must not leave the copy behind once
+    # every later pass returns "withdrawn".
+    _base_scene(capture)
+    world = World(on_archive=lambda: _withdraw(capture))
+    attempts = _flaky_retraction(world, failures=2)
+    manifest_path = capture / "pipeline/website_scene_preparation/scene_preview.json"
+    assert world.publish(capture) == {"status": "withdrawn"}
+    archive = json.loads(manifest_path.read_text())["archive"]
+    assert archive["retraction"] == "pending" and "retracted" not in archive
+    assert archive["retraction_error"] == "RuntimeError" and world.retracted == [] and world.delivered == []
+    # The capture is still withdrawn, and the next pass retries before returning that.
+    assert world.publish(capture) == {"status": "failed", "reason": "website_scene_preview_retraction_pending"}
+    assert world.publish(capture) == {"status": "withdrawn"}
+    archive = json.loads(manifest_path.read_text())["archive"]
+    assert world.retracted == [archive["uri"]] and len(attempts) == 3
+    assert archive["retracted"] is True and "retraction" not in archive and "retraction_error" not in archive
+    # Gone is gone: later passes delete nothing more.
+    assert world.publish(capture) == {"status": "withdrawn"} and len(attempts) == 3
+
+
+def test_a_failed_take_back_after_a_rights_refusal_is_retried_before_the_rights_check(capture):
+    _base_scene(capture)
+    world = World(delivery_error=ValueError("website_control_scene-preview_http_409:source_revoked"))
+    attempts = _flaky_retraction(world, failures=1)
+    manifest_path = capture / "pipeline/website_scene_preparation/scene_preview.json"
+    assert world.publish(capture)["status"] == "refused"
+    archive = json.loads(manifest_path.read_text())["archive"]
+    assert archive["retraction"] == "pending" and world.retracted == []
+    # A copy whose retraction is pending is never read, whatever the store holds.
+    with pytest.raises(preview.ScenePreviewUnavailable):
+        preview.open_scene_preview(request_id="req1", capture_id="walkthrough-req1", digest=archive["digest"],
+                                   storage_root=capture.parents[4], client=object(), bucket="b")
+    # Rights still refused: the deletion is retried first, and nothing is uploaded again.
+    world.rights = False
+    world.archive = lambda *_a, **_k: pytest.fail("re-uploaded while rights were refused")
+    assert world.publish(capture)["status"] == "refused"
+    assert world.retracted == [archive["uri"]] and len(attempts) == 2
+    assert json.loads(manifest_path.read_text())["archive"]["retracted"] is True
+
+
 def test_a_webapp_rights_refusal_takes_the_copy_back(capture):
     _base_scene(capture)
     world = World(delivery_error=ValueError("website_control_scene-preview_http_409:source_revoked"))
