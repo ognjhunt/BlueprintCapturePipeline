@@ -22,8 +22,10 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   the records inside their archive, read through the existing client;
 - every B2 object those pointers and the bound runs' registered remote result
   artifacts name, with each object version and delete marker listed through
-  the existing artifact store client, and every archived Atlas preview of the
-  site's walkthrough (found by its name, so also after workspace retirement);
+  the existing artifact store client, every archived Atlas preview of the
+  site's walkthrough and every published web-sized scene preview the site's job
+  page showed (``website_scene_preview``), each found by its name, so also after
+  workspace retirement;
 - every beta policy screening attempt of a campaign bound to the site by the
   screening ledger, and the provider output archives its promotion receipts name
   (``website_capture_withdrawal_screening``): one whose money is final and whose
@@ -431,11 +433,12 @@ class B2ObjectVersions:
             markers = {"KeyMarker": page["NextKeyMarker"], "VersionIdMarker": page["NextVersionIdMarker"]}
         raise WithdrawalDeletionError("website_withdrawal_deletion_object_listing_unbounded")
 
-    def named(self, prefix: str, filename: str, *, continuation_request_id: str | None = None) -> list[str]:
+    def named(self, prefix: str, filename: str, *, continuation_request_id: str | None = None,
+              suffix: str = ".zip") -> list[str]:
         """Exact original and job-scoped continuation archive names, in any version."""
         keys, markers = set(), {}
-        continuation = (re.compile(re.escape(f"{continuation_request_id}-supplement-") + r"[a-f0-9]{40}\.zip")
-                        if continuation_request_id is not None else None)
+        continuation = (re.compile(re.escape(f"{continuation_request_id}-supplement-") + r"[a-f0-9]{40}"
+                                   + re.escape(suffix)) if continuation_request_id is not None else None)
         for _page in range(10_000):
             page = self.client.list_object_versions(Bucket=self.bucket, Prefix=prefix, **markers)
             for row in [*(page.get("Versions") or []), *(page.get("DeleteMarkers") or [])]:
@@ -492,6 +495,23 @@ def _atlas_preview_uris(object_store: Any, identity: Mapping[str, str],
     try:
         return object_store.named(prefix, bundle_filename(identity["capture_id"]),
                                   continuation_request_id=identity["request_id"])
+    except WithdrawalDeletionError as error:
+        unresolved.append({"prefix": prefix, "reason": str(error)})
+        return []
+
+
+def _scene_preview_uris(object_store: Any, identity: Mapping[str, str],
+                        unresolved: list[dict[str, Any]]) -> list[str]:
+    """Every published scene preview of the walkthrough and its same-job updates, by name."""
+    from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
+    from .website_scene_preview import ARTIFACT_KIND, preview_filename
+    prefix = f"{LARGE_ARTIFACT_KEY_PREFIX}/{ARTIFACT_KIND}/sha256/"
+    if object_store is None:
+        unresolved.append({"prefix": prefix, "reason": "website_withdrawal_deletion_object_store_unconfigured"})
+        return []
+    try:
+        return object_store.named(prefix, preview_filename(identity["capture_id"], identity["request_id"]),
+                                  continuation_request_id=identity["request_id"], suffix=".ply")
     except WithdrawalDeletionError as error:
         unresolved.append({"prefix": prefix, "reason": str(error)})
         return []
@@ -577,7 +597,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
     uris = sorted({uri for run in runs for uri in run["object_uris"]}
                   | {uri for attempt in screened["attempts"] for uri in attempt["object_uris"]}
                   | ({workspace["archive_uri"]} if workspace["archive_uri"] else set())
-                  | set(_atlas_preview_uris(object_store, identity, unresolved)))
+                  | set(_atlas_preview_uris(object_store, identity, unresolved))
+                  | set(_scene_preview_uris(object_store, identity, unresolved)))
     # A content-addressed object an unbound run also names is not this site's to delete.
     unbound_uris = set(foreign_uris)
     for key, unit in units.items():
@@ -650,7 +671,8 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
 
     It holds every same-site Atlas preview lock throughout, so no preview step can
     publish a new copy between this plan's object listing and its deletion; a step
-    in progress refuses (``atlas_preview_busy``) and the operator retries. It holds
+    in progress refuses (``atlas_preview_busy``) and the operator retries. Each
+    capture's scene preview lock is held the same way (``scene_preview_busy``). It holds
     each capture's screening review-video retention lock the same way
     (``review_videos_busy``), so no video is copied in while the site is deleted,
     and the team scene packet queue's lock (``team_scene_packets_busy``), so no
@@ -681,6 +703,19 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise WithdrawalDeletionError("website_withdrawal_deletion_atlas_preview_busy") from None
+        from .website_scene_preview import DIRECTORY as SCENE_PREVIEW_DIRECTORY, LOCK_FILE as SCENE_PREVIEW_LOCK
+        for path in sorted(site.glob(f"captures/*/{'/'.join(SCENE_PREVIEW_DIRECTORY)}/{SCENE_PREVIEW_LOCK}")):
+            _require(not any(item.is_symlink() for item in (path, *path.parents)), "unsafe_entry")
+            try:
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError:
+                raise WithdrawalDeletionError("website_withdrawal_deletion_scene_preview_lock_unsafe") from None
+            lock = locks.enter_context(os.fdopen(descriptor, "rb"))
+            _require(stat.S_ISREG(os.fstat(lock.fileno()).st_mode), "scene_preview_lock_unsafe")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise WithdrawalDeletionError("website_withdrawal_deletion_scene_preview_busy") from None
         from .beta_screening_review_videos import DIRNAME as REVIEW_VIDEOS, LOCK_NAME as REVIEW_LOCK
         for path in sorted(site.glob(f"captures/*/pipeline/{REVIEW_VIDEOS}/{REVIEW_LOCK}")):
             _require(not any(item.is_symlink() for item in (path, *path.parents)), "unsafe_entry")

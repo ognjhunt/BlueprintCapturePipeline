@@ -315,6 +315,52 @@ def test_withdrawal_finds_only_its_job_scoped_revision_previews_without_local_ca
     assert all(world["store"].present(uri) for uri in others)
 
 
+def test_published_scene_previews_of_the_job_are_found_by_name_and_deleted(world):
+    # The job page's web-sized scene previews (website_scene_preview): the walkthrough's and an
+    # update's, found by name even with no local capture records; other jobs' stay.
+    child = "supplement-" + "a" * 40
+    mine = [_uri("website-scene-preview", "3", "walkthrough-req1.ply"),
+            _uri("website-scene-preview", "4", f"req1-{child}.ply")]
+    others = [_uri("website-scene-preview", "5", "walkthrough-req2.ply"),
+              _uri("website-scene-preview", "6", f"req11-{child}.ply"),
+              _uri("website-scene-preview", "7", f"req1-{child}.zip")]
+    for uri in [*mine, *others]:
+        world["store"].put(uri, b"synthetic preview", versions=2, marker=True)
+    plan = _plan(world)
+    assert plan["unresolved"] == []
+    found = {row["uri"]: row for row in plan["objects"]}
+    assert set(mine) <= set(found) and not set(others) & set(found)
+    assert len(found[mine[0]]["versions"]) == 3
+    receipt = _apply(world, plan)
+    assert all(not world["store"].present(uri) for uri in mine)
+    assert all(world["store"].present(uri) for uri in others)
+    assert set(mine) <= {row["uri"] for row in receipt["deleted"]["objects"]}
+
+
+def test_scene_previews_cannot_be_ruled_out_without_the_object_store(world):
+    plan = _plan(world, object_store=None)
+    assert {"prefix": f"{PREFIX}/website-scene-preview/sha256/",
+            "reason": "website_withdrawal_deletion_object_store_unconfigured"} in plan["unresolved"]
+
+
+def test_deletion_waits_for_a_scene_preview_pass_and_removes_its_local_copy(world):
+    import fcntl
+    from blueprint_pipeline import website_scene_preview as scene_preview
+    directory = world["capture"].joinpath(*scene_preview.DIRECTORY)
+    _write(directory / scene_preview.PREVIEW_FILE, b"ply synthetic preview")
+    _write(directory / scene_preview.MANIFEST_FILE, {"schema_version": scene_preview.MANIFEST_SCHEMA})
+    (directory / scene_preview.LOCK_FILE).touch()
+    plan = _plan(world)
+    with (directory / scene_preview.LOCK_FILE).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with pytest.raises(deletion.WithdrawalDeletionError, match="scene_preview_busy"):
+            _apply(world, plan)
+    assert world["store"].deleted == [] and (directory / scene_preview.PREVIEW_FILE).exists()
+    _apply(world, plan)
+    assert not (directory / scene_preview.PREVIEW_FILE).exists()
+    assert not (directory / scene_preview.MANIFEST_FILE).exists()
+
+
 @pytest.mark.parametrize("capture_id", ["walkthrough-req1", "supplement-" + "a" * 40])
 def test_deletion_waits_for_a_running_preview_step_and_then_holds_it_off(world, capture_id):
     import fcntl

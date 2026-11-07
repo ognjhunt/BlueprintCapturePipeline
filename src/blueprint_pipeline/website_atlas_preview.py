@@ -741,6 +741,19 @@ def trigger_stop_reason(*, unit: str = TRIGGER_UNIT, hold_record: Path = HOLD_RE
     return reason
 
 
+def scene_preview_tick(storage_root: Path) -> dict[str, int]:
+    """The site's web-sized scene previews (``website_scene_preview``), published by the same timer.
+
+    It reads retained scenes and pays for nothing; a failure is counted, never raised into the tick.
+    """
+    try:
+        from .website_scene_preview import tick as publish_scene_previews
+        return publish_scene_previews(storage_root)
+    except Exception as error:  # noqa: BLE001 - previews are optional; the Atlas tick has finished
+        logger.warning("website_scene_preview_tick_failed type=%s", type(error).__name__)
+        return {"tick_failed": 1}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -768,6 +781,7 @@ def main(argv: list[str] | None = None) -> int:
                   stop_reason=trigger_stop_reason())
     from .owned_capture_atlas_worker import tick_from_environment
     counts.update({"owned_" + key: value for key, value in tick_from_environment().items()})
+    counts.update({"scene_preview_" + key: value for key, value in scene_preview_tick(args.storage_root).items()})
     print(json.dumps(counts, sort_keys=True), flush=True)
     return 0
 
