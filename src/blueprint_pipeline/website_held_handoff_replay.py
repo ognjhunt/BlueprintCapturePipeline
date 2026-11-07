@@ -23,6 +23,10 @@ arrived fact (``reconcile_held_handoffs``, its state written before the run, so 
 website preparation stage's input binding names that fact (``preparation_binding``), so only that stage
 runs again from its retained outputs. No new queue, publisher, credential or grant. The confirmation is
 always the website's own reading; nothing here sets or assumes it.
+
+A job held before the ledger kept its bytes is replayed by the operator instead
+(``resume_held_preparation``, the door's ``--resume-preparation``), on the original payload the door
+verified, through the same claim, once per fact.
 """
 from __future__ import annotations
 
@@ -152,8 +156,27 @@ def replay_record(listener, *, payload, payload_digest, producer_delivery_key, c
             "source_payload_sha256": payload_digest, "producer_delivery_key": producer_delivery_key}
 
 
+#: An operator's reviewed replay of a held ledger that keeps no bytes of its own (it predates them).
+OPERATOR_SCHEMA = "website_held_handoff_operator_replay.v1"
+
+
 def claim_matches(ledger, expected, *, payload_sha256, producer_delivery_key) -> bool:
-    """Inside the claim lock: still the held, completed ledger the drain read, for the same delivery."""
+    """Inside the claim lock: still the held, completed ledger the drain (or operator) read, for the same delivery.
+
+    The operator form names the exact reviewed ledger (its digest), the selected original payload the door
+    verified against the producer delivery, and the fact; the drain form names the ledger's own kept bytes.
+    """
+    if expected.get("review_schema") == OPERATOR_SCHEMA:
+        import re
+
+        digest = expected.get("ledger_digest")
+        return (set(expected) == {"review_schema", "ledger_digest", "selected_payload_sha256", "fact"}
+                and ledger.get("status") == "completed"
+                and type(digest) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None
+                and canonical_digest(dict(ledger)) == digest
+                and type(payload_sha256) is str and payload_sha256 == expected["selected_payload_sha256"]
+                and producer_delivery_key is not None and producer_delivery_key == ledger.get("producer_delivery_key")
+                and isinstance(expected.get("fact"), dict) and type(expected["fact"].get("fact_digest")) is str)
     record = expected.get("record")
     return (type(expected.get("revision")) is int and ledger.get("revision") == expected["revision"]
             and ledger.get("status") == "completed"
@@ -256,5 +279,35 @@ def reconcile_held_handoffs(listener, *, storage_root: Path, process_args, limit
     return counts
 
 
-__all__ = ["CONSENT_HOLDS", "FIELD", "MARK", "SCHEMA", "arrived_fact", "claim_matches", "held_kind",
-           "preparation_binding", "reconcile_held_handoffs", "replay_record"]
+def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path, handoff_payload: bytes,
+                            ledger_digest: str, ledger_revision: int, provider: str) -> dict[str, Any]:
+    """An operator's replay of a held, completed ledger that keeps no replay bytes (it predates the hook).
+
+    ``handoff_payload`` is the original payload the door verified against the producer delivery; the claim
+    re-checks the exact reviewed ledger. Eligible only while the retained handoff holds on a fact that has
+    arrived (a confirmed successor of its context, a bound intake receipt, or a release for its integration
+    gap), and once per fact. Everything else refuses by name; nothing is bought.
+    """
+    import hashlib
+
+    pipeline = Path(capture_root) / "pipeline"
+    fact = arrived_fact(pipeline)
+    if fact is None:
+        raise ValueError("website_held_handoff_resume_not_eligible")
+    spent = _state(pipeline)
+    # As in the drain: a fact is spent once a run claimed the job (its ledger revision moved).
+    if spent.get("fact_digest") == fact["fact_digest"] and spent.get("ledger_revision") != ledger_revision:
+        raise ValueError("website_held_handoff_resume_already_replayed")
+    # Durable before the run, so the same fact never runs twice (the drain reads it too).
+    write_json(pipeline / "website_scene_preparation" / STATE_FILE, {
+        "schema_version": "website_held_handoff_replay_state.v1", "fact": fact,
+        "fact_digest": fact["fact_digest"], "handoff_digest": (_handoff(pipeline) or {}).get("digest"),
+        "ledger_revision": ledger_revision, "replayed_at_epoch": time.time(), "operator": True})
+    return listener.process_handoff_payload(handoff_payload, storage_root=Path(storage_root), provider=provider,
+        expected_preparation_purpose="scene_preparation",
+        expected_held_replay={"review_schema": OPERATOR_SCHEMA, "ledger_digest": ledger_digest,
+                              "selected_payload_sha256": hashlib.sha256(handoff_payload).hexdigest(), "fact": fact})
+
+
+__all__ = ["CONSENT_HOLDS", "FIELD", "MARK", "OPERATOR_SCHEMA", "SCHEMA", "arrived_fact", "claim_matches",
+           "held_kind", "preparation_binding", "reconcile_held_handoffs", "replay_record", "resume_held_preparation"]

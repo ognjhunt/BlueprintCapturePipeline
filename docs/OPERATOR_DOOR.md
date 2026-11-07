@@ -268,6 +268,17 @@ inside the job's existing caps (owner decision 2026-11-07). A resend that also g
 no answer stops at `meta_sam_submission_requires_reconciliation`. An unanswered
 video upload still stops at `meta_sam_video_upload_requires_reconciliation`.
 
+The same flag replays a `completed` native ledger whose retained handoff is held
+on a fact that has since arrived (`website_held_handoff_replay`): a hold naming a
+missing `pipeline:*` piece, once for each release, or a consent hold whose
+current website task context is the retained one's confirmed successor. This is
+for jobs held before the ledger kept their replay bytes. It runs the held stage
+again from its retained outputs, on the original payload, through the same
+held-replay claim, which binds the reviewed ledger digest. Nothing is bought
+again. It runs once per fact; otherwise it refuses with
+`selected_handoff_atlas_held_handoff_resume_not_eligible` or
+`selected_handoff_atlas_held_handoff_resume_already_replayed`.
+
 `--reissue-preparation --atlas-status-digest sha256:...` (mode
 `preparation-reissue`) re-issues a completed native preparation as a new job
 after its sponsor renewed the expired grant in the WebApp. It takes the same

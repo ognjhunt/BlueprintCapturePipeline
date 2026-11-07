@@ -999,7 +999,7 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     selected_modes.add_argument("--dispatch", action="store_true", help="invoke only the existing admission-fenced native handler")
     selected_modes.add_argument("--atlas-status", action="store_true", help="read this original capture's existing Atlas job and allowance")
     selected_modes.add_argument("--atlas-retry", action="store_true", help="requeue exactly this failed Atlas job after budget review; its timer can spend")
-    selected_modes.add_argument("--resume-preparation", action="store_true", help="resume this failed native job, or one whose process died past its lease expiry, after Atlas is ready, using the reviewed status and existing admission")
+    selected_modes.add_argument("--resume-preparation", action="store_true", help="resume this failed native job, or one whose process died past its lease expiry, after Atlas is ready, using the reviewed status and existing admission; or replay once a completed one held on a fact that has since arrived")
     selected_modes.add_argument("--reissue-preparation", action="store_true", help="re-issue this completed preparation as a new job under its sponsor-renewed grant, after reviewing the status; buys nothing")
     selected.add_argument("--atlas-status-digest", help="exact snapshot digest reviewed before --atlas-retry, --resume-preparation or --reissue-preparation")
     selected.add_argument("--resume-request", help="recover one matching retained failure before native lease creation")

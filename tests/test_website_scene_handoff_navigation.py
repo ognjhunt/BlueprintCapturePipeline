@@ -567,3 +567,103 @@ def test_the_library_shape_a_brief_confirmed_after_preparation_reaches_the_intak
     result = outcome["website_scene_preparation"]
     assert result["navigation_intake"]["status"] == "forward_pending"
     assert result["blockers"] == [HOLD_CODE] and holds_native_task_preparation(result, successor)
+
+
+def test_the_library_shape_held_before_the_intake_hook_is_resumed_once_and_sends_the_intake(job, monkeypatch):
+    """Completed and held before the intake hook existed (its runnable policy missing only the source
+    identity, no intake record, no replay record kept), its brief confirmed on the website since: the
+    operator's resume replays the held stage once, through the held-replay claim, on the original payload.
+    It sends the intake with the confirmed consent and the successor's task id, and buys nothing again."""
+    import hashlib
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini, clean_plate_stage, meta_sam31
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import website_atlas_preview, website_candidate_ranking, website_gemini_receipts
+    from blueprint_pipeline import website_held_handoff_replay as held
+    from blueprint_pipeline import website_task_context as context_reader
+    from blueprint_pipeline import website_task_masks
+    from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
+    from blueprint_pipeline.website_task_context_lineage import record_confirmation_lineage
+
+    for module, name in ((website_gemini_receipts, "retained_gemini_call"), (website_candidate_ranking, "_gemini"),
+                         (clean_plate_stage, "analyze_removal_targets"),
+                         (clean_plate_removal_analysis_gemini, "analyze_removal_targets"),
+                         (meta_sam31, "run_meta_sam31"), (website_task_masks, "run_meta_sam31"),
+                         (website_atlas_preview, "retry_failed_job")):
+        monkeypatch.setattr(module, name, lambda *_, **__: pytest.fail("nothing paid is bought again"))
+    pipeline = job["capture"] / "pipeline"
+    parent = _context(confirmed=False)
+    write_json(pipeline / "website_task_context.json", parent)
+    # Before the hook: the scene half is written and no intake is sent.
+    intake = handoff._navigation_intake
+    monkeypatch.setattr(handoff, "_navigation_intake", lambda **_: (False, None))
+    first, _ = _run(job, context=parent, authority=_authority(parent))
+    monkeypatch.setattr(handoff, "_navigation_intake", intake)
+    assert first["blockers"] == [HOLD_CODE] and "navigation_intake" not in first and job["sent"] == []
+    assert _missing(first) == {f"pipeline:{SOURCE_IDENTITY_PIECE}"}
+    raw = b'{"original":"selected envelope"}'
+    key = "sha256:" + "d" * 64
+    ledger = {"schema_version": "v1", "status": "completed", "scene_id": "site-req1", "capture_id": "walkthrough-req1",
+              "revision": 4, "attempt_count": 1, "source_payload_sha256": hashlib.sha256(raw).hexdigest(),
+              "producer_delivery_key": key, "attempt_history": [{"attempt_number": 1, "status": "completed"}],
+              "lease_owner": None, "lease_token": None, "lease_expires_at": None}
+    write_json(job["capture"] / listener.JOB_LEDGER_FILENAME, ledger)
+    assert held.FIELD not in ledger and held.held_kind(pipeline) == "integration_gap"
+    # The site confirms its brief on the website; a release with the intake hook runs.
+    successor = {key_: value for key_, value in parent.items() if key_ != "context_digest"}
+    successor.update(confirmed=True, confirmed_at="2026-11-07T14:30:45Z")
+    successor["context_digest"] = canonical_digest(successor, digest_field="context_digest")
+    monkeypatch.setattr(context_reader, "load_current_website_task_context", lambda **_: dict(successor))
+    monkeypatch.setattr("blueprint_pipeline.team_scene_packet_worker.current_release_commit", lambda: "a" * 40)
+    media, outcomes = [], []
+
+    def prepare_media(**kwargs):
+        media.append(kwargs["task_context"]["context_digest"])
+        return {"privacy_verified": True, "status": "noop", "source_geometry": None, "task_masks": {},
+                "removal_manifest_path": str(job["removal"]), "privacy_status": "website_capture_admitted"}
+
+    def process(payload, **kwargs):
+        status, claimed = listener._claim_job_lease(
+            job["capture"], scene_id="site-req1", capture_id="walkthrough-req1", owner="reviewed-recovery",
+            lease_seconds=60, payload_sha256=hashlib.sha256(payload).hexdigest(), producer_delivery_key=key,
+            expected_held_replay=kwargs["expected_held_replay"])
+        assert status == "claimed" and claimed["attempt_count"] == 2
+        # The orchestrator's entry: the website's current reading, its lineage kept; then the held stage.
+        sealed = json.loads((pipeline / "website_task_context.json").read_text())
+        current = context_reader.load_current_website_task_context(request_id="req1")
+        assert record_confirmation_lineage(pipeline, parent=sealed, successor=current) is not None
+        write_json(pipeline / "website_task_context.json", current)
+        gate = SimpleNamespace(passed=True)
+        metadata = {"site_task_context": current, "website_scene_execution_authority": _authority(current)}
+        outcomes.append(run_website_capture_preparation(
+            descriptor=SimpleNamespace(metadata=metadata, requested_outputs=[], to_dict=lambda: {
+                "capture_id": "walkthrough-req1", "scene_id": "site-req1", "metadata": dict(metadata)}),
+            capture_root=job["capture"], pipeline_dir=pipeline, source_video=None,
+            derived_scene_generation_allowed=True, gates=[], prepare_media=prepare_media,
+            check_privacy=lambda **_: gate, make_gate=lambda *_: gate))
+        listener._finish_job_lease(job["capture"], owner="reviewed-recovery", token=claimed["lease_token"],
+                                   update={"status": "completed"})
+        return {"status": "processed", "queue_disposition": "terminal_success"}
+
+    def resume(process):
+        current = json.loads((job["capture"] / listener.JOB_LEDGER_FILENAME).read_text())
+        return held.resume_held_preparation(
+            SimpleNamespace(process_handoff_payload=process), capture_root=job["capture"],
+            storage_root=job["capture"].parents[4], handoff_payload=raw, ledger_digest=canonical_digest(current),
+            ledger_revision=current["revision"], provider="openai")
+
+    assert resume(process)["status"] == "processed" and len(outcomes) == 1
+    sent = job["sent"][-1]
+    assert sent["consent"] == _authority(successor)["consent"] and sent["consent"]["task_confirmed"] is True
+    assert sent["task"]["task_id"] == "website-" + successor["context_digest"][7:27]
+    result = outcomes[0]["website_scene_preparation"]
+    assert result["navigation_intake"]["status"] == "forward_pending"
+    assert result["blockers"] == [HOLD_CODE] and holds_native_task_preparation(result, successor)
+    # The paid analysis was read under the sealed parent, so its retained calls are reused.
+    assert media == [parent["context_digest"]]
+    # Once per fact: the same release never replays it again; it now waits for its intake receipt.
+    assert held.held_kind(pipeline) == "intake_receipt"
+    with pytest.raises(ValueError, match="website_held_handoff_resume_already_replayed"):
+        resume(lambda *_, **__: pytest.fail("the same fact replayed twice"))
+    assert len(job["sent"]) == 1
