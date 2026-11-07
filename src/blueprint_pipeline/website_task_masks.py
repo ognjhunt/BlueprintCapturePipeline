@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -23,7 +24,21 @@ from .sam31_source_track_provider_stage import run_sam31_source_track_stage
 from .scene_placement.sam31_source_track_provider import RUN_REQUEST_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 from .website_task_target_choice import TaskTargetAmbiguous, best_supported_guess, chosen_track
-from .website_track_mask_codec import decode_track_mask
+from .website_track_mask_codec import (canonical_track_digest, decode_track_mask, load_track_json, mask_runs,
+                                       plain_runs, write_track_json)
+
+
+def _plain_ambiguity(function):
+    """An ambiguity refusal leaves with its instances' runs as plain lists, like every returned track."""
+
+    @functools.wraps(function)
+    def plain(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except TaskTargetAmbiguous as exc:
+            exc.candidates = plain_runs(exc.candidates)
+            raise
+    return plain
 
 
 def is_person_removal(target: Mapping[str, Any]) -> bool:
@@ -39,25 +54,25 @@ def tracked_task_targets(plan: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 def union_person_tracks(tracks: list[Mapping[str, Any]], *, label: str) -> dict[str, Any]:
     """Every instance of a person concept, merged per frame; no single instance is chosen."""
-    merged: dict[str, dict[str, Any]] = {}
+    return plain_runs(_union_person_tracks(tracks, label=label))
+
+
+def _union_person_tracks(tracks: list[Mapping[str, Any]], *, label: str) -> dict[str, Any]:
+    """``union_person_tracks`` with compact runs; one frame's masks are decoded at a time."""
+    by_frame: dict[str, list[Mapping[str, Any]]] = {}
     for track in tracks:
         for observation in track["observations"]:
-            frame_id = observation["source_frame_id"]
-            mask = decode_track_mask(observation)
-            if frame_id in merged:
-                prior = merged[frame_id]
-                if mask.shape != prior["mask"].shape:
-                    raise ValueError("website_person_track_dimensions_inconsistent")
-                prior["mask"] |= mask
-            else:
-                merged[frame_id] = {"observation": observation, "mask": mask.copy()}
+            by_frame.setdefault(observation["source_frame_id"], []).append(observation)
     observations = []
-    for frame_id, row in merged.items():
-        edges = np.diff(np.pad(row["mask"].reshape(-1).astype(np.int8), (1, 1)))
-        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
-        observations.append({**{key: value for key, value in row["observation"].items() if key != "runs"},
-                             "runs": [{"start": int(start), "length": int(end - start)}
-                                      for start, end in zip(starts, ends)]})
+    for rows in by_frame.values():
+        mask = decode_track_mask(rows[0])
+        for row in rows[1:]:
+            part = decode_track_mask(row)
+            if part.shape != mask.shape:
+                raise ValueError("website_person_track_dimensions_inconsistent")
+            mask |= part
+        observations.append({**{key: value for key, value in rows[0].items() if key != "runs"},
+                             "runs": mask_runs(mask)})
     return {"track_id": f"{label}-union", "label": label, "observations": observations,
             "member_track_ids": sorted(str(track.get("track_id")) for track in tracks)}
 
@@ -74,7 +89,7 @@ def track_at_geometry_resolution(track: Mapping[str, Any], frames: list[Mapping[
         edges = np.diff(np.pad(resized.reshape(-1).astype(np.int8), (1, 1)))
         starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
         observations.append({**observation, "width": frame["width"], "height": frame["height"],
-                             "source_mask_digest": canonical_digest(observation),
+                             "source_mask_digest": canonical_track_digest(observation),
                              "source_mask_width": observation["width"],
                              "source_mask_height": observation["height"],
                              "resampling": "upright_uncropped_nearest",
@@ -449,6 +464,7 @@ def estimate_region_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
             "source_frame_ids": [observation["source_frame_id"] for observation in observations]}
 
 
+@_plain_ambiguity
 def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
                           output_root: Path, meta_admission: Mapping[str, Any] | None = None,
                           meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None,
@@ -600,7 +616,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     if provider == "meta":
         result = run_meta_sam31(frame_registry=registry, frame_artifacts=artifacts, prompts=prompts,
                                output_root=root, admission=meta_admission or {}, admission_grant=meta_admission_grant,
-                               task_context=task_context, video_artifact=video_artifact,
+                               task_context=task_context, video_artifact=video_artifact, compact_runs=True,
                                **({"require_retained_video": True} if recovering else {}))
         geometry_ids = {frame["frame_id"] for frame in frames}
         # Full tracks stay in the provider receipt. Sampled source frames drive
@@ -651,10 +667,10 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                              "task_effect": target["task_effect"], "segmentation_prompt": selected_prompt,
                              "placement_relation": None, "articulated_part": "", "articulation_kind": "",
                              "disposition": target["disposition"],
-                             "track": union_person_tracks(members, label=target["target_id"]),
+                             "track": _union_person_tracks(members, label=target["target_id"]),
                              "estimated_visible_bounds": None})
             if provider == "meta":
-                selected[-1]["source_track"] = union_person_tracks(candidates, label=target["target_id"])
+                selected[-1]["source_track"] = _union_person_tracks(candidates, label=target["target_id"])
             continue
         grounding = None
         if target["target_id"] in grounded_targets:
@@ -723,7 +739,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                             refined = run_meta_sam31(frame_registry=registry, frame_artifacts=[],
                                 prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"],
                                           "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
-                                admission={}, task_context=task_context, video_artifact=video_artifact)
+                                admission={}, task_context=task_context, video_artifact=video_artifact,
+                                compact_runs=True)
                             try:
                                 identity = select_task_track(target=grounded, tracks=refined["tracks"],
                                                              frames=identity_frames, site_choice=site_choice)
@@ -755,7 +772,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                                             anchor_scores=weights)
             selected_prompt = unresolved.segmentation_prompt or selected_prompt
             if target_guesses is not None:
-                target_guesses.append({"target": dict(target), "candidates": list(unresolved.candidates),
+                target_guesses.append({"target": dict(target), "candidates": plain_runs(list(unresolved.candidates)),
                                        "frames": list(unresolved.frames or identity_frames),
                                        "guessed_track_id": str(identity["track_id"])})
             if provider == "meta":
@@ -801,16 +818,18 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         manifest["retained_static_recovery"] = {"source_task_masks_digest": retained_static_masks["digest"],
             "reference_geometry_digest": recovery_geometry["digest"], "full_video_reused": True,
             "static_contact_only": True}
-    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    manifest["digest"] = canonical_track_digest(manifest, digest_field="digest")
     manifest_path = manifest_root / ("task_masks.object_removal.json" if deferred_target_ids else "task_masks.json")
     if recovering and manifest_path.is_file():
-        if json.loads(manifest_path.read_text()) != manifest:
+        if load_track_json(manifest_path) != manifest:
             raise ValueError("website_retained_static_masks_manifest_changed")
     else:
-        write_json(manifest_path, manifest)
-    return manifest
+        write_track_json(manifest_path, manifest)
+    # Selected source tracks leave as plain lists of runs, as callers have always received them.
+    return plain_runs(manifest)
 
 
+@_plain_ambiguity
 def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
                                         source_geometry: Mapping[str, Any],
                                         task_masks: Mapping[str, Any],
@@ -828,7 +847,7 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
     to use exact-frame grounding and a single-image mask under admission.
     """
     try:
-        complete = select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
+        complete = _select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
             task_masks=task_masks, output_root=output_root, view_plan_root=view_plan_root)
     except ValueError as exc:
         target = next((row for row in tracked_task_targets(plan) if
@@ -847,13 +866,14 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
             task_context=task_context, source_video=source_video, view_plan=view_plan,
             retained_static_masks=task_masks, recovery_geometry=recovery_geometry)
     completed_path = output_root.resolve() / canonical_digest(task_masks["binding"])[7:23] / "task_masks.json"
-    if completed_path.is_file() and json.loads(completed_path.read_text()) != complete:
+    if completed_path.is_file() and load_track_json(completed_path) != complete:
         raise ValueError("website_retained_static_masks_manifest_changed")
     if not completed_path.is_file():
-        write_json(completed_path, complete)
-    return complete
+        write_track_json(completed_path, complete)
+    return plain_runs(complete)
 
 
+@_plain_ambiguity
 def select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                       task_masks: Mapping[str, Any], output_root: Path,
                                       view_plan_root: Path) -> dict[str, Any]:
@@ -862,11 +882,20 @@ def select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometr
     Reads only the retained clean-plate evidence under ``output_root`` and
     ``view_plan_root``; raises the same refusals.
     """
+    return plain_runs(_select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
+                                                         task_masks=task_masks, output_root=output_root,
+                                                         view_plan_root=view_plan_root))
+
+
+def _select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
+                                       task_masks: Mapping[str, Any], output_root: Path,
+                                       view_plan_root: Path) -> dict[str, Any]:
+    """``select_retained_static_task_masks`` with the retained tracks' runs kept compact."""
     deferred = task_masks.get("deferred_target_ids")
     targets = tracked_task_targets(plan)
     if (task_masks.get("status") != "object_removal_ready" or not isinstance(deferred, list) or not deferred
             or len(set(deferred)) != len(deferred)
-            or task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
+            or task_masks.get("digest") != canonical_track_digest(task_masks, digest_field="digest")
             or source_geometry.get("digest") != canonical_digest(source_geometry, digest_field="digest")
             or task_masks.get("source_video_digest") != source_geometry.get("binding", {}).get("source_video_digest")):
         raise ValueError("website_retained_static_masks_binding_invalid")
@@ -887,7 +916,7 @@ def select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometr
     request_key = canonical_digest({key: value for key, value in binding.items() if key != "target_choices_digest"})
     root = output_root.resolve() / request_key[7:23]
     first_manifest = output_root.resolve() / canonical_digest(binding)[7:23] / "task_masks.object_removal.json"
-    if not first_manifest.is_file() or json.loads(first_manifest.read_text()) != task_masks:
+    if not first_manifest.is_file() or load_track_json(first_manifest) != task_masks:
         raise ValueError("website_retained_static_masks_manifest_changed")
     if binding["mask_input_pixels"] == "selected_original_views_v1":
         plans = list(view_plan_root.glob("*/view_plan.json"))
@@ -930,7 +959,7 @@ def select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometr
     result_path = candidates[0]
     paid_root = result_path.parent
     request_binding = json.loads((paid_root / "binding.json").read_text())
-    result = json.loads(result_path.read_text())
+    result = load_track_json(result_path)
     provider_digest = canonical_digest(request_binding)
     if (result.get("schema_version") != "website_meta_sam31_tracks.v1"
             or result.get("status") != "completed" or result.get("binding_digest") != provider_digest
@@ -955,10 +984,10 @@ def select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometr
                 or receipt.get("sha256") != _sha256_file(response_path)):
             raise ValueError("website_retained_static_provider_receipts_invalid")
         response = json.loads(response_path.read_text())
-        parsed = json.loads(parsed_path.read_text())
+        parsed = load_track_json(parsed_path)
         if (response.get("binding_digest") != provider_digest or response.get("clip_digest") != video["sha256"]
                 or response.get("response", {}).get("status") != "completed"
-                or parsed.get("digest") != canonical_digest(parsed, digest_field="digest")
+                or parsed.get("digest") != canonical_track_digest(parsed, digest_field="digest")
                 or parsed.get("binding") != {"response_digest": receipt["sha256"],
                     "request_digest": provider_digest, "parser_revision": 1, "profile": META_PROFILE}
                 or any(row.get("label") != prompts[index].get("output_label")
@@ -1004,7 +1033,7 @@ def select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometr
                                    "provider_result_digest": _sha256_file(result_path),
                                    "retained_video_receipt_digest": input_digest}}
     complete.pop("deferred_target_ids")
-    complete["digest"] = canonical_digest(complete, digest_field="digest")
+    complete["digest"] = canonical_track_digest(complete, digest_field="digest")
     return complete
 
 
@@ -1044,7 +1073,7 @@ def retained_task_surfaces(*, pipeline_root: Path, source_video_digest: str | No
             task_masks = select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
                 task_masks=task_masks, output_root=root / "task_masks", view_plan_root=root / "mask_view_plan")
         elif (task_masks.get("status") != "completed"
-              or task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")):
+              or task_masks.get("digest") != canonical_track_digest(task_masks, digest_field="digest")):
             raise ValueError("website_retained_static_masks_binding_invalid")
     except OSError:
         # A retained clip, binding or response that is gone or unreadable casts no vote; it never
@@ -1096,7 +1125,7 @@ def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometr
     """Lift the retained selected tracks after reconstruction; never call SAM again."""
     if task_masks.get("deferred_target_ids"):
         raise ValueError("website_static_task_masks_pending")
-    if (task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
+    if (task_masks.get("digest") != canonical_track_digest(task_masks, digest_field="digest")
             or source_geometry.get("digest") != canonical_digest(source_geometry, digest_field="digest")
             or task_masks.get("source_video_digest") != source_geometry["binding"].get("source_video_digest")
             or not (_same_frame_sample(task_masks, source_geometry)
@@ -1115,5 +1144,5 @@ def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometr
         targets.append({**target, "track": track, "estimated_visible_bounds": bounds})
     value = {**task_masks, "targets": targets, "source_geometry_digest": source_geometry["digest"],
              "binding": {**task_masks["binding"], "geometry_digest": source_geometry["digest"]}}
-    value["digest"] = canonical_digest(value, digest_field="digest")
+    value["digest"] = canonical_track_digest(value, digest_field="digest")
     return value

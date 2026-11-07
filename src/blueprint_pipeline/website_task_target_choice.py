@@ -70,10 +70,13 @@ class TaskTargetAmbiguous(ValueError):
 
 
 def _candidate_rows(tracks: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    # ``canonical_digest``'s value, also for compact runs (``website_track_mask_codec.RunLengths``).
+    from .website_track_mask_codec import canonical_track_digest
+
     rows = []
     for track in tracks:
         identity = {"track_id": str(track["track_id"]),
-                    "observations_digest": canonical_digest({"observations": list(track.get("observations") or [])})}
+                    "observations_digest": canonical_track_digest({"observations": list(track.get("observations") or [])})}
         rows.append({**identity, "candidate_id": "c" + canonical_digest(identity)[7:23]})
     return sorted(rows, key=lambda row: row["track_id"])
 

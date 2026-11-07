@@ -25,6 +25,8 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 from .semantic_teacher_image_edit_worker import _open_no_redirect
+from .website_track_mask_codec import (canonical_track_digest, load_track_json, plain_runs, raster_runs,
+                                       write_track_json)
 
 MODEL = "sam-3.1"
 ENDPOINT = "https://api.meta.ai/v1/responses"
@@ -389,6 +391,11 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
 def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
                  registry: Sequence[Mapping[str, Any]],
                  backend_out: list[str] | None = None) -> list[dict[str, Any]]:
+    """Tracks whose observations hold each mask's whole-frame runs as a compact ``RunLengths``.
+
+    ``runs`` reads, iterates, compares and encodes like the list of ``{"start", "length"}``
+    dicts, without holding one Python dict per run (a 4K video's large surfaces reach millions).
+    """
     from meta_sam_parser import (CompletedOutcome, InvalidSegmentationMaskError,
                                  SegmentationMaskIdentity, SegmentationMaskRecord,
                                  decode_mask_to_raster)
@@ -421,13 +428,10 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
         raster = np.frombuffer(decoded, dtype=np.uint8).reshape(mask_height, mask_width)
         if raster.shape != (bottom - top, right - left):
             raster = np.asarray(Image.fromarray(raster).resize((right - left, bottom - top), Image.Resampling.NEAREST))
-        mask = np.zeros((height, width), dtype=np.uint8)
-        mask[top:bottom, left:right] = raster
-        edges = np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1)))
-        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        # The box's runs in the whole frame, as if pasted into it; no frame-sized array per mask.
         observations.setdefault(object_id, {})[index] = {
             "source_frame_id": registry[index]["source_frame_id"], "width": width, "height": height,
-            "runs": [{"start": int(start), "length": int(end - start)} for start, end in zip(starts, ends)],
+            "runs": raster_runs(raster, left=left, top=top, width=width),
         }
 
     class _SingleDecodeParser(_SegmentationParser):
@@ -513,13 +517,20 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                    task_context: Mapping[str, Any] | None = None,
                    video_artifact: Mapping[str, Any] | None = None,
                    opener: Any = _open_no_redirect, source_video_digest: str | None = None,
-                   require_retained_video: bool = False, maximum_cost_usd: float | None = None) -> dict[str, Any]:
-    """Masks for each prompt over the frames, bought once per binding.
+                   require_retained_video: bool = False, maximum_cost_usd: float | None = None,
+                   compact_runs: bool = False) -> dict[str, Any]:
+    """Hosted SAM 3.1 masks for each prompt over the frames, bought once per binding, replayed without a
+    second purchase.
 
     ``maximum_cost_usd`` is a caller's own ceiling on all this binding's dispatches. A resend
     of an unanswered dispatch is reserved only while it, the prompts and every refused
     dispatch's held reservation still fit under it; otherwise the unanswered one stays for
     reconciliation.
+
+    Decoded tracks are hashed and written chunk by chunk from their compact runs (the bytes
+    ``write_json`` and ``canonical_digest`` give for the list form). The returned tracks carry
+    those compact ``RunLengths`` when ``compact_runs``; otherwise each observation's ``runs`` is
+    the plain list of dicts, as before.
     """
     binding = request_binding(frame_registry=frame_registry, frame_artifacts=frame_artifacts, prompts=prompts,
                               video_artifact=video_artifact)
@@ -664,9 +675,9 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             parsed_binding = {"response_digest": _sha256_file(result_path), "request_digest": digest,
                               "parser_revision": 1, "profile": PROFILE}
             if parsed_path.is_file():
-                parsed = json.loads(parsed_path.read_text())
+                parsed = load_track_json(parsed_path)
                 if (parsed.get("binding") != parsed_binding
-                        or parsed.get("digest") != canonical_digest(parsed, digest_field="digest")):
+                        or parsed.get("digest") != canonical_track_digest(parsed, digest_field="digest")):
                     raise ValueError("meta_sam_retained_tracks_changed")
                 decoded = parsed["tracks"]
             else:
@@ -675,20 +686,20 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 backend: list[str] = []
                 decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend)
                 parsed = {"binding": parsed_binding, "tracks": decoded, "parser_runtime": backend[0]}
-                parsed["digest"] = canonical_digest(parsed, digest_field="digest")
+                parsed["digest"] = canonical_track_digest(parsed, digest_field="digest")
                 temporary = parsed_path.with_suffix(".tmp")
-                write_json(temporary, parsed)
+                write_track_json(temporary, parsed)
                 os.replace(temporary, parsed_path)
             tracks.extend(decoded)
             receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
         result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
                   "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
         if require_retained_video:
-            if json.loads((root / "tracks.json").read_text()) != result:
+            if load_track_json(root / "tracks.json") != result:
                 raise ValueError("meta_sam_retained_tracks_changed")
         else:
-            write_json(root / "tracks.json", result)
-        return result
+            write_track_json(root / "tracks.json", result)
+        return result if compact_runs else plain_runs(result)
     finally:
         if video_artifact and not retained:
             try:
