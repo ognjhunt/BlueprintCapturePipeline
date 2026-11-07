@@ -11,6 +11,8 @@ from typing import Any
 from .common import write_json
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    SPEND_EFFECT_NEW_SPEND,
+    SPEND_EFFECT_STOP,
     PaidResourceAdmissionGrant,
     build_paid_lane_admission,
     require_paid_resource_admission,
@@ -66,6 +68,8 @@ def admit_qualification_control_mutation(
             "component": component,
             "generated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
             "fresh_control_admission": True,
+            # Stopping a component never starts spend, so the account monthly limit never blocks it.
+            "spend_effect": SPEND_EFFECT_STOP if action == "stop" else SPEND_EFFECT_NEW_SPEND,
         }
     )
     write_json(Path(admission_out).expanduser().resolve(), admission)
@@ -73,4 +77,5 @@ def admit_qualification_control_mutation(
         admission,
         resource_class="gpu_render",
         expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+        spend_effect=admission["spend_effect"],
     )

@@ -1,0 +1,11 @@
+{
+  "schema_version": "blueprint.account_monthly_spend_limit.v1",
+  "monthly_limit_usd": "200",
+  "monthly_limit_overrides": {},
+  "report_path": "/var/lib/blueprint/pipeline-control-plane/account-monthly-spend/report.json",
+  "decision": {
+    "by": "owner",
+    "on": "2026-11-07",
+    "note": "Meter + monthly cap: one account-wide limit of USD 200 a UTC month; alerts at 50, 80 and 100 percent."
+  }
+}
