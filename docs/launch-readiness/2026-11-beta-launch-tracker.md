@@ -179,6 +179,12 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - The next PR adds it as a development-only estimate: up on the provider's +Y when both observed estimates lie within 3 degrees of it, and a flat floor at the uneven band's median height.
   - In the collider copy, that floor replaces the near-level faces within 12 cm of it; walls, shelf sides and the splat are kept. It is flagged in the levelling record and the base scene.
   - The owner's other questions are still open: the navigation intake kind (money), the brief confirmation, the `reviewed_checkpoint_terms` stand-in (rights), and one or two funded navigation rows.
+- **Owner, 11-07, later, all four answered:**
+  - The `reviewed_checkpoint_terms` stand-in: "yes - make sure this is the case for all future runs/scenes".
+  - Funded navigation rows: "two", each at the $4 cap.
+  - The navigation intake kind: "yes".
+  - The brief confirmation: "yes a confirmed brief counts as consent".
+  - The G1 session confirmed the first two with the owner directly. Its PR from `claude/modest-hopper-102z18` adds the general G1 navigation development-run allowance and the `g1_scene_floor_estimated` flag. Nothing writes a verified site episode, and every result stays `development_only`.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
