@@ -175,6 +175,10 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - The reconstructed floor is uneven: its best 2 cm plane holds 1.5%, while a 20 cm band holds about 6%.
     - This session stops tuning levelling here. More would be fitting one scene.
   - **Paid nothing since 06:10Z.** Atlas $7.38 of $25 (15 requests), clean plate $0.69 held, intake $1.06 known: about $9.13 against the $115 ceiling.
+- **Owner, 11-07, about 13:00Z:** "build the flagged fallback floor and keep going".
+  - The next PR adds it as a development-only estimate: up on the provider's +Y when both observed estimates lie within 3 degrees of it, and a flat floor at the uneven band's median height.
+  - In the collider copy, that floor replaces the near-level faces within 12 cm of it; walls, shelf sides and the splat are kept. It is flagged in the levelling record and the base scene.
+  - The owner's other questions are still open: the navigation intake kind (money), the brief confirmation, the `reviewed_checkpoint_terms` stand-in (rights), and one or two funded navigation rows.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
