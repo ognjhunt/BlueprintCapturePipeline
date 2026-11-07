@@ -121,13 +121,18 @@ def collect_meter_view(*, now: float, world_labs: Mapping[str, Any] | None = Non
     return meter_view([*journal_rows(events), *screening, *atlas_rows(world_labs)], now=now, gaps=gaps)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, now: float | None = None) -> int:
     import argparse
+
+    from .account_monthly_spend import current_world_labs, read_provider_observation
 
     parser = argparse.ArgumentParser(description="Print this month's per-job metered spend (reads only).")
     parser.add_argument("--job", default=None, help="show one job (WebApp request id)")
     args = parser.parse_args(argv)
-    view = public_view(collect_meter_view(now=time.time()))
+    moment = time.time() if now is None else float(now)
+    # The Atlas attempts come from the capacity tick's retained World Labs reading, as the account report reads them.
+    world_labs = current_world_labs(read_provider_observation(), now=moment)
+    view = public_view(collect_meter_view(now=moment, world_labs=world_labs))
     if args.job:
         view["jobs"] = [row for row in view["jobs"] if row["job_id"] == job_key(args.job)]
     print(json.dumps(view, indent=2, sort_keys=True))

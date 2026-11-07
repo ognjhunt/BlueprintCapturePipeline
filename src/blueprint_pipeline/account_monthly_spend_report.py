@@ -147,7 +147,7 @@ def billing_month_readings(export_path: Path | None, audit_root: Path | None, *,
             continue
         value, moment, late = baseline
         delta = total - value
-        extra: dict[str, Any] = {"baseline_at": _utc(moment).isoformat(), "export_generated_at": export.get("generated_at")}
+        extra: dict[str, Any] = {"baseline_at": _utc(moment).isoformat(), "observed_at": export.get("generated_at")}
         reason = None
         if delta < 0:
             delta, reason = Decimal(0), "billing_total_below_month_baseline"
@@ -190,9 +190,10 @@ def gcp_budget_reading(*, now: float, environ: Mapping[str, str]) -> dict[str, A
         age = now - _time(str(report.get("generated_at"))).timestamp()
     except (TypeError, ValueError):
         age = math.inf
+    observed_at = str(report.get("generated_at"))
     if not 0 <= age <= GCP_REPORT_MAX_AGE_SECONDS:
-        return _reading("partial", cost, reason="gcp_budget_report_stale")
-    return _reading("observed", cost)
+        return _reading("partial", cost, reason="gcp_budget_report_stale", observed_at=observed_at)
+    return _reading("observed", cost, observed_at=observed_at)
 
 
 def observation_readings(observation: Mapping[str, Any] | None, *, now: float) -> dict[str, dict[str, Any]]:
@@ -201,7 +202,9 @@ def observation_readings(observation: Mapping[str, Any] | None, *, now: float) -
     if not isinstance(observation, Mapping) or observation.get("schema_version") != OBSERVATION_SCHEMA:
         return {name: _reading("unobserved", reason="provider_observation_missing") for name in ("openai", "world_labs")}
     observed = observation.get("observed_at_epoch")
-    age = now - observed if isinstance(observed, (int, float)) and not isinstance(observed, bool) else math.inf
+    known = isinstance(observed, (int, float)) and not isinstance(observed, bool) and math.isfinite(observed)
+    age = now - observed if known else math.inf
+    stamp = {"observed_at": _utc(observed).isoformat()} if known else {}
     readings = {}
     providers = observation.get("providers") if isinstance(observation.get("providers"), Mapping) else {}
     for name in ("openai", "world_labs"):
@@ -212,11 +215,12 @@ def observation_readings(observation: Mapping[str, Any] | None, *, now: float) -
         elif row.get("month") != month_of(now):
             readings[name] = _reading("other_month", reason="provider_observation_from_previous_month")
         elif not 0 <= age <= OBSERVATION_MAX_AGE_SECONDS:
-            readings[name] = _reading("stale", amount, reason="provider_observation_stale")
+            readings[name] = _reading("stale", amount, reason="provider_observation_stale", **stamp)
         elif row.get("status") != "observed" or row.get("blockers"):
-            readings[name] = _reading("partial", amount, reason=",".join(row.get("blockers") or []) or "provider_reading_partial")
+            readings[name] = _reading("partial", amount, **stamp,
+                                      reason=",".join(row.get("blockers") or []) or "provider_reading_partial")
         else:
-            readings[name] = _reading("observed", amount)
+            readings[name] = _reading("observed", amount, **stamp)
     return readings
 
 
@@ -238,32 +242,89 @@ def collect_readings(*, now: float, environ: Mapping[str, str], observation: Map
     return readings
 
 
-def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: str | None, config: Path,
-                 readings: Mapping[str, Mapping[str, Any]], meter: Mapping[str, Any]) -> dict[str, Any]:
-    """The account's month: what counts, against which limit, and whether admission is open."""
+#: Meter gaps that mean a source of holds could not be read, by the source they belong to.
+_HOLD_SOURCE_GAPS = {"beta_policy_screening": "paid_spend_meter_screening_",
+                     "paid_resource_admission": "paid_spend_meter_journal_"}
 
-    from .paid_spend_meter import public_view
+
+def _same_month(previous: Mapping[str, Any] | None, period: str) -> Mapping[str, Any]:
+    """The previous report, when it is this month's; else nothing to hold."""
+
+    if isinstance(previous, Mapping) and previous.get("schema_version") == REPORT_SCHEMA and previous.get("period") == period:
+        return previous
+    return {}
+
+
+def _previous_holds(previous: Mapping[str, Any]) -> dict[str, Decimal]:
+    meter = previous.get("meter") if isinstance(previous.get("meter"), Mapping) else {}
+    sources = (meter.get("totals") or {}).get("by_source") if isinstance(meter.get("totals"), Mapping) else None
+    held = {}
+    for name, row in (sources.items() if isinstance(sources, Mapping) else ()):
+        amount = money(row.get("held_usd")) if isinstance(row, Mapping) else None
+        if amount is not None:
+            held[str(name)] = amount
+    return held
+
+
+def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: str | None, config: Path,
+                 readings: Mapping[str, Mapping[str, Any]], meter: Mapping[str, Any],
+                 previous: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The account's month: what counts, against which limit, and whether admission is open.
+
+    ``previous`` is the last report written. Within one month a monitoring
+    failure never lowers the count: a provider never counts less than it did
+    in the previous report, and a source of holds that cannot be read keeps the
+    holds it last had. A held figure is marked ``stale`` (its reading failed)
+    or ``partial`` (its reading came back lower), with the time it was observed.
+    """
+
+    from .paid_spend_meter import SOURCE_ATLAS, public_view
 
     period = month_of(now)
+    prior = _same_month(previous, period)
+    prior_providers = prior.get("providers") if isinstance(prior.get("providers"), Mapping) else {}
     exact = meter["_exact"]
     metered_by_provider: Mapping[str, Decimal] = exact["by_provider_settled_usd"]
     providers: dict[str, dict[str, Any]] = {}
     gaps = list(meter.get("gaps") or [])
     spend = Decimal(0)
-    for name in sorted(set(ACCOUNT_PROVIDERS) | set(metered_by_provider)):
+    for name in sorted(set(ACCOUNT_PROVIDERS) | set(metered_by_provider) | set(prior_providers)):
         reading = readings.get(name) or _reading("unobserved", reason="no_reading_for_provider")
         reconciled = reading.get("month_usd")
         metered = metered_by_provider.get(name, Decimal(0))
         counted = max(reconciled if reconciled is not None else Decimal(0), metered)
         status = str(reading.get("status"))
-        if status != "observed" and not (name not in ACCOUNT_PROVIDERS and reconciled is None):
+        if name not in ACCOUNT_PROVIDERS and reconciled is None:
+            status = "metered_only"
+        observed_at = reading.get("observed_at") if reconciled is not None and counted == reconciled else None
+        row = {"reconciled_month_usd": None if reconciled is None else usd(reconciled),
+               "metered_settled_usd": usd(metered),
+               **{key: reading[key] for key in ("reason", "baseline_at", "source") if reading.get(key)}}
+        before = prior_providers.get(name) if isinstance(prior_providers.get(name), Mapping) else {}
+        floor = money(before.get("counted_usd"))
+        if floor is not None and floor > counted:
+            # Keep the last count: a failed or lower reading is a monitoring gap, not a refund.
+            status = "stale" if reconciled is None else "partial"
+            counted = floor
+            observed_at = before.get("observed_at")
+            row["held_from_previous_report"] = True
+            gaps.append(f"account_monthly_spend_provider_held_at_last_count:{name}")
+        if status not in {"observed", "metered_only"}:
             gaps.append(f"account_monthly_spend_provider_{status}:{name}")
-        providers[name] = {"status": status if name in ACCOUNT_PROVIDERS or reconciled is not None else "metered_only",
-                           "reconciled_month_usd": None if reconciled is None else usd(reconciled),
-                           "metered_settled_usd": usd(metered), "counted_usd": usd(counted),
-                           **{key: reading[key] for key in ("reason", "baseline_at", "source") if reading.get(key)}}
+        providers[name] = {"status": status, **row, "counted_usd": usd(counted), "observed_at": observed_at}
         spend += counted
-    held = exact["held_outside_provider_readings_usd"]
+    by_source: dict[str, Decimal] = {name: amounts["held_usd"] for name, amounts in exact["by_source"].items()}
+    prior_holds = _previous_holds(prior)
+    held_sources: dict[str, dict[str, Any]] = {}
+    for source, prefix in _HOLD_SOURCE_GAPS.items():
+        unread = any(str(gap).startswith(prefix) for gap in meter.get("gaps") or [])
+        current = by_source.get(source, Decimal(0))
+        if unread and prior_holds.get(source, Decimal(0)) > current:
+            by_source[source] = prior_holds[source]
+            held_sources[source] = {"status": "stale", "held_usd": usd(prior_holds[source]),
+                                    "held_from_previous_report": True}
+            gaps.append(f"account_monthly_spend_holds_held_at_last_count:{source}")
+    held = sum((amount for name, amount in by_source.items() if name != SOURCE_ATLAS), Decimal(0))
     counted_total = spend + held
     limit = effective_limit(policy, period) if policy is not None else None
     fraction = float(counted_total / limit) if limit else None
@@ -278,6 +339,8 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
         "limit_usd": None if limit is None else str(limit),
         "alert_lines_usd": {str(percent): usd(limit * percent / 100) for percent in ALERT_PERCENTS} if limit else None,
         "spend_usd": usd(spend), "held_usd": usd(held), "counted_usd": usd(counted_total),
+        "held_by_source_usd": {name: usd(amount) for name, amount in sorted(by_source.items()) if name != SOURCE_ATLAS},
+        **({"held_sources_kept": held_sources} if held_sources else {}),
         "fraction": None if fraction is None else round(fraction, 6),
         "alert_threshold_percent": reached[-1] if reached else None,
         "limit_reached": limit_reached, "admission_allowed": not blockers, "blockers": blockers,
@@ -301,14 +364,16 @@ def refresh_report(*, now: float | None = None, environ: Mapping[str, str] | Non
     observation = read_provider_observation(env)
     readings = collect_readings(now=moment, environ=env, observation=observation,
                                 billing_export_path=billing_export_path, audit_root=audit_root)
-    world_labs = None
-    if isinstance(observation, Mapping) and observation.get("schema_version") == OBSERVATION_SCHEMA:
-        row = (observation.get("providers") or {}).get("world_labs")
-        if isinstance(row, Mapping) and row.get("month") == month_of(moment):
-            world_labs = row
-    meter = collect_meter_view(now=moment, world_labs=world_labs, environ=env)
-    report = build_report(now=moment, policy=policy, policy_error=error, config=config, readings=readings, meter=meter)
+    meter = collect_meter_view(now=moment, world_labs=_account.current_world_labs(observation, now=moment), environ=env)
     destination = report_path(policy, env)
+    previous = None
+    if destination is not None:
+        try:
+            previous = _account.read_report(destination)
+        except (OSError, ValueError, UnicodeDecodeError):
+            previous = None
+    report = build_report(now=moment, policy=policy, policy_error=error, config=config, readings=readings,
+                          meter=meter, previous=previous)
     report["report_path"] = str(destination) if destination is not None else None
     if destination is not None:
         _write_public(destination, report)

@@ -71,7 +71,8 @@ admission proceeds. The limit reads reconciled billing, not the journal.
 To see the meter:
 
 - `python -m blueprint_pipeline.paid_spend_meter_sources [--job <request id>]`
-  prints every job;
+  prints every job, Atlas included: it reads the capacity tick's retained World
+  Labs reading, as the account report does;
 - `door status` shows the ten largest jobs under
   `spend_guard.account_monthly_spend.jobs`.
 
@@ -98,12 +99,23 @@ caps, and journal holds once lanes price them. Holds are counted on top of
 billing. An in-flight attempt is therefore counted twice: once in its partial
 bill, once in its whole hold. That only makes the limit trip earlier.
 
-**Missing readings.** A reading that is missing, stale, partial or from
-another month counts what is known (0 when nothing is). It sets
-`complete: false`, names the reading under `gaps`, and raises the
+**Missing readings.** A monitoring failure never lowers the count within a
+month. Each run reads the previous report:
+
+- A provider never counts less than it did there. If its reading failed, or
+  came back lower, the earlier figure is kept, marked `stale` (failed) or
+  `partial` (lower), with `held_from_previous_report` and the `observed_at`
+  of the reading it keeps.
+- A source of holds that cannot be read (the screening ledger, the journal)
+  keeps the holds it last had.
+
+A held figure, or a reading with nothing earlier to keep, sets
+`complete: false`, names the provider under `gaps`, and raises the
 `account_spend_unverifiable` warning. It does not stop work by itself:
 everything except money keeps going, and the provider guards still bound each
-provider.
+provider. A new month starts from its own readings. One consequence: a World
+Labs attempt held at full price that later fails keeps counting until the
+month ends.
 
 **Claim boundary.** Provider readings lag their bills by hours. The limit
 stops new paid admissions, not charges already running. It is a monthly stop,
@@ -158,9 +170,32 @@ when:
 | `account_monthly_spend_limit_config_invalid` | The config exists but does not validate. |
 | `account_monthly_spend_limit_unavailable` | The check itself raised. |
 
+**Stops are never blocked.** `require_paid_resource_admission` takes
+`spend_effect`, which defaults to `new_spend`, so an unmarked caller is
+checked. A stop must be declared twice: the caller passes `spend_effect="stop"`
+and the admission it built and wrote carries `"spend_effect": "stop"`. Only
+then is the account limit skipped. A stop declared once is refused
+(`paid_resource_admission_spend_effect_mismatch`), and so is an unknown value
+(`paid_resource_admission_spend_effect_invalid`). A stop still passes every
+other admission check.
+
+The stops that use the chokepoint today:
+
+| Stop | Caller |
+|---|---|
+| Stop a qualification-session component | `qualification_control_admission.py` (`action="stop"`); `run`, `restart`, `refresh` and `install-checkpoint` stay `new_spend`. |
+| Close out a warm scene-configuration session (destroys the retained instance) | `task_evaluation_scene_configuration_allocator.py` (`warm_action="closeout"`); `iterate` stays `new_spend`. |
+
+Terminal resource release and reaping do not pass through the chokepoint.
+
 The limit is never checked when an issued grant is re-validated
 (`require_paid_resource_admission_grant`). Work already admitted, teardown and
 reconciliation are never stopped by it.
+
+The GCP monthly check (`_monthly_budget_blockers`) is unchanged. It runs on
+every `require_paid_resource_admission`, stops included, wherever it is active:
+`BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT` set (no committed unit sets it), or
+`provider_reconstruction_api` with `BLUEPRINT_GCP_BUDGET_GUARD_CONFIG`.
 
 **Files on the host.** Directory
 `/var/lib/blueprint/pipeline-control-plane/account-monthly-spend/`, owned by

@@ -188,7 +188,8 @@ def record_settlement(*, job_id: Any, meter_key: str, settled_usd: Any, basis: s
 
 
 def meter_chokepoint_admission(admission: Mapping[str, Any], *, resource_class: str, schema_version: str,
-                               environ: Mapping[str, str] | None = None, now: float | None = None) -> None:
+                               spend_effect: str = "new_spend", environ: Mapping[str, str] | None = None,
+                               now: float | None = None) -> None:
     """Journal one grant the chokepoint issued. Never raises and never changes the admission."""
 
     try:
@@ -208,7 +209,7 @@ def meter_chokepoint_admission(admission: Mapping[str, Any], *, resource_class: 
             ).hexdigest()
         record_admission(job_id=job_id, meter_key=meter_key, resource_class=resource_class,
                          held_usd=meter.get("held_usd"), provider=meter.get("provider"), root=root, now=now,
-                         admission_schema_version=schema_version,
+                         admission_schema_version=schema_version, spend_effect=spend_effect,
                          allocation_binding_digest=str(binding) if binding is not None else None)
     except Exception:  # noqa: BLE001 - metering is visibility; the monthly limit reads billing, not this
         return
@@ -378,6 +379,7 @@ def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[
     return {"schema_version": VIEW_SCHEMA, "period": month, "generated_at": _utc(now).isoformat(),
             "jobs": job_rows, "totals": project(totals),
             "_exact": {"settled_usd": totals["settled_usd"], "held_usd": totals["held_usd"],
+                       "by_source": {name: dict(amounts) for name, amounts in totals["by_source"].items()},
                        "held_outside_provider_readings_usd": sum(
                            (amounts["held_usd"] for name, amounts in totals["by_source"].items() if name != SOURCE_ATLAS),
                            Decimal(0)),

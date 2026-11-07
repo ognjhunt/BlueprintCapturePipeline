@@ -17,6 +17,8 @@ from .host_resident_launch_inputs import (
 )
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    SPEND_EFFECT_NEW_SPEND,
+    SPEND_EFFECT_STOP,
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
     build_paid_lane_admission,
@@ -134,6 +136,8 @@ def _run_scene_configuration_warm_action(args: argparse.Namespace) -> int:
             "retry_cap": 0,
             "allocation_binding": binding,
             "allocation_binding_digest": canonical_digest(binding),
+            # Closeout destroys the retained instance: the account monthly limit never blocks it.
+            "spend_effect": SPEND_EFFECT_STOP if action == "closeout" else SPEND_EFFECT_NEW_SPEND,
         }
     )
     write_json(Path(args.admission_out), admission)
@@ -144,6 +148,7 @@ def _run_scene_configuration_warm_action(args: argparse.Namespace) -> int:
                 admission,
                 resource_class="vast_provider_adapter",
                 expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                spend_effect=admission["spend_effect"],
             )
         except PaidResourceAdmissionBlocked as exc:
             result = {

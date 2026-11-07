@@ -35,10 +35,12 @@ What counts
       purchase records): the capacity tick's provider spend observation
       (``provider_spend_alerts``), persisted for this module.
 
-    A reading that is missing or stale counts what is known and is flagged;
-    it never stops work by itself. Held reservations double count spend that
-    an in-flight attempt has already billed, which can only make the limit
-    trip earlier.
+    A reading that is missing, stale or lower is flagged and never lowers the
+    count within the month: the provider keeps what the previous report
+    counted (``account_monthly_spend_report.build_report``). It never stops
+    work by itself. Held reservations double count spend that an in-flight
+    attempt has already billed, which can only make the limit trip earlier.
+    A clear stop (``paid_resource_admission.SPEND_EFFECTS``) is never refused.
 
 Report and freshness
     The GPU spend guard rewrites the report every minute
@@ -274,6 +276,16 @@ def read_provider_observation(environ: Mapping[str, str] | None = None) -> dict[
         return _json_object(_regular_bytes(root / OBSERVATION_FILENAME, MAX_REPORT_BYTES))
     except (OSError, ValueError, UnicodeDecodeError):
         return None
+
+
+def current_world_labs(observation: Mapping[str, Any] | None, *, now: float) -> dict[str, Any] | None:
+    """The retained World Labs reading, with its Atlas charges, when it is this month's."""
+
+    if not isinstance(observation, Mapping) or observation.get("schema_version") != OBSERVATION_SCHEMA:
+        return None
+    providers = observation.get("providers") if isinstance(observation.get("providers"), Mapping) else {}
+    row = providers.get("world_labs")
+    return dict(row) if isinstance(row, Mapping) and row.get("month") == month_of(now) else None
 
 
 # ----------------------------- the report -----------------------------

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -344,6 +345,8 @@ def test_the_existing_gcp_guard_still_applies_beside_the_account_limit(host, mon
 
 
 def _row(host, *, openai: float) -> dict:
+    # Each case starts the month afresh: within a month the count never goes down.
+    (host["root"] / account.REPORT_FILENAME).unlink(missing_ok=True)
     _observation(host["root"], openai=openai)
     report_module.refresh_report(now=NOW)
     return account.observe_account_spend(now=NOW + 60)
@@ -410,8 +413,8 @@ def test_the_capacity_check_leaves_its_readings_for_the_guard(tmp_path, monkeypa
     assert set(written["providers"]) == {"openai", "world_labs"}
     assert "day_usd" not in written["providers"]["openai"]
     assert os.stat(tmp_path / "account" / account.OBSERVATION_FILENAME).st_mode & 0o777 == 0o644
-    assert report_module.observation_readings(written, now=NOW + 60)["openai"] == {"status": "observed",
-                                                                          "month_usd": Decimal("3.0")}
+    assert report_module.observation_readings(written, now=NOW + 60)["openai"] == {
+        "status": "observed", "month_usd": Decimal("3.0"), "observed_at": "2026-11-20T16:00:00+00:00"}
 
 
 def test_the_admission_path_stays_light():
@@ -443,3 +446,175 @@ def test_a_guard_run_embeds_the_account_summary_in_its_report(patched_guard, mon
     assert embedded["cap_status"] == "not_set" and embedded["admission_allowed"] is True
     assert "status" not in embedded  # not {"status": "refresh_failed"}
     assert "Account monthly spend: $" in capsys.readouterr().err
+
+
+# ----------------------------- stops are never blocked (review finding 1) -----------------------------
+
+
+def _stop_admission(resource_class: str = "gpu_render", **extra) -> dict:
+    return {**build_paid_lane_admission(resource_class=resource_class), **extra}
+
+
+@pytest.mark.parametrize("state", ["limit_reached", "report_stale"])
+def test_a_clear_stop_is_admitted_when_the_limit_refuses_new_spend(host, state):
+    _observation(host["root"], openai=500.0)
+    report_module.refresh_report(now=NOW if state == "limit_reached" else NOW - 3600)
+    assert account.admission_blockers() == [account.LIMIT_REACHED if state == "limit_reached" else account.REPORT_STALE]
+    grant = require_paid_resource_admission(_stop_admission(spend_effect="stop"), resource_class="gpu_render",
+                                            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                                            spend_effect="stop")
+    assert grant.resource_class == "gpu_render"
+    with pytest.raises(PaidResourceAdmissionBlocked):
+        _admit("gpu_render")
+
+
+@pytest.mark.parametrize("record, keyword, expected", [
+    ({}, "stop", ["account_monthly_spend_limit_reached", "paid_resource_admission_spend_effect_mismatch"]),
+    ({"spend_effect": "stop"}, "new_spend", ["account_monthly_spend_limit_reached"]),
+    ({"spend_effect": "stop"}, "teardown", ["account_monthly_spend_limit_reached",
+                                            "paid_resource_admission_spend_effect_invalid"]),
+])
+def test_anything_but_a_stop_declared_twice_is_checked_as_new_spend(host, record, keyword, expected):
+    _observation(host["root"], openai=500.0)
+    report_module.refresh_report()
+    with pytest.raises(PaidResourceAdmissionBlocked) as refused:
+        require_paid_resource_admission(_stop_admission(**record), resource_class="gpu_render",
+                                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                                        spend_effect=keyword)
+    assert refused.value.blockers == expected
+
+
+def test_a_stop_is_still_refused_for_its_own_admission_blockers(host):
+    with pytest.raises(PaidResourceAdmissionBlocked) as refused:
+        require_paid_resource_admission({**_stop_admission(spend_effect="stop"), "status": "blocked",
+                                         "blockers": ["x"]}, resource_class="gpu_render",
+                                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                                        spend_effect="stop")
+    assert "paid_resource_admission_not_admitted" in refused.value.blockers
+
+
+def _qualification(tmp_path, action: str):
+    from blueprint_pipeline.qualification_control_admission import admit_qualification_control_mutation
+
+    manifest = {"continuing_spend": True, "watchdog_deadline_epoch": NOW + 86_400, "resource_name": "g1-session",
+                "launch_session_id": "session-1"}
+    inspected = {"status": "observed", "instance_id": "4242", "name": "g1-session"}
+    out = tmp_path / f"control-{action}.json"
+    grant = admit_qualification_control_mutation(out, manifest, inspected, "4242", action, "controller",
+                                                 clock=lambda: NOW)
+    return grant, json.loads(out.read_text())
+
+
+def test_an_operator_can_stop_a_qualification_component_at_the_limit(host):
+    _observation(host["root"], openai=500.0)
+    report_module.refresh_report()
+    assert account.admission_blockers() == [account.LIMIT_REACHED]
+    grant, admission = _qualification(host["tmp"], "stop")
+    assert grant.resource_class == "gpu_render" and admission["spend_effect"] == "stop"
+    for action in ("run", "restart", "refresh", "install-checkpoint"):
+        with pytest.raises(PaidResourceAdmissionBlocked) as refused:
+            _qualification(host["tmp"], action)
+        assert refused.value.blockers == [account.LIMIT_REACHED]
+
+
+def test_a_warm_scene_closeout_is_admitted_at_the_limit_and_an_iteration_is_not(host):
+    from blueprint_pipeline import task_evaluation_scene_configuration_allocator as allocator
+
+    _observation(host["root"], openai=500.0)
+    report_module.refresh_report()
+    recorded = {}
+    for action in ("closeout", "iterate"):
+        out = host["tmp"] / f"warm-{action}.json"
+        allocator._run_scene_configuration_warm_action(argparse.Namespace(
+            scene_configuration_warm_action=action, scene_configuration_warm_session_root=None,
+            scene_configuration_warm_closeout_receipt=None, scene_configuration_warm_iteration_authority=None,
+            scene_configuration_job_dir=None, provider="vast", admission_out=str(out),
+            adapter_output=str(host["tmp"] / f"warm-{action}-result.json"), execute=False))
+        recorded[action] = {**json.loads(out.read_text()), "status": "admitted", "blockers": []}
+    assert recorded["closeout"]["spend_effect"] == "stop" and recorded["iterate"]["spend_effect"] == "new_spend"
+    require_paid_resource_admission(recorded["closeout"], resource_class="vast_provider_adapter",
+                                    expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                                    spend_effect=recorded["closeout"]["spend_effect"])
+    with pytest.raises(PaidResourceAdmissionBlocked) as refused:
+        require_paid_resource_admission(recorded["iterate"], resource_class="vast_provider_adapter",
+                                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                                        spend_effect=recorded["iterate"]["spend_effect"])
+    assert refused.value.blockers == [account.LIMIT_REACHED]
+
+
+def test_stops_are_journaled_as_stops(host):
+    grant = require_paid_resource_admission(_stop_admission(spend_effect="stop", request_id="req-7"),
+                                            resource_class="gpu_render",
+                                            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                                            spend_effect="stop")
+    assert grant is not None
+    events, _gaps = meter.read_journal(Path(host["env"][meter.METER_ROOT_ENV]))
+    assert [(row["job_id"], row.get("spend_effect")) for row in events][-1] == ("req-7", "stop")
+
+
+# ----------------------------- a failed reading never lowers the count (review finding 2) -----------------------------
+
+
+def test_a_failed_provider_reading_keeps_the_last_count_for_the_month(host):
+    _observation(host["root"], openai=210.0)
+    first = report_module.refresh_report(now=NOW)
+    assert first["limit_reached"] is True and first["providers"]["openai"]["counted_usd"] == 210.0
+    # The next capacity tick's Costs API call fails: OpenAI's month comes back null.
+    observation = json.loads((host["root"] / account.OBSERVATION_FILENAME).read_text())
+    observation["observed_at_epoch"] = NOW + 600
+    observation["providers"]["openai"] = {"status": "unknown", "blockers": ["openai_spend_transport_failed"],
+                                          "month": "2026-11", "month_to_date_usd": None}
+    (host["root"] / account.OBSERVATION_FILENAME).write_text(json.dumps(observation))
+    second = report_module.refresh_report(now=NOW + 660)
+    openai = second["providers"]["openai"]
+    assert openai["counted_usd"] == 210.0 and openai["status"] == "stale"
+    assert openai["held_from_previous_report"] is True
+    assert openai["observed_at"] == "2026-11-20T15:55:00+00:00"  # when the kept reading was observed
+    assert second["counted_usd"] >= first["counted_usd"] and second["limit_reached"] is True
+    assert "account_monthly_spend_provider_held_at_last_count:openai" in second["gaps"]
+    assert account.admission_blockers(now=NOW + 700) == [account.LIMIT_REACHED]
+    # A third failed tick still holds the figure and the time it was observed.
+    third = report_module.refresh_report(now=NOW + 1260)
+    assert third["providers"]["openai"]["counted_usd"] == 210.0
+    assert third["providers"]["openai"]["observed_at"] == "2026-11-20T15:55:00+00:00"
+
+
+@pytest.mark.parametrize("breakage", ["export_unreadable", "lower_partial_reading", "screening_ledger_unreadable"])
+def test_no_monitoring_failure_lowers_the_counted_total(host, breakage):
+    first = report_module.refresh_report(now=NOW)
+    if breakage == "export_unreadable":
+        Path(host["env"][account.BILLING_EXPORT_ENV]).write_text("{not json")
+    elif breakage == "lower_partial_reading":
+        _observation(host["root"], openai=10.0)
+        observation = json.loads((host["root"] / account.OBSERVATION_FILENAME).read_text())
+        observation["providers"]["openai"]["status"] = "partial"
+        (host["root"] / account.OBSERVATION_FILENAME).write_text(json.dumps(observation))
+    else:
+        (host["tmp"] / "queue" / "screening_ledger.v1.json").write_text("{not json")
+    second = report_module.refresh_report(now=NOW + 60)
+    assert second["counted_usd"] >= first["counted_usd"], (first["counted_usd"], second["counted_usd"])
+    assert second["complete"] is False
+
+
+def test_a_new_month_starts_from_its_own_readings(host):
+    _observation(host["root"], openai=210.0)
+    report_module.refresh_report(now=NOW)
+    december = datetime(2026, 12, 2, 12, 0, tzinfo=timezone.utc).timestamp()
+    report = report_module.refresh_report(now=december)
+    assert report["period"] == "2026-12"
+    assert not any(row.get("held_from_previous_report") for row in report["providers"].values())
+
+
+# ----------------------------- the meter CLI shows Atlas (review finding 3) -----------------------------
+
+
+def test_the_meter_cli_includes_the_retained_atlas_attempts(host, capsys):
+    from blueprint_pipeline import paid_spend_meter_sources as sources
+
+    monkey_now = NOW + 60
+    sources.main([], now=monkey_now)
+    view = json.loads(capsys.readouterr().out)
+    jobs = {row["job_id"]: row for row in view["jobs"]}
+    assert jobs["req-1"]["by_source"]["atlas"]["settled_usd"] == 5.5
+    assert jobs["req-3"]["by_source"]["atlas"]["held_usd"] == 1.7
+    assert "paid_spend_meter_atlas_attempts_unobserved" not in view["gaps"]

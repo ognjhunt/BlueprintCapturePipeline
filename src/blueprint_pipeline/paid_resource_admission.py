@@ -132,12 +132,35 @@ def _monthly_budget_blockers(resource_class: str) -> list[str]:
         return ["gcp_monthly_budget_report_unavailable"]
 
 
+#: What a paid admission does to spend. ``new_spend`` (the default) starts or
+#: extends spend and is checked against the account monthly limit. ``stop`` only
+#: stops, tears down or destroys what is already running; the limit never blocks
+#: it, so an operator can always stop spend. A stop must say so twice: the caller
+#: passes ``spend_effect="stop"`` and the admission record it built carries
+#: ``"spend_effect": "stop"``. Anything else is checked as new spend.
+SPEND_EFFECT_NEW_SPEND = "new_spend"
+SPEND_EFFECT_STOP = "stop"
+SPEND_EFFECTS = frozenset({SPEND_EFFECT_NEW_SPEND, SPEND_EFFECT_STOP})
+
+
+def _spend_effect_blockers(admission: Mapping[str, Any], spend_effect: str) -> tuple[list[str], bool]:
+    """Blockers for the declared spend effect, and whether this is a clear stop."""
+    if spend_effect not in SPEND_EFFECTS:
+        return ["paid_resource_admission_spend_effect_invalid"], False
+    if spend_effect != SPEND_EFFECT_STOP:
+        return [], False
+    if admission.get("spend_effect") != SPEND_EFFECT_STOP:
+        return ["paid_resource_admission_spend_effect_mismatch"], False
+    return [], True
+
+
 def _account_monthly_limit_blockers() -> list[str]:
     """The account-wide monthly limit (``account_monthly_spend``); ``[]`` while none is configured.
 
     Checked where a new paid admission is made or about to be reserved, never
-    when an issued grant is re-validated: work already admitted, teardown and
-    reconciliation are never stopped by it.
+    for a clear stop (``spend_effect``) and never when an issued grant is
+    re-validated: stops, work already admitted, teardown and reconciliation are
+    never refused by it.
     """
     try:
         from blueprint_pipeline.account_monthly_spend import admission_blockers
@@ -167,12 +190,20 @@ def require_paid_resource_admission(
     *,
     resource_class: str,
     expected_schema_version: str,
+    spend_effect: str = SPEND_EFFECT_NEW_SPEND,
 ) -> PaidResourceAdmissionGrant:
-    """Return an in-process grant or raise before a provider mutation."""
+    """Return an in-process grant or raise before a provider mutation.
+
+    ``spend_effect="stop"`` marks an admission that only stops or destroys
+    running spend; see ``SPEND_EFFECTS``.
+    """
     from .core.handoff_lease import handoff_lease_checkpoint, current_handoff_lease_check
     handoff_lease_checkpoint("paid_resource_admission")
     blockers: list[str] = _monthly_budget_blockers(resource_class)
-    blockers.extend(_account_monthly_limit_blockers())
+    effect_blockers, clear_stop = _spend_effect_blockers(admission, spend_effect)
+    blockers.extend(effect_blockers)
+    if not clear_stop:
+        blockers.extend(_account_monthly_limit_blockers())
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
     blockers.extend(runpod_retirement_blockers(resource_class))
@@ -194,7 +225,8 @@ def require_paid_resource_admission(
     # Every grant is metered against its job (``paid_spend_meter``); never raises.
     from .paid_spend_meter import meter_chokepoint_admission
 
-    meter_chokepoint_admission(admission, resource_class=resource_class, schema_version=expected_schema_version)
+    meter_chokepoint_admission(admission, resource_class=resource_class, schema_version=expected_schema_version,
+                               spend_effect=SPEND_EFFECT_STOP if clear_stop else SPEND_EFFECT_NEW_SPEND)
     return PaidResourceAdmissionGrant(
         resource_class=resource_class,
         schema_version=expected_schema_version,
