@@ -569,11 +569,15 @@ def test_the_library_shape_a_brief_confirmed_after_preparation_reaches_the_intak
     assert result["blockers"] == [HOLD_CODE] and holds_native_task_preparation(result, successor)
 
 
-def test_the_library_shape_held_before_the_intake_hook_is_resumed_once_and_sends_the_intake(job, monkeypatch):
+@pytest.mark.parametrize("confirmation", ["confirmation_only", "accepted_proposal"])
+def test_the_library_shape_held_before_the_intake_hook_is_resumed_once_and_sends_the_intake(job, monkeypatch,
+                                                                                            confirmation):
     """Completed and held before the intake hook existed (its runnable policy missing only the source
     identity, no intake record, no replay record kept), its brief confirmed on the website since: the
     operator's resume replays the held stage once, through the held-replay claim, on the original payload.
-    It sends the intake with the confirmed consent and the successor's task id, and buys nothing again."""
+    It sends the intake with the confirmed consent and the successor's task id, and buys nothing again.
+    The library job's confirmation also accepted Blueprint's proposed answer, marked no gate unknown and
+    gave success criteria that state nothing; the website names the sealed parent for it."""
     import hashlib
     from types import SimpleNamespace
 
@@ -613,6 +617,13 @@ def test_the_library_shape_held_before_the_intake_hook_is_resumed_once_and_sends
     # The site confirms its brief on the website; a release with the intake hook runs.
     successor = {key_: value for key_, value in parent.items() if key_ != "context_digest"}
     successor.update(confirmed=True, confirmed_at="2026-11-07T14:30:45Z")
+    if confirmation == "accepted_proposal":
+        successor.update(operator_answers={"taskShape": "single"}, unresolved=[],
+                         success_criteria={"successDefinition": None, "successRate": None, "cycleTimeSeconds": None,
+                                           "unknown": True},
+                         task_evidence_provenance={"item_details": "owner_stated_unverified",
+                                                   "success_criteria": "owner_stated_target"},
+                         confirmation_parent_context_digest=parent["context_digest"])
     successor["context_digest"] = canonical_digest(successor, digest_field="context_digest")
     monkeypatch.setattr(context_reader, "load_current_website_task_context", lambda **_: dict(successor))
     monkeypatch.setattr("blueprint_pipeline.team_scene_packet_worker.current_release_commit", lambda: "a" * 40)
@@ -667,3 +678,6 @@ def test_the_library_shape_held_before_the_intake_hook_is_resumed_once_and_sends
     with pytest.raises(ValueError, match="website_held_handoff_resume_already_replayed"):
         resume(lambda *_, **__: pytest.fail("the same fact replayed twice"))
     assert len(job["sent"]) == 1
+    # The record (and so the intake receipt staged from it) binds the confirmed successor's own digest.
+    record = read_navigation_scene_inputs(Path(result["navigation_scene_inputs"]["path"]))
+    assert record["source_gap"]["known"]["task_context_digest"] == successor["context_digest"]

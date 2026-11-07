@@ -371,6 +371,13 @@ def validate_website_task_context(
         raise ValueError("website_task_context_not_confirmed")
     if not isinstance(value.get("description"), str) or not value["description"].strip():
         raise ValueError("website_task_context_description_missing")
+    # The parent a confirmation followed, as the website states it inside the confirmed context's seal
+    # (website_task_context_lineage); only a confirmed context names one.
+    parent = value.get("confirmation_parent_context_digest", None)
+    if "confirmation_parent_context_digest" in value and (
+            not isinstance(parent, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", parent) is None
+            or value.get("confirmed") is not True or parent == value.get("context_digest")):
+        raise ValueError("website_task_context_confirmation_parent_invalid")
     # A source-bound analysis may name any family. The runnable inventory is
     # an execution concern, never an intake allowlist.
     if "task_family" in value and (not isinstance(value["task_family"], str)
