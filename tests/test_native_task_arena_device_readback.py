@@ -118,3 +118,19 @@ def test_a_rigid_scene_without_a_task_object_still_fails(monkeypatch) -> None:
                                        scene_asset_names={}, contact_sensor_names={}, camera_scene_names={})
     with pytest.raises(KeyError):
         read_native_task_arena_device_binding(rigid, expected_device="cuda:0")
+
+
+def test_the_local_navigation_kind_matches_the_runtime_contract_without_importing_it() -> None:
+    """The provider bundles ship this module but not the runtime contract, so it keeps its own copy."""
+    import ast
+    import inspect
+
+    from blueprint_pipeline import native_task_arena_device_readback as readback
+    from blueprint_pipeline.native_task_runtime_contract import NAVIGATION_TASK_KIND
+
+    assert readback.NAVIGATION_TASK_KIND == NAVIGATION_TASK_KIND
+    imported = {
+        node.module for node in ast.walk(ast.parse(inspect.getsource(readback)))
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert "native_task_runtime_contract" not in imported

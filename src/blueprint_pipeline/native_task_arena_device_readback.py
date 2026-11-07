@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from .native_task_arena_runtime import NativeTaskArenaEnvironment
-from .native_task_runtime_contract import NAVIGATION_TASK_KIND
 
 
 SCHEMA_VERSION = "native_task_arena_device_readback.v1"
+#: Kept local, like the scene plan's and readback's copies: the provider bundles ship this module
+#: but not ``native_task_runtime_contract``, so importing the constant from there would leave the
+#: bundle's import closure incomplete.
+NAVIGATION_TASK_KIND = "goal_region_navigation"
 
 
 def _device(value: Any) -> str | None:
