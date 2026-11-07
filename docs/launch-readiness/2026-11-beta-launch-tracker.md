@@ -410,7 +410,13 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - `clear`: 71,464 scene samples, no overlap, no unreadable collider, the first searched stance kept.
   - 7 bodies have no collider and are ignored: `d435_link`, two IMUs, `mid360_link`, `pelvis`, and two waist links.
   - The left sole is 1.4 mm above the floor. The right sole has no upward-facing scene surface within 10 cm of it: a hole or steep patch in the scanned floor.
-  - The check measures overlap, not support, so this is neither a gate nor a flag today. A follow-up should flag an unsupported foot (`setup_quality_flags`, not a gate).
+  - The check measures overlap, not support, so this was neither a gate nor a flag. The owner asked for a warning ("add the foot warning"): [#3433](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3433) flags a foot with no floor within 10 cm, or a sole more than 2 cm above the floor, as `g1_spawn_foot_unsupported` in `setup_quality_flags`, never a gate. Capture-447's existing report raises it for the right foot.
+- Merged 11-06 and 11-07 on the owner's word: [#3432](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3432) (50038e2), [#3433](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3433) (de33929) and [#3434](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3434) (74d5275, "make the deletion wait until probe runs settle").
+- 682d098 (#3431-#3435) deploy:
+  - The owner approved it off-window ("approve the off-window deploy for 3435"); #3432 and #3434 are privacy fixes.
+  - The library-aisle session requested it at 01:48:25Z on 11-07 (request 20261107T014825Z-deploy-b391aab8), with no paid stage active.
+  - It was active at 02:01:08Z: `deployed`, no blockers, `commit_proven`.
+  - Main's CI on 682d098 failed only "GR00T OSCAR external prerequisite pins", on an HTTP fetch of three external repositories. That job passed on the three commits before, and the door's own attestation check passed. No door upgrade was needed, because the release has no door code.
 - Scene retirement leaves the G1 overlay row and `native-g1/` packets in place. That is storage, not privacy, because withdrawal now deletes both. It is a follow-up.
 
 ## Operating notes (2026-11-02)
