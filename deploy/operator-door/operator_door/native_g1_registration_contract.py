@@ -191,6 +191,8 @@ def _site_profile(request, registry):
 
 #: The fields a site's confirmation changes in its task context (the Pipeline's ``website_task_context_lineage``).
 CONFIRMATION_FIELDS = frozenset({"confirmed", "confirmed_at", "context_digest"})
+#: The website's statement, sealed in a confirmed context, of the parent its confirmation followed (``PARENT_FIELD``).
+CONFIRMATION_PARENT_FIELD = "confirmation_parent_context_digest"
 
 
 def accepts_context_digest(context, bound):
@@ -198,9 +200,11 @@ def accepts_context_digest(context, bound):
 
     A brief confirmed after preparation keeps what was bound to it: a confirmed context's parent is the same
     content with ``confirmed`` false and ``confirmed_at`` null (or absent, as an older projection wrote it), so
-    the parent's digest follows from the context itself. An edited task never matches, and an unconfirmed
-    context accepts only its own digest. The rule of ``website_task_context_lineage.accepts_bound_digest``,
-    standard library only because the door runs it.
+    the parent's digest follows from the context itself. A confirmation that also gave answers carries its
+    parent's digest inside its own seal (``CONFIRMATION_PARENT_FIELD``), as the website stated it: the website
+    alone holds the brief's proposals and names a parent only when every answer accepts one or marks a gate
+    unknown. An edited task never matches, and an unconfirmed context accepts only its own digest. The rule
+    of ``website_task_context_lineage.implied_parent_digests``, standard library only because the door runs it.
     """
     if not isinstance(bound, str):
         return False
@@ -209,7 +213,11 @@ def accepts_context_digest(context, bound):
     confirmed_at = context.get("confirmed_at")
     if context.get("confirmed") is not True or not isinstance(confirmed_at, str) or not confirmed_at.strip():
         return False
-    content = {key: value for key, value in context.items() if key not in CONFIRMATION_FIELDS}
+    stated = context.get(CONFIRMATION_PARENT_FIELD)
+    if isinstance(stated, str) and DIGEST.fullmatch(stated) and bound == stated:
+        return True
+    content = {key: value for key, value in context.items()
+               if key not in CONFIRMATION_FIELDS | {CONFIRMATION_PARENT_FIELD}}
     return bound in {common.digest({**content, "confirmed": False, "confirmed_at": None}),
                      common.digest({**content, "confirmed": False})}
 
