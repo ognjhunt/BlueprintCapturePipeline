@@ -123,6 +123,9 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32, packet_queue
                         from .bounded_error import error_description
 
                         outcome['g1_registration'] = {'status': 'failed', 'error': error_description(exc)}
+                    # Plan on the profile as it is now: the registration above may have added the site's G1 rows
+                    # (the overlay the registry reader merges), as the packet pass reads it after registering.
+                    profile = profile_for_capture(capture) or profile
                 else:
                     retained = read(profile['family_scene_inputs_path'], digest_field='inputs_digest')
                     intent = reopen_scene_intent(retained['references']['scene_intent'])
