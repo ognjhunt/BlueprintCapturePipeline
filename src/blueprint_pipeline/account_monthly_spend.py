@@ -231,7 +231,7 @@ def _write_public(path: Path, value: Mapping[str, Any]) -> None:
         raise ValueError("account_monthly_spend_output_unsafe")
     if not path.parent.is_dir():
         path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(path.parent, 0o755)
+        os.chmod(path.parent, 0o755)  # nosec B103 - the paid lanes must traverse this report directory; files 0644
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
