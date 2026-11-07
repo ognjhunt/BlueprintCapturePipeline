@@ -230,6 +230,22 @@ def test_the_same_confirmation_is_replayed_once_even_if_the_job_holds_again(site
     assert len(site.runs) == 2
 
 
+def test_a_replay_that_stops_before_its_claim_keeps_the_fact_eligible(site, monkeypatch):
+    site.deliver()
+    _confirm(site)
+    real = listener.process_handoff_payload
+    # A transient owner read returns before the job is claimed: nothing ran and the ledger did not move.
+    monkeypatch.setattr(listener, "process_handoff_payload",
+                        lambda *a, **k: {"status": "capture_owner_observation_unavailable_retryable"})
+    revision = listener._read_job_ledger(site.root)["revision"]
+    site.reconcile()
+    assert listener._read_job_ledger(site.root)["revision"] == revision and len(site.runs) == 1
+    # The next drain replays the same confirmation, and only once.
+    monkeypatch.setattr(listener, "process_handoff_payload", real)
+    assert site.reconcile()["replayed"] == 1 and len(site.runs) == 2
+    assert site.reconcile()["replayed"] == 0 and len(site.runs) == 2
+
+
 def test_an_edited_task_is_not_a_successor_and_is_not_replayed(site):
     site.deliver()
     _confirm(site, description="Walk to the other end instead")

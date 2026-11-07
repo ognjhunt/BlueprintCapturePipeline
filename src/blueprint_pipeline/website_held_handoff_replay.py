@@ -196,8 +196,13 @@ def reconcile_held_handoffs(listener, *, storage_root: Path, process_args, limit
             if fact is None:
                 counts["held"] += 1
                 continue
-            if _state(pipeline).get("fact_digest") == fact["fact_digest"]:
-                counts["already_replayed"] += 1  # Once per fact: a replay that held again waits for the next.
+            spent = _state(pipeline)
+            # Once per fact: a replay that held again waits for the next. A fact is spent only once a run
+            # claimed the job (its ledger revision moved); a replay that returned or stopped before its claim
+            # (a transient owner read, a crash) leaves the fact eligible.
+            if (spent.get("fact_digest") == fact["fact_digest"]
+                    and spent.get("ledger_revision") != before.get("revision")):
+                counts["already_replayed"] += 1
                 continue
             _require(set(record) == _RECORD_FIELDS and record.get("schema_version") == SCHEMA)
             _require(type(record["payload_base64"]) is str and len(record["payload_base64"]) <= 4 * ((MAX_BYTES + 2) // 3))
@@ -221,7 +226,7 @@ def reconcile_held_handoffs(listener, *, storage_root: Path, process_args, limit
             write_json(pipeline / "website_scene_preparation" / STATE_FILE, {
                 "schema_version": "website_held_handoff_replay_state.v1", "fact": fact,
                 "fact_digest": fact["fact_digest"], "handoff_digest": (_handoff(pipeline) or {}).get("digest"),
-                "replayed_at_epoch": current})
+                "ledger_revision": before.get("revision"), "replayed_at_epoch": current})
             listener.process_handoff_payload(raw, storage_root=storage_root,
                 payload_digest=record["source_payload_sha256"],
                 expected_held_replay={"revision": before["revision"], "record": record, "fact": fact},
