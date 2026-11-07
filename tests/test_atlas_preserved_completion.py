@@ -88,7 +88,11 @@ def test_missing_or_unregistered_geometry_never_reaches_fusion(tmp_path, monkeyp
     if outcome == 'registering':
         assert result['operation_id'] == 'same-retained-operation'
     if outcome == 'picture-only':
-        assert result['reason'] == 'atlas_preserved_completion_no_exportable_geometry'
+        # Flagged, not a stop: the captured export goes on unchanged, with the receipt that shows why.
+        assert result['status'] == 'completed' and result['generated_geometry_admitted'] is False
+        assert result['generated_geometry_rejected'] == 'atlas_preserved_completion_no_exportable_geometry'
+        assert result['generated_roots'] == [] and result['splat_root'] == str(args['splat_root'])
+        assert result['geometry_recovery']['exportable_samples'] == 0
     if outcome in {'source', 'no-gap'}:
         assert calls == ['complete']
 
@@ -175,3 +179,14 @@ def test_all_atlas_callbacks_recheck_the_current_source_and_preserve_the_experim
         options['preserved_capture'] = True
     assert method(**options) == [('1' * 40, ['existing-hold']), ('2' * 40, ['existing-hold'])]
     assert seen == [('1' * 40, experimental), ('2' * 40, experimental)]
+
+
+def test_an_empty_recovery_must_say_so_in_its_own_sealed_receipt(tmp_path, monkeypatch):
+    args, _, _, _ = fixture(tmp_path, monkeypatch, 'picture-only')
+
+    def recover(**options):
+        return [], sealed({'source_geometry_modified': False, 'known_pixels_changed': 0, 'exportable_samples': 7,
+                           'preservation_paths': []})
+    monkeypatch.setattr(atlas_scene_recovery, 'recover_reviewed_geometry', recover)
+    with pytest.raises(ValueError, match='atlas_preserved_completion_rejection_not_bound'):
+        worker.run_preserved_completion(**args)

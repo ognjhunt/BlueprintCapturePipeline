@@ -458,6 +458,12 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             'failure_class': completion.get('failure_class'),
             'generated_geometry_admitted': admitted_completion,
             'remaining_unknowns': native_completion.get('remaining_unknowns', []),
+            # Generated views made and reviewed but adding nothing: named, with the
+            # recovery receipt that shows it, so the scene source can go on unchanged.
+            **({'generated_geometry_rejected': completion['generated_geometry_rejected'],
+                'geometry_recovery': {key: completion['geometry_recovery'][key]
+                                      for key in ('digest', 'exportable_samples', 'added_geometry_pixels')}}
+               if completion.get('generated_geometry_rejected') else {}),
             **({'admission_digest': completion['admission']['digest'],
                 'admission_relative_path': str(Path(completion['admission_path']).relative_to(output_root))}
                if admitted_completion else {})}

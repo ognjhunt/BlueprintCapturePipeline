@@ -316,6 +316,39 @@ def test_protected_photo_pixels_do_not_freeze_missing_source_depth(tmp_path):
     assert receipt['generated_source_depth_hole_pixel_count'] == 4
 
 
+def test_the_receipt_says_why_a_named_gap_gained_no_geometry(tmp_path):
+    """Photographed without depth in one view, but another view measured that surface:
+    generated depth matching it is "already observed", and the receipt names the view."""
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+
+    source = frame()
+    source['depth'][2:4, 2:4] = np.nan
+    source['confidence'][2:4, 2:4] = 0
+    other = frame('other')
+    row = preservation.prepare_completion_views(frames=[source], selected=[{
+        'camera_id': 'hole', 'source_frame_id': 'source', 'camera': camera()}], root=tmp_path / 'input')[0]
+    depth_path, gap_path = tmp_path / 'source-depth.png', tmp_path / 'gap.png'
+    Image.fromarray(np.where(np.isfinite(source['depth']), 255, 0).astype(np.uint8)).save(depth_path)
+    gap = np.zeros((6, 6), np.uint8)
+    gap[2:4, 2:4] = 255
+    Image.fromarray(gap).save(gap_path)
+    row.update(source_depth_context_path=str(depth_path), source_depth_context_digest=_sha256_file(depth_path),
+               completion_gap_mask_path=str(gap_path), completion_gap_mask_digest=_sha256_file(gap_path),
+               completion_gap_ids=['hole-gap-1'], completion_gap_pixel_count=4)
+    kwargs = dict(generated=frame('generated'), prepared=row, output_root=tmp_path / 'out',
+                  native_result_digest='native', native_frame_index=0)
+    _, _, blocked, _ = preservation.preserve_generated_view(references=[source, other], **kwargs)
+    assert blocked['generated_geometry_pixel_count'] == 0
+    assert blocked['gap_geometry_rejection'] == {
+        'gap_pixels': 4, 'admitted': 0, 'no_generated_depth': 0, 'outside_extent': 0,
+        'matched_or_in_front_of_observed_surface': 4, 'first_blocking_references': {'other': 4},
+        'blocking_reference_count': 1, 'kept_known_depth': 0}
+    kwargs['output_root'] = tmp_path / 'alone'
+    _, _, admitted, _ = preservation.preserve_generated_view(references=[source], **kwargs)
+    assert admitted['generated_geometry_pixel_count'] == 4
+    assert admitted['gap_geometry_rejection']['admitted'] == 4
+
+
 def test_masked_completion_uses_paired_keep_masks_and_reuses_completed_operation(tmp_path, monkeypatch):
     import json
     from blueprint_pipeline import atlas_depth_splat
