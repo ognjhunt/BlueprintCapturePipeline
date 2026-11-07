@@ -23,6 +23,7 @@ Before you act:
 | [1. A job stops moving](#1-a-job-stops-moving) | A stall page arrives, or a job shows the same state for hours. |
 | [2. Vast credit runs out](#2-vast-credit-runs-out) | `provider_credit_insufficient` pages, or a launch is refused for credit. |
 | [2a. Provider funding](#2a-provider-funding) | An OpenAI, World Labs or Google Cloud spend page arrives (`*_spend_*_high`). |
+| [2b. Account monthly limit](#2b-account-monthly-limit) | An `account_spend_*` alert arrives, or a paid admission is refused with `account_monthly_spend_*`. |
 | [3. The work volume is full](#3-the-work-volume-is-full) | A launch is refused for disk, or a capacity page arrives. |
 | [4. The operator door or the host is down](#4-the-operator-door-or-the-host-is-down) | The uptime probe pages, or `door` calls fail. |
 | [5. Roll back a bad deploy](#5-roll-back-a-bad-deploy) | A deploy broke production. |
@@ -269,6 +270,43 @@ When a spend page arrives:
 4. A page for an expected busy day stops by itself when that day leaves the
    window. To move a line, the owner edits the environment file over SSH
    (section 4) and records a break-glass note ([`break-glass.md`](break-glass.md)).
+
+## 2b. Account monthly limit
+
+The owner set one account-wide limit on 2026-11-07: **USD 200 per UTC
+month**, across every provider. The design and the stage-2 plan are in
+[`../architecture/metered-spend.md`](../architecture/metered-spend.md).
+
+- **Where the amount lives.** `monthly_limit_usd` in
+  `config/account_monthly_spend_limit.v1.json`. It is committed and the
+  deploy installs it.
+- **What counts.** Reconciled provider month-to-date plus held reservations.
+  The spend guard rewrites the report about once a minute, to
+  `/var/lib/blueprint/pipeline-control-plane/account-monthly-spend/report.json`.
+- **Where it is enforced.** At `paid_resource_admission`. Admitted work,
+  teardown and reconciliation are never stopped by it.
+
+| Alert or refusal | Means | Do |
+|---|---|---|
+| `account_spend_month_50pct` (warn) | The month has counted $100. | Nothing. Read the jobs (below) if it is early in the month. |
+| `account_spend_month_80pct` (page) | $160. | Tell the owner. Find the largest jobs and any unexpected spend. |
+| `account_spend_month_limit_reached` (page); refusal `account_monthly_spend_limit_reached` | $200 counted: new paid admissions are refused until the month ends or the owner raises the limit. | Tell the owner. Only the owner can raise the limit (a money decision). A one-month raise goes in `monthly_limit_overrides` (`{"2026-11": "300"}`), in a reviewed commit, then a deploy. |
+| `account_spend_report_stale` (page); refusals `account_monthly_spend_report_stale` / `_missing_or_invalid` | The spend guard has not rewritten the report for 15 min, so every paid admission is refused. | Check `blueprint-gpu-spend-guard.service` (`door status`, `failed_units`). For up to a minute after a deploy or after 00:00 UTC on the 1st, this is expected. |
+| `account_spend_limit_config_invalid` (page) | The installed config does not validate, so every paid admission is refused. | Fix the file in a reviewed commit and deploy. |
+| `account_spend_unverifiable` (warn) | A provider reading is missing or stale (`reason`). The month counts what it can see. | See section 2a for that provider. |
+| `account_spend_limit_not_set` (warn) | No config is installed: the month is reported, nothing is refused. | Expected only off the host or before the deploy. |
+
+To read the month:
+
+1. `door status`: `spend_guard.account_monthly_spend` (limit, counted, held,
+   providers, the ten largest jobs) and
+   `capacity.provider_spend.providers.account`.
+2. On the host: `python -m blueprint_pipeline.account_monthly_spend` (the
+   admission decision) and `python -m blueprint_pipeline.paid_spend_meter_sources`
+   (every job's metered spend).
+
+Holds count in full on top of billing. A busy day can therefore read high
+until attempts settle. Provider bills lag by hours.
 
 ## 3. The work volume is full
 

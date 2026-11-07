@@ -71,7 +71,7 @@ The bounded estimate or "held" is decided in step 12 (`beta_policy_screening_res
 | Flow | Unit or route | Module | Store | Notes |
 |---|---|---|---|---|
 | Withdrawal and deletion | WebApp withdrawal and deletion workers (`server/worker.ts`), then an operator-run Pipeline deletion | `website_capture_withdrawal_deletion`, `website_capture_withdrawal_screening`, `website_capture_withdrawal_native_g1` (G1 site registration rows and `native-g1/` packets), `website_capture_withdrawal_team_scene` (the team scene halves and every record pointing at them: derived-profile rows, packet queue requests and statuses, rigid probe entries) and `website_capture_withdrawal_rigid_probe` (a settled probe job's bundles, inputs and run outputs, its money records kept; the deletion waits, unresolved, while any job's money may still settle); `owner_approved_deletion` (`blueprint-owner-approved-deletion{-plan,}.service`, started by hand) | WebApp `websiteCaptureDeletionReceipts`; `pcp/storage-gc/owner-approved-deletions` | **[PRIVACY][RIGHTS]**. The drill on a test job is still open (tracker G-02) |
-| GPU spend guard | `blueprint-gpu-spend-guard.timer` | `scripts/gpu_spend_guard.py`, `gcp_monthly_budget_guard`; `Wants=` `blueprint-provider-billing-reconciler.service` (`provider_billing_reconciler`; its own timer is off on purpose) | `pcp/gpu_spend_guard/{latest.json,billing-audit,…}`, `pcp/gcp-monthly-budget/` | **[MONEY]**. Inventories Vast, RunPod, DigitalOcean and GCP; reaps orphans; fleet caps in the unit |
+| GPU spend guard | `blueprint-gpu-spend-guard.timer` | `scripts/gpu_spend_guard.py`, `gcp_monthly_budget_guard`, `account_monthly_spend_report` (the account monthly report, read at `paid_resource_admission`); `Wants=` `blueprint-provider-billing-reconciler.service` (`provider_billing_reconciler`; its own timer is off on purpose) | `pcp/gpu_spend_guard/{latest.json,billing-audit,…}`, `pcp/gcp-monthly-budget/`, `pcp/account-monthly-spend/report.json` | **[MONEY]**. Inventories Vast, RunPod, DigitalOcean and GCP; reaps orphans; fleet caps in the unit |
 | Scene spend refresh | `blueprint-scene-project-spend-refresh.service` (no timer; pulled by capacity and the replay GC) | `task_evaluation_scene_spend.refresh_configured_scene_project_spend` | `pcp/scene-project-spend/` | **[MONEY]** |
 | Capacity, stalls and paging | `blueprint-control-plane-capacity.timer` (10 min) | `control_plane_capacity_controller`, `control_plane_stall_alarm`, `provider_spend_alerts`, `provider_credit_admission` | `pcp/capacity/summary.json` (read by `door status`) | pages on `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`; runbook [`beta-operations.md` §1-3](runbooks/beta-operations.md) |
 | Preflight | `blueprint-control-plane-preflight.timer` | `task_evaluation_production_chain_preflight` | `pcp/preflight/latest.json` | the blocker count is not a health signal yet (tracker D-04) |
@@ -106,6 +106,8 @@ Every ceiling, with the file that sets it, is in the "Spend limits" table of [`A
 - screening (step 12).
 
 The WebApp's job ceiling (`server/utils/websiteJobCeiling.ts`) bounds all four.
+
+One account-wide monthly limit (USD 200, `config/account_monthly_spend_limit.v1.json`) bounds every job and every provider together. It is enforced at `paid_resource_admission`. `paid_spend_meter` meters each paid admission against its job. Stage 1 adds them beside the ledgers above; the plan to remove the per-job ledgers is [`architecture/metered-spend.md`](architecture/metered-spend.md).
 
 ## Where to look next
 
