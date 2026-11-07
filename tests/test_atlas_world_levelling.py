@@ -83,12 +83,35 @@ def test_a_world_with_no_level_surface_is_refused(tmp_path):
     assert search["parallel_level_share"] == 0.0
 
 
+def test_a_refusal_keeps_the_height_profile_around_the_cameras(tmp_path):
+    value, _ = level(tmp_path, floor=False, counter=False)
+    profile = value["level_search"]["height_profile"]
+    assert value["status"] == "needs_input" and profile["band_m"] == levelling.PROFILE_BAND_M
+    assert len(profile["shares"]) == round((profile["to_m"] - profile["from_m"]) / profile["band_m"])
+    assert sum(profile["shares"]) + profile["below_share"] + profile["above_share"] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_a_candidate_refitted_past_the_tilt_bound_never_levels(tmp_path):
+    # Parallel planes whose normal is 47 degrees from +Y; the only candidate starts at 44 degrees.
+    rng = np.random.default_rng(0)
+    steep, start = (np.array([np.sin(np.radians(a)), np.cos(np.radians(a)), 0.0]) for a in (47.0, 44.0))
+    across = np.cross(steep, [0.0, 0.0, 1.0])
+    points = np.concatenate([offset * steep + rng.uniform(-3, 3, (4000, 1)) * across
+                             + rng.uniform(-3, 3, (4000, 1)) * np.array([0.0, 0.0, 1.0])
+                             for offset in (0.0, 0.4, 0.8, 1.2)])
+    search = {}
+    found = levelling._parallel_level_direction(np.zeros((0, 3)), np.zeros((0, 3), np.int64), points, search,
+                                                directions=(start,))
+    assert found is None
+    assert search["parallel_candidates"][0]["tilt_degrees"] > levelling.MAX_TILT_DEGREES
+
+
 def test_rough_open_ground_is_still_refused(tmp_path):
     value, _ = level(tmp_path, terrain=True, cameras=[(0.0, 1.8, 0.0), (1.0, 1.9, 0.5), (-1.0, 1.7, -0.5)])
     assert value["status"] == "needs_input" and value["reason"] == "website_atlas_scene_level_unobserved"
     search = value["level_search"]
     assert search["largest_level_plane_share"] < levelling.MIN_LEVEL_SHARE
-    assert search["parallel_level_layers"] == 0 and search["parallel_level_share"] == 0.0
+    assert search["parallel_level_share"] < levelling.MIN_LEVEL_SHARE / 2
 
 
 AISLE = [(2.5, 1.45, 0.0), (0.0, 1.5, 0.05), (-2.0, 1.4, -0.05)]
@@ -104,8 +127,18 @@ def test_an_aisle_floor_is_found_among_its_shelf_boards(tmp_path):
     assert value["up_basis"] == "observed_floor" and value["ground_plane_offset_m"] == 0.0
     assert value["floor"]["camera_heights_m"] == pytest.approx([1.45, 1.5, 1.4], abs=0.02)
     # The floor and the board heights are the layers: together far above the single-plane share.
-    assert value["level_search"]["parallel_level_layers"] >= 5
-    assert value["level_search"]["parallel_level_share"] > 2 * levelling.MIN_LEVEL_SHARE
+    search = value["level_search"]
+    assert search["parallel_level_layers"] >= 5 and search["parallel_level_share"] > 2 * levelling.MIN_LEVEL_SHARE
+    # Both candidate directions were tried; the kept one holds the most, and its layers are reported
+    # by height from the cameras: the floor 1.45 m below them.
+    sources = {row["source"]: row for row in search["parallel_candidates"]}
+    assert set(sources) == {"face_normal_mode", "largest_level_plane"}
+    assert search["parallel_level_share"] == max(row["share"] for row in sources.values())
+    assert any(abs(row["height_from_cameras_m"] + 1.45) <= 0.03 for row in search["densest_layers"])
+    # The profile shows the floor as the lowest band with anything in it.
+    profile = search["height_profile"]
+    floor_band = int((-1.45 - profile["from_m"]) / profile["band_m"])
+    assert profile["shares"][floor_band] >= 0.03 and not any(profile["shares"][:floor_band])
 
 
 def test_an_aisle_with_no_floor_left_is_levelled_but_declares_no_floor(tmp_path):
