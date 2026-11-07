@@ -152,6 +152,10 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
 - **06:10Z: #3439 merged** (part C 1/2), after the G1 session's review. #3440, from another session, had merged at 06:02Z.
 - **Owner, through the G1 session, about 05:50Z:** "yes a confirmed brief counts as consent". The consent rechecks stay as they are. The library job's brief is confirmed only on the website, by its owner.
 - **Job spend at 06:10Z:** Atlas $7.38 of $25, clean plate $0.69 held, intake $1.06 known. About $9.13 in all.
+- **`74e13f5` (#3441, with #3439 and #3440)**, live 06:38:25Z (`20261107T062523Z-deploy-1c182563`). Main's CI was fully green; no paid lock, no hold, no pending request; the last deploy was this session's 01ca433. The G1 session was told first.
+  - The budget report was stale again after the deploy. The resume waited for a fresh one (06:40:34Z, `20261107T064034Z-selected-handoff-5a133a8f`).
+  - **06:45Z: levelling refused again**, now with its numbers (v2 record): the largest single plane held 2.65% (4% needed), and along the face-normal direction, 1.38 degrees from +Y, no layer passed.
+  - **The causes and the fix** (general, the next PR): the floor, as the lowest layer, was its own background; a 3x ratio to the clutter fails against shelves full of books; and a direction a degree off smears a long floor. Layers now need an excess over the clutter, are found coarse to fine, and the record keeps a height profile.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
