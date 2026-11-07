@@ -14,9 +14,14 @@ rigid team scene (``team_scene_packet``, ``website_task_family_scene_inputs``):
   floor (the rule ``team_embodiment_stance.ground_stance`` applies for the G1 preparation). The head
   camera is the G1 preparation's; the G1 contract also requires one world overview camera, placed
   as the team scene places its overview;
+- the scene's robot-free probe receipt (``navigation_robot_free_probe``), written beside the packet
+  under the name the probe gate reads (``robot_free_probe_gate.RECEIPT_FILENAME``): the navigation
+  scorer run on synthetic root traces built from the plan's own task spec, bound to the plan digest,
+  the task spec, its success contract and the scorer. It proves only that the scorer tells those
+  traces apart, never anything about the scene, a simulator or a robot;
 - a sealed record, ``blueprint.website_navigation_scene_inputs.v1``, holding the packet's files and
-  digests, the bindings to both input records, ``scene_revision_digest`` (the base plan digest) and
-  every disclosed assumption.
+  digests, the probe receipt's file record, digest and status, the bindings to both input records,
+  ``scene_revision_digest`` (the base plan digest) and every disclosed assumption.
 
 The current-source identity the screening lane binds (``native_g1_beta_authority.SOURCE_FIELDS``)
 needs a scene intent, which a scene kept as filmed does not have: ``screening_source`` refuses with
@@ -39,6 +44,7 @@ from .native_g1_navigation_goal import (
     navigation_task_success_contract,
     validate_navigation_task_success_contract,
 )
+from .robot_free_probe_gate import RECEIPT_FILENAME as PROBE_RECEIPT_FILENAME
 from .usd_binary_read_cache import read_scoped
 
 SCHEMA = "blueprint.website_navigation_scene_inputs.v1"
@@ -232,13 +238,15 @@ def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], sc
 
     ``robot_record`` is the pinned G1 USD's file record (``path``, ``sha256``, ``size_bytes``), as the
     G1 preparation takes it. Returns ``{"path", "record"}``. A second call with the same inputs
-    re-verifies and returns the same record without rewriting anything.
+    re-verifies and returns the same record without rewriting anything. The robot-free probe receipt
+    is written beside the packet whether it passed or not; the probe gate decides what it admits.
     """
     from . import beta_policy_screening_g1_prepare as prepare
     from . import native_g1_arena_robot_configuration as g1_robot
     from .beta_policy_screening_files import _bound_path
     from .native_task_arena_packet import materialize_native_task_arena_packet
     from .native_task_robot_contact_topology import _asset_rigid_body_paths
+    from .navigation_robot_free_probe import score_navigation_robot_free_probe
     from .team_scene_packet import EXECUTION_AUTHORITY, PENDING_CONTROLS
 
     task = _task_spec(navigation_task_spec)
@@ -261,6 +269,7 @@ def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], sc
     _require(not any(part.is_symlink() for part in (root, *root.parents)),
              "website_navigation_scene_inputs_symlink_refused")
     path, packet, evidence = root / RECORD_FILENAME, root / PACKET_DIRECTORY, root / INPUTS_DIRECTORY
+    probe_path = root / PROBE_RECEIPT_FILENAME
     with ExitStack() as held:
         try:
             held.enter_context(prepare._namespace_lock(root.parent / ("." + key + ".lock")))
@@ -273,9 +282,10 @@ def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], sc
                      and record["robot"]["usd_sha256"] == bound["robot_usd_sha256"],
                      "website_navigation_scene_inputs_existing_conflict")
             return {"path": str(path), "record": record}
-        if packet.exists():
-            # A killed compile left no record: keep its bytes aside and compile the same path again.
-            prepare._preserve_incomplete(packet)
+        for incomplete in (packet, probe_path):
+            if incomplete.exists():
+                # A killed compile left no record: keep its bytes aside and compile the same path again.
+                prepare._preserve_incomplete(incomplete)
         rows = []
         for role, semantic in (("collision", "scene_collision"), ("appearance", "scene_appearance")):
             row = assets[role]
@@ -308,6 +318,12 @@ def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], sc
                 "website_navigation_scene_inputs_packet_invalid:" + str(exc)[:300]) from exc
         plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8"))
         files = {role: _file_record(packet / name) for role, name in _PACKET_FILES}
+        try:
+            probe = score_navigation_robot_free_probe(plan=plan)
+        except ValueError as exc:
+            raise WebsiteNavigationSceneInputsError(
+                "website_navigation_scene_inputs_robot_free_probe_invalid:" + str(exc)[:200]) from exc
+        _write_once(probe_path, probe)
         value = {
             "schema_version": SCHEMA, "claim_ceiling": CLAIM_CEILING, "task_kind": NAVIGATION_TASK_KIND,
             "scene_id": task["site_id"], "task_id": task["task_id"],
@@ -335,6 +351,8 @@ def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], sc
                            "known": {"task_id": task["task_id"], "scene_revision_digest": plan["plan_digest"],
                                      "task_context_digest": task["navigation_goal_basis"]["task_context_digest"]}},
             "execution_authority": dict(EXECUTION_AUTHORITY), "control_diagnostic": dict(PENDING_CONTROLS),
+            "robot_free_probe": {**_file_record(probe_path), "schema_version": probe["schema_version"],
+                                 "receipt_digest": probe["receipt_digest"], "status": probe["status"]},
             "disclosed_assumptions": assumptions,
             "native_application_claimed": False, "policy_episode_claimed": False,
             "provider_mutation_performed": False, "paid_authority_granted": False,
@@ -419,7 +437,28 @@ def read_navigation_scene_inputs(path: str | Path) -> dict[str, Any]:
     except (KeyError, TypeError, OSError, ValueError) as exc:
         raise WebsiteNavigationSceneInputsError("website_navigation_scene_inputs_binding_changed") from exc
     _require(bound, "website_navigation_scene_inputs_binding_changed")
+    _verify_probe(value, packet_root=root, plan=plan)
     return json.loads(json.dumps(value, allow_nan=False))
+
+
+def _verify_probe(value: Mapping[str, Any], *, packet_root: Path, plan: Mapping[str, Any]) -> None:
+    """The probe receipt beside the packet: its bytes as recorded, its seal, and this plan's binding."""
+    from .navigation_robot_free_probe import validate_navigation_robot_free_probe_receipt
+
+    code = "website_navigation_scene_inputs_robot_free_probe_changed"
+    try:
+        recorded = value["robot_free_probe"]
+        path = Path(recorded["path"])
+        _require(path == packet_root.parent / PROBE_RECEIPT_FILENAME
+                 and not any(part.is_symlink() for part in (path, *path.parents)) and path.is_file(), code)
+        _require(_file_record(path) == {key: recorded[key] for key in ("path", "size_bytes", "sha256")}, code)
+        receipt = validate_navigation_robot_free_probe_receipt(json.loads(path.read_text(encoding="utf-8")),
+                                                               plan=plan)
+        _require(all(receipt[key] == recorded[key] for key in ("schema_version", "receipt_digest", "status")), code)
+    except WebsiteNavigationSceneInputsError:
+        raise
+    except (KeyError, TypeError, OSError, UnicodeError, ValueError) as exc:
+        raise WebsiteNavigationSceneInputsError(code) from exc
 
 
 def screening_source(record: Mapping[str, Any]) -> dict[str, Any]:

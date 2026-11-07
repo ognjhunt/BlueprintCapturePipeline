@@ -16,6 +16,8 @@ import numpy
 import pytest
 
 from blueprint_pipeline import native_g1_arena_robot_configuration as robot_config
+from blueprint_pipeline import native_g1_navigation_goal as navigation_goal
+from blueprint_pipeline import robot_free_probe_gate as gate
 from blueprint_pipeline.beta_policy_screening_files import _record
 from blueprint_pipeline.beta_policy_screening_g1_prepare import HEAD_CAMERA
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -28,6 +30,9 @@ from blueprint_pipeline.native_g1_navigation_goal import (
     validate_navigation_task_success_contract,
 )
 from blueprint_pipeline.native_task_arena_bundle import verify_native_task_arena_packet
+from blueprint_pipeline.navigation_robot_free_probe import REQUIRED_CHECKS as PROBE_CHECKS
+from blueprint_pipeline.navigation_robot_free_probe import SCHEMA as PROBE_SCHEMA
+from blueprint_pipeline.navigation_robot_free_probe import score_navigation_robot_free_probe
 from blueprint_pipeline.scene_placement.robot_profile import UNITREE_G1_PROFILE
 from blueprint_pipeline.website_navigation_scene_assets import SCHEMA as ASSETS_SCHEMA
 from blueprint_pipeline.website_navigation_scene_inputs import (
@@ -181,6 +186,123 @@ def test_the_writer_refuses_another_kind_another_robot_and_a_changed_scene_file(
                        match="^website_navigation_scene_inputs_scene_asset_changed$"):
         write_navigation_scene_inputs(**inputs)
     assert not inputs["output_root"].exists()
+
+
+# --- the robot-free probe ---------------------------------------------------------------------
+
+
+def _planning_probe(record: dict, plan: dict) -> dict:
+    """The probe gate as beta planning calls it (build_planning_inputs), the receipt read beside the packet."""
+    task = plan["task_spec"]
+    receipt = gate.retained_probe_receipt(Path(record["robot_free_probe"]["path"]).parent)
+    return gate.require_robot_free_probe(
+        receipt, scene_revision_digest=record["scene_revision_digest"], task_kind=task["task_kind"],
+        task_spec_digest=canonical_digest(task),
+        task_success_contract_digest=gate.task_success_contract_binding(task["task_kind"],
+                                                                       record["task_success_contract"]))
+
+
+def test_the_robot_free_probe_receipt_is_written_beside_the_packet_and_admits_planning(inputs) -> None:
+    result = write_navigation_scene_inputs(**inputs)
+    record = result["record"]
+    root, plan, _request = _packet_documents(record)
+    probe_path = root.parent / gate.RECEIPT_FILENAME
+    receipt = json.loads(probe_path.read_text())
+    assert record["robot_free_probe"] == {**_record(probe_path), "schema_version": PROBE_SCHEMA,
+                                          "receipt_digest": receipt["receipt_digest"], "status": "passed"}
+    assert probe_path.parent == Path(result["path"]).parent and probe_path.stat().st_mode & 0o222 == 0
+    # The scorer on synthetic traces of this plan's own start and goal, bound to the plan.
+    assert receipt == score_navigation_robot_free_probe(plan=plan)
+    assert receipt["checks"] == dict.fromkeys(PROBE_CHECKS, True)
+    assert receipt["configured_scene_revision_digest"] == record["scene_revision_digest"] == plan["plan_digest"]
+    assert receipt["task_success_contract_digest"] == record["task_success_contract_digest"]
+    assert receipt["navigation_task_spec_digest"] == inputs["navigation_task_spec"]["task_spec_digest"]
+    assert receipt["claim_ceiling"] == "development_only"
+    assert receipt["proof_boundary"]["simulator_used"] is False
+    assert receipt["proof_boundary"]["physical_outcome_claimed"] is False
+    assert _planning_probe(record, plan) == {"receipt_digest": receipt["receipt_digest"],
+                                             "scene_revision_digest": plan["plan_digest"],
+                                             "task_spec_digest": canonical_digest(plan["task_spec"])}
+
+
+def _replace_receipt(path: Path, value: dict) -> None:
+    os.chmod(path, 0o644)
+    path.write_text(json.dumps(value))
+
+
+def test_the_reader_refuses_a_changed_or_another_plans_probe_receipt(inputs, tmp_path) -> None:
+    result = write_navigation_scene_inputs(**inputs)
+    record = result["record"]
+    _root, plan, _request = _packet_documents(record)
+    probe_path = Path(record["robot_free_probe"]["path"])
+    original = probe_path.read_bytes()
+    receipt = json.loads(original)
+    code = "website_navigation_scene_inputs_robot_free_probe_changed"
+
+    def recorded(value: dict, name: str) -> Path:
+        """The receipt beside the packet replaced by ``value``, under a record resealed to its bytes."""
+        _replace_receipt(probe_path, value)
+        entry = {**_record(probe_path), "schema_version": value.get("schema_version"),
+                 "receipt_digest": value.get("receipt_digest"), "status": value.get("status")}
+        return _resealed(record, tmp_path, name, robot_free_probe=entry)
+
+    def resealed_receipt(**change) -> dict:
+        row = {**copy.deepcopy(receipt), **change}
+        return {**row, "receipt_digest": canonical_digest(row, digest_field="receipt_digest")}
+
+    # Tampered bytes under the record that sealed the original.
+    _replace_receipt(probe_path, {**receipt, "status": "failed"})
+    _refused(Path(result["path"]), code)
+    probe_path.write_bytes(original)
+    assert read_navigation_scene_inputs(result["path"]) == record
+    # A receipt missing a required check, one made for another plan, or one claiming more, even resealed.
+    missing = resealed_receipt(checks={key: True for key in PROBE_CHECKS[1:]},
+                               required_checks=list(PROBE_CHECKS[1:]))
+    _refused(recorded(missing, "missing.json"), code)
+    other_plan = {**copy.deepcopy(plan), "scene_id": "site-other"}
+    other_plan["plan_digest"] = canonical_digest(other_plan, digest_field="plan_digest")
+    _refused(recorded(score_navigation_robot_free_probe(plan=other_plan), "other.json"), code)
+    _refused(recorded(resealed_receipt(claim_ceiling="diagnostic_policy_execution"), "ceiling.json"), code)
+    probe_path.write_bytes(original)
+    # A record naming a copy elsewhere, or a receipt that is gone.
+    copied = tmp_path / gate.RECEIPT_FILENAME
+    copied.write_bytes(original)
+    _refused(_resealed(record, tmp_path, "elsewhere.json",
+                       robot_free_probe={**record["robot_free_probe"], **_record(copied)}), code)
+    probe_path.unlink()
+    _refused(Path(result["path"]), code)
+
+
+def test_a_killed_write_keeps_its_receipt_aside_and_writes_again(inputs) -> None:
+    first = write_navigation_scene_inputs(**inputs)
+    record_path = Path(first["path"])
+    probe_path = Path(first["record"]["robot_free_probe"]["path"])
+    left = probe_path.read_bytes()
+    record_path.unlink()  # killed after the receipt and before the record
+    second = write_navigation_scene_inputs(**inputs)
+    assert read_navigation_scene_inputs(second["path"]) == second["record"]
+    assert second["record"]["robot_free_probe"]["status"] == "passed"
+    kept = list(probe_path.parent.glob("." + gate.RECEIPT_FILENAME + ".incomplete-*/" + gate.RECEIPT_FILENAME))
+    assert len(kept) == 1 and kept[0].read_bytes() == left
+
+
+def test_a_failed_probe_is_written_and_read_and_planning_holds_it(inputs, monkeypatch) -> None:
+    real = navigation_goal.score_g1_navigation_episode
+
+    def ever_reached(*, task_spec, samples):
+        report = dict(real(task_spec=task_spec, samples=samples))
+        if report["minimum_distance_m"] <= report["goal"]["acceptance_radius_m"]:
+            report["outcome"] = "success"
+        return report
+
+    monkeypatch.setattr(navigation_goal, "score_g1_navigation_episode", ever_reached)
+    result = write_navigation_scene_inputs(**inputs)
+    record = result["record"]
+    assert record["robot_free_probe"]["status"] == "failed"
+    assert read_navigation_scene_inputs(result["path"]) == record  # flagged, and the job keeps its record
+    _root, plan, _request = _packet_documents(record)
+    with pytest.raises(gate.RobotFreeProbeGateError, match="^team_evaluation_robot_free_probe_not_passed$"):
+        _planning_probe(record, plan)
 
 
 # --- the success contract ---------------------------------------------------------------------
