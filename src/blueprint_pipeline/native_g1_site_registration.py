@@ -277,8 +277,9 @@ def _compose_navigation_authority(*, site_id: str, current: Mapping[str, Any], r
     """The navigation scene's goal authority, composed and written once beside its G1 packet; its file record.
 
     Composed from the G1 packet's own plan and the site's retained task context, read and consent-checked as the
-    door's builder reads it (``native_g1_registration_contract.site_task_context``). Whether the site confirmed
-    its brief is disclosed in the authority, never a stop. The caller has just read the site's consent live.
+    door's builder reads it (``native_g1_registration_contract.site_task_context``). The authority records whether
+    the site confirmed its brief; the job holds until the site confirms it on the website (a confirmed brief
+    counts as consent, owner 2026-11-07). The caller has just read the site's consent live.
     """
     from .deployment_embodiment_preparation_contract import write_once
     from .native_g1_navigation_goal import compose_g1_navigation_goal_authority

@@ -25,15 +25,19 @@ PUBLISHED_TASK_INSTRUCTION = "Avoid obstacles and move to the yellow marked area
 NAVIGATION_TASK_KIND = "goal_region_navigation"
 GOAL_HOST_TASK_KINDS = frozenset({"rigid_pick_place", NAVIGATION_TASK_KIND})
 #: Owner decision 4 (2026-11-06 15:07Z): the site's brief plus a machine-composed authority replace the
-#: named human reviewer and team, recorded as a disclosed assumption. Owner, 2026-11-07: an unconfirmed
-#: brief is never a stop; it is disclosed. ``v3``: the basis and status say whether the site confirmed its
-#: brief, recomputed from its sealed context (``v2`` called every brief confirmed; none was ever stored).
+#: named human reviewer and team, recorded as a disclosed assumption. The authority only records whether
+#: the site confirmed its brief (``site_brief_confirmed``); the job holds until the site confirms its brief
+#: on the website (a confirmed brief counts as consent, owner 2026-11-07), by name at the live consent
+#: recheck or at the WebApp's ``task_confirmed``. ``v3``: the basis and status say whether the site
+#: confirmed its brief, recomputed from its sealed context (``v2`` called every brief confirmed; none was
+#: ever stored).
 MACHINE_AUTHORITY_SCHEMA_VERSION = "native_g1_navigation_goal_authority.v3"
 GOAL_BASIS_SCHEMA_VERSION = "native_g1_navigation_goal_basis.v1"
-#: Keyed by whether the site confirmed its brief (``site_brief_confirmed``).
+#: Keyed by whether the site confirmed its brief (``site_brief_confirmed``). An unconfirmed brief's basis
+#: cites no owner decision: no decision makes an unconfirmed brief a basis, so it is only disclosed.
 MACHINE_AUTHORITY_BASIS = {
     True: "owner_decision_2026_11_06_confirmed_brief_and_machine_composed_goal",
-    False: "owner_decision_2026_11_07_unconfirmed_brief_disclosed_and_machine_composed_goal",
+    False: "machine_composed_goal_site_brief_unconfirmed_disclosed",
 }
 MACHINE_AUTHORITY_STATUS = {
     True: "confirmed_for_development_simulation",
@@ -303,9 +307,9 @@ def _site_context(context: Any, *, basis: Mapping[str, Any]) -> dict[str, Any]:
     """The site's own task context, sealed and for the same site.
 
     Its digest is recomputed, so a caller cannot change a context and keep its seal. Whether the
-    site confirmed its brief is not a stop (owner, 2026-11-07: "these shouldnt be blockers at
-    all"; only privacy, rights and money stop a job). It is disclosed with the authority instead
-    (``site_brief_confirmed``).
+    site confirmed its brief is not checked here: the authority records it (``site_brief_confirmed``),
+    and the job holds until the site confirms its brief on the website (a confirmed brief counts as
+    consent, owner 2026-11-07).
     """
     if not isinstance(context, Mapping) or context.get("context_digest") != canonical_digest(
             context, digest_field="context_digest"):
@@ -366,8 +370,9 @@ def compose_g1_navigation_goal_authority(*, plan: Mapping[str, Any],
     """Compose the goal authority for a navigation scene from the site's own task context.
 
     No human reviewer is named or claimed. Whether the site confirmed its brief is recorded in
-    ``site_brief_confirmed``, and the ``status`` and ``authority_basis`` say the same; it never stops
-    the run. Refuses a context that is not the one the
+    ``site_brief_confirmed``, and the ``status`` and ``authority_basis`` say the same; the job holds
+    until the site confirms its brief on the website (a confirmed brief counts as consent, owner
+    2026-11-07), so the authority only records it. Refuses a context that is not the one the
     goal was compiled from (``g1_navigation_goal_task_context_invalid``), a goal or basis the
     plan's compiled spec does not produce (``g1_navigation_goal_spec_binding_invalid``), or a
     plan that is not a G1 navigation scene.
