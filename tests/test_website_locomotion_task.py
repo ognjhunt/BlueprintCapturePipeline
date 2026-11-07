@@ -112,8 +112,8 @@ def test_bodies_and_policies_are_chosen_by_requirement_from_data() -> None:
     walking = sorted(key for key, value in served.items() if value["locomote"])
     assert sorted(row["candidate_id"] for row in options["policies"]) == walking
     assert walking  # the catalog declares at least one policy that moves its robot
-    # With no job's outputs known, nothing a job makes counts as built.
-    assert all(not row["runnable"] and "pipeline:arena_navigation_scene_runtime" in row["missing"]
+    # With no job's outputs known, nothing a job makes counts as built; the arena runtime is code alone.
+    assert all(not row["runnable"] and "pipeline:arena_navigation_scene_runtime" not in row["missing"]
                and "pipeline:navigation_task_spec_from_compiled_spec" in row["missing"]
                for row in options["policies"])
     # A fixed-arm policy never serves a locomotion requirement, and serves manipulation.
@@ -146,8 +146,8 @@ def test_the_hold_names_each_missing_piece_and_is_re_derived(tmp_path) -> None:
     gap = runnable_policy_gap(task_context=context, requirements=WALK, spec_digest="sha256:" + "c" * 64,
                               options=runnable_options(WALK, built_pieces=built))
     assert gap["code"] == HOLD_CODE and gap["job_disposition"] == "held_for_preparation"
-    assert {"pipeline:arena_navigation_scene_runtime", "pipeline:g1_navigation_preparation"} <= set(gap["missing"])
-    assert "pipeline:navigation_scene_assets" not in gap["missing"]
+    assert "pipeline:g1_navigation_preparation" in gap["missing"]
+    assert not {"pipeline:navigation_scene_assets", "pipeline:arena_navigation_scene_runtime"} & set(gap["missing"])
     assert gap["runnable_options"]["navigation_pieces_built"] == sorted(built)
     # A job whose scene files could not be authored names that piece itself.
     failed = runnable_options(WALK, built_pieces=navigation_pieces_built({"navigation_task_spec": True}))
@@ -168,6 +168,30 @@ def test_the_hold_names_each_missing_piece_and_is_re_derived(tmp_path) -> None:
     assert not holds_native_task_preparation(stale, context)  # a changed catalog releases the hold
     pick = _context("rigid_pick_place")
     assert not holds_native_task_preparation({**handoff, "scene_id": "site-a"}, pick)
+
+
+def test_a_catalog_row_that_lists_no_navigation_kind_is_named_as_planning_would_refuse_it() -> None:
+    from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
+
+    catalog = json.loads(json.dumps(load_default_catalog()))
+    walking = {key for key, value in policy_requirements_served().items() if value["locomote"]}
+    rows = [row for row in catalog["candidates"] if row["candidate_id"] in walking]
+    assert rows
+    every = navigation_pieces_built({output: True for output in NAVIGATION_PIECE_OUTPUTS.values()})
+
+    def missing(kinds):
+        for row in rows:
+            row["supported_task_kinds"] = kinds
+        return {row["candidate_id"]: row["missing"] for row in runnable_options(
+            WALK, catalog=catalog, built_pieces=every)["policies"]}
+
+    assert all("catalog:task_kind_not_supported_by_candidate" in items for items in missing(["rigid_pick_place"]).values())
+    assert all("catalog:task_kind_support_unverified" in items for items in missing([]).values())
+    assert not any(item.startswith("catalog:task_kind") for items in missing(["goal_region_navigation"]).values()
+                   for item in items)
+    # A fixed-arm task never compiles to the navigation kind.
+    arm = runnable_options(requirements(locomote=False, manipulate=True), catalog=catalog)
+    assert not any(item.startswith("catalog:task_kind") for row in arm["policies"] for item in row["missing"])
 
 
 def test_a_runnable_policy_is_never_held() -> None:

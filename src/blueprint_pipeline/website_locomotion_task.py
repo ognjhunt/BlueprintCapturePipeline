@@ -49,12 +49,16 @@ NAVIGATION_PIPELINE_PIECES = (
     "navigation_task_spec_from_compiled_spec",   # website_navigation_packet (built)
     "navigation_scene_assets",                    # Isaac appearance/collision for a scene kept as filmed
     "arena_navigation_scene_runtime",             # scene plan, runtime and readback without a task object
-    "g1_navigation_preparation",                  # G1 stance at the compiled start, cells, registration
+    "g1_navigation_preparation",                  # G1 stance at the compiled start, its nominal cell, registration
 )
+#: What the G1 lane itself still adds (its perturbed start cells, planning and launch) shows as the
+#: catalog rows' own task-kind support (``_catalog_task_kind_gap``) and the embodiment's missing work.
 #: The pieces whose code exists. One that stands for a job's own output (``NAVIGATION_PIECE_OUTPUTS``)
 #: is built for a job only once its handoff wrote that output (``navigation_pieces_built``).
+#: ``arena_navigation_scene_runtime`` is code alone: the arena runs a scene with no task object (part B,
+#: #3431), for every job; the scene plan and runtime contract a job compiles are its scene half's.
 BUILT_NAVIGATION_PIECES = frozenset({"navigation_task_spec_from_compiled_spec", "navigation_scene_assets",
-                                     "g1_navigation_preparation"})
+                                     "arena_navigation_scene_runtime", "g1_navigation_preparation"})
 #: Each job-made piece and the handoff output it stands for (``website_scene_handoff``):
 #: ``navigation_task_spec.json``, ``navigation_scene_assets.json``, and the scene-inputs record
 #: (``website_navigation_scene_inputs``: the G1 at the compiled start) with its team registry row.
@@ -201,6 +205,22 @@ def _policy_serves(row: Mapping[str, Any], requirements: Mapping[str, Any],
                                         if requirements.get(key))
 
 
+def _catalog_task_kind_gap(row: Mapping[str, Any], requirements: Mapping[str, Any]) -> list[str]:
+    """Whether the catalog row lists the task kind this job compiles to, as the screening plan reads it.
+
+    Only a walk with nothing handled compiles to a kind here (``goal_region_navigation``); the codes are
+    the screening plan's own (``beta_policy_screening_plan``), so a hold names what planning would refuse.
+    """
+    if not requirements.get("locomote") or requirements.get("manipulate"):
+        return []
+    from .native_g1_navigation_goal import NAVIGATION_TASK_KIND
+
+    kinds = row.get("supported_task_kinds") or []
+    if NAVIGATION_TASK_KIND in kinds:
+        return []
+    return ["catalog:task_kind_not_supported_by_candidate" if kinds else "catalog:task_kind_support_unverified"]
+
+
 def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, Any] | None = None,
                      served: Mapping[str, Mapping[str, bool]] | None = None,
                      built_pieces: frozenset[str] | None = None) -> dict[str, Any]:
@@ -228,6 +248,7 @@ def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, A
                    *(f"pipeline:{piece}" for piece in NAVIGATION_PIPELINE_PIECES if piece not in built)] \
             if requirements.get("locomote") else [*(f"embodiment:{item}" for item in body.missing)]
         missing += [f"catalog:{code}" for code in (row.get("eligibility") or {}).get("blockers") or []]
+        missing += _catalog_task_kind_gap(row, requirements)
         policies.append({"candidate_id": row["candidate_id"], "embodiment_id": body.embodiment_id,
                          "runnable": not missing, "missing": missing})
     return {"requirements": dict(requirements),

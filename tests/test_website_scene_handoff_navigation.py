@@ -27,6 +27,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.team_candidate_quick10_registry import profile_for_capture
 from blueprint_pipeline.team_candidate_registry_reader import REGISTRY_ENV
 from blueprint_pipeline.website_locomotion_hold import HOLD_CODE
+from blueprint_pipeline.website_locomotion_task import BUILT_NAVIGATION_PIECES
 from blueprint_pipeline.website_navigation_scene_inputs import (
     OUTPUT_DIRECTORY,
     SOURCE_UNBOUND,
@@ -143,6 +144,29 @@ def test_the_handoff_writes_the_scene_half_and_registers_it(job):
     assert "website_intake_outbox" not in result
     with pytest.raises(WebsiteNavigationSceneInputsError, match=SOURCE_UNBOUND):
         screening_source(record)
+
+
+def test_once_built_the_hold_names_only_what_the_g1_lane_still_lacks(job):
+    """No pipeline piece: only the embodiment's missing work and each catalog row's own task-kind support."""
+    from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
+    from blueprint_pipeline.native_g1_navigation_goal import NAVIGATION_TASK_KIND
+    from blueprint_pipeline.task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY
+
+    result, context = _run(job)
+    options = result["native_task_preparation_gap"]["runnable_options"]
+    assert options["navigation_pieces_built"] == sorted(BUILT_NAVIGATION_PIECES)
+    bodies = {row.embodiment_id: row for row in EMBODIMENT_REGISTRY}
+    rows = {row["candidate_id"]: row for row in load_default_catalog()["candidates"]}
+    assert options["policies"]
+    for policy in options["policies"]:
+        kinds = rows[policy["candidate_id"]]["supported_task_kinds"]
+        expected = [f"embodiment:{item}" for item in bodies[policy["embodiment_id"]].missing]
+        expected += [f"catalog:{code}" for code in rows[policy["candidate_id"]]["eligibility"]["blockers"]]
+        if NAVIGATION_TASK_KIND not in kinds:
+            expected.append("catalog:task_kind_not_supported_by_candidate" if kinds
+                            else "catalog:task_kind_support_unverified")
+        assert policy["missing"] == expected and not any(item.startswith("pipeline:") for item in policy["missing"])
+    assert holds_native_task_preparation(result, context)
 
 
 def test_a_second_handoff_finds_the_same_record_and_row(job):
