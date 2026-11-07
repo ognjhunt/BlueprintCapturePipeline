@@ -281,7 +281,8 @@ def _navigation_scene_facts(profile: Mapping[str, Any], *, inputs: Mapping[str, 
     (``native_g1_navigation_goal.PUBLISHED_TASK_INSTRUCTION``), never the site's sentence. The record
     names no runtime source: the G1 registration's own record supplies it (its ``runtime_source_gap``).
     The robot-free probe receipt is retained in the record's own directory, beside the packet. The
-    G1 lane takes its horizon from the G1 execution spec, so the profile's is passed through as given.
+    G1 lane's horizon is its interface contract's (``beta_policy_screening_g1.interface_contract``),
+    so the profile's is passed through as given.
     """
     from .native_g1_navigation_goal import PUBLISHED_TASK_INSTRUCTION
 
