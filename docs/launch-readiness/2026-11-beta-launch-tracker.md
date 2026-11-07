@@ -226,6 +226,32 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - both navigation rows are funded, $4 each.
   - [#3449](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3449) builds it, with the `g1_scene_floor_estimated` flag. Each run record quotes the owner with the session and UTC time.
 
+- **15:30–21:45Z: confirmation, intake and restarts.**
+  - **Fixes:**
+    - #3453: the Pipeline half of the navigation intake.
+    - #3454 and #3455, with WebApp #1236: a late confirmation is the sealed context's confirmed successor, and a held job replays once per arrived fact.
+    - #3456: the operator replays a held, completed ledger.
+    - #3457 and #3458, with WebApp #1237: a confirmation that accepts Blueprint's proposals keeps the successor's parent.
+    - WebApp #1235: confirm at upload.
+  - **Deploys:**
+    - `4289556`: live 15:46Z, without the job's resume.
+    - `9d77525`: owner, "deploy 9d77525".
+    - `ad2776f` and `9a64834` (live 21:08Z): owner, "deploy main" both times.
+    - WebApp `bf91ecc`: live 21:22Z.
+    - Each deploy was checked first: no paid lock, no hold, no pending request, and the G1 session told.
+  - **Restarts.** The 19:18Z and 20:03Z restarts were refused. Each refusal (`task_context_changed`, `native_resume_not_eligible`, `website_assessment_resume_binding_invalid`) led to one of the fixes above. The 21:22:51Z restart (`20261107T212251Z-selected-handoff-d9d9b63d`) completed at 21:24Z: `native_preparation` is at revision 101, `completed`.
+  - **It changed nothing.**
+    - `capture_pipeline` took 0.08 s, and `handoff.json` and `provider_run_manifest.json` stayed at 14:04Z, so the navigation intake was never sent.
+    - The qualification lane's resume marker (`pipeline/lane_ledger`) keyed only on the delivered descriptor and raw manifest, which no replay changes. It had skipped the 20:04Z release replay the same way, and it would skip target corrections and robot-fit rechecks too.
+    - #3460 (13dbd27) adds run_e2e's capture-stage binding to that key.
+  - **View your scene.** #3459, with WebApp #1238 (merged 21:36Z): the job page opens a private, web-sized preview of the job's own scene.
+  - **Owner, about 21:10Z:** "i pre-approve all deploys and stuff necessary - keep working without stopping".
+  - **Next:**
+    1. Deploy 13dbd27 (#3459 and #3460) once main attests and the door is quiet; the G1 session was told at 21:39Z.
+    2. Run one restart, keyed by the release.
+    3. Expected after that: intake sent → receipt bound → handoff → the two funded G1 runs.
+  - **Paid nothing this afternoon.** Atlas $7.38 of $25.
+
 ## Deploys on 2026-11-05 (capture-447 screening)
 
 - Two cloud sessions share the `cloud-scene-runs` door token today. Both merge and deploy on capture-447, so check `door requests` and `deploys.recent_receipts` before deploying.
