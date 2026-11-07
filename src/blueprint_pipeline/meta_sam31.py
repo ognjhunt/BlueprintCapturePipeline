@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
@@ -23,6 +25,8 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 from .semantic_teacher_image_edit_worker import _open_no_redirect
+from .website_track_mask_codec import (canonical_track_digest, load_track_json, plain_runs, raster_runs,
+                                       write_track_json)
 
 MODEL = "sam-3.1"
 ENDPOINT = "https://api.meta.ai/v1/responses"
@@ -67,8 +71,9 @@ def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
     HTTP response), so nothing was processed and the prompt is dispatched again, under a new
     admission digest so the website reserves it afresh and no one-dispatch grant is replayed.
     A 404 also retires the uploaded video it named (the provider no longer holds that file), so
-    the next dispatch uploads it again. A prompt whose outcome is unknown (an intent with no
-    answered refusal) still requires reconciliation.
+    the next dispatch uploads it again. A prompt whose dispatch got no answer at all is counted as
+    spent and sent once more (``count_unanswered_dispatches``). Any other answer, such as a 5xx,
+    may have been processed and still requires reconciliation.
     """
     archive = Path(root) / "refused"
     count = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
@@ -92,6 +97,84 @@ def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
                 if (Path(root) / name).is_file():
                     os.replace(Path(root) / name, target / name)
     return count
+
+
+#: Owner decision 2026-11-07 ("Yes, resend once"), for every job: a SAM request a crashed
+#: attempt left with no answer may be sent once more. The first stays counted as spent; the
+#: resend has its own reservation inside the job's existing caps; both are recorded; a resend
+#: that also gets no answer stops for review.
+UNANSWERED_ARCHIVE = "unanswered"
+COUNTED_AS_SPENT = "counted-as-spent.json"
+COUNTED_AS_SPENT_SCHEMA = "meta_sam31_unanswered_dispatch.v1"
+_ALLOCATION_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def _counted_as_spent(root: Path) -> dict[int, tuple[Path, dict[str, Any]]]:
+    archive = Path(root) / UNANSWERED_ARCHIVE
+    counted: dict[int, tuple[Path, dict[str, Any]]] = {}
+    for path in sorted(archive.glob(f"attempt-*/{COUNTED_AS_SPENT}")) if archive.is_dir() else ():
+        record = json.loads(path.read_text())
+        index = record.get("prompt_index")
+        if (path.is_symlink() or record.get("schema_version") != COUNTED_AS_SPENT_SCHEMA
+                or type(index) is not int or index in counted):
+            raise ValueError("meta_sam_unanswered_record_invalid")
+        counted[index] = (path.parent, record)
+    return counted
+
+
+def count_unanswered_dispatches(root: Path, pending: Sequence[int], *, binding_digest: str,
+                                limit: int | None = None) -> dict[int, dict[str, Any]]:
+    """Count each pending prompt's unanswered dispatch as spent, once per prompt; return the resend marks.
+
+    An intent with no response and no recorded answer is what a crashed attempt leaves (or a
+    timeout, or a dropped connection): the provider may have processed and billed it, and its
+    response is lost. Its reservation, named in the intent, stays held at its maximum: nothing
+    here releases or settles it. One durable record says so, then the intent moves beside it
+    under ``unanswered/attempt-N``, and the prompt is dispatched once more under a new
+    admission digest that names the intent it resends. Each mark returned (prompt index ->
+    ``resend_of``, ``resend_index``) goes into that admission and into the resend's own intent.
+    A prompt already counted is never counted again: its resend, if it too gets no answer,
+    still requires reconciliation. An intent that names no reservation of this binding is
+    left for reconciliation, as is one beyond ``limit`` resends (a caller's own cap).
+    """
+    root = Path(root)
+    counted = _counted_as_spent(root)
+    archive = root / UNANSWERED_ARCHIVE
+    attempts = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
+    for index in pending:
+        intent, failure = root / f"intent-{index}.json", root / f"failure-{index}.json"
+        if not intent.is_file() or intent.is_symlink() or failure.exists() or failure.is_symlink():
+            continue
+        raw = intent.read_bytes()
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        if index in counted:
+            target, record = counted[index]
+            if record.get("intent_sha256") == digest and not (target / intent.name).exists():
+                os.replace(intent, target / intent.name)  # finish an archive a crash interrupted
+            continue
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        if type(value) is not dict:
+            continue
+        allocation = value.get("allocation_binding_digest")
+        if (value.get("binding_digest") != binding_digest or "resend_of" in value or type(allocation) is not str
+                or not _ALLOCATION_DIGEST.fullmatch(allocation) or (limit is not None and len(counted) >= limit)):
+            continue
+        attempts += 1
+        target = archive / f"attempt-{attempts}"
+        target.mkdir(parents=True)
+        record = {"schema_version": COUNTED_AS_SPENT_SCHEMA, "status": "counted_as_spent", "outcome": "unknown",
+                  "prompt_index": index, "binding_digest": binding_digest, "intent_sha256": digest,
+                  "allocation_binding_digest": allocation, "clip_digest": value.get("clip_digest"),
+                  "reservation": "held_at_maximum_never_released_or_settled_as_zero",
+                  "resends_allowed": 1, "recorded_at": datetime.now(timezone.utc).isoformat()}
+        write_json(target / COUNTED_AS_SPENT, record)
+        os.replace(intent, target / intent.name)
+        counted[index] = (target, record)
+    return {index: {"resend_of": record["intent_sha256"], "resend_index": 1}
+            for index, (_, record) in counted.items()}
 
 
 def _parse_js_rasters(text: str, accept: Any) -> bool:
@@ -174,7 +257,9 @@ def _upload_video(*, clip: Path, root: Path, token: str, opener: Any) -> str:
             raise ValueError("meta_sam_uploaded_video_changed")
         return receipt["file_id"]
     # Uploads do not purchase segmentation, but an uncertain upload must not
-    # silently accumulate copies of private footage on the provider.
+    # silently accumulate copies of private footage on the provider. Its file id
+    # is unknown, so that copy could never be deleted: unlike a SAM request, an
+    # unanswered upload is never resent (privacy, not money, stops it).
     intent = root / "video-upload-intent.json"
     if intent.exists():
         raise ValueError("meta_sam_video_upload_requires_reconciliation")
@@ -306,6 +391,11 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
 def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
                  registry: Sequence[Mapping[str, Any]],
                  backend_out: list[str] | None = None) -> list[dict[str, Any]]:
+    """Tracks whose observations hold each mask's whole-frame runs as a compact ``RunLengths``.
+
+    ``runs`` reads, iterates, compares and encodes like the list of ``{"start", "length"}``
+    dicts, without holding one Python dict per run (a 4K video's large surfaces reach millions).
+    """
     from meta_sam_parser import (CompletedOutcome, InvalidSegmentationMaskError,
                                  SegmentationMaskIdentity, SegmentationMaskRecord,
                                  decode_mask_to_raster)
@@ -338,13 +428,10 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
         raster = np.frombuffer(decoded, dtype=np.uint8).reshape(mask_height, mask_width)
         if raster.shape != (bottom - top, right - left):
             raster = np.asarray(Image.fromarray(raster).resize((right - left, bottom - top), Image.Resampling.NEAREST))
-        mask = np.zeros((height, width), dtype=np.uint8)
-        mask[top:bottom, left:right] = raster
-        edges = np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1)))
-        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        # The box's runs in the whole frame, as if pasted into it; no frame-sized array per mask.
         observations.setdefault(object_id, {})[index] = {
             "source_frame_id": registry[index]["source_frame_id"], "width": width, "height": height,
-            "runs": [{"start": int(start), "length": int(end - start)} for start, end in zip(starts, ends)],
+            "runs": raster_runs(raster, left=left, top=top, width=width),
         }
 
     class _SingleDecodeParser(_SegmentationParser):
@@ -430,7 +517,21 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                    task_context: Mapping[str, Any] | None = None,
                    video_artifact: Mapping[str, Any] | None = None,
                    opener: Any = _open_no_redirect, source_video_digest: str | None = None,
-                   require_retained_video: bool = False) -> dict[str, Any]:
+                   require_retained_video: bool = False, maximum_cost_usd: float | None = None,
+                   compact_runs: bool = False) -> dict[str, Any]:
+    """Hosted SAM 3.1 masks for each prompt over the frames, bought once per binding, replayed without a
+    second purchase.
+
+    ``maximum_cost_usd`` is a caller's own ceiling on all this binding's dispatches. A resend
+    of an unanswered dispatch is reserved only while it, the prompts and every refused
+    dispatch's held reservation still fit under it; otherwise the unanswered one stays for
+    reconciliation.
+
+    Decoded tracks are hashed and written chunk by chunk from their compact runs (the bytes
+    ``write_json`` and ``canonical_digest`` give for the list form). The returned tracks carry
+    those compact ``RunLengths`` when ``compact_runs``; otherwise each observation's ``runs`` is
+    the plain list of dicts, as before.
+    """
     binding = request_binding(frame_registry=frame_registry, frame_artifacts=frame_artifacts, prompts=prompts,
                               video_artifact=video_artifact)
     if source_video_digest is not None:
@@ -440,6 +541,15 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
     retained = bool(prompts) and not pending
     refused = retire_refused_dispatches(root, pending) if pending and not require_retained_video else 0
+    image_request = len(frame_registry) == 1
+    unit_cost = 0.0025 if image_request else max(50, len(frame_registry)) * PRICE_PER_FRAME_USD
+    room = (None if maximum_cost_usd is None
+            else max(0, math.floor(maximum_cost_usd / unit_cost + 1e-9) - len(prompts) - refused))
+    # The resend marks of every pending prompt whose first dispatch got no answer: that one is
+    # counted as spent (its reservation stays held), and this dispatch is its single resend.
+    resends = ({index: mark for index, mark in count_unanswered_dispatches(
+                    root, pending, binding_digest=digest, limit=room).items() if index in pending}
+               if pending and not require_retained_video else {})
     if require_retained_video:
         required = [root / name for name in ("binding.json", "tracks.json")]
         required.extend(root / f"{prefix}-{index}.json" for prefix in ("response", "parsed-response")
@@ -452,11 +562,13 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     # stopped worker may have retained only a prefix of its provider responses;
     # continuing that prefix needs a distinct, bounded grant for the missing
     # prompts rather than redispatching the already reserved parent binding.
-    admission_digest = (digest if len(pending) == len(prompts) and not refused else canonical_digest({
+    # A resend is never the original grant: the binding names each intent it resends, so the
+    # website reserves it afresh beside the held first reservation, never "already_reserved".
+    admission_digest = (digest if len(pending) == len(prompts) and not refused and not resends else canonical_digest({
         "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
-        "pending_prompt_indices": pending, **({"refused_dispatches": refused} if refused else {})}))
-    image_request = len(frame_registry) == 1
-    unit_cost = 0.0025 if image_request else max(50, len(frame_registry)) * PRICE_PER_FRAME_USD
+        "pending_prompt_indices": pending, **({"refused_dispatches": refused} if refused else {}),
+        **({"unanswered_resends": [{"prompt_index": index, **resends[index]} for index in sorted(resends)]}
+           if resends else {})}))
     if not prompts or len({p["prompt_id"] for p in prompts}) != len(prompts):
         raise ValueError("meta_sam_prompts_invalid")
     for prompt in prompts:
@@ -535,7 +647,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                     allocation_binding_digest=admission_digest, require_allocation_binding=True)
                 with intent_path.open("x") as file:
                     json.dump({"binding_digest": digest, "clip_digest": _sha256_file(clip),
-                               "allocation_binding_digest": admission_digest}, file)
+                               "allocation_binding_digest": admission_digest, **resends.get(index, {})}, file)
                     file.flush()
                     os.fsync(file.fileno())
                 try:
@@ -550,7 +662,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                     raise ValueError(f"meta_sam_http_{exc.code}") from None
                 receipt = {"binding_digest": digest, "clip_digest": _sha256_file(clip),
                            "allocation_binding_digest": admission_digest, "response": response,
-                           "reserved_cost_usd": unit_cost}
+                           "reserved_cost_usd": unit_cost, **resends.get(index, {})}
                 temporary = result_path.with_suffix(".tmp")
                 write_json(temporary, receipt)
                 os.replace(temporary, result_path)
@@ -563,9 +675,9 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             parsed_binding = {"response_digest": _sha256_file(result_path), "request_digest": digest,
                               "parser_revision": 1, "profile": PROFILE}
             if parsed_path.is_file():
-                parsed = json.loads(parsed_path.read_text())
+                parsed = load_track_json(parsed_path)
                 if (parsed.get("binding") != parsed_binding
-                        or parsed.get("digest") != canonical_digest(parsed, digest_field="digest")):
+                        or parsed.get("digest") != canonical_track_digest(parsed, digest_field="digest")):
                     raise ValueError("meta_sam_retained_tracks_changed")
                 decoded = parsed["tracks"]
             else:
@@ -574,20 +686,20 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 backend: list[str] = []
                 decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend)
                 parsed = {"binding": parsed_binding, "tracks": decoded, "parser_runtime": backend[0]}
-                parsed["digest"] = canonical_digest(parsed, digest_field="digest")
+                parsed["digest"] = canonical_track_digest(parsed, digest_field="digest")
                 temporary = parsed_path.with_suffix(".tmp")
-                write_json(temporary, parsed)
+                write_track_json(temporary, parsed)
                 os.replace(temporary, parsed_path)
             tracks.extend(decoded)
             receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
         result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
                   "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
         if require_retained_video:
-            if json.loads((root / "tracks.json").read_text()) != result:
+            if load_track_json(root / "tracks.json") != result:
                 raise ValueError("meta_sam_retained_tracks_changed")
         else:
-            write_json(root / "tracks.json", result)
-        return result
+            write_track_json(root / "tracks.json", result)
+        return result if compact_runs else plain_runs(result)
     finally:
         if video_artifact and not retained:
             try:
