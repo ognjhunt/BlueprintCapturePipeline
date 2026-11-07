@@ -313,6 +313,48 @@ def _splat_input_options(pose_root, *, review, policy, edit_scope):
     return {"minimum_frames": 16, "maximum_frames": 30} if dense else {}
 
 
+REFINED_APPEARANCE, DRAFT_APPEARANCE = "atlas_refined_splat", "depth_fused_draft_fallback"
+
+
+def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_context, source_digest,
+                          configuration, check, experimental, max_polls, admitted_completion):
+    """Atlas's refined splat of the captured frames, or the draft with the reason it is the fallback.
+
+    The draft is the fallback only when the job's Atlas money cannot cover the refined splat and
+    the mesh after it, when Atlas fails every attempt, or when admitted generated geometry would
+    be left out of a captured-frames-only request. A splat already bought is always adopted.
+    """
+    from .atlas_native_splat import _form_roots, _started, run_native_splat
+    from .atlas_pricing import splat_cost
+    from .paid_resource_allocator import run_sponsored_website_atlas_task
+
+    root = output_root / "refined_splat"
+    bought = any(_started(form_root) for _, form_root in _form_roots(root))
+    if admitted_completion and not bought:
+        return {"status": "completed", "basis": DRAFT_APPEARANCE,
+                "fallback_reason": "atlas_refined_splat_would_omit_admitted_completion"}
+    if not bought:
+        remaining = _current_configuration(task_context, source_digest, configuration).get("remaining_cost_usd")
+        needed = splat_cost(policy) + float(policy.get("mesh_export_cost_usd", 0))
+        if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or remaining < needed:
+            return {"status": "completed", "basis": DRAFT_APPEARANCE,
+                    "fallback_reason": "atlas_refined_splat_unaffordable"}
+    check("refined_splat")
+    try:
+        native = run_native_splat(frames=frames, result=pose, draft=draft, output_root=root, policy=policy,
+            task_context=task_context, max_polls=max_polls,
+            task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw))
+    except ValueError as exc:
+        if str(exc) != "atlas_task_operation_failed":
+            raise
+        return {"status": "completed", "basis": DRAFT_APPEARANCE,
+                "fallback_reason": "atlas_refined_splat_provider_failed"}
+    if native["status"] != "completed":
+        return {"status": "processing", "stage": "refined_splat", "operation_id": native.get("operation_id")}
+    return {"status": "completed", "basis": REFINED_APPEARANCE, "splat_root": native["splat_root"],
+            "splat_manifest": native["splat_manifest"]}
+
+
 def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
                      source_digest, configuration, check, experimental, max_polls, model,
                      source_survey_path=None, reconstruction_only=False, task_evidence_limitation=None,
@@ -402,9 +444,24 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 splat_root, splat = Path(completion['splat_root']), completion['splat_manifest']
                 generated_roots = [Path(p) for p in completion['generated_roots']]
                 completion_paths = [Path(p) for p in completion['analysis_paths']]
+    # The scene's appearance is Atlas's refined splat whenever its money allows (owner,
+    # 2026-11-07); the depth-fused draft stays the gap and coverage evidence and is the
+    # appearance only as a named fallback.
+    appearance = None
+    if (not reconstruction_only and not geometry_only and source_pose['status'] == 'completed'
+            and not completion_stopped and 'refined_splat_cost_usd' in policy):
+        appearance = _preserved_appearance(frames=frames, pose=pose, draft=splat, output_root=output_root,
+            policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
+            check=check, experimental=experimental, max_polls=max_polls, admitted_completion=admitted_completion)
+        if appearance['status'] == 'processing':
+            return appearance
+        if appearance['basis'] == REFINED_APPEARANCE:
+            splat_root, splat = Path(appearance['splat_root']), appearance['splat_manifest']
     if (not reconstruction_only and source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
             and not completion_stopped):
-        mesh_destination = (output_root / 'preserved_completion/mesh' / splat['digest'][7:23]
+        mesh_destination = (output_root / 'mesh-refined' / splat['digest'][7:23]
+                            if (appearance or {}).get('basis') == REFINED_APPEARANCE
+                            else output_root / 'preserved_completion/mesh' / splat['digest'][7:23]
                             if admitted_completion else output_root / 'mesh')
         spec, mesh_root = splats2mesh_attempt(splat_root, mesh_destination)
         quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "splats2Mesh",
@@ -453,6 +510,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         "claim_ceiling": "development_only", "physical_evidence": False,
         "scale_status": source_pose.get("scale_status", "unscaled_provider_world_units"),
         "billing_status": "provider_usage_unreported"}
+    if appearance is not None:
+        result['appearance'] = {key: appearance[key] for key in ('basis', 'fallback_reason') if key in appearance}
     if completion is not None:
         result['scene_completion'] = {'status': completion['status'], 'reason': completion.get('reason'),
             'failure_class': completion.get('failure_class'),
