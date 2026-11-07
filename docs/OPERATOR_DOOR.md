@@ -262,8 +262,11 @@ checks the expiry again under its own lock. It then records the dead attempt as
 and its history row (stage `lease_expired`, outcome `unknown`) keeps the lease
 owner and times. The claim then retries it like any reviewed failure, with the
 same payload, delivery, consent, authority and spending checks. A Meta SAM
-submission the dead attempt left unanswered still stops at
-`meta_sam_submission_requires_reconciliation`, before any new reservation or call.
+request the dead attempt left unanswered is counted as spent, and its reservation
+stays held at its maximum. It is then sent once more under its own reservation,
+inside the job's existing caps (owner decision 2026-11-07). A resend that also gets
+no answer stops at `meta_sam_submission_requires_reconciliation`. An unanswered
+video upload still stops at `meta_sam_video_upload_requires_reconciliation`.
 
 `--reissue-preparation --atlas-status-digest sha256:...` (mode
 `preparation-reissue`) re-issues a completed native preparation as a new job

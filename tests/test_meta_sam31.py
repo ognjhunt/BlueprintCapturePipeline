@@ -186,6 +186,7 @@ def test_partial_prompt_resume_refuses_uncertain_missing_prompt_before_reservati
     clip = sam.encode_clip(registry=args["frame_registry"], artifacts=args["frame_artifacts"], root=root)
     sam.write_json(root / "response-0.json", {"binding_digest": digest,
         "clip_digest": _sha256_file(clip), "response": response()})
+    # An intent that names no reservation cannot be counted as spent, so it is never resent.
     sam.write_json(root / "intent-1.json", {"binding_digest": digest, "clip_digest": _sha256_file(clip)})
     monkeypatch.setattr("blueprint_pipeline.website_task_context.reserve_website_sam_spend",
         lambda **kwargs: pytest.fail("uncertain provider call must not get another grant"))
@@ -199,7 +200,9 @@ def test_partial_prompt_resume_refuses_uncertain_missing_prompt_before_reservati
         sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("tampered provider response"))
 
 
-def test_timeout_is_not_retried_and_missing_grant_cannot_call_provider(tmp_path, monkeypatch):
+def test_timeout_is_resent_only_under_its_own_grant_and_missing_grant_cannot_call_provider(tmp_path, monkeypatch):
+    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
+
     monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
     calls = []
     def opener(*args, **kwargs):
@@ -211,9 +214,13 @@ def test_timeout_is_not_retried_and_missing_grant_cannot_call_provider(tmp_path,
     assert calls == []
     with pytest.raises(TimeoutError):
         sam.run_meta_sam31(**args, opener=opener)
-    with pytest.raises(ValueError, match="requires_reconciliation"):
+    # The unanswered dispatch is counted as spent; its one resend needs its own reservation,
+    # and the grant for the first never pays for it.
+    with pytest.raises(PaidResourceAdmissionBlocked, match="grant_binding_mismatch"):
         sam.run_meta_sam31(**args, opener=opener)
     assert len(calls) == 1
+    counted = json.loads(next(args["output_root"].rglob(sam.COUNTED_AS_SPENT)).read_text())
+    assert counted["status"] == "counted_as_spent" and counted["allocation_binding_digest"] == args["admission"]["allocation_binding_digest"]
 
 
 def test_per_frame_budget_is_checked_before_submission(tmp_path, monkeypatch):
@@ -455,9 +462,12 @@ def test_a_refusal_the_provider_answered_is_dispatched_again_under_a_fresh_reser
     archived = args["output_root"] / digest[7:] / "refused" / "attempt-1"
     assert json.loads((archived / "failure-1.json").read_text())["http_status"] == 404
     assert (archived / "intent-1.json").is_file()
+    # An answered refusal is no unknown outcome: nothing is counted as spent or marked a resend.
+    assert not (archived.parents[1] / sam.UNANSWERED_ARCHIVE).exists()
+    assert "resend_of" not in json.loads((archived.parents[1] / "response-1.json").read_text())
 
 
-def test_an_unanswered_dispatch_still_requires_reconciliation(tmp_path, monkeypatch):
+def test_a_server_error_answer_still_requires_reconciliation(tmp_path, monkeypatch):
     monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
     args = inputs(tmp_path)
     digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
@@ -469,9 +479,175 @@ def test_an_unanswered_dispatch_still_requires_reconciliation(tmp_path, monkeypa
     with pytest.raises(ValueError, match="requires_reconciliation"):
         sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("a 5xx may have been processed"))
     assert sam.retire_refused_dispatches(root, [0]) == 0
+    assert not (root / sam.UNANSWERED_ARCHIVE).exists() and (root / "intent-0.json").is_file()
 
 
 def test_the_parser_time_limit_grows_with_the_response():
     assert sam.parser_timeout_seconds("x" * 1000) == 300
     assert sam.parser_timeout_seconds("x" * (2 * 1024 * 1024)) == 600
     assert sam.parser_timeout_seconds("x" * (64 * 1024 * 1024)) == 3600
+
+
+def _job_spend(monkeypatch):
+    """The job's reservation path as the website answers it: one admission per distinct binding."""
+    from blueprint_pipeline import website_task_context
+
+    reservations = []
+
+    def reserve(**kwargs):
+        assert kwargs["binding_digest"] not in [row["binding_digest"] for row in reservations], "already_reserved"
+        reservations.append(kwargs)
+        value = {**build_paid_lane_admission(resource_class="evaluator_api"),
+                 "allocation_binding_digest": kwargs["binding_digest"],
+                 "maximum_cost_usd": kwargs["maximum_cost_usd"], "external_disclosure_allowed": True}
+        return value, require_paid_resource_admission(value, resource_class="evaluator_api",
+            expected_schema_version="paid_lane_admission.v1")
+
+    monkeypatch.setattr(website_task_context, "reserve_website_sam_spend", reserve)
+    # Nothing here may release a reservation or settle one, at zero or otherwise.
+    monkeypatch.setattr(website_task_context, "preparation_webapp_request",
+                        lambda **_: pytest.fail("a SAM reservation was released or settled"))
+    return reservations
+
+
+def _two_prompts(tmp_path):
+    args = inputs(tmp_path)
+    prompts = [{**PROMPT, "prompt_id": f"target-{i}", "text": f"object {i}"} for i in range(2)]
+    args.update(prompts=prompts, admission={}, admission_grant=None, task_context={"capture_id": "fixture"})
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+                                                  frame_artifacts=args["frame_artifacts"], prompts=prompts))
+    return args, digest, args["output_root"] / digest[7:]
+
+
+def _provider(calls, *, drop):
+    """Answers every prompt except those in ``drop``, whose answer never arrives (a crash looks the same)."""
+    def opener(request, **_kwargs):
+        text = json.loads(request.data)["input"][0]["content"][0]["text"]
+        calls.append(text)
+        if text in drop:
+            raise ConnectionResetError("no answer")
+        return BytesIO(json.dumps(response()).encode())
+    return opener
+
+
+def test_an_unanswered_dispatch_is_counted_as_spent_and_resent_once_under_its_own_reservation(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    reservations = _job_spend(monkeypatch)
+    args, digest, root = _two_prompts(tmp_path)
+    calls = []
+    with pytest.raises(ConnectionResetError):
+        sam.run_meta_sam31(**args, opener=_provider(calls, drop={"object 1"}))
+    first_intent = (root / "intent-1.json").read_bytes()
+    assert json.loads(first_intent)["allocation_binding_digest"] == digest == reservations[0]["binding_digest"]
+    answered = json.loads((root / "response-0.json").read_text())
+
+    result = sam.run_meta_sam31(**args, opener=_provider(calls, drop=set()))
+    assert result["status"] == "completed" and calls == ["object 0", "object 1", "object 1"]
+    # The first reservation is kept as it was; the resend has its own, distinct binding, for one prompt.
+    resend_of = "sha256:" + sam.hashlib.sha256(first_intent).hexdigest()
+    mark = {"resend_of": resend_of, "resend_index": 1}
+    assert len(reservations) == 2 and reservations[0]["binding_digest"] == digest
+    assert reservations[1]["binding_digest"] == canonical_digest({
+        "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest, "pending_prompt_indices": [1],
+        "unanswered_resends": [{"prompt_index": 1, **mark}]}) != digest
+    assert (reservations[1]["request_count"], reservations[1]["maximum_cost_usd"]) == (1, 0.0025)
+    # The unanswered first dispatch is recorded as spent, naming the reservation that stays held.
+    archived = root / sam.UNANSWERED_ARCHIVE / "attempt-1"
+    counted = json.loads((archived / sam.COUNTED_AS_SPENT).read_text())
+    assert (archived / "intent-1.json").read_bytes() == first_intent
+    assert {key: counted[key] for key in ("status", "outcome", "prompt_index", "allocation_binding_digest",
+                                          "intent_sha256", "reservation", "resends_allowed")} == {
+        "status": "counted_as_spent", "outcome": "unknown", "prompt_index": 1, "allocation_binding_digest": digest,
+        "intent_sha256": resend_of, "reservation": "held_at_maximum_never_released_or_settled_as_zero",
+        "resends_allowed": 1}
+    # Both are recorded: the resend's receipt names its own reservation and what it resends.
+    resent = json.loads((root / "response-1.json").read_text())
+    assert resent["allocation_binding_digest"] == reservations[1]["binding_digest"]
+    assert {key: resent[key] for key in mark} == mark
+    # An answered prompt is untouched.
+    assert json.loads((root / "response-0.json").read_text()) == answered
+    assert set(answered) == {"binding_digest", "clip_digest", "allocation_binding_digest", "response",
+                             "reserved_cost_usd"} and answered["allocation_binding_digest"] == digest
+    assert sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("retained")) == result
+    assert len(reservations) == 2
+
+
+def test_a_resend_that_also_gets_no_answer_stops_for_review(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    reservations = _job_spend(monkeypatch)
+    args, digest, root = _two_prompts(tmp_path)
+    calls = []
+    for _ in range(2):
+        with pytest.raises(ConnectionResetError):
+            sam.run_meta_sam31(**args, opener=_provider(calls, drop={"object 1"}))
+    resend_intent = json.loads((root / "intent-1.json").read_text())
+    assert resend_intent["resend_index"] == 1 and resend_intent["allocation_binding_digest"] == reservations[1]["binding_digest"]
+    with pytest.raises(ValueError, match="meta_sam_submission_requires_reconciliation"):
+        sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("a second resend"))
+    assert calls == ["object 0", "object 1", "object 1"] and len(reservations) == 2
+    assert len(list((root / sam.UNANSWERED_ARCHIVE).glob("attempt-*"))) == 1
+    assert json.loads((root / "intent-1.json").read_text()) == resend_intent
+
+
+def test_a_refused_resend_is_dispatched_again_but_never_resent_a_second_time(tmp_path, monkeypatch):
+    from urllib.error import HTTPError
+
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    reservations = _job_spend(monkeypatch)
+    args, digest, root = _two_prompts(tmp_path)
+    calls = []
+    with pytest.raises(ConnectionResetError):
+        sam.run_meta_sam31(**args, opener=_provider(calls, drop={"object 1"}))
+
+    def refuses(request, **_kwargs):
+        calls.append(json.loads(request.data)["input"][0]["content"][0]["text"])
+        raise HTTPError(sam.ENDPOINT, 409, "Conflict", {}, None)
+    with pytest.raises(ValueError, match="meta_sam_http_409"):
+        sam.run_meta_sam31(**args, opener=refuses)
+    # The refusal is an answer (#3423): the prompt goes again under a fresh reservation, still marked
+    # as this prompt's one resend, so a lost answer to it stops for review.
+    with pytest.raises(ConnectionResetError):
+        sam.run_meta_sam31(**args, opener=_provider(calls, drop={"object 1"}))
+    assert json.loads((root / "intent-1.json").read_text())["resend_index"] == 1
+    with pytest.raises(ValueError, match="meta_sam_submission_requires_reconciliation"):
+        sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("a second resend"))
+    assert len(reservations) == 3 and len({row["binding_digest"] for row in reservations}) == 3
+    assert calls == ["object 0", "object 1", "object 1", "object 1"]
+
+
+def test_an_archive_a_crash_interrupted_is_finished_not_counted_twice(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    reservations = _job_spend(monkeypatch)
+    args, digest, root = _two_prompts(tmp_path)
+    calls = []
+    with pytest.raises(ConnectionResetError):
+        sam.run_meta_sam31(**args, opener=_provider(calls, drop={"object 1"}))
+    original = root / "intent-1.json"
+    first = original.read_bytes()
+    sam.count_unanswered_dispatches(root, [1], binding_digest=digest)
+    archived = root / sam.UNANSWERED_ARCHIVE / "attempt-1"
+    # As if the process died after the record was written and before the intent moved.
+    shutil.move(str(archived / "intent-1.json"), str(original))
+    assert sam.run_meta_sam31(**args, opener=_provider(calls, drop=set()))["status"] == "completed"
+    assert (archived / "intent-1.json").read_bytes() == first
+    assert json.loads(original.read_text())["resend_index"] == 1  # the resend's own intent
+    assert len(list((root / sam.UNANSWERED_ARCHIVE).glob("attempt-*"))) == 1 and len(reservations) == 2
+
+
+@pytest.mark.parametrize("cap,resent", [(0.005, False), (0.0075, True)])
+def test_a_resend_never_exceeds_the_callers_own_cap(tmp_path, monkeypatch, cap, resent):
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    reservations = _job_spend(monkeypatch)
+    args, digest, root = _two_prompts(tmp_path)
+    args["maximum_cost_usd"] = cap  # two prompts at 0.0025 each; only the larger cap leaves room for one more
+    calls = []
+    with pytest.raises(ConnectionResetError):
+        sam.run_meta_sam31(**args, opener=_provider(calls, drop={"object 1"}))
+    if resent:
+        assert sam.run_meta_sam31(**args, opener=_provider(calls, drop=set()))["status"] == "completed"
+        assert len(reservations) == 2 and calls[-1] == "object 1"
+    else:
+        with pytest.raises(ValueError, match="meta_sam_submission_requires_reconciliation"):
+            sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("resend beyond the caller's cap"))
+        assert len(reservations) == 1 and not (root / sam.UNANSWERED_ARCHIVE).exists()
+        assert (root / "intent-1.json").is_file()
