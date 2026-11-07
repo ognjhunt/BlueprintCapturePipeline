@@ -415,7 +415,15 @@ def test_the_success_contract_validates_and_tampering_refuses() -> None:
     task = _navigation_task()
     contract = navigation_task_success_contract(task)
     assert validate_navigation_task_success_contract(contract, task_spec=task) == contract
-    assert contract["criterion"] == NAVIGATION_CRITERION == "root_xy_goal_arrival_and_terminal_hold"
+    assert contract["criterion"] == NAVIGATION_CRITERION == "root_xy_goal_arrival_terminal_hold_and_root_height_stable"
+    # Every condition the scorer fails an episode on is named, with its bound, and what voids one.
+    goal = task["g1_navigation_goal"]
+    assert contract["success_conditions"] == [
+        {"condition": "terminal_goal_hold", "measured": "robot_root_xy",
+         "acceptance_radius_m": goal["acceptance_radius_m"], "settle_window_samples": goal["settle_window_samples"]},
+        {"condition": "root_height_stable_throughout", "measured": "robot_root_z",
+         "max_root_height_drift_m": goal["max_root_height_drift_m"]}]
+    assert contract["void_conditions"] == ["fewer_than_two_samples", "root_readback_invalid", "start_already_at_goal"]
     assert contract["compiled_task_spec_digest"] == task["compiled_task_spec_digest"]
     assert contract["obstacle_contact"] == {"recorded_per_step": True, "part_of_success": False,
                                             "compiled_predicate_ids": ["no_obstacle_contact"]}
@@ -430,6 +438,7 @@ def test_the_success_contract_validates_and_tampering_refuses() -> None:
     scored_contact["contract_digest"] = canonical_digest(scored_contact, digest_field="contract_digest")
     refused(scored_contact)
     refused({**contract, "criterion": "root_xy_inside_visible_goal"})
+    refused({**contract, "success_conditions": contract["success_conditions"][:1]})
     refused({**contract, "contract_digest": "sha256:" + "0" * 64})
     # A goal moved under the same contract, a tampered compiled spec, or another kind of task.
     moved = copy.deepcopy(task)

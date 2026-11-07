@@ -12,7 +12,8 @@ that needs no simulator:
 - ``navigation_goal_basis`` records what that goal was made from: the site, the compiled spec and
   the brief. Each clamp and restyle is a disclosed assumption. The machine-composed authority
   (``native_g1_navigation_goal.compose_g1_navigation_goal_authority``, owner decision 4) binds it
-  and refuses an unconfirmed brief.
+  and discloses whether the site confirmed its brief; an unconfirmed brief is never a stop
+  (owner, 2026-11-07).
 - ``navigation_task_spec`` is the scene task: kind ``goal_region_navigation``, the robot's start
   pose facing the goal, the goal, the basis and the compiled spec itself, so the scorer reads
   the same predicates the compiler sealed.

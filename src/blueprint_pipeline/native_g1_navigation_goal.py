@@ -24,11 +24,21 @@ PUBLISHED_TASK_INSTRUCTION = "Avoid obstacles and move to the yellow marked area
 #: navigation scene, compiled from the site's brief (``website_navigation_packet``).
 NAVIGATION_TASK_KIND = "goal_region_navigation"
 GOAL_HOST_TASK_KINDS = frozenset({"rigid_pick_place", NAVIGATION_TASK_KIND})
-#: Owner decision 4 (2026-11-06 15:07Z): the site's confirmed brief plus a machine-composed
-#: authority replace the named human reviewer and team, recorded as a disclosed assumption.
-MACHINE_AUTHORITY_SCHEMA_VERSION = "native_g1_navigation_goal_authority.v2"
+#: Owner decision 4 (2026-11-06 15:07Z): the site's brief plus a machine-composed authority replace the
+#: named human reviewer and team, recorded as a disclosed assumption. Owner, 2026-11-07: an unconfirmed
+#: brief is never a stop; it is disclosed. ``v3``: the basis and status say whether the site confirmed its
+#: brief, recomputed from its sealed context (``v2`` called every brief confirmed; none was ever stored).
+MACHINE_AUTHORITY_SCHEMA_VERSION = "native_g1_navigation_goal_authority.v3"
 GOAL_BASIS_SCHEMA_VERSION = "native_g1_navigation_goal_basis.v1"
-MACHINE_AUTHORITY_BASIS = "owner_decision_2026_11_06_confirmed_brief_and_machine_composed_goal"
+#: Keyed by whether the site confirmed its brief (``site_brief_confirmed``).
+MACHINE_AUTHORITY_BASIS = {
+    True: "owner_decision_2026_11_06_confirmed_brief_and_machine_composed_goal",
+    False: "owner_decision_2026_11_07_unconfirmed_brief_disclosed_and_machine_composed_goal",
+}
+MACHINE_AUTHORITY_STATUS = {
+    True: "confirmed_for_development_simulation",
+    False: "composed_for_development_simulation_site_brief_unconfirmed",
+}
 MACHINE_AUTHORITY_COMPOSER = "blueprint_task_spec_compiler"
 
 
@@ -84,8 +94,8 @@ def validate_g1_navigation_goal_authority(
 ) -> dict[str, Any]:
     """Bind team-confirmed goal arrival to one sealed G1 task/site scene.
 
-    A ``v2`` authority (a navigation scene compiled from the site's confirmed brief)
-    is checked by ``validate_machine_composed_goal_authority``.
+    A ``v3`` authority (a navigation scene compiled from the site's brief, whether the site
+    confirmed it disclosed) is checked by ``validate_machine_composed_goal_authority``.
     """
 
     if isinstance(value, Mapping) and value.get("schema_version") == MACHINE_AUTHORITY_SCHEMA_VERSION:
@@ -313,7 +323,11 @@ def _site_brief_confirmed(context: Mapping[str, Any]) -> bool:
 
 def validate_machine_composed_goal_authority(value: Mapping[str, Any] | None, *,
                                              plan: Mapping[str, Any]) -> dict[str, Any]:
-    """Owner decision 4: a confirmed brief plus a machine-composed goal stands in for a named reviewer."""
+    """Owner decision 4: the site's brief plus a machine-composed goal stands in for a named reviewer.
+
+    Whether the site confirmed its brief is recomputed from the sealed context it carries, and the
+    authority's ``site_brief_confirmed``, ``status`` and ``authority_basis`` must all say the same.
+    """
     try:
         authority = json.loads(json.dumps(value, allow_nan=False))
         goal, basis, scope = _machine_scope(plan)
@@ -323,23 +337,24 @@ def validate_machine_composed_goal_authority(value: Mapping[str, Any] | None, *,
                                       "human_reviewer", "disclosed_assumptions", "reviewed_criterion",
                                       "obstacle_clearance_scored", "physical_outcome_claimed", "authority_digest"}
                 or authority["schema_version"] != MACHINE_AUTHORITY_SCHEMA_VERSION
-                or authority["status"] != "confirmed_for_development_simulation"
                 or authority["claim_ceiling"] != "development_only"
                 or authority["scope"] != scope
                 or authority["goal"] != goal
                 or authority["goal_digest"] != cross_runtime_canonical_digest(goal)
-                or authority["authority_basis"] != MACHINE_AUTHORITY_BASIS
                 or authority["composed_by"] != MACHINE_AUTHORITY_COMPOSER
                 or authority["human_reviewer"] is not None
                 or authority["disclosed_assumptions"] != basis["disclosed_assumptions"]
-                or authority["reviewed_criterion"] != "root_xy_goal_arrival_and_terminal_hold"
+                or authority["reviewed_criterion"] != NAVIGATION_CRITERION
                 or authority["obstacle_clearance_scored"] is not False
                 or authority["physical_outcome_claimed"] is not False
                 or authority["authority_digest"] != cross_runtime_canonical_digest(
                     authority, digest_field="authority_digest")):
             raise ValueError("invalid")
         context = _site_context(authority["task_context"], basis=basis)
-        if authority["site_brief_confirmed"] is not _site_brief_confirmed(context):
+        confirmed = _site_brief_confirmed(context)
+        if (authority["site_brief_confirmed"] is not confirmed
+                or authority["status"] != MACHINE_AUTHORITY_STATUS[confirmed]
+                or authority["authority_basis"] != MACHINE_AUTHORITY_BASIS[confirmed]):
             raise ValueError("invalid")
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("g1_navigation_goal_authority_invalid") from exc
@@ -351,27 +366,29 @@ def compose_g1_navigation_goal_authority(*, plan: Mapping[str, Any],
     """Compose the goal authority for a navigation scene from the site's own task context.
 
     No human reviewer is named or claimed. Whether the site confirmed its brief is recorded in
-    ``site_brief_confirmed`` and never stops the run. Refuses a context that is not the one the
+    ``site_brief_confirmed``, and the ``status`` and ``authority_basis`` say the same; it never stops
+    the run. Refuses a context that is not the one the
     goal was compiled from (``g1_navigation_goal_task_context_invalid``), a goal or basis the
     plan's compiled spec does not produce (``g1_navigation_goal_spec_binding_invalid``), or a
     plan that is not a G1 navigation scene.
     """
     goal, basis, scope = _machine_scope(plan)
     context = _site_context(task_context, basis=basis)
+    confirmed = _site_brief_confirmed(context)
     authority = {
         "schema_version": MACHINE_AUTHORITY_SCHEMA_VERSION,
-        "status": "confirmed_for_development_simulation",
+        "status": MACHINE_AUTHORITY_STATUS[confirmed],
         "claim_ceiling": "development_only",
         "scope": scope,
         "goal": goal,
         "goal_digest": cross_runtime_canonical_digest(goal),
         "task_context": context,
-        "site_brief_confirmed": _site_brief_confirmed(context),
-        "authority_basis": MACHINE_AUTHORITY_BASIS,
+        "site_brief_confirmed": confirmed,
+        "authority_basis": MACHINE_AUTHORITY_BASIS[confirmed],
         "composed_by": MACHINE_AUTHORITY_COMPOSER,
         "human_reviewer": None,
         "disclosed_assumptions": list(basis["disclosed_assumptions"]),
-        "reviewed_criterion": "root_xy_goal_arrival_and_terminal_hold",
+        "reviewed_criterion": NAVIGATION_CRITERION,
         "obstacle_clearance_scored": False,
         "physical_outcome_claimed": False,
     }
@@ -379,11 +396,15 @@ def compose_g1_navigation_goal_authority(*, plan: Mapping[str, Any],
     return validate_machine_composed_goal_authority(authority, plan=plan)
 
 
-#: What a navigation scene's G1 run is scored by: the compiled goal's arrival and terminal hold
-#: (``score_g1_navigation_episode``). Contact off the feet is recorded per step
-#: (``native_task_runtime_contract.NAVIGATION_SAMPLE_BINDING``) and is never part of success.
-NAVIGATION_CONTRACT_SCHEMA_VERSION = "native_g1_navigation_task_success_contract.v1"
-NAVIGATION_CRITERION = "root_xy_goal_arrival_and_terminal_hold"
+#: What a navigation scene's G1 run is scored by (``score_g1_navigation_episode``): the root inside the
+#: goal for the final settle window, and its height within the drift bound at every sample. Contact off
+#: the feet is recorded per step (``native_task_runtime_contract.NAVIGATION_SAMPLE_BINDING``) and is
+#: never part of success. ``v2`` names both success conditions and what voids an episode (``v1``
+#: named only arrival and hold, though the scorer also failed an episode on root-height drift).
+NAVIGATION_CONTRACT_SCHEMA_VERSION = "native_g1_navigation_task_success_contract.v2"
+NAVIGATION_CRITERION = "root_xy_goal_arrival_terminal_hold_and_root_height_stable"
+#: What the scorer refuses to score (it raises): such an episode is void, never a success or a failure.
+NAVIGATION_VOID_CONDITIONS = ("fewer_than_two_samples", "root_readback_invalid", "start_already_at_goal")
 
 
 def navigation_task_success_contract(task_spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -401,6 +422,15 @@ def navigation_task_success_contract(task_spec: Mapping[str, Any]) -> dict[str, 
         "scope": {"site_id": spec["site_id"], "task_id": spec["task_id"]},
         "compiled_task_spec_digest": spec["spec_digest"], "goal_digest": cross_runtime_canonical_digest(goal),
         "criterion": NAVIGATION_CRITERION, "scorer": "native_g1_navigation_goal.score_g1_navigation_episode",
+        # Every condition the scorer fails an episode on; both must hold for success.
+        "success_conditions": [
+            {"condition": "terminal_goal_hold", "measured": "robot_root_xy",
+             "acceptance_radius_m": goal["acceptance_radius_m"],
+             "settle_window_samples": goal["settle_window_samples"]},
+            {"condition": "root_height_stable_throughout", "measured": "robot_root_z",
+             "max_root_height_drift_m": goal["max_root_height_drift_m"]},
+        ],
+        "void_conditions": list(NAVIGATION_VOID_CONDITIONS),
         "obstacle_contact": {"recorded_per_step": True, "part_of_success": False,
                              "compiled_predicate_ids": contacts},
         "claim_ceiling": "development_only", "physical_outcome_claimed": False,
