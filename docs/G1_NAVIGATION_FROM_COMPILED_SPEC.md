@@ -30,14 +30,45 @@ The owner asked on 2026-11-06 at about 18:00Z to "build the missing navigation p
 | A2 | The scene's Isaac files: the ParticleField appearance USD and the collision USD (Z up, metres), authored on the controller with no spend. It reuses `prepare_native_appearance` and `normalize_runtime_collision` with the base scene's own declared frame, the one the compiler uses (`website_navigation_scene_assets`). The handoff writes `navigation_scene_assets.json`; a failure is that job's missing piece. | this session | merged in #3428 (513c93d) |
 | B | The arena runtime runs a scene with no task object, behind the `goal_region_navigation` kind. The rigid and articulated paths are unchanged. This covers the scene plan, runtime contract, spawn and readback. The G1 navigation sampler records per-step robot–scene contact force. | this session; the G1 session agreed, on condition that the rigid and articulated paths are unchanged, no simulator sensor is added and the bundle digest changes are listed | PR open, G1 session reviewing |
 | C | G1 lane. Prepare and the execution spec use the compiled start as the stance; the navigation cells perturb the robot's start, not an object. The registration contract, the catalog's two `_vision_navi` rows (`supported_task_kinds`), capabilities and plan accept the kind. Registration of the rows comes from the A1 packet. | this session, after the G1 session's spawn-clearance PR and #3426 | both merged (#3429, #3426); in review: the lane is built, and a navigation site registers once its record names a source (its scene intent is still undecided) |
-| D | One paid G1 navigation session on the library-aisle site: $4 cap, 4 cells, inside the $30 site limit (owner decision 3). | controller | after A1–C deploy |
+| D | Paid G1 navigation sessions on the library-aisle site, one for each `_vision_navi` row (owner, 2026-11-07, in the library-aisle session: "two"; confirmed to the G1 session at 13:43Z as $4 each, $8 per site): each $4 cap, 4 cells, inside the $30 site limit (owner, 2026-11-06). No code change: nothing limits a navigation site to one funded row (see "Funding both navigation rows"). | controller | after A1–C deploy |
 
 ## Prerequisites outside code
 
 - **The site confirms its brief.** The library-aisle job's `website_task_context.json` reads `confirmed: false`. A confirmed brief counts as consent (owner, 2026-11-07), so the job holds by name until the site confirms its brief on the website: at the live consent recheck, or at the WebApp's `task_confirmed`. The goal authority only records the flag (`site_brief_confirmed: false`, status `composed_for_development_simulation_site_brief_unconfirmed`, basis `machine_composed_goal_site_brief_unconfirmed_disclosed`, which cites no owner decision).
-- **The G1's first-navigation-run allowance is deferred** (owner). No body declares a development-run allowance (`task_evaluation_embodiment_registry.DevelopmentRunAllowance`), so the G1 navigation options still list `embodiment:verified_site_episode` and `embodiment:reviewed_checkpoint_terms`, and the handoff hold names both, with `pipeline:navigation_source_identity` and any catalog gaps. Before one is added it needs a bound (for example, it expires once the site has a navigation result) and the owner's decision on the `reviewed_checkpoint_terms` stand-in (the per-checkpoint development rights reviews): that is a rights call. The allowance type, `development_run_missing` and the registry's check of an allowance stay, so a bounded one can be added once decided.
 - **The Vast top-up** (owner): credit was $7.07 against the $11 page line.
 - **G1 runtime source restore and registration** (G1 session; #3426 fixes the restore's permission error).
+
+## The G1's development-run allowance
+
+The owner decided on 2026-11-07; each record quotes the owner's words with the session and UTC time (`CHECKPOINT_TERMS_DECISION`, `VERIFIED_EPISODE_DECISION`). The allowance had been deferred in #3443 because it had no bound and no owner decision on its `reviewed_checkpoint_terms` stand-in. `task_evaluation_embodiment_registry.G1_NAVIGATION_DEVELOPMENT_RUN` is declared on the G1 row. It is general: it applies to every site and scene, it names no site, and it covers the `goal_region_navigation` task profile only. It has no count or expiry, because its two bounds are the claim ceiling and each checkpoint's own review:
+
+- **`reviewed_checkpoint_terms`** is stood in for by each navigation checkpoint's own human development rights review: `approved_for_development_simulation`, with `checkpoint_terms_reviewed: true`, in `docs/arm_decision_proof_v1/manifests/g1_841757_<candidate>_development_rights_review.v1.json`. The owner, 2026-11-07 about 13:20Z, in the library-aisle session, answering its question 3 ("may each navigation checkpoint's development rights review stand in for its checkpoint-terms review?"): "yes - make sure this is the case for all future runs/scenes". The owner confirmed it to the G1 session at 13:43Z for every G1 navigation run on all sites and scenes ("Yes, both confirmed"). It holds per checkpoint. `g1_navigation_checkpoint_development_rights_review` reads the review through the same sha256-pinned reader every run's authority uses (`native_g1_beta_authority.reviewed_model_terms`). A manipulation checkpoint, a checkpoint with no pinned review, or a changed review file keeps the item missing. Every G1 run validates the review again:
+  - `native_g1_beta_authority.validate_beta_authority` refuses an authority unless its embedded review matches the pinned file sha256 and review digest, says `approved_for_development_simulation` and has both term reviews `true` (`native_g1_beta_authority.py:194-200`). It also refuses any scope other than `development_only` and `ranking_eligible: false` (`:189`).
+  - The execution spec composes the authority from the file and pins the file's record (`beta_policy_screening_g1.py:297-301`, through `native_g1_beta_authority_composer.py:32,36`). Its validator checks the authority again and requires the pinned record to match the embedded review (`beta_policy_screening_g1.py:144-148`).
+  - The session authority checks it again (`native_g1_beta_session.py:146`).
+  - The provider bundle and runtime require the session's authority to equal the spec's (`native_g1_beta_bundle.py:73-77`, `native_g1_beta_runtime.py:46-50`).
+  - The G1 worker checks it twice, at preflight and against the scene plan (`native_g1_development_worker.py:137,313`).
+- **`verified_site_episode`** is stood in for on a development run. The owner, 2026-11-07 00:05Z, in the library-aisle session, on how the library job's first G1 navigation run counts: "Dev check, then counts". It was made general in the owner's 13:43Z confirmation to the G1 session: every site and scene, results development-only, and the first run to pass every check counts as G1's verified navigation episode. The run proceeds as a development-only check, and no result can claim more than `development_only`. The spec (`beta_policy_screening_g1.py:136`), the session (`native_g1_beta_session.py:126-134`) and the authority's scope (`native_g1_beta_authority.py:119-133`) each fix the ceiling, with ranking and scene promotion off.
+  - Nothing in this change writes a verified site episode or removes the item from the G1's `missing`.
+  - Promoting the first run that passes every check to G1's first verified site episode is future work. It needs that run's receipt.
+
+What the allowance changes:
+
+- `website_locomotion_task.runnable_options` reads it for a walk with no manipulation, and the handoff hold records it.
+- Each G1 navigation option drops the two `embodiment:` items, carries `claim_ceiling: development_only`, and records each item under `development_run_allowance.stood_in` as "stood in by the development-run allowance (development_only)", never satisfied, with its basis and decision. The hold's reason says so too.
+- The hold still names `pipeline:navigation_source_identity` and any catalog gaps.
+- The body is still listed `unavailable` with both items.
+- Manipulation (`rigid_pick_place`) options, routing and every other robot are unchanged.
+
+### Funding both navigation rows
+
+The owner's "two" (2026-11-07, confirmed to the G1 session at 13:43Z) needs no code change. Nothing limits a navigation site to one funded row:
+
+- Registration lists both `_vision_navi` rows (`config/native_g1_shared_inputs.v1.json:21-22`) and registers each one (`native_g1_site_registration.py:517-522`).
+- Capabilities bind each catalog row on its own (`beta_policy_screening_capabilities.py:279`).
+- The plan selects rows in order while each cap fits the remaining budget, with no count per kind (`beta_policy_screening_plan.py:671-735`).
+- The coordinator funds a waitlisted row whenever its cap fits both the site limit and its plan's budget (`beta_policy_screening_coordinator.py:919`).
+- Two $4 rows fit the $30 site limit (`SITE_LIMIT`, `SITE_BUDGET_USD`). No cap changes.
 
 ## Claims
 

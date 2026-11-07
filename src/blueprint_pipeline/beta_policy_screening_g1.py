@@ -350,13 +350,19 @@ def _navigation_spec(spec: Mapping[str, Any]) -> bool:
 def setup_quality_flags(spec: Mapping[str, Any]) -> list[str]:
     """Typed flags a funded G1 row carries into its plan descriptor and result: a spawn not measured, or
     a foot with no floor under it (``native_g1_spawn_clearance.spawn_setup_flags``). Never a refusal.
-    A navigation row's are its start offsets' (``navigation_start_offsets``)."""
+    A navigation row's are its start offsets' (``navigation_start_offsets``). A scene floor that is a
+    development-only estimate adds ``g1_scene_floor_estimated`` (``packet_floor_estimate``): the spawn
+    readings are then against a flat stand-in floor."""
     from .beta_policy_screening_launch import _bound_path
-    from .native_g1_spawn_clearance import spawn_setup_flags
+    from .native_g1_spawn_clearance import FLOOR_ESTIMATED_REASON, packet_floor_estimate, spawn_setup_flags
     packet = _bound_path(spec["native_g1"]["scene_packet"]).parent
     if _navigation_spec(spec):
-        return navigation_start_offsets(packet, spec["scene_plan_digest"])[1]
-    return sorted(set(spawn_setup_flags(packet, spec["scene_plan_digest"])))
+        flags = set(navigation_start_offsets(packet, spec["scene_plan_digest"])[1])
+    else:
+        flags = set(spawn_setup_flags(packet, spec["scene_plan_digest"]))
+    if packet_floor_estimate(packet, spec["scene_plan_digest"]) is not None:
+        flags.add(FLOOR_ESTIMATED_REASON)
+    return sorted(flags)
 
 
 def dropped_start_offsets(spec: Mapping[str, Any]) -> dict[str, str]:

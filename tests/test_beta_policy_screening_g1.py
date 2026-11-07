@@ -812,6 +812,56 @@ def test_planning_binds_a_navigation_g1_row_and_quotes_only_its_funded_cells(tmp
     assert planning["scene"]["robot_free_probe_digest"] == sealed["beta_robot_free_probe_receipt"]["receipt_digest"]
 
 
+def test_an_estimated_scene_floor_flags_a_navigation_row_and_never_refuses_it(tmp_path, monkeypatch):
+    from tests.test_beta_policy_screening_g1_prepare import fallback_floor_levelling
+    kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch, levelling=fallback_floor_levelling())
+    for candidate in (DP_NAV, PI_NAV):  # Bound and composed as on a measured floor.
+        spec = g1.candidate_execution_spec(**{**kwargs, "candidate_id": candidate})
+        assert g1.validate_execution_spec(spec, candidate_id=candidate) == spec
+        assert g1.setup_quality_flags(spec) == ["g1_scene_floor_estimated"] and g1.dropped_start_offsets(spec) == {}
+
+
+def test_an_estimated_floor_keeps_the_spawn_flags_sorted_beside_it(tmp_path, monkeypatch):
+    from tests.test_beta_policy_screening_g1_prepare import fallback_floor_levelling
+    kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch, levelling=fallback_floor_levelling(), wall_x=-0.2)
+    spec = g1.candidate_execution_spec(**kwargs)
+    assert g1.setup_quality_flags(spec) == ["g1_scene_floor_estimated", "g1_spawn_overlap"]
+    assert g1.dropped_start_offsets(spec) == {"back_15cm": "g1_spawn_overlap"}
+
+
+def test_without_an_estimated_floor_a_navigation_row_carries_no_floor_flag(tmp_path, monkeypatch):
+    from tests.test_beta_policy_screening_g1_prepare import fallback_floor_levelling
+    levelling = {key: value for key, value in fallback_floor_levelling().items() if key != "fallback_floor"}
+    kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch, levelling=levelling)
+    assert g1.setup_quality_flags(g1.candidate_execution_spec(**kwargs)) == []
+
+
+def test_planning_quotes_a_floor_estimated_navigation_row_and_its_flag_reaches_the_result(tmp_path, monkeypatch):
+    from pathlib import Path
+    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
+    from tests.test_beta_policy_screening_g1_prepare import fallback_floor_levelling
+
+    kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch, levelling=fallback_floor_levelling())
+    profile = navigation_profile(kwargs, tmp_path)
+    planning = capabilities.build_planning_inputs(catalog=load_default_catalog(), profile=profile,
+        capture_root=Path(profile["capture_root"]), source=kwargs["source"], inputs_dir=tmp_path / "screening-inputs")
+    descriptor = planning["capabilities"]["candidate_bindings"][DP_NAV]["execution_spec"]
+    assert descriptor["setup_quality_flags"] == ["g1_scene_floor_estimated"]
+    assert g1.DROPPED_START_OFFSETS_FIELD not in descriptor
+    quote = planning["cost_quotes"][DP_NAV]  # Every cell funded: a flag, never a gate.
+    assert quote["episode_count"] == g1.CELLS_PER_SESSION and quote["maximum_cost_usd"] == "4.00"
+    # The plan takes the code and the row's result summary carries it, as it carries the spawn flags.
+    flags = ["g1_scene_floor_estimated"]
+    plan = g1_plan(flags=flags)
+    assert plan["candidates"][0]["status"] == "selected" and validate_screening_plan(plan) == plan
+    schema = json.loads((g1.REPOSITORY / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
+    Draft202012Validator(schema).validate(plan)
+    assert "g1_scene_floor_estimated" in schema["$defs"]["execution"]["properties"]["setup_quality_flags"][
+        "description"]
+    plan, candidate, result = session_result(flags=flags)
+    assert g1.summarize_result(result, plan=plan, candidate=candidate)["setup_quality_flags"] == flags
+
+
 def test_the_worker_refuses_a_scene_kind_that_is_not_a_string_by_name_never_by_type_error():
     from blueprint_pipeline.native_g1_development_worker import scene_kind_admitted
     assert scene_kind_admitted("rigid_pick_place", DP) and scene_kind_admitted("rigid_pick_place", DP_NAV)

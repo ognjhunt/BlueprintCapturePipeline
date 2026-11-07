@@ -204,6 +204,11 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - `pipeline:navigation_source_identity` clears with the navigation intake kind and per-job bindability (the G1 session's O5).
   - Paid nothing: still about $9.13.
 - **The brief, about 14:00Z.** The owner opened the job page to confirm and found no Confirm button. While a job waits on Blueprint, the page showed the brief read-only, so an unconfirmed brief could not be confirmed. The WebApp fix keeps the confirmation on the page during the stop. Until the owner taps it, the brief stays unconfirmed.
+- **The G1 session, 13:43Z:** the owner confirmed to the G1 session directly ("Yes, both confirmed"):
+  - each navigation checkpoint's own development rights review stands in for its checkpoint-terms review on every G1 navigation run, on all sites and scenes;
+  - results stay development-only, and the first run to pass every check then counts;
+  - both navigation rows are funded, $4 each.
+  - [#3449](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3449) builds it, with the `g1_scene_floor_estimated` flag. Each run record quotes the owner with the session and UTC time.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 

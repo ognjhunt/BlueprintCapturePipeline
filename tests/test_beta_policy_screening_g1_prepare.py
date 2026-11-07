@@ -426,10 +426,36 @@ def navigation_task_context() -> dict:
     return context
 
 
-def navigation_preparation(tmp_path: Path, monkeypatch, **room) -> tuple[dict, dict]:
+def fallback_floor_levelling() -> dict:
+    """A base scene's ``levelling`` as #3448 records a flagged fallback floor (synthetic values, no mesh)."""
+    return {"digest": "sha256:" + "c" * 64, "up_basis": "fallback_fitted_floor", "tilt_degrees": 1.4,
+            "fallback_floor": {"basis": "flat_floor_at_uneven_band_median", "claim": "development_only_estimate",
+                               "up_estimates": {"floor_band_tilt_degrees": 1.4, "face_normal_mode_tilt_degrees": 1.9,
+                                                "separation_degrees": 3.13},
+                               "band_spread_m": [-0.052, 0.048], "band_share": 0.061, "replaced_faces": 412,
+                               "replaced_area_share": 0.3, "flat_floor_extent_m": [9.5, 2.5], "flat_floor_faces": 760}}
+
+
+def _compiled_from_scene_facts(tmp_path: Path, levelling: dict) -> dict:
+    """The fixture task, compiled with the metric-scale evidence ``scene_facts`` reads from a base scene's levelling."""
+    from blueprint_pipeline.task_spec_compiler import compile_task_spec
+    from blueprint_pipeline.website_locomotion_task import scene_facts
+    from tests.test_task_spec_compiler import _aisle_brief, _aisle_scene
+    from tests.test_website_locomotion_task import _corridor
+
+    (tmp_path / "base-scene").mkdir()
+    base, path = _corridor(tmp_path / "base-scene")
+    facts = scene_facts(base_scene={**base, "levelling": levelling}, camera_path_levelled_m=path)
+    return compile_task_spec(brief=_aisle_brief(), scene={**_aisle_scene(), "metric_scale": facts["metric_scale"]},
+                             task_requirements={"locomote": True, "manipulate": False})
+
+
+def navigation_preparation(tmp_path: Path, monkeypatch, *, levelling: dict | None = None,
+                           **room) -> tuple[dict, dict]:
     """A real navigation record (``website_navigation_scene_inputs``) over a measurable room, and G1 prepare's
-    arguments for it. The task is compiled from ``navigation_task_context``. The source is a stand-in: a
-    navigation job's source identity (its scene intent) is not decided yet."""
+    arguments for it. The task is compiled from ``navigation_task_context``; given a base scene's ``levelling``,
+    with the metric-scale evidence ``scene_facts`` reads from it. The source is a stand-in: a navigation job's
+    source identity (its scene intent) is not decided yet."""
     from blueprint_pipeline.beta_policy_screening_files import _record as file_record
     from blueprint_pipeline.website_navigation_packet import navigation_task_spec
     from blueprint_pipeline.website_navigation_scene_inputs import write_navigation_scene_inputs
@@ -437,7 +463,8 @@ def navigation_preparation(tmp_path: Path, monkeypatch, **room) -> tuple[dict, d
     from tests.test_website_navigation_scene_inputs import navigation_scene_inputs_arguments
 
     arguments = navigation_scene_inputs_arguments(tmp_path, monkeypatch)
-    arguments["navigation_task_spec"] = navigation_task_spec(_spec(), task_context=navigation_task_context())
+    compiled = _spec() if levelling is None else _compiled_from_scene_facts(tmp_path, levelling)
+    arguments["navigation_task_spec"] = navigation_task_spec(compiled, task_context=navigation_task_context())
     assets = arguments["scene_assets"]
     collision = file_record(room_floor(tmp_path / "navigation_scene" / "room.usda", **room))
     assets["collision"] = {**assets["collision"], **collision}
@@ -550,6 +577,65 @@ def test_a_compiled_start_inside_the_room_falls_back_to_the_closest_clear_floor_
     assert spawn.packet_spawn_clearance(root)["status"] == "clear"
 
 
+FLOOR_ESTIMATE = {"claim": "development_only_estimate", "basis": "flat_floor_at_uneven_band_median",
+                  "band_spread_m": [-0.052, 0.048]}
+#: A navigation receipt's fields before the floor estimate existed; a packet without one keeps exactly these.
+NAVIGATION_RECEIPT_FIELDS = {
+    "schema_version", "status", "recipe_id", "source", "site_id", "base_packet", "scene_packet", "assumptions",
+    "scene_plan_digest", "candidate_reasons", "candidate_policy_queried", "simulator_executed",
+    "provider_allocations_performed", "new_human_review_claimed", "current_consent_revalidated", "claim_ceiling",
+    "spawn_clearance", "start_offsets", "preparation_digest"}
+
+
+def test_an_estimated_scene_floor_is_disclosed_with_its_band_spread_and_never_refused(tmp_path, monkeypatch):
+    args, _ = navigation_preparation(tmp_path, monkeypatch, levelling=fallback_floor_levelling())
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    root, request, plan = _packet(result)
+    # The base scene's estimate reaches the packet in the compiled spec its task embeds, as recorded.
+    assert spawn.scene_floor_estimate(request["task_spec"]) == FLOOR_ESTIMATE
+    assert spawn.packet_floor_estimate(root, plan["plan_digest"]) == FLOOR_ESTIMATE
+    assert spawn.packet_floor_estimate(root, "sha256:" + "0" * 64) is None
+    disclosed = result["scene_floor_estimate"]
+    assert disclosed == {**FLOOR_ESTIMATE, "setup_quality_flag": "g1_scene_floor_estimated",
+                         "disclosed_assumption": spawn.floor_estimate_assumption(FLOOR_ESTIMATE)}
+    assert "development_only_estimate (flat_floor_at_uneven_band_median)" in disclosed["disclosed_assumption"]
+    assert "-0.052 m to +0.048 m" in disclosed["disclosed_assumption"]
+    receipt = json.loads((root / prepare.FILENAME).read_text())
+    assert set(receipt) == NAVIGATION_RECEIPT_FIELDS | {"scene_floor_estimate"}
+    assert receipt["scene_floor_estimate"] == disclosed
+    assert receipt["preparation_digest"] == canonical_digest(receipt, digest_field="preparation_digest")
+    # Never a gate: prepared, measured and offered to the navigation candidates as a measured floor is.
+    assert result["status"] == "prepared_not_executed" and result["spawn_clearance"]["status"] == "clear"
+    assert {row["status"] for row in result["start_offsets"]["offsets"].values()} == {"clear"}
+    assert result["candidate_reasons"] == navigation_preparation_reasons()
+    assert prepare.prepare_native_g1_beta_packet(**args) == result
+
+
+def navigation_preparation_reasons() -> dict:
+    """What a navigation receipt records for the four G1 candidates, with or without an estimated floor."""
+    return {**{key: ["g1_beta_manipulation_policy_task_mismatch"] for key in g1.CANDIDATES[:2]},
+            **{key: ["g1_beta_current_navigation_goal_authority_missing"] for key in g1.CANDIDATES[2:]}}
+
+
+def test_without_an_estimated_floor_the_receipt_and_packet_are_as_before(tmp_path, monkeypatch):
+    levelling = {key: value for key, value in fallback_floor_levelling().items() if key != "fallback_floor"}
+    args, _ = navigation_preparation(tmp_path, monkeypatch, levelling=levelling)
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    root, request, plan = _packet(result)
+    # The compiled spec's evidence is the shape scene_facts wrote before, so every digest downstream is too.
+    evidence = request["task_spec"]["compiled_task_spec"]["metric_scale"]["evidence"]
+    assert [set(row) for row in evidence] == [{"source", "meters_per_unit", "levelling_tilt_degrees"}]
+    assert spawn.scene_floor_estimate(request["task_spec"]) is None
+    assert spawn.packet_floor_estimate(root, plan["plan_digest"]) is None
+    receipt = (root / prepare.FILENAME).read_bytes()
+    assert set(json.loads(receipt)) == NAVIGATION_RECEIPT_FIELDS and "scene_floor_estimate" not in result
+    assert result["candidate_reasons"] == navigation_preparation_reasons()
+    # write_once refuses other bytes: preparing again with no floor reader at all writes the same receipt.
+    monkeypatch.setattr(spawn, "scene_floor_estimate", lambda _task: None)
+    assert prepare.prepare_native_g1_beta_packet(**args) == result
+    assert (root / prepare.FILENAME).read_bytes() == receipt
+
+
 def test_the_rigid_request_is_byte_for_byte_the_one_before_navigation(prepared_scene, monkeypatch):
     """Pin: the rigid request is the function as it stood before navigation (e3510d28), never the navigation one."""
     import inspect
@@ -563,3 +649,8 @@ def test_the_rigid_request_is_byte_for_byte_the_one_before_navigation(prepared_s
     assert result["assumptions"]["stance_method"] == "existing_scene_collision_floor_and_clear_footprint_search"
     assert "start_offsets" not in result and set(result["candidate_reasons"]) == set(g1.CANDIDATES[2:])
     assert not (Path(result["scene_packet"]["path"]).parent / spawn.START_OFFSETS_FILENAME).exists()
+    # A rigid packet carries no levelling record (its scene half is compiled from the configured revision alone).
+    assert "scene_floor_estimate" not in result
+    assert spawn.scene_floor_estimate(json.loads((Path(result["scene_packet"]["path"]).parent
+                                                  / "native_task_arena_packet_request.v1.json").read_text())
+                                      ["task_spec"]) is None

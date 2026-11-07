@@ -26,6 +26,9 @@ row's ``setup_quality_flags`` and its result summary; the row is still bound and
 no floor found under its sole within ``SOLE_SEARCH_M``, or a sole more than ``FOOT_SUPPORT_TOLERANCE_M``
 above it, is flagged the same way (``g1_spawn_foot_unsupported``): a hole or steep patch in a scanned
 floor is not an overlap, but the robot may tip or drop at spawn.
+A scene whose floor is a development-only estimate (a flat floor standing in for an uneven scanned one,
+``atlas_world_levelling``) is flagged too (``g1_scene_floor_estimated``, ``packet_floor_estimate``): every
+reading here is then against that flat floor, so clear and supported say nothing about the floor as scanned.
 Nothing here runs a simulator, calls a provider or changes an input file.
 """
 from __future__ import annotations
@@ -68,6 +71,11 @@ UNMEASURED_REASON = "g1_spawn_clearance_unmeasured"
 #: the robot may tip or drop at spawn. The overlap measure cannot see a missing floor, so this is a flag the
 #: row carries (``setup_quality_flags``), never a gate.
 UNSUPPORTED_FOOT_REASON = "g1_spawn_foot_unsupported"
+#: The scene's floor is a development-only estimate: in the collider copy a flat floor at the uneven scanned
+#: band's median height replaced the floor (``atlas_world_levelling`` fallback floor). The overlap measure and
+#: the foot support read against that flat floor, so a G1 result there would overstate itself. A flag the row
+#: carries (``setup_quality_flags``), never a gate.
+FLOOR_ESTIMATED_REASON = "g1_scene_floor_estimated"
 CLAIM_BOUNDARY = ("cpu_geometry_at_the_reset_pose_only: the G1 USD's colliders against sampled static scene "
                   "collision before the first physics step; no simulator ran; nothing about contact after "
                   "spawn, balance, reach or the task")
@@ -507,6 +515,50 @@ def spawn_setup_flags(packet_dir: str | Path, plan_digest: str) -> list[str]:
     if report is None:
         return [UNMEASURED_REASON]
     return [UNSUPPORTED_FOOT_REASON] if unsupported_feet(report) else []
+
+
+def scene_floor_estimate(task_spec: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The floor estimate a packet's task carries from its scene's levelling, or None when it carries none.
+
+    A navigation task embeds its compiled spec, whose metric-scale evidence carries the base scene's
+    levelling (``website_locomotion_task.scene_facts``): ``levelling_floor_estimate``, with the estimate's
+    ``claim``, ``basis`` and ``band_spread_m``, exactly when the floor is a flat stand-in. A rigid task's
+    packet carries no levelling record, so it reads None.
+    """
+    compiled = task_spec.get("compiled_task_spec") if isinstance(task_spec, Mapping) else None
+    scale = compiled.get("metric_scale") if isinstance(compiled, Mapping) else None
+    evidence = scale.get("evidence") if isinstance(scale, Mapping) else None
+    for row in evidence if isinstance(evidence, list) else []:
+        estimate = row.get("levelling_floor_estimate") if isinstance(row, Mapping) else None
+        if isinstance(estimate, Mapping):
+            return dict(estimate)
+    return None
+
+
+def packet_floor_estimate(packet_dir: str | Path, plan_digest: str) -> dict[str, Any] | None:
+    """The floor estimate the packet's own plan of ``plan_digest`` carries (``scene_floor_estimate``), else None."""
+    path = Path(packet_dir) / "native_task_arena_scene_plan.v1.json"
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
+    except (OSError, ValueError):
+        return None
+    if not isinstance(plan, dict) or plan.get("plan_digest") != plan_digest:
+        return None
+    return scene_floor_estimate(plan.get("task_spec") or {})
+
+
+def floor_estimate_assumption(estimate: Mapping[str, Any]) -> str:
+    """The disclosed assumption a G1 preparation records for a scene floor that is an estimate."""
+    spread = estimate.get("band_spread_m")
+    try:
+        low, high = (float(value) for value in spread)
+        band = f"the scanned floor band spans {low:+.3f} m to {high:+.3f} m about that height (5th to 95th percentile)"
+    except (TypeError, ValueError):
+        band = "the scanned floor band's spread is not recorded"
+    return (f"Scene floor: {estimate.get('claim')} ({estimate.get('basis')}). In the scene collision a flat floor "
+            f"at the uneven scanned floor's median height stands in for it; {band}. The spawn check, each start "
+            "offset and the foot support read against that flat floor, so a clear or supported reading does not "
+            "describe the floor as scanned.")
 
 
 def spawn_clearance_status(packet_dir: str | Path, plan_digest: str) -> str:

@@ -306,3 +306,26 @@ def test_planning_reads_overlap_only_from_a_sealed_report_of_this_plan(tmp_path,
             value["max_depth_m"] = 0.0  # Any change after sealing.
         (tmp_path / spawn.FILENAME).write_text(json.dumps(value))
     assert spawn.spawn_clearance_status(tmp_path, digest) == reading
+
+
+def test_a_floor_estimate_is_read_only_from_the_compiled_spec_evidence_and_disclosed_with_its_spread(tmp_path):
+    estimate = {"claim": "development_only_estimate", "basis": "flat_floor_at_uneven_band_median",
+                "band_spread_m": [-0.052, 0.048]}
+    task = {"compiled_task_spec": {"metric_scale": {"status": "unverified", "evidence": [
+        {"source": "atlas_reference_estimate", "levelling_tilt_degrees": 1.4, "levelling_floor_estimate": estimate}]}}}
+    assert spawn.scene_floor_estimate(task) == estimate
+    # A task with no compiled spec (a rigid one), no estimate or a malformed one reads as none.
+    for value in ({}, {"compiled_task_spec": None}, {"compiled_task_spec": {"metric_scale": {"evidence": "x"}}},
+                  {"compiled_task_spec": {"metric_scale": {"evidence": [{"levelling_tilt_degrees": 1.4}]}}},
+                  {"compiled_task_spec": {"metric_scale": {"evidence": [{"levelling_floor_estimate": "x"}]}}}, None):
+        assert spawn.scene_floor_estimate(value) is None
+    text = spawn.floor_estimate_assumption(estimate)
+    assert "development_only_estimate (flat_floor_at_uneven_band_median)" in text
+    assert "-0.052 m to +0.048 m" in text
+    assert "spread is not recorded" in spawn.floor_estimate_assumption({**estimate, "band_spread_m": None})
+    # The packet's own plan is read, and only the plan it is asked about.
+    plan = {"plan_digest": "sha256:" + "1" * 64, "task_spec": task}
+    (tmp_path / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    assert spawn.packet_floor_estimate(tmp_path, plan["plan_digest"]) == estimate
+    assert spawn.packet_floor_estimate(tmp_path, "sha256:" + "2" * 64) is None
+    assert spawn.packet_floor_estimate(tmp_path / "missing", plan["plan_digest"]) is None
