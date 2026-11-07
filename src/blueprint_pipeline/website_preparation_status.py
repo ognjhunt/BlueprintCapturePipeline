@@ -322,9 +322,16 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         current = _current_context(request_id=selected["request_id"],
                         scene_id=selected["scene_id"], capture_id=selected["capture_id"],
                         purpose=context_purpose, allow_unconfirmed_preparation=raw_retained is None)
-        _require(current["context_digest"] == selected["task_context_digest"]
-                 and (retained is None or retained["context_digest"] == current["context_digest"]),
+        # A current context that is the retained one's confirmed successor (only the site's confirmation
+        # changed: consent state, not task content) keeps every retained record valid; the records read
+        # below were decided against the retained context. Any other change refuses as before.
+        from .website_task_context_lineage import confirmation_successor
+        successor = retained is not None and confirmation_successor(retained, current) is not None
+        _require((current["context_digest"] == selected["task_context_digest"]
+                  and (retained is None or retained["context_digest"] == current["context_digest"]))
+                 or (successor and selected["task_context_digest"] == retained["context_digest"]),
                  "task_context_changed")
+        bound = retained if successor else current
         # A completed job always retained its context; never hand off without it.
         _require(retained is not None or before.get("status") != "completed")
         if current.get("confirmed") is False:
@@ -348,14 +355,14 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
             from .website_target_background_correction import retains_rejected_selection
             from .observed_room_contracts import retains_observed_room_limit
-            native_profile_held = (holds_native_task_preparation(handoff, current)
-                                   or retains_rejected_selection(handoff, current)
-                                   or retains_observed_room_limit(handoff, current)
-                                   or retains_geometry_only_fit(handoff, current)
-                                   or retains_robot_fit_hold(handoff, current))
-            family_prepared = retains_task_family_preparation(handoff, current)
+            native_profile_held = (holds_native_task_preparation(handoff, bound)
+                                   or retains_rejected_selection(handoff, bound)
+                                   or retains_observed_room_limit(handoff, bound)
+                                   or retains_geometry_only_fit(handoff, bound)
+                                   or retains_robot_fit_hold(handoff, bound))
+            family_prepared = retains_task_family_preparation(handoff, bound)
             # A navigation job handed to the G1 screening lane reads as handed off; it claims no result.
-            navigation_prepared = retains_navigation_preparation(handoff, current)
+            navigation_prepared = retains_navigation_preparation(handoff, bound)
             _require(handoff.get("schema_version") == "website_scene_handoff.v1"
                      and handoff.get("scene_id") == selected["scene_id"]
                      and handoff.get("capture_id") == selected["capture_id"]

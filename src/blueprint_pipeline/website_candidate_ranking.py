@@ -28,6 +28,7 @@ from typing import Any
 
 from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as write_json, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
+from .website_task_context_lineage import accepts_bound_digest
 from .website_gemini_receipts import gemini_quote, retained_gemini_call
 
 SCHEMA_VERSION = "website_candidate_ranking.v1"
@@ -217,23 +218,41 @@ def merge_rankings(response: Any, *, compatible: Sequence[str]) -> tuple[list[di
     return rows, sorted(set(flags))
 
 
-def load_ranking(pipeline_dir: Path, *, task_context_digest: str) -> dict[str, Any] | None:
-    """The retained ranking for this exact confirmed task, or None."""
+def load_ranking(pipeline_dir: Path, *, task_context_digest: str,
+                 task_context: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    """The retained ranking for this exact task, or None.
+
+    With ``task_context`` (sealed, of ``task_context_digest``), a ranking retained for its unconfirmed
+    parent is this task's too: a confirmed successor differs only in consent state
+    (``website_task_context_lineage``), so it is never ranked, or paid for, again.
+    """
     path = Path(pipeline_dir) / RANKING_FILENAME
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    bound = value.get("task_context_digest") if isinstance(value, dict) else None
     if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
-            or value.get("task_context_digest") != task_context_digest
+            or not (bound == task_context_digest or (
+                isinstance(task_context, Mapping) and task_context.get("context_digest") == task_context_digest
+                and accepts_bound_digest(task_context, bound)))
             or value.get("ranking_digest") != canonical_digest(value, digest_field="ranking_digest")):
         return None
     return value
 
 
 def retained_priority(pipeline_dir: Path, *, task_context_digest: str) -> list[str]:
-    """The ranked order the screening plan follows; empty keeps the planner's default order."""
-    value = load_ranking(pipeline_dir, task_context_digest=task_context_digest)
+    """The ranked order the screening plan follows; empty keeps the planner's default order.
+
+    The capture's retained task context, when it is the one named, lets a confirmed successor read the
+    ranking retained for its unconfirmed parent.
+    """
+    try:
+        retained = json.loads((Path(pipeline_dir) / "website_task_context.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        retained = None
+    value = load_ranking(pipeline_dir, task_context_digest=task_context_digest,
+                         task_context=retained if isinstance(retained, dict) else None)
     return list(value["priority_order"]) if value and value["status"] == "ranked" else []
 
 
@@ -269,7 +288,7 @@ def rank_website_candidates(*, task_context: Mapping[str, Any], task_masks: Mapp
                             ) -> dict[str, Any]:
     """Retain the job's candidate order; a refusal or failure is flagged and the job keeps going."""
     pipeline_dir = Path(pipeline_dir)
-    retained = load_ranking(pipeline_dir, task_context_digest=task_context["context_digest"])
+    retained = load_ranking(pipeline_dir, task_context_digest=task_context["context_digest"], task_context=task_context)
     if retained is not None and retained["status"] == "ranked":
         return retained
     value: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "task_context_digest": task_context["context_digest"],
@@ -335,7 +354,8 @@ def rank_website_candidates(*, task_context: Mapping[str, Any], task_masks: Mapp
                      candidates=[], priority_order=[], preparation_requested=[],
                      preparation={"status": "not_started", "reason": PREPARATION_HOOK_MISSING})
         # A concurrent pass may have finished the same retained call meanwhile.
-        retained = load_ranking(pipeline_dir, task_context_digest=task_context["context_digest"])
+        retained = load_ranking(pipeline_dir, task_context_digest=task_context["context_digest"],
+                                task_context=task_context)
         if retained is not None and retained["status"] == "ranked":
             return retained
     value["ranking_digest"] = canonical_digest(value, digest_field="ranking_digest")

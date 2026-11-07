@@ -60,7 +60,9 @@ def _context_upgrade_allowed(retained, context):
                     and bool(context["task_family"].strip()) and same({"context_digest", "task_family"}))
     task_named = (retained.get("confirmed") is False and unnamed(retained) and not unnamed(context)
                   and same(NAMED_TASK_FIELDS))
-    return family_added or task_named
+    # The site confirmed its brief: consent state, not task content (website_task_context_lineage).
+    from .website_task_context_lineage import confirmation_successor
+    return family_added or task_named or confirmation_successor(retained, context) is not None
 
 
 def _unique(pairs):
@@ -165,6 +167,10 @@ def admit_browser_preparation(listener, *, payload, handoff, capture_root, obser
             scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
         if retained["context_digest"] != context["context_digest"]:
             _require(_context_upgrade_allowed(retained, context))
+            # A confirmed successor keeps its lineage before the sealed context is replaced, so every
+            # reader binds it on the parent's artifacts and nothing paid is bought again.
+            from .website_task_context_lineage import record_confirmation_lineage
+            record_confirmation_lineage(path.parent, parent=retained, successor=context)
             context_reader.validate_website_task_context(context, request_id=observation["request_id"],
                 scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
             from .launch_immutable_input_writer import write_exclusive_private_bytes

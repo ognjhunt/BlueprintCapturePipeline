@@ -15,6 +15,7 @@ from typing import Any, Mapping
 from pydantic import BaseModel, ConfigDict, Field
 
 from .decision_evidence_contracts import canonical_digest
+from .website_task_context_lineage import accepts_bound_digest
 from .atlas_preparation_context import (
     preparation_context_digest_matches, requires_task_semantic_analysis, task_text_sources,
 )
@@ -92,9 +93,16 @@ def clarification_request(parent_semantics: Mapping[str, Any], *, task_context: 
     return {"scope": "operation_coverage", "schema_version": "website_operation_coverage_request.v1",
             "parent_semantics_digest": value["digest"],
             "parent_planner_receipt_digest": canonical_digest(value["planner_receipt"]),
-            "task_context_digest": task_context["context_digest"],
+            # The reading's own bound context: this one, or the unconfirmed parent of its confirmed successor.
+            "task_context_digest": _bound_context_digest(value, task_context),
             "source_video_digest": source_video_digest,
             "original_semantics": deepcopy(semantics)}
+
+
+def _bound_context_digest(value: Mapping[str, Any], task_context: Mapping[str, Any]) -> str:
+    """The semantics' bound context when it is valid for ``task_context`` (its own or its confirmed parent's)."""
+    bound = (value.get("binding") or {}).get("task_context_digest")
+    return bound if accepts_bound_digest(task_context, bound) else task_context["context_digest"]
 
 
 def _strings(value):
@@ -112,7 +120,7 @@ def validate_coverage(value: Mapping[str, Any], *, request: Mapping[str, Any],
     """Validate semantic content inside the planner's bounded repair boundary."""
     if (request.get("scope") != "operation_coverage"
             or request.get("schema_version") != "website_operation_coverage_request.v1"
-            or request.get("task_context_digest") != task_context.get("context_digest")
+            or not accepts_bound_digest(task_context, request.get("task_context_digest"))
             or not preparation_context_digest_matches(task_context)):
         raise ValueError("website_task_operation_coverage_binding_invalid")
     coverage = OperationCoverage.model_validate(value).model_dump(mode="json")
@@ -145,7 +153,8 @@ def from_receipt(parent_semantics: Mapping[str, Any], receipt: Mapping[str, Any]
     if (receipt.get("status") != "completed"
             or receipt.get("binding_digest") != canonical_digest(binding)
             or receipt.get("proposal_digest") != canonical_digest(proposal)
-            or binding.get("task_context_digest") != task_context["context_digest"]
+            or binding.get("task_context_digest") != request["task_context_digest"]
+            or not accepts_bound_digest(task_context, binding.get("task_context_digest"))
             or binding.get("source_video_digest") != source_video_digest
             or binding.get("operation_coverage_request_digest") != canonical_digest(request)):
         raise ValueError("website_task_operation_coverage_binding_invalid")
