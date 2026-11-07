@@ -258,10 +258,17 @@ def navigation_site_inputs(profile, source, site, settings):
     bind is recomputed from them: the task, the scene revision (the plan digest) and the task context the goal
     was compiled from (the plan's ``navigation_goal_basis``); the capture is the retained context's
     (``_site_context``). The scene intent pair is the record's own source (``navigation_source``).
+
+    Both paths are taken as written: one with a ``..`` part is refused (``common.safe_path`` does not), and the
+    capture is the site's walkthrough, named as the site's withdrawal finds it (``walkthrough-<request id>``,
+    ``website_capture_withdrawal._site``), so a withdrawal reaches every file the record names.
     """
-    inputs_path = common.safe_path(Path(profile["navigation_scene_inputs_path"]))
-    capture = common.safe_path(Path(profile["capture_root"]))
-    require(capture.parent.name == "captures" and capture.parent.parent.name == site
+    raw_inputs, raw_capture = Path(profile["navigation_scene_inputs_path"]), Path(profile["capture_root"])
+    require(".." not in raw_inputs.parts and ".." not in raw_capture.parts, "current_site_packet_root_invalid")
+    inputs_path, capture = common.safe_path(raw_inputs), common.safe_path(raw_capture)
+    request_id = site[len("site-"):] if site.startswith("site-") else ""
+    require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", request_id) and capture.name == "walkthrough-" + request_id
+        and capture.parent.name == "captures" and capture.parent.parent.name == site
         and inputs_path.is_relative_to(capture) and inputs_path.parent != capture, "current_site_packet_root_invalid")
     record = sealed(inputs_path, NAVIGATION_SCENE_INPUTS_SCHEMA, "scene_inputs_digest")
     require(record.get("task_kind") == NAVIGATION_TASK_KIND and record.get("claim_ceiling") == "development_only"

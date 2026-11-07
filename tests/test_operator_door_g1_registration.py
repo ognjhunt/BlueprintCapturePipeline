@@ -506,6 +506,47 @@ def test_a_navigation_record_outside_its_sites_own_capture_is_refused(tmp_path, 
         contract.site_inputs(site.request, site.registry)
 
 
+def _reprofile(tmp_path, **changes):
+    """Rewrite the site's derived profile with ``changes``, sealed again."""
+    profile = json.loads((tmp_path / "derived/site.json").read_text())
+    profile = {key: value for key, value in profile.items() if key != "profile_digest"}
+    write(tmp_path / "derived/site.json", seal({**profile, **changes}, "profile_digest"))
+
+
+@pytest.mark.parametrize("which", ["navigation_scene_inputs_path", "capture_root", "both"])
+def test_a_navigation_profile_path_with_a_parent_part_is_refused(tmp_path, monkeypatch, which):
+    """A ``..`` part is refused by name, though the path it spells is the record's own (``safe_path`` allows it)."""
+    site = navigation_site(tmp_path, monkeypatch)
+    stand_in_source(monkeypatch, site)
+    profile = json.loads((tmp_path / "derived/site.json").read_text())
+    capture, record = Path(profile["capture_root"]), Path(profile["navigation_scene_inputs_path"])
+    (tmp_path / "elsewhere").mkdir()
+    detour = tmp_path / "elsewhere" / ".." / capture.relative_to(tmp_path)
+    changes = {"navigation_scene_inputs_path": str(capture / "pipeline" / ".." / record.relative_to(capture))}
+    if which != "navigation_scene_inputs_path":
+        changes = {"capture_root": str(detour),
+                   **({"navigation_scene_inputs_path": str(detour / record.relative_to(capture))} if which == "both" else {})}
+    assert all(Path(value).resolve() == Path(profile[key]).resolve() for key, value in changes.items())
+    _reprofile(tmp_path, **changes)
+    with pytest.raises(ValueError, match="^native_g1_install_current_site_packet_root_invalid$"):
+        contract.site_inputs(site.request, site.registry)
+
+
+@pytest.mark.parametrize("name", ["upload-{id}", "walkthrough-other", "walkthrough-{id}-copy"])
+def test_a_navigation_capture_not_named_as_the_sites_withdrawal_finds_it_is_refused(tmp_path, monkeypatch, name):
+    """The capture is the site's ``walkthrough-<request id>`` (``website_capture_withdrawal._site``), or nothing."""
+    site = navigation_site(tmp_path, monkeypatch)
+    stand_in_source(monkeypatch, site)
+    profile = json.loads((tmp_path / "derived/site.json").read_text())
+    capture, record = Path(profile["capture_root"]), Path(profile["navigation_scene_inputs_path"])
+    assert capture.name == "walkthrough-" + site.request["site_id"][len("site-"):]
+    moved = capture.with_name(name.format(id=site.request["site_id"][len("site-"):]))
+    capture.rename(moved)
+    _reprofile(tmp_path, capture_root=str(moved), navigation_scene_inputs_path=str(moved / record.relative_to(capture)))
+    with pytest.raises(ValueError, match="^native_g1_install_current_site_packet_root_invalid$"):
+        contract.site_inputs(site.request, site.registry)
+
+
 def test_the_door_reads_a_navigation_site_and_recomputes_its_source_from_the_sealed_record(tmp_path, monkeypatch):
     site = navigation_site(tmp_path, monkeypatch)
     stand_in_source(monkeypatch, site)
