@@ -237,19 +237,25 @@ def observed_scene_bounds(frames):
             'additional_space_beyond_observed_bounds': False}
 
 
-def unobserved_geometry_mask(generated, references, *, extent_bounds=None, repair_exported_gap=False):
+def unobserved_geometry_mask(generated, references, *, extent_bounds=None, repair_exported_gap=False,
+                             rejection=None):
     """Reject generated surfaces in known geometry or observed free space.
 
     A point behind an observed surface may be unseen/occluded; a point in
     front of it contradicts the observation. No source geometry is rewritten.
+    ``rejection``, when given, is filled with a per-pixel reason grid (0 allowed,
+    1 no generated depth, 2 outside the extent, 3 + i blocked first by reference i),
+    so a receipt can say why a gap gained nothing.
     """
     valid = _valid(generated)
     points, y, x = _world(generated, valid)
     allowed = np.ones(len(points), bool)
+    reason = np.zeros(len(points), np.int32)
     if extent_bounds is not None:
         allowed &= np.all((points >= np.asarray(extent_bounds['minimum'])) &
                           (points <= np.asarray(extent_bounds['maximum'])), axis=1)
-    for reference in references:
+        reason[~allowed] = 2
+    for index, reference in enumerate(references):
         camera = {'intrinsics': reference['intrinsics'], 'extrinsics': reference['extrinsics']}
         z, u, v, inside = _project(points, camera)
         indices = np.flatnonzero(inside)
@@ -263,10 +269,30 @@ def unobserved_geometry_mask(generated, references, *, extent_bounds=None, repai
             blocked = known & (z[inside] < observed * (1 - MAX_MEDIAN_CROSS_VIEW_RESIDUAL))
         else:
             blocked = known & (z[inside] <= observed * (1 + MAX_MEDIAN_CROSS_VIEW_RESIDUAL))
+        first = indices[blocked][reason[indices[blocked]] == 0]
+        reason[first] = 3 + index
         allowed[indices[blocked]] = False
     mask = np.zeros(valid.shape, bool)
     mask[y[allowed], x[allowed]] = True
+    if rejection is not None:
+        grid = np.ones(valid.shape, np.int32)
+        grid[y, x] = reason
+        rejection['grid'] = grid
     return mask
+
+
+def _rejection_summary(grid, gap, references):
+    """Why a named gap's pixels did or did not become generated geometry (counts only)."""
+    inside = grid[gap]
+    blocked = {}
+    for code, count in zip(*np.unique(inside[inside >= 3], return_counts=True)):
+        frame = references[int(code) - 3]
+        blocked[str(frame.get('frame_id', int(code) - 3))] = int(count)
+    top = dict(sorted(blocked.items(), key=lambda item: (-item[1], item[0]))[:8])
+    return {'gap_pixels': int(gap.sum()), 'admitted': int((inside == 0).sum()),
+            'no_generated_depth': int((inside == 1).sum()), 'outside_extent': int((inside == 2).sum()),
+            'matched_or_in_front_of_observed_surface': int((inside >= 3).sum()),
+            'first_blocking_references': top, 'blocking_reference_count': len(blocked)}
 
 
 # Cameras are projected a batch at a time so each source frame is lifted once
@@ -336,8 +362,10 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
         depth_known = np.asarray(Image.open(depth_path).convert('L')) > 0
         if depth_known.shape != keep.shape:
             raise ValueError('atlas_completion_preservation_grid_changed')
+    rejection = {}
     allowed = unobserved_geometry_mask(generated, references, extent_bounds=extent_bounds,
-                                      repair_exported_gap=repair_exported_gap) & (~keep | ~depth_known)
+                                      repair_exported_gap=repair_exported_gap,
+                                      rejection=rejection) & (~keep | ~depth_known)
     if prepared.get('completion_gap_mask_path'):
         gap_path = Path(prepared['completion_gap_mask_path'])
         if _sha256_file(gap_path) != prepared['completion_gap_mask_digest']:
@@ -346,6 +374,11 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
         if gap.shape != allowed.shape:
             raise ValueError('atlas_completion_gap_mask_grid_changed')
         allowed &= gap
+        # Counts only: why the named gap's pixels did or did not become geometry.
+        summary = _rejection_summary(rejection['grid'], gap, references)
+        summary['kept_known_depth'] = int((gap & ~(~keep | ~depth_known)).sum())
+    else:
+        summary = None
     frame = restrict_frame(generated, allowed, rgb=composite)
     image, known_mask, geometry_mask = (output_root / n for n in ('image.png', 'known.png', 'generated-geometry.png'))
     _save_image(image, composite)
@@ -373,6 +406,7 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
               **({key: prepared[key] for key in ('completion_gap_mask_digest', 'completion_gap_ids',
                                                   'completion_gap_pixel_count')}
                  if prepared.get('completion_gap_mask_path') else {}),
+              **({'gap_geometry_rejection': summary} if summary is not None else {}),
               **({'generation_extent': extent_bounds} if extent_bounds is not None else {}),
               'claim_ceiling': 'development_only', 'assets': assets}
     report['digest'] = canonical_digest(report, digest_field='digest')

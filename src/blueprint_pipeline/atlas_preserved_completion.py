@@ -9,6 +9,8 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 APPEARANCE_BASIS = 'preserved_capture_with_bounded_completion'
+#: Generated views were made and reviewed, but none added geometry the observations allow.
+NO_EXPORTABLE_GEOMETRY = 'atlas_preserved_completion_no_exportable_geometry'
 
 
 def _splat_assets(root, manifest):
@@ -138,10 +140,18 @@ def run_preserved_completion(*, pose_root, pose, frames, review, root, job_root,
         reviewed_views=registered, root=root / 'registered-geometry-recovery', checkpoint=checkpoint)
     additions = [frame for frame in additions if len(surface_samples(frame)['points'])]
     if not additions:
-        return {'status': 'needs_input', 'reason': 'atlas_preserved_completion_no_exportable_geometry',
-                'stage': 'preserved_scene_completion', 'completion': completion,
+        # Flagged, not a stop. The reviewed, registered views added no point the
+        # retained observations allow, so nothing generated enters the scene and
+        # the captured export goes on unchanged. The recovery receipt says why
+        # (gap_geometry_rejection); the gaps stay disclosed as remaining unknowns.
+        if recovery.get('exportable_samples') != 0 or recovery.get('digest') != canonical_digest(
+                recovery, digest_field='digest'):
+            raise ValueError('atlas_preserved_completion_rejection_not_bound')
+        return {'status': 'completed', 'generated_geometry_admitted': False,
+                'generated_geometry_rejected': NO_EXPORTABLE_GEOMETRY,
+                'splat_root': str(splat_root), 'completion': completion,
                 'generated_view_registration': registration, 'geometry_recovery': recovery,
-                'failure_class': 'missing_evidence'}
+                'generated_roots': []}
     if source_bindings != [_frame_binding(frame) for frame in frames]:
         raise ValueError('atlas_preserved_completion_modified_source')
     provenance = [completion['generation_result_digest'], registration['digest'], recovery['digest']]

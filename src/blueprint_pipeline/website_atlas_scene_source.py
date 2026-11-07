@@ -178,6 +178,40 @@ def _retained_pose_alignment(*, job_dir: Path, source_root: Path, source: Mappin
     return None
 
 
+def _captured_frames_refinement(splat: Mapping[str, Any], source: Mapping[str, Any]) -> bool:
+    """True for Atlas's refined splat of the captured frames alone, on their own pose.
+
+    Atlas re-optimises appearance, so its manifest says ``generated_content``; with only the
+    filmed frames posted (the documented minimal form, no reviewed generated view) it adds no
+    generated scene content, and a scene kept as filmed may use it as its appearance.
+    """
+    from .atlas_refined_splat_forms import MINIMAL
+
+    captured = {row.get('frame_id') for row in
+                ((source.get('operation_receipt') or {}).get('input_usage') or {}).get('frames') or []}
+    rows = splat.get('frames') or []
+    return (splat.get('splat_kind') == 'atlas_refined' and splat.get('task') == 'posedImages2Splats'
+            and splat.get('request_form') == MINIMAL and splat.get('pose_result_digest') == source.get('digest')
+            and not splat.get('whole_view_review') and bool(rows) and bool(captured)
+            and all(isinstance(row, Mapping) and row.get('frame_id') in captured
+                    and 'whole_view_review' not in row and 'gap_composite' not in row for row in rows))
+
+
+def _generated_views_added_nothing(result: Mapping[str, Any], completion: Mapping[str, Any]) -> bool:
+    """True when a completion made and reviewed views that added no geometry (nothing generated exported)."""
+    from .atlas_preserved_completion import NO_EXPORTABLE_GEOMETRY
+
+    recovery = completion.get('geometry_recovery') or {}
+    return (completion.get('status') == 'completed'
+            and completion.get('generated_geometry_rejected') == NO_EXPORTABLE_GEOMETRY
+            and completion.get('generated_geometry_admitted') is False
+            and result.get('generated_geometry_admitted') is False
+            # Zero exportable samples is what keeps generated content out of the export. Admitted
+            # pixels that yield no sample (too narrow for a surface normal) are reported, not refused.
+            and recovery.get('exportable_samples') == 0
+            and isinstance(recovery.get('digest'), str))
+
+
 def atlas_scene_source(*, capture_root: Path, output_root: Path,
                        retained_result_path: Path | None = None,
                        retained_result_digest: str | None = None) -> dict[str, Any]:
@@ -229,8 +263,13 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                 or (geometry_only and (result["generated_completion_performed"]
                                        or type(result.get("subject_in_reconstruction")) is not bool))):
             raise ValueError("website_atlas_preserved_scene_contract_invalid")
-        if result['generated_completion_performed']:
-            completion = result.get('scene_completion') or {}
+        completion = result.get('scene_completion') or {}
+        if result['generated_completion_performed'] and _generated_views_added_nothing(result, completion):
+            # Flagged, not a stop: the views were generated and reviewed but added no
+            # geometry, so nothing generated is in this export. The captured scene goes on
+            # as filmed, and its gaps stay listed as remaining unknowns.
+            pass
+        elif result['generated_completion_performed']:
             if (result.get('generated_geometry_admitted') is not True
                     or completion.get('generated_geometry_admitted') is not True):
                 return {'status': 'needs_input', 'reason': 'atlas_preserved_completion_not_admitted'}
@@ -332,7 +371,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         validate_preserved_completion(report=completion_admission, job_root=job_dir,
             source_pose_digest=source['digest'], source_video_digest=result['source_video_digest'],
             task_context_digest=result['task_context_digest'], splat=splat_manifest)
-    elif preserved and splat_manifest.get('generated_content'):
+    elif preserved and splat_manifest.get('generated_content') and not _captured_frames_refinement(
+            splat_manifest, source):
         raise ValueError('atlas_preserved_completion_not_bound')
     background_root = pose_root
     if splat_manifest["pose_result_digest"] == source["digest"]:
