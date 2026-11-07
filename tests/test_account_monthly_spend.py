@@ -432,7 +432,7 @@ def test_the_spend_guard_rewrites_the_report_and_carries_its_summary(host):
     assert account.admission_blockers() == []
 
 
-def test_a_guard_run_embeds_the_account_summary_in_its_report(patched_guard, monkeypatch, capsys):
+def test_a_guard_run_embeds_the_account_summary_in_its_report(patched_guard, monkeypatch, capsys):  # noqa: F811
     from scripts import gpu_spend_guard as fleet
 
     tmp_path, _terminated = patched_guard
