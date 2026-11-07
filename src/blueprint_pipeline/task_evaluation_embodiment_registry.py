@@ -11,6 +11,14 @@ capability or about who deploys it.
 Adding a robot: declare its interface and ``missing`` work here. Promoting it
 needs a verified asset, controller adapter, camera rig, reset pose and an
 integration canary receipt; editing ``status`` alone must not make it run.
+
+One narrow, explicit exception can be declared (``DevelopmentRunAllowance``):
+a development-only run of one named task profile may proceed while named items
+are still ``missing``, each with the basis that stands in for it, and its
+result is recorded ``development_only``. It never makes a body ``runnable``
+and covers no other task profile. No body declares one today: the G1's
+first-navigation-run allowance is deferred until it has a bound and the owner
+has decided on each stand-in (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md).
 """
 
 from __future__ import annotations
@@ -64,6 +72,25 @@ def deployment_embodiment_support_catalog() -> dict[str, Any]:
     return value
 
 
+#: The only task profiles a development-only run allowance may name. None is granted today; adding one
+#: needs a bound and the owner's decision on each stand-in (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md).
+DEVELOPMENT_RUN_TASK_PROFILES = frozenset({"goal_region_navigation"})
+
+
+@dataclass(frozen=True)
+class DevelopmentRunAllowance:
+    """What a development-only run of one task profile may proceed without, and on what basis.
+
+    ``satisfied_by`` pairs each still-``missing`` item with what stands in for it on such a run. The body
+    stays as listed (its ``status`` and ``missing`` unchanged); only a run of ``task_profile_id`` whose
+    result is recorded ``claim_ceiling`` may proceed without those items.
+    """
+
+    task_profile_id: str
+    satisfied_by: tuple[tuple[str, str], ...]
+    claim_ceiling: str = "development_only"
+
+
 @dataclass(frozen=True)
 class EmbodimentProfile:
     embodiment_id: str
@@ -82,10 +109,24 @@ class EmbodimentProfile:
     reason: str | None = None
     #: The catalog interfaces' ``robot_profile_id`` values that run on this body.
     policy_robot_profile_ids: tuple[str, ...] = ()
+    #: Narrow exceptions for a development-only run of one task profile (``DevelopmentRunAllowance``).
+    development_run_allowances: tuple[DevelopmentRunAllowance, ...] = ()
 
     @property
     def available(self) -> bool:
         return self.status == "runnable"
+
+    def development_run_missing(self, task_profile_id: str) -> tuple[tuple[str, ...], DevelopmentRunAllowance | None]:
+        """What a development-only run of ``task_profile_id`` on this body still lacks, and the allowance used.
+
+        Without an allowance for that profile it is everything ``missing``, as for any run.
+        """
+        allowance = next((row for row in self.development_run_allowances
+                          if row.task_profile_id == task_profile_id and task_profile_id in self.task_profile_ids), None)
+        if allowance is None:
+            return self.missing, None
+        waived = {item for item, _basis in allowance.satisfied_by}
+        return tuple(item for item in self.missing if item not in waived), allowance
 
     def meets(self, requirements: Mapping[str, Any]) -> bool:
         """Whether this body can do what a compiled task requires: chosen by need, never by task kind."""
@@ -154,7 +195,7 @@ EMBODIMENT_REGISTRY: tuple[EmbodimentProfile, ...] = (
         action_schema_ids=("humanoidarena_semantic_v3",),
         controller="SONIC whole-body controller", simulator_runtime_id="isaac_native_arena_g1_v1",
         sensor_reference="configs/g1_humanoidarena_checkpoint_inventory.v1.json",
-        task_profile_ids=("rigid_pick_place",), status="unavailable",
+        task_profile_ids=("rigid_pick_place", "goal_region_navigation"), status="unavailable",
         missing=("verified_site_episode", "reviewed_checkpoint_terms"),
         reason="No production policy-canary profile has executed a verified G1 episode on a site scene, and its checkpoint terms are pending review.",
         policy_robot_profile_ids=("unitree_g1_dex3_sonic_v1",),
@@ -196,10 +237,18 @@ def embodiment_registry_violations() -> list[str]:
                 violations.append(f"runnable_embodiment_incomplete:{row.embodiment_id}")
         elif not row.reason or not row.missing:
             violations.append(f"unavailable_embodiment_without_reason:{row.embodiment_id}")
+        for allowance in row.development_run_allowances:
+            # Narrow and explicit: one listed profile, development-only, only items the body still misses.
+            if (row.available or allowance.task_profile_id not in row.task_profile_ids
+                    or allowance.task_profile_id not in DEVELOPMENT_RUN_TASK_PROFILES
+                    or allowance.claim_ceiling != "development_only" or not allowance.satisfied_by
+                    or any(item not in row.missing or not basis for item, basis in allowance.satisfied_by)):
+                violations.append(f"development_run_allowance_invalid:{row.embodiment_id}")
     return violations
 
 
 __all__ = [
-    "EMBODIMENT_REGISTRY", "EmbodimentProfile", "deployment_embodiment_support_catalog",
+    "DevelopmentRunAllowance", "EMBODIMENT_REGISTRY", "EmbodimentProfile",
+    "deployment_embodiment_support_catalog",
     "embodiment", "embodiment_registry_violations",
 ]

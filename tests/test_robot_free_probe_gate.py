@@ -386,3 +386,23 @@ def test_the_probe_refuses_a_plan_it_cannot_bind_and_a_receipt_of_another_plan()
     receipt_refused(reseal(claim_ceiling="diagnostic_policy_execution"))
     receipt_refused(reseal(proof_boundary={**receipt["proof_boundary"], "scene_geometry_read": True}))
     receipt_refused(None)
+
+
+def test_a_navigation_receipt_needs_its_kind_named_and_a_call_without_one_reads_as_before() -> None:
+    plan = navigation_plan()
+    receipt = navigation_probe.score_navigation_robot_free_probe(plan=plan)
+    kwargs = _planning_kwargs(plan)
+    assert gate.require_robot_free_probe(receipt, **kwargs)["receipt_digest"] == receipt["receipt_digest"]
+    # A caller that names no kind (the team run controller) reads only rigid and articulated receipts, as on main.
+    unnamed = {key: value for key, value in kwargs.items() if key != "task_kind"}
+    with pytest.raises(gate.RobotFreeProbeGateError) as raised:
+        gate.require_robot_free_probe(receipt, **unnamed)
+    assert raised.value.reason == "receipt_schema_invalid"
+    rigid = scored_probe_receipt()
+    assert gate.require_robot_free_probe(rigid, scene_revision_digest=REVISION)["receipt_digest"] == \
+        rigid["receipt_digest"]
+    # A kind that is not a string is refused by name, never hashed.
+    for kind in (["goal_region_navigation"], {"task_kind": "goal_region_navigation"}, 3):
+        with pytest.raises(gate.RobotFreeProbeGateError) as raised:
+            gate.require_robot_free_probe(receipt, **{**kwargs, "task_kind": kind})
+        assert raised.value.reason.startswith("unavailable_for_task_kind:")

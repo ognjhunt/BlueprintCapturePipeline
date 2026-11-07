@@ -444,3 +444,171 @@ def test_service_prepares_real_cpu_packet_and_root_independently_accepts_it(prep
     builder._prepare_current_packet(req, {}, profile_root=profile_root,
         shared_registry_path=shared_path, source_queue=tmp_path / "unused")
     assert packet_path.read_bytes() == before
+
+
+# --- a navigation site: the G1 at its compiled start (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C) ---
+
+
+def navigation_site(tmp_path, monkeypatch):
+    """A real navigation record and its real G1 packet, registered as a derived profile the door reads."""
+    from blueprint_pipeline import beta_policy_screening_g1_prepare as prepare
+    from tests.test_beta_policy_screening_g1_prepare import navigation_preparation, navigation_task_context
+
+    args, record = navigation_preparation(tmp_path, monkeypatch)
+    g1 = prepare.prepare_native_g1_beta_packet(**args)
+    # The record's own website capture (``scenes/<site>/captures/<capture>``), where the handoff writes it.
+    capture = next(path for path in Path(record["packet_root"]).parents if path.parent.name == "captures")
+    write(capture / "pipeline/website_task_context.json", navigation_task_context())
+    record_path = Path(record["packet_root"]).parent / "website_navigation_scene_inputs.v1.json"
+    write(tmp_path / "derived/site.json", seal({"schema_version": "blueprint.team_candidate_derived_profile.v1",
+        "capture_root": str(capture), "scene_id": record["scene_id"], "task_id": record["task_id"],
+        "scene_revision_digest": record["scene_revision_digest"], "navigation_scene_inputs_path": str(record_path)},
+        "profile_digest"))
+    registry = seal({"schema_version": "blueprint.team_candidate_quick10_registry.v1", "profiles": [],
+        "derived_profiles": {"root": str(tmp_path / "derived"),
+                             "packet_inputs": {"output_root": str(tmp_path / "navigation_scene_inputs")}}},
+        "registry_digest")
+    profile = json.loads((PROFILE_ROOT / "native_g1_registration_profile.json").read_text())
+    robot = args["robot_asset_record"]
+    plan = contract.common.read(Path(g1["scene_packet"]["path"]).parent / "native_task_arena_scene_plan.v1.json")
+    profile.update(robot_usd_sha256=robot["sha256"], robot_usd_size_bytes=robot["size_bytes"],
+                   robot_runtime_asset_dependencies=plan["robot"]["usd_runtime_asset_dependencies"])
+    # The fixture robot is G1-shaped, not the pinned USD: its numeric template is the packet's own (the
+    # template check itself is the rigid path's, tested above).
+    profile["robot_template"] = {key: plan["robot"][key] for key in profile["robot_template"]}
+    return SimpleNamespace(args=args, record=record, g1=g1, registry=registry, profile=profile,
+                           request={"source": dict(args["source"]), "site_id": record["scene_id"]})
+
+
+def stand_in_source(monkeypatch, site):
+    """A navigation record names no source yet (its scene intent is undecided): a clearly marked stand-in."""
+    monkeypatch.setattr(contract, "navigation_source", lambda record: dict(site.args["source"]))
+
+
+def test_a_navigation_record_names_no_source_yet_so_the_door_refuses_by_name(tmp_path, monkeypatch):
+    site = navigation_site(tmp_path, monkeypatch)
+    assert site.record["source"] is None
+    with pytest.raises(ValueError, match="^native_g1_install_navigation_source_identity_unbound$"):
+        contract.site_inputs(site.request, site.registry)
+
+
+def test_a_navigation_record_outside_its_sites_own_capture_is_refused(tmp_path, monkeypatch):
+    """The record must lie inside the capture whose sealed context and consent the door has just checked."""
+    site = navigation_site(tmp_path, monkeypatch)
+    stand_in_source(monkeypatch, site)
+    elsewhere = tmp_path / "elsewhere/website_navigation_scene_inputs.v1.json"
+    write(elsewhere, site.record)
+    profile = json.loads((tmp_path / "derived/site.json").read_text())
+    profile = {key: value for key, value in profile.items() if key != "profile_digest"}
+    write(tmp_path / "derived/site.json", seal({**profile, "navigation_scene_inputs_path": str(elsewhere)},
+                                               "profile_digest"))
+    with pytest.raises(ValueError, match="^native_g1_install_current_site_packet_root_invalid$"):
+        contract.site_inputs(site.request, site.registry)
+
+
+def _reprofile(tmp_path, **changes):
+    """Rewrite the site's derived profile with ``changes``, sealed again."""
+    profile = json.loads((tmp_path / "derived/site.json").read_text())
+    profile = {key: value for key, value in profile.items() if key != "profile_digest"}
+    write(tmp_path / "derived/site.json", seal({**profile, **changes}, "profile_digest"))
+
+
+@pytest.mark.parametrize("which", ["navigation_scene_inputs_path", "capture_root", "both"])
+def test_a_navigation_profile_path_with_a_parent_part_is_refused(tmp_path, monkeypatch, which):
+    """A ``..`` part is refused by name, though the path it spells is the record's own (``safe_path`` allows it)."""
+    site = navigation_site(tmp_path, monkeypatch)
+    stand_in_source(monkeypatch, site)
+    profile = json.loads((tmp_path / "derived/site.json").read_text())
+    capture, record = Path(profile["capture_root"]), Path(profile["navigation_scene_inputs_path"])
+    (tmp_path / "elsewhere").mkdir()
+    detour = tmp_path / "elsewhere" / ".." / capture.relative_to(tmp_path)
+    changes = {"navigation_scene_inputs_path": str(capture / "pipeline" / ".." / record.relative_to(capture))}
+    if which != "navigation_scene_inputs_path":
+        changes = {"capture_root": str(detour),
+                   **({"navigation_scene_inputs_path": str(detour / record.relative_to(capture))} if which == "both" else {})}
+    assert all(Path(value).resolve() == Path(profile[key]).resolve() for key, value in changes.items())
+    _reprofile(tmp_path, **changes)
+    with pytest.raises(ValueError, match="^native_g1_install_current_site_packet_root_invalid$"):
+        contract.site_inputs(site.request, site.registry)
+
+
+@pytest.mark.parametrize("name", ["upload-{id}", "walkthrough-other", "walkthrough-{id}-copy"])
+def test_a_navigation_capture_not_named_as_the_sites_withdrawal_finds_it_is_refused(tmp_path, monkeypatch, name):
+    """The capture is the site's ``walkthrough-<request id>`` (``website_capture_withdrawal._site``), or nothing."""
+    site = navigation_site(tmp_path, monkeypatch)
+    stand_in_source(monkeypatch, site)
+    profile = json.loads((tmp_path / "derived/site.json").read_text())
+    capture, record = Path(profile["capture_root"]), Path(profile["navigation_scene_inputs_path"])
+    assert capture.name == "walkthrough-" + site.request["site_id"][len("site-"):]
+    moved = capture.with_name(name.format(id=site.request["site_id"][len("site-"):]))
+    capture.rename(moved)
+    _reprofile(tmp_path, capture_root=str(moved), navigation_scene_inputs_path=str(moved / record.relative_to(capture)))
+    with pytest.raises(ValueError, match="^native_g1_install_current_site_packet_root_invalid$"):
+        contract.site_inputs(site.request, site.registry)
+
+
+def test_the_door_reads_a_navigation_site_and_recomputes_its_source_from_the_sealed_record(tmp_path, monkeypatch):
+    site = navigation_site(tmp_path, monkeypatch)
+    stand_in_source(monkeypatch, site)
+    root, inputs, base_receipt, base_request, base_scene = contract.site_inputs(site.request, site.registry)
+    assert root == Path(site.record["packet_root"]).parent and inputs == site.record
+    assert base_scene["task_kind"] == "goal_region_navigation" and base_receipt["receipt_digest"] == \
+        site.record["packet_receipt_digest"]
+    assert contract.site_task_context(site.request, site.registry)["context_digest"] == \
+        site.request["source"]["task_context_digest"]
+    # Each source field the record and its sealed plan bind is recomputed; a stand-in naming another intent is not it.
+    monkeypatch.setattr(contract, "navigation_source", lambda record: {**site.args["source"], "scene_intent_id": "other"})
+    with pytest.raises(ValueError, match="^native_g1_install_current_intent_changed$"):
+        contract.site_inputs(site.request, site.registry)
+
+
+def test_the_door_verifies_a_navigation_g1_packet_and_its_compiled_start(tmp_path, monkeypatch):
+    site = navigation_site(tmp_path, monkeypatch)
+    stand_in_source(monkeypatch, site)
+    _root, inputs, base_receipt, base_request, base_scene = contract.site_inputs(site.request, site.registry)
+    record = contract.file_record(site.g1["scene_packet"]["path"])
+    common_arguments = {"profile": site.profile, "source": site.request["source"], "site_id": site.request["site_id"],
+                        "inputs": inputs, "base_receipt": base_receipt, "base_request": base_request,
+                        "base_scene": base_scene}
+    for candidate in (DP_NAV, PI_NAV):
+        scene = contract.verify_scene(record, candidate_id=candidate, **common_arguments)
+        assert scene["task_kind"] == "goal_region_navigation"
+        assert scene["robot"]["base_pose_world"] == base_scene["robot"]["base_pose_world"]
+    for candidate in (DP, PI):  # A manipulation checkpoint on a navigation site stays unavailable.
+        with pytest.raises(ValueError, match="^native_g1_install_candidate_task_mismatch$"):
+            contract.verify_scene(record, candidate_id=candidate, **common_arguments)
+    _receipt, request_value, scene = contract.packet(Path(record["path"]))
+    arguments = {"request": request_value, "scene": scene, "base_request": base_request, "base_scene": base_scene,
+                 "base_receipt": base_receipt, "profile": site.profile, "source": site.request["source"],
+                 "site_id": site.request["site_id"], "inputs": inputs}
+    contract.verify_navigation_assumptions(**arguments)
+    for key, value, reason in (("stance_method", "existing_scene_collision_floor_and_clear_footprint_search",
+                                "simulation_assumptions_changed"),
+                               ("subject_bounds_world_m", {"minimum": [0, 0, 0], "maximum": [1, 1, 1]},
+                                "simulation_assumptions_changed"),
+                               ("navigation_goal_added", True, "simulation_assumptions_changed"),
+                               ("stance", {**request_value["g1_scene_derivation"]["assumptions"]["stance"],
+                                           "position_world_m": [0.5, 0.0, 0.79]}, "simulation_stance_invalid")):
+        changed = deepcopy(request_value)
+        assumptions = changed["g1_scene_derivation"]["assumptions"]
+        assumptions[key] = value
+        seal(assumptions, "assumptions_digest")
+        with pytest.raises(ValueError, match="^native_g1_install_" + reason + "$"):
+            contract.verify_navigation_assumptions(**{**arguments, "request": changed})
+
+
+def test_the_door_verifies_a_navigation_fallback_stance_near_the_start(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_g1_prepare as prepare
+    from tests.test_beta_policy_screening_g1_prepare import navigation_preparation
+
+    args, record = navigation_preparation(tmp_path, monkeypatch, wall_x=0.05)  # The start is inside a wall.
+    g1 = prepare.prepare_native_g1_beta_packet(**args)
+    base_receipt, base_request, base_scene = contract.packet(Path(record["base_native_packet"]["path"]))
+    receipt, request_value, scene = contract.packet(Path(g1["scene_packet"]["path"]))
+    stance = request_value["g1_scene_derivation"]["assumptions"]["stance"]
+    assert stance["schema_version"] == "blueprint.team_free_base_stance.v1"
+    profile = json.loads((PROFILE_ROOT / "native_g1_registration_profile.json").read_text())
+    profile["robot_usd_sha256"] = args["robot_asset_record"]["sha256"]
+    contract.verify_navigation_assumptions(request=request_value, scene=scene, base_request=base_request,
+        base_scene=base_scene, base_receipt=base_receipt, profile=profile, source=args["source"],
+        site_id=args["site_id"], inputs=record)

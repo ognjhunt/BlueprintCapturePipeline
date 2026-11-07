@@ -203,7 +203,9 @@ def validate_navigation_robot_free_probe_receipt(receipt: Any, *, plan: Mapping[
 
     Whether it admits a scored run is the gate's decision (``robot_free_probe_gate``). Raises
     ``navigation_robot_free_probe_receipt_invalid`` for a tampered receipt, another plan's, or one
-    whose checks are not exactly the required ones or disagree with its status.
+    whose checks are not exactly the required ones or disagree with its status. The probe costs
+    nothing, so it is run again here: a receipt is valid only while it is exactly what today's scorer
+    (its module bytes included) says for this plan, never on the scorer identity it records.
     """
     _task, _goal, _contract, binding = _plan_parts(plan)
     try:
@@ -221,6 +223,7 @@ def validate_navigation_robot_free_probe_receipt(receipt: Any, *, plan: Mapping[
              and value.get("status") == ("passed" if all(checks.values()) else "failed")
              and value.get("learned_policy_evaluation_admitted") is (value.get("status") == "passed"),
              "navigation_robot_free_probe_receipt_invalid")
+    _require(value == score_navigation_robot_free_probe(plan=plan), "navigation_robot_free_probe_receipt_invalid")
     return value
 
 

@@ -116,15 +116,36 @@ def test_the_machine_composed_authority_binds_the_sites_own_context_and_disclose
     assert authority["schema_version"] == MACHINE_AUTHORITY_SCHEMA_VERSION
     assert authority["human_reviewer"] is None and authority["claim_ceiling"] == "development_only"
     assert authority["task_context"] == context and authority["site_brief_confirmed"] is True
+    assert authority["status"] == "confirmed_for_development_simulation"
+    assert authority["authority_basis"] == "owner_decision_2026_11_06_confirmed_brief_and_machine_composed_goal"
+    assert authority["reviewed_criterion"] == "root_xy_goal_arrival_terminal_hold_and_root_height_stable"
     assert authority["disclosed_assumptions"] == plan["task_spec"]["navigation_goal_basis"]["disclosed_assumptions"]
     # The shared validator dispatches on the schema version.
     assert validate_g1_navigation_goal_authority(authority, plan=plan) == authority
-    # Owner, 2026-11-07: an unconfirmed brief is not a stop. The authority is composed and says so.
+    # An unconfirmed brief: the authority only records it. The job holds until the site confirms its brief
+    # on the website (a confirmed brief counts as consent, owner 2026-11-07), never here.
     unconfirmed = _context(spec, confirmed=False)
     unconfirmed_plan = _plan(navigation_task_spec(spec, task_context=unconfirmed))
     flagged = compose_g1_navigation_goal_authority(plan=unconfirmed_plan, task_context=unconfirmed)
     assert flagged["site_brief_confirmed"] is False and flagged["claim_ceiling"] == "development_only"
+    # Its basis and status say what is true: composed from an unconfirmed brief, disclosed. The basis cites
+    # no owner decision.
+    assert flagged["status"] == "composed_for_development_simulation_site_brief_unconfirmed"
+    assert flagged["authority_basis"] == "machine_composed_goal_site_brief_unconfirmed_disclosed"
+    assert "owner_decision" not in flagged["authority_basis"]
     assert validate_g1_navigation_goal_authority(flagged, plan=unconfirmed_plan) == flagged
+    for field, claimed in (("status", "confirmed_for_development_simulation"),
+                           ("authority_basis", "owner_decision_2026_11_06_confirmed_brief_and_machine_composed_goal")):
+        overstated = {**flagged, field: claimed}
+        from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest as _seal
+        overstated["authority_digest"] = _seal(overstated, digest_field="authority_digest")
+        with pytest.raises(ValueError, match="g1_navigation_goal_authority_invalid"):
+            validate_g1_navigation_goal_authority(overstated, plan=unconfirmed_plan)
+    # A v2 authority (which called every brief confirmed) is never read as this one.
+    old = {**flagged, "schema_version": "native_g1_navigation_goal_authority.v2"}
+    old["authority_digest"] = _seal(old, digest_field="authority_digest")
+    with pytest.raises(ValueError, match="g1_navigation_goal_authority_invalid"):
+        validate_g1_navigation_goal_authority(old, plan=unconfirmed_plan)
     # The flag cannot be flipped without the site's own sealed confirmation.
     lifted = {**flagged, "site_brief_confirmed": True}
     from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest

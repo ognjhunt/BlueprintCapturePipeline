@@ -413,3 +413,148 @@ def test_without_a_site_figure_and_for_hosted_candidates_quotes_are_unchanged():
     hosted = next(row for row in value["candidates"] if row["candidate_id"] == "pi05_droid")
     # Its provider cap is set by the hosted delivery, so its quote is never fitted.
     assert hosted["max_cost_usd"] == "4.00"
+
+
+# --- a navigation scene: cells move the robot's start (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C) ---
+
+from blueprint_pipeline import beta_policy_screening_g1 as g1  # noqa: E402
+from blueprint_pipeline import native_g1_beta_authority as rights  # noqa: E402
+
+
+def navigation_scene(**native):
+    goal = {"schema_version": "native_g1_navigation_goal.v1", "center_world_m": [5.0, 0.0, 0.0],
+            "acceptance_radius_m": 0.3, "max_root_height_drift_m": 0.15, "settle_window_samples": 10,
+            "task_instruction": "Avoid obstacles and move to the yellow marked area.",
+            "visible_target_marker": {"schema_version": "native_task_target_marker.v1", "shape": "flat_yellow_disc",
+                                      "non_colliding": True, "surface_position_world_m": [5.0, 0.0, 0.0],
+                                      "radius_m": 0.3}}
+    task = {"task_kind": "goal_region_navigation", "start_pose_world": [0.0, 0.0, 0.0, 0, 0, 0, 1],
+            "g1_navigation_goal": goal}
+    plan = {"task_kind": "goal_region_navigation", "task_spec": task,
+            "objects": [{"semantic_role": "scene_collision"}, {"semantic_role": "scene_appearance"}], **native}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return {**scene(), "site_id": "site-library", "scene_id": "site-library", "task_kind": "goal_region_navigation",
+            "task_spec": task, "native_scene_plan": plan}
+
+
+def navigation_catalog():
+    """The default catalog's G1 rows, the navigation ones declaring the navigation kind (as the shipped catalog does)."""
+    catalog = load_default_catalog()
+    rows = []
+    for row in catalog["candidates"]:
+        if row["candidate_id"] in g1.CANDIDATES:
+            kinds = (["rigid_pick_place", "goal_region_navigation"] if row["candidate_id"].endswith("_vision_navi")
+                     else ["rigid_pick_place"])
+            rows.append({**deepcopy(row), "supported_task_kinds": kinds})
+    return seal_catalog({**catalog, "candidates": rows})
+
+
+def navigation_plan(*, dropped=None, episodes=None, catalog=None):
+    catalog = catalog or navigation_catalog()
+    bindings, quotes = {}, {}
+    for candidate in catalog["candidates"]:
+        binding, quote = admitted(candidate, maximum="4.00")
+        spec = binding["execution_spec"]
+        spec.update(backend=g1.BACKEND, minimum_gpu_memory_gb=48)
+        if dropped:
+            spec[g1.DROPPED_START_OFFSETS_FIELD] = dict(dropped)
+        binding.update(backend=g1.BACKEND, admission_digest=canonical_digest(spec))
+        quote = {**quote, "episode_count": episodes or g1.CELLS_PER_SESSION - len(dropped or {})}
+        quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
+        bindings[candidate["candidate_id"]], quotes[candidate["candidate_id"]] = binding, quote
+    return build_screening_plan(catalog, navigation_scene(), campaign_id="navigation", now=NOW,
+                                capabilities={"candidate_bindings": bindings}, cost_quotes=quotes)
+
+
+def test_a_navigation_scene_has_one_cell_per_start_offset_seeded_from_its_salt():
+    cells = screening_cells(navigation_scene())
+    assert [cell["family"] for cell in cells] == ["robot_start_offset"] * 4
+    assert [cell["resolved_scenario"]["parameters"] for cell in cells] == [
+        rights.start_offset_parameters(ordinal) for ordinal in range(4)]
+    assert [cell["cell_id"] for cell in cells] == [f"screening.site-library.{n:03d}" for n in range(4)]
+    assert len({cell["seed"] for cell in cells}) == 4 and screening_cells(navigation_scene()) == cells
+    # The salt is the scene revision's and the task context's: another revision draws other seeds.
+    other = {**navigation_scene(), "scene_revision_digest": OTHER}
+    assert [cell["seed"] for cell in screening_cells(other)] != [cell["seed"] for cell in cells]
+    assert screening_cells(navigation_scene(), 2) == cells[:2]
+    assert all(rights.validate_frozen_cell(cell) == cell for cell in cells)
+
+
+@pytest.mark.parametrize("change", ["task_subject", "no_goal"])
+def test_a_navigation_scene_plan_has_no_task_subject_and_a_goal(change):
+    value = navigation_scene()
+    native = deepcopy(value["native_scene_plan"])
+    if change == "task_subject":
+        native["objects"].append({"task_subject": True})
+    else:
+        native["task_spec"] = {**native["task_spec"], "g1_navigation_goal": None}
+    native["plan_digest"] = canonical_digest(native, digest_field="plan_digest")
+    with pytest.raises(BetaPolicyScreeningPlanError, match="^beta_screening_native_scene_plan_invalid$"):
+        screening_cells({**value, "native_scene_plan": native})
+
+
+def test_only_the_navigation_checkpoints_are_planned_on_a_navigation_scene_with_its_four_offset_cells():
+    value = navigation_plan()
+    rows = {row["candidate_id"]: row for row in value["candidates"]}
+    nav = [key for key in g1.CANDIDATES if key.endswith("_vision_navi")]
+    assert [rows[key]["status"] for key in nav] == ["selected", "selected"]
+    for key in nav:
+        assert rows[key]["episode_count"] == 4 and rows[key]["scenario_cells"] == value["scenario_cells"]
+        assert rows[key]["max_cost_usd"] == "4.00"  # Money unchanged: $4 a G1 run, 4 cells.
+    for key in set(g1.CANDIDATES) - set(nav):
+        assert rows[key]["status"] == "unavailable" and "task_kind_not_supported_by_candidate" in rows[key]["blockers"]
+    assert validate_screening_plan(value) == value
+    schema = json.loads((Path(__file__).resolve().parents[1]
+                         / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
+    Draft202012Validator(schema).validate(value)
+
+
+def test_a_dropped_start_offset_is_not_funded_and_the_row_runs_the_rest():
+    value = navigation_plan(dropped={"back_15cm": "g1_spawn_overlap"})
+    row = next(row for row in value["candidates"] if row["candidate_id"] == g1.CANDIDATES[2])
+    assert row["status"] == "selected" and row["episode_count"] == 3
+    assert row["scenario_cells"] == value["scenario_cells"][:3] and len(value["scenario_cells"]) == 4
+    assert row["execution_spec"][g1.DROPPED_START_OFFSETS_FIELD] == {"back_15cm": "g1_spawn_overlap"}
+    assert validate_screening_plan(value) == value
+    schema = json.loads((Path(__file__).resolve().parents[1]
+                         / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
+    Draft202012Validator(schema).validate(value)
+    # A quote for four cells no longer matches a row that runs three: it is deferred, never over-run.
+    stale = navigation_plan(dropped={"back_15cm": "g1_spawn_overlap"}, episodes=4)
+    row = next(row for row in stale["candidates"] if row["candidate_id"] == g1.CANDIDATES[2])
+    assert row["status"] == "deferred"
+
+
+@pytest.mark.parametrize("dropped", [
+    {"start": "g1_spawn_overlap", "left_15cm": "g1_spawn_overlap", "right_15cm": "g1_spawn_overlap",
+     "back_15cm": "g1_spawn_overlap"},
+    {"up_15cm": "g1_spawn_overlap"}, {"back_15cm": "g1_spawn_clearance_unmeasured"}, {}, ["back_15cm"]])
+def test_dropped_start_offsets_must_be_named_overlaps_and_leave_a_cell(dropped):
+    catalog = navigation_catalog()
+    candidate = next(row for row in catalog["candidates"] if row["candidate_id"] == g1.CANDIDATES[2])
+    binding, _ = admitted(candidate)
+    spec = {**binding["execution_spec"], "backend": g1.BACKEND, g1.DROPPED_START_OFFSETS_FIELD: dropped}
+    with pytest.raises(BetaPolicyScreeningPlanError, match="^beta_screening_dropped_start_offsets_invalid$"):
+        validate_execution_descriptor(spec, candidate_id=candidate["candidate_id"],
+                                      configuration_digest=candidate["configuration_digest"])
+    robolab = {**binding["execution_spec"], g1.DROPPED_START_OFFSETS_FIELD: {"back_15cm": "g1_spawn_overlap"}}
+    with pytest.raises(BetaPolicyScreeningPlanError, match="^beta_screening_dropped_start_offsets_invalid$"):
+        validate_execution_descriptor(robolab, candidate_id=candidate["candidate_id"],
+                                      configuration_digest=candidate["configuration_digest"])
+
+
+@pytest.mark.parametrize("mutation", ["parameters", "ordinal_row", "coverage_gap"])
+def test_a_resealed_navigation_cell_must_stay_a_row_of_the_table(mutation):
+    value = navigation_plan()
+    cell = value["scenario_cells"][1]
+    scenario = cell["resolved_scenario"]
+    if mutation == "parameters":
+        scenario["parameters"] = {"robot_start_forward_m": 0.0, "robot_start_lateral_m": 0.4}
+    elif mutation == "ordinal_row":
+        scenario["parameters"] = rights.start_offset_parameters(2)
+    else:
+        scenario["runtime_coverage_gaps"] = []
+    cell["cell_spec_digest"] = cell["resolved_scenario_digest"] = canonical_digest(scenario)
+    value["scenario_plan_digest"] = canonical_digest({"cells": value["scenario_cells"]})
+    with pytest.raises(BetaPolicyScreeningPlanError, match="^beta_screening_scenario_parameters_invalid$"):
+        validate_screening_plan(reseal(value))

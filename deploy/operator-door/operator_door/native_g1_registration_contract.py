@@ -40,6 +40,11 @@ FIELDS = {"schema_version", "installation_id", "release_commit", "site_id", "sou
           "publisher_source", "runtime_source", "shared_registry_digest", "expected_registry_digest",
           "authorization_reference", "request_digest"}
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+#: A navigation job's scene half (the Pipeline's ``website_navigation_scene_inputs``): the G1 at the compiled
+#: start of a scene kept as filmed (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C).
+NAVIGATION_SCENE_INPUTS_SCHEMA = "blueprint.website_navigation_scene_inputs.v1"
+NAVIGATION_TASK_KIND = "goal_region_navigation"
+NAVIGATION_STANCE_METHOD = "compiled_start_pose"
 
 
 def require(condition, reason):
@@ -160,7 +165,7 @@ def discover(root, reference, *, names):
     return matches[0]
 
 
-def site_inputs(request, registry, *, source_queue=SOURCE_QUEUE):
+def _site_profile(request, registry):
     source, site = request["source"], request["site_id"]
     profiles = [row for row in registry["profiles"] if row.get("scene_id") == site]
     settings = registry.get("derived_profiles") or {}
@@ -177,6 +182,10 @@ def site_inputs(request, registry, *, source_queue=SOURCE_QUEUE):
     require(len(profiles) == 1, "current_site_profile_missing_or_ambiguous")
     profile = profiles[0]
     require(profile.get("task_id") == source["task_id"] and profile.get("scene_revision_digest") == source["scene_revision_digest"], "current_site_changed")
+    return profile, settings
+
+
+def _site_context(profile, source, site):
     context = sealed(common.safe_path(Path(profile["capture_root"])) / "pipeline/website_task_context.json", "website_site_task_context.v1", "context_digest")
     consent = context.get("capture_rights") or {}
     require(context.get("scene_id") == site and context.get("capture_id") == source["capture_id"]
@@ -184,6 +193,21 @@ def site_inputs(request, registry, *, source_queue=SOURCE_QUEUE):
         and consent.get("consent_status") == "granted" and consent.get("consent_revoked") is False
         and "robot_evaluation" in consent.get("consent_scope", [])
         and consent.get("derived_scene_generation_allowed") is True, "retained_task_consent_invalid")
+    return context
+
+
+def site_task_context(request, registry):
+    """The site's retained task context, sealed and its consent checked exactly as ``site_inputs`` checks it."""
+    profile, _settings = _site_profile(request, registry)
+    return _site_context(profile, request["source"], request["site_id"])
+
+
+def site_inputs(request, registry, *, source_queue=SOURCE_QUEUE):
+    source, site = request["source"], request["site_id"]
+    profile, settings = _site_profile(request, registry)
+    _site_context(profile, source, site)
+    if profile.get("navigation_scene_inputs_path"):
+        return navigation_site_inputs(profile, source, site, settings)
     # A digest alone is not a new intent. Reopen the existing completed source
     # queue record used by the beta worker, never a caller-written authority.
     paths = sorted((common.safe_path(source_queue) / "processed").glob("*.json"))
@@ -210,6 +234,63 @@ def site_inputs(request, registry, *, source_queue=SOURCE_QUEUE):
     base_receipt, base_request, base_scene = packet(Path(base["path"]))
     require(base_scene.get("scene_id") == site and base_scene.get("task_id") == source["task_id"], "current_base_scene_changed")
     return inputs_path.parent, inputs, base_receipt, base_request, base_scene
+
+
+def navigation_source(record):
+    """The six-field source a navigation record names; refuses by name while it names none.
+
+    A scene kept as filmed has no scene intent, so the Pipeline's record does not name a source yet
+    (its ``source_gap``, ``website_navigation_scene_inputs.screening_source``). Once it does, the request's
+    source must be exactly that one.
+    """
+    named = record.get("source")
+    require(isinstance(named, dict) and set(named) == set(SOURCE_FIELDS), "navigation_source_identity_unbound")
+    return named
+
+
+def navigation_site_inputs(profile, source, site, settings):
+    """A navigation profile's inputs: the sealed record, its base packet, and the source recomputed from both.
+
+    The record lies inside the site's own website capture (``scenes/<site>/captures/<capture>``, the profile's
+    ``capture_root`` whose sealed task context and consent ``_site_context`` has just checked), where the site's
+    withdrawal deletes it, and its base packet in the record's own directory, where the G1 packet is prepared.
+    A team scene's inputs lie under the registry's packet-inputs root instead. Every source field the record and its sealed plan
+    bind is recomputed from them: the task, the scene revision (the plan digest) and the task context the goal
+    was compiled from (the plan's ``navigation_goal_basis``); the capture is the retained context's
+    (``_site_context``). The scene intent pair is the record's own source (``navigation_source``).
+
+    Both paths are taken as written: one with a ``..`` part is refused (``common.safe_path`` does not), and the
+    capture is the site's walkthrough, named as the site's withdrawal finds it (``walkthrough-<request id>``,
+    ``website_capture_withdrawal._site``), so a withdrawal reaches every file the record names.
+    """
+    raw_inputs, raw_capture = Path(profile["navigation_scene_inputs_path"]), Path(profile["capture_root"])
+    require(".." not in raw_inputs.parts and ".." not in raw_capture.parts, "current_site_packet_root_invalid")
+    inputs_path, capture = common.safe_path(raw_inputs), common.safe_path(raw_capture)
+    request_id = site[len("site-"):] if site.startswith("site-") else ""
+    require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", request_id) and capture.name == "walkthrough-" + request_id
+        and capture.parent.name == "captures" and capture.parent.parent.name == site
+        and inputs_path.is_relative_to(capture) and inputs_path.parent != capture, "current_site_packet_root_invalid")
+    record = sealed(inputs_path, NAVIGATION_SCENE_INPUTS_SCHEMA, "scene_inputs_digest")
+    require(record.get("task_kind") == NAVIGATION_TASK_KIND and record.get("claim_ceiling") == "development_only"
+        and record.get("scene_id") == site and record.get("task_id") == source["task_id"]
+        and record.get("scene_revision_digest") == record.get("plan_digest") == source["scene_revision_digest"],
+        "current_scene_revision_changed")
+    base = record["base_native_packet"]
+    bound(base["path"], {key: base[key] for key in ("sha256", "size_bytes")})
+    require(Path(base["path"]).is_relative_to(inputs_path.parent), "current_base_packet_root_invalid")
+    base_receipt, base_request, base_scene = packet(Path(base["path"]))
+    require(base_scene.get("scene_id") == site and base_scene.get("task_id") == source["task_id"]
+        and base_scene.get("task_kind") == NAVIGATION_TASK_KIND and base_scene.get("plan_digest") == record["plan_digest"]
+        and base_receipt.get("receipt_digest") == record.get("packet_receipt_digest")
+        and base_scene["task_spec"].get("task_success_contract") == record.get("task_success_contract")
+        and record["task_success_contract"].get("contract_digest") == record.get("task_success_contract_digest"),
+        "current_base_scene_changed")
+    basis = base_scene["task_spec"].get("navigation_goal_basis") or {}
+    recomputed = {"task_id": base_scene["task_id"], "scene_revision_digest": base_scene["plan_digest"],
+                  "task_context_digest": basis.get("task_context_digest")}
+    require(all(source[key] == value for key, value in recomputed.items()), "current_navigation_source_changed")
+    require(navigation_source(record) == source, "current_intent_changed")
+    return inputs_path.parent, record, base_receipt, base_request, base_scene
 
 
 def packet(path):
@@ -320,8 +401,11 @@ def verify_scene(record, *, candidate_id, profile, source, site_id, inputs, base
     task = scene["task_spec"]
     original = {**base_scene["task_spec"], "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"]}
+    # A navigation base scene (the G1 at its compiled start) keeps its kind; every other is the rigid one.
+    navigation = base_scene.get("task_kind") == NAVIGATION_TASK_KIND
     require(scene.get("scene_id") == site_id and scene.get("task_id") == source["task_id"]
-        and scene.get("task_kind") == "rigid_pick_place" and set(task) == set(original)
+        and scene.get("task_kind") == (NAVIGATION_TASK_KIND if navigation else "rigid_pick_place")
+        and set(task) == set(original)
         and all(task[k] == original[k] for k in task if k not in ROBOT_TASK_FIELDS)
         and task.get("task_success_contract") == inputs["task_success_contract"]
         and task.get("task_success_contract_digest") == inputs["task_success_contract_digest"]
@@ -348,8 +432,9 @@ def verify_scene(record, *, candidate_id, profile, source, site_id, inputs, base
         and cameras[0].get("intrinsics", {}).get("width") == 640
         and cameras[0].get("intrinsics", {}).get("height") == 480, "g1_head_camera_changed")
     require(bool(task.get("g1_navigation_goal")) == candidate_id.endswith("_vision_navi"), "candidate_task_mismatch")
-    verify_assumptions(request=request, scene=scene, base_request=base_request, base_scene=base_scene,
-        base_receipt=base_receipt, profile=profile, source=source, site_id=site_id, inputs=inputs)
+    (verify_navigation_assumptions if navigation else verify_assumptions)(request=request, scene=scene,
+        base_request=base_request, base_scene=base_scene, base_receipt=base_receipt, profile=profile, source=source,
+        site_id=site_id, inputs=inputs)
     return scene
 
 
@@ -434,6 +519,77 @@ def verify_assumptions(*, request, scene, base_request, base_scene, base_receipt
     require(assumptions["subject_bounds_world_m"] == bounds and assumptions["subject_bounds_basis"] == basis
         and all(abs(position[i] - original["start_pose_world"][i]) <= 1.6 + 1e-9 for i in range(2)), "simulation_subject_binding_changed")
     pose = {"position_world_m": position, "orientation_xyzw": orientation}
+    require(scene["robot"].get("base_pose_world") == pose and request.get("robot_base_pose_world") == pose,
+        "simulation_stance_binding_changed")
+
+
+def verify_navigation_assumptions(*, request, scene, base_request, base_scene, base_receipt, profile, source, site_id, inputs):
+    """The Pipeline's navigation recipe (``beta_policy_screening_g1_prepare._navigation_request``), field by field.
+
+    The task is the compiled one retimed for the G1 lane, with no subject bounds and no goal added. The stance is
+    the base scene's own robot pose, the compiled start, or, only where the body there overlapped the room, a clear
+    floor stance the G1's footprint search found within its radius of the start.
+    """
+    derivation = request["g1_scene_derivation"]
+    assumptions = derivation.get("assumptions")
+    require(derivation.get("schema_version") == "native_g1_beta_scene_packet_derivation.v1"
+        and derivation.get("claim_ceiling") == "development_only" and isinstance(assumptions, dict)
+        and assumptions.get("assumptions_digest") == common.digest(assumptions, "assumptions_digest"), "simulation_assumptions_missing")
+    original = base_request["task_spec"]
+    duration = min(float(original["maximum_episode_seconds"]), int(original["maximum_action_steps"]) / float(original["control_frequency_hz"]))
+    expected = {"recipe_id": "native_g1_beta_retained_scene.v1", "current_task_source": source, "site_id": site_id,
+        "source_packet_receipt_digest": base_receipt["receipt_digest"], "source_scene_plan_digest": base_receipt["arena_scene_plan_digest"],
+        "source_task_spec_digest": original["task_spec_digest"],
+        "robot_usd_sha256": profile["robot_usd_sha256"], "task_success_contract_digest": inputs["task_success_contract_digest"],
+        "subject_bounds_world_m": None, "subject_bounds_basis": None,
+        "stance_method": NAVIGATION_STANCE_METHOD, "stance_is_geometric_estimate": True, "large_collision_bounds_retained": True,
+        "measured_robot_calibration_claimed": False, "footprint_half_extent_m": [0.12, 0.23],
+        "root_height_above_inferred_floor_m": 0.79, "head_camera": profile["head_camera"],
+        "head_camera_calibration_measured": False, "head_camera_basis": "existing_g1_development_mount_simulation_assumption",
+        "overview_basis": "unchanged_current_task_review_camera", "task_hand": "right", "task_hand_is_simulation_assumption": True,
+        "control_frequency_hz": 50.0, "physics_frequency_hz": 200.0,
+        "source_control_frequency_hz": original["control_frequency_hz"], "source_maximum_action_steps": original["maximum_action_steps"],
+        "source_maximum_episode_seconds": original["maximum_episode_seconds"],
+        "maximum_action_steps": math.floor(duration * 50), "maximum_episode_seconds": duration,
+        "navigation_goal_added": False, "source_geometry_changed": False, "policy_queried": False,
+        "simulator_executed": False, "physical_outcome_claimed": False, "new_human_review_claimed": False,
+        "current_consent_revalidated": False}
+    require(set(assumptions) == {*expected, "stance", "assumptions_digest"}
+        and all(assumptions.get(key) == value for key, value in expected.items())
+        and all(type(assumptions[key]) is bool for key, value in expected.items() if type(value) is bool), "simulation_assumptions_changed")
+    require(math.isfinite(duration) and duration >= 0.02 and request.get("physics_frequency_hz") == 200
+        and request["task_spec"]["maximum_action_steps"] == expected["maximum_action_steps"]
+        and request["task_spec"]["maximum_episode_seconds"] == duration, "simulation_budget_changed")
+    expected_task = {**original, "task_success_contract": inputs["task_success_contract"],
+        "task_success_contract_digest": inputs["task_success_contract_digest"], "control_frequency_hz": 50.0,
+        "maximum_action_steps": expected["maximum_action_steps"], "maximum_episode_seconds": duration}
+    require(request["task_spec"] == expected_task, "simulation_task_semantics_changed")
+    overview = [row for row in base_request.get("cameras", []) if row.get("role") == "overview"]
+    require(len(overview) == 1 and request.get("cameras") == [profile["head_camera"], overview[0]], "simulation_camera_recipe_changed")
+    stance, start = assumptions["stance"], base_scene["robot"]["base_pose_world"]
+    if isinstance(stance, dict) and stance.get("source") == NAVIGATION_STANCE_METHOD:
+        require(set(stance) == {"source", "position_world_m", "orientation_xyzw", "start_pose_world"}
+            and stance["start_pose_world"] == original["start_pose_world"]
+            and stance["position_world_m"] == start["position_world_m"]
+            and stance["orientation_xyzw"] == start["orientation_xyzw"] == original["start_pose_world"][3:],
+            "simulation_stance_invalid")
+    else:
+        require(isinstance(stance, dict) and stance.get("schema_version") == "blueprint.team_free_base_stance.v1"
+            and stance.get("stance_digest") == common.digest(stance, "stance_digest")
+            and stance.get("footprint_half_extent_m") == [0.12, 0.23]
+            and stance.get("search_radius_m") == 1.6 and stance.get("grid_step_m") == 0.05
+            and type(stance.get("clear_stances")) is int and stance["clear_stances"] > 0
+            and stance.get("validator") == "scene_placement.validation.validate_stand_pose", "simulation_stance_invalid")
+        collision = [row for row in base_receipt["source_bindings"] if row["semantic_role"] == "scene_collision"]
+        require(len(collision) == 1 and stance.get("scene_collision_sha256") == collision[0]["staged_sha256"], "simulation_stance_source_changed")
+        position, orientation = stance.get("position_world_m"), stance.get("orientation_xyzw")
+        require(isinstance(position, list) and len(position) == 3 and isinstance(orientation, list) and len(orientation) == 4
+            and all(type(v) in (int, float) and math.isfinite(v) for v in [*position, *orientation, stance["floor_z_m"], stance["yaw_rad"]])
+            and math.isclose(position[2], stance["floor_z_m"] + 0.79, abs_tol=1e-9)
+            and all(math.isclose(v, expected, abs_tol=1e-9) for v, expected in zip(orientation,
+                [0, 0, math.sin(stance["yaw_rad"] / 2), math.cos(stance["yaw_rad"] / 2)], strict=True))
+            and all(abs(position[i] - original["start_pose_world"][i]) <= 1.6 + 1e-9 for i in range(2)), "simulation_stance_pose_invalid")
+    pose = {"position_world_m": stance["position_world_m"], "orientation_xyzw": stance["orientation_xyzw"]}
     require(scene["robot"].get("base_pose_world") == pose and request.get("robot_base_pose_world") == pose,
         "simulation_stance_binding_changed")
 

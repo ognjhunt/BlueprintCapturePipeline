@@ -89,9 +89,13 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                 catalog = catalog_for_profile(profile, base_catalog)
                 if navigation:
                     # A scene kept as filmed has no scene intent: the record's reader verifies it and
-                    # screening_source names its current source, or refuses by name until one is decided.
-                    from .website_navigation_scene_inputs import read_navigation_scene_inputs, screening_source
-                    source = screening_source(read_navigation_scene_inputs(profile['navigation_scene_inputs_path']))
+                    # screening_source names its current source. While no website intake can name one,
+                    # it refuses by name first, so a pass does not re-hash every record and packet.
+                    from . import website_navigation_scene_inputs as navigation_inputs
+                    if not navigation_inputs.SOURCE_IDENTITY_BINDABLE:
+                        raise navigation_inputs.WebsiteNavigationSceneInputsError(navigation_inputs.SOURCE_UNBOUND)
+                    source = navigation_inputs.screening_source(
+                        navigation_inputs.read_navigation_scene_inputs(profile['navigation_scene_inputs_path']))
                 else:
                     retained = read(profile['family_scene_inputs_path'], digest_field='inputs_digest')
                     intent = reopen_scene_intent(retained['references']['scene_intent'])

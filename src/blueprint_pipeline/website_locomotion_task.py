@@ -49,10 +49,41 @@ NAVIGATION_PIPELINE_PIECES = (
     "navigation_task_spec_from_compiled_spec",   # website_navigation_packet (built)
     "navigation_scene_assets",                    # Isaac appearance/collision for a scene kept as filmed
     "arena_navigation_scene_runtime",             # scene plan, runtime and readback without a task object
-    "g1_navigation_preparation",                  # G1 stance at the compiled start, cells, registration
+    "g1_navigation_preparation",                  # G1 stance at the compiled start, its nominal cell, registration
+    "navigation_source_identity",                 # the website's scene intake takes a navigation task
 )
-BUILT_NAVIGATION_PIECES = frozenset({"navigation_task_spec_from_compiled_spec", "navigation_scene_assets"})
+#: The screening source a navigation scene half binds (``website_navigation_scene_inputs.screening_source``)
+#: is the website's scene intent, and the website's intake accepts no navigation task yet. Until it does
+#: (``SOURCE_IDENTITY_BINDABLE``) this piece is missing for every job, so the hold names it instead of a
+#: job passing the handoff with nothing it can screen.
+SOURCE_IDENTITY_PIECE = "navigation_source_identity"
+#: What the G1 lane itself still adds (its perturbed start cells, planning and launch) shows as the
+#: catalog rows' own task-kind support (``_catalog_task_kind_gap``) and the embodiment's missing work.
+#: The pieces whose code exists. One that stands for a job's own output (``NAVIGATION_PIECE_OUTPUTS``)
+#: is built for a job only once its handoff wrote that output (``navigation_pieces_built``).
+#: ``arena_navigation_scene_runtime`` is code alone: the arena runs a scene with no task object (part B,
+#: #3431), for every job; the scene plan and runtime contract a job compiles are its scene half's.
+BUILT_NAVIGATION_PIECES = frozenset({"navigation_task_spec_from_compiled_spec", "navigation_scene_assets",
+                                     "arena_navigation_scene_runtime", "g1_navigation_preparation"})
+#: Each job-made piece and the handoff output it stands for (``website_scene_handoff``):
+#: ``navigation_task_spec.json``, ``navigation_scene_assets.json``, and the scene-inputs record
+#: (``website_navigation_scene_inputs``: the G1 at the compiled start) with its team registry row.
+NAVIGATION_PIECE_OUTPUTS = {"navigation_task_spec_from_compiled_spec": "navigation_task_spec",
+                            "navigation_scene_assets": "navigation_scene_assets",
+                            "g1_navigation_preparation": "navigation_scene_inputs"}
 NAVIGATION_TASK_FILE = "navigation_task_spec.json"
+
+
+def navigation_pieces_built(outputs: Mapping[str, bool]) -> frozenset[str]:
+    """What exists for one job: each built piece its handoff wrote the output of, and the code-only ones.
+
+    The source identity counts once the website's intake can bind one (``SOURCE_IDENTITY_PIECE``).
+    """
+    from .website_navigation_scene_inputs import SOURCE_IDENTITY_BINDABLE
+
+    built = frozenset(piece for piece in BUILT_NAVIGATION_PIECES
+                      if piece not in NAVIGATION_PIECE_OUTPUTS or outputs.get(NAVIGATION_PIECE_OUTPUTS[piece]) is True)
+    return built | {SOURCE_IDENTITY_PIECE} if SOURCE_IDENTITY_BINDABLE is True else built
 
 
 def _sha256(path: Path) -> str:
@@ -186,15 +217,32 @@ def _policy_serves(row: Mapping[str, Any], requirements: Mapping[str, Any],
                                         if requirements.get(key))
 
 
+def _catalog_task_kind_gap(row: Mapping[str, Any], requirements: Mapping[str, Any]) -> list[str]:
+    """Whether the catalog row lists the task kind this job compiles to, as the screening plan reads it.
+
+    Only a walk with nothing handled compiles to a kind here (``goal_region_navigation``); the codes are
+    the screening plan's own (``beta_policy_screening_plan``), so a hold names what planning would refuse.
+    """
+    if not requirements.get("locomote") or requirements.get("manipulate"):
+        return []
+    from .native_g1_navigation_goal import NAVIGATION_TASK_KIND
+
+    kinds = row.get("supported_task_kinds") or []
+    if NAVIGATION_TASK_KIND in kinds:
+        return []
+    return ["catalog:task_kind_not_supported_by_candidate" if kinds else "catalog:task_kind_support_unverified"]
+
+
 def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, Any] | None = None,
                      served: Mapping[str, Mapping[str, bool]] | None = None,
                      built_pieces: frozenset[str] | None = None) -> dict[str, Any]:
     """Bodies and policies that could do this job, each with what it still lacks here.
 
-    ``built_pieces`` is what exists for this job (the code's ``BUILT_NAVIGATION_PIECES`` less any
-    that failed for it); it is recorded so the hold contract re-checks the same pieces.
+    ``built_pieces`` is what exists for this job (``navigation_pieces_built`` from its handoff's
+    outputs); it is recorded so the hold contract re-checks the same pieces. Without it no job output
+    is known, so only the pieces that are code alone count as built.
     """
-    built = BUILT_NAVIGATION_PIECES if built_pieces is None else frozenset(built_pieces)
+    built = navigation_pieces_built({}) if built_pieces is None else frozenset(built_pieces)
     from .task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY
 
     served = policy_requirements_served() if served is None else served
@@ -204,16 +252,29 @@ def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, A
     bodies = [row for row in EMBODIMENT_REGISTRY if row.meets(requirements)]
     by_profile = {key: row for row in bodies for key in row.policy_robot_profile_ids}
     policies = []
+    # A walk with no manipulation is the navigation profile: a body may declare a narrow development-only
+    # allowance for it (``EmbodimentProfile.development_run_missing``). None does today, so each body's
+    # gaps show in full; one declared later is read here and its result recorded development_only.
+    navigation = bool(requirements.get("locomote")) and not requirements.get("manipulate")
     for row in catalog["candidates"]:
         body = by_profile.get((row.get("interface") or {}).get("robot_profile_id"))
         if body is None or not (row.get("eligibility") or {}).get("enabled") or not _policy_serves(row, requirements, served):
             continue
-        missing = [*(f"embodiment:{item}" for item in body.missing),
+        body_missing, allowance = (body.development_run_missing("goal_region_navigation") if navigation
+                                   else (body.missing, None))
+        missing = [*(f"embodiment:{item}" for item in body_missing),
                    *(f"pipeline:{piece}" for piece in NAVIGATION_PIPELINE_PIECES if piece not in built)] \
             if requirements.get("locomote") else [*(f"embodiment:{item}" for item in body.missing)]
         missing += [f"catalog:{code}" for code in (row.get("eligibility") or {}).get("blockers") or []]
-        policies.append({"candidate_id": row["candidate_id"], "embodiment_id": body.embodiment_id,
-                         "runnable": not missing, "missing": missing})
+        missing += _catalog_task_kind_gap(row, requirements)
+        option = {"candidate_id": row["candidate_id"], "embodiment_id": body.embodiment_id,
+                  "runnable": not missing, "missing": missing}
+        if allowance is not None:
+            # Its result is recorded development_only, and the items it stands in for are named with their basis.
+            option.update(claim_ceiling=allowance.claim_ceiling,
+                          development_run_allowance={"task_profile_id": allowance.task_profile_id,
+                                                     "satisfied_by": dict(allowance.satisfied_by)})
+        policies.append(option)
     return {"requirements": dict(requirements),
             **({"navigation_pieces_built": sorted(built)} if requirements.get("locomote") else {}),
             "embodiments": [{"embodiment_id": row.embodiment_id, "robot": row.robot, "mobility": row.mobility,
@@ -241,8 +302,8 @@ def retained_spec(root: Path) -> dict[str, Any] | None:
 
 
 __all__ = [
-    "BUILT_NAVIGATION_PIECES", "HOLD_CODE", "NAVIGATION_PIPELINE_PIECES", "NAVIGATION_SCENE_PACKET",
-    "NAVIGATION_TASK_FILE", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec",
-    "obstacle_distance", "policy_requirements_served", "retained_spec", "runnable_options", "runnable_policy_gap",
-    "scene_facts",
+    "BUILT_NAVIGATION_PIECES", "HOLD_CODE", "NAVIGATION_PIECE_OUTPUTS", "NAVIGATION_PIPELINE_PIECES",
+    "NAVIGATION_SCENE_PACKET", "NAVIGATION_TASK_FILE", "SOURCE_IDENTITY_PIECE", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec",
+    "navigation_pieces_built", "obstacle_distance", "policy_requirements_served", "retained_spec",
+    "runnable_options", "runnable_policy_gap", "scene_facts",
 ]

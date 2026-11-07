@@ -572,3 +572,253 @@ def test_scored_isaac_close_recovery_requires_retained_preclose_and_observed_zer
         reseal(invalid, "result_digest")
         with pytest.raises(ValueError):
             g1.summarize_result(invalid, plan=plan, candidate=candidate)
+
+
+# --- a navigation scene: the G1 at its compiled start (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C) ---
+
+
+def navigation_cells():
+    """A navigation plan's cells: one per start offset, ids and seeds as a plan names them."""
+    cells = []
+    for ordinal in range(len(rights.NAVIGATION_START_OFFSETS)):
+        scenario = {"family": rights.START_OFFSET_FAMILY, "ordinal": ordinal,
+                    "parameters": rights.start_offset_parameters(ordinal)}
+        cells.append({"cell_id": f"screening.site-navigation.{ordinal:03d}", "seed": 1000 + ordinal,
+                      "family": rights.START_OFFSET_FAMILY, "partition": "screening", "resolved_scenario": scenario,
+                      "cell_spec_digest": canonical_digest(scenario), "resolved_scenario_digest": canonical_digest(scenario)})
+    return cells
+
+
+def navigation_spec_inputs(tmp_path, monkeypatch, **room):
+    """The real chain: a navigation record, G1 prepare, the composed goal authority beside the packet."""
+    from pathlib import Path
+    from blueprint_pipeline import beta_policy_screening_g1_prepare as prepare
+    from blueprint_pipeline.beta_policy_screening_launch import _record
+    from blueprint_pipeline.native_g1_navigation_goal import compose_g1_navigation_goal_authority
+    from tests.test_beta_policy_screening_g1_prepare import (
+        _shared_sources, navigation_preparation, navigation_task_context)
+
+    args, record = navigation_preparation(tmp_path, monkeypatch, **room)
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    packet = Path(result["scene_packet"]["path"]).parent
+    plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())
+    authority = compose_g1_navigation_goal_authority(plan=plan, task_context=navigation_task_context())
+    (packet / "navigation_authority.json").write_text(json.dumps(authority))
+    base_plan = json.loads((Path(record["packet_root"]) / "native_task_arena_scene_plan.v1.json").read_text())
+    registration = {"scene_packet": result["scene_packet"], **_shared_sources(args, tmp_path, monkeypatch),
+                    "navigation_authority": _record(packet / "navigation_authority.json")}
+    kwargs = {"candidate_id": DP_NAV, "registration": registration, "scene_plan": base_plan,
+              "base_packet": record["base_native_packet"], "source": args["source"],
+              "contract": record["task_success_contract"], "site_id": args["site_id"]}
+    return kwargs, packet, plan
+
+
+def test_a_navigation_packet_composes_a_navigation_execution_spec(tmp_path, monkeypatch):
+    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch)
+    for candidate in (DP_NAV, PI_NAV):
+        spec = g1.candidate_execution_spec(**{**kwargs, "candidate_id": candidate})
+        assert g1.validate_execution_spec(spec, candidate_id=candidate) == spec
+        assert spec["task_success_contract"] == kwargs["contract"] and spec["scene_plan_digest"] == plan["plan_digest"]
+        assert set(spec["native_g1"]) == {"scene_packet", "publisher_source", "runtime_source", "navigation_authority",
+                                          "model_terms_review"}
+        assert g1.setup_quality_flags(spec) == [] and g1.dropped_start_offsets(spec) == {}
+    # Only a navigation checkpoint runs a navigation scene.
+    for candidate in (DP, PI):
+        with pytest.raises(ValueError, match="^g1_beta_manipulation_policy_task_mismatch$"):
+            g1.candidate_execution_spec(**{**kwargs, "candidate_id": candidate})
+
+
+def test_a_navigation_scene_needs_a_navigation_base_plan_and_contract(tmp_path, monkeypatch):
+    kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="^g1_beta_current_task_binding_mismatch$"):
+        g1.candidate_execution_spec(**{**kwargs, "scene_plan": {**kwargs["scene_plan"], "task_kind": "rigid_pick_place"}})
+    moved = reseal({**deepcopy(kwargs["contract"]), "goal_digest": SHA}, "contract_digest")
+    with pytest.raises(ValueError):
+        g1.candidate_execution_spec(**{**kwargs, "contract": moved})
+
+
+def test_an_overlapping_start_offset_drops_only_its_cell(tmp_path, monkeypatch):
+    # A wall 20 cm behind the start: 15 cm back the body is inside it.
+    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch, wall_x=-0.2)
+    spec = g1.candidate_execution_spec(**kwargs)  # The row is never refused as a whole.
+    assert g1.dropped_start_offsets(spec) == {"back_15cm": "g1_spawn_overlap"}
+    assert g1.setup_quality_flags(spec) == ["g1_spawn_overlap"]
+    kept = g1.frozen_cells(navigation_cells(), g1.dropped_start_offsets(spec))
+    assert [cell["resolved_scenario"]["ordinal"] for cell in kept] == [0, 1, 2]
+    assert kept == navigation_cells()[:3]
+
+
+def test_a_foot_with_no_floor_at_one_offset_is_a_flag_for_the_row(tmp_path, monkeypatch):
+    kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch, floor_x_min=-0.04)
+    spec = g1.candidate_execution_spec(**kwargs)
+    assert g1.dropped_start_offsets(spec) == {} and g1.setup_quality_flags(spec) == ["g1_spawn_foot_unsupported"]
+
+
+def test_with_every_start_offset_overlapping_no_navigation_spec_is_composed(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch)
+    path = packet / spawn.START_OFFSETS_FILENAME
+    report = json.loads(path.read_text())
+    for row in report["offsets"]:
+        row["status"] = "overlap"
+    path.chmod(0o644)
+    path.write_text(json.dumps(reseal(report, "report_digest")))
+    with pytest.raises(ValueError, match="^g1_spawn_overlap$"):
+        g1.candidate_execution_spec(**kwargs)
+
+
+def test_without_its_offset_report_a_navigation_row_is_unmeasured_and_its_start_still_counts(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch)
+    (packet / spawn.START_OFFSETS_FILENAME).unlink()
+    spec = g1.candidate_execution_spec(**kwargs)
+    assert g1.dropped_start_offsets(spec) == {} and g1.setup_quality_flags(spec) == ["g1_spawn_clearance_unmeasured"]
+    report = json.loads((packet / spawn.FILENAME).read_text())
+    report["status"] = "overlap"
+    (packet / spawn.FILENAME).chmod(0o644)
+    (packet / spawn.FILENAME).write_text(json.dumps(reseal(report, "report_digest")))
+    assert g1.dropped_start_offsets(spec) == {"start": "g1_spawn_overlap"}
+    measured = spawn.ensure_packet_start_offsets(packet)  # Measured again from the packet itself.
+    assert [row["status"] for row in measured["offsets"]] == ["clear"] * 4
+
+
+@pytest.mark.parametrize("damage", ["edited_without_its_seal", "another_plans", "unreadable"])
+def test_a_start_offset_report_its_reader_refuses_is_set_aside_and_measured_again(tmp_path, monkeypatch, damage):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch)
+    path = packet / spawn.START_OFFSETS_FILENAME
+    measured = json.loads(path.read_text())
+    assert spawn.start_offset_reports(packet, plan["plan_digest"]) == measured["offsets"]
+    if damage == "edited_without_its_seal":
+        changed = deepcopy(measured)
+        changed["offsets"][0]["status"] = "clear" if changed["offsets"][0]["status"] == "overlap" else "overlap"
+        text = json.dumps(changed)
+    elif damage == "another_plans":
+        text = json.dumps(reseal({**measured, "scene_plan_digest": "sha256:" + "0" * 64}, "report_digest"))
+    else:
+        text = "{not json"
+    path.chmod(0o644)
+    path.write_text(text)
+    assert spawn.start_offset_reports(packet, plan["plan_digest"]) is None
+    # Never returned as it is: kept aside beside the packet, and the packet measured again.
+    again = spawn.ensure_packet_start_offsets(packet)
+    assert again == json.loads(path.read_text()) and spawn.start_offset_reports(packet, plan["plan_digest"]) is not None
+    assert [row["status"] for row in again["offsets"]] == [row["status"] for row in measured["offsets"]]
+    [kept] = packet.glob(f".{spawn.START_OFFSETS_FILENAME}.incomplete-*/{spawn.START_OFFSETS_FILENAME}")
+    assert kept.read_text() == text
+    # A report its reader accepts is returned as it is, never measured again.
+    monkeypatch.setattr(spawn, "packet_start_offsets", lambda *_a, **_k: pytest.fail("measured again"))
+    assert spawn.ensure_packet_start_offsets(packet) == again
+
+
+def test_a_linked_start_offset_report_is_never_followed(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    _kwargs, packet, _plan = navigation_spec_inputs(tmp_path, monkeypatch)
+    path = packet / spawn.START_OFFSETS_FILENAME
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text(path.read_text())
+    path.unlink()
+    path.symlink_to(elsewhere)
+    with pytest.raises(ValueError, match="symlink_refused"):
+        spawn.ensure_packet_start_offsets(packet)
+    assert path.is_symlink() and elsewhere.is_file()
+
+
+def test_frozen_cells_keep_navigation_offsets_and_rigid_anchors_as_before():
+    assert g1.frozen_cells(navigation_cells()) == navigation_cells()
+    assert g1.frozen_cells(navigation_cells(), {"start": "g1_spawn_overlap", "left_15cm": "g1_spawn_overlap"}) \
+        == navigation_cells()[2:]
+    rigid = g1_plan()["scenario_cells"]
+    assert g1.frozen_cells(rigid, {"start": "g1_spawn_overlap"}) == g1.frozen_cells(rigid)
+    assert {cell["family"] for cell in g1.frozen_cells(rigid)} == {"canonical_anchor"}
+
+
+def test_an_execution_spec_checks_its_contract_by_kind(tmp_path, monkeypatch):
+    kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch)
+    spec = g1.candidate_execution_spec(**kwargs)
+    contract, task_id = spec["task_success_contract"], spec["source"]["task_id"]
+    assert g1.is_navigation_contract(contract) and not g1.is_navigation_contract(rigid_contract())
+    g1._navigation_contract_shape(contract, candidate_id=DP_NAV, task_id=task_id)
+    # A manipulation checkpoint never carries a navigation contract; a changed or rescoped one is refused.
+    for candidate, value, task in ((DP, contract, task_id), (DP_NAV, {**contract, "criterion": "x"}, task_id),
+                                   (DP_NAV, contract, "another-task")):
+        with pytest.raises(ValueError, match="^g1_beta_navigation_contract_invalid$"):
+            g1._navigation_contract_shape(value, candidate_id=candidate, task_id=task)
+    changed = deepcopy(spec)
+    changed["task_success_contract"] = reseal({**contract, "criterion": "x"}, "contract_digest")
+    changed["task_success_contract_digest"] = changed["task_success_contract"]["contract_digest"]
+    with pytest.raises(ValueError, match="^g1_beta_execution_spec_invalid$"):
+        g1.validate_execution_spec(reseal(changed, "execution_spec_digest"))
+
+
+def rigid_contract():
+    from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
+    from tests.test_task_evaluation_policy_canary_setup import _setup
+    return seal_rigid_task_success_contract(task_spec={}, site_id="site-current", task_id="task-current",
+        author_source="compatibility_default", author_id="blueprint:manipulation_strategy_defaults.v1",
+        confirmation_status="confirmed", criteria=_setup()["task_success_contract"]["criteria"])
+
+
+def test_the_navigation_rows_declare_the_navigation_kind_and_the_manipulation_rows_do_not():
+    rows = {row["candidate_id"]: row for row in g1.catalog_candidates()}
+    assert rows[DP_NAV]["supported_task_kinds"] == rows[PI_NAV]["supported_task_kinds"] == [
+        "rigid_pick_place", "goal_region_navigation"]
+    assert rows[DP]["supported_task_kinds"] == rows[PI]["supported_task_kinds"] == ["rigid_pick_place"]
+
+
+def navigation_profile(kwargs, tmp_path, *, candidates=(DP_NAV,)):
+    """The derived profile a navigation site's registry row reads, with its G1 registration."""
+    from pathlib import Path
+    record_dir = Path(kwargs["base_packet"]["path"]).parent.parent
+    record = json.loads((record_dir / "website_navigation_scene_inputs.v1.json").read_text())
+    return {"capture_root": str(tmp_path / "capture"), "scene_id": record["scene_id"], "task_id": record["task_id"],
+            "scenario_id": "nominal", "robot_free_probe_root": str(record_dir),
+            "scene_revision_digest": record["scene_revision_digest"],
+            "navigation_scene_inputs_path": str(record_dir / "website_navigation_scene_inputs.v1.json"),
+            "open_loop_horizon": 8, "max_hourly_rate_usd": 0.8,
+            "screening_candidates": {key: {"native_g1": kwargs["registration"]} for key in candidates},
+            "native_g1_registration_source": dict(kwargs["source"])}
+
+
+def test_planning_binds_a_navigation_g1_row_and_quotes_only_its_funded_cells(tmp_path, monkeypatch):
+    from pathlib import Path
+    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("a navigation scene reached a fixed-arm runtime or the paused-controls omission")
+
+    monkeypatch.setattr(capabilities, "_native_templates", never)
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_control_omission.omit_paused_controls", never)
+    monkeypatch.setattr("blueprint_pipeline.cosmos_droid_bundle.profile", never)
+    monkeypatch.setattr("blueprint_pipeline.molmoact2_droid_runtime.candidate_execution_spec", never)
+    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch, wall_x=-0.2)
+    profile = navigation_profile(kwargs, tmp_path)
+    # The probe receipt is read where the record's scene facts name it (its own directory), not the profile's.
+    (tmp_path / "elsewhere").mkdir()
+    profile["robot_free_probe_root"] = str(tmp_path / "elsewhere")
+    planning = capabilities.build_planning_inputs(catalog=load_default_catalog(), profile=profile,
+        capture_root=Path(profile["capture_root"]), source=kwargs["source"], inputs_dir=tmp_path / "screening-inputs")
+    assert planning["scene"]["task_kind"] == "goal_region_navigation"
+    binding = planning["capabilities"]["candidate_bindings"][DP_NAV]
+    descriptor = binding["execution_spec"]
+    assert descriptor[g1.DROPPED_START_OFFSETS_FIELD] == {"back_15cm": "g1_spawn_overlap"}
+    assert descriptor["setup_quality_flags"] == ["g1_spawn_overlap"] and descriptor["backend"] == g1.BACKEND
+    quote = planning["cost_quotes"][DP_NAV]
+    assert quote["episode_count"] == 3 and quote["maximum_cost_usd"] == "4.00"
+    # The contract the candidates run is the record's, with no paused-controls omission.
+    sealed = json.loads(Path(planning["scene"]["scene_inputs"]["path"]).read_text())
+    assert sealed["task_success_contract"] == kwargs["contract"] and "diagnostic_control_omission_authority" not in sealed
+    # The robot-free probe receipt is the record's own, from the directory its scene facts name.
+    assert planning["scene"]["robot_free_probe_digest"] == sealed["beta_robot_free_probe_receipt"]["receipt_digest"]
+
+
+def test_the_worker_refuses_a_scene_kind_that_is_not_a_string_by_name_never_by_type_error():
+    from blueprint_pipeline.native_g1_development_worker import scene_kind_admitted
+    assert scene_kind_admitted("rigid_pick_place", DP) and scene_kind_admitted("rigid_pick_place", DP_NAV)
+    assert scene_kind_admitted("goal_region_navigation", DP_NAV) and scene_kind_admitted("goal_region_navigation", PI_NAV)
+    assert not scene_kind_admitted("goal_region_navigation", DP) and not scene_kind_admitted("articulated_open_close", DP)
+    # A malformed plan's kind (unhashable or not a string) is refused, so the worker names
+    # g1_worker_scene_changed_after_preflight instead of raising TypeError.
+    for kind in (["goal_region_navigation"], {"task_kind": "rigid_pick_place"}, None, 3):
+        assert scene_kind_admitted(kind, DP_NAV) is False
+    assert scene_kind_admitted("goal_region_navigation", [DP_NAV]) is False

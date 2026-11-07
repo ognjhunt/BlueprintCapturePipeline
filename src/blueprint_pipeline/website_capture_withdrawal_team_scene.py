@@ -15,7 +15,10 @@ that are gone:
   file named here (the one the units read): each ``<capture key>.json`` of a planned half,
   its ``.tmp`` staging, and any row whose own bytes name the site or a planned half. The
   registry's own operator rows are root-owned and are not written here; the receipt names
-  each one that names the site;
+  each one that names the site. A navigation job's row (``navigation_scene_inputs_path``)
+  names a record the handoff keeps under the capture's own workspace, which the site's local
+  cleanup removes with its staged copies and probe receipt; a row naming one outside the site
+  directory fails closed, so its bytes are never left behind unnamed;
 - the team scene packet queue's records for the site: a request key is the site's when its
   request or its status names the site or a planned half, and every file of it goes, in
   ``pending/``, ``processed/``, ``holds/`` (with its ``settled/`` and ``superseded/``) and
@@ -187,8 +190,30 @@ def _halves(root: Path, keys: set[str], vocabulary: set[bytes], request_id: str,
     return rows
 
 
+def _navigation_record_outside(path: Path, site_root: Path | None) -> bool:
+    """Whether a site's derived row names a navigation scene-inputs record the site deletion would not reach.
+
+    The handoff writes a navigation job's record under the capture's own workspace, so the site's local
+    cleanup removes it, its staged scene and robot copies and its probe receipt
+    (``website_navigation_scene_inputs.OUTPUT_DIRECTORY``). A row naming one anywhere else would leave
+    those bytes behind while the row itself went, so it is never deleted silently.
+    """
+    if site_root is None:
+        return False
+    try:
+        row = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return False  # A staging row cut short names nothing readable; it goes with the rest.
+    named = row.get("navigation_scene_inputs_path") if isinstance(row, dict) else None
+    if named is None:
+        return False
+    target = Path(str(named))
+    # Resolved, so a name under the site that a link carries elsewhere is outside it.
+    return not (target.is_absolute() and target.resolve().is_relative_to(site_root.resolve()))
+
+
 def _derived_rows(root: Path, keys: set[str], vocabulary: set[bytes], request_id: str,
-                  unresolved: list[dict[str, Any]]) -> list[list[Any]]:
+                  unresolved: list[dict[str, Any]], site_root: Path | None = None) -> list[list[Any]]:
     """The planned halves' rows by name, and any row whose own bytes name the site or a planned half."""
     named = {f"{key}{suffix}" for key in keys for suffix in (".json", ".tmp")}
     rows = []
@@ -205,6 +230,9 @@ def _derived_rows(root: Path, keys: set[str], vocabulary: set[bytes], request_id
             continue
         if scan.other_sites:
             unresolved.append({"path": str(child), "reason": _PREFIX + "derived_profile_names_another_site"})
+            continue
+        if _navigation_record_outside(child, site_root):
+            unresolved.append({"path": str(child), "reason": _PREFIX + "navigation_scene_inputs_outside_site"})
             continue
         rows.append(_identity(child))
     return rows
@@ -300,8 +328,13 @@ def _root(value: Path | None, unresolved: list[dict[str, Any]]) -> Path | None:
 def plan_team_scene(identity: Mapping[str, str], intents: list[str], *, capture_ids: set[str],
                     capture_keys: set[str], native_g1: Mapping[str, Any], halves_root: Path | None,
                     registry: Path | None, packet_queue_root: Path | None, probe_queue_root: Path | None,
-                    unresolved: list[dict[str, Any]], probe_work_root: Path | None = None) -> dict[str, Any]:
-    """The site's halves, every record pointing at them and the probe copies built from them; reads only."""
+                    unresolved: list[dict[str, Any]], probe_work_root: Path | None = None,
+                    site_root: Path | None = None) -> dict[str, Any]:
+    """The site's halves, every record pointing at them and the probe copies built from them; reads only.
+
+    With ``site_root``, a site's derived row that names a navigation scene-inputs record outside the
+    site directory fails closed (``navigation_scene_inputs_outside_site``).
+    """
     seeds = {identity["scene_id"], *capture_ids, *intents}
     vocabulary = {token.encode() for token in seeds}
     request_id = identity["request_id"]
@@ -325,7 +358,8 @@ def plan_team_scene(identity: Mapping[str, str], intents: list[str], *, capture_
     pointing = vocabulary | {key.encode() for key in keys}
     derived = _root(Path(section["derived_profile_root"]) if section["derived_profile_root"] else None, unresolved)
     if derived is not None:
-        section["derived_profile_rows"] = _derived_rows(derived, keys, pointing, request_id, unresolved)
+        section["derived_profile_rows"] = _derived_rows(derived, keys, pointing, request_id, unresolved,
+                                                        site_root=Path(site_root) if site_root else None)
     packets = _root(packet_queue_root, unresolved)
     if packets is not None:
         section["packet_queue_records"] = _packet_records(packets, pointing, request_id, unresolved)

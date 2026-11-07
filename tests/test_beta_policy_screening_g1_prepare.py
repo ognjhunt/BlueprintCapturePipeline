@@ -386,3 +386,180 @@ def test_planning_funds_no_g1_row_whose_packet_spawns_inside_the_room(prepared_s
     assert row["status"] == "selected"
     flags = row["execution_spec"].get("setup_quality_flags")
     assert flags == (["g1_spawn_clearance_unmeasured"] if spawn_reading == "missing" else None)
+
+
+# --- a navigation base packet: the G1 at the compiled start (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C) ---
+
+
+def room_floor(path: Path, *, floor_x_min: float = -3.0, wall_x: float | None = None) -> Path:
+    """A static Z-up room: a floor at z = 0 from ``floor_x_min`` to x = 6 m and, optionally, a wall at ``wall_x``."""
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateNew(str(path))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/World").GetPrim())
+    quads = {"floor": [(floor_x_min, -3, 0), (6, -3, 0), (6, 3, 0), (floor_x_min, 3, 0)]}
+    if wall_x is not None:
+        quads["wall"] = [(wall_x, -2, 0), (wall_x, 2, 0), (wall_x, 2, 2), (wall_x, -2, 2)]
+    for name, corners in quads.items():
+        mesh = UsdGeom.Mesh.Define(stage, "/World/" + name)
+        mesh.GetPointsAttr().Set([Gf.Vec3f(*corner) for corner in corners])
+        mesh.GetFaceVertexCountsAttr().Set([4])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    stage.GetRootLayer().Save()
+    return path
+
+
+def navigation_task_context() -> dict:
+    """The site's sealed task context the navigation fixture task is compiled from, consent included."""
+    from tests.test_website_navigation_packet import _spec
+
+    spec = _spec()
+    context = {"schema_version": "website_site_task_context.v1", "scene_id": spec["site_id"],
+               "capture_id": "walkthrough-a", "description": spec["sentence"], "task_family": "general_task",
+               "confirmed": False, "confirmed_at": None,
+               "capture_rights": {"consent_status": "granted", "consent_revoked": False,
+                                  "consent_scope": ["robot_evaluation"], "derived_scene_generation_allowed": True}}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    return context
+
+
+def navigation_preparation(tmp_path: Path, monkeypatch, **room) -> tuple[dict, dict]:
+    """A real navigation record (``website_navigation_scene_inputs``) over a measurable room, and G1 prepare's
+    arguments for it. The task is compiled from ``navigation_task_context``. The source is a stand-in: a
+    navigation job's source identity (its scene intent) is not decided yet."""
+    from blueprint_pipeline.beta_policy_screening_files import _record as file_record
+    from blueprint_pipeline.website_navigation_packet import navigation_task_spec
+    from blueprint_pipeline.website_navigation_scene_inputs import write_navigation_scene_inputs
+    from tests.test_website_navigation_packet import _spec
+    from tests.test_website_navigation_scene_inputs import navigation_scene_inputs_arguments
+
+    arguments = navigation_scene_inputs_arguments(tmp_path, monkeypatch)
+    arguments["navigation_task_spec"] = navigation_task_spec(_spec(), task_context=navigation_task_context())
+    assets = arguments["scene_assets"]
+    collision = file_record(room_floor(tmp_path / "navigation_scene" / "room.usda", **room))
+    assets["collision"] = {**assets["collision"], **collision}
+    assets["digest"] = canonical_digest(assets, digest_field="digest")
+    record = write_navigation_scene_inputs(**arguments)["record"]
+    source = {"capture_id": "walkthrough-a", "task_id": record["task_id"], "scene_intent_id": "stand-in-intent",
+              "task_context_digest": record["source_gap"]["known"]["task_context_digest"],
+              "scene_intent_digest": "sha256:" + "b" * 64, "scene_revision_digest": record["scene_revision_digest"]}
+    args = {"base_packet_record": record["base_native_packet"], "source": source, "site_id": record["scene_id"],
+            "output_root": Path(record["packet_root"]).parent, "robot_asset_record": arguments["robot_record"],
+            "task_success_contract": record["task_success_contract"]}
+    return args, record
+
+
+def _packet(result: dict) -> tuple[Path, dict, dict]:
+    root = Path(result["scene_packet"]["path"]).parent
+    return (root, json.loads((root / "native_task_arena_packet_request.v1.json").read_text()),
+            json.loads((root / "native_task_arena_scene_plan.v1.json").read_text()))
+
+
+def test_a_navigation_packet_keeps_the_compiled_start_as_the_g1_stance(tmp_path, monkeypatch):
+    from blueprint_pipeline.native_g1_navigation_goal import validate_navigation_task_success_contract
+
+    args, record = navigation_preparation(tmp_path, monkeypatch)
+    base_root = Path(record["packet_root"])
+    base_request = json.loads((base_root / "native_task_arena_packet_request.v1.json").read_text())
+    base_plan = json.loads((base_root / "native_task_arena_scene_plan.v1.json").read_text())
+    monkeypatch.setattr(prepare, "_request", lambda **_: pytest.fail("a navigation packet took the rigid request"))
+    monkeypatch.setattr(prepare, "g1_stance_search", lambda **_: pytest.fail("an object-centred stance search ran"))
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    root, request, plan = _packet(result)
+    assert plan["task_kind"] == "goal_region_navigation" and plan["robot"]["robot_id"] == "unitree_g1"
+    # The stance is the compiled start the base packet stands the G1 at.
+    assert plan["robot"]["base_pose_world"] == base_plan["robot"]["base_pose_world"] == request["robot_base_pose_world"]
+    assumptions = result["assumptions"]
+    assert assumptions == request["g1_scene_derivation"]["assumptions"]
+    assert assumptions["stance_method"] == "compiled_start_pose"
+    assert assumptions["stance"]["source"] == "compiled_start_pose"
+    assert assumptions["stance"]["start_pose_world"] == base_plan["task_spec"]["start_pose_world"]
+    assert assumptions["source_task_spec_digest"] == record["navigation_task_spec_digest"]
+    assert assumptions["subject_bounds_world_m"] is None and assumptions["subject_bounds_basis"] is None
+    assert assumptions["navigation_goal_added"] is False and "stance_reach" not in assumptions
+    assert assumptions["assumptions_digest"] == canonical_digest(assumptions, digest_field="assumptions_digest")
+    # The task is the compiled one, retimed for the G1 lane only; its contract is the record's.
+    task = request["task_spec"]
+    assert validate_navigation_task_success_contract(task["task_success_contract"], task_spec=task) \
+        == record["task_success_contract"]
+    for key, value in base_request["task_spec"].items():
+        if key not in {"control_frequency_hz", "maximum_action_steps", "maximum_episode_seconds"}:
+            assert task[key] == value, key
+    assert task["control_frequency_hz"] == 50 and task["maximum_episode_seconds"] <= 60
+    assert request["navigation_scene_derivation"] == base_request["navigation_scene_derivation"]
+    assert request["cameras"][0] == prepare.HEAD_CAMERA and request["cameras"][1] == base_request["cameras"][1]
+    assert result["spawn_clearance"]["status"] == "clear" and result["spawn_clearance"]["fallback_used"] is False
+    assert set(result["candidate_reasons"]) == set(g1.CANDIDATES)
+    assert prepare.prepare_native_g1_beta_packet(**args) == result
+
+
+def test_the_spawn_check_runs_at_every_start_offset_and_is_kept_beside_the_packet(tmp_path, monkeypatch):
+    from blueprint_pipeline.native_g1_beta_authority import (
+        NAVIGATION_START_OFFSETS, apply_start_offset, start_offset_parameters)
+
+    # A wall 20 cm behind the start: the G1 clears it at the start and to either side, not 15 cm back.
+    args, _ = navigation_preparation(tmp_path, monkeypatch, wall_x=-0.2)
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    root, _, plan = _packet(result)
+    assert result["spawn_clearance"]["status"] == "clear"
+    report = json.loads((root / spawn.START_OFFSETS_FILENAME).read_text())
+    assert report["schema_version"] == spawn.START_OFFSETS_SCHEMA_VERSION
+    assert report["report_digest"] == canonical_digest(report, digest_field="report_digest")
+    assert report["scene_plan_digest"] == plan["plan_digest"] and report["simulator_executed"] is False
+    rows = spawn.start_offset_reports(root, plan["plan_digest"])
+    assert [row["offset_id"] for row in rows] == [row[0] for row in NAVIGATION_START_OFFSETS]
+    assert {row["offset_id"]: row["status"] for row in rows} == {
+        "start": "clear", "left_15cm": "clear", "right_15cm": "clear", "back_15cm": "overlap"}
+    for ordinal, row in enumerate(rows):
+        pose = apply_start_offset(plan["robot"]["base_pose_world"], start_offset_parameters(ordinal))
+        assert row["base_pose_world"] == pose and row["unsupported_feet"] == []
+    assert rows[3]["worst_bodies"][0]["body"] == "pelvis" and rows[3]["max_depth_m"] > 0.04
+    assert result["start_offsets"]["report"] == _record(root / spawn.START_OFFSETS_FILENAME)
+    assert result["start_offsets"]["offsets"]["back_15cm"]["status"] == "overlap"
+    assert spawn.start_offset_reports(root, "sha256:" + "0" * 64) is None
+
+
+def test_an_unsupported_foot_is_recorded_per_start_offset(tmp_path, monkeypatch):
+    # The floor starts 4 cm behind the start: 15 cm back, neither sole has floor under it.
+    args, _ = navigation_preparation(tmp_path, monkeypatch, floor_x_min=-0.04)
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    root, _, plan = _packet(result)
+    rows = {row["offset_id"]: row for row in spawn.start_offset_reports(root, plan["plan_digest"])}
+    assert rows["back_15cm"]["unsupported_feet"] == ["left_ankle_roll_link", "right_ankle_roll_link"]
+    assert spawn.unsupported_feet(rows["back_15cm"]) == rows["back_15cm"]["unsupported_feet"]
+    assert all(rows[key]["unsupported_feet"] == [] for key in ("start", "left_15cm", "right_15cm"))
+
+
+def test_a_compiled_start_inside_the_room_falls_back_to_the_closest_clear_floor_stance(tmp_path, monkeypatch):
+    # A wall 5 cm in front of the start runs through the pelvis there.
+    args, _ = navigation_preparation(tmp_path, monkeypatch, wall_x=0.05)
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    root, request, plan = _packet(result)
+    report = json.loads((root / spawn.FILENAME).read_text())
+    selection = report["stance_selection"]
+    assert report["status"] == "clear" and selection["source"] == "compiled_start_pose"
+    assert selection["fallback_used"] is True and selection["chosen_overlap"]["worst_bodies"][0]["body"] == "pelvis"
+    stance = result["assumptions"]["stance"]
+    assert stance["schema_version"] == "blueprint.team_free_base_stance.v1" and stance["position_world_m"][0] < 0.0
+    assert plan["robot"]["base_pose_world"] == {"position_world_m": stance["position_world_m"],
+                                                "orientation_xyzw": stance["orientation_xyzw"]}
+    assert result["assumptions"]["stance_method"] == "compiled_start_pose"
+    assert spawn.packet_spawn_clearance(root)["status"] == "clear"
+
+
+def test_the_rigid_request_is_byte_for_byte_the_one_before_navigation(prepared_scene, monkeypatch):
+    """Pin: the rigid request is the function as it stood before navigation (e3510d28), never the navigation one."""
+    import inspect
+
+    source = inspect.getsource(prepare._request)
+    assert hashlib.sha256(source.encode()).hexdigest() == \
+        "79556aa658bcb98c733fc634799943962645aae1ed4201ac1cb6225704821965"
+    args, _, _ = prepared_scene
+    monkeypatch.setattr(prepare, "_navigation_request", lambda **_: pytest.fail("a rigid task took navigation"))
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    assert result["assumptions"]["stance_method"] == "existing_scene_collision_floor_and_clear_footprint_search"
+    assert "start_offsets" not in result and set(result["candidate_reasons"]) == set(g1.CANDIDATES[2:])
+    assert not (Path(result["scene_packet"]["path"]).parent / spawn.START_OFFSETS_FILENAME).exists()
