@@ -179,6 +179,31 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - The next PR adds it as a development-only estimate: up on the provider's +Y when both observed estimates lie within 3 degrees of it, and a flat floor at the uneven band's median height.
   - In the collider copy, that floor replaces the near-level faces within 12 cm of it; walls, shelf sides and the splat are kept. It is flagged in the levelling record and the base scene.
   - The owner's other questions are still open: the navigation intake kind (money), the brief confirmation, the `reviewed_checkpoint_terms` stand-in (rights), and one or two funded navigation rows.
+- **Owner, 11-07, about 13:20Z, answered the four questions:**
+  1. **Money: metered spend with one monthly cap, no per-job budgets.** In the owner's words: "i dont think all runs should need/have/be required to confirm budgets - that's not how prod services work". Every paid call is metered against its job. Alerts go at 50, 80 and 100% of one account-wide monthly limit, and spend stops only at that limit. Provider runaway guards stay.
+     - **About 13:55Z: "set the monthly cap to $200".**
+     - Stage 1 (metering, the cap at paid admission, alerts) is being built as an additive change. Until it ships, the existing limits hold.
+     - The Google Cloud project's own USD 100 budget guard stays as a provider guard.
+  2. **The brief is confirmed at upload.** The form requires the task description and one consent checkbox, and submitting is the confirmation. Inferences are disclosed as assumptions. An existing job needs one click.
+  3. **A development-run allowance for every navigation site**, built by the G1 session with the estimated-floor flag.
+  4. **Two funded navigation rows.**
+- **`853f309` (#3448)**, requested 13:44:31Z (`20261107T134431Z-deploy-d9e1689d`), live 13:56:43Z.
+  - Pre-checks: main's CI was green, with no paid lock, no hold and no pending request. The last deploy was this session's 706255c at 09:50Z, and the G1 session was told first.
+  - Resumed 13:57:00Z (`20261107T135700Z-selected-handoff-5fe5304c`), on a fresh budget report at the first try. It finished 14:04:37Z with `terminal_success`.
+  - **Levelling passed** on `fallback_fitted_floor`, tilt 0:
+    - up estimates: band 1.79°, mode 1.38°, 3.13° apart;
+    - band spread −13.1 to +10.5 cm, share 6.8%;
+    - 3,167 faces (0.83% of the area) replaced by a 3.42 × 2.75 m flat floor of 336 faces.
+    - The base scene carries `fallback_floor` with `claim: development_only_estimate`.
+  - **The navigation half was written:**
+    - the navigation task spec and scene assets;
+    - the navigation scene inputs (`status: written`), with `robot_free_probe_status: passed`;
+    - the registry's derived row.
+  - **The handoff holds** at `website_task_runnable_policy_missing`, naming exactly three items. Both `_vision_navi` rows list the same three.
+    - `embodiment:reviewed_checkpoint_terms` and `embodiment:verified_site_episode` clear with the G1 session's development-run allowance.
+    - `pipeline:navigation_source_identity` clears with the navigation intake kind and per-job bindability (the G1 session's O5).
+  - Paid nothing: still about $9.13.
+- **The brief, about 14:00Z.** The owner opened the job page to confirm and found no Confirm button. While a job waits on Blueprint, the page showed the brief read-only, so an unconfirmed brief could not be confirmed. The WebApp fix keeps the confirmation on the page during the stop. Until the owner taps it, the brief stays unconfirmed.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
