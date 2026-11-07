@@ -648,3 +648,44 @@ def test_the_door_verifies_a_navigation_fallback_stance_near_the_start(tmp_path,
     contract.verify_navigation_assumptions(request=request_value, scene=scene, base_request=base_request,
         base_scene=base_scene, base_receipt=base_receipt, profile=profile, source=args["source"],
         site_id=args["site_id"], inputs=record)
+
+
+def _context(**changes):
+    return seal({"schema_version": "website_site_task_context.v1", "scene_id": "site-development",
+        "capture_id": request()["source"]["capture_id"], "description": "move to the end bookshelf",
+        "confirmed": False, "confirmed_at": None,
+        "capture_rights": {"consent_status": "granted", "consent_revoked": False,
+            "consent_scope": ["robot_evaluation"], "derived_scene_generation_allowed": True}, **changes},
+        "context_digest")
+
+
+@pytest.mark.parametrize("legacy_parent", [False, True])
+def test_a_brief_confirmed_after_preparation_keeps_its_source(tmp_path, legacy_parent):
+    """The retained context is the confirmed successor; the source is bound to its unconfirmed parent."""
+    parent = _context()
+    if legacy_parent:  # An older projection wrote no confirmed_at on an unconfirmed brief.
+        parent = seal({key: value for key, value in parent.items() if key not in {"confirmed_at", "context_digest"}},
+                      "context_digest")
+    successor = _context(confirmed=True, confirmed_at="2026-11-07T14:30:45Z")
+    write(tmp_path / "capture/pipeline/website_task_context.json", successor)
+    source = {**request()["source"], "task_context_digest": parent["context_digest"]}
+    assert contract._site_context({"capture_root": str(tmp_path / "capture")}, source,
+                                  "site-development") == successor
+    assert contract.accepts_context_digest(successor, successor["context_digest"])
+
+
+@pytest.mark.parametrize("case", ["edited_task", "unconfirmed_current", "revoked_consent"])
+def test_only_a_confirmation_or_the_own_digest_keeps_a_source(tmp_path, case):
+    """An edited task, an unconfirmed context with another digest, or revoked consent is refused by name."""
+    parent = _context()
+    current = {
+        "edited_task": _context(confirmed=True, confirmed_at="2026-11-07T14:30:45Z", description="edited"),
+        "unconfirmed_current": _context(description="edited"),
+        "revoked_consent": _context(confirmed=True, confirmed_at="2026-11-07T14:30:45Z",
+            capture_rights={"consent_status": "granted", "consent_revoked": True,
+                            "consent_scope": ["robot_evaluation"], "derived_scene_generation_allowed": True}),
+    }[case]
+    write(tmp_path / "capture/pipeline/website_task_context.json", current)
+    source = {**request()["source"], "task_context_digest": parent["context_digest"]}
+    with pytest.raises(Exception, match="retained_task_consent_invalid"):
+        contract._site_context({"capture_root": str(tmp_path / "capture")}, source, "site-development")

@@ -189,11 +189,37 @@ def _site_profile(request, registry):
     return profile, settings
 
 
+#: The fields a site's confirmation changes in its task context (the Pipeline's ``website_task_context_lineage``).
+CONFIRMATION_FIELDS = frozenset({"confirmed", "confirmed_at", "context_digest"})
+
+
+def accepts_context_digest(context, bound):
+    """Whether a source bound to ``bound`` is valid for the sealed ``context``: its own digest, or its unconfirmed parent's.
+
+    A brief confirmed after preparation keeps what was bound to it: a confirmed context's parent is the same
+    content with ``confirmed`` false and ``confirmed_at`` null (or absent, as an older projection wrote it), so
+    the parent's digest follows from the context itself. An edited task never matches, and an unconfirmed
+    context accepts only its own digest. The rule of ``website_task_context_lineage.accepts_bound_digest``,
+    standard library only because the door runs it.
+    """
+    if not isinstance(bound, str):
+        return False
+    if bound == context.get("context_digest"):
+        return True
+    confirmed_at = context.get("confirmed_at")
+    if context.get("confirmed") is not True or not isinstance(confirmed_at, str) or not confirmed_at.strip():
+        return False
+    content = {key: value for key, value in context.items() if key not in CONFIRMATION_FIELDS}
+    return bound in {common.digest({**content, "confirmed": False, "confirmed_at": None}),
+                     common.digest({**content, "confirmed": False})}
+
+
 def _site_context(profile, source, site):
     context = sealed(common.safe_path(Path(profile["capture_root"])) / "pipeline/website_task_context.json", "website_site_task_context.v1", "context_digest")
     consent = context.get("capture_rights") or {}
+    # Consent is read from the current context; a source bound to its unconfirmed parent stays valid for it.
     require(context.get("scene_id") == site and context.get("capture_id") == source["capture_id"]
-        and context.get("context_digest") == source["task_context_digest"]
+        and accepts_context_digest(context, source["task_context_digest"])
         and consent.get("consent_status") == "granted" and consent.get("consent_revoked") is False
         and "robot_evaluation" in consent.get("consent_scope", [])
         and consent.get("derived_scene_generation_allowed") is True, "retained_task_consent_invalid")
