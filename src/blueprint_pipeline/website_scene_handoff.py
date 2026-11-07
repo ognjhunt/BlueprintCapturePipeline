@@ -540,8 +540,25 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             held = runnable_policy_gap(task_context=context, requirements=need, spec_digest=spec["spec_digest"],
                                        task_semantics=semantics_options["task_semantics"],
                                        source_video_digest=source_video_digest, options=options)
+            if held is None and need["locomote"] and outputs["navigation_scene_inputs"] \
+                    and outputs["navigation_intake_receipt"]:
+                # Every runnable option is a G1 navigation checkpoint and its lane inputs exist: the
+                # scene-inputs record (registered) and this job's intake receipt. Screening enters from
+                # the registry row, so the job is handed off, development_only, claiming no result.
+                from .website_locomotion_hold import navigation_preparation
+                handed = navigation_preparation(
+                    task_context=context, spec_digest=spec["spec_digest"], options=options,
+                    scene_inputs=result["navigation_scene_inputs"], receipt=result["navigation_intake"]["receipt"],
+                    task_semantics=semantics_options["task_semantics"], source_video_digest=source_video_digest)
+                if handed is not None:
+                    result.update(status="intake_ready", blockers=[], job_disposition="accepted",
+                                  navigation_preparation=handed)
+                    result["digest"] = canonical_digest(result, digest_field="digest")
+                    write_json(handoff_path, result)
+                    return result
             if held is None:
-                # A runnable policy exists but its execution route is not built: say so, typed.
+                # A runnable policy exists but its execution route is not built (a body with no lane
+                # here): say so, typed.
                 raise ValueError("website_locomotion_task_execution_route_missing")
             return retain_gap(held)
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks

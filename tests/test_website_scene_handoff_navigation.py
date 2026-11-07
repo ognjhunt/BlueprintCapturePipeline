@@ -48,7 +48,10 @@ from blueprint_pipeline.website_navigation_scene_inputs import (
     screening_source,
 )
 from blueprint_pipeline.website_preparation_revision import workspace
-from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
+from blueprint_pipeline.website_task_context_contracts import (
+    holds_native_task_preparation,
+    retains_navigation_preparation,
+)
 from tests.test_website_capture_withdrawal_team_scene import _registry
 from tests.test_website_locomotion_task import _corridor
 from tests.test_website_navigation_scene_inputs import _scene_assets, navigation_scene_inputs_arguments
@@ -364,12 +367,21 @@ def test_a_confirmed_brief_sends_the_jobs_real_records_and_its_receipt_binds_the
     assert receipt["reserved_usd"] == 0 and receipt["construction_allowance_granted"] is False
     assert screening_source(record) == source
     # The source identity was this job's only missing piece (the G1's development-run allowance stands in
-    # for its body items). Built now, a policy is runnable, and the handoff says what it has not built by
-    # its existing typed name rather than passing: the G1 screening lane reads the receipt on its own.
+    # for its body items). Built now, every runnable option is a G1 navigation checkpoint with its lane
+    # inputs in place, so the job is handed off to screening: development_only, no result claimed.
     assert _missing(first) == {f"pipeline:{SOURCE_IDENTITY_PIECE}"}
-    assert second["status"] == "awaiting_inputs"
-    assert second["blockers"] == ["website_locomotion_task_execution_route_missing"]
+    assert second["status"] == "intake_ready" and second["blockers"] == []
+    handed = second["navigation_preparation"]
+    assert handed["lane"] == "g1_navigation_screening" and handed["claim_ceiling"] == "development_only"
+    assert handed["result_claimed"] is False and "No result yet" in handed["summary"]
+    assert handed["source"] == source and handed["candidates"]
+    assert all(candidate.endswith("_vision_navi") for candidate in handed["candidates"])
     assert "native_task_preparation_gap" not in second
+    assert retains_navigation_preparation(second, context) and not holds_native_task_preparation(second, context)
+    retained = json.loads((job["capture"] / "pipeline/website_scene_preparation/handoff.json").read_text())
+    assert retained == second
+    # Bound to this task context: another context's record is not this job's.
+    assert not retains_navigation_preparation(second, _context(confirmed=False))
     # The website already holds this record's intake: a later pass sends nothing and changes nothing.
     assert job["sent"] == [request] and read_navigation_intake_receipt(path) == receipt
 
@@ -408,6 +420,27 @@ def test_a_withdrawn_capture_gets_no_receipt(job):
     with pytest.raises(WebsiteNavigationIntakeError, match="^website_capture_withdrawn$"):
         bind_navigation_intake_receipt(record_path=path, capture_root=job["capture"])
     assert not (path.parent / RECEIPT_FILENAME).exists()
+
+
+def test_a_runnable_option_on_a_body_with_no_lane_keeps_the_typed_route_missing(job, monkeypatch):
+    """Only the G1 navigation checkpoints have a lane here; any other runnable body is still a typed gap."""
+    from blueprint_pipeline import website_locomotion_task as locomotion
+
+    real = locomotion.runnable_options
+
+    def another_body(requirements, **kwargs):
+        options = real(requirements, **kwargs)
+        return {**options, "policies": [{**row, "embodiment_id": "another_walking_body"} if row["runnable"] else row
+                                        for row in options["policies"]]}
+
+    monkeypatch.setattr(locomotion, "runnable_options", another_body)
+    _run(job)
+    _stage(job)
+    result, context = _run(job)
+    assert result["navigation_intake"]["receipt"] is not None
+    assert result["status"] == "awaiting_inputs"
+    assert result["blockers"] == ["website_locomotion_task_execution_route_missing"]
+    assert "navigation_preparation" not in result and not retains_navigation_preparation(result, context)
 
 
 def test_an_unconfirmed_brief_is_refused_by_the_website_and_the_job_holds_by_that_name(job):
