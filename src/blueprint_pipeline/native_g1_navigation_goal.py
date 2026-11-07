@@ -370,6 +370,48 @@ def compose_g1_navigation_goal_authority(*, plan: Mapping[str, Any],
     return validate_machine_composed_goal_authority(authority, plan=plan)
 
 
+#: What a navigation scene's G1 run is scored by: the compiled goal's arrival and terminal hold
+#: (``score_g1_navigation_episode``). Contact off the feet is recorded per step
+#: (``native_task_runtime_contract.NAVIGATION_SAMPLE_BINDING``) and is never part of success.
+NAVIGATION_CONTRACT_SCHEMA_VERSION = "native_g1_navigation_task_success_contract.v1"
+NAVIGATION_CRITERION = "root_xy_goal_arrival_and_terminal_hold"
+
+
+def navigation_task_success_contract(task_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """The success contract of a compiled navigation task spec, bound to its sealed spec and goal."""
+    goal = validate_g1_navigation_goal(task_spec)
+    spec = task_spec.get("compiled_task_spec")
+    if (task_spec.get("task_kind") != NAVIGATION_TASK_KIND or not isinstance(spec, Mapping)
+            or spec.get("spec_digest") != canonical_digest(spec, digest_field="spec_digest")
+            or spec["spec_digest"] != task_spec.get("compiled_task_spec_digest")
+            or spec.get("site_id") != task_spec.get("site_id") or spec.get("task_id") != task_spec.get("task_id")):
+        raise ValueError("g1_navigation_task_success_contract_invalid")
+    contacts = sorted(str(row.get("id")) for row in _compiled_rows(spec, "no_contact"))
+    contract = {
+        "schema_version": NAVIGATION_CONTRACT_SCHEMA_VERSION, "task_kind": NAVIGATION_TASK_KIND,
+        "scope": {"site_id": spec["site_id"], "task_id": spec["task_id"]},
+        "compiled_task_spec_digest": spec["spec_digest"], "goal_digest": cross_runtime_canonical_digest(goal),
+        "criterion": NAVIGATION_CRITERION, "scorer": "native_g1_navigation_goal.score_g1_navigation_episode",
+        "obstacle_contact": {"recorded_per_step": True, "part_of_success": False,
+                             "compiled_predicate_ids": contacts},
+        "claim_ceiling": "development_only", "physical_outcome_claimed": False,
+    }
+    contract["contract_digest"] = canonical_digest(contract, digest_field="contract_digest")
+    return contract
+
+
+def validate_navigation_task_success_contract(value: Any, *, task_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Refuse a navigation contract the task spec does not produce exactly (``..._invalid``)."""
+    expected = navigation_task_success_contract(task_spec)
+    try:
+        observed = json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("g1_navigation_task_success_contract_invalid") from exc
+    if observed != expected:
+        raise ValueError("g1_navigation_task_success_contract_invalid")
+    return expected
+
+
 def score_g1_navigation_episode(
     *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
