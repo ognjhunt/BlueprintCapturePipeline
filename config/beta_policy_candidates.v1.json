@@ -3687,7 +3687,7 @@
     },
     {
       "candidate_id": "humanoidarena_dp_g1_dex3_sonic_vision_navi",
-      "configuration_digest": "sha256:2098a7f8893f19a118794c1498e811d4a2a05393e400775931f5136b208df2f4",
+      "configuration_digest": "sha256:d2ac8de215efc17714c50ad76e5c04d697ba9e11f6a1006c5d1a9d6863861787",
       "deployment": {
         "companies": [
           "Unitree"
@@ -3736,12 +3736,13 @@
         "runtime_id": "native_g1_beta_session.v1"
       },
       "supported_task_kinds": [
-        "rigid_pick_place"
+        "rigid_pick_place",
+        "goal_region_navigation"
       ]
     },
     {
       "candidate_id": "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
-      "configuration_digest": "sha256:5427de0effca0da39dd4fe0d5cb77085b536a6524c0679a750649ef3cbc61245",
+      "configuration_digest": "sha256:16c03035945126eb0ecbd781a412d3a9a1d60d33c399e92f4dddd393836f0b84",
       "deployment": {
         "companies": [
           "Unitree"
@@ -3790,7 +3791,8 @@
         "runtime_id": "native_g1_beta_session.v1"
       },
       "supported_task_kinds": [
-        "rigid_pick_place"
+        "rigid_pick_place",
+        "goal_region_navigation"
       ]
     },
     {
@@ -4895,7 +4897,7 @@
     }
   ],
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility:trlc-community-pi05:single-ur-robotiq-scripted:public-fixed-arms-batch1:openpi-polaris-droid-variants",
+  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility:trlc-community-pi05:single-ur-robotiq-scripted:public-fixed-arms-batch1:openpi-polaris-droid-variants:g1-goal-region-navigation",
   "schema_version": "beta_policy_candidate_catalog.v1",
-  "catalog_digest": "sha256:3638ecbe1fc095be78d5468918fe6e2b35b735e12905d2e8920bc54308fad9cc"
+  "catalog_digest": "sha256:790f07a84bf43cb79b720f426968714bcf15c149cbadbc82af725d05176df93c"
 }

@@ -1,8 +1,8 @@
 """Deliberate, reviewed revisions of pinned scripted-controller sources.
 
 A predecessor snapshot proves that later body additions changed no existing
-controller byte. A revision that intentionally changes one is listed here with
-its reason; only that exact digest substitution is accepted.
+controller byte or catalog row. A revision that intentionally changes one is
+listed here with its reason; only that exact digest substitution is accepted.
 """
 from __future__ import annotations
 
@@ -62,6 +62,12 @@ SUPERSEDED = {
         "sha256:e4b852ffd0dd9d49a2ca8d9ae3138fb490edb0d9a1c2e80ed1b5ee51d32acf13",  # blueprint_scripted_yaskawa_hc20_robotiq_2f85_sim
     "sha256:dd9f015ceeb5de6d35a29684818ff6813fd91b12dfc1ae2352da5efe0139bab0":
         "sha256:91f03b0c66ad1e78adbc7f1890f80ec92f865c5209c6106bf6cc49b0cf3b7576",  # blueprint_scripted_agile_robots_diana_7_robotiq_2f85_sim
+    # G1 navigation part C (owner, 2026-11-07: "yes, re-plan is fine"): the two navigation checkpoints' rows also
+    # declare goal_region_navigation in supported_task_kinds; nothing else in either row changed.
+    "sha256:914498e187db76c26dd9bb6b8312720c393422755a6189fe4d0a9761ebec6c46":
+        "sha256:df6db9bc373ec4b83c119ccd5261d58da58908788c587f90e52edf454cd0a7b3",  # humanoidarena_dp_g1_dex3_sonic_vision_navi
+    "sha256:dd507af1b8072b18fac879c264f2fd9a55b851d385c2cef8da5bbf603eb23b7d":
+        "sha256:d727ac26ad7ab361cfb64cc1967dc1bcabc37c086a7f280dcf7801e989dff400",  # humanoidarena_pi05_g1_dex3_sonic_vision_navi
 }
 
 
