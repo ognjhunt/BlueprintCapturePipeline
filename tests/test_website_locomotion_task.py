@@ -14,7 +14,9 @@ from blueprint_pipeline.task_evaluation_embodiment_registry import EMBODIMENT_RE
 from blueprint_pipeline.website_locomotion_task import (
     BUILT_NAVIGATION_PIECES,
     HOLD_CODE,
+    NAVIGATION_PIECE_OUTPUTS,
     compile_locomotion_spec,
+    navigation_pieces_built,
     obstacle_distance,
     policy_requirements_served,
     runnable_options,
@@ -110,8 +112,9 @@ def test_bodies_and_policies_are_chosen_by_requirement_from_data() -> None:
     walking = sorted(key for key, value in served.items() if value["locomote"])
     assert sorted(row["candidate_id"] for row in options["policies"]) == walking
     assert walking  # the catalog declares at least one policy that moves its robot
+    # With no job's outputs known, nothing a job makes counts as built.
     assert all(not row["runnable"] and "pipeline:arena_navigation_scene_runtime" in row["missing"]
-               and "pipeline:navigation_task_spec_from_compiled_spec" not in row["missing"]
+               and "pipeline:navigation_task_spec_from_compiled_spec" in row["missing"]
                for row in options["policies"])
     # A fixed-arm policy never serves a locomotion requirement, and serves manipulation.
     arm = runnable_options(requirements(locomote=False, manipulate=True))
@@ -138,14 +141,20 @@ def test_the_handoff_turns_a_compiled_corridor_walk_into_a_g1_navigation_task(tm
 
 def test_the_hold_names_each_missing_piece_and_is_re_derived(tmp_path) -> None:
     context = _context()
-    gap = runnable_policy_gap(task_context=context, requirements=WALK, spec_digest="sha256:" + "c" * 64)
+    # A job whose handoff wrote its task spec and scene files, but not yet its G1 scene half.
+    built = navigation_pieces_built({"navigation_task_spec": True, "navigation_scene_assets": True})
+    gap = runnable_policy_gap(task_context=context, requirements=WALK, spec_digest="sha256:" + "c" * 64,
+                              options=runnable_options(WALK, built_pieces=built))
     assert gap["code"] == HOLD_CODE and gap["job_disposition"] == "held_for_preparation"
     assert {"pipeline:arena_navigation_scene_runtime", "pipeline:g1_navigation_preparation"} <= set(gap["missing"])
     assert "pipeline:navigation_scene_assets" not in gap["missing"]
-    assert gap["runnable_options"]["navigation_pieces_built"] == sorted(BUILT_NAVIGATION_PIECES)
+    assert gap["runnable_options"]["navigation_pieces_built"] == sorted(built)
     # A job whose scene files could not be authored names that piece itself.
-    failed = runnable_options(WALK, built_pieces=BUILT_NAVIGATION_PIECES - {"navigation_scene_assets"})
+    failed = runnable_options(WALK, built_pieces=navigation_pieces_built({"navigation_task_spec": True}))
     assert all("pipeline:navigation_scene_assets" in row["missing"] for row in failed["policies"])
+    # Each job-made piece counts only once its own output exists; a piece's code alone is not a job's output.
+    assert navigation_pieces_built({}) == BUILT_NAVIGATION_PIECES - set(NAVIGATION_PIECE_OUTPUTS)
+    assert "g1_navigation_preparation" in navigation_pieces_built({"navigation_scene_inputs": True})
     assert "Unitree G1" in gap["reason"]
     handoff = {"schema_version": "website_scene_handoff.v1", "scene_id": "site-a", "capture_id": "walkthrough-a",
                "status": "needs_input", "blockers": [HOLD_CODE], "simulator_ready": False,

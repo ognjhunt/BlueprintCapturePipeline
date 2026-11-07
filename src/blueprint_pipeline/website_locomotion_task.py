@@ -51,8 +51,23 @@ NAVIGATION_PIPELINE_PIECES = (
     "arena_navigation_scene_runtime",             # scene plan, runtime and readback without a task object
     "g1_navigation_preparation",                  # G1 stance at the compiled start, cells, registration
 )
-BUILT_NAVIGATION_PIECES = frozenset({"navigation_task_spec_from_compiled_spec", "navigation_scene_assets"})
+#: The pieces whose code exists. One that stands for a job's own output (``NAVIGATION_PIECE_OUTPUTS``)
+#: is built for a job only once its handoff wrote that output (``navigation_pieces_built``).
+BUILT_NAVIGATION_PIECES = frozenset({"navigation_task_spec_from_compiled_spec", "navigation_scene_assets",
+                                     "g1_navigation_preparation"})
+#: Each job-made piece and the handoff output it stands for (``website_scene_handoff``):
+#: ``navigation_task_spec.json``, ``navigation_scene_assets.json``, and the scene-inputs record
+#: (``website_navigation_scene_inputs``: the G1 at the compiled start) with its team registry row.
+NAVIGATION_PIECE_OUTPUTS = {"navigation_task_spec_from_compiled_spec": "navigation_task_spec",
+                            "navigation_scene_assets": "navigation_scene_assets",
+                            "g1_navigation_preparation": "navigation_scene_inputs"}
 NAVIGATION_TASK_FILE = "navigation_task_spec.json"
+
+
+def navigation_pieces_built(outputs: Mapping[str, bool]) -> frozenset[str]:
+    """What exists for one job: each built piece its handoff wrote the output of, and the code-only ones."""
+    return frozenset(piece for piece in BUILT_NAVIGATION_PIECES
+                     if piece not in NAVIGATION_PIECE_OUTPUTS or outputs.get(NAVIGATION_PIECE_OUTPUTS[piece]) is True)
 
 
 def _sha256(path: Path) -> str:
@@ -191,10 +206,11 @@ def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, A
                      built_pieces: frozenset[str] | None = None) -> dict[str, Any]:
     """Bodies and policies that could do this job, each with what it still lacks here.
 
-    ``built_pieces`` is what exists for this job (the code's ``BUILT_NAVIGATION_PIECES`` less any
-    that failed for it); it is recorded so the hold contract re-checks the same pieces.
+    ``built_pieces`` is what exists for this job (``navigation_pieces_built`` from its handoff's
+    outputs); it is recorded so the hold contract re-checks the same pieces. Without it no job output
+    is known, so only the pieces that are code alone count as built.
     """
-    built = BUILT_NAVIGATION_PIECES if built_pieces is None else frozenset(built_pieces)
+    built = navigation_pieces_built({}) if built_pieces is None else frozenset(built_pieces)
     from .task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY
 
     served = policy_requirements_served() if served is None else served
@@ -241,8 +257,8 @@ def retained_spec(root: Path) -> dict[str, Any] | None:
 
 
 __all__ = [
-    "BUILT_NAVIGATION_PIECES", "HOLD_CODE", "NAVIGATION_PIPELINE_PIECES", "NAVIGATION_SCENE_PACKET",
-    "NAVIGATION_TASK_FILE", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec",
-    "obstacle_distance", "policy_requirements_served", "retained_spec", "runnable_options", "runnable_policy_gap",
-    "scene_facts",
+    "BUILT_NAVIGATION_PIECES", "HOLD_CODE", "NAVIGATION_PIECE_OUTPUTS", "NAVIGATION_PIPELINE_PIECES",
+    "NAVIGATION_SCENE_PACKET", "NAVIGATION_TASK_FILE", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec",
+    "navigation_pieces_built", "obstacle_distance", "policy_requirements_served", "retained_spec",
+    "runnable_options", "runnable_policy_gap", "scene_facts",
 ]

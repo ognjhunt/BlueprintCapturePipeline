@@ -466,6 +466,22 @@ def _verify_probe(value: Mapping[str, Any], *, packet_root: Path, plan: Mapping[
         raise WebsiteNavigationSceneInputsError(code) from exc
 
 
+def derived_profile_row(written: Mapping[str, Any], *, capture_root: str | Path) -> dict[str, Any]:
+    """The team registry's derived row for a written record (``write_derived_profile``): scene facts only.
+
+    ``written`` is :func:`write_navigation_scene_inputs`'s result. The row names the record, the
+    directory its robot-free probe receipt sits in, its revision and its nominal scenario cell, as the
+    packet's own plan states it; never approvers, rights, rates or a salt.
+    """
+    record = written["record"]
+    plan = json.loads((Path(record["packet_root"]) / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8"))
+    return {"capture_root": str(Path(capture_root).resolve()), "scene_id": record["scene_id"],
+            "task_id": record["task_id"], "scenario_id": plan["scenario"]["cell_id"],
+            "robot_free_probe_root": str(Path(record["robot_free_probe"]["path"]).parent),
+            "scene_revision_digest": record["scene_revision_digest"],
+            "navigation_scene_inputs_path": str(written["path"])}
+
+
 def screening_source(record: Mapping[str, Any]) -> dict[str, Any]:
     """The current-source identity the screening lane binds (``SOURCE_FIELDS``): not decided yet.
 
@@ -480,5 +496,5 @@ def screening_source(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = ["CLAIM_CEILING", "OUTPUT_DIRECTORY", "RECORD_FILENAME", "SCHEMA", "SOURCE_UNBOUND",
-           "WebsiteNavigationSceneInputsError",
+           "WebsiteNavigationSceneInputsError", "derived_profile_row",
            "read_navigation_scene_inputs", "screening_source", "write_navigation_scene_inputs"]
