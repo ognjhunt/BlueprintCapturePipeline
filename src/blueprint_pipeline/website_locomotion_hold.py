@@ -27,13 +27,19 @@ def runnable_policy_gap_from_options(*, task_context: Mapping[str, Any], require
     missing = sorted({item for row in options["policies"] for item in row["missing"]}) or ["policy_for_requirements"]
     bodies = ", ".join(f"{row['robot']} ({row['status']})" for row in options["embodiments"]) or "none listed"
     names = ", ".join(row["candidate_id"] for row in options["policies"]) or "none in the catalog"
+    # Items a body's development-run allowance stands in for (the registry's STOOD_IN): named as such, never
+    # as satisfied, and read from the recorded options so the hold contract re-derives the same text.
+    stood_in = sorted({f"embodiment:{item}" for row in options["policies"]
+                       for item in (row.get("development_run_allowance") or {}).get("stood_in") or {}})
     return {
         "code": HOLD_CODE, "task_family": task_context.get("task_family") or "general_task",
         "task_context_digest": task_context["context_digest"], "job_disposition": "held_for_preparation",
         "description": task_context.get("description"), "compiled_task_spec_digest": spec_digest,
         "runnable_options": options, "missing": missing,
         "reason": ("The task is compiled and its scene is kept. No robot policy can run it here yet. "
-                   f"Bodies that can do it: {bodies}. Policies for them: {names}. Missing: {', '.join(missing)}."),
+                   f"Bodies that can do it: {bodies}. Policies for them: {names}. Missing: {', '.join(missing)}."
+                   + (f" {', '.join(stood_in)}: stood in by the development-run allowance (development_only)."
+                      if stood_in else "")),
         "claim_boundary": "Blueprint integration gap only; no finding that robot teams cannot perform the job.",
         **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
            if task_semantics is not None else {}),

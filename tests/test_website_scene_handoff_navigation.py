@@ -147,22 +147,28 @@ def test_the_handoff_writes_the_scene_half_and_registers_it(job):
 
 
 def test_once_built_the_hold_names_only_what_is_still_lacking(job):
-    """Of the pipeline, only the website intake a screening source needs; then each body's and catalog row's own."""
+    """Of the pipeline, only the website intake a screening source needs; then each body's and catalog row's own.
+
+    The G1's development-run allowance stands in for its two items on each navigation checkpoint (owner
+    decisions 2026-11-07), so the hold names neither and records the allowance, development_only.
+    """
     from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
     from blueprint_pipeline.native_g1_navigation_goal import NAVIGATION_TASK_KIND
-    from blueprint_pipeline.task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY
+    from blueprint_pipeline.task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY, STOOD_IN
     from blueprint_pipeline.task_evaluation_g1_catalog import G1_EMBODIMENT_ID
 
     result, context = _run(job)
     assert result["status"] == "needs_input" and result["blockers"] == [HOLD_CODE]
-    options = result["native_task_preparation_gap"]["runnable_options"]
+    gap = result["native_task_preparation_gap"]
+    options = gap["runnable_options"]
     assert options["navigation_pieces_built"] == sorted(BUILT_NAVIGATION_PIECES)
     bodies = {row.embodiment_id: row for row in EMBODIMENT_REGISTRY}
     rows = {row["candidate_id"]: row for row in load_default_catalog()["candidates"]}
     assert options["policies"]
     for policy in options["policies"]:
         kinds = rows[policy["candidate_id"]]["supported_task_kinds"]
-        body_missing, _ = bodies[policy["embodiment_id"]].development_run_missing(NAVIGATION_TASK_KIND)
+        body_missing, _ = bodies[policy["embodiment_id"]].development_run_missing(
+            NAVIGATION_TASK_KIND, candidate_id=policy["candidate_id"])
         expected = [f"embodiment:{item}" for item in body_missing]
         expected.append(f"pipeline:{SOURCE_IDENTITY_PIECE}")
         expected += [f"catalog:{code}" for code in rows[policy["candidate_id"]]["eligibility"]["blockers"]]
@@ -170,10 +176,19 @@ def test_once_built_the_hold_names_only_what_is_still_lacking(job):
             expected.append("catalog:task_kind_not_supported_by_candidate" if kinds
                             else "catalog:task_kind_support_unverified")
         assert policy["missing"] == expected
-        # No body declares a development-run allowance today, so each body's own gaps are named too.
-        assert {f"embodiment:{item}" for item in bodies[policy["embodiment_id"]].missing} <= set(policy["missing"])
-        assert "claim_ceiling" not in policy and "development_run_allowance" not in policy
+        # Stood in, not satisfied: neither item is named missing, and the allowance is recorded.
+        assert not {"embodiment:verified_site_episode", "embodiment:reviewed_checkpoint_terms"} & set(policy["missing"])
+        assert policy["claim_ceiling"] == "development_only"
+        stood_in = policy["development_run_allowance"]["stood_in"]
+        assert sorted(stood_in) == ["reviewed_checkpoint_terms", "verified_site_episode"]
+        assert {entry["status"] for entry in stood_in.values()} == {STOOD_IN}
     assert {policy["embodiment_id"] for policy in options["policies"]} == {G1_EMBODIMENT_ID}
+    # The hold itself names only what is still lacking, and says what the allowance stands in for.
+    assert gap["missing"] == [f"pipeline:{SOURCE_IDENTITY_PIECE}"]
+    assert STOOD_IN in gap["reason"]
+    # The body stays listed as it is: unavailable, with both items.
+    assert next(row for row in options["embodiments"] if row["embodiment_id"] == G1_EMBODIMENT_ID)["missing"] == [
+        "verified_site_episode", "reviewed_checkpoint_terms"]
     assert holds_native_task_preparation(result, context)
 
 

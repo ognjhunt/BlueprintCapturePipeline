@@ -260,15 +260,18 @@ def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, A
     by_profile = {key: row for row in bodies for key in row.policy_robot_profile_ids}
     policies = []
     # A walk with no manipulation is the navigation profile: a body may declare a narrow development-only
-    # allowance for it (``EmbodimentProfile.development_run_missing``). None does today, so each body's
-    # gaps show in full; one declared later is read here and its result recorded development_only.
+    # allowance for it (``EmbodimentProfile.development_run_missing``), as the G1 does
+    # (``G1_NAVIGATION_DEVELOPMENT_RUN``). The items it stands in for on this candidate leave ``missing`` and
+    # are recorded STOOD_IN with their basis and owner decision, never satisfied; the option's result is
+    # recorded development_only. Every other requirement reads the body's full gaps.
     navigation = bool(requirements.get("locomote")) and not requirements.get("manipulate")
     for row in catalog["candidates"]:
         body = by_profile.get((row.get("interface") or {}).get("robot_profile_id"))
         if body is None or not (row.get("eligibility") or {}).get("enabled") or not _policy_serves(row, requirements, served):
             continue
-        body_missing, allowance = (body.development_run_missing("goal_region_navigation") if navigation
-                                   else (body.missing, None))
+        body_missing, allowance = (body.development_run_missing("goal_region_navigation",
+                                                                candidate_id=row["candidate_id"])
+                                   if navigation else (body.missing, None))
         missing = [*(f"embodiment:{item}" for item in body_missing),
                    *(f"pipeline:{piece}" for piece in NAVIGATION_PIPELINE_PIECES if piece not in built)] \
             if requirements.get("locomote") else [*(f"embodiment:{item}" for item in body.missing)]
@@ -277,10 +280,9 @@ def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, A
         option = {"candidate_id": row["candidate_id"], "embodiment_id": body.embodiment_id,
                   "runnable": not missing, "missing": missing}
         if allowance is not None:
-            # Its result is recorded development_only, and the items it stands in for are named with their basis.
+            # Its result is recorded development_only, and each item it stands in for is named STOOD_IN.
             option.update(claim_ceiling=allowance.claim_ceiling,
-                          development_run_allowance={"task_profile_id": allowance.task_profile_id,
-                                                     "satisfied_by": dict(allowance.satisfied_by)})
+                          development_run_allowance=allowance.record(row["candidate_id"]))
         policies.append(option)
     return {"requirements": dict(requirements),
             **({"navigation_pieces_built": sorted(built)} if requirements.get("locomote") else {}),

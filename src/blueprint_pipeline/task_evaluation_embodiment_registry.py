@@ -14,19 +14,38 @@ integration canary receipt; editing ``status`` alone must not make it run.
 
 One narrow, explicit exception can be declared (``DevelopmentRunAllowance``):
 a development-only run of one named task profile may proceed while named items
-are still ``missing``, each with the basis that stands in for it, and its
-result is recorded ``development_only``. It never makes a body ``runnable``
-and covers no other task profile. No body declares one today: the G1's
-first-navigation-run allowance is deferred until it has a bound and the owner
-has decided on each stand-in (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md).
+are still ``missing``, each stood in for by a named basis and the owner decision
+behind it, and its result is recorded ``development_only``. It never makes a
+body ``runnable``, never removes an item from ``missing`` and covers no other
+task profile. The registry's output calls such an item ``STOOD_IN``, never
+satisfied.
+
+The G1 declares one, ``G1_NAVIGATION_DEVELOPMENT_RUN``: general, for every site
+and scene, and for ``goal_region_navigation`` only
+(docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md). Owner decisions of 2026-11-07:
+
+- ``reviewed_checkpoint_terms``: each navigation checkpoint's own human
+  development rights review (``approved_for_development_simulation``,
+  docs/arm_decision_proof_v1/manifests/g1_841757_<candidate>_development_rights_review.v1.json)
+  stands in for it. Decision 2, verbatim: "yes - make sure this is the case for
+  all future runs/scenes". A checkpoint without its own pinned review keeps the
+  item missing. Every G1 run re-validates that review
+  (``native_g1_beta_authority.validate_beta_authority``, embedded and
+  digest-pinned in the execution spec, the session authority and the worker).
+- ``verified_site_episode``: a development run stands in for it. Decision 1,
+  verbatim: "Dev check, then counts". The run proceeds as a development-only
+  check, and no result of it claims more than ``development_only``. Nothing
+  here writes a verified site episode or removes the item from the G1's
+  ``missing``: promoting the first run that passes every check to G1's first
+  verified site episode is future work, and needs that run's receipt.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from typing import Literal
 
@@ -72,23 +91,65 @@ def deployment_embodiment_support_catalog() -> dict[str, Any]:
     return value
 
 
-#: The only task profiles a development-only run allowance may name. None is granted today; adding one
-#: needs a bound and the owner's decision on each stand-in (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md).
+#: The only task profiles a development-only run allowance may name: G1 navigation, by the owner's
+#: decisions of 2026-11-07 (``G1_NAVIGATION_DEVELOPMENT_RUN``).
 DEVELOPMENT_RUN_TASK_PROFILES = frozenset({"goal_region_navigation"})
+
+#: What the registry's output says of an item an allowance stands in for. It is never "satisfied": the
+#: body still misses the item, and a run that proceeds on it is recorded ``development_only``.
+STOOD_IN = "stood in by the development-run allowance (development_only)"
+
+#: The item a stand-in may cover only per checkpoint, from that checkpoint's own human review (rights).
+CHECKPOINT_TERMS_ITEM = "reviewed_checkpoint_terms"
+
+
+@dataclass(frozen=True)
+class StandIn:
+    """One still-``missing`` item a development-only run may proceed without, what stands in, and who decided.
+
+    ``owner_decision`` quotes the decision verbatim, with its date and number. ``checkpoint_review``, when set,
+    reads a candidate checkpoint's own human review (a mapping, or ``None`` when it has none that approves);
+    the item is then stood in for only on a candidate whose review it returns.
+    """
+
+    item: str
+    basis: str
+    owner_decision: str
+    checkpoint_review: Callable[[str], Mapping[str, Any] | None] | None = None
 
 
 @dataclass(frozen=True)
 class DevelopmentRunAllowance:
     """What a development-only run of one task profile may proceed without, and on what basis.
 
-    ``satisfied_by`` pairs each still-``missing`` item with what stands in for it on such a run. The body
-    stays as listed (its ``status`` and ``missing`` unchanged); only a run of ``task_profile_id`` whose
+    Each ``stood_in_by`` entry names a still-``missing`` item and what stands in for it on such a run. The
+    body stays as listed (its ``status`` and ``missing`` unchanged); only a run of ``task_profile_id`` whose
     result is recorded ``claim_ceiling`` may proceed without those items.
     """
 
     task_profile_id: str
-    satisfied_by: tuple[tuple[str, str], ...]
+    stood_in_by: tuple[StandIn, ...]
     claim_ceiling: str = "development_only"
+
+    def for_candidate(self, candidate_id: str | None) -> DevelopmentRunAllowance | None:
+        """The stand-ins that hold for one candidate checkpoint, or ``None`` when none does.
+
+        A per-checkpoint stand-in holds only for a candidate whose own review its reader returns; without a
+        candidate it holds for none.
+        """
+        held = tuple(row for row in self.stood_in_by if row.checkpoint_review is None
+                     or (candidate_id is not None and row.checkpoint_review(candidate_id) is not None))
+        return replace(self, stood_in_by=held) if held else None
+
+    def record(self, candidate_id: str | None = None) -> dict[str, Any]:
+        """The allowance as the registry's output names it: each item ``STOOD_IN``, with its basis and decision."""
+        stood_in = {}
+        for row in self.stood_in_by:
+            entry = {"status": STOOD_IN, "basis": row.basis, "owner_decision": row.owner_decision}
+            if row.checkpoint_review is not None and candidate_id is not None:
+                entry["checkpoint_review"] = dict(row.checkpoint_review(candidate_id) or {})
+            stood_in[row.item] = entry
+        return {"task_profile_id": self.task_profile_id, "claim_ceiling": self.claim_ceiling, "stood_in": stood_in}
 
 
 @dataclass(frozen=True)
@@ -116,17 +177,21 @@ class EmbodimentProfile:
     def available(self) -> bool:
         return self.status == "runnable"
 
-    def development_run_missing(self, task_profile_id: str) -> tuple[tuple[str, ...], DevelopmentRunAllowance | None]:
-        """What a development-only run of ``task_profile_id`` on this body still lacks, and the allowance used.
+    def development_run_missing(self, task_profile_id: str, *, candidate_id: str | None = None
+                                ) -> tuple[tuple[str, ...], DevelopmentRunAllowance | None]:
+        """What a development-only run of ``task_profile_id`` by ``candidate_id`` on this body still lacks.
 
-        Without an allowance for that profile it is everything ``missing``, as for any run.
+        Returns those items and the allowance used, narrowed to the stand-ins that hold for that candidate
+        (``DevelopmentRunAllowance.for_candidate``). Without an allowance for that profile, or with none of
+        its stand-ins holding, it is everything ``missing``, as for any run.
         """
         allowance = next((row for row in self.development_run_allowances
                           if row.task_profile_id == task_profile_id and task_profile_id in self.task_profile_ids), None)
+        allowance = allowance.for_candidate(candidate_id) if allowance is not None else None
         if allowance is None:
             return self.missing, None
-        waived = {item for item, _basis in allowance.satisfied_by}
-        return tuple(item for item in self.missing if item not in waived), allowance
+        stood_in = {row.item for row in allowance.stood_in_by}
+        return tuple(item for item in self.missing if item not in stood_in), allowance
 
     def meets(self, requirements: Mapping[str, Any]) -> bool:
         """Whether this body can do what a compiled task requires: chosen by need, never by task kind."""
@@ -176,6 +241,59 @@ def _catalog_arm(row: dict[str, Any]) -> EmbodimentProfile:
     )
 
 
+#: A G1 navigation checkpoint's candidate id ends so: the rule planning (``beta_policy_screening_g1``) and
+#: registration (``native_g1_site_registration``) use to run only these on a navigation scene.
+G1_NAVIGATION_CHECKPOINT_SUFFIX = "_vision_navi"
+
+
+def g1_navigation_checkpoint_development_rights_review(candidate_id: str) -> dict[str, Any] | None:
+    """A G1 navigation checkpoint's own pinned human development rights review, when it approves development simulation.
+
+    Read from docs/arm_decision_proof_v1/manifests/g1_841757_<candidate>_development_rights_review.v1.json
+    through the reader every G1 run's authority uses (``native_g1_beta_authority.reviewed_model_terms``: the
+    file's sha256 is pinned per candidate). ``None`` for a manipulation checkpoint (owner decision 2 names the
+    navigation checkpoints' reviews only), a candidate with no pinned review, a changed file, or a review that
+    does not approve this checkpoint's terms for development simulation.
+    """
+    if not candidate_id.endswith(G1_NAVIGATION_CHECKPOINT_SUFFIX):
+        return None
+    from .native_g1_beta_authority import REVIEW_DIGESTS, reviewed_model_terms
+
+    try:
+        terms = reviewed_model_terms(candidate_id)
+    except ValueError:
+        return None
+    receipt = terms["receipt"]
+    if (receipt.get("candidate_id") != candidate_id
+            or receipt.get("status") != "approved_for_development_simulation"
+            or receipt.get("checkpoint_terms_reviewed") is not True
+            or receipt.get("rights_review_digest") != REVIEW_DIGESTS.get(candidate_id)):
+        return None
+    return {"artifact_sha256": terms["artifact_sha256"], "rights_review_digest": receipt["rights_review_digest"],
+            "status": receipt["status"]}
+
+
+#: G1 navigation on every site and scene, development-only (owner decisions 2026-11-07; module docstring).
+#: Nothing names a site. It never writes a verified site episode: the G1 row's ``missing`` keeps both items.
+G1_NAVIGATION_DEVELOPMENT_RUN = DevelopmentRunAllowance(
+    task_profile_id="goal_region_navigation",
+    stood_in_by=(
+        StandIn(
+            item="verified_site_episode",
+            basis="development_only_run_proceeds_as_the_development_check",
+            owner_decision='owner decision 2026-11-07, decision 1: "Dev check, then counts"',
+        ),
+        StandIn(
+            item=CHECKPOINT_TERMS_ITEM,
+            basis="each_navigation_checkpoints_own_human_development_rights_review_approved_for_development_simulation",
+            owner_decision='owner decision 2026-11-07, decision 2: "yes - make sure this is the case for all '
+                           'future runs/scenes"',
+            checkpoint_review=g1_navigation_checkpoint_development_rights_review,
+        ),
+    ),
+)
+
+
 EMBODIMENT_REGISTRY: tuple[EmbodimentProfile, ...] = (
     EmbodimentProfile(
         embodiment_id=DROID_EMBODIMENT_ID,
@@ -199,6 +317,7 @@ EMBODIMENT_REGISTRY: tuple[EmbodimentProfile, ...] = (
         missing=("verified_site_episode", "reviewed_checkpoint_terms"),
         reason="No production policy-canary profile has executed a verified G1 episode on a site scene, and its checkpoint terms are pending review.",
         policy_robot_profile_ids=("unitree_g1_dex3_sonic_v1",),
+        development_run_allowances=(G1_NAVIGATION_DEVELOPMENT_RUN,),
     ),
     EmbodimentProfile(
         embodiment_id="boston_dynamics_atlas",
@@ -238,17 +357,23 @@ def embodiment_registry_violations() -> list[str]:
         elif not row.reason or not row.missing:
             violations.append(f"unavailable_embodiment_without_reason:{row.embodiment_id}")
         for allowance in row.development_run_allowances:
-            # Narrow and explicit: one listed profile, development-only, only items the body still misses.
+            # Narrow and explicit: one listed profile, development-only, only items the body still misses, each
+            # with a basis and its owner decision; checkpoint terms only per checkpoint, from its own review.
+            items = [stand.item for stand in allowance.stood_in_by]
             if (row.available or allowance.task_profile_id not in row.task_profile_ids
                     or allowance.task_profile_id not in DEVELOPMENT_RUN_TASK_PROFILES
-                    or allowance.claim_ceiling != "development_only" or not allowance.satisfied_by
-                    or any(item not in row.missing or not basis for item, basis in allowance.satisfied_by)):
+                    or allowance.claim_ceiling != "development_only" or not allowance.stood_in_by
+                    or len(set(items)) != len(items)
+                    or any(stand.item not in row.missing or not stand.basis or not stand.owner_decision
+                           or (stand.item == CHECKPOINT_TERMS_ITEM and stand.checkpoint_review is None)
+                           for stand in allowance.stood_in_by)):
                 violations.append(f"development_run_allowance_invalid:{row.embodiment_id}")
     return violations
 
 
 __all__ = [
-    "DevelopmentRunAllowance", "EMBODIMENT_REGISTRY", "EmbodimentProfile",
+    "CHECKPOINT_TERMS_ITEM", "DevelopmentRunAllowance", "EMBODIMENT_REGISTRY", "EmbodimentProfile",
+    "G1_NAVIGATION_CHECKPOINT_SUFFIX", "G1_NAVIGATION_DEVELOPMENT_RUN", "STOOD_IN", "StandIn",
     "deployment_embodiment_support_catalog",
-    "embodiment", "embodiment_registry_violations",
+    "embodiment", "embodiment_registry_violations", "g1_navigation_checkpoint_development_rights_review",
 ]
