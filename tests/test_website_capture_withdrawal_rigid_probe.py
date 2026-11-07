@@ -64,22 +64,32 @@ def test_a_settled_jobs_copies_are_deleted_and_its_money_records_still_replay(wo
 
 @pytest.mark.parametrize("money,reason", [("pending", "settlement_pending"),
                                           ("running", "allocator_running_or_unknown")])
-def test_a_job_whose_money_is_not_final_stays_whole_named_and_incomplete(world, team, money, reason):
+def test_the_deletion_waits_until_the_sites_probe_money_settles(world, team, money, reason):
+    # Owner decision (2026-11-06): settlement reads the capture's task context, which the deletion removes.
     waiting = probe_attempt(team["probes"], team["work_root"], _job(team, "f"), 0, capture=team["capture"],
                             money=money)
+    job = str(waiting["attempt"].parents[1])
     gcs = base.FakeGcs()
     plan = base._plan(world, cloud_storage=gcs)
-    assert plan["unresolved"] == []  # It never blocks the rest of the deletion.
-    assert plan["team_scene"]["probe_jobs_waiting"] == [{"job": str(waiting["attempt"].parents[1]), "final": False,
-                                                         "attempts": [],
+    assert {"path": job, "reason": "website_withdrawal_deletion_rigid_probe_money_not_final"} in plan["unresolved"]
+    assert plan["team_scene"]["probe_jobs_waiting"] == [{"job": job, "final": False, "attempts": [],
                                                          "waiting": [{"attempt": "00", "reason": reason}]}]
+    capture = sorted(Path(team["capture"]).rglob("*"))
+    with pytest.raises(deletion.WithdrawalDeletionError, match="unresolved_copies"):
+        base._apply(world, plan, cloud_storage=gcs)
+    # Nothing went: the settled job, the waiting one, and the capture (whose task context settlement reads).
+    assert all(path.exists() for path in [*waiting["bulk"], *waiting["records"], *team["probe_attempts"][0]["bulk"]])
+    assert capture and sorted(Path(team["capture"]).rglob("*")) == capture
+    # Once the runner settles it, the deletion planned again goes ahead.
+    settled = json.loads((team["probe_attempts"][0]["attempt"] / settlement.SETTLEMENT_FILENAME).read_text())
+    (waiting["attempt"] / settlement.SETTLEMENT_FILENAME).write_text(
+        json.dumps(_sealed({**settled, "attempt": "00"}, "record_digest")))
+    plan = base._plan(world, cloud_storage=gcs)
+    assert not [row for row in plan["unresolved"] if row["path"] == job]
     receipt = base._apply(world, plan, cloud_storage=gcs)
-    assert all(path.exists() for path in [*waiting["bulk"], *waiting["records"]])
-    assert not any(path.exists() for path in team["probe_attempts"][0]["bulk"])  # the settled job still goes
-    holders = {row["holder"]: row for row in receipt["remaining"]}
-    assert holders["rigid_robot_free_probe_jobs_waiting"]["jobs"] == [
-        {"job": str(waiting["attempt"].parents[1]), "attempts": [{"attempt": "00", "reason": reason}]}]
-    assert receipt["pipeline_controlled_deletion_complete"] is False
+    assert not any(path.exists() for path in waiting["bulk"])
+    assert all(path.exists() for path in waiting["records"])  # Its money records stay, as for any settled job.
+    assert "rigid_robot_free_probe_jobs_waiting" not in {row["holder"] for row in receipt["remaining"]}
 
 
 @pytest.mark.parametrize("fault", ["unreadable", "unsealed", "another_attempt", "linked"])
@@ -101,9 +111,11 @@ def test_a_settlement_that_does_not_read_as_this_attempts_is_never_taken_as_sett
     [row] = plan["team_scene"]["probe_jobs_waiting"]
     assert row["waiting"] == [{"attempt": "00", "reason": "settlement_unreadable"}]
     assert plan["team_scene"]["probe_jobs_final"] == []
-    receipt = base._apply(world, plan, cloud_storage=gcs)
+    # It may still settle, so the deletion waits.
+    assert {"path": row["job"], "reason": "website_withdrawal_deletion_rigid_probe_money_not_final"} in plan["unresolved"]
+    with pytest.raises(deletion.WithdrawalDeletionError, match="unresolved_copies"):
+        base._apply(world, plan, cloud_storage=gcs)
     assert all(path.exists() for attempt in team["probe_attempts"] for path in attempt["bulk"])
-    assert receipt["pipeline_controlled_deletion_complete"] is False
 
 
 @pytest.mark.parametrize("change", ["bundle_gains_a_file", "output_rewritten", "attempt_staged_since"])
@@ -176,6 +188,9 @@ def test_a_work_directory_not_tied_to_its_attempt_waits(world, team, fault, reas
     plan = base._plan(world)
     assert [row for row in plan["team_scene"]["probe_jobs_waiting"] if row["job"] == str(job)] == [
         {"job": str(job), "final": False, "attempts": [], "waiting": [{"attempt": name, "reason": reason}]}]
+    # Bulk no queue attempt names settles nothing; a work directory it cannot read may, so that one waits.
+    held = {"path": str(job), "reason": "website_withdrawal_deletion_rigid_probe_money_not_final"} in plan["unresolved"]
+    assert held is (reason != "work_dir_unbound")
 
 
 def test_a_staging_that_failed_before_its_record_is_deleted_with_its_attempt(world, team):

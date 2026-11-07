@@ -113,12 +113,18 @@ launched, the deletion removes the bytes built from the half:
   (`--rigid-probe-work-root`).
 
 It keeps the settlement, reservation, admission, allocator result, teardown,
-budget-ledger and avoidlist records, which settlement replays from. A job with a
-reservation not yet settled (or held), an allocator still running, or a
-settlement that does not read stays whole. The receipt names it, the deletion
-reads as not complete, and a later run deletes it once it settles. The receipt
-also names, without writing them, the root-owned registry rows that name the
-site.
+budget-ledger and avoidlist records, which settlement replays from.
+
+The whole deletion waits while any of the site's probe money may still settle
+(owner decision, 2026-11-06): a reservation not yet settled (or held), an
+allocator still running, a settlement or attempt record that does not read, or
+a work directory it cannot tie to its attempt. Each such job is `unresolved`
+(`rigid_probe_money_not_final`) and the apply refuses, because settlement reads
+the capture's task context, which this deletion removes. Run the deletion again
+once the runner has settled it. A held settlement keeps the deletion waiting
+until it settles. Bulk that no queued attempt names settles nothing; it is named
+as remaining and never holds the deletion. The receipt also names, without
+writing them, the root-owned registry rows that name the site.
 
 
 ## Connect the team's own robot and policy
