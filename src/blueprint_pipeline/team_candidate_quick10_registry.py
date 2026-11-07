@@ -7,8 +7,11 @@ not group- or world-writable, owned by root or the service user, self-digest
 intact) binds one capture to:
 
 - the scene's half of a run: the prepared scene's own compiled packet
-  (``team_scene_packet``, no robot placement and no prior run), or the scene's
-  frozen internal Quick-10 inputs and activation;
+  (``team_scene_packet``, no robot placement and no prior run), the scene's
+  frozen internal Quick-10 inputs and activation, a task family's scene inputs,
+  or a navigation job's scene inputs (``website_navigation_scene_inputs``: the
+  G1 at the compiled start in a scene kept as filmed, screened by the G1 lane
+  and never listed as a team evaluation);
 - the directory the scene's robot-free probe receipt is retained in (read
   only through ``robot_free_probe_gate.retained_probe_receipt``);
 - the open-loop horizon, hourly-rate ceiling and hard TTL of a run;
@@ -78,6 +81,9 @@ from .team_robot_free_probe import scored_task_spec
 # The scene's nominal cell: what the prompt and query budget are read from.
 NOMINAL_CELL = {"cell_id": "scene.nominal", "seed": 0, "family": "canonical_anchor",
                 "resolved_scenario": {"family": "canonical_anchor", "ordinal": 0, "parameters": {}}}
+# A navigation job's scene inputs record (``website_navigation_scene_inputs.SCHEMA``, pinned by a test;
+# kept literal so this module does not import the navigation writer's USD and packet code).
+NAVIGATION_SCENE_INPUTS_SCHEMA = "blueprint.website_navigation_scene_inputs.v1"
 
 
 def _scored_salt(key_path: Any, scene_revision_digest: Any) -> str | None:
@@ -157,7 +163,7 @@ def _one_scene_half(profile: Mapping[str, Any]) -> bool:
     pair = [bool(profile.get(key)) for key in ("pair_runtime_inputs_path", "pair_activation_path")]
     return (pair in ([True, True], [False, False])
             and sum((bool(profile.get('team_scene_inputs_path')), bool(profile.get('family_scene_inputs_path')),
-                     pair == [True, True])) == 1)
+                     bool(profile.get('navigation_scene_inputs_path')), pair == [True, True])) == 1)
 
 
 def profile_for_request(request: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -187,6 +193,13 @@ def _scene_inputs(profile: Mapping[str, Any]) -> dict[str, Any]:
             return read_family_scene_inputs(Path(profile['family_scene_inputs_path']))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise TeamCandidateRegistryError(str(exc) or 'family_scene_inputs_unavailable') from exc
+    if profile.get("navigation_scene_inputs_path"):
+        from .website_navigation_scene_inputs import read_navigation_scene_inputs
+
+        try:
+            return read_navigation_scene_inputs(Path(profile["navigation_scene_inputs_path"]))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise TeamCandidateRegistryError(str(exc) or "navigation_scene_inputs_unavailable") from exc
     if profile.get("team_scene_inputs_path"):
         from .team_scene_packet import TeamScenePacketError, read_team_scene_inputs
 
@@ -225,6 +238,8 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
                 'embodiment_preset_id': plan['native_runtime_contract']['robot_configuration']['embodiment_id']},
             'prompt': context.get('description'), 'max_policy_queries': None, 'open_loop_horizon': horizon,
             'episode_specs_sha256': canonical_digest(inputs)}
+    if inputs.get("schema_version") == NAVIGATION_SCENE_INPUTS_SCHEMA:
+        return _navigation_scene_facts(profile, inputs=inputs, packet_dir=packet_dir, plan=plan)
     try:
         nominal = _resolved_scene_plan(plan, {**NOMINAL_CELL, "control_diagnostic": inputs["control_diagnostic"]},
                                        task_success_contract=inputs["task_success_contract"])
@@ -252,6 +267,34 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
         "prompt": nominal["task_spec"]["prompt"],
         "max_policy_queries": maximum_policy_queries_for_task_spec(nominal["task_spec"], open_loop_horizon=horizon),
         "open_loop_horizon": horizon,
+        "episode_specs_sha256": canonical_digest(inputs),
+    }
+
+
+def _navigation_scene_facts(profile: Mapping[str, Any], *, inputs: Mapping[str, Any], packet_dir: Path,
+                            plan: Mapping[str, Any]) -> dict[str, Any]:
+    """A navigation job's scene half: the plan's task spec, revision and contract, no Franka DROID cell.
+
+    The record (``website_navigation_scene_inputs``) was reopened and verified by its reader. The robot
+    is the plan's own (the G1 at the compiled start), so no DROID cell is resolved and no query budget
+    is derived from one. The prompt is the checkpoints' trained instruction
+    (``native_g1_navigation_goal.PUBLISHED_TASK_INSTRUCTION``), never the site's sentence. The record
+    names no runtime source: the G1 registration's own record supplies it (its ``runtime_source_gap``).
+    The robot-free probe receipt is retained in the record's own directory, beside the packet. The
+    G1 lane's horizon is its interface contract's (``beta_policy_screening_g1.interface_contract``),
+    so the profile's is passed through as given.
+    """
+    from .native_g1_navigation_goal import PUBLISHED_TASK_INSTRUCTION
+
+    return {
+        "inputs": inputs, "packet_dir": packet_dir, "runtime_source_packet_receipt": None,
+        "robot_free_probe_root": Path(inputs["robot_free_probe"]["path"]).parent,
+        "scene": {"scene_revision_digest": inputs["scene_revision_digest"], "task_spec": plan["task_spec"],
+                  "task_success_contract": inputs["task_success_contract"],
+                  "embodiment_preset_id": plan["robot"]["robot_id"]},
+        "prompt": PUBLISHED_TASK_INSTRUCTION,
+        "max_policy_queries": None,
+        "open_loop_horizon": profile.get("open_loop_horizon"),
         "episode_specs_sha256": canonical_digest(inputs),
     }
 
@@ -284,6 +327,10 @@ def offer_eligibility(profile: Mapping[str, Any] | None,
         receipt = retained_probe_receipt(Path(profile["robot_free_probe_root"]))
     except (KeyError, OSError, ValueError) as exc:
         return None, [str(exc) or "team_candidate_scene_facts_unavailable"]
+    if facts["inputs"].get("schema_version") == NAVIGATION_SCENE_INPUTS_SCHEMA:
+        # A team evaluation runs a team's arm on a rigid task's cells; a navigation scene is screened
+        # by the G1 lane alone (``beta_policy_screening_capabilities.build_planning_inputs``).
+        return None, ["team_candidate_navigation_scene_not_a_team_evaluation"]
     blockers = []
     source = facts["inputs"]["task_success_contract"]
     # Under the platform owner's standing pause, a contract that requires per-cell controls runs
@@ -322,6 +369,7 @@ def offer_eligibility(profile: Mapping[str, Any] | None,
 __all__ = [
     "DERIVED_FIELDS",
     "DERIVED_SCHEMA",
+    "NAVIGATION_SCENE_INPUTS_SCHEMA",
     "NOMINAL_CELL",
     "OPERATOR_FIELDS",
     "REGISTRY_ENV",

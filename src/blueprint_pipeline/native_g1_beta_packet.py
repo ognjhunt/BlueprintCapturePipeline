@@ -2,7 +2,10 @@
 
 The base packet remains immutable. Only policy-neutral scenario metadata and
 its enclosing digests change; this is a simulation seed derivation, not a new
-capture, task definition, controller calibration or human review.
+capture, task definition, controller calibration or human review. A navigation
+cell (``robot_start_offset``) also moves the robot's start by its frozen offset
+(``native_g1_beta_authority.offset_robot_documents``); the scene, the task and
+its goal stay as they are.
 """
 from __future__ import annotations
 
@@ -15,7 +18,10 @@ import shutil
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .native_g1_beta_authority import derive_cell_authority, validate_frozen_cell
+from .native_g1_beta_authority import (
+    NAVIGATION_TASK_KIND, START_OFFSET_FAMILY, derive_cell_authority, offset_robot_documents,
+    validate_frozen_cell,
+)
 from .native_task_arena_bundle import verify_native_task_arena_packet
 
 REQUEST = "native_task_arena_packet_request.v1.json"
@@ -39,7 +45,7 @@ def scenario_for_cell(cell: Mapping[str, Any]) -> dict[str, Any]:
         "cell_id": row["cell_id"], "seed": row["seed"],
         "policy_neutral": True, "caller_asserted_success": False,
         "learned_policy_outcomes_consulted": False,
-        "factor_records": [], "resolved_parameters": {},
+        "factor_records": [], "resolved_parameters": dict(row["resolved_scenario"]["parameters"]),
         "beta_cell_spec_digest": row["cell_spec_digest"],
         "scenario_scope": "native_frozen_reset_seeds"}
     context["instance_digest"] = canonical_digest(context, digest_field="instance_digest")
@@ -55,7 +61,7 @@ def derive_documents(*, base_request: Mapping[str, Any], base_contract: Mapping[
     scene = _sealed(base_scene, "plan_digest")
     if (scene.get("runtime_contract_digest") != contract["contract_digest"]
             or scene.get("robot", {}).get("robot_id") != "unitree_g1"
-            or scene.get("task_kind") != "rigid_pick_place"
+            or scene.get("task_kind") not in ("rigid_pick_place", NAVIGATION_TASK_KIND)
             or any(request.get(key) != scene.get(key) or contract.get(key) != scene.get(key)
                    for key in ("scene_id", "task_id"))
             or contract.get("task_spec") != scene.get("task_spec")
@@ -65,10 +71,19 @@ def derive_documents(*, base_request: Mapping[str, Any], base_contract: Mapping[
     # These are repetitions of the authored base scene. Existing parameter
     # applications remain frozen; a new cell does not claim to reapply them.
     scenario = scenario_for_cell(cell)
+    # A navigation scene's cells move the robot's start; a rigid scene's never do.
+    offset = cell["family"] == START_OFFSET_FAMILY
+    if offset is not (scene["task_kind"] == NAVIGATION_TASK_KIND):
+        raise ValueError("g1_beta_cell_family_task_mismatch")
+    parameters = cell["resolved_scenario"]["parameters"]
     request["scenario"] = scenario
+    if offset:
+        offset_robot_documents(parameters, request=request)
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     update = {key: scenario[key] for key in ("context_kind", "cell_id", "instance_digest", "seed")}
     contract["scenario"].update(update)
+    if offset:
+        offset_robot_documents(parameters, contract=contract, scene=scene)
     contract["contract_digest"] = canonical_digest(contract, digest_field="contract_digest")
     scene["scenario"].update(update)
     scene["runtime_contract_digest"] = contract["contract_digest"]

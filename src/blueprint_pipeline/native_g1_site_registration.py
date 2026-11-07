@@ -21,6 +21,15 @@ packet and source (``beta_policy_screening_g1.candidate_execution_spec``) and re
 (``compose_beta_authority``). Withdrawal deletion removes the row, its status and the packets
 (``website_capture_withdrawal_native_g1``).
 
+A navigation site (``goal_region_navigation``: the G1 at the compiled start of a scene kept as filmed,
+``website_navigation_scene_inputs``) is registered the same way. After the last live consent read its goal
+authority is composed from the G1 packet's plan and the site's retained task context
+(``native_g1_navigation_goal.compose_g1_navigation_goal_authority``) and written beside the packet as
+``navigation_authority.json``; only its navigation candidates are registered. The authority is deterministic
+from that plan and context, so one that today's contract refuses (an earlier composer's) or that does not read
+is set aside in the same directory and composed again. The door's contract reads such a site only once its
+record names a source (``native_g1_registration_contract.navigation_source``).
+
 Only privacy, rights and money stop work (AGENTS.md). A G1 problem here is a fixed reason in
 ``<root>/<site_id>.status.json``, never an exception. ``BLUEPRINT_NATIVE_G1_AUTO_REGISTRATION=0`` turns
 the registration, and the reading of its rows, off.
@@ -48,6 +57,12 @@ PACKET_RECEIPT = "native_task_arena_packet_receipt.v1.json"
 PUBLISHER_STAGE_SCHEMA = "native_g1_publisher_source_stage.v1"
 # The goal authority names the door's registration looks for (native_g1_registration_contract).
 NAVIGATION_AUTHORITY_NAMES = frozenset({"navigation_authority.json", "native_g1_navigation_goal_authority.v1.json"})
+#: The goal authority a navigation site's registration composes, beside its G1 packet.
+NAVIGATION_AUTHORITY_FILENAME = "navigation_authority.json"
+#: A superseded authority's name in its set-aside directory: one no authority reader looks for
+#: (``NAVIGATION_AUTHORITY_NAMES``), still ``.json`` so a withdrawal's scan reads it.
+SUPERSEDED_AUTHORITY_FILENAME = "navigation_authority.superseded.json"
+NAVIGATION_TASK_KIND = "goal_region_navigation"
 # A restore on the host, or a preparation already running, clears these with no new source, pin or
 # release: tried again on the next pass. Any other reason waits for one of those three to change.
 RETRY_EVERY_PASS = frozenset({
@@ -198,6 +213,19 @@ def _built_from_base(row: Mapping[str, Any], base_hex: str | None) -> bool:
                                         for item in row["screening_candidates"].values())
 
 
+def _navigation_plan(packet: str | Path) -> dict[str, Any] | None:
+    """The packet's scene plan when it is a navigation scene's, else None."""
+    try:
+        plan = json.loads((Path(packet) / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return plan if isinstance(plan, dict) and plan.get("task_kind") == NAVIGATION_TASK_KIND else None
+
+
+def _navigation_packet(packet: str | Path) -> bool:
+    return _navigation_plan(packet) is not None
+
+
 def _packet_dirs(row: Mapping[str, Any] | None) -> list[str]:
     try:
         return sorted({str(Path(item["native_g1"]["scene_packet"]["path"]).parent)
@@ -207,10 +235,20 @@ def _packet_dirs(row: Mapping[str, Any] | None) -> list[str]:
 
 
 def _spawn_reports_missing(row: Mapping[str, Any] | None) -> bool:
-    """Whether a registered packet has no spawn report yet (one prepared before the check existed)."""
-    from .native_g1_spawn_clearance import FILENAME
+    """Whether a registered packet has no spawn report yet (one prepared before the check existed).
 
-    return any(not (Path(packet) / FILENAME).is_file() for packet in _packet_dirs(row))
+    A navigation packet's per-offset report counts only while planning's reader accepts it for the packet's
+    plan; another is set aside and measured again (``ensure_packet_start_offsets``).
+    """
+    from .native_g1_spawn_clearance import FILENAME, start_offset_reports
+
+    for packet in _packet_dirs(row):
+        if not (Path(packet) / FILENAME).is_file():
+            return True
+        plan = _navigation_plan(packet)
+        if plan is not None and start_offset_reports(packet, plan.get("plan_digest")) is None:
+            return True
+    return False
 
 
 def _measure_spawns(row: Mapping[str, Any] | None) -> None:
@@ -221,13 +259,56 @@ def _measure_spawns(row: Mapping[str, Any] | None) -> None:
     A failure leaves it missing: planning then flags the row and funds it. A report is new data derived
     from the site's scene, so every caller reads the site's consent live first (``_require_current_consent``).
     """
-    from .native_g1_spawn_clearance import ensure_packet_spawn_clearance
+    from .native_g1_spawn_clearance import ensure_packet_spawn_clearance, ensure_packet_start_offsets
 
     for packet in _packet_dirs(row):
         try:
             ensure_packet_spawn_clearance(packet)
+            if _navigation_packet(packet):  # Each start offset its cells use, too.
+                ensure_packet_start_offsets(packet)
         except Exception:  # noqa: BLE001 - a G1 problem never stops the site's other candidates
             continue
+
+
+def _navigation_authorities_current(row: Mapping[str, Any]) -> bool:
+    """Every composed goal authority in the row still passes today's contract against its packet's plan.
+
+    After a composer change its file still matches the row's record, yet planning would refuse it; the
+    site is then registered again, which composes today's authority (``_compose_navigation_authority``).
+    A rigid scene's reviewed authority is not composed here and is left to planning.
+    """
+    from .native_g1_navigation_goal import validate_machine_composed_goal_authority
+
+    try:
+        for item in row["screening_candidates"].values():
+            record = item["native_g1"].get("navigation_authority")
+            packet = Path(item["native_g1"]["scene_packet"]["path"]).parent
+            if record is None or not _navigation_packet(packet):
+                continue
+            plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8"))
+            validate_machine_composed_goal_authority(
+                json.loads(Path(record["path"]).read_text(encoding="utf-8")), plan=plan)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def _set_aside(path: Path) -> None:
+    """Keep a superseded authority's bytes in a new directory beside it (``prepare._preserve_incomplete``'s pattern).
+
+    Inside the packet's directory, so the site's withdrawal deletes it with the packet; under a name no reader
+    looks for, so the current authority stays the only one. A link is refused, never followed.
+    """
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("g1_navigation_goal_authority_not_a_file")
+    retained = Path(tempfile.mkdtemp(prefix="." + path.name + ".superseded-", dir=path.parent))
+    os.rename(path, retained / SUPERSEDED_AUTHORITY_FILENAME)
+    for directory in (retained, path.parent):
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def _navigation_authority(site_root: Path, packet_dir: Path) -> dict[str, Any] | None:
@@ -248,6 +329,41 @@ def _navigation_authority(site_root: Path, packet_dir: Path) -> dict[str, Any] |
             except (OSError, ValueError, AttributeError):
                 continue
     return matches[0] if len(matches) == 1 else None
+
+
+def _compose_navigation_authority(*, site_id: str, current: Mapping[str, Any], registry: Mapping[str, Any],
+                                  packet_dir: Path) -> dict[str, Any]:
+    """The navigation scene's goal authority, composed and written beside its G1 packet; its file record.
+
+    Composed from the G1 packet's own plan and the site's retained task context, read and consent-checked as the
+    door's builder reads it (``native_g1_registration_contract.site_task_context``). The authority records whether
+    the site confirmed its brief; the job holds until the site confirms it on the website (a confirmed brief
+    counts as consent, owner 2026-11-07). The caller has just read the site's consent live.
+
+    The authority is deterministic from the plan and context just verified. A file with the same bytes is
+    left as it is; one with other bytes (an earlier composer's) or that does not read is set aside in the
+    same directory (``_set_aside``) and today's authority written in its place.
+    """
+    from .deployment_embodiment_preparation_contract import write_once
+    from .native_g1_navigation_goal import compose_g1_navigation_goal_authority
+
+    contract = _contract()
+    path = packet_dir / NAVIGATION_AUTHORITY_FILENAME
+    try:
+        context = contract.site_task_context({"source": dict(current), "site_id": site_id}, registry)
+        plan = contract.common.read(packet_dir / "native_task_arena_scene_plan.v1.json")
+        authority = compose_g1_navigation_goal_authority(plan=plan, task_context=context)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise _NotRegistered(_code(exc, "g1_current_navigation_goal_authority_unavailable")) from exc
+    try:
+        try:
+            write_once(path, authority)  # The same bytes already there: nothing is written.
+        except ValueError:  # Other bytes there (``existing_record_conflict``), or a link.
+            _set_aside(path)
+            write_once(path, authority)
+        return contract.file_record(path)
+    except (OSError, ValueError) as exc:
+        raise _NotRegistered("g1_current_navigation_goal_authority_unavailable") from exc
 
 
 def _write(path: Path, value: Mapping[str, Any]) -> None:
@@ -355,7 +471,8 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
             raise _NotRegistered(_code(exc, "g1_current_site_inputs_unavailable")) from exc
         except Exception as exc:  # noqa: BLE001 - recorded by name, never raised
             raise _NotRegistered("g1_current_site_inputs_unavailable") from exc
-        if base_scene.get("task_kind") != "rigid_pick_place":
+        navigation = base_scene.get("task_kind") == NAVIGATION_TASK_KIND
+        if base_scene.get("task_kind") != "rigid_pick_place" and not navigation:
             raise _NotRegistered("g1_beta_native_rigid_task_required")
         packet_dir = site_root / "native-g1" / base_receipt["receipt_digest"][7:] / canonical_digest(current)[7:]
         if not (packet_dir / PACKET_RECEIPT).exists():
@@ -371,12 +488,16 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
         try:
             records = {**shared, "scene_packet": contract.file_record(packet_dir / PACKET_RECEIPT)}
             goal = (base_scene.get("task_spec") or {}).get("g1_navigation_goal") is not None
-            authority = _navigation_authority(site_root, packet_dir) if goal else None
+            authority = _navigation_authority(site_root, packet_dir) if goal and not navigation else None
         except (OSError, ValueError) as exc:
             raise _NotRegistered("g1_current_scene_packet_missing") from exc
         # Privacy: a row (new or replacing one) only while the site's consent stands now, after any
         # preparation above, however long it took.
         _require_current_consent(current, site_id)
+        if navigation:
+            # New data from the site's own context (its brief), so only after that read.
+            authority = _compose_navigation_authority(site_id=site_id, current=current, registry=registry,
+                                                      packet_dir=packet_dir)
     except Exception as exc:  # noqa: BLE001 - a G1 problem never stops the site's other candidates
         refused = exc if isinstance(exc, _NotRegistered) else _NotRegistered("g1_site_registration_failed")
         if consent_refused(refused.reason):
@@ -399,7 +520,9 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
                 results[key] = {"status": "unavailable", "reason": "g1_current_navigation_goal_authority_missing"}
                 continue
             registrations[key] = {"native_g1": {**records, "navigation_authority": authority}}
-        elif goal:
+        elif goal or navigation:
+            # Planning refuses a manipulation checkpoint on a scene with a navigation goal, and on a navigation
+            # scene by its kind alone (``beta_policy_screening_g1``), whatever its task spec carries.
             results[key] = {"status": "unavailable", "reason": "g1_beta_manipulation_policy_task_mismatch"}
             continue
         else:
@@ -421,9 +544,9 @@ def ensure_site_registration(*, site_id: str, source: Mapping[str, Any], source_
                              manifest_path: str | Path = MANIFEST_PATH) -> dict[str, Any]:
     """Register the site's G1 candidates once for its current source; never raises.
 
-    Does nothing while the site's row already names the current source and its files still verify.
-    Otherwise prepares the site's G1 packet and writes a new row; another site's file is never written.
-    A consent refusal removes the site's row instead, and keeps removing it while the refusal stands.
+    Does nothing while the site's row already names the current source, its files still verify and each
+    goal authority it composed still passes today's contract. Otherwise prepares the site's G1 packet and
+    writes a new row; another site's file is never written. A consent refusal removes the site's row instead, and keeps removing it while the refusal stands.
     """
     if not reader.auto_registration_enabled():
         return {"status": "disabled"}
@@ -435,6 +558,7 @@ def ensure_site_registration(*, site_id: str, source: Mapping[str, Any], source_
     overlay = reader.site_registration_overlay(site_id, overlay_root)  # None for any unusable row
     if (overlay is not None and not consent_refused(_read_status(status_path).get("reason"))
             and overlay["source"] == current and _records_verify(overlay, Path(manifest_path))
+            and _navigation_authorities_current(overlay)
             and _built_from_base(overlay, _current_base_hex(site_id, current, Path(source_queue)))):
         if not _spawn_reports_missing(overlay):
             return {"status": "already_registered"}

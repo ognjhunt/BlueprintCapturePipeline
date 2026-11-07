@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
 from pathlib import Path
-from typing import Any, Mapping, Tuple
+from typing import Any, Iterable, Iterator, Mapping, Tuple
 
 
 # Shared readiness thresholds. Kept here so the numpy-free reviewer path
@@ -56,6 +56,7 @@ __all__ = [
     "try_parse_int",
     "utc_now_iso",
     "write_json",
+    "write_json_chunks",
     "write_text",
 ]
 
@@ -280,11 +281,86 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
+def _atomic_write_encoded_json(path: Path, chunks: Iterable[str]) -> None:
+    """``_atomic_write_text`` for JSON text that is still being encoded while it is written.
+
+    ``json.dumps`` used to fail before anything touched the filesystem. When encoding fails
+    part way (an unserializable value), the temporary file and any directories this call
+    created are removed again, so a refused payload leaves the filesystem as it found it.
+    """
+
+    missing = []
+    for parent in (path.parent, *path.parent.parents):
+        if parent.exists():
+            break
+        missing.append(parent)
+    ensure_dir(path.parent)
+    previous = _replaceable_target_metadata(path)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
+            for chunk in chunks:
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if previous is not None:
+            _carry_forward_target_identity(temporary_path, previous)
+        os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
+    except BaseException as error:
+        temporary_path.unlink(missing_ok=True)
+        if not isinstance(error, OSError):
+            for directory in missing:  # deepest first; a directory another writer filled stays
+                try:
+                    directory.rmdir()
+                except OSError:
+                    break
+        raise
+
+
+_JSON_REDACTIONS = (("<redacted:secret-field>", "REDACTED_SECRET_FIELD"), ("<redacted:secret>", "REDACTED_SECRET"))
+_JSON_WRITE_BATCH = 1 << 20
+
+
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    content = json.dumps(dict(payload), indent=2)
-    content = content.replace("<redacted:secret-field>", "REDACTED_SECRET_FIELD")
-    content = content.replace("<redacted:secret>", "REDACTED_SECRET")
-    _atomic_write_text(path, content)
+    # The very encoder ``json.dumps(payload, indent=2)`` runs (with an indent it is the pure-Python
+    # one), streamed: a large payload is never held as the list of its pieces nor as one string,
+    # which for millions of track runs took several times the payload. Same bytes.
+    write_json_chunks(path, json.JSONEncoder(indent=2).iterencode(dict(payload)))
+
+
+def write_json_chunks(path: Path, chunks: Iterable[str]) -> None:
+    """Commit the JSON text ``chunks`` spell out, redacted and atomically as ``write_json`` commits it.
+
+    Each JSON string must lie whole within one chunk, as ``json``'s encoders yield them. A
+    redaction marker exists only inside a JSON string, so it never straddles two chunks, and
+    redacting batches of whole chunks gives the bytes redacting the whole text gives.
+    """
+
+    def batches() -> Iterator[str]:
+        pending: list[str] = []
+        size = 0
+        for chunk in chunks:
+            pending.append(chunk)
+            size += len(chunk)
+            if size >= _JSON_WRITE_BATCH:
+                yield _redact_json_text("".join(pending))
+                pending, size = [], 0
+        if pending:
+            yield _redact_json_text("".join(pending))
+
+    _atomic_write_encoded_json(path, batches())
+
+
+def _redact_json_text(text: str) -> str:
+    for marker, replacement in _JSON_REDACTIONS:
+        text = text.replace(marker, replacement)
+    return text
 
 
 def write_text(path: Path, content: str) -> None:

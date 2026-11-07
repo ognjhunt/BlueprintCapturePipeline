@@ -30,6 +30,10 @@ from .team_evaluation_plan import scored_cells
 from .website_candidate_feasibility import REACH_RANK_FIELDS, REACH_TIERS, reach_rank
 from .task_family_policy_execution import FAMILY_BACKEND, family_policy_execution_binding
 from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES, frozen_cells as g1_cells
+from .beta_policy_screening_g1 import DROPPED_START_OFFSETS_FIELD
+from .native_g1_beta_authority import (
+    NAVIGATION_START_OFFSETS, NAVIGATION_TASK_KIND, START_OFFSET_FAMILY, start_offset_parameters,
+)
 
 PLAN_SCHEMA_VERSION = "beta_policy_screening_plan.v1"
 #: The screening harness revision a plan was made under. Plans made before revisions existed
@@ -87,6 +91,8 @@ _HOSTED_COST_FIELDS = {"provider_hard_cap_usd", "hosted_inference_maximum_usd", 
                        "hosted_max_cost_per_request_usd", "hosted_http_request_limit", "credential_origin"}
 _UNIT_PRICE = re.compile(r"^(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,12})?$")
 _ROOT_POSE_PARAMETERS = {"object_start_x_delta_m", "object_start_y_delta_m", "object_yaw_delta_degrees"}
+#: A navigation cell's parameters: one row of the robot's start offsets (``NAVIGATION_START_OFFSETS``).
+_START_OFFSET_PARAMETERS = {"robot_start_forward_m", "robot_start_lateral_m"}
 _CAPABILITY_REASON = re.compile(r"[a-z][a-z0-9_]{1,127}")
 # A measured refusal carries its numbers, e.g. robot_reach_insufficient:place:1.107m_vs_0.990m; the
 # coordinator publishes the same character set (``beta_policy_screening_coordinator._BLOCKER``).
@@ -168,7 +174,7 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
                 "configuration_digest", "runtime_digest", "backend", "max_hourly_rate_usd",
                 "hard_ttl_seconds", "implementation_commit", "task_success_contract_digest"}
     optional = {"machine_avoidlist_path", "credential_file", "team_robot_model", "minimum_gpu_memory_gb",
-                "setup_quality_flags"}
+                "setup_quality_flags", DROPPED_START_OFFSETS_FIELD}
     if (set(result) - required - optional - _HOSTED_COST_FIELDS
             or required - set(result)
             or result["schema_version"] != EXECUTION_SCHEMA_VERSION
@@ -188,6 +194,14 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
     if (not isinstance(flags, list) or not flags or flags != sorted(set(flags))
             or not all(isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code) for code in flags)):
         raise BetaPolicyScreeningPlanError("beta_screening_setup_quality_flags_invalid")
+    # A navigation G1 row's start offsets whose spawn overlaps: their cells are not funded (``g1_spawn_overlap``).
+    if DROPPED_START_OFFSETS_FIELD in result:
+        dropped = result[DROPPED_START_OFFSETS_FIELD]
+        if (result["backend"] != G1_BACKEND or not isinstance(dropped, dict)
+                or not 1 <= len(dropped) < len(NAVIGATION_START_OFFSETS)
+                or set(dropped) - {row[0] for row in NAVIGATION_START_OFFSETS}
+                or any(reason != "g1_spawn_overlap" for reason in dropped.values())):
+            raise BetaPolicyScreeningPlanError("beta_screening_dropped_start_offsets_invalid")
     if "minimum_gpu_memory_gb" in result:
         memory = result["minimum_gpu_memory_gb"]
         if type(memory) not in (int, float) or not 0 < memory <= 1024:
@@ -235,6 +249,12 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
                 or provider < _compute_cost_floor(result)):
             raise BetaPolicyScreeningPlanError("beta_screening_hosted_cost_binding_invalid")
     return result
+
+
+def _dropped_start_offsets(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """A G1 descriptor's dropped start offsets as a mapping (its own validation names a malformed one)."""
+    dropped = spec.get(DROPPED_START_OFFSETS_FIELD) if isinstance(spec, Mapping) else None
+    return dropped if isinstance(dropped, dict) else {}
 
 
 def _compute_cost_floor(spec: Mapping[str, Any]) -> Decimal:
@@ -298,12 +318,20 @@ def _native_scene_plan(scene: Mapping[str, Any]) -> Mapping[str, Any]:
                 != scene.get("task_success_contract_digest")):
             raise BetaPolicyScreeningPlanError("beta_screening_native_family_scene_plan_invalid")
         return plan
+    # A navigation scene (the G1 at its compiled start in a scene kept as filmed) has no task subject, and a goal.
+    navigation = scene.get("task_kind") == NAVIGATION_TASK_KIND
     if (not isinstance(plan, Mapping) or plan.get("task_kind") != scene.get("task_kind")
             or plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
             or not isinstance(plan.get("objects"), list)
             or any(not isinstance(row, Mapping) for row in plan["objects"])
-            or sum(row.get("task_subject") is True for row in plan["objects"]) != 1):
+            or sum(row.get("task_subject") is True for row in plan["objects"]) != (0 if navigation else 1)):
         raise BetaPolicyScreeningPlanError("beta_screening_native_scene_plan_invalid")
+    if navigation:
+        from .native_g1_navigation_goal import validate_g1_navigation_goal
+        try:
+            validate_g1_navigation_goal(plan.get("task_spec") or {})
+        except ValueError as exc:
+            raise BetaPolicyScreeningPlanError("beta_screening_native_scene_plan_invalid") from exc
     return plan
 
 
@@ -328,6 +356,19 @@ def screening_cells(scene: Mapping[str, Any], count: int = DEFAULT_EPISODES) -> 
             seed = int(hashlib.sha256(f"{salt}:{ordinal}".encode()).hexdigest()[:8], 16) % 2**31
             cells.append({"cell_id": f"screening.{scene['scene_id']}.{ordinal:03d}", "seed": seed,
                 "family": "canonical_anchor", "partition": "screening", "resolved_scenario": scenario,
+                "cell_spec_digest": digest, "resolved_scenario_digest": digest})
+        return cells
+    if scene.get("task_kind") == NAVIGATION_TASK_KIND:
+        # A navigation scene's cells move the robot's start, one per frozen start offset, seeded from the same
+        # salt; the rigid lane's placement and lighting perturbations have no object to move.
+        cells = []
+        for ordinal in range(min(count, len(NAVIGATION_START_OFFSETS))):
+            scenario = {"family": START_OFFSET_FAMILY, "ordinal": ordinal,
+                        "parameters": start_offset_parameters(ordinal)}
+            digest = canonical_digest(scenario)
+            seed = int(hashlib.sha256(f"{salt}:{ordinal}".encode()).hexdigest()[:8], 16) % 2**31
+            cells.append({"cell_id": f"screening.{scene['scene_id']}.{ordinal:03d}", "seed": seed,
+                "family": START_OFFSET_FAMILY, "partition": "screening", "resolved_scenario": scenario,
                 "cell_spec_digest": digest, "resolved_scenario_digest": digest})
         return cells
     draws = scored_cells(scene_revision_digest=scene["scene_revision_digest"], scene_id=scene["scene_id"],
@@ -653,7 +694,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             continue
         try:
             g1_row = (binding.get("execution_spec") or {}).get("backend") == G1_BACKEND
-            episodes = len(g1_cells(cells)) if g1_row else episodes_per_candidate
+            dropped = _dropped_start_offsets(binding.get("execution_spec") or {})
+            episodes = len(g1_cells(cells, dropped)) if g1_row else episodes_per_candidate
             quote = validate_cost_quote(cost_quotes.get(candidate_id, {}),
                                          configuration_digest=candidate["configuration_digest"],
                                          scene_revision_digest=scene["scene_revision_digest"],
@@ -676,7 +718,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         frozen = {"admission_digest": binding["admission_digest"],
                   "execution_spec": deepcopy(binding["execution_spec"]), "cost_quote": quote,
                   "max_cost_usd": quote["maximum_cost_usd"], "episode_count": episodes,
-                  "scenario_cells": g1_cells(cells) if spec["backend"] == G1_BACKEND else deepcopy(cells)}
+                  "scenario_cells": g1_cells(cells, dropped) if spec["backend"] == G1_BACKEND else deepcopy(cells)}
         if maximum > budget:
             # More than this plan could ever fund, even with nothing else selected.
             row.update(status="deferred", blockers=[WAITLIST_BLOCKER])
@@ -777,6 +819,16 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 or cell.get("resolved_scenario_digest") != cell["cell_spec_digest"]):
             raise BetaPolicyScreeningPlanError("beta_screening_cell_binding_invalid")
         scenario = cell["resolved_scenario"]
+        if cell.get("family") == START_OFFSET_FAMILY:
+            # A navigation cell: exactly one row of the robot's start offsets, at its own ordinal, and nothing else.
+            if (family or set(scenario) != {"family", "ordinal", "parameters"} or scenario["family"] != START_OFFSET_FAMILY
+                    or type(scenario["ordinal"]) is not int or scenario["ordinal"] != ordinal
+                    or ordinal >= len(NAVIGATION_START_OFFSETS)
+                    or scenario["parameters"] != start_offset_parameters(ordinal)):
+                raise BetaPolicyScreeningPlanError("beta_screening_scenario_parameters_invalid")
+            ids.append(cell["cell_id"])
+            seeds.append(cell["seed"])
+            continue
         if (not isinstance(scenario, dict) or set(scenario) - {"family", "ordinal", "parameters", "runtime_coverage_gaps"}
                 or not {"family", "ordinal", "parameters"} <= set(scenario)
                 or type(scenario["ordinal"]) is not int or scenario["ordinal"] != ordinal
@@ -827,7 +879,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
             if set(row) - evidence_fields != {"candidate_id", "display_name", "configuration_digest", "status", "blockers", "admission_digest",
                             "execution_spec", "cost_quote", "max_cost_usd", "episode_count", "scenario_cells"}:
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_fields_invalid")
-            expected_cells = g1_cells(cells) if row.get("execution_spec", {}).get("backend") == G1_BACKEND else cells
+            expected_cells = (g1_cells(cells, _dropped_start_offsets(row["execution_spec"]))
+                              if row.get("execution_spec", {}).get("backend") == G1_BACKEND else cells)
             # A plan sized to its website job's ceiling names the ceiling as what waitlisted it.
             waitlist_reasons = ([[WAITLIST_BLOCKER], [JOB_CEILING_DEFERRED]]
                                 if plan.get("budget_basis") == JOB_CEILING_BASIS else [[WAITLIST_BLOCKER]])

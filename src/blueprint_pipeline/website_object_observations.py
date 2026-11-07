@@ -20,6 +20,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .website_task_masks import decode_track_mask
+from .website_track_mask_codec import canonical_track_digest
 
 SCHEMA = "website_object_observations.v1"
 REFERENCE_ROLE = "website_object_observation_references"
@@ -127,8 +128,9 @@ def _upright(frame: Mapping[str, Any], source: Path, target: Path) -> float:
 
 def materialize_object_observations(*, preparation: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                     task_masks: Mapping[str, Any], output_root: Path) -> dict[str, Any]:
+    # Task masks may hold compact runs (``RunLengths``); the codec's digest is ``canonical_digest``'s.
     for value in (preparation, source_geometry, task_masks):
-        if value.get("digest") != canonical_digest(value, digest_field="digest"):
+        if value.get("digest") != canonical_track_digest(value, digest_field="digest"):
             raise ValueError("website_object_observation_input_changed")
     bindings = preparation["binding"]
     if (bindings["source_geometry_digest"] != source_geometry["digest"]

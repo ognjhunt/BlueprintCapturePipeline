@@ -17,6 +17,7 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_policy_server_supervisor import PINNED_SOURCE_REVISION
 from .native_g1_navigation_goal import (
+    NAVIGATION_TASK_KIND,
     validate_g1_navigation_goal,
     validate_g1_navigation_goal_authority,
 )
@@ -45,6 +46,19 @@ PATH_FIELDS = (
     "python_executable",
     "runtime_provisioning_receipt_path",
 )
+
+
+def scene_kind_admitted(task_kind: Any, candidate_id: Any) -> bool:
+    """Whether this G1 worker runs a scene of ``task_kind`` for ``candidate_id``; never raises.
+
+    A navigation scene (kept as filmed, no task object) runs only the navigation checkpoints; every other
+    G1 scene is the rigid pick-and-place it always was. Compared by ``==``, never hashed, so a kind that is
+    not a string (a malformed plan) is refused by name rather than raising ``TypeError``.
+    """
+    if not isinstance(task_kind, str) or not isinstance(candidate_id, str):
+        return False
+    return task_kind == "rigid_pick_place" or (task_kind == NAVIGATION_TASK_KIND
+                                               and candidate_id in G1_NAVIGATION_CANDIDATES)
 
 
 def _request(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -302,7 +316,9 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
                 raise ValueError("g1_beta_robot_asset_mismatch")
         if (
             plan.get("plan_digest") != preflight.get("scene_plan_digest")
-            or plan.get("task_kind") != "rigid_pick_place"
+            # A navigation scene (kept as filmed, no task object) runs only the navigation
+            # checkpoints; every other G1 scene is the rigid pick-and-place it always was.
+            or not scene_kind_admitted(plan.get("task_kind"), sealed["candidate_id"])
             or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
         ):
             raise ValueError("g1_worker_scene_changed_after_preflight")

@@ -29,6 +29,13 @@ GLB_FRAMES = {"atlas_world": (1.0, 1.0, 1.0), "atlas_world_rotated_180_x": (1.0,
 MAX_MEDIAN_RESIDUAL_VOXELS = 3.0
 SUPPORT_VOXELS = 4.0
 SUPPORT_MESH_EDGES = 2.0
+#: A mesh cannot sit closer to the splat than its own triangles allow: nearest-vertex distances grow
+#: with the provider's mesh resolution, which the draft's fusion grid does not set. capture-447's
+#: registered refined mesh measured a median residual of 0.81 median edges (0.0178 against a 0.0219
+#: edge); the library-aisle mesh (613,408 faces against capture-447's 1.89 M) failed the grid-only
+#: tolerance. A wrong declared frame misses by scene-scale distances, far beyond either bound.
+REGISTRATION_MESH_EDGES = 1.5
+FAILURE_RECORD = "atlas_mesh_registration_failure.json"
 REGISTRATION_SAMPLES = 200_000
 #: Faces gathered into (faces, 3, 3) at once. A room's mesh has millions of faces (capture-447's: 6.5 M), and
 #: the whole array is 470 MB of float64 per copy; registration held two and its area temporaries (2.8 GB).
@@ -214,12 +221,20 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
     if not np.isfinite(voxel) or voxel <= 0:
         raise ValueError("atlas_mesh_voxel_size_invalid")
     vertices, faces = read_glb_triangles(glb)
+
+    def per_face(rows: np.ndarray, value) -> np.ndarray:
+        """``value`` of ``vertices[rows]``, gathered ``FACE_BLOCK`` faces at a time: each face's own arithmetic."""
+        return np.concatenate([value(vertices[rows[start:start + FACE_BLOCK]])
+                               for start in range(0, len(rows), FACE_BLOCK)] or [value(vertices[rows[:0]])])
+
+    # Edge length does not change under the declared axis flips, so it is measured once, before the search.
+    edge = float(np.median(per_face(faces, lambda tri: np.linalg.norm(tri[:, 1] - tri[:, 0], axis=1))))
     tree = cKDTree(splat.xyz)
     mesh_tree = cKDTree(vertices)
     sample = vertices[np.linspace(0, len(vertices) - 1, min(REGISTRATION_SAMPLES, len(vertices))).astype(np.int64)]
     source_sample = splat.xyz[np.linspace(0, len(splat.xyz) - 1,
                                          min(REGISTRATION_SAMPLES, len(splat.xyz))).astype(np.int64)]
-    limit = MAX_MEDIAN_RESIDUAL_VOXELS * voxel
+    limit = max(MAX_MEDIAN_RESIDUAL_VOXELS * voxel, REGISTRATION_MESH_EDGES * edge)
     diagnostics, residuals, candidates = {}, {}, []
     for name, sign in GLB_FRAMES.items():
         # A partial mesh can cover less than half the source; closing sheets can
@@ -237,20 +252,26 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
                              "source_supported_fraction": float(np.mean(source_distance <= limit))}
         if best <= limit:
             candidates.append(name)
-    if not candidates:
-        raise ValueError("atlas_mesh_not_registered_to_splat")
     if len(candidates) != 1:
-        raise ValueError("atlas_mesh_frame_ambiguous")
+        # Counts and distances only, so the refusal can be read without the mesh or the splat.
+        failure = {"schema_version": "atlas_mesh_registration_failure.v1",
+                   "reason": "atlas_mesh_not_registered_to_splat" if not candidates else "atlas_mesh_frame_ambiguous",
+                   "frame_support": diagnostics, "median_residual_by_frame": residuals,
+                   "registration_distance_limit": limit, "voxel_size": voxel, "median_mesh_edge": edge,
+                   "registration_limit_basis": "max(3 draft voxels, 1.5 median mesh edges)",
+                   "mesh_vertices": int(len(vertices)), "mesh_faces": int(len(faces)),
+                   "splat_points": int(len(splat.xyz)),
+                   "mesh_bounds": [vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist()],
+                   "splat_bounds": [splat.xyz.min(axis=0).astype(float).tolist(),
+                                    splat.xyz.max(axis=0).astype(float).tolist()],
+                   "source_glb_sha256": _sha256_file(glb), "splat_manifest_digest": splat_manifest["digest"]}
+        failure["digest"] = canonical_digest(failure, digest_field="digest")
+        Path(output_root).mkdir(parents=True, exist_ok=True)
+        (Path(output_root) / FAILURE_RECORD).write_text(json.dumps(failure, indent=2, sort_keys=True) + "\n")
+        raise ValueError(failure["reason"])
     frame = candidates[0]
     del mesh_tree  # only the frame search reads it
     vertices = vertices * np.array(GLB_FRAMES[frame])
-
-    def per_face(rows: np.ndarray, value) -> np.ndarray:
-        """``value`` of ``vertices[rows]``, gathered ``FACE_BLOCK`` faces at a time: each face's own arithmetic."""
-        return np.concatenate([value(vertices[rows[start:start + FACE_BLOCK]])
-                               for start in range(0, len(rows), FACE_BLOCK)] or [value(vertices[rows[:0]])])
-
-    edge = float(np.median(per_face(faces, lambda tri: np.linalg.norm(tri[:, 1] - tri[:, 0], axis=1))))
     support = max(SUPPORT_VOXELS * voxel, SUPPORT_MESH_EDGES * edge)
     vertex_distance, vertex_nearest = tree.query(vertices, distance_upper_bound=np.nextafter(support, np.inf))
     centroid_distance = per_face(faces, lambda tri: tree.query(
@@ -279,6 +300,7 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
               "splat_manifest_digest": splat_manifest["digest"], "glb_frame": frame,
               "median_residual_by_frame": residuals, "frame_support": diagnostics,
               "registration_distance_limit": limit, "registration_basis": "majority_overlap_in_either_direction",
+              "registration_limit_basis": "max(3 draft voxels, 1.5 median mesh edges)",
               "support_basis": "all_vertices_and_centroid", "voxel_size": voxel, "median_mesh_edge": edge,
               "support_distance": support, "faces_in": int(len(faces)), "faces_kept": int(len(kept)),
               "area_kept_fraction": area(kept) / area(faces),

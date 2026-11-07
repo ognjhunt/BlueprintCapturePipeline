@@ -7,6 +7,7 @@ src/blueprint_pipeline/beta_policy_screening_worker.py.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -648,3 +649,294 @@ def test_the_worker_registers_before_reading_the_profile_and_goes_on_when_regist
     assert call["site_id"] == "site-job1" and call["source_queue"] == world["packet_queue"]
     plan = json.loads(next((world["screening_queue"] / "plans").glob("*.json")).read_text())
     assert call["source"] == plan["source"]
+
+
+# --- a navigation site: the G1 at its compiled start (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C) ---
+
+
+@pytest.fixture
+def navigation_world(tmp_path, monkeypatch):
+    """A real navigation record over a measurable room, its site records and a pinned manifest; the packet is
+    prepared by the registration itself."""
+    from tests.test_beta_policy_screening_g1_prepare import navigation_preparation, navigation_task_context
+
+    args, record = navigation_preparation(tmp_path, monkeypatch)
+    site, source = record["scene_id"], dict(args["source"])
+    # The record's own website capture (``scenes/<site>/captures/<capture>``), where the handoff writes it.
+    capture = next(path for path in Path(record["packet_root"]).parents if path.parent.name == "captures")
+    write(capture / "pipeline/website_task_context.json", navigation_task_context())
+    derived = seal({"schema_version": reader.DERIVED_SCHEMA, "capture_root": str(capture), "scene_id": site,
+        "task_id": source["task_id"], "scene_revision_digest": source["scene_revision_digest"],
+        "navigation_scene_inputs_path": str(Path(record["packet_root"]).parent / "website_navigation_scene_inputs.v1.json")},
+        "profile_digest")
+    write(tmp_path / "derived/site.json", derived)
+    defaults = {"allowed_founder_approvers": ["development-owner"], "max_hourly_rate_usd": 0.8, "open_loop_horizon": 8}
+    registry = seal({"schema_version": reader.REGISTRY_SCHEMA, "profiles": [], "derived_profiles": {
+        "root": str(tmp_path / "derived"), "packet_inputs": {"output_root": str(tmp_path / "navigation_scene_inputs")},
+        "defaults": defaults}}, "registry_digest")
+    write(tmp_path / "etc/registry.json", registry)
+    monkeypatch.setenv(reader.REGISTRY_ENV, str(tmp_path / "etc/registry.json"))
+    publisher = tmp_path / "shared/publisher/native_g1_publisher_source_stage.v1.json"
+    write(publisher, seal({"schema_version": "native_g1_publisher_source_stage.v1", "status": "ready"}, "receipt_digest"))
+    runtime = tmp_path / "shared/runtime/native_task_runtime_source_packet.v1.json"
+    write(runtime, {"schema_version": "development_only"})
+    robot = Path(args["robot_asset_record"]["path"])
+    write(tmp_path / "shared/manipulation/native_task_arena_scene_plan.v1.json", {"robot": {"usd_path": str(robot)}})
+    pinned = shared_manifest(tmp_path, publisher=publisher, runtime=runtime, robot=robot,
+                             robot_dir=tmp_path / "shared/manipulation")
+    kwargs = {"site_id": site, "source": source, "source_queue": tmp_path / "queue", "release": "a" * 40,
+              "manifest_path": pinned}
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", lambda *a, **k: {})
+    return kwargs, {**derived, **defaults}, registry, args, record
+
+
+def _stand_in_source(monkeypatch, kwargs):
+    """A navigation record names no source yet (its scene intent is undecided): a clearly marked stand-in."""
+    monkeypatch.setattr(builder.contract, "navigation_source", lambda record: dict(kwargs["source"]))
+
+
+def test_a_navigation_site_is_not_registered_until_its_record_names_a_source(navigation_world):
+    kwargs, _, _, _, _ = navigation_world
+    result = registration.ensure_site_registration(**kwargs)
+    assert result["status"] == "not_registered"
+    assert result["reason"] == "native_g1_install_navigation_source_identity_unbound"
+    assert status_of(kwargs["site_id"])["retry"] == "on_source_pin_or_release_change"
+    assert not overlay_path(kwargs["site_id"]).exists()
+
+
+def test_a_navigation_site_registers_its_navigation_checkpoints_with_a_composed_goal_authority(
+        navigation_world, monkeypatch):
+    from blueprint_pipeline.native_g1_navigation_goal import validate_g1_navigation_goal_authority
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    from tests.test_beta_policy_screening_g1_prepare import navigation_task_context
+
+    kwargs, profile, registry, args, record = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    checked = []
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source",
+                        lambda value, *, site_id: checked.append((value, site_id)))
+    result = registration.ensure_site_registration(**kwargs)
+    assert result["status"] == "registered", result
+    assert result["candidates"] == {
+        DP: {"status": "unavailable", "reason": "g1_beta_manipulation_policy_task_mismatch"},
+        PI: {"status": "unavailable", "reason": "g1_beta_manipulation_policy_task_mismatch"},
+        DP_NAV: {"status": "registered"}, PI_NAV: {"status": "registered"}}
+    # Consent was read live before the packet was prepared and again before the authority and the row.
+    assert checked == [(kwargs["source"], kwargs["site_id"])] * 2
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    records = row["screening_candidates"][DP_NAV]["native_g1"]
+    assert row["screening_candidates"][PI_NAV]["native_g1"] == records
+    packet = Path(records["scene_packet"]["path"]).parent
+    assert records["navigation_authority"]["path"] == str(packet / "navigation_authority.json")
+    plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())
+    authority = json.loads((packet / "navigation_authority.json").read_text())
+    assert validate_g1_navigation_goal_authority(authority, plan=plan) == authority
+    assert authority["task_context"] == navigation_task_context() and authority["site_brief_confirmed"] is False
+    assert authority["scope"]["scene_plan_digest"] == plan["plan_digest"]
+    # The spawn check at every start offset sits beside the packet.
+    assert spawn.start_offset_reports(packet, plan["plan_digest"]) is not None
+    actual = reader._site_screening_profile(registry, profile)
+    assert actual["native_g1_registration_source"] == kwargs["source"]
+    assert set(actual["screening_candidates"]) == {DP_NAV, PI_NAV}
+    # The next pass finds the row current and does nothing; the authority is written once.
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
+
+
+def test_a_registered_navigation_packet_without_its_offset_report_is_measured_on_the_next_pass(
+        navigation_world, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    report = Path(row["screening_candidates"][DP_NAV]["native_g1"]["scene_packet"]["path"]).parent \
+        / spawn.START_OFFSETS_FILENAME
+    kept = json.loads(report.read_text())
+    report.unlink()
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
+    assert json.loads(report.read_text()) == kept
+
+
+def test_a_registered_navigation_packet_whose_offset_report_changed_is_measured_again_on_the_next_pass(
+        navigation_world, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    packet = Path(row["screening_candidates"][DP_NAV]["native_g1"]["scene_packet"]["path"]).parent
+    report = packet / spawn.START_OFFSETS_FILENAME
+    kept = json.loads(report.read_text())
+    changed = deepcopy(kept)
+    changed["offsets"][0]["max_depth_m"] = 0.5  # Edited without its seal: planning's reader refuses it.
+    report.chmod(0o644)
+    report.write_text(json.dumps(changed))
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
+    assert json.loads(report.read_text()) == kept
+    [aside] = packet.glob(f".{spawn.START_OFFSETS_FILENAME}.incomplete-*/{spawn.START_OFFSETS_FILENAME}")
+    assert json.loads(aside.read_text()) == changed
+
+
+def _navigation_authority_path(kwargs) -> Path:
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    return Path(row["screening_candidates"][DP_NAV]["native_g1"]["navigation_authority"]["path"])
+
+
+def _kept_aside(path: Path) -> list[Path]:
+    return sorted(path.parent.glob(f".{path.name}.superseded-*/{registration.SUPERSEDED_AUTHORITY_FILENAME}"))
+
+
+def test_a_changed_composer_rewrites_the_navigation_authority_and_keeps_the_old_bytes_aside(
+        navigation_world, monkeypatch):
+    from blueprint_pipeline import native_g1_navigation_goal as goal
+
+    kwargs, profile, registry, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    path = _navigation_authority_path(kwargs)
+    before = path.read_bytes()
+    # A later release composes another authority, and its contract refuses the one already on disk.
+    monkeypatch.setattr(goal, "MACHINE_AUTHORITY_STATUS",
+                        {key: value + "_later_composer" for key, value in goal.MACHINE_AUTHORITY_STATUS.items()})
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    result = registration.ensure_site_registration(**kwargs)
+    assert result["status"] == "registered", result
+    assert result["candidates"][DP_NAV] == result["candidates"][PI_NAV] == {"status": "registered"}
+    # Rewritten in place; the old bytes are kept aside in the same directory, under a name no reader looks for.
+    assert path == _navigation_authority_path(kwargs) and path.read_bytes() != before
+    rewritten = json.loads(path.read_text())
+    plan = json.loads((path.parent / "native_task_arena_scene_plan.v1.json").read_text())
+    assert rewritten["status"].endswith("_later_composer")
+    assert goal.validate_machine_composed_goal_authority(rewritten, plan=plan) == rewritten
+    [kept] = _kept_aside(path)
+    assert kept.read_bytes() == before and kept.name not in registration.NAVIGATION_AUTHORITY_NAMES
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    assert row["screening_candidates"][DP_NAV]["native_g1"]["navigation_authority"]["sha256"] == \
+        "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    assert set(reader._site_screening_profile(registry, profile)["screening_candidates"]) == {DP_NAV, PI_NAV}
+    # The next pass finds it current and writes nothing.
+    assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
+    assert len(_kept_aside(path)) == 1
+
+
+def test_an_unreadable_navigation_authority_is_set_aside_and_composed_again(navigation_world, monkeypatch):
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    path = _navigation_authority_path(kwargs)
+    composed = path.read_bytes()
+    path.chmod(0o644)
+    path.write_bytes(b"{not json")
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    assert path.read_bytes() == composed
+    [kept] = _kept_aside(path)
+    assert kept.read_bytes() == b"{not json"
+
+
+def test_a_linked_navigation_authority_is_never_followed(navigation_world, monkeypatch, tmp_path):
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    path = _navigation_authority_path(kwargs)
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_bytes(b"{}")
+    path.unlink()
+    path.symlink_to(elsewhere)
+    result = registration.ensure_site_registration(**kwargs)
+    assert result["status"] == "not_registered"
+    assert result["reason"] == "g1_current_navigation_goal_authority_unavailable"
+    assert path.is_symlink() and elsewhere.read_bytes() == b"{}" and _kept_aside(path) == []
+
+
+def test_a_navigation_scene_never_registers_a_manipulation_checkpoint_whatever_its_task_spec_carries(
+        navigation_world, monkeypatch):
+    """By its kind alone, as planning refuses one (``beta_policy_screening_g1``), not only by its goal."""
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    resolve = builder.contract.site_inputs
+
+    def without_goal(*args, **kw):
+        site_root, inputs, base_receipt, request, scene = resolve(*args, **kw)
+        task_spec = {key: value for key, value in scene["task_spec"].items() if key != "g1_navigation_goal"}
+        return site_root, inputs, base_receipt, request, {**scene, "task_spec": task_spec}
+
+    monkeypatch.setattr(builder.contract, "site_inputs", without_goal)
+    overlay_path(kwargs["site_id"]).unlink()
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    result = registration.ensure_site_registration(**kwargs)
+    assert result["status"] == "registered", result
+    assert result["candidates"][DP] == result["candidates"][PI] == {
+        "status": "unavailable", "reason": "g1_beta_manipulation_policy_task_mismatch"}
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    assert set(row["screening_candidates"]) == {DP_NAV, PI_NAV}
+
+
+def test_a_refused_retained_consent_on_a_navigation_site_composes_nothing(navigation_world, monkeypatch, tmp_path):
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    path = next(tmp_path.rglob("captures/*/pipeline/website_task_context.json"))
+    context = json.loads(path.read_text())
+    context["capture_rights"] = {**context["capture_rights"], "consent_revoked": True}
+    write(path, seal(context, "context_digest"))
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared"))
+    result = registration.ensure_site_registration(**kwargs)
+    assert result == {"status": "not_registered", "reason": "native_g1_install_retained_task_consent_invalid"}
+    assert not overlay_path(kwargs["site_id"]).exists() and not list(tmp_path.rglob("navigation_authority.json"))
+
+
+def test_the_navigation_chain_from_the_record_through_g1_prepare_to_a_cell(navigation_world, monkeypatch, tmp_path):
+    """The real chain on CPU: the navigation record, the service registration (G1 prepare and the composed goal
+    authority), planning on the shipped catalog, a funded row's start-offset cell, and the cell's derived packet and
+    navigation authority as the G1 runtime and worker check them. No simulator, provider or money."""
+    from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
+    from blueprint_pipeline.beta_policy_screening_capabilities import build_planning_inputs
+    from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan, validate_screening_plan
+    from blueprint_pipeline.native_g1_beta_authority import apply_start_offset, start_offset_parameters
+    from blueprint_pipeline.native_g1_beta_navigation import derive_navigation_authority
+    from blueprint_pipeline.native_g1_beta_packet import materialize_cell_packet, verify_cell_packet
+
+    kwargs, profile, registry, args, record = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    current = reader._site_screening_profile(registry, profile)
+    # Only the CPU fixture stand-ins for the shared sources and the pinned G1 USD; consent is read as granted.
+    monkeypatch.setattr("blueprint_pipeline.native_g1_publisher_source_stage.verify_g1_publisher_source", lambda root: {})
+    monkeypatch.setattr("blueprint_pipeline.native_task_runtime_source_packet.verify_native_task_runtime_source_packet",
+        lambda path: {"runtime_profile": "unitree_g1", "redistribution_permitted": True})
+    monkeypatch.setattr(g1, "ROBOT_USD_SHA256", args["robot_asset_record"]["sha256"])
+    catalog = load_default_catalog()
+    planning = build_planning_inputs(catalog=catalog, profile=current, capture_root=Path(current["capture_root"]),
+                                     source=kwargs["source"], inputs_dir=tmp_path / "screening-inputs")
+    plan = build_screening_plan(catalog, planning["scene"], capabilities=planning["capabilities"],
+                                cost_quotes=planning["cost_quotes"], campaign_id="navigation-chain")
+    assert validate_screening_plan(plan) == plan
+    rows = {row["candidate_id"]: row for row in plan["candidates"]}
+    row = rows[DP_NAV]
+    assert row["status"] == "selected" and row["max_cost_usd"] == "4.00" and row["episode_count"] == 4
+    assert [cell["family"] for cell in row["scenario_cells"]] == ["robot_start_offset"] * 4
+    for key in (DP, PI):
+        assert rows[key]["status"] == "unavailable"
+        assert "task_kind_not_supported_by_candidate" in rows[key]["blockers"]
+    # The funded row's second cell: the G1 starts 15 cm to its left, nothing else moves.
+    spec = json.loads(Path(row["execution_spec"]["policy_execution_spec"]["path"]).read_text())
+    base = Path(spec["native_g1"]["scene_packet"]["path"]).parent
+    cell = row["scenario_cells"][1]
+    derivation = materialize_cell_packet(base_packet=base, output_dir=tmp_path / "cell", cell=cell,
+                                         base_authority=spec["rights_authority"])
+    assert verify_cell_packet(base_packet=base, cell_packet=tmp_path / "cell", cell=cell,
+                              base_authority=spec["rights_authority"]) == derivation
+    base_plan = json.loads((base / "native_task_arena_scene_plan.v1.json").read_text())
+    cell_plan = json.loads((tmp_path / "cell/native_task_arena_scene_plan.v1.json").read_text())
+    assert cell_plan["robot"]["base_pose_world"] == apply_start_offset(base_plan["robot"]["base_pose_world"],
+                                                                       start_offset_parameters(1))
+    assert cell_plan["task_spec"] == base_plan["task_spec"] and cell_plan["objects"] == base_plan["objects"]
+    # The goal decision carries across the derivation exactly as the runtime hands it to the worker.
+    authority = json.loads(Path(spec["native_g1"]["navigation_authority"]["path"]).read_text())
+    carried = derive_navigation_authority(authority, base_plan, cell_plan, derivation["rights_authority"],
+        base_contract=json.loads((base / "native_task_runtime_contract.v1.json").read_text()))
+    assert carried["new_human_review_claimed"] is False and carried["scene_plan_digest"] == cell_plan["plan_digest"]

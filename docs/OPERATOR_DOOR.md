@@ -251,6 +251,23 @@ as `blueprint`; retry can write only the selected capture's `pipeline/atlas`
 directory and the door's result directory. This recovery supports the beta scene
 journey and the ADP-009D development rehearsal without raising evidence claims.
 
+`--resume-preparation --atlas-status-digest sha256:...` also resumes a native
+job left `processing` by a process that died holding its lease (for example the
+kernel's OOM killer). The reviewed snapshot shows that ledger's
+`lease_expires_at`, and its digest binds the exact expired ledger. Until that
+expiry passes, the resume refuses with `selected_handoff_atlas_native_lease_active`
+and the native claim answers `lease_active_retryable`. After it, the native claim
+checks the expiry again under its own lock. It then records the dead attempt as
+`failed_retryable`, in one committed transition. That attempt keeps its number,
+and its history row (stage `lease_expired`, outcome `unknown`) keeps the lease
+owner and times. The claim then retries it like any reviewed failure, with the
+same payload, delivery, consent, authority and spending checks. A Meta SAM
+request the dead attempt left unanswered is counted as spent, and its reservation
+stays held at its maximum. It is then sent once more under its own reservation,
+inside the job's existing caps (owner decision 2026-11-07). A resend that also gets
+no answer stops at `meta_sam_submission_requires_reconciliation`. An unanswered
+video upload still stops at `meta_sam_video_upload_requires_reconciliation`.
+
 `--reissue-preparation --atlas-status-digest sha256:...` (mode
 `preparation-reissue`) re-issues a completed native preparation as a new job
 after its sponsor renewed the expired grant in the WebApp. It takes the same

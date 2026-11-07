@@ -15,11 +15,20 @@ task documents the receipt scored) and, when the caller knows it, to the exact
 task specification the evaluation will score. Anything else fails closed with
 a typed reason.
 
-Two receipt kinds exist: articulated open/close
-(``task_evaluation_scene_robot_free_readiness``) and rigid pick/place
-(``task_evaluation_scene_rigid_robot_free_readiness``), each with its own
-required checks. A receipt of one kind never admits the other, and every other
-task kind is refused by name until it has a probe.
+Three receipt kinds exist: articulated open/close
+(``task_evaluation_scene_robot_free_readiness``), rigid pick/place
+(``task_evaluation_scene_rigid_robot_free_readiness``) and goal-region
+navigation (``navigation_robot_free_probe``), each with its own required
+checks. A receipt of one kind never admits another, and every other task kind
+is refused by name until it has a probe. A navigation receipt is read only
+when the caller names the navigation kind: a call without a kind admits the
+rigid and articulated receipts alone, as before navigation receipts existed.
+
+A navigation scene has no task object, so its probe runs the navigation scorer
+on synthetic root traces built from the plan's task spec; no simulator is
+involved. Its receipt must also keep the ``development_only`` claim ceiling and
+claim no simulator or physical outcome (``claim_ceiling_invalid``). That check
+reads only navigation receipts: the articulated and rigid paths are unchanged.
 """
 
 from __future__ import annotations
@@ -36,15 +45,24 @@ from .decision_evidence_contracts import canonical_digest
 # imports no simulator-side scoring code; a test pins them together.
 RECEIPT_SCHEMA = "task_evaluation_configured_scene_robot_free_readiness.v1"
 RIGID_RECEIPT_SCHEMA = "task_evaluation_configured_scene_rigid_robot_free_readiness.v1"
+NAVIGATION_RECEIPT_SCHEMA = "task_evaluation_configured_scene_navigation_scorer_probe.v1"
+NAVIGATION_TASK_KIND = "goal_region_navigation"
+NAVIGATION_CLAIM_CEILING = "development_only"
 RECEIPT_FILENAME = "robot_free_readiness.v1.json"
-RECEIPT_TASK_KINDS = {RECEIPT_SCHEMA: "articulated_open_close", RIGID_RECEIPT_SCHEMA: "rigid_pick_place"}
+RECEIPT_TASK_KINDS = {RECEIPT_SCHEMA: "articulated_open_close", RIGID_RECEIPT_SCHEMA: "rigid_pick_place",
+                      NAVIGATION_RECEIPT_SCHEMA: NAVIGATION_TASK_KIND}
 REQUIRED_CHECKS = {
     "articulated_open_close": frozenset({"zero_action_not_success", "direct_drive_success"}),
     "rigid_pick_place": frozenset({
         "zero_action_not_success", "direct_placement_success", "contract_untouched_not_success",
         "contract_goal_success", "contract_short_hold_not_success", "contract_drift_not_success",
         "contract_outside_not_success"}),
+    NAVIGATION_TASK_KIND: frozenset({
+        "zero_action_not_success", "direct_arrival_held_success", "arrival_without_hold_not_success",
+        "root_height_drift_not_success"}),
 }
+# The task kinds whose receipts record the success contract they scored (task_success_contract_binding).
+CONTRACT_BOUND_TASK_KINDS = ("rigid_pick_place", NAVIGATION_TASK_KIND)  # compared by ==, as before: never hashed
 PROBE_TASK_KINDS = frozenset(REQUIRED_CHECKS)
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -63,14 +81,17 @@ def require_robot_free_probe(receipt: Mapping[str, Any] | None, *, scene_revisio
                              task_success_contract_digest: str | None = None) -> dict[str, Any]:
     """Return the admitted receipt's binding, or raise with a typed reason."""
 
-    if task_kind is not None and task_kind not in PROBE_TASK_KINDS:
+    # Compared as a string: a kind that is not one (a malformed caller) is refused by name, never hashed.
+    if task_kind is not None and (not isinstance(task_kind, str) or task_kind not in PROBE_TASK_KINDS):
         raise RobotFreeProbeGateError("unavailable_for_task_kind:" + str(task_kind))
     if not isinstance(scene_revision_digest, str) or not _DIGEST.fullmatch(scene_revision_digest):
         raise RobotFreeProbeGateError("scene_revision_unbound")
     if not isinstance(receipt, Mapping):
         raise RobotFreeProbeGateError("receipt_missing")
     kind = RECEIPT_TASK_KINDS.get(str(receipt.get("schema_version")))
-    if kind is None:
+    # A navigation receipt admits only a caller that names the navigation kind. A call without a kind reads
+    # the rigid and articulated receipts alone, exactly as before navigation receipts existed.
+    if kind is None or (kind == NAVIGATION_TASK_KIND and task_kind is None):
         raise RobotFreeProbeGateError("receipt_schema_invalid")
     if receipt.get("receipt_digest") != canonical_digest(dict(receipt), digest_field="receipt_digest"):
         raise RobotFreeProbeGateError("receipt_digest_invalid")
@@ -84,6 +105,10 @@ def require_robot_free_probe(receipt: Mapping[str, Any] | None, *, scene_revisio
         raise RobotFreeProbeGateError("not_passed")
     if not isinstance(boundary, Mapping) or boundary.get("robot_embodiment_used") is not False:
         raise RobotFreeProbeGateError("robot_used")
+    if kind == NAVIGATION_TASK_KIND and (receipt.get("claim_ceiling") != NAVIGATION_CLAIM_CEILING
+                                         or boundary.get("simulator_outcome_claimed") is not False
+                                         or boundary.get("physical_outcome_claimed") is not False):
+        raise RobotFreeProbeGateError("claim_ceiling_invalid")
     if receipt.get("configured_scene_revision_digest") != scene_revision_digest:
         raise RobotFreeProbeGateError("scene_revision_mismatch")
     if task_spec_digest is not None and receipt.get("task_spec_digest") != task_spec_digest:
@@ -99,12 +124,13 @@ def task_success_contract_binding(task_kind: object, task_success_contract: obje
     """The success-contract digest a probe receipt for this task must carry, or None.
 
     ``task_success_contract`` is the contract the team's run will be scored
-    against. Only rigid receipts record its digest (the articulated receipt
-    binds the contract through the task spec alone). A rigid task whose contract
-    has no digest returns "" so the gate refuses rather than skipping the binding.
+    against. Rigid and navigation receipts record its digest (the articulated
+    receipt binds the contract through the task spec alone). A rigid or
+    navigation task whose contract has no digest returns "" so the gate refuses
+    rather than skipping the binding.
     """
 
-    if task_kind != "rigid_pick_place":
+    if task_kind not in CONTRACT_BOUND_TASK_KINDS:
         return None
     digest = task_success_contract.get("contract_digest") if isinstance(task_success_contract, Mapping) else None
     return digest if isinstance(digest, str) else ""
@@ -126,6 +152,8 @@ def retained_probe_receipt(root: Path) -> dict[str, Any] | None:
 
 
 __all__ = [
+    "CONTRACT_BOUND_TASK_KINDS",
+    "NAVIGATION_RECEIPT_SCHEMA",
     "PROBE_TASK_KINDS",
     "RECEIPT_FILENAME",
     "RECEIPT_SCHEMA",

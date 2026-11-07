@@ -492,3 +492,33 @@ def test_navigation_candidate_requires_team_goal_authority_before_launch(
     )
     assert completed["status"] == "completed_development_only"
     assert completed["navigation_goal_authority_digest"] == authority["authority_digest"]
+
+
+@pytest.mark.parametrize("candidate,phase", [
+    ("humanoidarena_dp_g1_dex3_sonic_vision_navi", "navigation_goal_validation"),
+    (CANDIDATE, None),
+])
+def test_a_navigation_scene_reaches_only_the_navigation_checkpoints(tmp_path: Path, monkeypatch, candidate, phase):
+    """A scene kept as filmed (goal_region_navigation) passes the scene check only for a
+    navigation candidate; a manipulation candidate refuses it before any launch."""
+    request = _request(tmp_path)
+    plan_path = Path(request["bundle_root"], "native_task_arena_scene_plan.v1.json")
+    plan_path.write_text(json.dumps({**json.loads(plan_path.read_text()), "task_kind": "goal_region_navigation"}))
+    request["candidate_id"] = candidate
+    request["rights_review"]["candidate_id"] = candidate
+    request["rights_review"]["rights_review_digest"] = canonical_digest(
+        request["rights_review"], digest_field="rights_review_digest")
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    monkeypatch.setattr(worker, "_verify_packet", _packet)
+    monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", lambda **kwargs: {
+        **_preflight(**kwargs), "candidate_id": candidate,
+        "policy_role": "movement_navigation" if phase else "manipulation"})
+    monkeypatch.setattr(worker, "_launch_scene", lambda **_: pytest.fail("launched"))
+    result = worker.run_g1_development_worker(request=request, output_dir=tmp_path / "out")
+    assert result["status"] == "blocked"
+    if phase:
+        # Past the scene check: it stops only because this fixture has no goal.
+        assert result["phase_reached"] == phase
+        assert result["blocker"]["message"] == "g1_navigation_goal_or_visible_marker_missing"
+    else:
+        assert result["blocker"]["message"] == "g1_worker_scene_changed_after_preflight"

@@ -37,7 +37,9 @@ any other preparation analysis call: never a step for the site.
   is tried again at most once per release: a transient cause (the network, a
   timeout, a busy or failing service) after a wait, a refusal only under a
   newly deployed release. A paid call whose outcome is uncertain needs
-  reconciliation first and is never bought again by a retry. Each piece takes the
+  reconciliation first and is never bought again by a retry, except a SAM
+  request that got no answer: it is counted as spent and sent once more, only
+  while the segmentation share still covers it. Each piece takes the
   track its own boxes pick; an ambiguous one is left unmeasured, never guessed.
   Its 3-D bounds are lifted on the CPU from the scene's own estimated depth and
   cameras, as the task masks are (``website_task_masks.estimate_target_bounds``),
@@ -303,9 +305,12 @@ def _segment(*, video_path: str, source_video_digest: str, prompts: list[dict[st
                                                root=output_root / "video")
     unit = max(50, len(registry)) * PRICE_PER_FRAME_USD
     _require(unit * len(prompts) <= maximum_cost_usd + 1e-9, "segmentation_exceeds_binding")
+    # The share bounds every dispatch, including a resend of one that got no answer. The tracks
+    # span every frame at full resolution and only ``lift`` reads them (selection, decoding and
+    # resampling all take compact runs; the sidecar keeps bounds and track ids, never runs).
     result = run_meta_sam31(frame_registry=registry, frame_artifacts=[], prompts=prompts,
                             output_root=output_root / "sam", admission={}, task_context=task_context,
-                            video_artifact=video)
+                            video_artifact=video, maximum_cost_usd=maximum_cost_usd, compact_runs=True)
     return {"registry": registry, "tracks": result["tracks"], "reserved_cost_usd": unit * len(prompts)}
 
 

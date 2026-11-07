@@ -16,6 +16,7 @@ import os
 import re
 import stat
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
@@ -265,7 +266,8 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
         value["native_preparation"] = {
             "ledger_digest": canonical_digest(native),
             **{key: native.get(key) for key in (
-                "status", "revision", "attempt_count", "source_payload_sha256", "producer_delivery_key")},
+                "status", "revision", "attempt_count", "source_payload_sha256", "producer_delivery_key",
+                "lease_expires_at")},
         }
     if type(job.get("reason")) is str and _CODE.fullmatch(job["reason"]):
         value["job"]["reason"] = job["reason"]
@@ -427,18 +429,25 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                 native = snapshot["native_preparation"]
                 if selection["mode"] == "preparation-reissue":
                     return _reissue_preparation(snapshot, native, observation, capture_root)
-                _require(type(native) is dict and native["status"] == "failed_retryable"
+                _require(type(native) is dict and native["status"] in {"failed_retryable", "processing"}
                          and type(native["producer_delivery_key"]) is str
                          and _SHA.fullmatch(native["producer_delivery_key"])
                          and native["producer_delivery_key"] == observation["producer_delivery"].get("delivery_key"),
                          "native_resume_not_eligible")
+                from .website_reconstruction_resume import REVIEW_SCHEMA, lease_expired
+                if native["status"] == "processing":
+                    # An attempt whose process died holding its lease: resumable only
+                    # past the lease's own expiry, which the claim checks again under
+                    # its lock before it records the dead attempt as failed.
+                    ended = lease_expired(native.get("lease_expires_at"), datetime.now(timezone.utc))
+                    _require(ended is not False, "native_lease_active")
+                    _require(ended is True, "native_resume_not_eligible")
                 _require(type(handoff_payload) is bytes and listener is not None, "original_payload_required")
                 provider = os.getenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "")
                 _require(provider in {"local", "claude", "openai"}, "current_provider_missing")
                 # This is one explicit operator retry, not a broker reset or a
                 # new wait/grant. The native claim checks the reviewed ledger
                 # atomically, then increments its existing attempt history.
-                from .website_reconstruction_resume import REVIEW_SCHEMA
                 result = listener.process_handoff_payload(handoff_payload, storage_root=Path(storage_root),
                     provider=provider, expected_preparation_purpose="scene_preparation",
                     expected_reconstruction_resume={"review_schema": REVIEW_SCHEMA,

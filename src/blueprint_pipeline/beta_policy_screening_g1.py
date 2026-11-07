@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -10,7 +11,8 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_beta_authority import (
-    CANDIDATE_DIGESTS, INVENTORY_SHA256, SOURCE_REVISION, SONIC, ROBOT_USD_SHA256,
+    CANDIDATE_DIGESTS, INVENTORY_SHA256, NAVIGATION_START_OFFSETS, NAVIGATION_TASK_KIND, SOURCE_REVISION, SONIC,
+    START_OFFSET_FAMILY, ROBOT_USD_SHA256,
     validate_beta_authority, validate_cell_binding as validate_cell_binding, validate_frozen_cell,
 )
 from .native_g1_beta_authority_composer import compose_beta_authority
@@ -69,7 +71,9 @@ def catalog_candidates() -> list[dict[str, Any]]:
                 "revision": "sha256-pinned-file-inventory:" + native["inventory_digest"][7:],
                 "digest": native["inventory_digest"], "digest_kind": "pinned_runtime_file_inventory"},
             "interface": interface_contract(candidate_id), "runtime": runtime_contract(),
-            "supported_task_kinds": ["rigid_pick_place"],
+            # The navigation checkpoints also run a navigation scene, the G1 at its compiled start.
+            "supported_task_kinds": (["rigid_pick_place", NAVIGATION_TASK_KIND]
+                                     if candidate_id.endswith("_vision_navi") else ["rigid_pick_place"]),
             "eligibility": {"enabled": True, "commercial_use": "allowed_with_conditions",
                 "license_id": "publisher-apache-2-inherited-terms-and-sonic-oml",
                 "license_note": "Existing exact model/source/SONIC terms reviewed for internal development. "
@@ -85,9 +89,21 @@ def catalog_candidates() -> list[dict[str, Any]]:
 #: Cells per G1 session (owner decision 2026-11-06): a cell takes up to 50 min measured (55 min cap), so
 #: about four fit the 4 h session; the plan's first cells, with their shared ids and seeds.
 CELLS_PER_SESSION = 4
+#: The execution descriptor field naming a navigation row's dropped start offsets, each with its reason.
+DROPPED_START_OFFSETS_FIELD = "g1_start_offsets_dropped"
 
 
-def frozen_cells(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def frozen_cells(cells: list[dict[str, Any]], dropped_start_offsets: Any = ()) -> list[dict[str, Any]]:
+    """The session's cells: the plan's first cells as frozen reset seeds of the authored scene.
+
+    A navigation scene's cells (``robot_start_offset``, one per start offset) are kept as planned, less any
+    offset in ``dropped_start_offsets``: its spawn check overlaps, so its cell is not funded
+    (``navigation_start_offsets``). ``dropped_start_offsets`` means nothing for any other cell.
+    """
+    if cells and all(cell.get("family") == START_OFFSET_FAMILY for cell in cells):
+        dropped = set(dropped_start_offsets)
+        rows = [validate_frozen_cell(deepcopy(cell)) for cell in cells[:CELLS_PER_SESSION]]
+        return [row for row in rows if NAVIGATION_START_OFFSETS[row["resolved_scenario"]["ordinal"]][0] not in dropped]
     result = []
     for ordinal, cell in enumerate(cells[:CELLS_PER_SESSION]):
         scenario = {"family": "canonical_anchor", "ordinal": ordinal, "parameters": {}}
@@ -132,14 +148,45 @@ def validate_execution_spec(value: Mapping[str, Any], *, candidate_id: str | Non
                 or spec["rights_authority"]["registration_digest"] != canonical_digest({"candidate_id": candidate, "native_g1": records})
                 or spec["rights_authority"]["site_id"] != spec["site_id"]):
             raise ValueError("registration scope mismatch")
-        from .adp_task_scoring import validate_rigid_task_success_contract
-        validate_rigid_task_success_contract(spec["task_success_contract"], expected_task_id=spec["source"]["task_id"])
+        if is_navigation_contract(spec["task_success_contract"]):
+            # The task spec is the packet's; candidate_execution_spec checked the contract against it.
+            _navigation_contract_shape(spec["task_success_contract"], candidate_id=candidate,
+                                       task_id=spec["source"]["task_id"])
+        else:
+            from .adp_task_scoring import validate_rigid_task_success_contract
+            validate_rigid_task_success_contract(spec["task_success_contract"],
+                                                 expected_task_id=spec["source"]["task_id"])
         runtime = runtime_identity(spec)
         if spec["runtime_identity"] != runtime or spec["runtime_identity_digest"] != canonical_digest(runtime):
             raise ValueError("runtime mismatch")
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ValueError("g1_beta_execution_spec_invalid") from exc
     return spec
+
+
+def is_navigation_contract(contract: Mapping[str, Any]) -> bool:
+    """Whether a success contract is a navigation scene's (``navigation_task_success_contract``): its own kind."""
+    from .native_g1_navigation_goal import NAVIGATION_CONTRACT_SCHEMA_VERSION
+    return (contract.get("schema_version") == NAVIGATION_CONTRACT_SCHEMA_VERSION
+            or contract.get("task_kind") == NAVIGATION_TASK_KIND)
+
+
+def _navigation_contract_shape(contract: Mapping[str, Any], *, candidate_id: str, task_id: str) -> None:
+    """A navigation contract as an execution spec can check it without the task spec: sealed, scoped, its kind's.
+
+    ``validate_navigation_task_success_contract`` re-derives it from the packet's task spec when the spec is
+    composed (``candidate_execution_spec``); only a navigation checkpoint runs one.
+    """
+    from .native_g1_navigation_goal import NAVIGATION_CONTRACT_SCHEMA_VERSION, NAVIGATION_CRITERION
+    if (not candidate_id.endswith("_vision_navi")
+            or contract.get("schema_version") != NAVIGATION_CONTRACT_SCHEMA_VERSION
+            or contract.get("task_kind") != NAVIGATION_TASK_KIND
+            or (contract.get("scope") or {}).get("task_id") != task_id
+            or contract.get("criterion") != NAVIGATION_CRITERION
+            or contract.get("claim_ceiling") != "development_only"
+            or contract.get("physical_outcome_claimed") is not False
+            or contract.get("contract_digest") != canonical_digest(contract, digest_field="contract_digest")):
+        raise ValueError("g1_beta_navigation_contract_invalid")
 
 
 def runtime_identity(spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -195,8 +242,22 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
                    "task_success_contract_digest": contract["contract_digest"]}
     if candidate_id.endswith("_vision_navi") and source_task.get("g1_navigation_goal") is None:
         raise ValueError("g1_beta_current_navigation_goal_authority_missing")
+    # A navigation scene (the G1 at its compiled start) runs only a navigation checkpoint, and only when the G1
+    # plan and the base plan are both that scene's.
+    navigation = g1.get("task_kind") == NAVIGATION_TASK_KIND
+    if navigation and not candidate_id.endswith("_vision_navi"):
+        raise ValueError("g1_beta_manipulation_policy_task_mismatch")
+    if navigation and not (scene_plan.get("task_kind") == NAVIGATION_TASK_KIND
+                           and (base_request.get("task_spec") or {}).get("task_kind") == NAVIGATION_TASK_KIND):
+        raise ValueError("g1_beta_current_task_binding_mismatch")
+    if navigation:
+        from .native_g1_navigation_goal import validate_navigation_task_success_contract
+        try:
+            validate_navigation_task_success_contract(contract, task_spec=task)
+        except ValueError as exc:
+            raise ValueError("g1_beta_current_task_binding_mismatch") from exc
     if (g1.get("task_id") != source["task_id"] or g1.get("scene_id") != site_id
-            or g1.get("task_kind") != "rigid_pick_place"
+            or g1.get("task_kind") not in ("rigid_pick_place", NAVIGATION_TASK_KIND)
             or task.get("task_success_contract") != contract
             or task.get("task_success_contract_digest") != contract["contract_digest"]
             or set(task) != set(source_task)
@@ -221,7 +282,12 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
     # overlap (scene_physics_preflight.require_scene_physics_admission). Unmeasured is only a flag
     # (setup_quality_flags).
     from .native_g1_spawn_clearance import OVERLAP_REASON, spawn_clearance_status
-    if spawn_clearance_status(packet_root, g1["plan_digest"]) == "overlap":
+    if navigation:
+        # A start offset that overlaps drops only its own cell (``navigation_start_offsets``); with every one
+        # overlapping there is no cell left to fund.
+        if len(navigation_start_offsets(packet_root, g1["plan_digest"])[0]) == len(NAVIGATION_START_OFFSETS):
+            raise ValueError(OVERLAP_REASON)
+    elif spawn_clearance_status(packet_root, g1["plan_digest"]) == "overlap":
         raise ValueError(OVERLAP_REASON)
     verify_g1_publisher_source(_bound_path(records["publisher_source"]).parent)
     runtime = verify_native_task_runtime_source_packet(_bound_path(records["runtime_source"]))
@@ -244,13 +310,61 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
     return validate_execution_spec(spec, candidate_id=candidate_id)
 
 
+def navigation_start_offsets(packet_dir: Path, plan_digest: str) -> tuple[dict[str, str], list[str]]:
+    """A navigation packet's dropped start offsets, each with its reason, and the flags its funded cells carry.
+
+    Each offset reads its own spawn check (``native_g1_spawn_clearance.start_offset_reports``). One that
+    overlaps the room is dropped from the session: its cell is not funded (``g1_spawn_overlap``), the row
+    keeps the others and also carries ``g1_spawn_overlap`` as a flag. Of the rest, one not measured flags
+    ``g1_spawn_clearance_unmeasured`` and one with a foot that has no floor under it ``g1_spawn_foot_unsupported``
+    (``unsupported_feet``); neither refuses. With no per-offset report every offset is unmeasured, except
+    that the packet's own report, of the start itself, still counts.
+    """
+    from .native_g1_spawn_clearance import (
+        OVERLAP_REASON, UNMEASURED_REASON, UNSUPPORTED_FOOT_REASON, spawn_clearance_status, spawn_setup_flags,
+        start_offset_reports, unsupported_feet)
+    rows = {row["offset_id"]: row for row in start_offset_reports(packet_dir, plan_digest) or []}
+    dropped, flags = {}, set()
+    for offset_id, _, _ in NAVIGATION_START_OFFSETS:
+        row = rows.get(offset_id)
+        status = row["status"] if row is not None and row.get("status") in ("clear", "overlap") else "unmeasured"
+        packet_status = spawn_clearance_status(packet_dir, plan_digest) if offset_id == "start" else None
+        if packet_status == "overlap" or (row is None and packet_status == "clear"):
+            status = packet_status
+        if status == "overlap":
+            dropped[offset_id] = OVERLAP_REASON
+        elif status == "unmeasured":
+            flags.add(UNMEASURED_REASON)
+        elif (unsupported_feet(row) if row is not None
+              else UNSUPPORTED_FOOT_REASON in spawn_setup_flags(packet_dir, plan_digest)):
+            flags.add(UNSUPPORTED_FOOT_REASON)
+    if dropped:
+        flags.add(OVERLAP_REASON)
+    return dropped, sorted(flags)
+
+
+def _navigation_spec(spec: Mapping[str, Any]) -> bool:
+    return is_navigation_contract(spec["task_success_contract"])
+
+
 def setup_quality_flags(spec: Mapping[str, Any]) -> list[str]:
     """Typed flags a funded G1 row carries into its plan descriptor and result: a spawn not measured, or
-    a foot with no floor under it (``native_g1_spawn_clearance.spawn_setup_flags``). Never a refusal."""
+    a foot with no floor under it (``native_g1_spawn_clearance.spawn_setup_flags``). Never a refusal.
+    A navigation row's are its start offsets' (``navigation_start_offsets``)."""
     from .beta_policy_screening_launch import _bound_path
     from .native_g1_spawn_clearance import spawn_setup_flags
     packet = _bound_path(spec["native_g1"]["scene_packet"]).parent
+    if _navigation_spec(spec):
+        return navigation_start_offsets(packet, spec["scene_plan_digest"])[1]
     return sorted(set(spawn_setup_flags(packet, spec["scene_plan_digest"])))
+
+
+def dropped_start_offsets(spec: Mapping[str, Any]) -> dict[str, str]:
+    """The start offsets a navigation row's session drops (each ``g1_spawn_overlap``); none for any other row."""
+    from .beta_policy_screening_launch import _bound_path
+    if not _navigation_spec(spec):
+        return {}
+    return navigation_start_offsets(_bound_path(spec["native_g1"]["scene_packet"]).parent, spec["scene_plan_digest"])[0]
 
 
 def _sealed(value: Any, schema: str, digest_field: str) -> dict[str, Any]:

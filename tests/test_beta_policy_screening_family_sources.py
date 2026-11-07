@@ -20,6 +20,7 @@ from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_attempt_evidence import record
 from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, REGISTRY_SCHEMA
+from tests.test_website_navigation_scene_inputs import navigation_scene_inputs_arguments
 from tests.test_website_task_family_packet import family_preparation
 
 
@@ -222,3 +223,78 @@ def test_malformed_cursor_fails_before_any_source_admission(tmp_path, monkeypatc
     with pytest.raises(ValueError, match='beta_screening_family_source_cursor_invalid'):
         sources.enqueue_registered_family_scenes(queue_root=world.queue)
     assert not world.intent_checks and not world.planning_calls
+
+
+def _navigation_source(world, tmp_path, monkeypatch, *, derived):
+    """A navigation job's real scene-inputs record, registered as an operator row or a derived row."""
+    from blueprint_pipeline.team_candidate_quick10_registry import write_derived_profile
+    from blueprint_pipeline.website_navigation_scene_inputs import write_navigation_scene_inputs
+
+    written = write_navigation_scene_inputs(**navigation_scene_inputs_arguments(tmp_path, monkeypatch))
+    record = written['record']
+    capture = tmp_path / 'captures' / 'capture-navigation'
+    row = {'capture_root': str(capture), 'scene_id': record['scene_id'], 'task_id': record['task_id'],
+           'scenario_id': 'nominal', 'robot_free_probe_root': str(Path(record['robot_free_probe']['path']).parent),
+           'scene_revision_digest': record['scene_revision_digest'], 'navigation_scene_inputs_path': written['path']}
+    if derived:
+        capture.mkdir(parents=True)
+        assert write_derived_profile(row)['status'] == 'written'
+    else:
+        world.registry['profiles'].append(row)
+        world.persist_registry()
+    world.names['family-' + canonical_digest({'capture_root': str(capture)})[7:39]] = 'navigation'
+    return written
+
+
+@pytest.mark.parametrize('derived', [False, True])
+def test_a_navigation_source_is_picked_up_and_holds_by_name_until_its_source_identity_is_decided(
+        tmp_path, monkeypatch, derived):
+    from blueprint_pipeline.website_navigation_scene_inputs import SOURCE_UNBOUND
+
+    from blueprint_pipeline import website_navigation_scene_inputs as navigation_inputs
+
+    world = source_world(tmp_path, monkeypatch, 2)
+    _navigation_source(world, tmp_path, monkeypatch, derived=derived)
+    # Refused by name before the record and its packet are read (and hashed) again on every pass.
+    monkeypatch.setattr(navigation_inputs, 'read_navigation_scene_inputs',
+                        lambda _path: pytest.fail('an unbindable source is never read'))
+    result = sources.enqueue_registered_family_scenes(queue_root=world.queue)
+    assert _names(world, result) == ['000', '001', 'navigation']
+    navigation = result['sources'][2]
+    assert navigation['status'] == 'blocked' and navigation['blockers'] == [SOURCE_UNBOUND]
+    assert [row['status'] for row in result['sources'][:2]] == ['enqueued', 'enqueued']
+    # Nothing about the navigation source reached consent, an intent or the planner.
+    assert world.current_checks == world.planning_calls == ['000', '001']
+    assert sorted(world.intent_checks) == ['000', '001']
+    assert json.loads((world.queue / 'family_source_cursor.json').read_text()) == {
+        'last': str(tmp_path / 'captures' / 'capture-navigation')}
+
+
+def test_a_navigation_source_with_a_decided_identity_goes_on_through_current_consent_and_planning(
+        tmp_path, monkeypatch):
+    """Once screening_source names a source (a stand-in here: not decided yet), the family path goes on."""
+    from blueprint_pipeline import website_navigation_scene_inputs as navigation_inputs
+
+    world = source_world(tmp_path, monkeypatch, 1)
+    written = _navigation_source(world, tmp_path, monkeypatch, derived=False)
+    record = written['record']
+    # The screening source's fields (native_g1_beta_authority.SOURCE_FIELDS); the two scene-intent
+    # values are placeholders, since what stands in for them is the open decision.
+    stand_in = {'scene_intent_id': 'undecided', 'scene_intent_digest': 'sha256:' + '0' * 64,
+                'capture_id': 'capture-navigation', 'task_id': record['task_id'],
+                'task_context_digest': record['source_gap']['known']['task_context_digest'],
+                'scene_revision_digest': record['scene_revision_digest']}
+    seen = []
+
+    def decided(value):
+        seen.append(value)
+        return dict(stand_in)
+
+    monkeypatch.setattr(navigation_inputs, 'screening_source', decided)
+    monkeypatch.setattr(navigation_inputs, 'SOURCE_IDENTITY_BINDABLE', True)
+    result = sources.enqueue_registered_family_scenes(queue_root=world.queue)
+    assert _names(world, result) == ['000', 'navigation']
+    assert [row['status'] for row in result['sources']] == ['enqueued', 'enqueued']
+    assert seen == [navigation_inputs.read_navigation_scene_inputs(written['path'])]
+    assert world.current_checks == world.planning_calls == ['000', 'navigation']
+    assert world.intent_checks == ['000']  # a scene kept as filmed reopens no scene intent

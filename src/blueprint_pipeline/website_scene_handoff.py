@@ -7,10 +7,14 @@ discard completed preparation or label the scene simulator-ready.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
-from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as write_json, handoff_lease_checkpoint
+from .core.handoff_lease import (
+    HandoffLeaseError, guarded_handoff_write_json as write_json, guarded_handoff_write_track_json as write_track_json,
+    handoff_lease_checkpoint,
+)
 from .decision_evidence_contracts import canonical_digest
 from .website_task_preparation import (
     GEOMETRY_ONLY_BLOCKER, compile_website_scene_preparation, native_task_preparation_gap,
@@ -31,8 +35,10 @@ def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy
     """
     executor_owns_runtime = False
     try:
-        preparation = json.loads(preparation_path.read_text())
-        if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
+        # ``source_targets`` carries every target's full-video source track: read and hashed compact.
+        from .website_track_mask_codec import canonical_track_digest, load_track_json
+        preparation = load_track_json(preparation_path)
+        if (preparation.get("digest") != canonical_track_digest(preparation, digest_field="digest")
                 or preparation.get("status") not in {"task_evaluation_ready", "intake_ready"} or preparation.get("blockers") != []):
             raise ValueError("website_task_family_preparation_not_ready")
         inputs = preparation["task_evaluation_inputs"]
@@ -168,6 +174,74 @@ def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mappi
                                    "path": str(native_root / "capability_verdict.json"),
                                    "digest": verdict["verdict_digest"]},
             "robot_fit_table": fit}
+
+
+def _navigation_consent_refusal(*, capture_root: Path, task_context: Mapping[str, Any],
+                                authority: Mapping[str, Any], now: float) -> str | None:
+    """Why the job's own consent records stop its navigation scene half, or None while they allow it.
+
+    Privacy and rights, read from the records the website gave this job: a withdrawal on this host
+    (``website_atlas_preview_store.capture_withdrawn``, the tombstone or a revoked consent), the task
+    context's capture rights (``website_task_context.json``) and the end of its sponsorship
+    (``website_scene_sponsorship.json``, ``expires_at_epoch``, the website's ``consent_expired``).
+    """
+    from .website_atlas_preview_store import capture_withdrawn
+
+    if capture_withdrawn(capture_root):
+        return "website_capture_withdrawn"
+    rights = task_context.get("capture_rights") if isinstance(task_context.get("capture_rights"), Mapping) else {}
+    if rights.get("derived_scene_generation_allowed") is not True or rights.get("consent_revoked") is not False:
+        return "website_scene_processing_rights_required"
+    expiry = authority.get("expires_at_epoch") if isinstance(authority, Mapping) else None
+    if isinstance(expiry, bool) or not isinstance(expiry, (int, float)) or not math.isfinite(expiry):
+        return "website_scene_execution_authority_required"
+    return "website_scene_consent_expired" if expiry <= now else None
+
+
+def _navigation_scene_inputs(*, result: dict[str, Any], capture_root: Path, root: Path,
+                             navigation: Mapping[str, Any], assets: Mapping[str, Any],
+                             task_context: Mapping[str, Any], authority: Mapping[str, Any], now: float) -> bool:
+    """The G1 lane's scene half for a navigation job, on the controller and with no spend.
+
+    The base packet with the pinned G1 standing at the compiled start, its robot-free probe receipt and
+    the sealed record (``website_navigation_scene_inputs``), kept in the capture's own workspace so the
+    site's withdrawal deletes them, and the team registry's derived row naming the record. The robot is
+    the G1 registration's own pinned Arena USD (``native_g1_site_registration``). Withdrawn, revoked or
+    expired consent writes neither. Returns whether both exist; anything else is recorded and is this
+    job's missing piece, never a stop. A lost handoff lease stops it, as it stops every write.
+    """
+    from .website_navigation_scene_inputs import OUTPUT_DIRECTORY
+
+    refusal = _navigation_consent_refusal(capture_root=capture_root, task_context=task_context,
+                                          authority=authority, now=now)
+    if refusal is not None:
+        result["navigation_scene_inputs"] = {"status": "not_written", "reason": refusal}
+        return False
+    try:
+        from . import native_g1_site_registration as registration
+        from .team_candidate_quick10_registry import write_derived_profile
+        from .website_navigation_scene_inputs import derived_profile_row, write_navigation_scene_inputs
+
+        handoff_lease_checkpoint("website_scene_handoff_navigation_scene_inputs")
+        robot = registration._robot_record(registration.load_shared_inputs())
+        written = write_navigation_scene_inputs(navigation_task_spec=navigation, scene_assets=assets,
+                                                robot_record=robot, output_root=root / OUTPUT_DIRECTORY,
+                                                capture_root=capture_root)
+        handoff_lease_checkpoint("website_scene_handoff_navigation_registration")
+        profile = write_derived_profile(derived_profile_row(written, capture_root=capture_root))
+    except HandoffLeaseError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a job; this is its missing piece
+        reason = str(exc) if str(exc) else type(exc).__name__
+        result["navigation_scene_inputs"] = {"status": "failed", "error": reason[:300]}
+        return False
+    record = written["record"]
+    result["navigation_scene_inputs"] = {
+        "status": "written" if profile.get("status") == "written" else "not_registered",
+        "path": written["path"], "digest": record["scene_inputs_digest"],
+        "scene_revision_digest": record["scene_revision_digest"],
+        "robot_free_probe_status": record["robot_free_probe"]["status"], "registry": dict(profile)}
+    return profile.get("status") == "written"
 
 
 def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[str, Any], preparation_path: Path,
@@ -379,18 +453,28 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                               navigation_task_spec_digest=navigation["task_spec_digest"])
                 # The scene as filmed, as Isaac files, on the controller and with no spend
                 # (website_navigation_scene_assets). A failure is this job's missing piece.
-                from .website_locomotion_task import BUILT_NAVIGATION_PIECES
+                from .website_locomotion_task import navigation_pieces_built
                 from .website_navigation_scene_assets import FILE as ASSETS_FILE, navigation_scene_assets
-                built = set(BUILT_NAVIGATION_PIECES)
+                outputs = {"navigation_task_spec": True, "navigation_scene_assets": False,
+                           "navigation_scene_inputs": False}
                 try:
                     assets = navigation_scene_assets(base_scene=base, output_root=root / "navigation_scene")
                 except (ValueError, OSError) as exc:
-                    built.discard("navigation_scene_assets")
                     result["navigation_scene_assets_error"] = str(exc)[:300]
                 else:
                     write_json(root / ASSETS_FILE, assets)
                     result.update(navigation_scene_assets_path=str(root / ASSETS_FILE),
                                   navigation_scene_assets_digest=assets["digest"])
+                    outputs["navigation_scene_assets"] = True
+                    # The G1 lane's scene half: the G1 at the compiled start, its probe receipt and
+                    # the registry row (website_navigation_scene_inputs). A failure is this job's
+                    # missing piece (pipeline:g1_navigation_preparation).
+                    outputs["navigation_scene_inputs"] = _navigation_scene_inputs(
+                        result=result, capture_root=capture_root, root=root, navigation=navigation, assets=assets,
+                        task_context=context, authority=metadata.get("website_scene_execution_authority") or {},
+                        now=now)
+                # The pieces built for this job are the outputs it has.
+                built = navigation_pieces_built(outputs)
             result.update(geometry_backend=atlas["source_geometry"]["geometry_backend"],
                           source_geometry_digest=atlas["source_geometry"]["digest"],
                           compiled_task_spec_path=str(root / SPEC_FILE), compiled_task_spec_digest=spec["spec_digest"])
@@ -423,17 +507,20 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     recovery_options = {"task_context": context, "source_video": source_video,
                                         "recovery_geometry": atlas["source_geometry"]}
             handoff_lease_checkpoint("website_scene_handoff_static_masks")
+            # Kept surfaces' full-video source tracks stay compact (``RunLengths``) through
+            # binding, coverage, compile and the native inputs; each writes and hashes them
+            # with the codec, to the bytes and digests the plain lists give.
             masks = complete_retained_static_task_masks(plan=json.loads(plan_path.read_text()),
                 source_geometry=clean_plate["source_frames"], task_masks=clean_plate["task_masks"],
                 output_root=plan_path.parent / "task_masks",
-                view_plan_root=plan_path.parent / "mask_view_plan", **recovery_options)
+                view_plan_root=plan_path.parent / "mask_view_plan", compact_runs=True, **recovery_options)
             clean_plate = {**clean_plate, "task_masks": masks}
         geometry = atlas["source_geometry"]
         result.update(geometry_backend=geometry["geometry_backend"],
                       atlas_scene_source={key: atlas[key] for key in (
                           "status", "source_pose_digest", "background_pose_digest", "alignment")})
         masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
-        write_json(root / "task_masks.geometry.json", masks)
+        write_track_json(root / "task_masks.geometry.json", masks)
         clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
         from .website_target_background_worker import queue_correction
         correction = queue_correction(capture_root=capture_root, task_context=context, task_masks=masks, now=now)
@@ -538,7 +625,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         masks = attach_object_specs(task_masks=masks, removal_manifest=removal, task_context=context,
                                     output_root=root / "object_spec")
         if masks != clean_plate["task_masks"]:
-            write_json(root / "task_masks.coverage.json", masks)
+            write_track_json(root / "task_masks.coverage.json", masks)
             clean_plate = {**clean_plate, "task_masks": masks}
         authority = metadata.get("website_scene_execution_authority") or {}
         if not all(key in authority for key in ("max_total_spend_usd", "max_paid_attempts", "expires_at_epoch")):

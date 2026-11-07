@@ -111,6 +111,70 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - Clean plate: $0.39 held (SAM $0.26, Gemini $0.13).
   - Intake capture inference: $1.06 known, in a ledger marked `incomplete` with one call of unknown cost.
   - Known total: about $2.38, against the $115 ceiling.
+- **23:08Z: second stop.** Preserved-scene completion ended `needs_input` with `atlas_preserved_completion_no_exportable_geometry`.
+  - It had passed the planner ($0.28), the generation ($0.42), the review and the joint registration (41 frames, 33 agree).
+  - The recovered view's 4,510 named gap pixels yielded 0 exportable samples.
+  - Fixed by #3435: an empty recovery is flagged and the captured export goes on.
+- **Owner, 11-07, about 00:55Z:** "we need to remove 'depth-fused draft' from an option (maybe can be fallback) - atlas only here (as long as we have money/credits)". In #3435, a scene kept as filmed now takes Atlas's refined splat (`posedImages2Splats`, minimal form) as its appearance, mesh source and export, with the draft only a named fallback.
+- **`682d098` live at 02:01Z** (owner: off-window, recorded above). The job was requeued at 02:02Z (Atlas revision 7):
+  - 02:08Z: the refined splat was bought, with 41 captured frames, no generated view and 2 M Gaussians;
+  - 02:29Z: the $0.50 `splats2Mesh`;
+  - 02:30Z: failed with `atlas_mesh_not_registered_to_splat`.
+- **The cause.** The registration limit was 3 draft voxels (0.0198 here). The provider's mesh had 613,408 faces, against capture-447's 1.89 M. Fixed by #3437: the limit is max(3 draft voxels, 1.5 median mesh edges), and a refusal writes a failure record.
+- **`69e48f8` (#3437)**, owner: "Tonight, after checks". Requested 02:59:15Z (`20261107T025915Z-deploy-5f0be5d3`), live 03:12:57Z, with no blockers. Main's CI was fully green. Before it: no paid lock, no hold, nothing launching or running, and the last deploy was this session's 682d098.
+  - The job was requeued at 03:13Z and was `ready` at 03:18Z. The mesh registered in one frame: residual 0.0310 against the new limit 0.0504; median edge 0.0336. 398,036 of 613,408 faces were kept.
+- **03:19Z: the native preparation was resumed** (`--resume-preparation`, attempt 6). That runs the clean plate inside the door unit.
+  - 03:26Z: a global OOM. The kernel killed its python at 4.0 GB RSS; the host has 8.3 GB and no swap.
+  - The ledger was left `processing`, with a $0.087 SAM reservation held. A plain resume now refuses, because it requires `failed_retryable`.
+  - The likely cause: SAM mask decoding for the 4K, 437-frame video.
+  - Owner: "Build tonight, deploy 9 AM". Two general fixes are being built: bounded mask-decode memory, and an operator resume that can recover an attempt whose process died after its lease expired.
+- **Job spend at 03:30Z:**
+  - Atlas: $7.38 of $25, including the $5 refined splat and the $0.50 mesh.
+  - Clean plate: $0.48 held.
+  - Intake capture inference: $1.06 known.
+  - Known total: about $8.92.
+- **`01ca433` (#3438)**, owner: "Deploy tonight", replacing the 9 AM plan. It adds compact SAM tracks, one resend of an unanswered SAM request (the first is counted as spent) and the expired-lease takeover.
+  - Requested 05:29:33Z (`20261107T052933Z-deploy-f746a3cc`), live 05:42:50Z. Main's CI was fully green.
+  - Before it: no paid lock, no hold, no door request pending, and the last deploy was this session's 69e48f8.
+  - The G1 session was told first. It touches no G1 code and no registration contract.
+  - 05:43:55Z: the first resume (`20261107T054355Z-selected-handoff-39afcb69`) was refused before any work, with `selected_handoff_atlas_preflight_blocked` (`atlas_current_budget_admission_blocked`).
+    - The Google Cloud budget check accepts only a report under 5 minutes old, and this one was older: the spend guard that writes it did not run from 05:36Z to 05:45Z, while the deploy finished.
+    - The month itself was fine: $9.77 of $100, admitted, in the 05:45:00Z report.
+  - 05:46:45Z: resumed again on a fresh status read (`20261107T054645Z-selected-handoff-1692fcb8`). The lease had expired at 03:41Z.
+- **05:52:50Z: the clean plate finished, then the scene handoff stopped** with `website_atlas_scene_level_unobserved`.
+  - No out-of-memory this time: the host kept at least 5.5 GB free. The native preparation is `failed_retryable` (attempt 7).
+  - The clean plate holds $0.69: SAM $0.35, including the counted-as-spent request and its resend, and Gemini $0.34.
+  - **The cause.** Levelling found no single near-level plane holding 4% of the supported mesh (398,036 faces, 38% of the provider's area).
+    - An aisle's level surface is split across the floor strip and the shelf boards on both sides.
+    - The source views' depth also reaches about 11 m below the floor, so a reflective floor may have been trimmed from the supported copy.
+    - The mesh cannot leave the host, so a replay cannot show which.
+  - **The fix** (general): when no single plane passes, level on the parallel level surfaces together, and record what the search found, refusals included. Rough ground is still refused.
+- **06:10Z: #3439 merged** (part C 1/2), after the G1 session's review. #3440, from another session, had merged at 06:02Z.
+- **Owner, through the G1 session, about 05:50Z:** "yes a confirmed brief counts as consent". The consent rechecks stay as they are. The library job's brief is confirmed only on the website, by its owner.
+- **Job spend at 06:10Z:** Atlas $7.38 of $25, clean plate $0.69 held, intake $1.06 known. About $9.13 in all.
+- **`74e13f5` (#3441, with #3439 and #3440)**, live 06:38:25Z (`20261107T062523Z-deploy-1c182563`). Main's CI was fully green; no paid lock, no hold, no pending request; the last deploy was this session's 01ca433. The G1 session was told first.
+  - The budget report was stale again after the deploy. The resume waited for a fresh one (06:40:34Z, `20261107T064034Z-selected-handoff-5a133a8f`).
+  - **06:45Z: levelling refused again**, now with its numbers (v2 record): the largest single plane held 2.65% (4% needed), and along the face-normal direction, 1.38 degrees from +Y, no layer passed.
+  - **The causes and the fix** (general, the next PR): the floor, as the lowest layer, was its own background; a 3x ratio to the clutter fails against shelves full of books; and a direction a degree off smears a long floor. Layers now need an excess over the clutter, are found coarse to fine, and the record keeps a height profile.
+- **`8a3d0d3` (#3442)**, live 07:20Z (`20261107T070810Z-deploy-0234209d`). Pre-checks clear; the G1 session was told first. The resume waited for a fresh budget report and ran at 07:23:57Z (`20261107T072357Z-selected-handoff-d619d958`).
+  - **07:29Z: levelling refused a third time** (v3 record). The face-normal direction was 1.75 degrees from +Y, with one layer of 0.61% excess. The largest single plane was tilted 44.5 degrees, with 0.74%.
+  - The record's one height profile was taken along the candidate that held most, which was the 44.5-degree one, so it is not a vertical profile. The next PR keeps a 2 cm profile along +Y and every candidate. The search itself is unchanged.
+- **#3443 (part C 2/2) merged 08:10Z** after the G1 session's review and re-review. The first-run allowance is deferred: the owner decides the `reviewed_checkpoint_terms` stand-in (a rights call) and one versus two funded navigation rows.
+- **`e1dd95b` (#3443 and #3444)**, requested 08:22:56Z (`20261107T082256Z-deploy-fed70f2c`), after main's CI and a quiet door; the G1 session was told and agreed. The door's own registration contract copy stays on 8dc96be until a joint `upgrade-door`.
+  - The resume ran at 08:39:47Z (`20261107T083947Z-selected-handoff-7a5acd04`). **Levelling refused a fourth time**, now with the v4 profiles.
+  - Along +Y and along the face-normal direction, the scene runs from 1.6 m below the cameras to 1.6 m above, with nothing below the floor. The lowest band holds 6.3% of the points, spread evenly over 20 cm.
+  - That is a flat floor seen a couple of degrees off its own normal. The next PR fits the floor as its own plane, coarse to fine.
+- **`a8d1dc9` (#3445)**, requested 09:00:30Z (`20261107T090030Z-deploy-713aa1db`); resumed 09:15:21Z (`20261107T091521Z-selected-handoff-b7aca83e`). **Levelling refused a fifth time.**
+  - The floor band's own plane is tilted 1.79 degrees from +Y, in agreement with the face-normal direction (1.75).
+  - The floor is not tilted. It is uneven: its best 2 cm plane holds 1.5%, with 1.2% more than 5 cm below it.
+  - The next PR levels on those two agreeing directions and declares no floor. Locomotion infers its own floor from the collider; the next stop will show how an uneven floor reads there.
+- **`706255c` (#3446)**, requested 09:38:25Z (`20261107T093825Z-deploy-da130810`), live 09:50Z. This session's wait lost its connection (a 502 from the proxy tunnel), but the door had the request; a watcher saw the release change before resuming. Resumed 09:51:43Z (`20261107T095143Z-selected-handoff-86b5ad56`). **Levelling refused a sixth time.**
+  - **Correction.** The floor band's plane (1.79 degrees from +Y) and the face-normal direction (1.75) tilt by about the same amount but in different directions: they are **3.13 degrees apart**. The commit and PR for #3446 compared only the sizes of their tilts and said "the same way". That was wrong; the v6 record measures it (`direction_agreement_degrees`). #3446's rule needs 0.5 and did not fire, as it should not have.
+  - **Where the job stands:** held at levelling with a precise record.
+    - The up direction is known to about 3 degrees: two estimates that bracket +Y.
+    - The reconstructed floor is uneven: its best 2 cm plane holds 1.5%, while a 20 cm band holds about 6%.
+    - This session stops tuning levelling here. More would be fitting one scene.
+  - **Paid nothing since 06:10Z.** Atlas $7.38 of $25 (15 requests), clean plate $0.69 held, intake $1.06 known: about $9.13 against the $115 ceiling.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
