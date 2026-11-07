@@ -1,12 +1,20 @@
 """A brief confirmed after preparation: the sealed task context's confirmed successor.
 
-Decision (lead, 2026-11-07, on the owner's first-principles direction): confirming a brief is consent
-state, not task content. A current task context that differs from the sealed one only in the site's
-confirmation (``confirmed`` false to true, with the website's ``confirmed_at``) is that context's
-confirmed successor. Everything bound to the sealed digest stays valid for it and nothing paid is bought
-again: each context-bound reader binds on the parent's artifacts (``artifact_context``,
-``accepts_bound_digest``). Any other difference (the task was edited) is not a successor and keeps
-today's behaviour (``task_context_changed``, then preparation again).
+Decision (lead, 2026-11-07, on the owner's first-principles direction): a confirmation records consent
+and the site's answers to the screening gates; neither changes what the task is or any preparation
+artifact. A current task context is the sealed one's confirmed successor when it differs only in:
+
+- the site's confirmation (``confirmed`` false to true, with the website's ``confirmed_at``); or
+- also in the site's answers (``ANSWER_FIELDS``: ``operator_answers``, ``unresolved``, and
+  ``success_criteria`` with its ``task_evidence_provenance`` while the criteria state nothing), when the
+  website names the sealed digest as its parent (``PARENT_FIELD``, inside the current context's own seal).
+  Only the website holds the brief's proposals, so it decides that every added answer accepts Blueprint's
+  own proposal unchanged or marks a gate unknown; a corrected answer is task content and names no parent.
+
+Everything bound to the sealed digest stays valid for it and nothing paid is bought again: each
+context-bound reader binds on the parent's artifacts (``artifact_context``, ``accepts_bound_digest``). Any
+other difference (the task was edited, an answer corrected, a success definition stated) is not a successor
+and keeps today's behaviour (``task_context_changed``, then preparation again).
 
 The successor is always the website's own reading, as the signed task-context read returns it; nothing
 here sets, assumes or synthesizes a confirmation. The lineage is recorded in the capture's own pipeline
@@ -28,7 +36,12 @@ LINEAGE_SCHEMA = "website_task_context_confirmation_lineage.v1"
 LINEAGE_DIRECTORY = "website_task_context_lineage"
 #: The fields a confirmation changes: the confirmation itself, its time, and the seal over both.
 CONFIRMATION_FIELDS = frozenset({"confirmed", "confirmed_at", "context_digest"})
+#: The website's statement, sealed in a confirmed context, of the parent its confirmation followed.
+PARENT_FIELD = "confirmation_parent_context_digest"
+#: The site's answers a confirmation may also give, when the website names the sealed parent.
+ANSWER_FIELDS = frozenset({"operator_answers", "unresolved", "success_criteria", "task_evidence_provenance"})
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_ABSENT = object()
 
 
 def _sealed(context: Any) -> bool:
@@ -38,15 +51,38 @@ def _sealed(context: Any) -> bool:
 
 
 def _content(context: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in context.items() if key not in CONFIRMATION_FIELDS}
+    return {key: value for key, value in context.items() if key not in CONFIRMATION_FIELDS | {PARENT_FIELD}}
+
+
+def states_nothing(criteria: Any) -> bool:
+    """Success criteria that state nothing: none, or no definition and unknown or without a rate and a cycle time."""
+    if criteria is None:
+        return True
+    if not isinstance(criteria, Mapping):
+        return False
+    definition = criteria.get("successDefinition")
+    return ((definition is None or (isinstance(definition, str) and not definition.strip()))
+            and (criteria.get("unknown") is True
+                 or (criteria.get("successRate") is None and criteria.get("cycleTimeSeconds") is None)))
+
+
+def _answers_only(sealed: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    """The website named ``sealed`` as the parent and only the site's answers changed besides the confirmation."""
+    if current.get(PARENT_FIELD) != sealed["context_digest"] or PARENT_FIELD in sealed:
+        return False
+    changed = {key for key in set(sealed) | set(current) if key not in CONFIRMATION_FIELDS | {PARENT_FIELD}
+               and sealed.get(key, _ABSENT) != current.get(key, _ABSENT)}
+    return (changed <= ANSWER_FIELDS and states_nothing(sealed.get("success_criteria"))
+            and states_nothing(current.get("success_criteria")))
 
 
 def confirmation_successor(sealed: Any, current: Any) -> dict[str, Any] | None:
     """The lineage when ``current`` is ``sealed``'s confirmed successor; None otherwise.
 
     Both contexts must carry intact seals. The sealed one is unconfirmed, the current one confirmed
-    with the website's confirmation time, and with those fields and the seal removed the two have the
-    same canonical bytes.
+    with the website's confirmation time. With those fields and the seal removed the two have the same
+    canonical bytes, or the current one names the sealed digest as its parent (``PARENT_FIELD``) and
+    differs besides only in the site's answers (``ANSWER_FIELDS``, its success criteria stating nothing).
     """
     if not (_sealed(sealed) and _sealed(current)):
         return None
@@ -54,7 +90,7 @@ def confirmation_successor(sealed: Any, current: Any) -> dict[str, Any] | None:
             or current.get("confirmed") is not True
             or not isinstance(current.get("confirmed_at"), str) or not current["confirmed_at"].strip()):
         return None
-    if canonical_digest(_content(sealed)) != canonical_digest(_content(current)):
+    if canonical_digest(_content(sealed)) != canonical_digest(_content(current)) and not _answers_only(sealed, current):
         return None
     return {"schema_version": LINEAGE_SCHEMA, "confirmation_parent_context_digest": sealed["context_digest"],
             "context_digest": current["context_digest"], "confirmed_at": current["confirmed_at"]}
@@ -126,18 +162,21 @@ def artifact_context(pipeline_dir: str | Path | None, context: Any) -> Any:
 
 
 def implied_parent_digests(context: Any) -> frozenset[str]:
-    """The digests a confirmed context's unconfirmed parent can have: the same content, unconfirmed.
+    """The digests a confirmed context's unconfirmed parent can have, read from the context itself.
 
-    A successor differs from its parent only in the confirmation, so the parent is determined by the
-    successor: ``confirmed`` false and ``confirmed_at`` null (or absent, as an older projection wrote it).
+    A successor that differs from its parent only in the confirmation determines it: ``confirmed`` false
+    and ``confirmed_at`` null (or absent, as an older projection wrote it). One whose confirmation also gave
+    answers carries its parent's digest inside its own seal (``PARENT_FIELD``), as the website stated it.
     Empty for a context that is not a sealed, confirmed one. Nothing here confirms anything.
     """
     if (not _sealed(context) or context.get("confirmed") is not True
             or not isinstance(context.get("confirmed_at"), str) or not context["confirmed_at"].strip()):
         return frozenset()
     content = _content(context)
-    return frozenset(canonical_digest({**content, **unconfirmed}) for unconfirmed in (
-        {"confirmed": False, "confirmed_at": None}, {"confirmed": False}))
+    stated = context.get(PARENT_FIELD)
+    return frozenset({canonical_digest({**content, **unconfirmed}) for unconfirmed in (
+        {"confirmed": False, "confirmed_at": None}, {"confirmed": False})}
+        | ({stated} if isinstance(stated, str) and _DIGEST.fullmatch(stated) else set()))
 
 
 def accepts_bound_digest(context: Any, bound_digest: Any) -> bool:
@@ -151,6 +190,6 @@ def accepts_bound_digest(context: Any, bound_digest: Any) -> bool:
     return bound_digest == context.get("context_digest") or bound_digest in implied_parent_digests(context)
 
 
-__all__ = ["CONFIRMATION_FIELDS", "LINEAGE_DIRECTORY", "LINEAGE_SCHEMA", "accepts_bound_digest", "artifact_context",
-           "capture_pipeline_root", "confirmation_successor", "implied_parent_digests", "read_confirmation_parent",
-           "record_confirmation_lineage"]
+__all__ = ["ANSWER_FIELDS", "CONFIRMATION_FIELDS", "LINEAGE_DIRECTORY", "LINEAGE_SCHEMA", "PARENT_FIELD",
+           "accepts_bound_digest", "artifact_context", "capture_pipeline_root", "confirmation_successor",
+           "implied_parent_digests", "read_confirmation_parent", "record_confirmation_lineage", "states_nothing"]

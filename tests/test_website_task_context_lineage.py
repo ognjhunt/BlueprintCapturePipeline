@@ -18,6 +18,7 @@ import pytest
 from blueprint_pipeline import website_task_semantics as semantics
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.website_task_context_lineage import (
+    PARENT_FIELD,
     accepts_bound_digest,
     artifact_context,
     confirmation_successor,
@@ -192,3 +193,123 @@ def test_the_entry_keeps_the_lineage_before_it_replaces_the_sealed_context(tmp_p
     assert result.metadata["site_task_context"] == current
     assert json.loads((pipeline / "website_task_context.json").read_text()) == current
     assert read_confirmation_parent(pipeline, current) == parent
+
+
+# The website's own projections (WebApp ``projectWebsiteTaskContext``; the same brief in
+# server/tests/website-task-context-confirmation.test.ts), exactly as it serves them: a navigation brief
+# prepared while unconfirmed (no answers, four open gates, general_task), then confirmed by accepting
+# Blueprint's description-based proposal ``taskShape: single`` with no gate unknown and success criteria
+# that state nothing (the library job's shape); and the same confirmation correcting that answer.
+WEBSITE_SEALED = json.loads("{\"schema_version\":\"website_site_task_context.v1\",\"purpose\":\"scene_preparation\",\"request_id\":\"synthetic-aisle\",\"scene_id\":\"site-synthetic-aisle\",\"capture_id\":\"walkthrough-synthetic-aisle\",\"description\":\"Walk down the aisle to its far end without touching the shelves.\",\"task_family\":\"general_task\",\"confirmed\":false,\"confirmed_at\":null,\"operator_answers\":{},\"unresolved\":[\"sceneStability\",\"objectVariety\",\"deploymentTimeline\",\"accessWindow\"],\"capture_rights\":{\"derived_scene_generation_allowed\":true,\"data_licensing_allowed\":false,\"capture_contributor_payout_eligible\":false,\"consent_status\":\"granted\",\"consent_revoked\":false,\"consent_scope\":[\"derived_scene_generation\",\"robot_evaluation\"],\"statement_version\":\"2026-11-02.v2\",\"recorded_at_iso\":\"2026-11-06T10:00:00.000Z\"},\"context_digest\":\"sha256:bcfc3febeb9de94846c5500aae00aa129bb6dffe74a91fbfc4f485dd2f917c88\"}")
+WEBSITE_SUCCESSOR = json.loads("{\"schema_version\":\"website_site_task_context.v1\",\"purpose\":\"scene_preparation\",\"request_id\":\"synthetic-aisle\",\"scene_id\":\"site-synthetic-aisle\",\"capture_id\":\"walkthrough-synthetic-aisle\",\"description\":\"Walk down the aisle to its far end without touching the shelves.\",\"task_family\":\"general_task\",\"confirmed\":true,\"confirmed_at\":\"2026-11-07T14:30:45.016Z\",\"operator_answers\":{\"taskShape\":\"single\"},\"unresolved\":[],\"capture_rights\":{\"derived_scene_generation_allowed\":true,\"data_licensing_allowed\":false,\"capture_contributor_payout_eligible\":false,\"consent_status\":\"granted\",\"consent_revoked\":false,\"consent_scope\":[\"derived_scene_generation\",\"robot_evaluation\"],\"statement_version\":\"2026-11-02.v2\",\"recorded_at_iso\":\"2026-11-06T10:00:00.000Z\"},\"success_criteria\":{\"successDefinition\":null,\"successRate\":null,\"cycleTimeSeconds\":null,\"unknown\":true},\"task_evidence_provenance\":{\"item_details\":\"owner_stated_unverified\",\"success_criteria\":\"owner_stated_target\",\"success_rate_unit\":\"percent\",\"cycle_time_unit\":\"seconds\",\"physical_measurements_verified\":false},\"confirmation_parent_context_digest\":\"sha256:bcfc3febeb9de94846c5500aae00aa129bb6dffe74a91fbfc4f485dd2f917c88\",\"context_digest\":\"sha256:0deac30a4fe0a0c3b8c6da19224891249f2dc7ccc95b47427283ba977131b06c\"}")
+WEBSITE_CORRECTED = json.loads("{\"schema_version\":\"website_site_task_context.v1\",\"purpose\":\"scene_preparation\",\"request_id\":\"synthetic-aisle\",\"scene_id\":\"site-synthetic-aisle\",\"capture_id\":\"walkthrough-synthetic-aisle\",\"description\":\"Walk down the aisle to its far end without touching the shelves.\",\"task_family\":\"general_task\",\"confirmed\":true,\"confirmed_at\":\"2026-11-07T14:30:45.016Z\",\"operator_answers\":{\"taskShape\":\"multiple\"},\"unresolved\":[],\"capture_rights\":{\"derived_scene_generation_allowed\":true,\"data_licensing_allowed\":false,\"capture_contributor_payout_eligible\":false,\"consent_status\":\"granted\",\"consent_revoked\":false,\"consent_scope\":[\"derived_scene_generation\",\"robot_evaluation\"],\"statement_version\":\"2026-11-02.v2\",\"recorded_at_iso\":\"2026-11-06T10:00:00.000Z\"},\"success_criteria\":{\"successDefinition\":null,\"successRate\":null,\"cycleTimeSeconds\":null,\"unknown\":true},\"task_evidence_provenance\":{\"item_details\":\"owner_stated_unverified\",\"success_criteria\":\"owner_stated_target\",\"success_rate_unit\":\"percent\",\"cycle_time_unit\":\"seconds\",\"physical_measurements_verified\":false},\"context_digest\":\"sha256:c364877e9324ea0301f20e6307bab7f8b618b5f25c230a07025d12813a949778\"}")
+
+
+def test_the_websites_digests_are_these_bytes_and_the_successor_names_the_sealed_one():
+    for context in (WEBSITE_SEALED, WEBSITE_SUCCESSOR, WEBSITE_CORRECTED):
+        assert canonical_digest(context, digest_field="context_digest") == context["context_digest"]
+    assert WEBSITE_SUCCESSOR[PARENT_FIELD] == WEBSITE_SEALED["context_digest"]
+    assert PARENT_FIELD not in WEBSITE_CORRECTED
+
+
+def test_a_confirmation_that_accepts_the_proposal_is_the_sealed_ones_successor(tmp_path):
+    """The library shape: answers, open gates and empty success criteria changed; the task did not."""
+    from blueprint_pipeline.website_assessment_resume import _context_upgrade_allowed
+    from blueprint_pipeline.website_task_context_contracts import validate_website_task_context
+
+    sealed, current = deepcopy(WEBSITE_SEALED), deepcopy(WEBSITE_SUCCESSOR)
+    assert {key for key in set(sealed) | set(current) if sealed.get(key) != current.get(key)} == {
+        "confirmed", "confirmed_at", "operator_answers", "unresolved", "success_criteria",
+        "task_evidence_provenance", PARENT_FIELD, "context_digest"}
+    assert confirmation_successor(sealed, current)["confirmation_parent_context_digest"] == sealed["context_digest"]
+    # Browser admission (where the library job's resume was refused) now lets the successor replace it.
+    assert _context_upgrade_allowed(sealed, current)
+    assert validate_website_task_context(current, request_id=current["request_id"], scene_id=current["scene_id"],
+                                         capture_id=current["capture_id"], purpose="scene_preparation") == current
+    assert accepts_bound_digest(current, sealed["context_digest"])
+    pipeline = tmp_path / "scenes/site-synthetic-aisle/captures/walkthrough-synthetic-aisle/pipeline"
+    assert record_confirmation_lineage(pipeline, parent=sealed, successor=current) is not None
+    assert artifact_context(pipeline, current) == sealed
+
+
+def _restated(change: str) -> dict:
+    current = deepcopy(WEBSITE_SUCCESSOR)
+    if change == "description":
+        current["description"] += " Twice."
+    elif change == "family":
+        current["task_family"] = "navigation"
+    elif change == "success_definition":
+        current["success_criteria"] = {**current["success_criteria"], "successDefinition": "Reaches the end", "unknown": False}
+    elif change == "success_rate":
+        current["success_criteria"] = {**current["success_criteria"], "successRate": 90, "unknown": False}
+    elif change == "item_details":
+        current["operator_task_details"] = {"item_weight": "2 kg"}
+    elif change == "rights":
+        current["capture_rights"] = {**current["capture_rights"], "consent_scope": ["robot_evaluation"]}
+    elif change == "identity":
+        current["capture_id"] = "walkthrough-other"
+    elif change == "another_parent":
+        current[PARENT_FIELD] = "sha256:" + "e" * 64
+    return _sealed(current)
+
+
+@pytest.mark.parametrize("change", ["correction", "description", "family", "success_definition", "success_rate",
+                                    "item_details", "rights", "identity", "another_parent"])
+def test_a_correction_or_any_task_change_is_not_a_successor_even_when_a_parent_is_named(change):
+    from blueprint_pipeline.website_assessment_resume import _context_upgrade_allowed
+
+    current = deepcopy(WEBSITE_CORRECTED) if change == "correction" else _restated(change)
+    assert confirmation_successor(WEBSITE_SEALED, current) is None
+    assert not _context_upgrade_allowed(WEBSITE_SEALED, current)
+    if change in {"correction", "another_parent"}:
+        assert not accepts_bound_digest(current, WEBSITE_SEALED["context_digest"])
+
+
+@pytest.mark.parametrize("value", [{"confirmed": False, "confirmed_at": None}, {PARENT_FIELD: "sha256:not-a-digest"}])
+def test_only_a_confirmed_context_names_a_parent(value):
+    from blueprint_pipeline.website_task_context_contracts import validate_website_task_context
+
+    current = _sealed({**WEBSITE_SUCCESSOR, **value})
+    with pytest.raises(ValueError, match="website_task_context_confirmation_parent_invalid"):
+        validate_website_task_context(current, request_id=current["request_id"], scene_id=current["scene_id"],
+                                      capture_id=current["capture_id"], purpose="scene_preparation")
+
+
+@pytest.mark.parametrize("answered", [True, False])
+def test_semantics_bought_for_the_parent_load_for_a_successor_that_accepted_the_proposal(tmp_path, answered):
+    parent, source, receipt = semantics_fixture()
+    artifact = semantics.retain_task_semantics(job_dir=tmp_path, receipt=receipt, task_context=parent,
+                                               source_video_digest=source)
+    (tmp_path / "selection_binding.json").write_text(json.dumps({"planner_receipt": receipt}))
+    answers = {"operator_answers": {"taskShape": "single"}, "unresolved": []}
+    current = successor_of(parent, **answers, **({PARENT_FIELD: parent["context_digest"]} if answered else {}))
+    if answered:
+        assert semantics.load_task_semantics(job_dir=tmp_path, task_context=current, source_video_digest=source) == artifact
+    else:  # the same answers with no parent named by the website: a corrected brief binds nothing of the parent
+        with pytest.raises(ValueError, match="website_task_semantics_planner_binding_invalid"):
+            semantics.load_task_semantics(job_dir=tmp_path, task_context=current, source_video_digest=source)
+
+
+@pytest.mark.parametrize("current_kind", ["answered", "corrected"])
+def test_screening_reads_a_parent_bound_source_against_a_successor_that_accepted_the_proposal(tmp_path, monkeypatch,
+                                                                                               current_kind):
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline import team_scene_packet_worker as packets
+    from blueprint_pipeline import website_task_context as reader
+
+    parent = WEBSITE_SEALED
+    current = WEBSITE_SUCCESSOR if current_kind == "answered" else WEBSITE_CORRECTED
+    site = parent["scene_id"]
+    capture = tmp_path / "capture"
+    (capture / "pipeline").mkdir(parents=True)
+    source = {"scene_intent_id": "scene-" + "a" * 64, "scene_intent_digest": "sha256:" + "a" * 64,
+              "capture_id": parent["capture_id"], "task_id": "website-" + parent["context_digest"][7:27],
+              "task_context_digest": parent["context_digest"], "scene_revision_digest": "sha256:" + "b" * 64}
+    monkeypatch.setattr(packets, "resolve_capture_root", lambda _source: capture)
+    monkeypatch.setattr(reader, "load_current_website_task_context", lambda **_: deepcopy(current))
+    (capture / "pipeline/website_task_context.json").write_text(json.dumps(current))
+    if current_kind == "answered":
+        assert worker.require_current_source(source, site_id=site) == current
+    else:
+        with pytest.raises(ValueError, match="beta_screening_source_context_mismatch"):
+            worker.require_current_source(source, site_id=site)
