@@ -34,7 +34,7 @@ GOAL_HOST_TASK_KINDS = frozenset({"rigid_pick_place", NAVIGATION_TASK_KIND})
 MACHINE_AUTHORITY_SCHEMA_VERSION = "native_g1_navigation_goal_authority.v3"
 GOAL_BASIS_SCHEMA_VERSION = "native_g1_navigation_goal_basis.v1"
 #: Keyed by whether the site confirmed its brief (``site_brief_confirmed``). An unconfirmed brief's basis
-#: cites no owner decision: no decision makes an unconfirmed brief a basis, so it is only disclosed.
+#: cites no owner decision; the authority only discloses that the brief is unconfirmed.
 MACHINE_AUTHORITY_BASIS = {
     True: "owner_decision_2026_11_06_confirmed_brief_and_machine_composed_goal",
     False: "machine_composed_goal_site_brief_unconfirmed_disclosed",

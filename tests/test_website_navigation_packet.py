@@ -129,7 +129,7 @@ def test_the_machine_composed_authority_binds_the_sites_own_context_and_disclose
     flagged = compose_g1_navigation_goal_authority(plan=unconfirmed_plan, task_context=unconfirmed)
     assert flagged["site_brief_confirmed"] is False and flagged["claim_ceiling"] == "development_only"
     # Its basis and status say what is true: composed from an unconfirmed brief, disclosed. The basis cites
-    # no owner decision, since none makes an unconfirmed brief a basis.
+    # no owner decision.
     assert flagged["status"] == "composed_for_development_simulation_site_brief_unconfirmed"
     assert flagged["authority_basis"] == "machine_composed_goal_site_brief_unconfirmed_disclosed"
     assert "owner_decision" not in flagged["authority_basis"]
