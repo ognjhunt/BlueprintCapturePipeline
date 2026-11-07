@@ -1,7 +1,7 @@
 """Run a held website job's preparation again, once, when the fact it was held on arrives.
 
 Beta journey step: L3 website scene preparation. A held job is a completed stage: a redelivery never
-reruns it. Two holds wait on a fact the job's own preparation cannot produce, so nothing would ever
+reruns it. These holds wait on a fact the job's own preparation cannot produce, so nothing would ever
 re-run them:
 
 - **A brief confirmed after preparation.** The website refused the job's intake because the site had not
@@ -13,6 +13,9 @@ re-run them:
   asynchronously, so the handoff's own receipt lookup can find none and the job holds on
   ``pipeline:navigation_source_identity``. Once the screening pass binds the receipt beside the record
   (``website_navigation_intake``), the job runs again and is handed off.
+- **A Blueprint integration gap.** A hold naming any missing ``pipeline:*`` piece waits on Blueprint
+  itself, which a new release can fix. Each release (``current_release_commit``) re-evaluates the job
+  once, keyed by that commit and the pipeline pieces the hold names; the drain tick's limit bounds it.
 
 Modelled on the robot fit recheck (``website_robot_fit_hold``): the job ledger keeps the run's exact
 handoff bytes while it holds this way (``replay_record``); the existing drain tick replays them once per
@@ -63,8 +66,18 @@ def _handoff(pipeline_root: Path) -> dict[str, Any] | None:
         return None
 
 
+def _pipeline_missing(handoff: dict[str, Any]) -> list[str]:
+    """The Blueprint integration pieces a hold names as missing (``pipeline:*``)."""
+    gap = handoff.get("native_task_preparation_gap") or {}
+    return sorted({item for item in gap.get("missing") or () if isinstance(item, str) and item.startswith("pipeline:")})
+
+
 def held_kind(pipeline_root: Path) -> str | None:
-    """How the capture's retained handoff waits on a later fact: ``consent``, ``intake_receipt`` or None."""
+    """How the retained handoff waits on a later fact: ``consent``, ``intake_receipt``, ``integration_gap`` or None.
+
+    ``integration_gap``: the hold names a missing Blueprint piece (``pipeline:*``), which a new release
+    can build, so the job is re-evaluated once per release.
+    """
     from .website_task_context_contracts import holds_native_task_preparation
 
     root = Path(pipeline_root)
@@ -80,17 +93,20 @@ def held_kind(pipeline_root: Path) -> str | None:
             and (handoff.get("navigation_intake") or {}).get("status") == "forward_pending"
             and isinstance(inputs.get("path"), str)):
         return "intake_receipt"
-    return None
+    return "integration_gap" if _pipeline_missing(handoff) else None
 
 
 def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str, Any] | None:
     """The fact the held job now has and did not when it was held; None while it has none.
 
-    ``consent``: the website's current task context, one signed read, is the retained context's
-    confirmed successor. ``intake_receipt``: the record's intake receipt is bound and reads.
+    ``confirmed_successor``: the website's current task context, one signed read, is the retained
+    context's confirmed successor. ``intake_receipt``: the record's intake receipt is bound and reads.
+    ``release``: the running release (``current_release_commit``) with the pipeline pieces the hold names,
+    for a hold on a Blueprint integration gap; each release re-evaluates it once.
     """
     root = Path(pipeline_root)
     kind = held_kind(root)
+    fact = None
     if kind == "consent":
         from .website_task_context_lineage import confirmation_successor
 
@@ -100,21 +116,23 @@ def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str,
         current = load_current_context(request_id=retained["request_id"], scene_id=retained["scene_id"],
                                        capture_id=retained["capture_id"], purpose=retained.get("purpose"))
         lineage = confirmation_successor(retained, current)
-        if lineage is None:
-            return None
-        fact = {"kind": "confirmed_successor", **{key: lineage[key] for key in (
-            "confirmation_parent_context_digest", "context_digest", "confirmed_at")}}
+        if lineage is not None:
+            fact = {"kind": "confirmed_successor", **{key: lineage[key] for key in (
+                "confirmation_parent_context_digest", "context_digest", "confirmed_at")}}
     elif kind == "intake_receipt":
         from .website_navigation_intake import read_navigation_intake_receipt, receipt_exists
 
         path = (_handoff(root) or {})["navigation_scene_inputs"]["path"]
-        if not receipt_exists(path):
-            return None
-        receipt = read_navigation_intake_receipt(path)
-        if receipt is None:
-            return None
-        fact = {"kind": "intake_receipt", "receipt_digest": receipt["receipt_digest"]}
-    else:
+        receipt = read_navigation_intake_receipt(path) if receipt_exists(path) else None
+        if receipt is not None:
+            fact = {"kind": "intake_receipt", "receipt_digest": receipt["receipt_digest"]}
+    if fact is None and kind in {"intake_receipt", "integration_gap"}:
+        from .team_scene_packet_worker import current_release_commit
+
+        release, missing = current_release_commit(), _pipeline_missing(_handoff(root) or {})
+        if release and missing:
+            fact = {"kind": "release", "release_commit": release, "missing_pipeline": missing}
+    if fact is None:
         return None
     fact["fact_digest"] = canonical_digest(fact)
     return fact
