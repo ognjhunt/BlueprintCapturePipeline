@@ -358,3 +358,109 @@ def test_operator_resume_refuses_a_live_or_missing_lease_before_the_native_handl
     with pytest.raises(ValueError, match="selected_handoff_atlas_" + refusal):
         resume(site, snapshot["atlas_status_digest"], lambda *_, **__: pytest.fail("live lease taken over"))
     assert atlas_tests.tree_bytes(site) == before
+
+
+# The same door flag, for a completed ledger whose retained handoff is held on a fact that has since arrived
+# (website_held_handoff_replay): an integration gap a new release can build, or a confirmed successor.
+HELD_FACT = {"kind": "release", "release_commit": "a" * 40,
+             "missing_pipeline": ["pipeline:navigation_source_identity"]}
+HELD_FACT = {**HELD_FACT, "fact_digest": canonical_digest(HELD_FACT)}
+
+
+def held_native(site, monkeypatch, fact=HELD_FACT):
+    from blueprint_pipeline import website_held_handoff_replay as held
+
+    ledger = retained_native(site)
+    ledger.update(status="completed", last_error=None, attempt_history=[
+        *ledger["attempt_history"], {"attempt_number": 6, "status": "completed", "blockers": []}], attempt_count=6)
+    (site.capture / native.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
+    monkeypatch.setattr(held, "arrived_fact", lambda pipeline, **_: None if fact is None else dict(fact))
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    write_job(site, state="ready")
+    return ledger
+
+
+def held_claim(site, raw, expected):
+    return native._claim_job_lease(site.capture, scene_id="site-fixture", capture_id="walkthrough-fixture",
+        owner="reviewed-recovery", lease_seconds=60, payload_sha256=hashlib.sha256(raw).hexdigest(),
+        producer_delivery_key="sha256:" + "d" * 64, expected_held_replay=expected)
+
+
+def test_a_held_completed_ledger_is_replayed_once_per_fact_through_the_held_replay_claim(site, monkeypatch):
+    from blueprint_pipeline import website_held_handoff_replay as held
+
+    before = held_native(site, monkeypatch)
+    snapshot = recover(site)["atlas"]
+    assert snapshot["native_preparation"]["status"] == "completed"
+    seen = []
+
+    def process(raw, **kwargs):
+        seen.append((raw, kwargs))
+        status, ledger = held_claim(site, raw, kwargs["expected_held_replay"])
+        assert status == "claimed" and ledger["attempt_count"] == 7
+        assert ledger["attempt_history"][:6] == before["attempt_history"]
+        # The replayed stage holds again and the handler commits the ledger completed.
+        native._finish_job_lease(site.capture, owner="reviewed-recovery", token=ledger["lease_token"],
+                                 update={"status": "completed"})
+        return {"status": "processed", "queue_disposition": "terminal_success"}
+
+    result = resume(site, snapshot["atlas_status_digest"], process)
+    assert result["status"] == "held_preparation_replayed" and result["native_handler_invoked"]
+    assert result["atlas_retry_performed"] is False and len(seen) == 1
+    raw, kwargs = seen[0]
+    assert raw == b"original selected envelope" and kwargs["expected_preparation_purpose"] == "scene_preparation"
+    assert "expected_reconstruction_resume" not in kwargs
+    assert kwargs["expected_held_replay"] == {
+        "review_schema": held.OPERATOR_SCHEMA, "ledger_digest": canonical_digest(before),
+        "selected_payload_sha256": hashlib.sha256(raw).hexdigest(), "fact": HELD_FACT}
+    state = json.loads((site.capture / "pipeline/website_scene_preparation" / held.STATE_FILE).read_text())
+    assert state["fact_digest"] == HELD_FACT["fact_digest"] and state["ledger_revision"] == before["revision"]
+    # Once per fact: the same fact on a fresh review is refused by name.
+    with pytest.raises(ValueError, match="selected_handoff_atlas_held_handoff_resume_already_replayed"):
+        resume(site, recover(site)["atlas"]["atlas_status_digest"],
+               lambda *_, **__: pytest.fail("the same fact replayed twice"))
+
+
+def test_a_replay_that_stopped_before_its_claim_leaves_the_fact_for_the_operator(site, monkeypatch):
+    held_native(site, monkeypatch)
+    reviewed = recover(site)["atlas"]["atlas_status_digest"]
+    resume(site, reviewed, lambda *_, **__: {"status": "capture_owner_observation_unavailable_retryable"})
+    calls = []
+    result = resume(site, recover(site)["atlas"]["atlas_status_digest"],
+                    lambda *_, **__: calls.append(1) or {"status": "processed", "queue_disposition": "terminal_success"})
+    assert result["status"] == "held_preparation_replayed" and calls == [1]
+
+
+def test_a_completed_ledger_with_no_arrived_fact_is_refused_by_name(site, monkeypatch):
+    held_native(site, monkeypatch, fact=None)
+    snapshot = recover(site)["atlas"]
+    before = atlas_tests.tree_bytes(site)
+    with pytest.raises(ValueError, match="selected_handoff_atlas_held_handoff_resume_not_eligible"):
+        resume(site, snapshot["atlas_status_digest"], lambda *_, **__: pytest.fail("a non-held job replayed"))
+    assert atlas_tests.tree_bytes(site) == before
+
+
+@pytest.mark.parametrize("change", ["ledger", "payload", "delivery_key", "extra_field", "not_completed"])
+def test_the_operator_held_replay_claim_names_the_exact_reviewed_ledger_and_payload(site, monkeypatch, change):
+    from blueprint_pipeline import website_held_handoff_replay as held
+
+    ledger = held_native(site, monkeypatch)
+    raw = b"original selected envelope"
+    expected = {"review_schema": held.OPERATOR_SCHEMA, "ledger_digest": canonical_digest(ledger),
+                "selected_payload_sha256": hashlib.sha256(raw).hexdigest(), "fact": HELD_FACT}
+    if change == "ledger":
+        ledger["attempt_history"].append({"status": "unknown provider outcome"})
+    elif change == "payload":
+        expected["selected_payload_sha256"] = "b" * 64
+    elif change == "delivery_key":
+        ledger["producer_delivery_key"] = "sha256:" + "f" * 64
+        expected["ledger_digest"] = canonical_digest(ledger)
+    elif change == "extra_field":
+        expected["record"] = {}
+    elif change == "not_completed":
+        ledger["status"] = "failed_retryable"
+        expected["ledger_digest"] = canonical_digest(ledger)
+    (site.capture / native.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
+    status, _ = held_claim(site, raw, expected)
+    assert status == "held_handoff_replay_changed"
+    assert json.loads((site.capture / native.JOB_LEDGER_FILENAME).read_text()) == ledger

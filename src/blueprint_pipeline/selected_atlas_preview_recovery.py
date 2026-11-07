@@ -390,6 +390,56 @@ def _reissue_preparation(snapshot, native, observation, capture_root):
             "blockers": ["selected_handoff_preparation_reissue_enqueue_refused"]}
 
 
+def _resume_held_preparation(snapshot, native, observation, capture_root, storage_root, handoff_payload, listener):
+    """A completed ledger whose retained handoff holds on a fact that has since arrived, run again once.
+
+    The job's held stage runs again from its retained outputs through the same held-replay claim the drain
+    uses (``website_held_handoff_replay``): on an integration gap a new release can build, or on a consent
+    hold whose current context is the confirmed successor. Everything else refuses by name.
+    """
+    _require(type(native["producer_delivery_key"]) is str and _SHA.fullmatch(native["producer_delivery_key"])
+             and native["producer_delivery_key"] == observation["producer_delivery"].get("delivery_key"),
+             "native_resume_not_eligible")
+    _require(type(handoff_payload) is bytes and listener is not None, "original_payload_required")
+    provider = os.getenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "")
+    _require(provider in {"local", "claude", "openai"}, "current_provider_missing")
+    from .website_held_handoff_replay import resume_held_preparation
+    try:
+        result = resume_held_preparation(listener, capture_root=Path(capture_root), storage_root=Path(storage_root),
+            handoff_payload=handoff_payload, ledger_digest=native["ledger_digest"],
+            ledger_revision=native["revision"], provider=provider)
+    except ValueError as exc:
+        code = str(exc)
+        if code in {"website_held_handoff_resume_not_eligible", "website_held_handoff_resume_already_replayed"}:
+            raise ValueError("selected_handoff_atlas_" + code.removeprefix("website_")) from None
+        raise
+    return _native_outcome(snapshot, result, "held_preparation_replayed")
+
+
+def _native_outcome(snapshot, result, status):
+    complete = result.get("status") == "processed" and result.get("queue_disposition") == "terminal_success"
+    outcome = {"status": status if complete else "blocked", "atlas": snapshot,
+               "atlas_retry_performed": False, "native_handler_invoked": True,
+               "native_status": result.get("status"), "native_disposition": result.get("queue_disposition"),
+               "blockers": [] if complete else ["selected_handoff_native_preparation_still_blocked"]}
+    # Preserve the native stage's bounded refusal just as original
+    # dispatch does; never expose raw provider/source exception text.
+    from .capture_delivery_staging import STAGING_REASON_CODES, bounded_staging_error
+    from .capture_original_owner_observer import OWNER_OBSERVATION_REASON_CODES
+    for field, codes in (("staging_reason", STAGING_REASON_CODES),
+                         ("owner_observation_reason", OWNER_OBSERVATION_REASON_CODES)):
+        reason = result.get(field)
+        if type(reason) is str and reason in codes:
+            outcome[field] = reason
+    # A generic or summary refusal keeps only its failure's type and
+    # a redacted, trimmed message, bounded again here.
+    for field in ("owner_observation_error", "staging_error"):
+        described = bounded_staging_error(result.get(field))
+        if described is not None:
+            outcome[field] = described
+    return outcome
+
+
 def recover_selected_atlas_preview(selection, *, observation, membership, capture_root, storage_root,
                                    handoff_payload=None, listener=None):
     from .task_evaluation_scene_retirement_generations import _capture_admission
@@ -429,6 +479,9 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                 native = snapshot["native_preparation"]
                 if selection["mode"] == "preparation-reissue":
                     return _reissue_preparation(snapshot, native, observation, capture_root)
+                if type(native) is dict and native["status"] == "completed":
+                    return _resume_held_preparation(snapshot, native, observation, capture_root, storage_root,
+                                                    handoff_payload, listener)
                 _require(type(native) is dict and native["status"] in {"failed_retryable", "processing"}
                          and type(native["producer_delivery_key"]) is str
                          and _SHA.fullmatch(native["producer_delivery_key"])
@@ -453,27 +506,7 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                     expected_reconstruction_resume={"review_schema": REVIEW_SCHEMA,
                         "ledger_digest": native["ledger_digest"],
                         "selected_payload_sha256": hashlib.sha256(handoff_payload).hexdigest()})
-                complete = result.get("status") == "processed" and result.get("queue_disposition") == "terminal_success"
-                outcome = {"status": "native_preparation_resumed" if complete else "blocked", "atlas": snapshot,
-                        "atlas_retry_performed": False, "native_handler_invoked": True,
-                        "native_status": result.get("status"), "native_disposition": result.get("queue_disposition"),
-                        "blockers": [] if complete else ["selected_handoff_native_preparation_still_blocked"]}
-                # Preserve the native stage's bounded refusal just as original
-                # dispatch does; never expose raw provider/source exception text.
-                from .capture_delivery_staging import STAGING_REASON_CODES, bounded_staging_error
-                from .capture_original_owner_observer import OWNER_OBSERVATION_REASON_CODES
-                for field, codes in (("staging_reason", STAGING_REASON_CODES),
-                                     ("owner_observation_reason", OWNER_OBSERVATION_REASON_CODES)):
-                    reason = result.get(field)
-                    if type(reason) is str and reason in codes:
-                        outcome[field] = reason
-                # A generic or summary refusal keeps only its failure's type and
-                # a redacted, trimmed message, bounded again here.
-                for field in ("owner_observation_error", "staging_error"):
-                    described = bounded_staging_error(result.get(field))
-                    if described is not None:
-                        outcome[field] = described
-                return outcome
+                return _native_outcome(snapshot, result, "native_preparation_resumed")
             return {"status": "atlas_status_returned", "atlas": snapshot, "atlas_retry_performed": False}
 
         def preflight(job):

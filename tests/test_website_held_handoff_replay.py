@@ -1,4 +1,5 @@
-"""A held job's preparation runs again, once, when its brief is confirmed or its intake receipt is bound.
+"""A held job's preparation runs again, once, when its brief is confirmed, its intake receipt is bound or,
+on a Blueprint integration gap, a new release runs.
 
 The actual listener, lease, ledger, capture preparation stage, status reader and drain run. ``run_e2e``
 stands in for the orchestrator around the website preparation stage (its entry keeps the confirmation
@@ -69,7 +70,11 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
     need = requirements(locomote=True, manipulate=False)
     spec = "sha256:" + "e" * 64
     record_path = work / "navigation_scene_inputs" / "key" / "website_navigation_scene_inputs.v1.json"
-    state = {"refuse_again": False, "receipt": None, "media": []}
+    # ``gap``: this release cannot send the intake yet (the hook is missing), so the job holds on its
+    # integration gap alone; ``release``: the running release's commit.
+    state = {"refuse_again": False, "receipt": None, "media": [], "gap": False, "release": None}
+    monkeypatch.setattr("blueprint_pipeline.team_scene_packet_worker.current_release_commit",
+                        lambda: state["release"])
 
     def options(runnable: bool) -> dict:
         return {"requirements": need, "embodiments": [], "navigation_pieces_built": [],
@@ -88,7 +93,16 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
         result = {"schema_version": "website_scene_handoff.v1", "claim_ceiling": "development_only",
                   "simulator_ready": False, "visual_reconstruction_ready": True,
                   "capture_id": owner["capture_id"], "scene_id": owner["scene_id"], "compiled_task_spec_digest": spec}
-        if current["confirmed"] is not True or state["refuse_again"]:
+        if state["gap"]:
+            # The scene half is written but no intake is sent: the hold names the missing piece only.
+            record = write_record(current)
+            gap = runnable_policy_gap_from_options(task_context=current, requirements=need, spec_digest=spec,
+                                                   options=options(False))
+            result.update(status="needs_input", blockers=[gap["code"]], native_task_preparation_gap=gap,
+                          navigation_scene_inputs={"status": "written", "path": str(record_path),
+                                                   "digest": record["scene_inputs_digest"],
+                                                   "scene_revision_digest": record["scene_revision_digest"]})
+        elif current["confirmed"] is not True or state["refuse_again"]:
             gap = navigation_intake_refusal_hold(task_context=current, requirements=need, spec_digest=spec,
                 refusal="website_task_context_not_confirmed", options=options(False))
             result.update(status="needs_input", blockers=[gap["code"]], native_task_preparation_gap=gap,
@@ -164,8 +178,8 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
         write_json(record_path.parent / "website_navigation_intake_receipt.v1.json", receipt)
         state["receipt"] = receipt
 
-    def reconcile():
-        return replay.reconcile_held_handoffs(listener, storage_root=root.parents[4],
+    def reconcile(limit=1):
+        return replay.reconcile_held_handoffs(listener, storage_root=root.parents[4], limit=limit,
                                               process_args={"provider": "openai", "run_e2e": run_e2e})
 
     return SimpleNamespace(root=root, parent=parent, website=website, runs=runs, state=state, deliver=deliver,
@@ -273,3 +287,41 @@ def test_a_receipt_bound_after_the_handoff_reruns_it_once_and_the_job_is_handed_
     assert site.reconcile() == {"replayed": 0, "held": 0, "already_replayed": 0} and len(site.runs) == 3
     assert site.state["media"] == [site.parent["context_digest"]] * 3
     assert Path(site.root / "pipeline/website_task_context_lineage").is_dir()
+
+
+def test_an_integration_gap_keeps_its_bytes_and_is_rerun_once_per_new_release_paying_nothing(site):
+    """A hold naming a missing Blueprint piece (``pipeline:*``) is re-evaluated once for each release."""
+    site.state["gap"] = True
+    site.deliver()
+    ledger = listener._read_job_ledger(site.root)
+    handoff = _handoff(site)
+    assert ledger["status"] == "completed" and handoff["blockers"] == ["website_task_runnable_policy_missing"]
+    assert "navigation_intake" not in handoff
+    assert ledger[replay.FIELD]["schema_version"] == replay.SCHEMA
+    assert replay.held_kind(site.root / "pipeline") == "integration_gap"
+    # No release identity, no fact: nothing runs.
+    assert site.reconcile() == {"replayed": 0, "held": 1, "already_replayed": 0} and len(site.runs) == 1
+    site.state["release"] = "a" * 40
+    assert site.reconcile()["replayed"] == 1 and len(site.runs) == 2
+    fact = json.loads((site.work / replay.STATE_FILE).read_text())["fact"]
+    assert fact["kind"] == "release" and fact["release_commit"] == "a" * 40
+    assert fact["missing_pipeline"] == [replay.SOURCE_IDENTITY_MISSING]
+    ledger = listener._read_job_ledger(site.root)
+    assert ledger["attempt_history"][-1][replay.MARK] == fact["fact_digest"]
+    assert ledger[replay.FIELD]["schema_version"] == replay.SCHEMA  # still held, still kept
+    # The same release never reruns it.
+    assert site.reconcile() == {"replayed": 0, "held": 0, "already_replayed": 1} and len(site.runs) == 2
+    # A new release, inside the drain tick's existing limit.
+    site.state["release"] = "b" * 40
+    assert site.reconcile(limit=0)["replayed"] == 0 and len(site.runs) == 2
+    # This release sends the intake; the brief was confirmed meanwhile.
+    site.state["gap"] = False
+    successor = _confirm(site)
+    assert site.reconcile()["replayed"] == 1 and len(site.runs) == 3
+    handoff = _handoff(site)
+    assert handoff["navigation_intake"]["status"] == "forward_pending"
+    assert handoff["native_task_preparation_gap"]["task_context_digest"] == successor["context_digest"]
+    assert replay.held_kind(site.root / "pipeline") == "intake_receipt"
+    assert site.reconcile()["replayed"] == 0 and len(site.runs) == 3
+    # Every run read the stage's paid inputs under the sealed parent: nothing was bought again.
+    assert site.state["media"] == [site.parent["context_digest"]] * 3
