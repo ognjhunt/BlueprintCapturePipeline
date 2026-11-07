@@ -32,9 +32,10 @@ NAVIGATION = "goal_region_navigation"
 NAVIGATION_CHECKPOINTS = ("humanoidarena_dp_g1_dex3_sonic_vision_navi",
                           "humanoidarena_pi05_g1_dex3_sonic_vision_navi")
 MANIPULATION_CHECKPOINTS = ("humanoidarena_dp_g1_dex3_sonic", "humanoidarena_pi05_g1_dex3_sonic")
-#: The owner's decisions of 2026-11-07, verbatim.
-DECISION_1 = '"Dev check, then counts"'
-DECISION_2 = '"yes - make sure this is the case for all future runs/scenes"'
+#: The owner's words of 2026-11-07, verbatim: each stand-in quotes them with the session and UTC time.
+VERIFIED_EPISODE_WORDS = '"Dev check, then counts"'
+CHECKPOINT_TERMS_WORDS = '"yes - make sure this is the case for all future runs/scenes"'
+CONFIRMATION_WORDS = '"Yes, both confirmed"'
 
 
 def _g1_with(allowance):
@@ -67,11 +68,17 @@ def test_the_g1_stays_unavailable_with_every_gap_and_declares_one_general_naviga
     assert registry.DEVELOPMENT_RUN_TASK_PROFILES == frozenset({NAVIGATION})
     stand = {row.item: row for row in allowance.stood_in_by}
     assert list(stand) == ["verified_site_episode", "reviewed_checkpoint_terms"]
-    # Each stand-in cites its owner decision of 2026-11-07 verbatim.
-    assert stand["verified_site_episode"].owner_decision == f"owner decision 2026-11-07, decision 1: {DECISION_1}"
+    # Each stand-in quotes the owner verbatim, with the session and UTC time, so a run record can be traced.
+    episode = stand["verified_site_episode"].owner_decision
+    assert episode == registry.VERIFIED_EPISODE_DECISION
+    assert episode.startswith("owner, 2026-11-07 00:05Z, library-aisle session")
+    assert VERIFIED_EPISODE_WORDS in episode and "G1 session at 13:43Z" in episode and CONFIRMATION_WORDS in episode
     assert stand["verified_site_episode"].checkpoint_review is None
-    assert stand["reviewed_checkpoint_terms"].owner_decision == \
-        f"owner decision 2026-11-07, decision 2: {DECISION_2}"
+    terms = stand["reviewed_checkpoint_terms"].owner_decision
+    assert terms == registry.CHECKPOINT_TERMS_DECISION
+    assert terms.startswith("owner, 2026-11-07 about 13:20Z, library-aisle session, its question 3")
+    assert CHECKPOINT_TERMS_WORDS in terms and "G1 session at 13:43Z" in terms and CONFIRMATION_WORDS in terms
+    assert "decision 1" not in episode + terms and "decision 2" not in episode + terms
     assert stand["reviewed_checkpoint_terms"].checkpoint_review is \
         registry.g1_navigation_checkpoint_development_rights_review
     assert registry.embodiment_registry_violations() == []
@@ -86,7 +93,7 @@ def test_each_navigation_checkpoints_own_review_stands_in_for_its_checkpoint_ter
         assert review == {"artifact_sha256": "sha256:" + authority.MODEL_REVIEW_FILES[candidate],
                           "rights_review_digest": authority.REVIEW_DIGESTS[candidate],
                           "status": "approved_for_development_simulation"}
-    # Decision 2 names the navigation checkpoints' reviews: a manipulation checkpoint's review stands in for
+    # The owner's decision names the navigation checkpoints' reviews: a manipulation checkpoint's review stands in for
     # nothing here, and a checkpoint with no pinned review has none.
     for candidate in (*MANIPULATION_CHECKPOINTS, "pi05_droid", "humanoidarena_unreviewed_g1_vision_navi"):
         assert registry.g1_navigation_checkpoint_development_rights_review(candidate) is None
@@ -176,8 +183,8 @@ def test_a_navigation_walk_records_the_allowance_stood_in_and_development_only_n
             assert record["task_profile_id"] == NAVIGATION and record["claim_ceiling"] == "development_only"
             assert list(record["stood_in"]) == ["verified_site_episode", "reviewed_checkpoint_terms"]
             assert {entry["status"] for entry in record["stood_in"].values()} == {registry.STOOD_IN}
-            assert DECISION_1 in record["stood_in"]["verified_site_episode"]["owner_decision"]
-            assert DECISION_2 in record["stood_in"]["reviewed_checkpoint_terms"]["owner_decision"]
+            assert VERIFIED_EPISODE_WORDS in record["stood_in"]["verified_site_episode"]["owner_decision"]
+            assert CHECKPOINT_TERMS_WORDS in record["stood_in"]["reviewed_checkpoint_terms"]["owner_decision"]
             assert record["stood_in"]["reviewed_checkpoint_terms"]["checkpoint_review"] == \
                 registry.g1_navigation_checkpoint_development_rights_review(row["candidate_id"])
             # Stood in, never verified or satisfied: no value of the record says so.

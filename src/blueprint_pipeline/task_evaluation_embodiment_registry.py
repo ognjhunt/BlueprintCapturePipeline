@@ -22,18 +22,25 @@ satisfied.
 
 The G1 declares one, ``G1_NAVIGATION_DEVELOPMENT_RUN``: general, for every site
 and scene, and for ``goal_region_navigation`` only
-(docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md). Owner decisions of 2026-11-07:
+(docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md). The owner's words, each with where
+it was said (``CHECKPOINT_TERMS_DECISION``, ``VERIFIED_EPISODE_DECISION``):
 
 - ``reviewed_checkpoint_terms``: each navigation checkpoint's own human
   development rights review (``approved_for_development_simulation``,
   docs/arm_decision_proof_v1/manifests/g1_841757_<candidate>_development_rights_review.v1.json)
-  stands in for it. Decision 2, verbatim: "yes - make sure this is the case for
-  all future runs/scenes". A checkpoint without its own pinned review keeps the
+  stands in for it. Owner, 2026-11-07 about 13:20Z, in the library-aisle
+  session, answering its question 3: "yes - make sure this is the case for all
+  future runs/scenes". Confirmed to the G1 session at 13:43Z for every G1
+  navigation run on all sites and scenes. A checkpoint without its own pinned review keeps the
   item missing. Every G1 run re-validates that review
   (``native_g1_beta_authority.validate_beta_authority``, embedded and
   digest-pinned in the execution spec, the session authority and the worker).
-- ``verified_site_episode``: a development run stands in for it. Decision 1,
-  verbatim: "Dev check, then counts". The run proceeds as a development-only
+- ``verified_site_episode``: a development run stands in for it. Owner,
+  2026-11-07 00:05Z, in the library-aisle session, on how the library job's first
+  G1 navigation run counts: "Dev check, then counts". Made general in the G1
+  session's confirmation at 13:43Z: every site and scene, results
+  development-only, and the first run to pass every check counts as G1's
+  verified navigation episode. The run proceeds as a development-only
   check, and no result of it claims more than ``development_only``. Nothing
   here writes a verified site episode or removes the item from the G1's
   ``missing``: promoting the first run that passes every check to G1's first
@@ -107,9 +114,9 @@ CHECKPOINT_TERMS_ITEM = "reviewed_checkpoint_terms"
 class StandIn:
     """One still-``missing`` item a development-only run may proceed without, what stands in, and who decided.
 
-    ``owner_decision`` quotes the decision verbatim, with its date and number. ``checkpoint_review``, when set,
-    reads a candidate checkpoint's own human review (a mapping, or ``None`` when it has none that approves);
-    the item is then stood in for only on a candidate whose review it returns.
+    ``owner_decision`` quotes the decision verbatim, with the session and UTC time it was said.
+    ``checkpoint_review``, when set, reads a candidate checkpoint's own human review (a mapping, or ``None``
+    when it has none that approves); the item is then stood in for only on a candidate whose review it returns.
     """
 
     item: str
@@ -251,8 +258,8 @@ def g1_navigation_checkpoint_development_rights_review(candidate_id: str) -> dic
 
     Read from docs/arm_decision_proof_v1/manifests/g1_841757_<candidate>_development_rights_review.v1.json
     through the reader every G1 run's authority uses (``native_g1_beta_authority.reviewed_model_terms``: the
-    file's sha256 is pinned per candidate). ``None`` for a manipulation checkpoint (owner decision 2 names the
-    navigation checkpoints' reviews only), a candidate with no pinned review, a changed file, or a review that
+    file's sha256 is pinned per candidate). ``None`` for a manipulation checkpoint (the owner's decision
+    names the navigation checkpoints' reviews only, ``CHECKPOINT_TERMS_DECISION``), a candidate with no pinned review, a changed file, or a review that
     does not approve this checkpoint's terms for development simulation.
     """
     if not candidate_id.endswith(G1_NAVIGATION_CHECKPOINT_SUFFIX):
@@ -273,7 +280,21 @@ def g1_navigation_checkpoint_development_rights_review(candidate_id: str) -> dic
             "status": receipt["status"]}
 
 
-#: G1 navigation on every site and scene, development-only (owner decisions 2026-11-07; module docstring).
+#: The owner's words for each stand-in, with the session and UTC time they were said, so a run record that
+#: carries them can be traced to them.
+CHECKPOINT_TERMS_DECISION = (
+    "owner, 2026-11-07 about 13:20Z, library-aisle session, its question 3 (may each navigation checkpoint's "
+    "development rights review stand in for its checkpoint-terms review?): \"yes - make sure this is the case "
+    "for all future runs/scenes\"; confirmed to the G1 session at 13:43Z for every G1 navigation run on all "
+    "sites and scenes: \"Yes, both confirmed\"")
+VERIFIED_EPISODE_DECISION = (
+    "owner, 2026-11-07 00:05Z, library-aisle session, on how the library job's first G1 navigation run counts: "
+    "\"Dev check, then counts\"; made general to the G1 session at 13:43Z (every site and scene, results "
+    "development-only, the first run to pass every check counts as G1's verified navigation episode): "
+    "\"Yes, both confirmed\"")
+
+
+#: G1 navigation on every site and scene, development-only (the owner's decisions above; module docstring).
 #: Nothing names a site. It never writes a verified site episode: the G1 row's ``missing`` keeps both items.
 G1_NAVIGATION_DEVELOPMENT_RUN = DevelopmentRunAllowance(
     task_profile_id="goal_region_navigation",
@@ -281,13 +302,12 @@ G1_NAVIGATION_DEVELOPMENT_RUN = DevelopmentRunAllowance(
         StandIn(
             item="verified_site_episode",
             basis="development_only_run_proceeds_as_the_development_check",
-            owner_decision='owner decision 2026-11-07, decision 1: "Dev check, then counts"',
+            owner_decision=VERIFIED_EPISODE_DECISION,
         ),
         StandIn(
             item=CHECKPOINT_TERMS_ITEM,
             basis="each_navigation_checkpoints_own_human_development_rights_review_approved_for_development_simulation",
-            owner_decision='owner decision 2026-11-07, decision 2: "yes - make sure this is the case for all '
-                           'future runs/scenes"',
+            owner_decision=CHECKPOINT_TERMS_DECISION,
             checkpoint_review=g1_navigation_checkpoint_development_rights_review,
         ),
     ),
@@ -372,8 +392,9 @@ def embodiment_registry_violations() -> list[str]:
 
 
 __all__ = [
-    "CHECKPOINT_TERMS_ITEM", "DevelopmentRunAllowance", "EMBODIMENT_REGISTRY", "EmbodimentProfile",
+    "CHECKPOINT_TERMS_DECISION", "CHECKPOINT_TERMS_ITEM", "DevelopmentRunAllowance", "EMBODIMENT_REGISTRY", "EmbodimentProfile",
     "G1_NAVIGATION_CHECKPOINT_SUFFIX", "G1_NAVIGATION_DEVELOPMENT_RUN", "STOOD_IN", "StandIn",
+    "VERIFIED_EPISODE_DECISION",
     "deployment_embodiment_support_catalog",
     "embodiment", "embodiment_registry_violations", "g1_navigation_checkpoint_development_rights_review",
 ]
