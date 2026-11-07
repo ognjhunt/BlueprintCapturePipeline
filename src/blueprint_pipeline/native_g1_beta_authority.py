@@ -88,6 +88,34 @@ def apply_start_offset(pose: Mapping[str, Any], parameters: Mapping[str, Any]) -
     dy = 2.0 * (qx * qy + qz * qw) * forward + (1.0 - 2.0 * (qx * qx + qz * qz)) * lateral
     dz = 2.0 * (qx * qz - qy * qw) * forward + 2.0 * (qy * qz + qx * qw) * lateral
     return {"position_world_m": [x + dx, y + dy, z + dz], "orientation_xyzw": [qx, qy, qz, qw]}
+
+
+#: A navigation scene (``native_g1_navigation_goal.NAVIGATION_TASK_KIND``, pinned by a test). Kept literal:
+#: this module ships in the provider bundles, which do not ship the navigation goal module's imports.
+NAVIGATION_TASK_KIND = "goal_region_navigation"
+
+
+def offset_robot_documents(parameters: Mapping[str, Any], *, request: dict[str, Any] | None = None,
+                           contract: dict[str, Any] | None = None, scene: dict[str, Any] | None = None) -> None:
+    """Move a navigation cell's robot start (``apply_start_offset``) in its documents, in place, and nothing else.
+
+    The request's ``robot_base_pose_world`` and ``robot_configuration.base_pose_world``, the runtime contract's
+    ``robot.base_pose_world``, and the plan's ``robot.base_pose_world`` and ``reset.robot_base_pose_world``
+    (where the plan carries one). The task, its start pose, the scene and every other field stay as they are.
+    """
+    def move(document: dict[str, Any], key: str) -> None:
+        if key in document:
+            document[key] = apply_start_offset(document[key], parameters)
+
+    if request is not None:
+        move(request, "robot_base_pose_world")
+        move(request["robot_configuration"], "base_pose_world")
+    if contract is not None:
+        move(contract["robot"], "base_pose_world")
+    if scene is not None:
+        move(scene["robot"], "base_pose_world")
+        if isinstance(scene.get("reset"), dict):
+            move(scene["reset"], "robot_base_pose_world")
 SCOPE = {
     "authority_kind": "composed_internal_development",
     # Owner decision 2026-11-06: G1 is a screening option for every site and task; the 841757
@@ -184,19 +212,28 @@ def validate_beta_authority(value: Mapping[str, Any], *, candidate_id: str,
     return row
 
 
+def _frozen_scenario(scenario: Mapping[str, Any]) -> bool:
+    """A repetition of the authored scene, or one row of the start-offset table at its own ordinal."""
+    if scenario["family"] == "canonical_anchor":
+        return scenario["parameters"] == {}
+    return (scenario["family"] == START_OFFSET_FAMILY and scenario["ordinal"] < len(NAVIGATION_START_OFFSETS)
+            and scenario["parameters"] == start_offset_parameters(scenario["ordinal"]))
+
+
 def validate_frozen_cell(cell: Mapping[str, Any]) -> dict[str, Any]:
+    """A G1 cell: a frozen reset seed of the scene, or (``robot_start_offset``) a row of ``NAVIGATION_START_OFFSETS``."""
     if (set(cell) != {"cell_id", "seed", "family", "partition", "resolved_scenario",
                      "cell_spec_digest", "resolved_scenario_digest"}
             or not isinstance(cell["cell_id"], str)
             or not re.fullmatch(r"screening\.[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", cell["cell_id"])
             or ".." in cell["cell_id"]
             or type(cell["seed"]) is not int or not 0 <= cell["seed"] < 2**31
-            or cell["family"] != "canonical_anchor" or cell["partition"] != "screening"
+            or cell["family"] not in ("canonical_anchor", START_OFFSET_FAMILY) or cell["partition"] != "screening"
             or not isinstance(cell["resolved_scenario"], Mapping)
             or set(cell["resolved_scenario"]) != {"family", "ordinal", "parameters"}
-            or cell["resolved_scenario"]["family"] != "canonical_anchor"
+            or cell["resolved_scenario"]["family"] != cell["family"]
             or type(cell["resolved_scenario"]["ordinal"]) is not int or cell["resolved_scenario"]["ordinal"] < 0
-            or cell["resolved_scenario"]["parameters"] != {}
+            or not _frozen_scenario(cell["resolved_scenario"])
             or cell["cell_spec_digest"] != canonical_digest(cell["resolved_scenario"])
             or cell["resolved_scenario_digest"] != cell["cell_spec_digest"]):
         raise ValueError("g1_beta_frozen_cell_invalid")
@@ -217,15 +254,22 @@ def derive_cell_authority(*, base_authority: Mapping[str, Any], cell: Mapping[st
 def validate_cell_binding(base_scene: Mapping[str, Any], derived_scene: Mapping[str, Any],
                           cell: Mapping[str, Any], authority: Mapping[str, Any], *,
                           base_contract: Mapping[str, Any]) -> dict[str, Any]:
-    """A G1 cell changes only the reset seed, never the scene, task or controller."""
+    """A G1 cell changes only the reset seed, never the scene, task or controller.
+
+    A navigation cell (``robot_start_offset``) also moves the robot's start by its offset
+    (``offset_robot_documents``), and only on a navigation scene.
+    """
     validate_frozen_cell(cell)
     for scene in (base_scene, derived_scene):
         if scene.get("plan_digest") != canonical_digest(scene, digest_field="plan_digest"):
             raise ValueError("g1_beta_cell_scene_digest_invalid")
+    offset = cell["family"] == START_OFFSET_FAMILY
+    if offset is not (base_scene.get("task_kind") == NAVIGATION_TASK_KIND):
+        raise ValueError("g1_beta_cell_family_task_mismatch")
     context = {"schema_version": "adp009d_scenario_instance.v1", "cell_id": cell["cell_id"], "seed": cell["seed"],
         "policy_neutral": True, "caller_asserted_success": False, "learned_policy_outcomes_consulted": False,
-        "factor_records": [], "resolved_parameters": {}, "beta_cell_spec_digest": cell["cell_spec_digest"],
-        "scenario_scope": "native_frozen_reset_seeds"}
+        "factor_records": [], "resolved_parameters": dict(cell["resolved_scenario"]["parameters"]),
+        "beta_cell_spec_digest": cell["cell_spec_digest"], "scenario_scope": "native_frozen_reset_seeds"}
     scenario = {"context_kind": "evaluation_cell", "cell_id": cell["cell_id"], "seed": cell["seed"],
                 "instance_digest": canonical_digest(context, digest_field="instance_digest")}
     if (base_contract.get("contract_digest") != canonical_digest(base_contract, digest_field="contract_digest")
@@ -235,6 +279,8 @@ def validate_cell_binding(base_scene: Mapping[str, Any], derived_scene: Mapping[
     contract["scenario"].update(scenario)
     expected = deepcopy(dict(base_scene))
     expected["scenario"].update(scenario)
+    if offset:
+        offset_robot_documents(cell["resolved_scenario"]["parameters"], contract=contract, scene=expected)
     expected["runtime_contract_digest"] = canonical_digest(contract, digest_field="contract_digest")
     expected["plan_digest"] = canonical_digest(expected, digest_field="plan_digest")
     if dict(derived_scene) != expected:
