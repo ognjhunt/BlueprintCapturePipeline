@@ -345,6 +345,38 @@ An absent or inaccessible directory yields
 silently falls back. DP does not inspect these assets. This path performs no
 credential read, gated download, environment edit or allocation.
 
+On 2026-11-07 the retained folder existed, but its files no longer verified, so
+every pi0.5 row was held with `g1_beta_selected_pi_tokenizer_invalid`; the
+inventory's own pin still matched. The owner, relayed by the library-aisle
+session, chose a door restore ("lets do option 2", about 23:05Z) and approved
+development-simulation use of the Gemma tokenizer under Google's Gemma terms
+("Gemma terms OK", about 23:10Z). The door's `restore-g1-pi-language-assets`
+copies the six files from the first retained G1 provider bundle on the host
+whose embedded copies all verify. There is no Hugging Face download, no
+credential, no network and no money. The door refuses any path naming the
+tokenizer, so the operation and its records avoid that word.
+
+1. Plan it: `python3 scripts/operator_door.py restore-g1-pi-language-assets --wait`.
+   It should end `planned`, with the folder `invalid` (its file names, sizes,
+   sha256 and each inventory file's state are listed), a `source` bundle under
+   `native-g1-team-campaign-work/g1-<64 hex>/bundle/` and enough disk. A folder
+   that already verifies says `no_op` and nothing more is needed.
+2. Restore it: `python3 scripts/operator_door.py restore-g1-pi-language-assets --apply --wait`.
+   The outcome is `restored`, or `already_restored` when a run before it
+   finished. The invalid folder is kept as the hidden sibling
+   `.pi-tokenizer-f1eaa13.invalid-<UTC>`; nothing is deleted or overwritten.
+3. Read the record with `operator_door.py cat` on the outcome's `receipt`
+   (`g1-841757-development/pi-language-assets-restore-<UTC>.json`) or on
+   `results/<id>.g1-pi-language-assets.json`. The next screening plan is the
+   check: the pi0.5 rows lose `g1_beta_selected_pi_tokenizer_invalid`.
+
+A refusal names one fixed `g1_pi_language_assets_*` code. With
+`g1_pi_language_assets_no_verified_source`, `source_search.checked` lists every
+bundle read and why it was not used; `bundle_member_missing` means that bundle
+holds no embedded copy. The operation needs a door and an
+active release that both have it (`upgrade-door`, then a deploy); otherwise it
+refuses `kind_unknown` or `g1_pi_language_assets_release_lacks_module`.
+
 On the provider, source verification recomputes the actual clean checkout and
 all publisher file identities. Only the `source_root` location and resulting
 receipt digest may differ from the sealed controller receipt; the original

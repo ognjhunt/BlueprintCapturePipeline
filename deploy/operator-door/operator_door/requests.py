@@ -40,6 +40,12 @@ active release's restore of the shared G1 runtime source packet and its receipt
 from the retained object-store copy. Every identity is pinned in that module; the
 request carries only ``apply``. It overwrites nothing, starts no compute and moves
 no money.
+``restore-g1-pi-language-assets`` (``operate``) plans, or with ``apply`` performs, the
+active release's restore of the pi0.5 G1 language files from a verified retained G1
+provider bundle on the host. The folder, the search root and the inventory are pinned
+in that module; the request carries only ``apply``. It deletes and overwrites nothing
+(an invalid folder is set aside), reads no secret, uses no network, starts no compute
+and moves no money.
 ``retire-parked-delivery`` (``operate``) plans, or with ``apply`` performs, the
 active release's owner-approved retirement of one parked website preparation
 delivery (``website_preparation_delivery_retirement``): one capture-relative path
@@ -108,6 +114,8 @@ _SCOPES = {
     "confirm-owner-success-contract": "operate",
     # Restores the pinned G1 runtime source packet and receipt from the retained object-store copy.
     "restore-g1-runtime-source": "operate",
+    # Restores the pi0.5 G1 language files from a verified retained bundle on the host.
+    "restore-g1-pi-language-assets": "operate",
     # Retires one parked website preparation delivery on the owner's recorded approval.
     "retire-parked-delivery": "operate",
 }
@@ -141,13 +149,19 @@ if DISPATCHER_HOLD_ONLY:
     # approved (2026-11-06, verbatim: "yes retire the 7") retiring the parked
     # preparation deliveries: one parked delivery's record moves to its
     # terminal state with that approval on it; nothing is deleted, no compute
-    # starts and no money moves.
+    # starts and no money moves. The owner approved (2026-11-07, relayed by the
+    # library-aisle session, verbatim: "lets do option 2" about 23:05Z, then
+    # "Gemma terms OK" about 23:10Z) the pi0.5 G1 language file restore: it
+    # copies the six pinned, digest-verified files from a retained bundle on the
+    # host into the folder screening already names, sets an invalid folder aside
+    # instead of deleting it, overwrites nothing, reads no secret, uses no
+    # network, starts no compute and moves no money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
                            "confirm-owner-success-contract", "restore-g1-runtime-source",
-                           "retire-parked-delivery"}}
+                           "restore-g1-pi-language-assets", "retire-parked-delivery"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
@@ -570,6 +584,14 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         apply = body.get("apply", False)
         if type(apply) is not bool:
             raise RequestRefused("g1_runtime_source_apply_invalid")
+        return {"kind": kind, "apply": apply}
+    if kind == "restore-g1-pi-language-assets":
+        # No path, bundle or digest is a field: the release module pins the folder, the search
+        # root and the inventory, and takes the first retained bundle whose files all verify.
+        _only(body, ("kind", "apply"))
+        apply = body.get("apply", False)
+        if type(apply) is not bool:
+            raise RequestRefused("g1_pi_language_assets_apply_invalid")
         return {"kind": kind, "apply": apply}
     if kind == "retire-parked-delivery":
         _only(body, ("kind", "capture", "approval_evidence", "apply"))

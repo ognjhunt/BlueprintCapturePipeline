@@ -104,6 +104,9 @@ def _deploy_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str
 
 
 _PUBSUB_HANDOFFS = "/var/lib/blueprint/pubsub-handoffs"
+# The parent of the pi0.5 G1 language folder (native_g1_beta_tokenizer.RETAINED_TOKENIZER_DIR);
+# the restore writes only here: a staged sibling, the set-aside sibling and its receipt.
+_G1_PI_LANGUAGE_PARENT = "/var/lib/blueprint/task-evaluation-inputs/g1-841757-development"
 
 
 def _retire_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
@@ -366,6 +369,28 @@ def _g1_runtime_source_properties(config: DoorConfig, _request: dict[str, Any]) 
             f"ReadWritePaths=/mnt/blueprint-work {reservations} {Path(config.spool_root) / 'results'}")
 
 
+def _g1_pi_language_assets_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+              "DOOR_SERVICE_USER": "blueprint"}
+    if request["apply"]:
+        values["DOOR_APPLY"] = "1"
+    return values
+
+
+def _g1_pi_language_assets_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """It reads retained bundles already on the host, so it gets no network and every secret stays
+    hidden. It writes only beside the folder, its disk hold in the ledger and its result."""
+    reservations = str(Path(config.control_plane_state) / "disk-reservations")
+    # "-": an absent parent is the module's refusal to report, not a unit that cannot start.
+    writable = " ".join((f"-{_G1_PI_LANGUAGE_PARENT}", reservations, str(Path(config.spool_root) / "results")))
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+            "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
+            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
+            f"ReadWritePaths={writable}")
+
+
 def _parked_delivery_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
             "DOOR_SERVICE_USER": "blueprint",
@@ -499,6 +524,12 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         "blueprint-operator-door-g1-runtime-source", "door-restore-g1-runtime-source.sh", "2h",
         lambda request: hashlib.sha256(("apply" if request["apply"] else "plan").encode("utf-8")).hexdigest()[:12],
         _g1_runtime_source_environment, _g1_runtime_source_properties),
+    # Named by a hash of the mode: the request has no other field. Six small files read from at most
+    # 64 retained bundles on local disk: at most 15 min.
+    "restore-g1-pi-language-assets": _LaunchSpec(
+        "blueprint-operator-door-g1-pi-language-assets", "door-restore-g1-pi-language-assets.sh", "15min",
+        lambda request: hashlib.sha256(("apply" if request["apply"] else "plan").encode("utf-8")).hexdigest()[:12],
+        _g1_pi_language_assets_environment, _g1_pi_language_assets_properties),
     # Named by a hash of the capture and the mode; the approval text never reaches a unit name.
     "retire-parked-delivery": _LaunchSpec(
         "blueprint-operator-door-parked-delivery", "door-retire-parked-delivery.sh", "5min",

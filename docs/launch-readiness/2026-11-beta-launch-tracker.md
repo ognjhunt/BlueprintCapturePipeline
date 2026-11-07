@@ -558,6 +558,15 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - It was active at 02:01:08Z: `deployed`, no blockers, `commit_proven`.
   - Main's CI on 682d098 failed only "GR00T OSCAR external prerequisite pins", on an HTTP fetch of three external repositories. That job passed on the three commits before, and the door's own attestation check passed. No door upgrade was needed, because the release has no door code.
 - Scene retirement leaves the G1 overlay row and `native-g1/` packets in place. That is storage, not privacy, because withdrawal now deletes both. It is a follow-up.
+- **pi0.5 language files, 11-07.**
+  - **Problem.** Screening holds both pi0.5 rows with `g1_beta_selected_pi_tokenizer_invalid`. The retained folder (`native_g1_beta_tokenizer.RETAINED_TOKENIZER_DIR`) exists, but its files fail the pinned inventory. The inventory's own pin (`PI_AUXILIARY["inventory_file_sha256"]`) still matches.
+  - **Owner, relayed by the library-aisle session:** "lets do option 2" (about 23:05Z), a door operation that restores and verifies the files the way `restore-g1-runtime-source` did; then "Gemma terms OK" (about 23:10Z), approving development-simulation use of pi0.5's Gemma tokenizer under Google's Gemma terms. The source is a verified copy from a retained bundle on the host only: no Hugging Face, no credential, no network, no money.
+  - **Operation.** `restore-g1-pi-language-assets` (module `native_g1_pi_language_asset_restore`; plan, then `--apply`).
+    - It searches only `native-g1-team-campaign-work/g1-<64 hex>/bundle/` for the two G1 bundle names and takes the first whose six embedded files all verify. None verifying refuses `g1_pi_language_assets_no_verified_source`, listing every bundle checked with a reason.
+    - It sets the invalid folder aside as `.pi-tokenizer-f1eaa13.invalid-<UTC>` after recording its file names, sizes and hashes. It writes the verified files into a fresh sibling, verifies them, renames that into place and verifies again. Nothing is deleted or overwritten.
+    - A folder that already verifies is a no-op.
+    - Records: `results/<id>.g1-pi-language-assets.json` and `g1-841757-development/pi-language-assets-restore-<UTC>.json`. Neither name contains the word the door refuses to read.
+  - **Ships** with a joint `upgrade-door` and a deploy after the current paid DP run settles. Until then the door answers `kind_unknown`.
 
 ## Operating notes (2026-11-02)
 
