@@ -52,12 +52,67 @@ def room_parts(*, floor=True, counter=True, table=False, shelves=False, walls=Tr
     return parts
 
 
+def aisle_parts(*, seed=0, step=0.03, floor_width=1.3, hall_rows=1):
+    """A floor strip between two bookcases, in a hall of other shelving.
+
+    The aisle floor is the largest level plane but holds only about 5% of the
+    surface: shelf boards on both sides, book spines at uneven depths, back
+    panels, an end bookcase and the far shelving around the hall make the rest.
+    A grid ``step`` near an Atlas mesh's edge length (3 cm) gives each part its
+    share of vertices. ``floor_width`` narrows the observed floor strip down the
+    aisle's middle (0: none survived), and ``hall_rows`` adds rows of far shelving.
+    """
+    rng = np.random.default_rng(seed)
+    n = lambda length: int(round(length / step)) + 1  # noqa: E731
+    parts = {}
+    if floor_width:
+        parts["floor"] = _grid((-3.0, 0.0, -floor_width / 2), (step, 0.0, 0.0), (0.0, 0.0, step),
+                               n(6.0), n(floor_width))
+    boards = (0.10, 0.45, 0.80, 1.15, 1.50, 1.85, 2.20)
+    for side in (-1.0, 1.0):
+        front, back = side * 0.65, side * 0.95
+        for height in boards:
+            parts[f"board_{side:+.0f}_{height}"] = _grid((-3.0, height, front), (step, 0.0, 0.0),
+                                                          (0.0, 0.0, side * step), n(6.0), n(0.3))
+        for low in boards[:-1]:
+            spines, triangles = _grid((-3.0, low + 0.01, front + side * 0.02), (step, 0.0, 0.0),
+                                      (0.0, step, 0.0), n(6.0), n(0.27))
+            # Books stand at uneven depths: each column of spines sits back by its own amount.
+            depth = rng.uniform(0.0, 0.06, n(6.0)).repeat(n(0.27))
+            spines[:, 2] += side * depth
+            parts[f"spines_{side:+.0f}_{low}"] = (spines, triangles)
+        parts[f"back_{side:+.0f}"] = _grid((-3.0, 0.0, back), (step, 0.0, 0.0), (0.0, step, 0.0), n(6.0), n(2.2))
+    parts["end_bookcase"] = _grid((-3.3, 0.0, -0.65), (0.0, 0.0, step), (0.0, step, 0.0), n(1.3), n(2.2))
+    for row in range(hall_rows):
+        for z in (-6.0 - row, 6.0 + row):
+            parts[f"hall_shelving_{z:+.0f}"] = _grid((-6.0, 0.0, z), (step, 0.0, 0.0), (0.0, step, 0.0),
+                                                     n(12.0), n(2.4))
+    return parts
+
+
+def terrain_parts(*, seed=0, step=0.05):
+    """Open rough ground: rolling, with bumps everywhere and no level surface."""
+    rng = np.random.default_rng(seed)
+    vertices, triangles = _grid((-4.0, 0.0, -4.0), (step, 0.0, 0.0), (0.0, 0.0, step), 161, 161)
+    x, z = vertices[:, 0], vertices[:, 2]
+    vertices[:, 1] = (0.8 * np.sin(0.9 * x) * np.cos(0.7 * z) + 0.48 * np.sin(2.1 * x + 1.0)
+                      + 0.32 * np.cos(1.7 * z + 0.4) + rng.normal(0.0, 0.05, len(x)))
+    return {"ground": (vertices, triangles)}
+
+
 def write_room(splat_path: Path, mesh_path: Path, *, rotation=np.eye(3), offset_m=(0.0, 0.0, 0.0),
-               meters_per_unit=1.0, noise_m=0.003, seed=0, sh_rest=False, **surfaces) -> dict:
-    """Write the room so that provider units are ``(rotation @ metres + offset_m) / meters_per_unit``."""
+               meters_per_unit=1.0, noise_m=0.003, seed=0, sh_rest=False, aisle=False, terrain=False,
+               **surfaces) -> dict:
+    """Write the room so that provider units are ``(rotation @ metres + offset_m) / meters_per_unit``.
+
+    ``aisle`` writes ``aisle_parts`` (``surfaces`` are its options) and ``terrain``
+    writes ``terrain_parts``, instead of the room.
+    """
     rng = np.random.default_rng(seed)
     rotation = np.asarray(rotation, dtype=float)
-    parts, vertices, faces, spans, start = room_parts(**surfaces), [], [], {}, 0
+    parts = (aisle_parts(seed=seed, **surfaces) if aisle else terrain_parts(seed=seed) if terrain
+             else room_parts(**surfaces))
+    vertices, faces, spans, start = [], [], {}, 0
     for name, (points, triangles) in parts.items():
         vertices.append(points + (rng.normal(0.0, noise_m, points.shape) if noise_m else 0.0))
         faces.append(triangles + start)

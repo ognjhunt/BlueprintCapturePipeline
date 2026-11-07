@@ -77,6 +77,47 @@ def test_a_world_with_no_level_surface_is_refused(tmp_path):
     value, _ = level(tmp_path, floor=False, counter=False)
     assert value["status"] == "needs_input" and value["reason"] == "website_atlas_scene_level_unobserved"
     assert value["outputs"] == []
+    # The refusal says what the search found, so it can be read without the mesh.
+    search = value["level_search"]
+    assert search["largest_level_plane_share"] < search["minimum_level_plane_share"] == levelling.MIN_LEVEL_SHARE
+    assert search["parallel_level_share"] == 0.0
+
+
+def test_rough_open_ground_is_still_refused(tmp_path):
+    value, _ = level(tmp_path, terrain=True, cameras=[(0.0, 1.8, 0.0), (1.0, 1.9, 0.5), (-1.0, 1.7, -0.5)])
+    assert value["status"] == "needs_input" and value["reason"] == "website_atlas_scene_level_unobserved"
+    search = value["level_search"]
+    assert search["largest_level_plane_share"] < levelling.MIN_LEVEL_SHARE
+    assert search["parallel_level_layers"] == 0 and search["parallel_level_share"] == 0.0
+
+
+AISLE = [(2.5, 1.45, 0.0), (0.0, 1.5, 0.05), (-2.0, 1.4, -0.05)]
+
+
+def test_an_aisle_floor_is_found_among_its_shelf_boards(tmp_path):
+    # The floor strip holds 3% of the surface: no single plane passes, but the
+    # floor and the shelf boards on both sides are parallel.
+    value, _ = level(tmp_path, aisle=True, hall_rows=3, cameras=AISLE)
+    assert value["level_search"]["largest_level_plane_share"] < levelling.MIN_LEVEL_SHARE
+    assert value["status"] == "levelled" and value["level_direction_basis"] == "parallel_level_surfaces"
+    assert value["tilt_degrees"] == pytest.approx(18.0, abs=0.3)
+    assert value["up_basis"] == "observed_floor" and value["ground_plane_offset_m"] == 0.0
+    assert value["floor"]["camera_heights_m"] == pytest.approx([1.45, 1.5, 1.4], abs=0.02)
+    # The floor and the board heights are the layers: together far above the single-plane share.
+    assert value["level_search"]["parallel_level_layers"] >= 5
+    assert value["level_search"]["parallel_level_share"] > 2 * levelling.MIN_LEVEL_SHARE
+
+
+def test_an_aisle_with_no_floor_left_is_levelled_but_declares_no_floor(tmp_path):
+    value, _ = level(tmp_path, aisle=True, floor_width=0.0, cameras=AISLE)
+    assert value["status"] == "levelled" and value["level_direction_basis"] == "parallel_level_surfaces"
+    assert value["tilt_degrees"] == pytest.approx(18.0, abs=0.3)
+    assert value["up_basis"] == "dominant_level_surface" and value["ground_plane_offset_m"] is None
+
+
+def test_a_single_dominant_plane_keeps_its_own_basis(tmp_path):
+    value, _ = level(tmp_path)
+    assert value["level_direction_basis"] == "single_level_plane"
 
 
 def test_a_warehouse_floor_seen_from_a_mezzanine_is_declared(tmp_path):
