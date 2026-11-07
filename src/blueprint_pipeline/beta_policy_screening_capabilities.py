@@ -173,6 +173,11 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     inputs = facts["inputs"]
     task = facts["scene"]["task_spec"]
     family = inputs.get("schema_version") == "blueprint.task_family_scene_inputs.v1"
+    # A navigation scene (the G1 at its compiled start, ``website_navigation_scene_inputs``) is screened by the
+    # G1 lane alone: no fixed-arm template, cosmos or MolmoAct runtime, and no paused-controls omission, which is
+    # a rigid contract's.
+    from .native_g1_beta_authority import NAVIGATION_TASK_KIND
+    navigation = task.get("task_kind") == NAVIGATION_TASK_KIND
     if family:
         from .beta_policy_screening_family import static_family_readiness
         static = static_family_readiness(facts)
@@ -181,7 +186,9 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                          "family_static_readiness": static["readiness"], "scenario_scope": "native_frozen_reset_seeds",
                          "family_source_inputs": _record(Path(profile["family_scene_inputs_path"]))}
     else:
-        receipt = retained_probe_receipt(Path(profile["robot_free_probe_root"]))
+        # A navigation record keeps its probe receipt in its own directory, beside the packet (its scene facts).
+        receipt = retained_probe_receipt(Path(facts["robot_free_probe_root"] if navigation
+                                              else profile["robot_free_probe_root"]))
         probe = require_robot_free_probe(receipt, scene_revision_digest=inputs["scene_revision_digest"],
             task_kind=task["task_kind"], task_spec_digest=canonical_digest(task),
             task_success_contract_digest=task_success_contract_binding(task["task_kind"], inputs["task_success_contract"]))
@@ -190,7 +197,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             or Path(capture_root).resolve() != Path(profile["capture_root"]).resolve()):
         raise ValueError("beta_screening_source_scene_mismatch")
     root = Path(inputs_dir).resolve()
-    contract, omission = ((inputs["task_success_contract"], None) if family
+    contract, omission = ((inputs["task_success_contract"], None) if family or navigation
                           else omit_paused_controls(inputs["task_success_contract"]))
     normalized_inputs = ({**inputs, **family_fields} if family else
         {**inputs, "beta_robot_free_probe_receipt": receipt,
@@ -226,7 +233,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     infeasible = infeasible_blockers(feasibility)
     template_failures = {}
     templates = {}
-    if not family:
+    if not family and not navigation:
         try:
             templates = _native_templates(repo=repo, scene_plan={**scene_plan,
                 "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
@@ -236,7 +243,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                                       for key in ("pi05_droid", "groot_n17_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS)})
     from .cosmos_droid_bundle import CANDIDATES, profile as cosmos_profile
     for candidate in CANDIDATES:
-        if family or not any(row["candidate_id"] == candidate for row in catalog["candidates"]):
+        if family or navigation or not any(row["candidate_id"] == candidate for row in catalog["candidates"]):
             continue
         try:
             templates[candidate] = (cosmos_profile(candidate).candidate_execution_spec(scene_plan={**scene_plan,
@@ -246,7 +253,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             code = str(exc).split(":", 1)[0]
             template_failures[candidate] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
                                             else "cosmos_runtime_template_unavailable")
-    if not family and any(row["candidate_id"] == "molmoact2_droid" for row in catalog["candidates"]):
+    if not family and not navigation and any(row["candidate_id"] == "molmoact2_droid" for row in catalog["candidates"]):
         from .molmoact2_droid_runtime import candidate_execution_spec
         try:
             templates["molmoact2_droid"] = (candidate_execution_spec(scene_plan={**scene_plan,
@@ -280,7 +287,8 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             continue
         try:
             from .beta_policy_screening_g1 import (BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES,
-                                                   CELLS_PER_SESSION as G1_CELLS_PER_SESSION)
+                                                   CELLS_PER_SESSION as G1_CELLS_PER_SESSION,
+                                                   DROPPED_START_OFFSETS_FIELD)
             g1 = key in G1_CANDIDATES
             override = (profile.get("screening_candidates") or {}).get(key)
             model = None
@@ -373,12 +381,17 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                           "hard_ttl_seconds": ttl, "implementation_commit": commit, **hosted_settings}
             if model is not None:
                 descriptor["team_robot_model"] = model
+            dropped = {}
             if g1:
                 # A spawn the CPU check could not measure is flagged, never refused (only an overlap is).
-                from .beta_policy_screening_g1 import setup_quality_flags
+                from .beta_policy_screening_g1 import dropped_start_offsets, setup_quality_flags
                 spawn_flags = setup_quality_flags(spec)
                 if spawn_flags:
                     descriptor["setup_quality_flags"] = spawn_flags
+                # A navigation start offset that overlaps the room is not funded; the row keeps the others.
+                dropped = dropped_start_offsets(spec)
+                if dropped:
+                    descriptor[DROPPED_START_OFFSETS_FIELD] = dropped
             minimum_memory = configured["runtime"]["minimum_gpu_memory_gb"]
             if minimum_memory is not None:
                 descriptor["minimum_gpu_memory_gb"] = minimum_memory
@@ -400,7 +413,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                      "valid_until": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
                      "configuration_digest": configured["configuration_digest"],
                      "scene_revision_digest": inputs["scene_revision_digest"],
-                     "episode_count": G1_CELLS_PER_SESSION if g1 else 10,
+                     "episode_count": G1_CELLS_PER_SESSION - len(dropped) if g1 else 10,
                      "maximum_cost_usd": str(total_cap.quantize(Decimal("0.01"), rounding=ROUND_UP)), "quote_digest": ""}
             quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
             quotes[key] = quote

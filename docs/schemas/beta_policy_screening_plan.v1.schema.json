@@ -19,7 +19,8 @@
             "camera_sensor",
             "bounded_physics",
             "pairwise_stress",
-            "composed_stress"
+            "composed_stress",
+            "robot_start_offset"
           ]
         },
         "partition": {
@@ -36,7 +37,8 @@
                 "camera_sensor",
                 "bounded_physics",
                 "pairwise_stress",
-                "composed_stress"
+                "composed_stress",
+                "robot_start_offset"
               ]
             },
             "ordinal": {
@@ -63,6 +65,14 @@
                   "type": "number"
                 },
                 "task_light_intensity_scale": {
+                  "type": "number"
+                },
+                "robot_start_forward_m": {
+                  "description": "A navigation cell's start offset along the robot's own heading (robot_start_offset; native_g1_beta_authority.NAVIGATION_START_OFFSETS).",
+                  "type": "number"
+                },
+                "robot_start_lateral_m": {
+                  "description": "A navigation cell's start offset to the robot's left (robot_start_offset; native_g1_beta_authority.NAVIGATION_START_OFFSETS).",
                   "type": "number"
                 }
               },
@@ -329,6 +339,23 @@
         },
         "team_robot_model": {
           "$ref": "#/$defs/receipt"
+        },
+        "g1_start_offsets_dropped": {
+          "description": "A navigation G1 row's start offsets whose spawn check overlaps the room: their cells are not funded; the row keeps the others.",
+          "additionalProperties": {
+            "const": "g1_spawn_overlap"
+          },
+          "maxProperties": 3,
+          "minProperties": 1,
+          "propertyNames": {
+            "enum": [
+              "start",
+              "left_15cm",
+              "right_15cm",
+              "back_15cm"
+            ]
+          },
+          "type": "object"
         }
       },
       "required": [

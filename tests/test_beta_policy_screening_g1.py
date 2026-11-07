@@ -722,3 +722,49 @@ def test_the_navigation_rows_declare_the_navigation_kind_and_the_manipulation_ro
     assert rows[DP_NAV]["supported_task_kinds"] == rows[PI_NAV]["supported_task_kinds"] == [
         "rigid_pick_place", "goal_region_navigation"]
     assert rows[DP]["supported_task_kinds"] == rows[PI]["supported_task_kinds"] == ["rigid_pick_place"]
+
+
+def navigation_profile(kwargs, tmp_path, *, candidates=(DP_NAV,)):
+    """The derived profile a navigation site's registry row reads, with its G1 registration."""
+    from pathlib import Path
+    record_dir = Path(kwargs["base_packet"]["path"]).parent.parent
+    record = json.loads((record_dir / "website_navigation_scene_inputs.v1.json").read_text())
+    return {"capture_root": str(tmp_path / "capture"), "scene_id": record["scene_id"], "task_id": record["task_id"],
+            "scenario_id": "nominal", "robot_free_probe_root": str(record_dir),
+            "scene_revision_digest": record["scene_revision_digest"],
+            "navigation_scene_inputs_path": str(record_dir / "website_navigation_scene_inputs.v1.json"),
+            "open_loop_horizon": 8, "max_hourly_rate_usd": 0.8,
+            "screening_candidates": {key: {"native_g1": kwargs["registration"]} for key in candidates},
+            "native_g1_registration_source": dict(kwargs["source"])}
+
+
+def test_planning_binds_a_navigation_g1_row_and_quotes_only_its_funded_cells(tmp_path, monkeypatch):
+    from pathlib import Path
+    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("a navigation scene reached a fixed-arm runtime or the paused-controls omission")
+
+    monkeypatch.setattr(capabilities, "_native_templates", never)
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_control_omission.omit_paused_controls", never)
+    monkeypatch.setattr("blueprint_pipeline.cosmos_droid_bundle.profile", never)
+    monkeypatch.setattr("blueprint_pipeline.molmoact2_droid_runtime.candidate_execution_spec", never)
+    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch, wall_x=-0.2)
+    profile = navigation_profile(kwargs, tmp_path)
+    # The probe receipt is read where the record's scene facts name it (its own directory), not the profile's.
+    (tmp_path / "elsewhere").mkdir()
+    profile["robot_free_probe_root"] = str(tmp_path / "elsewhere")
+    planning = capabilities.build_planning_inputs(catalog=load_default_catalog(), profile=profile,
+        capture_root=Path(profile["capture_root"]), source=kwargs["source"], inputs_dir=tmp_path / "screening-inputs")
+    assert planning["scene"]["task_kind"] == "goal_region_navigation"
+    binding = planning["capabilities"]["candidate_bindings"][DP_NAV]
+    descriptor = binding["execution_spec"]
+    assert descriptor[g1.DROPPED_START_OFFSETS_FIELD] == {"back_15cm": "g1_spawn_overlap"}
+    assert descriptor["setup_quality_flags"] == ["g1_spawn_overlap"] and descriptor["backend"] == g1.BACKEND
+    quote = planning["cost_quotes"][DP_NAV]
+    assert quote["episode_count"] == 3 and quote["maximum_cost_usd"] == "4.00"
+    # The contract the candidates run is the record's, with no paused-controls omission.
+    sealed = json.loads(Path(planning["scene"]["scene_inputs"]["path"]).read_text())
+    assert sealed["task_success_contract"] == kwargs["contract"] and "diagnostic_control_omission_authority" not in sealed
+    # The robot-free probe receipt is the record's own, from the directory its scene facts name.
+    assert planning["scene"]["robot_free_probe_digest"] == sealed["beta_robot_free_probe_receipt"]["receipt_digest"]
