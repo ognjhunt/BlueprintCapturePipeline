@@ -108,23 +108,30 @@ def test_an_arm_spec_is_not_a_navigation_task():
         g1_navigation_goal_from_spec(bad)
 
 
-def test_the_machine_composed_authority_needs_the_sites_own_confirmed_context():
+def test_the_machine_composed_authority_binds_the_sites_own_context_and_discloses_confirmation():
     spec = _spec()
     context = _context(spec)
     plan = _plan(navigation_task_spec(spec, task_context=context))
     authority = compose_g1_navigation_goal_authority(plan=plan, task_context=context)
     assert authority["schema_version"] == MACHINE_AUTHORITY_SCHEMA_VERSION
     assert authority["human_reviewer"] is None and authority["claim_ceiling"] == "development_only"
-    assert authority["task_context"] == context
+    assert authority["task_context"] == context and authority["site_brief_confirmed"] is True
     assert authority["disclosed_assumptions"] == plan["task_spec"]["navigation_goal_basis"]["disclosed_assumptions"]
     # The shared validator dispatches on the schema version.
     assert validate_g1_navigation_goal_authority(authority, plan=plan) == authority
-    # An unconfirmed context refuses; so does a forged "confirmed" over an unconfirmed context's
-    # real digest (the digest is recomputed), and a context for another digest.
+    # Owner, 2026-11-07: an unconfirmed brief is not a stop. The authority is composed and says so.
     unconfirmed = _context(spec, confirmed=False)
     unconfirmed_plan = _plan(navigation_task_spec(spec, task_context=unconfirmed))
-    with pytest.raises(ValueError, match="g1_navigation_goal_brief_not_confirmed"):
-        compose_g1_navigation_goal_authority(plan=unconfirmed_plan, task_context=unconfirmed)
+    flagged = compose_g1_navigation_goal_authority(plan=unconfirmed_plan, task_context=unconfirmed)
+    assert flagged["site_brief_confirmed"] is False and flagged["claim_ceiling"] == "development_only"
+    assert validate_g1_navigation_goal_authority(flagged, plan=unconfirmed_plan) == flagged
+    # The flag cannot be flipped without the site's own sealed confirmation.
+    lifted = {**flagged, "site_brief_confirmed": True}
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    lifted["authority_digest"] = cross_runtime_canonical_digest(lifted, digest_field="authority_digest")
+    with pytest.raises(ValueError, match="g1_navigation_goal_authority_invalid"):
+        validate_g1_navigation_goal_authority(lifted, plan=unconfirmed_plan)
+    # A forged "confirmed" over an unconfirmed context's real digest is refused (the digest is recomputed).
     forged = {**unconfirmed, "confirmed": True, "confirmed_at": "whenever"}
     with pytest.raises(ValueError, match="g1_navigation_goal_task_context_invalid"):
         compose_g1_navigation_goal_authority(plan=unconfirmed_plan, task_context=forged)
