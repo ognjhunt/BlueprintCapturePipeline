@@ -271,6 +271,97 @@ def test_a_navigation_source_is_picked_up_and_holds_by_name_until_its_intake_rec
         'last': str(tmp_path / 'captures' / 'capture-navigation')}
 
 
+def _bound_navigation_source(world, tmp_path, monkeypatch):
+    """A navigation job's real record whose website intake is staged, its outbox beside the record."""
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_intake import stage_scene_intent
+    from blueprint_pipeline.website_navigation_intake import OUTBOX_FILENAME, OUTBOX_SCHEMA, navigation_task
+    from blueprint_pipeline.website_navigation_scene_inputs import write_navigation_scene_inputs
+
+    arguments = navigation_scene_inputs_arguments(tmp_path, monkeypatch)
+    written = write_navigation_scene_inputs(**arguments)
+    record, capture = written['record'], arguments['capture_root']
+    row = {'capture_root': str(capture), 'scene_id': record['scene_id'], 'task_id': record['task_id'],
+           'scenario_id': 'nominal', 'robot_free_probe_root': str(Path(record['robot_free_probe']['path']).parent),
+           'scene_revision_digest': record['scene_revision_digest'], 'navigation_scene_inputs_path': written['path']}
+    world.registry['profiles'].append(row)
+    world.persist_registry()
+    world.names['family-' + canonical_digest({'capture_root': str(capture)})[7:39]] = 'navigation'
+    now = datetime.now(timezone.utc).timestamp()
+    request = {'schema_version': 'task_evaluation_scene_intake_request.v1', 'submission_id': capture.name,
+               'owner': {'user_id': 'blueprint', 'organization_id': 'blueprint'},
+               'source': {'kind': 'gaussian_splat', 'binding_id': 'website-splat-' + 'a' * 32,
+                          'content_digest': 'sha256:' + 'a' * 64},
+               'task': navigation_task(record),
+               'execution': {'purpose': 'scene_preparation', 'max_total_spend_usd': 20, 'max_paid_attempts': 2,
+                             'max_retries': 0, 'expires_at_epoch': now + 3600,
+                             'allowed_providers': ['vast', 'openai'], 'policy_candidates': [],
+                             'claim_scope': 'development_only'},
+               'consent': {'accepted_by': 'blueprint', 'accepted_at_epoch': now - 60,
+                           'rights_reference': 'sha256:' + 'b' * 64, 'provider_terms_reference': 'sha256:' + 'c' * 64,
+                           'private_processing_authorized': True, 'provider_training_authorized': False,
+                           'task_confirmed': True, 'spend_authorized': True}}
+    staged = stage_scene_intent(value=request, queue_root=world.intents, authenticated_client='blueprint-webapp',
+                                trusted_clients={'blueprint-webapp'}, now=now)
+    outbox = {'schema_version': OUTBOX_SCHEMA, 'claim_ceiling': 'development_only',
+              'scene_inputs_digest': record['scene_inputs_digest'],
+              'scene_revision_digest': record['scene_revision_digest'], 'request': request,
+              'request_digest': cross_runtime_canonical_digest(request),
+              'website_intake': {'id': staged['intent_id'], 'request_digest': cross_runtime_canonical_digest(request),
+                                 'state': 'forward_pending'},
+              'intent_id': staged['intent_id'], 'reserved_usd': 0, 'construction_allowance_granted': False}
+    outbox['outbox_digest'] = canonical_digest(outbox, digest_field='outbox_digest')
+    write_json(Path(written['path']).parent / OUTBOX_FILENAME, outbox)
+    return written, capture, staged
+
+
+@pytest.mark.parametrize('g1', ['registered', 'failed'])
+def test_a_navigation_source_registers_its_sites_g1_rows_before_the_catalog_is_read(tmp_path, monkeypatch, g1):
+    """The family pass registers a navigation site's G1 candidates itself, as the packet pass does for a team scene.
+
+    A new row changes the catalog's revision, so registration comes before the catalog read; a G1 problem is
+    recorded and never stops the site.
+    """
+    from blueprint_pipeline import beta_policy_screening_team as team
+    from blueprint_pipeline import native_g1_site_registration as registration
+    from blueprint_pipeline import team_scene_packet_worker as packets
+
+    world = source_world(tmp_path, monkeypatch, 1)
+    written, capture, staged = _bound_navigation_source(world, tmp_path, monkeypatch)
+    order, calls = [], []
+
+    def ensure(**kwargs):
+        order.append('register')
+        calls.append(kwargs)
+        if g1 == 'failed':
+            raise RuntimeError('g1 shared inputs unreadable')
+        return {'status': 'registered'}
+
+    real_catalog = team.catalog_for_profile
+
+    def catalog(profile, base):
+        order.append('catalog:' + ('navigation' if profile.get('navigation_scene_inputs_path') else 'family'))
+        return real_catalog(profile, base)
+
+    monkeypatch.setattr(registration, 'ensure_site_registration', ensure)
+    monkeypatch.setattr(packets, 'current_release_commit', lambda: 'a' * 40)
+    monkeypatch.setattr(team, 'catalog_for_profile', catalog)
+    packet_root = tmp_path / 'team-scene-packets'
+    result = sources.enqueue_registered_family_scenes(queue_root=world.queue, packet_queue_root=packet_root)
+    navigation = result['sources'][_names(world, result).index('navigation')]
+    assert navigation['status'] == 'enqueued'
+    record = json.loads(Path(written['path']).read_text())
+    assert calls == [{'site_id': record['scene_id'], 'source': {
+        'scene_intent_id': staged['intent_id'], 'scene_intent_digest': staged['intent_digest'],
+        'capture_id': capture.name, 'task_id': record['task_id'],
+        'task_context_digest': record['source_gap']['known']['task_context_digest'],
+        'scene_revision_digest': record['scene_revision_digest']},
+        'source_queue': packet_root, 'release': 'a' * 40}]
+    assert order.index('register') < order.index('catalog:navigation')
+    assert navigation['g1_registration'] == ({'status': 'registered'} if g1 == 'registered' else {
+        'status': 'failed', 'error': navigation['g1_registration']['error']})
+
+
 def test_a_navigation_source_binds_its_staged_intake_and_goes_on_through_current_consent_and_planning(
         tmp_path, monkeypatch):
     """Once the job's navigation intake is staged, its receipt binds the source and the family path goes on."""
