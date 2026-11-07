@@ -34,7 +34,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-REVISION = "atlas_world_levelling.v4"
+REVISION = "atlas_world_levelling.v5"
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0
@@ -60,6 +60,13 @@ PARALLEL_REFITS = 2
 #: Coarse-to-fine: a direction a degree off spreads a 6 m floor over 10 cm, more than one 2 cm layer.
 #: Layers this many times thicker are found and refitted first; only the 2 cm ones are counted.
 PARALLEL_COARSE_LAYERS = (6.0, 3.0, 1.0)
+#: A floor seen along a direction a couple of degrees off its own normal spreads over a band
+#: (6 m at 2 degrees: 21 cm), and no 2 cm layer holds it. The lowest band holding a floor's
+#: share is refitted at these thicknesses in turn, trimming points beyond 2.5 robust deviations,
+#: until it is a 4 cm band about its own plane.
+FLOOR_BANDS_M = (0.30, 0.15, 0.08, 0.04)
+FLOOR_BAND_FIND_M = 0.10
+FLOOR_TRIM_DEVIATIONS = 2.5
 #: Kept in the record, so a refusal can be read without the mesh: the densest layers along the chosen
 #: direction, and along +Y and every candidate direction the share of points in each 2 cm band of
 #: height around the cameras (a floor shows as a peak a camera height below them, as thick as it is).
@@ -302,6 +309,75 @@ def _floor(points: np.ndarray, normal: np.ndarray) -> dict[str, Any] | None:
             "extent_m": spans[::-1]}
 
 
+def _band_floor(points: np.ndarray, direction: np.ndarray,
+                report: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """The floor found as the lowest band holding a floor's share, refitted coarse to fine; None if it fails.
+
+    Along ``direction`` the lowest 10 cm holding ``MIN_FLOOR_SHARE`` of the points starts a 30 cm
+    band; each band is fitted as a plane, points beyond ``FLOOR_TRIM_DEVIATIONS`` robust deviations
+    are trimmed, and the band narrows about the new plane. The result must hold a level plane's
+    share (``MIN_LEVEL_SHARE``) within 2 cm and meet the floor rules: almost nothing below it, and
+    wider than a counter both ways. ``report`` receives what was found either way.
+    """
+    if len(points) < 3:
+        return None
+    heights = points @ direction
+    step = PLANE_TOLERANCE_M
+    counts, edges = np.histogram(heights, bins=np.arange(heights.min(), heights.max() + 2 * step, step))
+    reach = int(round(FLOOR_BAND_FIND_M / step))
+    windows = np.convolve(counts, np.ones(reach, dtype=np.int64), mode="valid")
+    found = np.flatnonzero(windows >= MIN_FLOOR_SHARE * len(points))
+    if not len(found):
+        return None
+    normal, height = direction, float(edges[found[0]]) + FLOOR_BAND_FIND_M / 2
+    limit = math.cos(math.radians(MAX_TILT_DEGREES))
+    for thickness in FLOOR_BANDS_M:
+        band = points[np.abs(points @ normal - height) <= thickness / 2]
+        if len(band) < 3:
+            return None
+        fitted, offset = _plane(band)
+        residual = band @ fitted - offset
+        spread = 1.4826 * float(np.median(np.abs(residual)))
+        kept = band[np.abs(residual) <= max(FLOOR_TRIM_DEVIATIONS * spread, PLANE_TOLERANCE_M)]
+        if len(kept) >= 3:
+            fitted, offset = _plane(kept)
+        if fitted[1] < limit:
+            return None
+        normal, height = fitted, offset
+    heights = points @ normal
+    inliers = points[np.abs(heights - height) <= PLANE_TOLERANCE_M]
+    below = int(np.count_nonzero(heights < height - BELOW_FLOOR_M))
+    spans = [0.0, 0.0]
+    if len(inliers) >= 3:
+        flat = inliers - np.outer(inliers @ normal, normal)
+        flat -= flat.mean(axis=0)
+        spans = sorted(float(np.subtract(*np.percentile(flat @ axis, [98, 2])))
+                       for axis in np.linalg.svd(flat, full_matrices=False)[2][:2])
+    residual = inliers @ normal - height if len(inliers) else np.zeros(1)
+    value = {"normal": normal, "height_m": height, "inlier_share": len(inliers) / len(points),
+             "below_share": below / len(points), "rms_m": float(np.sqrt(np.mean(residual ** 2))),
+             "extent_m": spans[::-1]}
+    if report is not None:
+        report["floor_band"] = {"tilt_degrees": _tilt(normal), "inlier_share": value["inlier_share"],
+                                "below_share": value["below_share"], "rms_m": value["rms_m"],
+                                "extent_m": value["extent_m"]}
+    if (value["inlier_share"] < MIN_LEVEL_SHARE or below > MAX_BELOW_FLOOR_SHARE * len(points)
+            or spans[0] < MIN_FLOOR_EXTENT_M):
+        return None
+    return value
+
+
+def _cameras_above(floor: dict[str, Any] | None, centres_m: np.ndarray) -> np.ndarray | None:
+    """The cameras' heights over ``floor``, or None when they do not stand above it as people do."""
+    if floor is None:
+        return None
+    heights = centres_m @ floor["normal"] - floor["height_m"]
+    low, high = CAMERA_MEDIAN_HEIGHT_BOUNDS_M
+    if not len(heights) or heights.min() < CAMERA_MIN_HEIGHT_M or not low <= float(np.median(heights)) <= high:
+        return None
+    return heights
+
+
 def _rotation_to_up(normal: np.ndarray) -> np.ndarray:
     """The smallest rotation taking ``normal`` to +Y: no turn about the vertical."""
     axis, cosine = np.cross(normal, [0.0, 1.0, 0.0]), float(normal[1])
@@ -351,10 +427,23 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     largest: list[np.ndarray] = []
     normal = _level_direction(sample, rng, search, largest) if len(sample) >= 3 else None
     basis = "single_level_plane"
+    faces = np.asarray(mesh.faces, dtype=np.int64)
     if normal is None:
-        normal = _parallel_level_direction(vertices, np.asarray(mesh.faces, dtype=np.int64), sample, search,
+        normal = _parallel_level_direction(vertices, faces, sample, search,
                                            directions=tuple(largest), camera_centres=centres * meters_per_unit)
         basis = "parallel_level_surfaces"
+    floor = _floor(sample, normal) if normal is not None else None
+    camera_heights = _cameras_above(floor, centres * meters_per_unit)
+    if camera_heights is None:
+        # No 2 cm floor layer along the level direction: the floor may lie a couple of degrees off it
+        # (a reconstructed world's shelves and floor need not be exactly parallel). Fit it on its own.
+        start = normal if normal is not None else _normal_mode(*_face_normals_and_areas(vertices, faces))
+        floor = _band_floor(sample, start if start is not None else np.array([0.0, 1.0, 0.0]), search)
+        camera_heights = _cameras_above(floor, centres * meters_per_unit)
+        if camera_heights is None:
+            floor = None
+        elif normal is None:
+            normal, basis = floor["normal"], "observed_floor_band"
     value["level_search"] = search
     splat = read_standard_3dgs_ply(splat_path) if normal is not None else None
     if normal is None or splat.sh_rest is not None:
@@ -364,14 +453,6 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
         value["digest"] = canonical_digest(value, digest_field="digest")
         write_json(receipt_path, value)
         return value
-    floor = _floor(sample, normal)
-    camera_heights = None
-    if floor is not None:
-        camera_heights = centres * meters_per_unit @ floor["normal"] - floor["height_m"]
-        low, high = CAMERA_MEDIAN_HEIGHT_BOUNDS_M
-        if (not len(camera_heights) or camera_heights.min() < CAMERA_MIN_HEIGHT_M
-                or not low <= float(np.median(camera_heights)) <= high):
-            floor = None
     up = floor["normal"] if floor is not None else normal
     rotation = _rotation_to_up(up)
     transform = np.eye(4)
