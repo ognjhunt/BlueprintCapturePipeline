@@ -21,6 +21,7 @@ from blueprint_pipeline.website_task_context_lineage import (
     PARENT_FIELD,
     accepts_bound_digest,
     artifact_context,
+    binding_contexts,
     confirmation_successor,
     read_confirmation_parent,
     record_confirmation_lineage,
@@ -84,6 +85,9 @@ def test_the_lineage_is_kept_beside_the_capture_and_re_verified_on_every_read(tm
     assert record["confirmed_at"] == CONFIRMED_AT and record["parent_context"] == parent
     assert read_confirmation_parent(pipeline, current) == parent
     assert artifact_context(pipeline, current) == parent
+    # A record decided before the confirmation is matched against the context, then its verified parent.
+    assert binding_contexts(pipeline, current) == (current, parent)
+    assert binding_contexts(pipeline, parent) == (parent,) and binding_contexts(None, current) == (current,)
     # An edited task records nothing and reads as itself.
     edited = successor_of(parent, description="Another job")
     assert record_confirmation_lineage(pipeline, parent=parent, successor=edited) is None
@@ -94,6 +98,7 @@ def test_the_lineage_is_kept_beside_the_capture_and_re_verified_on_every_read(tm
     value["parent_context"]["description"] = "Another job"
     path.write_text(json.dumps(value))
     assert read_confirmation_parent(pipeline, current) is None and artifact_context(pipeline, current) == current
+    assert binding_contexts(pipeline, current) == (current,)
 
 
 def test_task_semantics_bought_for_the_parent_load_for_its_confirmed_successor(tmp_path):

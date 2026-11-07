@@ -161,6 +161,18 @@ def artifact_context(pipeline_dir: str | Path | None, context: Any) -> Any:
     return parent if parent is not None else context
 
 
+def binding_contexts(pipeline_dir: str | Path | None, context: Any) -> tuple[Any, ...]:
+    """The contexts a retained record of the job may be bound to: ``context``, then its verified parent.
+
+    A record decided before the site confirmed its brief (a held handoff) stays bound to the unconfirmed
+    parent after the retained context became its recorded confirmed successor, until a later run rewrites
+    it. A reader that matches such a record tries the context first and the parent second. Nothing else
+    is accepted: the parent comes only from the verified lineage record (``read_confirmation_parent``).
+    """
+    parent = read_confirmation_parent(pipeline_dir, context)
+    return (context,) if parent is None else (context, parent)
+
+
 def implied_parent_digests(context: Any) -> frozenset[str]:
     """The digests a confirmed context's unconfirmed parent can have, read from the context itself.
 
@@ -191,5 +203,5 @@ def accepts_bound_digest(context: Any, bound_digest: Any) -> bool:
 
 
 __all__ = ["ANSWER_FIELDS", "CONFIRMATION_FIELDS", "LINEAGE_DIRECTORY", "LINEAGE_SCHEMA", "PARENT_FIELD",
-           "accepts_bound_digest", "artifact_context", "capture_pipeline_root", "confirmation_successor",
+           "accepts_bound_digest", "artifact_context", "binding_contexts", "capture_pipeline_root", "confirmation_successor",
            "implied_parent_digests", "read_confirmation_parent", "record_confirmation_lineage", "states_nothing"]
