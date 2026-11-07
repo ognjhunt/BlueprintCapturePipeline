@@ -665,9 +665,19 @@ def _claim_job_lease(
         ):
             return "assessment_resume_changed", dict(ledger)
         if expected_reconstruction_resume is not None:
-            from .website_reconstruction_resume import claim_matches
-            if not claim_matches(ledger, expected_reconstruction_resume, payload_sha256=payload_sha256,
-                                 producer_delivery_key=producer_delivery_key):
+            from .website_reconstruction_resume import claim_matches, expired_lease_review
+            ended = expired_lease_review(ledger, expected_reconstruction_resume, payload_sha256=payload_sha256,
+                                         producer_delivery_key=producer_delivery_key, now=current_time)
+            if ended == "active":
+                return "active", dict(ledger)
+            if ended is not None:
+                # An operator reviewed an attempt whose process died holding its lease. One
+                # recorded transition, under this same lock, ends it as failed_retryable; the
+                # reviewed claim below then runs on that failure like any other.
+                ledger = _commit_job_ledger(capture_root, ended, previous_revision=revision)
+                revision, status = ledger["revision"], "failed_retryable"
+            elif not claim_matches(ledger, expected_reconstruction_resume, payload_sha256=payload_sha256,
+                                   producer_delivery_key=producer_delivery_key):
                 return "reconstruction_resume_changed", dict(ledger)
         if expected_target_choice_correction is not None:
             from .website_task_target_choice import claim_matches as correction_matches

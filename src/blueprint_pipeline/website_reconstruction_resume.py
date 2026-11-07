@@ -102,6 +102,72 @@ def armed(ledger) -> bool:
             and record.get("schema_version") == SCHEMA and record.get("error") == ledger.get("last_error"))
 
 
+def _review_names(ledger, expected, *, payload_sha256, producer_delivery_key) -> bool:
+    """An operator review of this exact envelope and delivery, with no field beyond the three it has."""
+    digest = expected.get("ledger_digest")
+    return (expected.get("review_schema") == REVIEW_SCHEMA
+            and set(expected) == {"review_schema", "ledger_digest", "selected_payload_sha256"}
+            and type(digest) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None
+            and type(payload_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", payload_sha256) is not None
+            and payload_sha256 == expected["selected_payload_sha256"]
+            and producer_delivery_key is not None and producer_delivery_key == ledger.get("producer_delivery_key"))
+
+
+#: What an attempt records when its lease ran out before it finished: its process died
+#: (the kernel's OOM killer, a lost host), so nothing it started has a recorded outcome.
+LEASE_EXPIRED_STAGE = "lease_expired"
+LEASE_EXPIRED_ERROR = "handoff_job_lease_expired"
+
+
+def lease_expired(value, now) -> bool | None:
+    """Whether a lease ending at ``value`` has ended by ``now``; None when it names no readable end."""
+    from .website_preparation_terminal import _parse_utc
+    expires = _parse_utc(value)
+    return None if expires is None else expires <= now
+
+
+def expired_lease_review(ledger, expected, *, payload_sha256, producer_delivery_key, now):
+    """Inside the claim lock: an operator review of an attempt whose process died holding its lease.
+
+    Returns ``"active"`` while the lease still runs (its owner may be alive and
+    heartbeating), or the ledger that records the dead attempt as
+    ``failed_retryable`` when the review names exactly this expired ledger, or
+    None, leaving ``claim_matches`` to decide. Only a lease past its own expiry
+    is taken over: no owner can renew it any more, and every lease-fenced effect
+    of the dead attempt already refuses. The dead attempt is never erased: it
+    keeps its attempt number, gains one history row with its lease owner and
+    times, and its unknown outcome stays on record, so it never becomes fresh
+    wait capacity (``safe_to_arm``). An attempt that itself took over an expired
+    lease without recording it (``recovered_expired_lease``) stays refused, as
+    its failure does in ``claim_matches``.
+    """
+    if (not _review_names(ledger, expected, payload_sha256=payload_sha256,
+                          producer_delivery_key=producer_delivery_key)
+            or ledger.get("status") != "processing"
+            or not all(type(ledger.get(key)) is str and ledger[key] for key in ("lease_owner", "lease_token"))):
+        return None
+    ended = lease_expired(ledger.get("lease_expires_at"), now)
+    if ended is False:
+        return "active"
+    attempt = ledger.get("attempt_count")
+    if (ended is not True or ledger.get("recovered_expired_lease") or type(attempt) is not int or attempt < 1
+            or canonical_digest(ledger) != expected["ledger_digest"]):
+        return None
+    from .website_preparation_terminal import _iso
+    at = _iso(now)
+    history = ledger.get("attempt_history")
+    row = {"attempt_number": attempt, "status": "failed_retryable", "stage": LEASE_EXPIRED_STAGE,
+           "started_at": ledger.get("last_attempt_started_at"), "failed_at": at,
+           "error_type": "HandoffLeaseError", "error": LEASE_EXPIRED_ERROR, "outcome": "unknown",
+           "recovered_expired_lease": True, "previous_lease_owner": ledger["lease_owner"],
+           **{key: ledger.get(key) for key in ("lease_acquired_at", "lease_heartbeat_at", "lease_expires_at")},
+           "recovered_at": at, "recovered_by": REVIEW_SCHEMA, "reviewed_ledger_digest": expected["ledger_digest"]}
+    return {**ledger, "status": "failed_retryable", "updated_at": at, "last_failed_at": at,
+            "last_error_type": row["error_type"], "last_error": LEASE_EXPIRED_ERROR,
+            "attempt_history": [*(history if type(history) is list else []), row],
+            "lease_owner": None, "lease_token": None, "lease_expires_at": None}
+
+
 def claim_matches(ledger, expected, *, payload_sha256, producer_delivery_key) -> bool:
     """Inside the claim lock: match the retained wait or an explicit operator review.
 
@@ -109,15 +175,11 @@ def claim_matches(ledger, expected, *, payload_sha256, producer_delivery_key) ->
     is created to make it eligible for the normal native claim.
     """
     if expected.get("review_schema") == REVIEW_SCHEMA:
-        digest = expected.get("ledger_digest")
-        return (set(expected) == {"review_schema", "ledger_digest", "selected_payload_sha256"}
-                and type(digest) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None
-                and type(payload_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", payload_sha256) is not None
-                and payload_sha256 == expected["selected_payload_sha256"]
-                and producer_delivery_key is not None and producer_delivery_key == ledger.get("producer_delivery_key")
+        return (_review_names(ledger, expected, payload_sha256=payload_sha256,
+                              producer_delivery_key=producer_delivery_key)
                 and ledger.get("status") == "failed_retryable" and not ledger.get("recovered_expired_lease")
                 and all(ledger.get(key) is None for key in ("lease_owner", "lease_token", "lease_expires_at"))
-                and canonical_digest(ledger) == digest)
+                and canonical_digest(ledger) == expected["ledger_digest"])
     record = expected.get("record")
     return (type(expected.get("revision")) is int and ledger.get("revision") == expected["revision"]
             and armed(ledger) and type(record) is dict and ledger.get(FIELD) == record

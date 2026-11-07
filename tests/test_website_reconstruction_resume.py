@@ -11,7 +11,7 @@ stages before the handoff. No provider call.
 """
 import base64
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -276,3 +276,74 @@ def test_the_existing_empty_queue_tick_also_replays_finished_atlas_waits(monkeyp
         provider="openai", max_messages=1, run_evaluation_prep=False, run_e2e_enabled=False)
     assert len(calls) == 1 and calls[0]["process_args"]["provider"] == "openai"
     assert calls[0]["process_args"]["run_e2e_enabled"] is False
+
+
+def _killed_attempt(root, raw, *, started_ago):
+    """The real claim of an attempt whose process the kernel then killed: its lease is never finished."""
+    failed = listener._read_job_ledger(root)
+    status, dead = listener._claim_job_lease(root, scene_id=failed["scene_id"], capture_id=failed["capture_id"],
+        owner="control-plane:4242:killed", lease_seconds=listener.DEFAULT_JOB_LEASE_SECONDS,
+        now=datetime.now(timezone.utc) - started_ago, payload_sha256=listener.payload_sha256(raw),
+        producer_delivery_key=failed["producer_delivery_key"])
+    assert status == "claimed" and dead["status"] == "processing"
+    return failed, dead
+
+
+def _review(ledger, raw):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    return {"review_schema": resume.REVIEW_SCHEMA, "ledger_digest": canonical_digest(ledger),
+            "selected_payload_sha256": listener.payload_sha256(raw)}
+
+
+def test_an_attempt_killed_holding_its_lease_resumes_once_reviewed(waiting):
+    root, _, _, raw, _ = waiting
+    failed, dead = _killed_attempt(root, raw, started_ago=timedelta(hours=1))
+    _job(root, "ready")
+    calls = []
+    result = listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
+        run_evaluation_prep=False, expected_reconstruction_resume=_review(dead, raw),
+        run_e2e=lambda **kw: calls.append(kw) or {"status": "completed"})
+    assert result["status"] == "processed" and len(calls) == 1 and calls[0]["resume_completed_stages"] is True
+    after = listener._read_job_ledger(root)
+    assert after["status"] == "completed" and after["attempt_count"] == dead["attempt_count"] + 1 == 3
+    first, killed, resumed = after["attempt_history"]
+    assert first == failed["attempt_history"][0]
+    assert (killed["attempt_number"], killed["status"], killed["stage"], killed["error"]) == (
+        2, "failed_retryable", resume.LEASE_EXPIRED_STAGE, resume.LEASE_EXPIRED_ERROR)
+    assert killed["recovered_expired_lease"] is True and killed["previous_lease_owner"] == dead["lease_owner"]
+    assert all(killed[key] == dead[key] for key in ("lease_acquired_at", "lease_heartbeat_at", "lease_expires_at"))
+    assert killed["started_at"] == dead["last_attempt_started_at"]
+    assert (resumed["attempt_number"], resumed["status"]) == (3, "completed")
+
+
+def test_a_reviewed_resume_never_takes_a_live_lease(waiting):
+    root, _, _, raw, _ = waiting
+    _, live = _killed_attempt(root, raw, started_ago=timedelta(minutes=1))
+    _job(root, "ready")
+    result = listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
+        expected_reconstruction_resume=_review(live, raw),
+        run_e2e=lambda **_: pytest.fail("a live attempt's lease was taken over"))
+    assert result["status"] == "lease_active_retryable" and result["blockers"] == ["handoff_job_active_lease"]
+    assert listener._read_job_ledger(root) == live
+
+
+def test_a_resumed_dead_attempt_that_fails_again_stays_reviewable(waiting):
+    root, _, _, raw, _ = waiting
+    _, dead = _killed_attempt(root, raw, started_ago=timedelta(hours=1))
+    _job(root, "ready")
+
+    def unreconciled(**_):
+        # The dead attempt's SAM submission has no recorded outcome; the stage refuses to buy it again.
+        raise PipelineError("clean_plate: meta_sam_submission_requires_reconciliation")
+    with pytest.raises(PipelineError, match="meta_sam_submission_requires_reconciliation"):
+        listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
+            run_evaluation_prep=False, expected_reconstruction_resume=_review(dead, raw), run_e2e=unreconciled)
+    again = listener._read_job_ledger(root)
+    assert again["status"] == "failed_retryable" and again["attempt_count"] == 3
+    assert again["recovered_expired_lease"] is False and not resume.armed(again)
+    assert [row["stage"] for row in again["attempt_history"][1:]] == [resume.LEASE_EXPIRED_STAGE, "run_e2e"]
+    # Once that submission is reconciled, the ordinary review resumes the job again.
+    result = listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
+        run_evaluation_prep=False, expected_reconstruction_resume=_review(again, raw),
+        run_e2e=lambda **_: {"status": "completed"})
+    assert result["status"] == "processed" and listener._read_job_ledger(root)["attempt_count"] == 4

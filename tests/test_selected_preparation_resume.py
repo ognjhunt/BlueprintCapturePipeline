@@ -2,6 +2,7 @@
 import hashlib
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -214,3 +215,146 @@ def test_global_paid_admission_still_blocks_native_resume(site, monkeypatch, age
     snapshot = recover(site)["atlas"]
     with pytest.raises(ValueError, match="selected_handoff_atlas_preflight_blocked"):
         resume(site, snapshot["atlas_status_digest"], lambda *_, **__: pytest.fail("spending stop bypassed"))
+
+
+def _iso(value):
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parsed(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def dead_native(site, *, expires_in_seconds=-60, **changes):
+    """A reviewed resume claimed attempt 6, then the kernel killed its process: only the lease is left."""
+    ledger = retained_native(site)
+    now = datetime.now(timezone.utc)
+    acquired = now + timedelta(seconds=expires_in_seconds - native.DEFAULT_JOB_LEASE_SECONDS)
+    ledger.update(status="processing", revision=13, attempt_count=6, last_attempt_started_at=_iso(acquired),
+                  lease_owner="control-plane:4242:" + "a" * 32, lease_token="c" * 32,
+                  lease_acquired_at=_iso(acquired), lease_heartbeat_at=_iso(acquired),
+                  lease_expires_at=_iso(now + timedelta(seconds=expires_in_seconds)),
+                  recovered_expired_lease=False, previous_lease_owner=None)
+    ledger.update(changes)
+    (site.capture / native.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
+    return ledger
+
+
+def claim(site, expected, *, payload_sha256="b" * 64, producer_delivery_key="sha256:" + "d" * 64, now=None):
+    return native._claim_job_lease(site.capture, scene_id="site-fixture", capture_id="walkthrough-fixture",
+        owner="operator", lease_seconds=60, payload_sha256=payload_sha256,
+        producer_delivery_key=producer_delivery_key, expected_reconstruction_resume=expected,
+        **({"now": now} if now is not None else {}))
+
+
+def on_disk(site):
+    return json.loads((site.capture / native.JOB_LEDGER_FILENAME).read_text())
+
+
+def test_a_reviewed_dead_attempt_is_recorded_failed_then_claimed_under_one_lock(site, monkeypatch):
+    dead = dead_native(site)
+    commits = []
+    commit = native._commit_job_ledger
+    monkeypatch.setattr(native, "_commit_job_ledger",
+                        lambda *args, **kwargs: commits.append(commit(*args, **kwargs)) or commits[-1])
+    status, claimed = claim(site, review(canonical_digest(dead)))
+    assert status == "claimed" and len(commits) == 2
+    ended, row = commits[0], commits[0]["attempt_history"][-1]
+    # The dead attempt keeps its number and gains one row; nothing before it changes.
+    assert ended["attempt_history"][:-1] == dead["attempt_history"]
+    assert row == {"attempt_number": 6, "status": "failed_retryable", "stage": continuation.LEASE_EXPIRED_STAGE,
+                   "started_at": dead["last_attempt_started_at"], "failed_at": row["recovered_at"],
+                   "error_type": "HandoffLeaseError", "error": continuation.LEASE_EXPIRED_ERROR,
+                   "outcome": "unknown", "recovered_expired_lease": True,
+                   "previous_lease_owner": dead["lease_owner"], "lease_acquired_at": dead["lease_acquired_at"],
+                   "lease_heartbeat_at": dead["lease_heartbeat_at"], "lease_expires_at": dead["lease_expires_at"],
+                   "recovered_at": row["recovered_at"], "recovered_by": continuation.REVIEW_SCHEMA,
+                   "reviewed_ledger_digest": canonical_digest(dead)}
+    assert _parsed(row["recovered_at"]) >= _parsed(dead["lease_expires_at"])
+    assert {key: ended[key] for key in ("status", "revision", "attempt_count", "last_error",
+                                        "lease_owner", "lease_token", "lease_expires_at")} == {
+        "status": "failed_retryable", "revision": 14, "attempt_count": 6,
+        "last_error": continuation.LEASE_EXPIRED_ERROR,
+        "lease_owner": None, "lease_token": None, "lease_expires_at": None}
+    # The claim on that failure is the ordinary reviewed retry: exactly one more attempt.
+    assert claimed == commits[1] == on_disk(site)
+    assert claimed["status"] == "processing" and claimed["revision"] == 15 and claimed["attempt_count"] == 7
+    assert claimed["attempt_history"] == ended["attempt_history"]
+    assert claimed["lease_owner"] == "operator" and claimed["lease_token"] != dead["lease_token"]
+    assert claimed["recovered_expired_lease"] is False and claimed["previous_lease_owner"] is None
+    # The unknown outcome is never fresh wait capacity for the new attempt.
+    assert not continuation.safe_to_arm(claimed["attempt_count"], claimed["attempt_history"],
+                                        claimed["recovered_expired_lease"])
+
+
+def test_a_lease_that_has_not_expired_is_refused_as_active(site):
+    live = dead_native(site, expires_in_seconds=600)
+    status, after = claim(site, review(canonical_digest(live)))
+    assert status == "active" and after == live == on_disk(site)
+
+
+@pytest.mark.parametrize("change", ["digest", "payload", "delivery_key", "extra_field", "no_token",
+                                    "unreadable_expiry", "unrecorded_takeover"])
+def test_a_dead_attempt_takeover_keeps_every_review_check(site, change):
+    dead = dead_native(site, **({"lease_token": None} if change == "no_token" else
+                                {"lease_expires_at": "unresolved"} if change == "unreadable_expiry" else
+                                {"recovered_expired_lease": True, "previous_lease_owner": "lost-worker"}
+                                if change == "unrecorded_takeover" else {}))
+    expected = review(canonical_digest({**dead, "revision": 12}) if change == "digest" else canonical_digest(dead))
+    if change == "extra_field":
+        expected["new_spend_authority"] = 999
+    status, after = claim(site, expected, payload_sha256="c" * 64 if change == "payload" else "b" * 64,
+        producer_delivery_key="sha256:" + ("e" if change == "delivery_key" else "d") * 64)
+    assert status == "reconstruction_resume_changed" and after == dead == on_disk(site)
+
+
+def test_one_review_takes_over_one_dead_attempt(site):
+    dead = dead_native(site)
+    expected = review(canonical_digest(dead))
+    assert claim(site, expected)[0] == "claimed"
+    taken = on_disk(site)
+    assert taken["attempt_count"] == dead["attempt_count"] + 1
+    assert len(taken["attempt_history"]) == taken["attempt_count"] - 1
+    # The same review is spent: refused while the new lease runs and after it too has run out.
+    assert claim(site, expected) == ("active", taken)
+    later = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert claim(site, expected, now=later) == ("reconstruction_resume_changed", taken)
+    assert on_disk(site) == taken
+
+
+def test_operator_resume_of_a_dead_attempt_goes_through_the_native_claim(site, monkeypatch):
+    dead = dead_native(site)
+    write_job(site, state="ready")
+    snapshot = recover(site)["atlas"]
+    assert snapshot["native_preparation"]["status"] == "processing"
+    assert snapshot["native_preparation"]["lease_expires_at"] == dead["lease_expires_at"]
+    assert snapshot["native_preparation"]["ledger_digest"] == canonical_digest(dead)
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    seen = []
+
+    def process(raw, **kwargs):
+        seen.append(kwargs["expected_reconstruction_resume"])
+        status, ledger = claim(site, kwargs["expected_reconstruction_resume"],
+                               payload_sha256=hashlib.sha256(raw).hexdigest())
+        assert status == "claimed" and ledger["attempt_count"] == 7
+        assert ledger["attempt_history"][-1]["previous_lease_owner"] == dead["lease_owner"]
+        return {"status": "processed", "queue_disposition": "terminal_success"}
+
+    result = resume(site, snapshot["atlas_status_digest"], process)
+    assert result["status"] == "native_preparation_resumed" and len(seen) == 1
+    assert seen[0]["ledger_digest"] == canonical_digest(dead)
+
+
+@pytest.mark.parametrize("lease,refusal", [(600, "native_lease_active"), (None, "native_resume_not_eligible")])
+def test_operator_resume_refuses_a_live_or_missing_lease_before_the_native_handler(site, monkeypatch, lease, refusal):
+    if lease is None:
+        dead_native(site, lease_owner=None, lease_token=None, lease_expires_at=None)
+    else:
+        dead_native(site, expires_in_seconds=lease)
+    write_job(site, state="ready")
+    snapshot = recover(site)["atlas"]
+    before = atlas_tests.tree_bytes(site)
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    with pytest.raises(ValueError, match="selected_handoff_atlas_" + refusal):
+        resume(site, snapshot["atlas_status_digest"], lambda *_, **__: pytest.fail("live lease taken over"))
+    assert atlas_tests.tree_bytes(site) == before
