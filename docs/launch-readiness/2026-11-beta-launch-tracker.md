@@ -111,6 +111,28 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - Clean plate: $0.39 held (SAM $0.26, Gemini $0.13).
   - Intake capture inference: $1.06 known, in a ledger marked `incomplete` with one call of unknown cost.
   - Known total: about $2.38, against the $115 ceiling.
+- **23:08Z: second stop.** Preserved-scene completion ended `needs_input` with `atlas_preserved_completion_no_exportable_geometry`.
+  - It had passed the planner ($0.28), the generation ($0.42), the review and the joint registration (41 frames, 33 agree).
+  - The recovered view's 4,510 named gap pixels yielded 0 exportable samples.
+  - Fixed by #3435: an empty recovery is flagged and the captured export goes on.
+- **Owner, 11-07, about 00:55Z:** "we need to remove 'depth-fused draft' from an option (maybe can be fallback) - atlas only here (as long as we have money/credits)". In #3435, a scene kept as filmed now takes Atlas's refined splat (`posedImages2Splats`, minimal form) as its appearance, mesh source and export, with the draft only a named fallback.
+- **`682d098` live at 02:01Z** (owner: off-window, recorded above). The job was requeued at 02:02Z (Atlas revision 7):
+  - 02:08Z: the refined splat was bought, with 41 captured frames, no generated view and 2 M Gaussians;
+  - 02:29Z: the $0.50 `splats2Mesh`;
+  - 02:30Z: failed with `atlas_mesh_not_registered_to_splat`.
+- **The cause.** The registration limit was 3 draft voxels (0.0198 here). The provider's mesh had 613,408 faces, against capture-447's 1.89 M. Fixed by #3437: the limit is max(3 draft voxels, 1.5 median mesh edges), and a refusal writes a failure record.
+- **`69e48f8` (#3437)**, owner: "Tonight, after checks". Requested 02:59:15Z (`20261107T025915Z-deploy-5f0be5d3`), live 03:12:57Z, with no blockers. Main's CI was fully green. Before it: no paid lock, no hold, nothing launching or running, and the last deploy was this session's 682d098.
+  - The job was requeued at 03:13Z and was `ready` at 03:18Z. The mesh registered in one frame: residual 0.0310 against the new limit 0.0504; median edge 0.0336. 398,036 of 613,408 faces were kept.
+- **03:19Z: the native preparation was resumed** (`--resume-preparation`, attempt 6). That runs the clean plate inside the door unit.
+  - 03:26Z: a global OOM. The kernel killed its python at 4.0 GB RSS; the host has 8.3 GB and no swap.
+  - The ledger was left `processing`, with a $0.087 SAM reservation held. A plain resume now refuses, because it requires `failed_retryable`.
+  - The likely cause: SAM mask decoding for the 4K, 437-frame video.
+  - Owner: "Build tonight, deploy 9 AM". Two general fixes are being built: bounded mask-decode memory, and an operator resume that can recover an attempt whose process died after its lease expired.
+- **Job spend at 03:30Z:**
+  - Atlas: $7.38 of $25, including the $5 refined splat and the $0.50 mesh.
+  - Clean plate: $0.48 held.
+  - Intake capture inference: $1.06 known.
+  - Known total: about $8.92.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
