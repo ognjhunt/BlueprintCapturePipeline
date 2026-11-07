@@ -73,8 +73,8 @@ def _scene_assets(directory: Path) -> dict:
     return value
 
 
-@pytest.fixture
-def inputs(tmp_path: Path, monkeypatch) -> dict:
+def navigation_scene_inputs_arguments(tmp_path: Path, monkeypatch) -> dict:
+    """``write_navigation_scene_inputs``'s arguments over the fixture room, for other modules' tests too."""
     # A tiny G1-shaped articulation under a fixed test identity instead of the 38 MB pinned USD.
     (tmp_path / "robot").mkdir()
     asset = g1_like_asset(tmp_path / "robot" / "g1.usda")
@@ -82,6 +82,11 @@ def inputs(tmp_path: Path, monkeypatch) -> dict:
     monkeypatch.setattr(robot_config, "G1_USD_SIZE_BYTES", asset.stat().st_size)
     return {"navigation_task_spec": _navigation_task(), "scene_assets": _scene_assets(tmp_path / "navigation_scene"),
             "robot_record": _record(asset), "output_root": tmp_path / "navigation_scene_inputs"}
+
+
+@pytest.fixture
+def inputs(tmp_path: Path, monkeypatch) -> dict:
+    return navigation_scene_inputs_arguments(tmp_path, monkeypatch)
 
 
 def _packet_documents(record: dict) -> tuple[Path, dict, dict]:

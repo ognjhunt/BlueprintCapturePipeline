@@ -3,6 +3,11 @@
 The source profile supplies scene facts. Current consent, canonical intent,
 operator candidate catalog, quotes, publication and allocator gates still own
 whether any policy can run.
+
+A navigation job's registered scene inputs (``navigation_scene_inputs_path``,
+``website_navigation_scene_inputs``) are picked up the same way. Its current-source
+identity comes from ``website_navigation_scene_inputs.screening_source``; until that
+is decided the source holds by that name and the next source goes on.
 """
 from __future__ import annotations
 
@@ -13,13 +18,17 @@ import re
 from .decision_evidence_contracts import canonical_digest
 
 
+def _registered_source(row):
+    return bool(row.get('family_scene_inputs_path') or row.get('navigation_scene_inputs_path'))
+
+
 def _profile_captures():
     from .team_candidate_quick10_registry import load_registry
     registry = load_registry()
     if registry is None:
         return []
     captures = {row['capture_root'] for row in registry['profiles']
-                if isinstance(row, dict) and row.get('family_scene_inputs_path')
+                if isinstance(row, dict) and _registered_source(row)
                 and isinstance(row.get('capture_root'), str) and row['capture_root']}
     settings = registry.get('derived_profiles') or {}
     root = Path(str(settings.get('root') or ''))
@@ -31,7 +40,7 @@ def _profile_captures():
                 row = json.loads(path.read_text())
             except (OSError, ValueError):
                 continue
-            if (isinstance(row, dict) and row.get('family_scene_inputs_path')
+            if (isinstance(row, dict) and _registered_source(row)
                     and isinstance(row.get('capture_root'), str) and row['capture_root']):
                 captures.add(row['capture_root'])
     return sorted(captures)
@@ -73,18 +82,27 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
             outcome = {'request_key': key, 'status': 'blocked'}
             try:
                 profile = profile_for_capture(capture)
-                if not profile or not profile.get('family_scene_inputs_path'):
+                navigation = bool(profile and not profile.get('family_scene_inputs_path')
+                                  and profile.get('navigation_scene_inputs_path'))
+                if not profile or not (profile.get('family_scene_inputs_path') or navigation):
                     raise ValueError('beta_screening_family_profile_unavailable')
                 catalog = catalog_for_profile(profile, base_catalog)
-                retained = read(profile['family_scene_inputs_path'], digest_field='inputs_digest')
-                intent = reopen_scene_intent(retained['references']['scene_intent'])
-                inputs = read_family_scene_inputs(profile['family_scene_inputs_path'])
-                source = inputs['source']
-                if (intent['intent_id'] != source['scene_intent_id']
-                        or intent['intent_digest'] != source['scene_intent_digest']
-                        or intent['request']['task']['task_id'] != source['task_id']
-                        or intent['request']['task']['task_success_contract_digest'] != inputs['task_success_contract_digest']):
-                    raise ValueError('beta_screening_family_source_intent_mismatch')
+                if navigation:
+                    # A scene kept as filmed has no scene intent: the record's reader verifies it and
+                    # screening_source names its current source, or refuses by name until one is decided.
+                    from .website_navigation_scene_inputs import read_navigation_scene_inputs, screening_source
+                    source = screening_source(read_navigation_scene_inputs(profile['navigation_scene_inputs_path']))
+                else:
+                    retained = read(profile['family_scene_inputs_path'], digest_field='inputs_digest')
+                    intent = reopen_scene_intent(retained['references']['scene_intent'])
+                    inputs = read_family_scene_inputs(profile['family_scene_inputs_path'])
+                    source = inputs['source']
+                    if (intent['intent_id'] != source['scene_intent_id']
+                            or intent['intent_digest'] != source['scene_intent_digest']
+                            or intent['request']['task']['task_id'] != source['task_id']
+                            or intent['request']['task']['task_success_contract_digest']
+                            != inputs['task_success_contract_digest']):
+                        raise ValueError('beta_screening_family_source_intent_mismatch')
                 context = require_current_source(source, site_id=profile['scene_id'])
                 if context['scene_id'] != profile['scene_id']:
                     raise ValueError('beta_screening_family_source_scene_mismatch')

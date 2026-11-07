@@ -30,9 +30,15 @@ from blueprint_pipeline.team_candidate_quick10_registry import (
 )
 from blueprint_pipeline.team_candidate_registry_reader import DERIVED_FIELDS, REQUIRED_DERIVED_FIELDS
 from blueprint_pipeline.team_evaluation_plan import PURPOSES
-from tests.test_website_navigation_scene_inputs import inputs  # noqa: F401 - the record's own fixture
+from tests.test_website_navigation_scene_inputs import navigation_scene_inputs_arguments
 
 HALVES = ("team_scene_inputs_path", "family_scene_inputs_path", "pair_runtime_inputs_path", "pair_activation_path")
+
+
+@pytest.fixture
+def inputs(tmp_path: Path, monkeypatch) -> dict[str, Any]:
+    """The navigation record's writer arguments over the record's own fixture room."""
+    return navigation_scene_inputs_arguments(tmp_path, monkeypatch)
 
 
 def _navigation_profile(record_path: str, record: dict[str, Any], **extra: Any) -> dict[str, Any]:
@@ -76,7 +82,7 @@ def test_a_navigation_record_is_one_scene_half_alone() -> None:
 # --- scene facts ------------------------------------------------------------------------------
 
 
-def test_scene_facts_read_a_navigation_record_without_a_franka_droid_plan(inputs, monkeypatch) -> None:  # noqa: F811 - the record's own fixture
+def test_scene_facts_read_a_navigation_record_without_a_franka_droid_plan(inputs, monkeypatch) -> None:
     written = navigation_inputs.write_navigation_scene_inputs(**inputs)
     record = written["record"]
     plan = json.loads((Path(record["packet_root"]) / "native_task_arena_scene_plan.v1.json").read_text())
@@ -100,7 +106,7 @@ def test_scene_facts_read_a_navigation_record_without_a_franka_droid_plan(inputs
     assert facts["episode_specs_sha256"] == canonical_digest(facts["inputs"])
 
 
-def test_a_navigation_record_that_does_not_verify_refuses_by_its_readers_name(inputs, tmp_path) -> None:  # noqa: F811 - the record's own fixture
+def test_a_navigation_record_that_does_not_verify_refuses_by_its_readers_name(inputs, tmp_path) -> None:
     written = navigation_inputs.write_navigation_scene_inputs(**inputs)
     record = written["record"]
     tampered = {**record, "task_id": "another-task"}
@@ -129,7 +135,7 @@ def _registry(tmp_path: Path, monkeypatch) -> Path:
 
 
 def test_a_derived_navigation_profile_is_written_read_back_and_never_listed_for_teams(
-        inputs, tmp_path, monkeypatch) -> None:  # noqa: F811 - the record's own fixture
+        inputs, tmp_path, monkeypatch) -> None:
     written = navigation_inputs.write_navigation_scene_inputs(**inputs)
     record = written["record"]
     _registry(tmp_path, monkeypatch)
@@ -165,7 +171,7 @@ def _plan_screening(record_path: str, record: dict[str, Any], tmp_path: Path) ->
                                  inputs_dir=tmp_path / "screening-inputs")
 
 
-def test_build_planning_inputs_robot_free_gate_admits_the_navigation_receipt(inputs, tmp_path, monkeypatch) -> None:  # noqa: F811 - the record's own fixture
+def test_build_planning_inputs_robot_free_gate_admits_the_navigation_receipt(inputs, tmp_path, monkeypatch) -> None:
     """The real planner, from the profile through scene facts and its own gate call, to every candidate."""
     written = navigation_inputs.write_navigation_scene_inputs(**inputs)
     record = written["record"]
@@ -190,7 +196,7 @@ def test_build_planning_inputs_robot_free_gate_admits_the_navigation_receipt(inp
                          ["g1_beta_scene_packet_missing"])
 
 
-def test_build_planning_inputs_holds_a_navigation_scene_whose_probe_failed(inputs, tmp_path, monkeypatch) -> None:  # noqa: F811 - the record's own fixture
+def test_build_planning_inputs_holds_a_navigation_scene_whose_probe_failed(inputs, tmp_path, monkeypatch) -> None:
     from blueprint_pipeline import native_g1_navigation_goal as navigation_goal
 
     real = navigation_goal.score_g1_navigation_episode
