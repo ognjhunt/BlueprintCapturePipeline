@@ -52,7 +52,7 @@ def room_parts(*, floor=True, counter=True, table=False, shelves=False, walls=Tr
     return parts
 
 
-def aisle_parts(*, seed=0, step=0.03, floor_width=1.3, hall_rows=1):
+def aisle_parts(*, seed=0, step=0.03, floor_width=1.3, hall_rows=1, floor_tilt_degrees=0.0):
     """A floor strip between two bookcases, in a hall of other shelving.
 
     The aisle floor is the largest level plane but holds only about 5% of the
@@ -61,13 +61,17 @@ def aisle_parts(*, seed=0, step=0.03, floor_width=1.3, hall_rows=1):
     A grid ``step`` near an Atlas mesh's edge length (3 cm) gives each part its
     share of vertices. ``floor_width`` narrows the observed floor strip down the
     aisle's middle (0: none survived), and ``hall_rows`` adds rows of far shelving.
+    ``floor_tilt_degrees`` tilts the floor along the aisle against everything else, as a
+    reconstructed world's floor and shelves can disagree by a degree or two.
     """
     rng = np.random.default_rng(seed)
     n = lambda length: int(round(length / step)) + 1  # noqa: E731
     parts = {}
     if floor_width:
-        parts["floor"] = _grid((-3.0, 0.0, -floor_width / 2), (step, 0.0, 0.0), (0.0, 0.0, step),
-                               n(6.0), n(floor_width))
+        floor, triangles = _grid((-3.0, 0.0, -floor_width / 2), (step, 0.0, 0.0), (0.0, 0.0, step),
+                                 n(6.0), n(floor_width))
+        floor[:, 1] += floor[:, 0] * math.tan(math.radians(floor_tilt_degrees))
+        parts["floor"] = (floor, triangles)
     boards = (0.10, 0.45, 0.80, 1.15, 1.50, 1.85, 2.20)
     for side in (-1.0, 1.0):
         front, back = side * 0.65, side * 0.95

@@ -153,6 +153,29 @@ def test_an_aisle_with_no_floor_left_is_levelled_but_declares_no_floor(tmp_path)
     assert value["up_basis"] == "dominant_level_surface" and value["ground_plane_offset_m"] is None
 
 
+def test_a_floor_a_few_degrees_off_the_start_direction_is_found_as_its_own_plane():
+    from tests.atlas_level_room_fixture import aisle_parts
+    points = np.concatenate([part for part, _ in aisle_parts(floor_tilt_degrees=2.5).values()])
+    points = points + np.random.default_rng(0).normal(0.0, 0.003, points.shape)
+    search = {}
+    # Along +Y the floor spreads over 26 cm; the band narrows onto its own plane.
+    floor = levelling._band_floor(points, np.array([0.0, 1.0, 0.0]), search)
+    assert floor is not None and floor["inlier_share"] >= levelling.MIN_LEVEL_SHARE
+    assert levelling._tilt(floor["normal"]) == pytest.approx(2.5, abs=0.15)
+    assert floor["rms_m"] < 0.01 and search["floor_band"]["tilt_degrees"] == pytest.approx(2.5, abs=0.15)
+
+
+def test_a_floor_off_the_shelves_levels_the_world_when_no_single_plane_is_found(tmp_path, monkeypatch):
+    # The three-point search can miss a floor holding a few percent; the floor band still finds it.
+    monkeypatch.setattr(levelling, "_level_direction", lambda *args, **kwargs: None)
+    value, _ = level(tmp_path, degrees=13.0, aisle=True, floor_tilt_degrees=2.0, cameras=AISLE)
+    assert value["status"] == "levelled" and value["up_basis"] == "observed_floor"
+    assert value["ground_plane_offset_m"] == 0.0 and value["level_search"]["floor_band"]["inlier_share"] >= 0.04
+    # Levelled on the floor's own plane: the floor is at y = 0 and the cameras stand on it.
+    heights = value["floor"]["camera_heights_m"]
+    assert all(1.3 < height < 1.6 for height in heights)
+
+
 def test_a_single_dominant_plane_keeps_its_own_basis(tmp_path):
     value, _ = level(tmp_path)
     assert value["level_direction_basis"] == "single_level_plane"
