@@ -682,6 +682,48 @@ def test_without_its_offset_report_a_navigation_row_is_unmeasured_and_its_start_
     assert [row["status"] for row in measured["offsets"]] == ["clear"] * 4
 
 
+@pytest.mark.parametrize("damage", ["edited_without_its_seal", "another_plans", "unreadable"])
+def test_a_start_offset_report_its_reader_refuses_is_set_aside_and_measured_again(tmp_path, monkeypatch, damage):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch)
+    path = packet / spawn.START_OFFSETS_FILENAME
+    measured = json.loads(path.read_text())
+    assert spawn.start_offset_reports(packet, plan["plan_digest"]) == measured["offsets"]
+    if damage == "edited_without_its_seal":
+        changed = deepcopy(measured)
+        changed["offsets"][0]["status"] = "clear" if changed["offsets"][0]["status"] == "overlap" else "overlap"
+        text = json.dumps(changed)
+    elif damage == "another_plans":
+        text = json.dumps(reseal({**measured, "scene_plan_digest": "sha256:" + "0" * 64}, "report_digest"))
+    else:
+        text = "{not json"
+    path.chmod(0o644)
+    path.write_text(text)
+    assert spawn.start_offset_reports(packet, plan["plan_digest"]) is None
+    # Never returned as it is: kept aside beside the packet, and the packet measured again.
+    again = spawn.ensure_packet_start_offsets(packet)
+    assert again == json.loads(path.read_text()) and spawn.start_offset_reports(packet, plan["plan_digest"]) is not None
+    assert [row["status"] for row in again["offsets"]] == [row["status"] for row in measured["offsets"]]
+    [kept] = packet.glob(f".{spawn.START_OFFSETS_FILENAME}.incomplete-*/{spawn.START_OFFSETS_FILENAME}")
+    assert kept.read_text() == text
+    # A report its reader accepts is returned as it is, never measured again.
+    monkeypatch.setattr(spawn, "packet_start_offsets", lambda *_a, **_k: pytest.fail("measured again"))
+    assert spawn.ensure_packet_start_offsets(packet) == again
+
+
+def test_a_linked_start_offset_report_is_never_followed(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    _kwargs, packet, _plan = navigation_spec_inputs(tmp_path, monkeypatch)
+    path = packet / spawn.START_OFFSETS_FILENAME
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text(path.read_text())
+    path.unlink()
+    path.symlink_to(elsewhere)
+    with pytest.raises(ValueError, match="symlink_refused"):
+        spawn.ensure_packet_start_offsets(packet)
+    assert path.is_symlink() and elsewhere.is_file()
+
+
 def test_frozen_cells_keep_navigation_offsets_and_rigid_anchors_as_before():
     assert g1.frozen_cells(navigation_cells()) == navigation_cells()
     assert g1.frozen_cells(navigation_cells(), {"start": "g1_spawn_overlap", "left_15cm": "g1_spawn_overlap"}) \

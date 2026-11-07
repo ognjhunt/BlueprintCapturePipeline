@@ -213,12 +213,17 @@ def _built_from_base(row: Mapping[str, Any], base_hex: str | None) -> bool:
                                         for item in row["screening_candidates"].values())
 
 
-def _navigation_packet(packet: str | Path) -> bool:
+def _navigation_plan(packet: str | Path) -> dict[str, Any] | None:
+    """The packet's scene plan when it is a navigation scene's, else None."""
     try:
         plan = json.loads((Path(packet) / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
-    return isinstance(plan, dict) and plan.get("task_kind") == NAVIGATION_TASK_KIND
+        return None
+    return plan if isinstance(plan, dict) and plan.get("task_kind") == NAVIGATION_TASK_KIND else None
+
+
+def _navigation_packet(packet: str | Path) -> bool:
+    return _navigation_plan(packet) is not None
 
 
 def _packet_dirs(row: Mapping[str, Any] | None) -> list[str]:
@@ -230,12 +235,20 @@ def _packet_dirs(row: Mapping[str, Any] | None) -> list[str]:
 
 
 def _spawn_reports_missing(row: Mapping[str, Any] | None) -> bool:
-    """Whether a registered packet has no spawn report yet (one prepared before the check existed)."""
-    from .native_g1_spawn_clearance import FILENAME, START_OFFSETS_FILENAME
+    """Whether a registered packet has no spawn report yet (one prepared before the check existed).
 
-    return any(not (Path(packet) / FILENAME).is_file()
-               or (_navigation_packet(packet) and not (Path(packet) / START_OFFSETS_FILENAME).is_file())
-               for packet in _packet_dirs(row))
+    A navigation packet's per-offset report counts only while planning's reader accepts it for the packet's
+    plan; another is set aside and measured again (``ensure_packet_start_offsets``).
+    """
+    from .native_g1_spawn_clearance import FILENAME, start_offset_reports
+
+    for packet in _packet_dirs(row):
+        if not (Path(packet) / FILENAME).is_file():
+            return True
+        plan = _navigation_plan(packet)
+        if plan is not None and start_offset_reports(packet, plan.get("plan_digest")) is None:
+            return True
+    return False
 
 
 def _measure_spawns(row: Mapping[str, Any] | None) -> None:

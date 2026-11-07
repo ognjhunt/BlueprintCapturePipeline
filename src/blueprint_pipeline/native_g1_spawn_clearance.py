@@ -370,21 +370,32 @@ def packet_start_offsets(packet_dir: str | Path, *,
 def ensure_packet_start_offsets(packet_dir: str | Path) -> dict[str, Any]:
     """The packet's per-offset spawn report, measured and written beside it once.
 
-    A report in which a read error left an offset unmeasured is returned unwritten, so a later call measures again.
+    A report already there is returned only while planning's own reader accepts it for the packet's plan
+    (``start_offset_reports``: schema, digest, plan and offsets). Any other (changed, another plan's or
+    unreadable) is set aside in the packet's directory, as G1 prepare keeps an incomplete packet
+    (``beta_policy_screening_g1_prepare._preserve_incomplete``; a link is refused), and measured again. A
+    report in which a read error left an offset unmeasured is returned unwritten, so a later call measures again.
     """
     from .deployment_embodiment_preparation_contract import write_once
 
-    path = Path(packet_dir) / START_OFFSETS_FILENAME
-    if path.is_file() and not path.is_symlink():
-        return json.loads(path.read_text(encoding="utf-8"))
-    value = packet_start_offsets(packet_dir)
+    root = Path(packet_dir)
+    path = root / START_OFFSETS_FILENAME
+    if path.exists() or path.is_symlink():
+        plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8"))
+        current = _start_offsets_report(root, plan["plan_digest"])
+        if current is not None:
+            return current
+        from .beta_policy_screening_g1_prepare import _preserve_incomplete
+
+        _preserve_incomplete(path)
+    value = packet_start_offsets(root)
     if not any(row["retryable"] for row in value["offsets"]):
         write_once(path, value)
     return value
 
 
-def start_offset_reports(packet_dir: str | Path, plan_digest: str) -> list[dict[str, Any]] | None:
-    """The packet's sealed per-offset reports of this plan, one per offset in table order; None for anything else."""
+def _start_offsets_report(packet_dir: str | Path, plan_digest: str) -> dict[str, Any] | None:
+    """The packet's sealed per-offset report of this plan, its offsets in table order; None for anything else."""
     from .native_g1_beta_authority import NAVIGATION_START_OFFSETS
 
     path = Path(packet_dir) / START_OFFSETS_FILENAME
@@ -398,7 +409,13 @@ def start_offset_reports(packet_dir: str | Path, plan_digest: str) -> list[dict[
             or [row.get("offset_id") if isinstance(row, dict) else None for row in value["offsets"]]
             != [row[0] for row in NAVIGATION_START_OFFSETS]):
         return None
-    return value["offsets"]
+    return value
+
+
+def start_offset_reports(packet_dir: str | Path, plan_digest: str) -> list[dict[str, Any]] | None:
+    """The packet's sealed per-offset reports of this plan, one per offset in table order; None for anything else."""
+    value = _start_offsets_report(packet_dir, plan_digest)
+    return None if value is None else value["offsets"]
 
 
 def seal(report: Mapping[str, Any]) -> dict[str, Any]:

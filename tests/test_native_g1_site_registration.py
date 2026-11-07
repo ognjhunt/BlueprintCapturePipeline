@@ -759,6 +759,27 @@ def test_a_registered_navigation_packet_without_its_offset_report_is_measured_on
     assert json.loads(report.read_text()) == kept
 
 
+def test_a_registered_navigation_packet_whose_offset_report_changed_is_measured_again_on_the_next_pass(
+        navigation_world, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    packet = Path(row["screening_candidates"][DP_NAV]["native_g1"]["scene_packet"]["path"]).parent
+    report = packet / spawn.START_OFFSETS_FILENAME
+    kept = json.loads(report.read_text())
+    changed = deepcopy(kept)
+    changed["offsets"][0]["max_depth_m"] = 0.5  # Edited without its seal: planning's reader refuses it.
+    report.chmod(0o644)
+    report.write_text(json.dumps(changed))
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
+    assert json.loads(report.read_text()) == kept
+    [aside] = packet.glob(f".{spawn.START_OFFSETS_FILENAME}.incomplete-*/{spawn.START_OFFSETS_FILENAME}")
+    assert json.loads(aside.read_text()) == changed
+
+
 def _navigation_authority_path(kwargs) -> Path:
     row = json.loads(overlay_path(kwargs["site_id"]).read_text())
     return Path(row["screening_candidates"][DP_NAV]["native_g1"]["navigation_authority"]["path"])
