@@ -20,7 +20,9 @@ Three receipt kinds exist: articulated open/close
 (``task_evaluation_scene_rigid_robot_free_readiness``) and goal-region
 navigation (``navigation_robot_free_probe``), each with its own required
 checks. A receipt of one kind never admits another, and every other task kind
-is refused by name until it has a probe.
+is refused by name until it has a probe. A navigation receipt is read only
+when the caller names the navigation kind: a call without a kind admits the
+rigid and articulated receipts alone, as before navigation receipts existed.
 
 A navigation scene has no task object, so its probe runs the navigation scorer
 on synthetic root traces built from the plan's task spec; no simulator is
@@ -79,14 +81,17 @@ def require_robot_free_probe(receipt: Mapping[str, Any] | None, *, scene_revisio
                              task_success_contract_digest: str | None = None) -> dict[str, Any]:
     """Return the admitted receipt's binding, or raise with a typed reason."""
 
-    if task_kind is not None and task_kind not in PROBE_TASK_KINDS:
+    # Compared as a string: a kind that is not one (a malformed caller) is refused by name, never hashed.
+    if task_kind is not None and (not isinstance(task_kind, str) or task_kind not in PROBE_TASK_KINDS):
         raise RobotFreeProbeGateError("unavailable_for_task_kind:" + str(task_kind))
     if not isinstance(scene_revision_digest, str) or not _DIGEST.fullmatch(scene_revision_digest):
         raise RobotFreeProbeGateError("scene_revision_unbound")
     if not isinstance(receipt, Mapping):
         raise RobotFreeProbeGateError("receipt_missing")
     kind = RECEIPT_TASK_KINDS.get(str(receipt.get("schema_version")))
-    if kind is None:
+    # A navigation receipt admits only a caller that names the navigation kind. A call without a kind reads
+    # the rigid and articulated receipts alone, exactly as before navigation receipts existed.
+    if kind is None or (kind == NAVIGATION_TASK_KIND and task_kind is None):
         raise RobotFreeProbeGateError("receipt_schema_invalid")
     if receipt.get("receipt_digest") != canonical_digest(dict(receipt), digest_field="receipt_digest"):
         raise RobotFreeProbeGateError("receipt_digest_invalid")
