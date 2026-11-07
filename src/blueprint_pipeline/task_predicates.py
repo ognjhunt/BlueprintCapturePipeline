@@ -286,11 +286,24 @@ def _contact_with(sample: Mapping[str, Any], geometry: Any, threshold: float) ->
     return bool(hits)
 
 
+def _excluded_bodies(trace: list[Mapping[str, Any]]) -> list[str]:
+    """Robot bodies a scene-contact readback left out (a walking robot's feet), named by the samples."""
+    names: set[str] = set()
+    for sample in trace:
+        for source in (sample, sample.get("native_readback")):
+            if isinstance(source, Mapping) and isinstance(source.get("robot_scene_contact_excluded_bodies"), list):
+                names.update(item for item in source["robot_scene_contact_excluded_bodies"] if isinstance(item, str))
+    return sorted(names)
+
+
 def _no_contact(row: Mapping[str, Any], trace: list[Mapping[str, Any]]) -> dict[str, Any]:
     contacts = [_contact_with(sample, row["geometry"], row["contact_force_threshold_n"]) for sample in trace]
     if any(item is None for item in contacts):
         return {"status": "unscored", "missing_readback": "robot_contact"}
     result: dict[str, Any] = {"contact_steps": [index for index, hit in enumerate(contacts) if hit]}
+    if row["geometry"] == "scene_obstacles" and (excluded := _excluded_bodies(trace)):
+        # "No contact" then covers every body but these: say so with the result.
+        result["excluded_robot_bodies"] = excluded
     clear = not result["contact_steps"]
     if "minimum_clearance_m" in row:
         clearances = [_finite(sample.get("robot_obstacle_clearance_m")) for sample in trace]

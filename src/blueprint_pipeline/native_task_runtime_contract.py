@@ -54,7 +54,20 @@ CAMERA_ROLES = ("external", "wrist", "overview")
 CAMERA_OPTICAL_CONVENTIONS = ("opencv",)
 ENV_ROOT = "{ENV_REGEX_NS}"
 FAMILY_TASK_KINDS = ("pouring", "wiping", "insertion", "stacking", "button_press", "cloth_folding", "multi_step")
-TASK_KINDS = ("rigid_pick_place", "articulated_open_close", *FAMILY_TASK_KINDS)
+#: A robot that moves itself to a goal region in a scene kept as filmed: no task object, no task
+#: support, no replacement (``native_g1_navigation_goal.NAVIGATION_TASK_KIND``).
+NAVIGATION_TASK_KIND = "goal_region_navigation"
+NAVIGATION_SAMPLE_BINDING = {
+    "schema_version": "native_navigation_task_sample_binding.v1",
+    "subject": "robot_root",
+    "fields": ["step_index", "root_position_world_m"],
+    # Present on a step whose planned robot_scene_contact sensors were read; the excluded
+    # bodies are the sealed feet, which the force does not cover.
+    "contact_fields": ["robot_scene_contact_peak_force_n", "robot_scene_contact_excluded_bodies"],
+    # Present instead, with the readback's error codes, on a step whose sensors could not be read.
+    "contact_unread_flag": "robot_scene_contact_unread",
+}
+TASK_KINDS = ("rigid_pick_place", "articulated_open_close", *FAMILY_TASK_KINDS, NAVIGATION_TASK_KIND)
 SCENARIO_CONTEXT_KINDS = ("construction_canary", "evaluation_cell")
 SUPPORTED_SCENARIO_RUNTIME_TARGETS = frozenset(
     {
@@ -217,6 +230,7 @@ def _asset_rows(
     *,
     subject_asset_id: str | None,
     errors: list[str],
+    task_kind: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Mapping[str, Any]]]:
     by_role: dict[str, Mapping[str, Any]] = {}
     replacements: list[Mapping[str, Any]] = []
@@ -264,7 +278,14 @@ def _asset_rows(
             errors.append("native_task_runtime_subject_asset_id_invalid")
         else:
             identified_task_object = True
-    required = {"scene_collision", "task_object"}
+    if task_kind == NAVIGATION_TASK_KIND:
+        # The scene is kept as filmed: no task object, support or replacement to move.
+        required = {"scene_collision"}
+        for role in sorted({"task_object", "task_support"} & set(by_role)) + (
+                [REPEATABLE_REPLACEMENT_ROLE] if replacements else []):
+            errors.append(f"native_task_runtime_navigation_task_asset_unexpected:{role}")
+    else:
+        required = {"scene_collision", "task_object"}
     for role in sorted(required - set(by_role)):
         errors.append(f"native_task_runtime_asset_missing:{role}")
 
@@ -885,12 +906,19 @@ def materialize_native_task_runtime_contract(
         errors.append("native_task_runtime_seed_invalid")
 
     subject_asset_id = task_spec.get("subject_asset_id")
+    navigation = task_kind == NAVIGATION_TASK_KIND
+    if navigation:
+        goal = task_spec.get("g1_navigation_goal")
+        if (subject_asset_id is not None or not isinstance(goal, Mapping)
+                or not isinstance(goal.get("visible_target_marker"), Mapping)):
+            errors.append("native_task_runtime_navigation_goal_invalid")
     asset_rows, by_asset_role = _asset_rows(
         assets,
         subject_asset_id=(
             str(subject_asset_id) if subject_asset_id is not None else None
         ),
         errors=errors,
+        task_kind=task_kind,
     )
     replacement_rows = [
         row
@@ -1001,6 +1029,14 @@ def materialize_native_task_runtime_contract(
             )
         except ValueError as exc:
             errors.append(f"native_task_runtime_composition_invalid:{exc}")
+    if navigation:
+        # The same static spawn the composition gives a task's scene: a hidden collider under the
+        # visible captured appearance.
+        composition_scene = {"scene_collision": False, "scene_appearance": True}
+        for row in asset_rows:
+            if row["semantic_role"] in composition_scene:
+                row["object_type"] = "BASE"
+                row["visible"] = composition_scene[row["semantic_role"]]
     if composition:
         planned = {row["semantic_role"]: row for row in composition["objects"]}
         for row in asset_rows:
@@ -1060,7 +1096,7 @@ def materialize_native_task_runtime_contract(
         "scene_id": scene,
         "task_id": task,
         "task_kind": task_kind,
-        "task_subject_asset_id": next(
+        "task_subject_asset_id": None if navigation else next(
             row["asset_id"] for row in asset_rows if row["task_subject"]
         ),
         "task_freeze_digest": task_freeze_digest,
@@ -1093,7 +1129,8 @@ def materialize_native_task_runtime_contract(
             },
         },
         "cameras": camera_rows,
-        "task_sample_binding": composition["task_sample_binding"],
+        "task_sample_binding": (json.loads(json.dumps(NAVIGATION_SAMPLE_BINDING)) if navigation
+                                else composition["task_sample_binding"]),
         "task_state_binding": state_binding,
         "reset_contract": {
             "same_scene_bytes": True,
@@ -1158,6 +1195,7 @@ def load_native_task_runtime_contract(path: str | Path) -> dict[str, Any]:
 
 __all__ = [
     "DROID_FRANKA_RESET_JOINT_NAMES",
+    "NAVIGATION_TASK_KIND",
     "FROZEN_CANDIDATES",
     "NativeTaskRuntimeContractError",
     "SCENARIO_CONTEXT_KINDS",

@@ -1053,6 +1053,93 @@ class NativeArticulatedTaskArenaReadback:
         return sample
 
 
+NAVIGATION_TASK_KIND = "goal_region_navigation"
+
+
+class NativeNavigationArenaReadback:
+    """Read robot-scene contact for a scene kept as filmed, leaving out the feet.
+
+    A walking robot always touches the floor and a filmed room is one collider, so the plan seals
+    which robot bodies the robot stands on (``articulation.ground_support_robot_body_paths``, from
+    ``native_task_arena_scene_plan.GROUND_SUPPORT_BODY_NAMES``). The peak is taken over every other
+    robot body's ``robot_scene_contact`` sensor; contact on the feet alone reads 0.0. A plan with no
+    ``robot_scene_contact`` sensors gives no field, so a scorer reads it as unmeasured, never clear.
+    """
+
+    def __init__(self, built: NativeTaskArenaEnvironment):
+        self._built = built
+        plan = built.plan
+        if plan.get("task_kind") != NAVIGATION_TASK_KIND:
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_readback_task_kind_invalid"]
+            )
+        articulation = plan.get("articulation") or {}
+        self._sensor_bodies = {
+            str(row.get("sensor_instance_id") or ""): str(row.get("prim_path") or "")
+            for row in articulation.get("contact_sensors") or []
+            if isinstance(row, Mapping)
+            and row.get("logical_sensor_id") == "robot_scene_contact"
+        }
+        ground = articulation.get("ground_support_robot_body_paths")
+        if self._sensor_bodies and (
+            not isinstance(ground, list)
+            or not ground
+            or any(not isinstance(path, str) or not path for path in ground)
+        ):
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_navigation_ground_support_rule_missing"]
+            )
+        self._ground_support = frozenset(ground or ())
+
+    def read_robot_scene_contact(self) -> dict[str, Any]:
+        """The peak robot-scene force over every body but the sealed feet, or ``{}``.
+
+        The feet are named with the value (``robot_scene_contact_excluded_bodies``): the filmed
+        room is one collider, so a foot that kicks a shelf base reads as support, and a result
+        must say that its "no contact" does not cover the feet.
+        """
+
+        scene_names = self._built.contact_sensor_names.get("robot_scene_contact")
+        if not self._sensor_bodies and not scene_names:
+            return {}
+        if (
+            isinstance(scene_names, str)
+            or not scene_names
+            or set(scene_names) != set(self._sensor_bodies)
+        ):
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_contact_sensor_missing:robot_scene_contact"]
+            )
+        env = getattr(self._built.env, "unwrapped", self._built.env)
+        scene = getattr(env, "scene", None)
+        if scene is None:
+            raise NativeTaskArenaReadbackError(
+                ["native_task_arena_scene_readback_missing"]
+            )
+        peak = 0.0
+        for scene_name in scene_names:
+            if self._sensor_bodies[scene_name] in self._ground_support:
+                continue
+            try:
+                sensor = scene[scene_name]
+            except (KeyError, TypeError) as exc:
+                raise NativeTaskArenaReadbackError(
+                    [f"native_task_arena_contact_sensor_missing:robot_scene_contact:{scene_name}"]
+                ) from exc
+            vectors = _force_vectors(
+                getattr(getattr(sensor, "data", None), "force_matrix_w", None),
+                sensor_id=f"robot_scene_contact:{scene_name}",
+            )
+            peak = max(
+                peak,
+                *(math.sqrt(sum(component * component for component in vector)) for vector in vectors),
+            )
+        return {
+            "robot_scene_contact_peak_force_n": peak,
+            "robot_scene_contact_excluded_bodies": sorted(self._ground_support),
+        }
+
+
 class NativeRigidTaskArenaReadback:
     """Read rigid root pose and exact contact channels from one Arena build."""
 
@@ -1350,6 +1437,7 @@ class NativeRigidTaskArenaReadback:
 
 __all__ = [
     "NativeArticulatedTaskArenaReadback",
+    "NativeNavigationArenaReadback",
     "NativeRigidTaskArenaReadback",
     "NativeTaskArenaReadbackError",
     "read_native_task_arena_object_reset_state",

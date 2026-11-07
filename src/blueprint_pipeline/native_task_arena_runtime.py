@@ -648,13 +648,11 @@ OPTIONAL_CONTACT_CHANNELS = frozenset(
 def required_contact_channels(task_kind: str) -> frozenset[str]:
     """The channels a task kind cannot be scored without."""
 
+    if task_kind == "goal_region_navigation":  # a scene kept as filmed: no task object
+        return frozenset({"robot_scene_contact"})
     if task_kind == "articulated_open_close":
-        return frozenset(
-            {"task_robot_contact", "task_scene_contact", "robot_scene_contact"}
-        )
-    return frozenset(
-        {"task_robot_contact", "task_support_contact", "robot_scene_contact"}
-    )
+        return frozenset({"task_robot_contact", "task_scene_contact", "robot_scene_contact"})
+    return frozenset({"task_robot_contact", "task_support_contact", "robot_scene_contact"})
 
 
 def _invalid_exact_contact_path(path: Any) -> bool:
@@ -1254,10 +1252,10 @@ def validate_contact_sensor_plan(
         names.setdefault(logical_sensor_id, []).append(sensor_instance_id)
 
     required = required_contact_channels(str(plan.get("task_kind") or ""))
-    if sensors and not (
-        required.issubset(names)
-        and set(names) <= required | OPTIONAL_CONTACT_CHANNELS
-    ):
+    # A navigation scene has no task object, so no optional task channel applies to it.
+    navigation = plan.get("task_kind") == "goal_region_navigation"
+    optional = frozenset() if navigation else OPTIONAL_CONTACT_CHANNELS
+    if sensors and not (required.issubset(names) and set(names) <= required | optional):
         raise NativeTaskArenaRuntimeError(
             ["native_task_arena_contact_sensor_channels_incomplete"]
         )
@@ -1766,7 +1764,7 @@ def build_native_task_arena_environment(
         sensor_instance_id = str(sensor.get("sensor_instance_id") or "")
         prim_path = str(sensor.get("prim_path") or "")
         filter_paths = list(sensor.get("filter_prim_paths_expr") or [])
-        if index == 0 and task_object is None:
+        if index == 0 and task_object is None and plan.get("task_kind") != "goal_region_navigation":
             raise NativeTaskArenaRuntimeError(
                 ["native_task_arena_task_object_missing"]
             )
