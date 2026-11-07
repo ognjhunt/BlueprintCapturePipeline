@@ -23,8 +23,13 @@ generation is allowed. A withdrawal that lands while publishing takes the archiv
 back, and so does a WebApp refusal for rights. It costs nothing: it reads retained files,
 calls no model or reconstruction provider and buys nothing.
 
-The preview is for looking at, never a measurement: it keeps the most visible Gaussians
-(opacity times projected size), band-0 colour only, in the source's own coordinates.
+The preview is for looking at, never a measurement. It is PlayCanvas's compressed PLY, the
+layout the vendored viewer (``@playcanvas/supersplat-viewer`` 1.37.0) decodes: about 16 bytes
+a Gaussian, so a 2 M Gaussian Atlas splat fits the cap whole. Each Gaussian keeps its
+position, scale, rotation, band-0 colour and opacity, quantized within its chunk of 256
+spatial neighbours, in the source's own coordinates. Only a scene larger than the cap loses
+Gaussians, the most transparent first; size never decides (keeping the largest blobs and
+dropping the small ones that carry detail smeared the preview, 2026-11-07).
 """
 from __future__ import annotations
 
@@ -57,16 +62,31 @@ PREVIEW_FILE = "scene_preview.ply"
 #: Withdrawal deletion holds this lock, so no pass publishes between its listing and deletion.
 LOCK_FILE = "scene_preview.lock"
 ARTIFACT_KIND = "website-scene-preview"
-#: A standard binary 3DGS PLY: position, band-0 colour, opacity, scale, rotation (14 floats).
-FORMAT = "ply_3dgs_sh0"
-RECORD_BYTES = 14 * 4
+#: PlayCanvas's compressed 3DGS PLY with band-0 colour only, as the vendored viewer reads it
+#: (``isCompressedPly``, ``readCompressedPly`` and ``SplatCompressedIterator`` in WebApp
+#: ``client/public/splat-viewer/index.js``): an ``element chunk`` of float bounds per 256
+#: consecutive Gaussians, then an ``element vertex`` of four packed uints per Gaussian.
+FORMAT = "ply_3dgs_compressed_sh0"
+CHUNK_SPLATS = 256
+CHUNK_PROPERTIES = ("min_x", "min_y", "min_z", "max_x", "max_y", "max_z",
+                    "min_scale_x", "min_scale_y", "min_scale_z", "max_scale_x", "max_scale_y", "max_scale_z",
+                    "min_r", "min_g", "min_b", "max_r", "max_g", "max_b")
+VERTEX_PROPERTIES = ("packed_position", "packed_rotation", "packed_scale", "packed_color")
+CHUNK_BYTES = len(CHUNK_PROPERTIES) * 4
+RECORD_BYTES = len(VERTEX_PROPERTIES) * 4
+#: The band-0 spherical harmonic constant the viewer uses: colour = 0.5 + SH_C0 * f_dc.
+SH_C0 = 0.28209479177387814
 #: Atlas worlds and their levelled copies are right-up-back with +Y up; the viewer route
 #: turns exactly this frame for the vendored viewer.
 COORDINATE_FRAME = "right_up_back_y_up"
-BUILDER_REVISION = "website_scene_preview_builder.v1"
-#: The size cap: a phone opens 32 MiB in seconds; a 2 M Gaussian Atlas splat is ~120 MiB.
+#: Part of the scene revision: a preview the float writer (v1) built is rebuilt once.
+BUILDER_REVISION = "website_scene_preview_builder.v2"
+#: The size cap: a phone opens 32 MiB in seconds. A 2 M Gaussian Atlas splat is ~107 MiB as
+#: a float PLY and ~31 MiB compressed.
 MAX_PREVIEW_BYTES = 32 * 1024 * 1024
 _HEADER_ALLOWANCE = 1024
+#: Bits per axis of the Morton key that orders Gaussians before chunking (3 x 21 = 63).
+_MORTON_BITS = 21
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _SPLAT_MEMBER = re.compile(r"splat/[^/]+\.ply")
 #: A WebApp or store refusal that means the site's rights no longer allow the preview.
@@ -177,8 +197,19 @@ def scene_source(capture_root: Path) -> dict[str, Any] | None:
 
 
 def scene_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PREVIEW_BYTES) -> str:
-    return canonical_digest({"builder": BUILDER_REVISION, "max_bytes": int(max_bytes), "kind": source["kind"],
-                             "splat_digest": source["digest"], "record_digest": source["record_digest"]})
+    """The preview's identity: its source, the cap, and the writer and format that built it."""
+    return canonical_digest({"builder": BUILDER_REVISION, "format": FORMAT, "max_bytes": int(max_bytes),
+                             "kind": source["kind"], "splat_digest": source["digest"],
+                             "record_digest": source["record_digest"]})
+
+
+def preview_capacity(max_bytes: int = MAX_PREVIEW_BYTES) -> int:
+    """How many Gaussians a compressed preview of at most ``max_bytes`` holds (header allowed for)."""
+    room = int(max_bytes) - _HEADER_ALLOWANCE
+    if room <= 0:
+        return 0
+    full, rest = divmod(room, CHUNK_SPLATS * RECORD_BYTES + CHUNK_BYTES)
+    return full * CHUNK_SPLATS + max(0, (rest - CHUNK_BYTES) // RECORD_BYTES)
 
 
 def _start_view(xyz: Any) -> dict[str, list[float]] | None:
@@ -197,38 +228,153 @@ def _start_view(xyz: Any) -> dict[str, list[float]] | None:
             "target": [round(float(value), 4) for value in target]}
 
 
+def _morton_order(xyz: Any) -> Any:
+    """The order along a Morton (Z-order) curve over ``xyz``'s bounds, ties by index.
+
+    Each axis is quantized to 21 bits, x the most significant of each interleaved triple,
+    so 256 consecutive Gaussians are spatial neighbours and their chunk bounds stay tight.
+    """
+    import numpy as np
+    top = (1 << _MORTON_BITS) - 1
+    code = np.zeros(len(xyz), dtype=np.uint64)
+    for axis in range(3):
+        values = xyz[:, axis]
+        low, high = values.min(), values.max()
+        span = high - low if high > low else 1.0
+        cell = np.clip(np.floor((values - low) / span * top), 0, top).astype(np.uint64)
+        for shift, mask in ((32, 0x1F00000000FFFF), (16, 0x1F0000FF0000FF), (8, 0x100F00F00F00F00F),
+                            (4, 0x10C30C30C30C30C3), (2, 0x1249249249249249)):
+            cell = (cell | (cell << np.uint64(shift))) & np.uint64(mask)
+        code |= cell << np.uint64(2 - axis)
+    return np.argsort(code, kind="stable")
+
+
+def _unorm(fraction: Any, bits: int) -> Any:
+    import numpy as np
+    top = (1 << bits) - 1
+    return np.clip(np.rint(fraction * top), 0, top).astype(np.uint32)
+
+
+def _chunk_quantized(columns: Any, bits: tuple[int, int, int], chunk: Any, starts: Any) -> tuple[Any, Any, list[Any]]:
+    """Per-chunk float32 min and max of three float64 columns, and each value's unorm step between them.
+
+    One column at a time, so a 2 M Gaussian scene holds a few 16 MB temporaries, not 48 MB ones.
+    """
+    import numpy as np
+    lows, highs, steps = [], [], []
+    for values, width in zip(columns, bits, strict=True):
+        low = np.minimum.reduceat(values, starts).astype(np.float32)
+        high = np.maximum.reduceat(values, starts).astype(np.float32)
+        # Normalized against the bounds as written, so the viewer's lerp lands on the nearest step.
+        base = low.astype(np.float64)[chunk]
+        span = high.astype(np.float64)[chunk] - base
+        fraction = np.divide(values - base, span, out=np.zeros_like(values), where=span > 0)
+        steps.append(_unorm(np.clip(fraction, 0.0, 1.0), width))
+        lows.append(low)
+        highs.append(high)
+    return np.stack(lows, axis=1), np.stack(highs, axis=1), steps
+
+
+def _pack_111011(steps: list[Any]) -> Any:
+    import numpy as np
+    return (steps[0] << np.uint32(21)) | (steps[1] << np.uint32(11)) | steps[2]
+
+
+def _pack_rotation(quats: Any) -> Any:
+    """Smallest three of each unit quaternion (rot_0..rot_3), largest index in the top 2 bits.
+
+    The viewer rebuilds the largest component as sqrt(1 - a^2 - b^2 - c^2), so it is made
+    non-negative first (q and -q are the same rotation); the other three, in index order,
+    are stored as a * sqrt(2)/2 + 0.5 in 10 bits each.
+    """
+    import numpy as np
+    q = quats.astype(np.float64)
+    norm = np.sqrt(np.einsum("ij,ij->i", q, q))
+    q /= np.where(norm > 0, norm, 1.0)[:, None]
+    q[norm == 0] = (1.0, 0.0, 0.0, 0.0)
+    largest = np.argmax(np.abs(q), axis=1)
+    rows = np.arange(len(q))
+    sign = np.where(q[rows, largest] < 0, -1.0, 1.0)
+    packed = largest.astype(np.uint32) << np.uint32(30)
+    for slot in range(3):
+        # The slot-th component other than the largest: slot itself, or the one after it.
+        component = slot + (largest <= slot)
+        stored = _unorm(sign * q[rows, component] * (np.sqrt(2.0) / 2.0) + 0.5, 10)
+        packed |= stored << np.uint32(20 - 10 * slot)
+    return packed
+
+
+def _compressed_header(chunks: int, count: int) -> bytes:
+    return ("ply\nformat binary_little_endian 1.0\n"
+            f"element chunk {chunks}\n" + "".join(f"property float {name}\n" for name in CHUNK_PROPERTIES)
+            + f"element vertex {count}\n" + "".join(f"property uint {name}\n" for name in VERTEX_PROPERTIES)
+            + "end_header\n").encode("ascii")
+
+
 def build_preview(source: Path, output: Path, *, max_bytes: int = MAX_PREVIEW_BYTES) -> dict[str, Any]:
-    """Write the most visible Gaussians of ``source`` that fit ``max_bytes``, deterministically."""
+    """Write ``source`` as a compressed PLY under ``max_bytes``, deterministically.
+
+    Every finite Gaussian is kept while it fits; over the cap the most transparent go first
+    (lowest opacity, the later Gaussian first on a tie). Kept Gaussians are written in Morton
+    order, so each chunk of 256 is a spatial neighbourhood.
+    """
     import numpy as np
 
-    from .gaussian_splat_decode import SplatData, read_standard_3dgs_ply, write_standard_3dgs_ply
+    from .gaussian_splat_decode import read_standard_3dgs_ply
     try:
         splat = read_standard_3dgs_ply(source)
     except ValueError:
         raise ValueError("website_scene_preview_source_not_3dgs_ply") from None
-    capacity = (int(max_bytes) - _HEADER_ALLOWANCE) // RECORD_BYTES
-    columns = np.concatenate([splat.xyz, splat.f_dc, splat.opacity[:, None], splat.scales, splat.quats], axis=1)
-    finite = np.isfinite(columns).all(axis=1)
-    if splat.count == 0 or capacity <= 0 or not finite.any():
+    capacity = preview_capacity(max_bytes)
+    finite = (np.isfinite(splat.xyz).all(axis=1) & np.isfinite(splat.f_dc).all(axis=1) & np.isfinite(splat.opacity)
+              & np.isfinite(splat.scales).all(axis=1) & np.isfinite(splat.quats).all(axis=1))
+    candidates = np.flatnonzero(finite)
+    if splat.count == 0 or capacity <= 0 or candidates.size == 0:
         raise ValueError("website_scene_preview_source_empty")
-    # Opacity times projected area: (s0 s1 s2)^(2/3), from log scales.
-    area = np.exp(np.clip(splat.scales.astype(np.float64).sum(axis=1) * (2.0 / 3.0), -80.0, 80.0))
-    importance = np.where(finite, splat.opacity_sigmoid.astype(np.float64) * area, -1.0)
-    keep = min(capacity, int(finite.sum()))
-    order = np.lexsort((np.arange(splat.count), -importance))
-    kept = np.sort(order[:keep])
-    subset = SplatData(count=keep, xyz=splat.xyz[kept], opacity=splat.opacity[kept], f_dc=splat.f_dc[kept],
-                       scales=splat.scales[kept], quats=splat.quats[kept], properties=(), sh_rest=None)
+    if candidates.size > capacity:
+        # The logit orders exactly as its sigmoid does, without the sigmoid's saturated ties.
+        ranked = np.lexsort((candidates, -splat.opacity[candidates].astype(np.float64)))
+        candidates = np.sort(candidates[ranked[:capacity]])
+    xyz = splat.xyz[candidates].astype(np.float64)
+    start_view = _start_view(xyz)
+    morton = _morton_order(xyz)
+    order, xyz = candidates[morton], xyz[morton]
+    del candidates, morton
+    count = int(order.size)
+    starts = np.arange(0, count, CHUNK_SPLATS)
+    chunk = np.arange(count) // CHUNK_SPLATS
+    low_xyz, high_xyz, steps = _chunk_quantized((xyz[:, axis] for axis in range(3)), (11, 10, 11), chunk, starts)
+    del xyz
+    packed_position = _pack_111011(steps)
+    low_scale, high_scale, steps = _chunk_quantized(
+        (splat.scales[order, axis].astype(np.float64) for axis in range(3)), (11, 10, 11), chunk, starts)
+    packed_scale = _pack_111011(steps)
+    low_rgb, high_rgb, steps = _chunk_quantized(
+        (0.5 + SH_C0 * splat.f_dc[order, axis].astype(np.float64) for axis in range(3)), (8, 8, 8), chunk, starts)
+    alpha = 1.0 / (1.0 + np.exp(-np.clip(splat.opacity[order].astype(np.float64), -40.0, 40.0)))
+    packed_color = ((steps[0] << np.uint32(24)) | (steps[1] << np.uint32(16)) | (steps[2] << np.uint32(8))
+                    | _unorm(alpha, 8))
+    del steps, alpha, chunk
+    packed_rotation = _pack_rotation(splat.quats[order])
+    header = _compressed_header(len(starts), count)
+    if len(header) > _HEADER_ALLOWANCE:
+        raise ValueError("website_scene_preview_header_over_allowance")
+    chunks = np.concatenate([low_xyz, high_xyz, low_scale, high_scale, low_rgb, high_rgb], axis=1)
+    vertices = np.stack([packed_position, packed_rotation, packed_scale, packed_color], axis=1)
+    del packed_position, packed_rotation, packed_scale, packed_color
     partial = output.with_name(output.name + ".partial")
-    write_standard_3dgs_ply(subset, partial)
+    with open(partial, "wb") as handle:
+        handle.write(header)
+        for rows in (chunks.astype("<f4", copy=False), vertices.astype("<u4", copy=False)):
+            handle.write(np.ascontiguousarray(rows).reshape(-1).view(np.uint8))
     size = partial.stat().st_size
     if size > max_bytes:
         partial.unlink()
         raise ValueError("website_scene_preview_over_size_cap")
     os.replace(partial, output)
     return {"format": FORMAT, "coordinate_frame": COORDINATE_FRAME, "digest": _sha256_file(output),
-            "size_bytes": size, "gaussian_count": keep, "source_gaussian_count": int(splat.count),
-            "max_bytes": int(max_bytes), "start_view": _start_view(subset.xyz.astype(np.float64))}
+            "size_bytes": size, "gaussian_count": count, "source_gaussian_count": int(splat.count),
+            "max_bytes": int(max_bytes), "start_view": start_view}
 
 
 def preview_record(*, identity: Mapping[str, str], manifest: Mapping[str, Any]) -> dict[str, Any]:

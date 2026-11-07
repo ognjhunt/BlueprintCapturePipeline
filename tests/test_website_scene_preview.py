@@ -16,7 +16,7 @@ import pytest
 
 from blueprint_pipeline import website_scene_preview as preview
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from blueprint_pipeline.gaussian_splat_decode import SplatData, read_standard_3dgs_ply, write_standard_3dgs_ply
+from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 
 
 def _sha(path: Path) -> str:
@@ -118,37 +118,257 @@ class World:
                                              **options)
 
 
-def test_the_preview_keeps_the_most_visible_gaussians_under_the_cap_and_is_deterministic(tmp_path):
-    source = _splat(tmp_path / "source.ply", 1000)
-    raw = read_standard_3dgs_ply(source)
-    raw_bad = SplatData(count=raw.count, xyz=raw.xyz.copy(), opacity=raw.opacity.copy(), f_dc=raw.f_dc,
-                        scales=raw.scales, quats=raw.quats, properties=(), sh_rest=raw.sh_rest)
-    raw_bad.opacity[0] = np.nan  # a broken Gaussian never survives, however visible it claims to be
-    raw_bad.scales[0] = 10
-    write_standard_3dgs_ply(raw_bad, source)
-    cap = 1024 + 100 * preview.RECORD_BYTES
-    built = preview.build_preview(source, tmp_path / "a.ply", max_bytes=cap)
-    again = preview.build_preview(source, tmp_path / "b.ply", max_bytes=cap)
-    assert built == again and (tmp_path / "a.ply").read_bytes() == (tmp_path / "b.ply").read_bytes()
-    assert built["gaussian_count"] == 100 and built["source_gaussian_count"] == 1000
-    assert built["size_bytes"] <= cap and built["format"] == "ply_3dgs_sh0"
+# The vendored viewer's own names (isCompressedPly in WebApp client/public/splat-viewer/index.js).
+VIEWER_CHUNK_PROPERTIES = ["min_x", "min_y", "min_z", "max_x", "max_y", "max_z", "min_scale_x", "min_scale_y",
+                           "min_scale_z", "max_scale_x", "max_scale_y", "max_scale_z", "min_r", "min_g", "min_b",
+                           "max_r", "max_g", "max_b"]
+VIEWER_VERTEX_PROPERTIES = ["packed_position", "packed_rotation", "packed_scale", "packed_color"]
+SH_C0 = 0.28209479177387814
+
+
+def _viewer_decode(path: Path) -> dict:
+    """The vendored viewer's reading of a compressed PLY, in numpy.
+
+    Mirrors @playcanvas/supersplat-viewer 1.37.0: parseHeader and isCompressedPly accept the
+    layout, readCompressedPly reads the chunk floats and then four uints per Gaussian, and
+    SplatCompressedIterator.read with decompress() unpack them (chunk = index // 256).
+    """
+    data = path.read_bytes()
+    end = data.index(b"\nend_header\n")
+    lines = data[:end].decode("ascii").split("\n")
+    assert lines[0] == "ply"
+    elements, form = [], None
+    for line in lines[1:]:
+        words = line.split(" ")
+        if words[0] == "format":
+            form = words[1]
+        elif words[0] == "element":
+            elements.append({"name": words[1], "count": int(words[2]), "properties": []})
+        elif words[0] == "property":
+            elements[-1]["properties"].append((words[1], words[2]))
+        else:
+            assert words[0] == "comment"
+    assert form == "binary_little_endian"
+    # isCompressedPly without an sh element: exactly these two elements, these properties, in order.
+    assert [element["name"] for element in elements] == ["chunk", "vertex"]
+    assert elements[0]["properties"] == [("float", name) for name in VIEWER_CHUNK_PROPERTIES]
+    assert elements[1]["properties"] == [("uint", name) for name in VIEWER_VERTEX_PROPERTIES]
+    chunks, count = elements[0]["count"], elements[1]["count"]
+    # numChunks = ceil(numSplats / 256), and chunkSize = chunkData.length / numChunks.
+    assert chunks == -(-count // 256)
+    body = end + len(b"\nend_header\n")
+    assert len(data) == body + chunks * 18 * 4 + count * 4 * 4
+    chunk = np.frombuffer(data, "<f4", chunks * 18, body).reshape(chunks, 18).astype(np.float64)
+    vertex = np.frombuffer(data, "<u4", count * 4, body + chunks * 18 * 4).reshape(count, 4)
+    bounds = chunk[np.arange(count) // 256]
+
+    def unorm(value, bits):
+        return (value & ((1 << bits) - 1)) / ((1 << bits) - 1)
+
+    def unpack111011(value):
+        return np.stack([unorm(value >> 21, 11), unorm(value >> 11, 10), unorm(value, 11)], axis=1)
+
+    def lerp(a, b, t):
+        return a * (1 - t) + b * t
+
+    xyz = lerp(bounds[:, 0:3], bounds[:, 3:6], unpack111011(vertex[:, 0]))
+    log_scale = lerp(bounds[:, 6:9], bounds[:, 9:12], unpack111011(vertex[:, 2]))
+    rgba = np.stack([unorm(vertex[:, 3] >> shift, 8) for shift in (24, 16, 8, 0)], axis=1)
+    rgb = lerp(bounds[:, 12:15], bounds[:, 15:18], rgba[:, :3])
+    # unpackRotation: Quat.set(x, y, z, w) by the top two bits; decompress() writes rot_0 = w.
+    packed = vertex[:, 1]
+    a, b, c = ((unorm(packed >> shift, 10) - 0.5) * np.sqrt(2) for shift in (20, 10, 0))
+    m = np.sqrt(1 - (a * a + b * b + c * c))
+    modes = [packed >> 30 == mode for mode in range(4)]
+    x, y = np.select(modes, [a, m, b, b]), np.select(modes, [b, b, m, c])
+    z, w = np.select(modes, [c, c, c, m]), np.select(modes, [m, a, a, a])
+    return {"count": count, "chunk": chunk, "xyz": xyz, "log_scale": log_scale, "rgb": rgb, "alpha": rgba[:, 3],
+            "f_dc": (rgb - 0.5) / SH_C0, "rot": np.stack([w, x, y, z], axis=1), "bounds": bounds}
+
+
+def _grid_splat(path: Path, *, shape=(13, 9, 11), seed: int = 0, opacity=None) -> SplatData:
+    """Gaussians on a shuffled, jittered grid (so each is told apart by position), every field random."""
+    rng = np.random.default_rng(seed)
+    grid = np.stack(np.meshgrid(*(np.arange(n) for n in shape), indexing="ij"), axis=-1).reshape(-1, 3)
+    count = len(grid)
+    xyz = (grid[rng.permutation(count)] + rng.uniform(-0.2, 0.2, (count, 3))) * np.array([1.0, 0.5, 2.0])
+    data = SplatData(
+        count=count, xyz=(xyz - 4).astype(np.float32),
+        opacity=(rng.normal(0, 3, count) if opacity is None else opacity(rng, count)).astype(np.float32),
+        f_dc=rng.normal(0, 1.2, (count, 3)).astype(np.float32),
+        scales=np.column_stack([rng.normal(-4, 1.5, (count, 2)), np.full(count, -3.25)]).astype(np.float32),
+        quats=rng.normal(size=(count, 4)).astype(np.float32), properties=(), sh_rest=None)
+    write_standard_3dgs_ply(data, path)
+    return data
+
+
+def _matched(decoded: dict, source: SplatData) -> np.ndarray:
+    """For each decoded Gaussian, the source Gaussian of the same grid point (jitter is under half a cell)."""
+    def cells(xyz):
+        return [tuple(row) for row in np.rint((np.asarray(xyz, np.float64) + 4) / [1.0, 0.5, 2.0]).astype(int)]
+    index = {cell: position for position, cell in enumerate(cells(source.xyz))}
+    assert len(index) == source.count
+    match = np.array([index[cell] for cell in cells(decoded["xyz"])])
+    assert len(np.unique(match)) == len(match)
+    assert np.abs(decoded["xyz"] - source.xyz[match]).max() < 0.05
+    return match
+
+
+def _record_bytes(count: int) -> int:
+    return -(-count // 256) * 18 * 4 + count * 4 * 4
+
+
+def test_the_preview_round_trips_through_the_viewers_own_decoding(tmp_path):
+    source = _grid_splat(tmp_path / "source.ply")
+    built = preview.build_preview(tmp_path / "source.ply", tmp_path / "preview.ply")
+    assert built["format"] == preview.FORMAT == "ply_3dgs_compressed_sh0"
     assert built["coordinate_frame"] == "right_up_back_y_up"
-    kept = read_standard_3dgs_ply(tmp_path / "a.ply")
-    # Band-0 colour only, in the source's own coordinates: rows are copied, never moved.
-    assert kept.sh_rest is None and kept.properties == (
-        "x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2",
-        "rot_0", "rot_1", "rot_2", "rot_3")
-    written = read_standard_3dgs_ply(source)
-    importance = written.opacity_sigmoid.astype(np.float64) * np.exp(
-        written.scales.astype(np.float64).sum(axis=1) * 2 / 3)
-    importance[0] = -1
-    expected = np.sort(np.argsort(-importance, kind="stable")[:100])
-    assert np.array_equal(kept.xyz, raw.xyz[expected])
-    assert not np.isnan(kept.opacity).any()
+    assert built["gaussian_count"] == built["source_gaussian_count"] == source.count == 1287
+    decoded = _viewer_decode(tmp_path / "preview.ply")
+    assert decoded["count"] == source.count and built["size_bytes"] == (tmp_path / "preview.ply").stat().st_size
+    assert len(decoded["chunk"]) == 6  # five chunks of 256 and one of 7
+    match = _matched(decoded, source)
+    bounds = decoded["bounds"]
+    # Positions and log scales: within half an 11-10-11 step of their chunk's range, in the source's frame.
+    steps = np.array([2047, 1023, 2047])
+    position_room = (bounds[:, 3:6] - bounds[:, 0:3]) / (2 * steps) + 1e-5
+    assert (np.abs(decoded["xyz"] - source.xyz[match]) <= position_room).all()
+    scale_room = (bounds[:, 9:12] - bounds[:, 6:9]) / (2 * steps) + 1e-5
+    assert (np.abs(decoded["log_scale"] - source.scales[match]) <= scale_room).all()
+    # A field that is the same across a chunk comes back exactly.
+    assert (decoded["log_scale"][:, 2] == np.float32(-3.25)).all()
+    # Colour within half an 8-bit step of its chunk's range; opacity within half a step of 1.
+    colour = 0.5 + SH_C0 * source.f_dc[match].astype(np.float64)
+    colour_room = (bounds[:, 15:18] - bounds[:, 12:15]) / (2 * 255) + 1e-6
+    assert (np.abs(decoded["rgb"] - colour) <= colour_room).all()
+    assert np.allclose(decoded["f_dc"], source.f_dc[match], atol=float(colour_room.max()) / SH_C0)
+    alpha = 1 / (1 + np.exp(-source.opacity[match].astype(np.float64)))
+    assert (np.abs(decoded["alpha"] - alpha) <= 0.5 / 255 + 1e-9).all()
+    # The same rotation, up to sign, whatever the source quaternion's norm or sign.
+    unit = source.quats[match].astype(np.float64)
+    unit /= np.linalg.norm(unit, axis=1, keepdims=True)
+    assert np.allclose(np.linalg.norm(decoded["rot"], axis=1), 1, atol=1e-3)
+    assert (np.abs((decoded["rot"] * unit).sum(axis=1)) > 0.9999).all()
+    assert ((unit[np.arange(len(unit)), np.abs(unit).argmax(axis=1)]) < 0).any()  # negative largest parts covered
+    # The start view is the kept positions' own, as before.
+    assert built["start_view"] == preview._start_view(source.xyz.astype(np.float64))
     view = built["start_view"]
-    assert len(view["position"]) == 3 and view["target"][0] > view["position"][0]  # along the long x side
-    # A scene that already fits keeps every Gaussian.
-    assert preview.build_preview(source, tmp_path / "c.ply")["gaussian_count"] == 999
+    assert len(view["position"]) == 3 and view["target"][2] > view["position"][2]  # along the long z side
+    # Deterministic: the same source gives the same bytes and record.
+    again = preview.build_preview(tmp_path / "source.ply", tmp_path / "again.ply")
+    assert again == built and (tmp_path / "again.ply").read_bytes() == (tmp_path / "preview.ply").read_bytes()
+
+
+def _morton_code(cell) -> int:
+    """Bits interleaved one at a time: bit b of x, y, z lands at 3b + 2, 3b + 1, 3b."""
+    return sum(((int(cell[axis]) >> bit) & 1) << (3 * bit + 2 - axis) for bit in range(21) for axis in range(3))
+
+
+def test_gaussians_are_chunked_in_morton_order(tmp_path):
+    source = _grid_splat(tmp_path / "source.ply", shape=(16, 16, 16), seed=4)
+    preview.build_preview(tmp_path / "source.ply", tmp_path / "preview.ply")
+    decoded = _viewer_decode(tmp_path / "preview.ply")
+    match = _matched(decoded, source)
+    xyz = source.xyz.astype(np.float64)
+    low, high = xyz.min(axis=0), xyz.max(axis=0)
+    cells = np.clip(np.floor((xyz - low) / (high - low) * (2**21 - 1)), 0, 2**21 - 1).astype(np.int64)
+    codes = [_morton_code(cell) for cell in cells]
+    assert match.tolist() == sorted(range(source.count), key=lambda index: (codes[index], index))
+    # Chunks of 256 consecutive Gaussians, each bounding exactly its own members.
+    chunk = decoded["chunk"]
+    assert len(chunk) == 16
+    for index in range(16):
+        members = source.xyz[match[index * 256:(index + 1) * 256]]
+        assert np.array_equal(chunk[index, 0:3], members.min(axis=0))
+        assert np.array_equal(chunk[index, 3:6], members.max(axis=0))
+    # Spatially compact: each chunk is one 8 x 8 x 4 block of the 16 x 16 x 16 grid, a sixteenth
+    # of the scene (a little more with the jitter), where file order would give each all of it.
+    volumes = np.prod(chunk[:, 3:6] - chunk[:, 0:3], axis=1)
+    assert volumes.max() < 0.12 * np.prod(high - low)
+    shuffled = source.xyz.reshape(16, 256, 3)
+    assert np.prod(shuffled.max(axis=1) - shuffled.min(axis=1), axis=1).min() > 0.5 * np.prod(high - low)
+
+
+def test_the_capacity_fits_a_whole_atlas_splat_under_the_cap(tmp_path):
+    # 2,000,000 Gaussians: 7,813 chunks of bounds and 16 bytes each, under 32 MiB with the header.
+    assert preview.MAX_PREVIEW_BYTES == 33_554_432
+    assert preview.preview_capacity() >= 2_000_000
+    assert 1024 + _record_bytes(2_000_000) == 1024 + 7_813 * 72 + 32_000_000 <= preview.MAX_PREVIEW_BYTES
+    assert len(preview._compressed_header(7_813, 2_000_000)) <= 1024
+    # Exact: the capacity fits the cap, and one more Gaussian would not.
+    for cap in (preview.MAX_PREVIEW_BYTES, 1024 + 72 + 16, 1024 + _record_bytes(256), 1024 + _record_bytes(257) - 1,
+                5_000_000):
+        capacity = preview.preview_capacity(cap)
+        assert 1024 + _record_bytes(capacity) <= cap < 1024 + _record_bytes(capacity + 1)
+    assert preview.preview_capacity(1024 + 72) == 0 and preview.preview_capacity(100) == 0
+    # A built preview at a small cap holds exactly the capacity.
+    _grid_splat(tmp_path / "source.ply")
+    cap = 1024 + _record_bytes(300)
+    built = preview.build_preview(tmp_path / "source.ply", tmp_path / "preview.ply", max_bytes=cap)
+    assert built["gaussian_count"] == preview.preview_capacity(cap) == 300 and built["size_bytes"] <= cap
+
+
+def test_over_capacity_the_most_transparent_gaussians_go_first(tmp_path):
+    # Five opacity levels, so many tie: the later Gaussian goes first on a tie. Size never counts.
+    source = _grid_splat(tmp_path / "source.ply", opacity=lambda rng, count: rng.integers(-2, 3, count) * 1.5)
+    broken = SplatData(count=source.count, xyz=source.xyz, opacity=source.opacity.copy(), f_dc=source.f_dc,
+                       scales=source.scales.copy(), quats=source.quats, properties=(), sh_rest=None)
+    broken.opacity[0], broken.scales[1] = np.nan, np.inf  # a broken Gaussian never survives
+    broken.opacity[1] = 99
+    write_standard_3dgs_ply(broken, tmp_path / "source.ply")
+    cap = 1024 + _record_bytes(300)
+    built = preview.build_preview(tmp_path / "source.ply", tmp_path / "preview.ply", max_bytes=cap)
+    assert built["gaussian_count"] == 300 and built["source_gaussian_count"] == source.count
+    decoded = _viewer_decode(tmp_path / "preview.ply")
+    kept = set(_matched(decoded, source).tolist())
+    finite = [index for index in range(source.count) if index not in (0, 1)]
+    expected = sorted(finite, key=lambda index: (-float(broken.opacity[index]), index))[:300]
+    assert kept == set(expected)
+    # The cut falls inside a tie, and it keeps the earlier Gaussians of that level.
+    level = float(broken.opacity[expected[-1]])
+    tied = [index for index in finite if float(broken.opacity[index]) == level]
+    assert set(tied) - kept and tied[:len(set(tied) & kept)] == sorted(set(tied) & kept)
+    # The start view is the kept Gaussians' own.
+    assert built["start_view"] == preview._start_view(source.xyz[sorted(kept)].astype(np.float64))
+    # A scene that already fits keeps every finite Gaussian.
+    assert preview.build_preview(tmp_path / "source.ply", tmp_path / "all.ply")["gaussian_count"] == source.count - 2
+
+
+def test_the_scene_revision_names_the_writer_so_a_float_preview_is_rebuilt_once(capture, monkeypatch):
+    _base_scene(capture)
+    source = preview.scene_source(capture)
+    world = World()
+    first = world.publish(capture)
+    assert first["status"] == "published" and world.delivered[0]["format"] == "ply_3dgs_compressed_sh0"
+    # The float writer's revision formula (builder v1, no format) never matches the compressed writer's.
+    old_revision = canonical_digest({"builder": "website_scene_preview_builder.v1",
+                                     "max_bytes": preview.MAX_PREVIEW_BYTES, "kind": source["kind"],
+                                     "splat_digest": source["digest"], "record_digest": source["record_digest"]})
+    assert first["scene_revision"] == preview.scene_revision(source) != old_revision
+    with monkeypatch.context() as patch:
+        patch.setattr(preview, "BUILDER_REVISION", "website_scene_preview_builder.v3")
+        assert preview.scene_revision(source) != first["scene_revision"]
+    # A preview the float writer built, archived and delivered: current under its own revision.
+    directory = capture / "pipeline/website_scene_preparation"
+    manifest_path, preview_path = directory / "scene_preview.json", directory / "scene_preview.ply"
+    _splat(preview_path, 50, sh_rest=False)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["scene_revision"] = old_revision
+    manifest["preview"] = {**manifest["preview"], "format": "ply_3dgs_sh0", "digest": _sha(preview_path),
+                           "size_bytes": preview_path.stat().st_size, "gaussian_count": 50}
+    manifest["archive"] = {**manifest["archive"], "digest": _sha(preview_path)}
+    identity = {"request_id": "req1", "scene_id": "site-req1", "capture_id": "walkthrough-req1"}
+    manifest["preview_digest"] = preview.preview_record(identity=identity, manifest=manifest)["preview_digest"]
+    manifest["delivered"] = {"preview_digest": manifest["preview_digest"], "at_epoch": 1}
+    manifest_path.write_text(json.dumps(manifest))
+    assert preview._current(manifest, old_revision, preview_path)
+    # The next pass rebuilds it in the compressed format once; the one after finds it current.
+    rebuilt = world.publish(capture)
+    assert rebuilt["status"] == "published" and rebuilt["scene_revision"] == first["scene_revision"]
+    assert len(world.archived) == 2 and world.delivered[-1]["format"] == "ply_3dgs_compressed_sh0"
+    assert _viewer_decode(preview_path)["count"] == world.delivered[-1]["gaussian_count"] == 400
+    assert world.publish(capture) == {"status": "current", "scene_revision": first["scene_revision"]}
+    assert len(world.archived) == 2 and len(world.delivered) == 2
 
 
 def test_a_file_that_is_not_a_splat_is_refused(tmp_path):
