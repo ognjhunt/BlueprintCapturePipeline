@@ -10,7 +10,10 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as write_json, handoff_lease_checkpoint
+from .core.handoff_lease import (
+    HandoffLeaseError, guarded_handoff_write_json as write_json, guarded_handoff_write_track_json as write_track_json,
+    handoff_lease_checkpoint,
+)
 from .decision_evidence_contracts import canonical_digest
 from .website_task_preparation import (
     GEOMETRY_ONLY_BLOCKER, compile_website_scene_preparation, native_task_preparation_gap,
@@ -31,8 +34,10 @@ def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy
     """
     executor_owns_runtime = False
     try:
-        preparation = json.loads(preparation_path.read_text())
-        if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
+        # ``source_targets`` carries every target's full-video source track: read and hashed compact.
+        from .website_track_mask_codec import canonical_track_digest, load_track_json
+        preparation = load_track_json(preparation_path)
+        if (preparation.get("digest") != canonical_track_digest(preparation, digest_field="digest")
                 or preparation.get("status") not in {"task_evaluation_ready", "intake_ready"} or preparation.get("blockers") != []):
             raise ValueError("website_task_family_preparation_not_ready")
         inputs = preparation["task_evaluation_inputs"]
@@ -423,17 +428,20 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     recovery_options = {"task_context": context, "source_video": source_video,
                                         "recovery_geometry": atlas["source_geometry"]}
             handoff_lease_checkpoint("website_scene_handoff_static_masks")
+            # Kept surfaces' full-video source tracks stay compact (``RunLengths``) through
+            # binding, coverage, compile and the native inputs; each writes and hashes them
+            # with the codec, to the bytes and digests the plain lists give.
             masks = complete_retained_static_task_masks(plan=json.loads(plan_path.read_text()),
                 source_geometry=clean_plate["source_frames"], task_masks=clean_plate["task_masks"],
                 output_root=plan_path.parent / "task_masks",
-                view_plan_root=plan_path.parent / "mask_view_plan", **recovery_options)
+                view_plan_root=plan_path.parent / "mask_view_plan", compact_runs=True, **recovery_options)
             clean_plate = {**clean_plate, "task_masks": masks}
         geometry = atlas["source_geometry"]
         result.update(geometry_backend=geometry["geometry_backend"],
                       atlas_scene_source={key: atlas[key] for key in (
                           "status", "source_pose_digest", "background_pose_digest", "alignment")})
         masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
-        write_json(root / "task_masks.geometry.json", masks)
+        write_track_json(root / "task_masks.geometry.json", masks)
         clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
         from .website_target_background_worker import queue_correction
         correction = queue_correction(capture_root=capture_root, task_context=context, task_masks=masks, now=now)
@@ -538,7 +546,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         masks = attach_object_specs(task_masks=masks, removal_manifest=removal, task_context=context,
                                     output_root=root / "object_spec")
         if masks != clean_plate["task_masks"]:
-            write_json(root / "task_masks.coverage.json", masks)
+            write_track_json(root / "task_masks.coverage.json", masks)
             clean_plate = {**clean_plate, "task_masks": masks}
         authority = metadata.get("website_scene_execution_authority") or {}
         if not all(key in authority for key in ("max_total_spend_usd", "max_paid_attempts", "expires_at_epoch")):

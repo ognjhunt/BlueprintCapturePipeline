@@ -305,10 +305,12 @@ def _segment(*, video_path: str, source_video_digest: str, prompts: list[dict[st
                                                root=output_root / "video")
     unit = max(50, len(registry)) * PRICE_PER_FRAME_USD
     _require(unit * len(prompts) <= maximum_cost_usd + 1e-9, "segmentation_exceeds_binding")
-    # The share bounds every dispatch, including a resend of one that got no answer.
+    # The share bounds every dispatch, including a resend of one that got no answer. The tracks
+    # span every frame at full resolution and only ``lift`` reads them (selection, decoding and
+    # resampling all take compact runs; the sidecar keeps bounds and track ids, never runs).
     result = run_meta_sam31(frame_registry=registry, frame_artifacts=[], prompts=prompts,
                             output_root=output_root / "sam", admission={}, task_context=task_context,
-                            video_artifact=video, maximum_cost_usd=maximum_cost_usd)
+                            video_artifact=video, maximum_cost_usd=maximum_cost_usd, compact_runs=True)
     return {"registry": registry, "tracks": result["tracks"], "reserved_cost_usd": unit * len(prompts)}
 
 

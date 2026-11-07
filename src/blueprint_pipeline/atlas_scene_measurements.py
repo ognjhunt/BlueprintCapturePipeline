@@ -447,7 +447,7 @@ def surfaces_on_posed_views(frames: list[dict], inputs: dict, selection: dict) -
     if selection.get("status") != "selected":
         return []
     import cv2
-    from .website_task_masks import decode_track_mask
+    from .website_track_mask_codec import canonical_track_digest, decode_track_mask
 
     registry = {row.get("source_frame_id"): row for row in selection.get("source_frame_registry") or []}
     times = {row.get("frame_id"): row.get("timestamp_seconds") for row in inputs.get("frames") or []}
@@ -480,7 +480,7 @@ def surfaces_on_posed_views(frames: list[dict], inputs: dict, selection: dict) -
             edges = np.diff(np.pad(posed.reshape(-1).astype(np.int8), (1, 1)))
             starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
             observations.append({"source_frame_id": frame_id, "width": width, "height": height,
-                                 "source_mask_digest": canonical_digest(observation),
+                                 "source_mask_digest": canonical_track_digest(observation),
                                  "resampling": "source_to_posed_nearest",
                                  "runs": [{"start": int(s), "length": int(e - s)} for s, e in zip(starts, ends)]})
         surfaces.append({**{key: target.get(key) for key in (

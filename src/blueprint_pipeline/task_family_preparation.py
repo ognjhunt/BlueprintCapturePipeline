@@ -6,13 +6,11 @@ does not establish native physics application or authorize paid execution.
 """
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .task_family_native_contracts import family_source_blockers
@@ -22,6 +20,7 @@ from .task_family_scoring import (
     canonical_task_family,
     validate_task_family_contract,
 )
+from .website_track_mask_codec import canonical_track_digest, detached_track_json, plain_runs, write_track_json
 
 
 def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
@@ -155,7 +154,11 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
                and isinstance((spend or {}).get("anthropic_provider_terms_reference"), str) else {}),
         "intake_request": request, "thumbnail": None, "provider_mutation_performed": False,
     }
-    value["digest"] = canonical_digest(value, digest_field="digest")
-    detached = json.loads(json.dumps(value, allow_nan=False))
-    write_json(output_root / "preparation.json", detached)
-    return detached
+    # ``source_targets`` carries every target's full-video source track, compact runs included:
+    # hashed, detached and written by the codec, chunk by chunk, to the bytes and digest
+    # ``canonical_digest``, ``json.loads(json.dumps(value, allow_nan=False))`` and ``write_json``
+    # give. The preparation leaves with plain lists, as the handoff record and its readers expect.
+    value["digest"] = canonical_track_digest(value, digest_field="digest")
+    detached = detached_track_json(value)
+    write_track_json(output_root / "preparation.json", detached)
+    return plain_runs(detached)

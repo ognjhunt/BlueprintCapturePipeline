@@ -231,6 +231,11 @@ def test_retained_clean_plate_tracks_cast_the_task_surface_vote(tmp_path):
     assert selection["status"] == "selected" and [row["target_id"] for row in selection["targets"]] == ["desk"]
     frames, inputs = _posed_desk_views(tmp_path)
     surfaces = surfaces_on_posed_views(frames, inputs, selection)
+    # The full-video source tracks arrive compact and give what their plain lists give.
+    from blueprint_pipeline.website_track_mask_codec import RunLengths, plain_runs
+    assert {type(row["runs"]) for target in selection["targets"]
+            for row in target["source_track"]["observations"] if len(row["runs"])} == {RunLengths}
+    assert surfaces_on_posed_views(frames, inputs, plain_runs(selection)) == surfaces
     observed = surfaces[0]["track"]["observations"]
     assert [row["source_frame_id"] for row in observed] == ["frame-0", "frame-1"]
     assert all((row["width"], row["height"]) == (40, 40) for row in observed)
