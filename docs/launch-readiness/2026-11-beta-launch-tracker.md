@@ -567,6 +567,17 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - A folder that already verifies is a no-op.
     - Records: `results/<id>.g1-pi-language-assets.json` and `g1-841757-development/pi-language-assets-restore-<UTC>.json`. Neither name contains the word the door refuses to read.
   - **Ships** with a joint `upgrade-door` and a deploy after the current paid DP run settles. Until then the door answers `kind_unknown`.
+- **First G1 run on a website job, 11-07 (library aisle, `site-capture-5b067498…`).**
+  - **Registration, 22:47:43Z (release 008142c):** the service registered both `_vision_navi` rows by itself (`service_automatic`), bound to the confirmed brief's context (1535db…), with 0 allocations. The manipulation rows were refused as `task_mismatch`.
+  - **Plans:**
+    - The 22:48:54Z plan had both navigation rows unavailable (`g1_beta_scene_packet_missing`): the family pass read the profile before registering (fix in #3463).
+    - The 22:55:48Z plan (`screening-83766945…`) selected DP: 4 episodes, $4.00 cap, `setup_quality_flags: ["g1_scene_floor_estimated", "g1_spawn_foot_unsupported"]`.
+    - π0.5 navigation was `g1_beta_selected_pi_tokenizer_invalid`; see the language files above.
+  - **Paid run:** attempt `screen-baf4d7ec…`, Vast instance 59633791, launched 23:01:22Z, settled 23:18:40Z.
+    - Spend: an estimated $0.40 of the $4 cap ($0.09 runtime, $0.31 transfer; the actual figure isn't available from the provider API). No continuing spend, staged objects absent.
+    - Outcome: the GPU sanity check and the Isaac smoke test passed. The G1 runtime then exited 2 at import (`ModuleNotFoundError: jsonschema`, via `native_g1_beta_runtime._inputs` → `beta_policy_screening_g1` → its catalog module → `beta_policy_candidate_catalog`).
+    - No first observation, no policy query, no episode. Ledger: `blocked`, `g1_beta_native_result_missing_or_invalid`.
+  - **Fix:** #3463 imports `seal_catalog` lazily and adds a guard test with `jsonschema` blocked. The blocker is a harness failure, so after the deploy the DP row is planned again once under the existing bounded retry, inside the site's allowance.
 
 ## Operating notes (2026-11-02)
 
