@@ -265,15 +265,16 @@ def test_generated_scene_without_independent_geometry_admission_is_not_handed_of
     assert outcome == {'status': 'needs_input', 'reason': 'atlas_preserved_completion_not_admitted'}
 
 
-@pytest.mark.parametrize('tamper', [None, 'samples', 'admitted', 'reason'])
+@pytest.mark.parametrize('tamper', [None, 'narrow_pixels', 'samples', 'admitted', 'reason'])
 def test_generated_views_that_added_nothing_hand_off_the_scene_as_filmed(tmp_path, tamper):
     """The views were made and reviewed but added no geometry: flagged, and the captured
     scene goes on unchanged. A record claiming otherwise is still refused."""
     root = job_fixture(tmp_path, same_pose=True)
     result = json.loads((root / 'result.json').read_text())
     background = result.pop('automation')['background']
+    # 'narrow_pixels': depth pixels were admitted, but too few neighbours for a surface sample.
     recovery = {'digest': 'sha256:' + 'a' * 64, 'exportable_samples': 0 if tamper != 'samples' else 3,
-                'added_geometry_pixels': 0}
+                'added_geometry_pixels': 12 if tamper == 'narrow_pixels' else 0}
     result.update(subject_origin='no_manipulated_subject', captured_scene_preserved=True,
         object_removal_performed=False, image_inpainting_performed=False,
         generated_completion_performed=True, generated_geometry_admitted=tamper == 'admitted',
@@ -288,7 +289,7 @@ def test_generated_views_that_added_nothing_hand_off_the_scene_as_filmed(tmp_pat
     write(root / 'result.json', digest(result))
     write(root / 'preview_job.json', {'state': 'ready', 'result_digest': result['digest']})
     outcome = scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / 'prep')
-    if tamper is None:
+    if tamper in {None, 'narrow_pixels'}:
         assert outcome['status'] == 'ready' and outcome['scene_content'] == 'captured_scene_preserved'
         assert outcome['base_scene']['anchor']['basis'] == 'same_atlas_pose'
     else:

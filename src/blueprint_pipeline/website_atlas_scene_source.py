@@ -187,7 +187,9 @@ def _generated_views_added_nothing(result: Mapping[str, Any], completion: Mappin
             and completion.get('generated_geometry_rejected') == NO_EXPORTABLE_GEOMETRY
             and completion.get('generated_geometry_admitted') is False
             and result.get('generated_geometry_admitted') is False
-            and recovery.get('exportable_samples') == 0 and recovery.get('added_geometry_pixels') == 0
+            # Zero exportable samples is what keeps generated content out of the export. Admitted
+            # pixels that yield no sample (too narrow for a surface normal) are reported, not refused.
+            and recovery.get('exportable_samples') == 0
             and isinstance(recovery.get('digest'), str))
 
 
