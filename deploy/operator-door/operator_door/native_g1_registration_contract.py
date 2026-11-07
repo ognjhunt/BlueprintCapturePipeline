@@ -251,15 +251,18 @@ def navigation_source(record):
 def navigation_site_inputs(profile, source, site, settings):
     """A navigation profile's inputs: the sealed record, its base packet, and the source recomputed from both.
 
-    The record lies under the registry's packet-inputs root, as a team scene's does, and its base packet in the
-    record's own directory, where the G1 packet is prepared. Every source field the record and its sealed plan
+    The record lies inside the site's own website capture (``scenes/<site>/captures/<capture>``, the profile's
+    ``capture_root`` whose sealed task context and consent ``_site_context`` has just checked), where the site's
+    withdrawal deletes it, and its base packet in the record's own directory, where the G1 packet is prepared.
+    A team scene's inputs lie under the registry's packet-inputs root instead. Every source field the record and its sealed plan
     bind is recomputed from them: the task, the scene revision (the plan digest) and the task context the goal
     was compiled from (the plan's ``navigation_goal_basis``); the capture is the retained context's
     (``_site_context``). The scene intent pair is the record's own source (``navigation_source``).
     """
     inputs_path = common.safe_path(Path(profile["navigation_scene_inputs_path"]))
-    output_root = common.safe_path(Path(settings["packet_inputs"]["output_root"]))
-    require(inputs_path.is_relative_to(output_root) and inputs_path.parent != output_root, "current_site_packet_root_invalid")
+    capture = common.safe_path(Path(profile["capture_root"]))
+    require(capture.parent.name == "captures" and capture.parent.parent.name == site
+        and inputs_path.is_relative_to(capture) and inputs_path.parent != capture, "current_site_packet_root_invalid")
     record = sealed(inputs_path, NAVIGATION_SCENE_INPUTS_SCHEMA, "scene_inputs_digest")
     require(record.get("task_kind") == NAVIGATION_TASK_KIND and record.get("claim_ceiling") == "development_only"
         and record.get("scene_id") == site and record.get("task_id") == source["task_id"]

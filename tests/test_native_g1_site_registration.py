@@ -661,7 +661,8 @@ def navigation_world(tmp_path, monkeypatch):
 
     args, record = navigation_preparation(tmp_path, monkeypatch)
     site, source = record["scene_id"], dict(args["source"])
-    capture = tmp_path / "capture"
+    # The record's own website capture (``scenes/<site>/captures/<capture>``), where the handoff writes it.
+    capture = next(path for path in Path(record["packet_root"]).parents if path.parent.name == "captures")
     write(capture / "pipeline/website_task_context.json", navigation_task_context())
     derived = seal({"schema_version": reader.DERIVED_SCHEMA, "capture_root": str(capture), "scene_id": site,
         "task_id": source["task_id"], "scene_revision_digest": source["scene_revision_digest"],
@@ -760,7 +761,7 @@ def test_a_registered_navigation_packet_without_its_offset_report_is_measured_on
 def test_a_refused_retained_consent_on_a_navigation_site_composes_nothing(navigation_world, monkeypatch, tmp_path):
     kwargs, _, _, _, _ = navigation_world
     _stand_in_source(monkeypatch, kwargs)
-    path = tmp_path / "capture/pipeline/website_task_context.json"
+    path = next(tmp_path.rglob("captures/*/pipeline/website_task_context.json"))
     context = json.loads(path.read_text())
     context["capture_rights"] = {**context["capture_rights"], "consent_revoked": True}
     write(path, seal(context, "context_digest"))

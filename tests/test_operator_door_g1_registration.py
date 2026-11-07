@@ -456,7 +456,8 @@ def navigation_site(tmp_path, monkeypatch):
 
     args, record = navigation_preparation(tmp_path, monkeypatch)
     g1 = prepare.prepare_native_g1_beta_packet(**args)
-    capture = tmp_path / "capture"
+    # The record's own website capture (``scenes/<site>/captures/<capture>``), where the handoff writes it.
+    capture = next(path for path in Path(record["packet_root"]).parents if path.parent.name == "captures")
     write(capture / "pipeline/website_task_context.json", navigation_task_context())
     record_path = Path(record["packet_root"]).parent / "website_navigation_scene_inputs.v1.json"
     write(tmp_path / "derived/site.json", seal({"schema_version": "blueprint.team_candidate_derived_profile.v1",
@@ -488,6 +489,20 @@ def test_a_navigation_record_names_no_source_yet_so_the_door_refuses_by_name(tmp
     site = navigation_site(tmp_path, monkeypatch)
     assert site.record["source"] is None
     with pytest.raises(ValueError, match="^native_g1_install_navigation_source_identity_unbound$"):
+        contract.site_inputs(site.request, site.registry)
+
+
+def test_a_navigation_record_outside_its_sites_own_capture_is_refused(tmp_path, monkeypatch):
+    """The record must lie inside the capture whose sealed context and consent the door has just checked."""
+    site = navigation_site(tmp_path, monkeypatch)
+    stand_in_source(monkeypatch, site)
+    elsewhere = tmp_path / "elsewhere/website_navigation_scene_inputs.v1.json"
+    write(elsewhere, site.record)
+    profile = json.loads((tmp_path / "derived/site.json").read_text())
+    profile = {key: value for key, value in profile.items() if key != "profile_digest"}
+    write(tmp_path / "derived/site.json", seal({**profile, "navigation_scene_inputs_path": str(elsewhere)},
+                                               "profile_digest"))
+    with pytest.raises(ValueError, match="^native_g1_install_current_site_packet_root_invalid$"):
         contract.site_inputs(site.request, site.registry)
 
 

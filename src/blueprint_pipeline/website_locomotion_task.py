@@ -50,7 +50,13 @@ NAVIGATION_PIPELINE_PIECES = (
     "navigation_scene_assets",                    # Isaac appearance/collision for a scene kept as filmed
     "arena_navigation_scene_runtime",             # scene plan, runtime and readback without a task object
     "g1_navigation_preparation",                  # G1 stance at the compiled start, its nominal cell, registration
+    "navigation_source_identity",                 # the website's scene intake takes a navigation task
 )
+#: The screening source a navigation scene half binds (``website_navigation_scene_inputs.screening_source``)
+#: is the website's scene intent, and the website's intake accepts no navigation task yet. Until it does
+#: (``SOURCE_IDENTITY_BINDABLE``) this piece is missing for every job, so the hold names it instead of a
+#: job passing the handoff with nothing it can screen.
+SOURCE_IDENTITY_PIECE = "navigation_source_identity"
 #: What the G1 lane itself still adds (its perturbed start cells, planning and launch) shows as the
 #: catalog rows' own task-kind support (``_catalog_task_kind_gap``) and the embodiment's missing work.
 #: The pieces whose code exists. One that stands for a job's own output (``NAVIGATION_PIECE_OUTPUTS``)
@@ -69,9 +75,15 @@ NAVIGATION_TASK_FILE = "navigation_task_spec.json"
 
 
 def navigation_pieces_built(outputs: Mapping[str, bool]) -> frozenset[str]:
-    """What exists for one job: each built piece its handoff wrote the output of, and the code-only ones."""
-    return frozenset(piece for piece in BUILT_NAVIGATION_PIECES
-                     if piece not in NAVIGATION_PIECE_OUTPUTS or outputs.get(NAVIGATION_PIECE_OUTPUTS[piece]) is True)
+    """What exists for one job: each built piece its handoff wrote the output of, and the code-only ones.
+
+    The source identity counts once the website's intake can bind one (``SOURCE_IDENTITY_PIECE``).
+    """
+    from .website_navigation_scene_inputs import SOURCE_IDENTITY_BINDABLE
+
+    built = frozenset(piece for piece in BUILT_NAVIGATION_PIECES
+                      if piece not in NAVIGATION_PIECE_OUTPUTS or outputs.get(NAVIGATION_PIECE_OUTPUTS[piece]) is True)
+    return built | {SOURCE_IDENTITY_PIECE} if SOURCE_IDENTITY_BINDABLE is True else built
 
 
 def _sha256(path: Path) -> str:
@@ -290,7 +302,7 @@ def retained_spec(root: Path) -> dict[str, Any] | None:
 
 __all__ = [
     "BUILT_NAVIGATION_PIECES", "HOLD_CODE", "NAVIGATION_PIECE_OUTPUTS", "NAVIGATION_PIPELINE_PIECES",
-    "NAVIGATION_SCENE_PACKET", "NAVIGATION_TASK_FILE", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec",
+    "NAVIGATION_SCENE_PACKET", "NAVIGATION_TASK_FILE", "SOURCE_IDENTITY_PIECE", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec",
     "navigation_pieces_built", "obstacle_distance", "policy_requirements_served", "retained_spec",
     "runnable_options", "runnable_policy_gap", "scene_facts",
 ]
