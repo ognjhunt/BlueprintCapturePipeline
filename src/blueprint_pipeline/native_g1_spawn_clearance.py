@@ -306,6 +306,101 @@ def choose_spawn_stance(*, robot_usd: str | Path, joint_reset_positions: Mapping
     return chosen, {**first, "stance_selection": selection}
 
 
+def measure_poses(*, robot_usd: str | Path, joint_reset_positions: Mapping[str, float],
+                  poses: Sequence[Mapping[str, Any]], background_usd: str | Path,
+                  background_pose_world: Mapping[str, Any] | None = None,
+                  sample_spacing_m: float = DEFAULT_SAMPLE_SPACING_M) -> list[dict[str, Any]]:
+    """The spawn check at each root pose, in order, the robot and the background read once; never raises.
+
+    Each report is what ``choose_spawn_stance`` measures for one stance, without a selection: a navigation
+    packet's start offsets are each measured, none replaces another.
+    """
+    reset = {str(name): float(value) for name, value in joint_reset_positions.items()}
+    try:
+        model = _model(robot_usd, reset)
+    except Exception as exc:  # noqa: BLE001 - USD errors (Tf.ErrorException) included: unmeasured, by name
+        return [_unmeasured(_code(exc, "g1_spawn_robot_model_unreadable"), sample_spacing_m, error=exc) for _ in poses]
+    return _measure_stances(model, reset, list(poses), background_usd, background_pose_world, sample_spacing_m)
+
+
+#: A navigation packet's spawn check at each start offset (``native_g1_beta_authority.NAVIGATION_START_OFFSETS``),
+#: kept beside the packet. Planning funds no cell whose offset reads overlap and flags the rest as the packet's
+#: own report is flagged (``beta_policy_screening_g1.navigation_start_offsets``).
+START_OFFSETS_SCHEMA_VERSION = "native_g1_navigation_start_offsets.v1"
+START_OFFSETS_FILENAME = START_OFFSETS_SCHEMA_VERSION + ".json"
+
+
+def packet_start_offsets(packet_dir: str | Path, *,
+                         sample_spacing_m: float = DEFAULT_SAMPLE_SPACING_M) -> dict[str, Any]:
+    """Measure a navigation packet's G1 at each start offset of its plan's own robot pose, sealed to that plan."""
+    from .native_g1_beta_authority import NAVIGATION_START_OFFSETS, apply_start_offset, start_offset_parameters
+
+    root = Path(packet_dir)
+    plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8"))
+    robot = plan["robot"]
+    collisions = [row for row in plan.get("objects") or [] if row.get("semantic_role") == "scene_collision"]
+    if len(collisions) != 1:
+        raise ScenePhysicsPreflightError("g1_spawn_packet_scene_collision_count_invalid")
+    reset = robot["joint_reset_positions_rad"]
+    poses = [apply_start_offset(robot["base_pose_world"], start_offset_parameters(ordinal))
+             for ordinal in range(len(NAVIGATION_START_OFFSETS))]
+    try:
+        robot_usd = _bound_file(root, robot["usd_path"], robot["usd_sha256"])
+        background = _bound_file(root, collisions[0]["usd_path"], collisions[0]["sha256"])
+    except ScenePhysicsPreflightError as exc:
+        reports = [_unmeasured(str(exc), sample_spacing_m) for _ in poses]
+    else:
+        reports = measure_poses(robot_usd=robot_usd, joint_reset_positions=reset, poses=poses,
+                                background_usd=background, background_pose_world=collisions[0].get("pose_world"),
+                                sample_spacing_m=sample_spacing_m)
+    rows = []
+    for (offset_id, forward, lateral), pose, report in zip(NAVIGATION_START_OFFSETS, poses, reports, strict=True):
+        rows.append({**report, "offset_id": offset_id, "robot_start_forward_m": forward,
+                     "robot_start_lateral_m": lateral, "unsupported_feet": unsupported_feet(report),
+                     **binding(robot_usd_sha256=robot["usd_sha256"], scene_collision_sha256=collisions[0]["sha256"],
+                               base_pose_world=pose, joint_reset_positions=reset)})
+    value = {"schema_version": START_OFFSETS_SCHEMA_VERSION, "scene_plan_digest": plan["plan_digest"],
+             "offsets": rows, "claim_boundary": CLAIM_BOUNDARY, "simulator_executed": False,
+             "provider_mutation_performed": False}
+    value["report_digest"] = canonical_digest(value, digest_field="report_digest")
+    return value
+
+
+@read_scoped
+def ensure_packet_start_offsets(packet_dir: str | Path) -> dict[str, Any]:
+    """The packet's per-offset spawn report, measured and written beside it once.
+
+    A report in which a read error left an offset unmeasured is returned unwritten, so a later call measures again.
+    """
+    from .deployment_embodiment_preparation_contract import write_once
+
+    path = Path(packet_dir) / START_OFFSETS_FILENAME
+    if path.is_file() and not path.is_symlink():
+        return json.loads(path.read_text(encoding="utf-8"))
+    value = packet_start_offsets(packet_dir)
+    if not any(row["retryable"] for row in value["offsets"]):
+        write_once(path, value)
+    return value
+
+
+def start_offset_reports(packet_dir: str | Path, plan_digest: str) -> list[dict[str, Any]] | None:
+    """The packet's sealed per-offset reports of this plan, one per offset in table order; None for anything else."""
+    from .native_g1_beta_authority import NAVIGATION_START_OFFSETS
+
+    path = Path(packet_dir) / START_OFFSETS_FILENAME
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(value, dict) or value.get("schema_version") != START_OFFSETS_SCHEMA_VERSION
+            or value.get("report_digest") != canonical_digest(value, digest_field="report_digest")
+            or value.get("scene_plan_digest") != plan_digest or not isinstance(value.get("offsets"), list)
+            or [row.get("offset_id") if isinstance(row, dict) else None for row in value["offsets"]]
+            != [row[0] for row in NAVIGATION_START_OFFSETS]):
+        return None
+    return value["offsets"]
+
+
 def seal(report: Mapping[str, Any]) -> dict[str, Any]:
     """The report as the packet keeps it: schema, claim boundary and digest."""
     value = {**dict(report), "schema_version": SCHEMA_VERSION, "claim_boundary": CLAIM_BOUNDARY,

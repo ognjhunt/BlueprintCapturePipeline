@@ -55,6 +55,39 @@ CANDIDATE_DIGESTS = {
 }
 SOURCE_FIELDS = ("scene_intent_id", "scene_intent_digest", "capture_id", "task_id",
                  "task_context_digest", "scene_revision_digest")
+#: A navigation cell moves the robot's start, never an object (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C).
+START_OFFSET_FAMILY = "robot_start_offset"
+#: The navigation cells' start offsets, agreed with the G1 session: the root moved in the robot's own start
+#: frame (x forward, y to its left), its yaw, joints, the task and the scene unchanged. Rows: offset id,
+#: forward metres, lateral metres; a cell's ordinal is its row.
+NAVIGATION_START_OFFSETS: tuple[tuple[str, float, float], ...] = (
+    ("start", 0.0, 0.0),
+    ("left_15cm", 0.0, 0.15),
+    ("right_15cm", 0.0, -0.15),
+    ("back_15cm", -0.15, 0.0),
+)
+
+
+def start_offset_parameters(ordinal: int) -> dict[str, float]:
+    """A cell's parameters for row ``ordinal`` of ``NAVIGATION_START_OFFSETS``."""
+    _, forward, lateral = NAVIGATION_START_OFFSETS[ordinal]
+    return {"robot_start_forward_m": forward, "robot_start_lateral_m": lateral}
+
+
+def apply_start_offset(pose: Mapping[str, Any], parameters: Mapping[str, Any]) -> dict[str, list[float]]:
+    """A root pose moved by a start offset in its own frame: the position shifts, the orientation stays.
+
+    The one rule every reader shares: preparation's spawn check at each offset, the cell derivation and
+    its binding check (``validate_cell_binding``).
+    """
+    x, y, z = (float(value) for value in pose["position_world_m"])
+    qx, qy, qz, qw = (float(value) for value in pose["orientation_xyzw"])
+    forward, lateral = float(parameters["robot_start_forward_m"]), float(parameters["robot_start_lateral_m"])
+    # (forward, lateral, 0) rotated into the world by the root's quaternion.
+    dx = (1.0 - 2.0 * (qy * qy + qz * qz)) * forward + 2.0 * (qx * qy - qz * qw) * lateral
+    dy = 2.0 * (qx * qy + qz * qw) * forward + (1.0 - 2.0 * (qx * qx + qz * qz)) * lateral
+    dz = 2.0 * (qx * qz - qy * qw) * forward + 2.0 * (qy * qz + qx * qw) * lateral
+    return {"position_world_m": [x + dx, y + dy, z + dz], "orientation_xyzw": [qx, qy, qz, qw]}
 SCOPE = {
     "authority_kind": "composed_internal_development",
     # Owner decision 2026-11-06: G1 is a screening option for every site and task; the 841757
