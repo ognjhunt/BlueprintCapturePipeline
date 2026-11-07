@@ -7,6 +7,7 @@ src/blueprint_pipeline/beta_policy_screening_worker.py.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -756,6 +757,78 @@ def test_a_registered_navigation_packet_without_its_offset_report_is_measured_on
     monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
     assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
     assert json.loads(report.read_text()) == kept
+
+
+def _navigation_authority_path(kwargs) -> Path:
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    return Path(row["screening_candidates"][DP_NAV]["native_g1"]["navigation_authority"]["path"])
+
+
+def _kept_aside(path: Path) -> list[Path]:
+    return sorted(path.parent.glob(f".{path.name}.superseded-*/{registration.SUPERSEDED_AUTHORITY_FILENAME}"))
+
+
+def test_a_changed_composer_rewrites_the_navigation_authority_and_keeps_the_old_bytes_aside(
+        navigation_world, monkeypatch):
+    from blueprint_pipeline import native_g1_navigation_goal as goal
+
+    kwargs, profile, registry, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    path = _navigation_authority_path(kwargs)
+    before = path.read_bytes()
+    # A later release composes another authority, and its contract refuses the one already on disk.
+    monkeypatch.setattr(goal, "MACHINE_AUTHORITY_STATUS",
+                        {key: value + "_later_composer" for key, value in goal.MACHINE_AUTHORITY_STATUS.items()})
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    result = registration.ensure_site_registration(**kwargs)
+    assert result["status"] == "registered", result
+    assert result["candidates"][DP_NAV] == result["candidates"][PI_NAV] == {"status": "registered"}
+    # Rewritten in place; the old bytes are kept aside in the same directory, under a name no reader looks for.
+    assert path == _navigation_authority_path(kwargs) and path.read_bytes() != before
+    rewritten = json.loads(path.read_text())
+    plan = json.loads((path.parent / "native_task_arena_scene_plan.v1.json").read_text())
+    assert rewritten["status"].endswith("_later_composer")
+    assert goal.validate_machine_composed_goal_authority(rewritten, plan=plan) == rewritten
+    [kept] = _kept_aside(path)
+    assert kept.read_bytes() == before and kept.name not in registration.NAVIGATION_AUTHORITY_NAMES
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    assert row["screening_candidates"][DP_NAV]["native_g1"]["navigation_authority"]["sha256"] == \
+        "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    assert set(reader._site_screening_profile(registry, profile)["screening_candidates"]) == {DP_NAV, PI_NAV}
+    # The next pass finds it current and writes nothing.
+    assert registration.ensure_site_registration(**kwargs) == {"status": "already_registered"}
+    assert len(_kept_aside(path)) == 1
+
+
+def test_an_unreadable_navigation_authority_is_set_aside_and_composed_again(navigation_world, monkeypatch):
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    path = _navigation_authority_path(kwargs)
+    composed = path.read_bytes()
+    path.chmod(0o644)
+    path.write_bytes(b"{not json")
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    assert path.read_bytes() == composed
+    [kept] = _kept_aside(path)
+    assert kept.read_bytes() == b"{not json"
+
+
+def test_a_linked_navigation_authority_is_never_followed(navigation_world, monkeypatch, tmp_path):
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    path = _navigation_authority_path(kwargs)
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_bytes(b"{}")
+    path.unlink()
+    path.symlink_to(elsewhere)
+    result = registration.ensure_site_registration(**kwargs)
+    assert result["status"] == "not_registered"
+    assert result["reason"] == "g1_current_navigation_goal_authority_unavailable"
+    assert path.is_symlink() and elsewhere.read_bytes() == b"{}" and _kept_aside(path) == []
 
 
 def test_a_refused_retained_consent_on_a_navigation_site_composes_nothing(navigation_world, monkeypatch, tmp_path):
