@@ -50,6 +50,10 @@ from .usd_binary_read_cache import read_scoped
 SCHEMA = "blueprint.website_navigation_scene_inputs.v1"
 DIGEST_FIELD = "scene_inputs_digest"
 RECORD_FILENAME = "website_navigation_scene_inputs.v1.json"
+#: Where the handoff keeps the record: ``<capture workspace>/navigation_scene_inputs/<inputs key>/``,
+#: under the site directory, so the site's withdrawal deletes it with the job's other derived files
+#: (``website_capture_withdrawal_deletion``); a derived row naming a record elsewhere fails closed there.
+OUTPUT_DIRECTORY = "navigation_scene_inputs"
 PACKET_DIRECTORY = "native-task-packet"
 INPUTS_DIRECTORY = ".inputs"
 CLAIM_CEILING = "development_only"
@@ -470,5 +474,6 @@ def screening_source(record: Mapping[str, Any]) -> dict[str, Any]:
     raise WebsiteNavigationSceneInputsError(SOURCE_UNBOUND)
 
 
-__all__ = ["CLAIM_CEILING", "RECORD_FILENAME", "SCHEMA", "SOURCE_UNBOUND", "WebsiteNavigationSceneInputsError",
+__all__ = ["CLAIM_CEILING", "OUTPUT_DIRECTORY", "RECORD_FILENAME", "SCHEMA", "SOURCE_UNBOUND",
+           "WebsiteNavigationSceneInputsError",
            "read_navigation_scene_inputs", "screening_source", "write_navigation_scene_inputs"]

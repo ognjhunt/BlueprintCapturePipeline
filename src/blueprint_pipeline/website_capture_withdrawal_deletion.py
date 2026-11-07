@@ -39,6 +39,13 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   inputs and run outputs are deleted once its money is final, and its money
   records stay (``website_capture_withdrawal_rigid_probe``); a job still waiting
   on its money is named as remaining;
+- every file under ``scenes/site-<id>/`` through the existing local cleanup. For a
+  navigation job (a scene kept as filmed) that is everything its handoff writes in the
+  capture's workspace: ``navigation_task_spec.json``, ``navigation_scene_assets.json``
+  with its authored appearance and collision USDs, and the scene-inputs record's root
+  with its packet, staged scene and G1 USD copies and robot-free probe receipt. The
+  team registry's derived row naming that record is the team scene section's, which
+  refuses a row whose record lies outside the site directory;
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
 
 The plan reads every run's JSON records once (streamed, any size), so it is an
@@ -547,7 +554,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
         identity, lineage["intents"], capture_ids=native_g1._site_capture_ids(site, identity),
         capture_keys=native_g1._site_capture_keys(site, identity), native_g1=g1, halves_root=team_scene_halves_root,
         registry=team_registry, packet_queue_root=team_scene_packet_queue_root,
-        probe_queue_root=rigid_probe_queue_root, probe_work_root=rigid_probe_work_root, unresolved=unresolved)
+        probe_queue_root=rigid_probe_queue_root, probe_work_root=rigid_probe_work_root, unresolved=unresolved,
+        site_root=site)
     uris = sorted({uri for run in runs for uri in run["object_uris"]}
                   | {uri for attempt in screened["attempts"] for uri in attempt["object_uris"]}
                   | ({workspace["archive_uri"]} if workspace["archive_uri"] else set())
