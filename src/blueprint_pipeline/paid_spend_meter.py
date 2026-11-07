@@ -13,8 +13,9 @@ job, so they are read where they are, not copied:
 ``paid_resource_admission`` (journal)
     Every grant the shared chokepoint issues is appended here
     (``meter_chokepoint_admission``), keyed by the job the admission names
-    (``admission["meter"]["job_id"]``, else ``BLUEPRINT_PAID_SPEND_JOB_ID`` in
-    the process environment, else ``unattributed``). An admission carries a
+    (``admission["meter"]["job_id"]``, else the admission's own ``job_id``,
+    ``website_request_id`` or ``request_id``, else ``BLUEPRINT_PAID_SPEND_JOB_ID``
+    in the process environment, else ``unattributed``). An admission carries a
     price only when it names one (``admission["meter"]["held_usd"]``); no
     lane does yet, so these rows count calls, not dollars, until stage 2.
     ``record_settlement`` is the matching settlement record.
@@ -196,7 +197,8 @@ def meter_chokepoint_admission(admission: Mapping[str, Any], *, resource_class: 
         if root is None:
             return
         meter = admission.get("meter") if isinstance(admission.get("meter"), Mapping) else {}
-        job_id = meter.get("job_id") or env.get(JOB_ID_ENV)
+        job_id = (meter.get("job_id") or admission.get("job_id") or admission.get("website_request_id")
+                  or admission.get("request_id") or env.get(JOB_ID_ENV))
         binding = admission.get("allocation_binding_digest")
         meter_key = str(meter.get("meter_key") or binding or "")
         if not meter_key:

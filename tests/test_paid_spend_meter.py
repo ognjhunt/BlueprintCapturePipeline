@@ -61,6 +61,16 @@ def test_every_grant_is_journaled_against_the_job_it_names(journal, monkeypatch)
     assert all(row["event"] == "admission" and row["schema_version"] == meter.EVENT_SCHEMA for row in events)
 
 
+def test_an_admission_that_carries_its_request_id_is_metered_against_it(journal, monkeypatch):
+    monkeypatch.setenv(meter.JOB_ID_ENV, "req-from-env")
+    admission = {**build_paid_lane_admission(resource_class="provider_reconstruction_api"),
+                 "request_id": "req-9", "allocation_binding_digest": "sha256:" + "a" * 64}
+    require_paid_resource_admission(admission, resource_class="provider_reconstruction_api",
+                                    expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+    [row] = _events(journal)
+    assert (row["job_id"], row["meter_key"], row["provider"]) == ("req-9", "sha256:" + "a" * 64, "world_labs")
+
+
 def test_a_refused_admission_is_not_metered(journal):
     with pytest.raises(PaidResourceAdmissionBlocked):
         require_paid_resource_admission(build_paid_lane_admission(resource_class="vast_provider_adapter",
