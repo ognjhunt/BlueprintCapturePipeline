@@ -412,20 +412,38 @@ def room_floor(path: Path, *, floor_x_min: float = -3.0, wall_x: float | None = 
     return path
 
 
+def navigation_task_context() -> dict:
+    """The site's sealed task context the navigation fixture task is compiled from, consent included."""
+    from tests.test_website_navigation_packet import _spec
+
+    spec = _spec()
+    context = {"schema_version": "website_site_task_context.v1", "scene_id": spec["site_id"],
+               "capture_id": "walkthrough-a", "description": spec["sentence"], "task_family": "general_task",
+               "confirmed": False, "confirmed_at": None,
+               "capture_rights": {"consent_status": "granted", "consent_revoked": False,
+                                  "consent_scope": ["robot_evaluation"], "derived_scene_generation_allowed": True}}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    return context
+
+
 def navigation_preparation(tmp_path: Path, monkeypatch, **room) -> tuple[dict, dict]:
     """A real navigation record (``website_navigation_scene_inputs``) over a measurable room, and G1 prepare's
-    arguments for it. The source is a stand-in: a navigation job's source identity is not decided yet."""
+    arguments for it. The task is compiled from ``navigation_task_context``. The source is a stand-in: a
+    navigation job's source identity (its scene intent) is not decided yet."""
     from blueprint_pipeline.beta_policy_screening_files import _record as file_record
+    from blueprint_pipeline.website_navigation_packet import navigation_task_spec
     from blueprint_pipeline.website_navigation_scene_inputs import write_navigation_scene_inputs
+    from tests.test_website_navigation_packet import _spec
     from tests.test_website_navigation_scene_inputs import navigation_scene_inputs_arguments
 
     arguments = navigation_scene_inputs_arguments(tmp_path, monkeypatch)
+    arguments["navigation_task_spec"] = navigation_task_spec(_spec(), task_context=navigation_task_context())
     assets = arguments["scene_assets"]
     collision = file_record(room_floor(tmp_path / "navigation_scene" / "room.usda", **room))
     assets["collision"] = {**assets["collision"], **collision}
     assets["digest"] = canonical_digest(assets, digest_field="digest")
     record = write_navigation_scene_inputs(**arguments)["record"]
-    source = {"capture_id": "capture-navigation", "task_id": record["task_id"], "scene_intent_id": "stand-in-intent",
+    source = {"capture_id": "walkthrough-a", "task_id": record["task_id"], "scene_intent_id": "stand-in-intent",
               "task_context_digest": record["source_gap"]["known"]["task_context_digest"],
               "scene_intent_digest": "sha256:" + "b" * 64, "scene_revision_digest": record["scene_revision_digest"]}
     args = {"base_packet_record": record["base_native_packet"], "source": source, "site_id": record["scene_id"],
