@@ -83,12 +83,14 @@ def test_a_world_with_no_level_surface_is_refused(tmp_path):
     assert search["parallel_level_share"] == 0.0
 
 
-def test_a_refusal_keeps_the_height_profile_around_the_cameras(tmp_path):
+def test_a_refusal_keeps_the_height_profiles_around_the_cameras(tmp_path):
     value, _ = level(tmp_path, floor=False, counter=False)
-    profile = value["level_search"]["height_profile"]
-    assert value["status"] == "needs_input" and profile["band_m"] == levelling.PROFILE_BAND_M
-    assert len(profile["shares"]) == round((profile["to_m"] - profile["from_m"]) / profile["band_m"])
-    assert sum(profile["shares"]) + profile["below_share"] + profile["above_share"] == pytest.approx(1.0, abs=1e-3)
+    profiles = value["level_search"]["height_profiles"]
+    assert value["status"] == "needs_input" and profiles[0]["source"] == "plus_y"
+    for profile in profiles:
+        assert profile["band_m"] == levelling.PROFILE_BAND_M
+        assert len(profile["shares"]) == round((profile["to_m"] - profile["from_m"]) / profile["band_m"])
+        assert sum(profile["shares"]) + profile["below_share"] + profile["above_share"] == pytest.approx(1.0, abs=1e-3)
 
 
 def test_a_candidate_refitted_past_the_tilt_bound_never_levels(tmp_path):
@@ -135,10 +137,13 @@ def test_an_aisle_floor_is_found_among_its_shelf_boards(tmp_path):
     assert set(sources) == {"face_normal_mode", "largest_level_plane"}
     assert search["parallel_level_share"] == max(row["share"] for row in sources.values())
     assert any(abs(row["height_from_cameras_m"] + 1.45) <= 0.03 for row in search["densest_layers"])
-    # The profile shows the floor as the lowest band with anything in it.
-    profile = search["height_profile"]
-    floor_band = int((-1.45 - profile["from_m"]) / profile["band_m"])
-    assert profile["shares"][floor_band] >= 0.03 and not any(profile["shares"][:floor_band])
+    # Along every candidate, the profile shows the floor as the lowest band with anything in it.
+    profiles = {row["source"]: row for row in search["height_profiles"]}
+    assert set(profiles) == {"plus_y", "face_normal_mode", "largest_level_plane"}
+    profile = profiles["face_normal_mode"]
+    floor_band = int(round((-1.45 - profile["from_m"]) / profile["band_m"]))
+    peak = max(range(floor_band - 1, floor_band + 2), key=lambda band: profile["shares"][band])
+    assert profile["shares"][peak] >= 0.02 and not any(profile["shares"][:floor_band - 2])
 
 
 def test_an_aisle_with_no_floor_left_is_levelled_but_declares_no_floor(tmp_path):

@@ -156,6 +156,10 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - The budget report was stale again after the deploy. The resume waited for a fresh one (06:40:34Z, `20261107T064034Z-selected-handoff-5a133a8f`).
   - **06:45Z: levelling refused again**, now with its numbers (v2 record): the largest single plane held 2.65% (4% needed), and along the face-normal direction, 1.38 degrees from +Y, no layer passed.
   - **The causes and the fix** (general, the next PR): the floor, as the lowest layer, was its own background; a 3x ratio to the clutter fails against shelves full of books; and a direction a degree off smears a long floor. Layers now need an excess over the clutter, are found coarse to fine, and the record keeps a height profile.
+- **`8a3d0d3` (#3442)**, live 07:20Z (`20261107T070810Z-deploy-0234209d`). Pre-checks clear; the G1 session was told first. The resume waited for a fresh budget report and ran at 07:23:57Z (`20261107T072357Z-selected-handoff-d619d958`).
+  - **07:29Z: levelling refused a third time** (v3 record). The face-normal direction was 1.75 degrees from +Y, with one layer of 0.61% excess. The largest single plane was tilted 44.5 degrees, with 0.74%.
+  - The record's one height profile was taken along the candidate that held most, which was the 44.5-degree one, so it is not a vertical profile. The next PR keeps a 2 cm profile along +Y and every candidate. The search itself is unchanged.
+- **#3443 (part C 2/2) merged 08:10Z** after the G1 session's review and re-review. The first-run allowance is deferred: the owner decides the `reviewed_checkpoint_terms` stand-in (a rights call) and one versus two funded navigation rows.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 

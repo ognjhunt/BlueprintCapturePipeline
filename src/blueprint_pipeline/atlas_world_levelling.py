@@ -34,7 +34,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-REVISION = "atlas_world_levelling.v3"
+REVISION = "atlas_world_levelling.v4"
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0
@@ -61,9 +61,10 @@ PARALLEL_REFITS = 2
 #: Layers this many times thicker are found and refitted first; only the 2 cm ones are counted.
 PARALLEL_COARSE_LAYERS = (6.0, 3.0, 1.0)
 #: Kept in the record, so a refusal can be read without the mesh: the densest layers along the chosen
-#: direction, and the share of points in each band of height around the cameras.
+#: direction, and along +Y and every candidate direction the share of points in each 2 cm band of
+#: height around the cameras (a floor shows as a peak a camera height below them, as thick as it is).
 REPORTED_LAYERS = 12
-PROFILE_BAND_M = 0.1
+PROFILE_BAND_M = 0.02
 PROFILE_SPAN_M = (-3.0, 2.0)
 #: Faces read at a time: a room's mesh has millions of faces (capture-447's: 6.5 M).
 FACE_BLOCK = 1 << 20
@@ -209,6 +210,21 @@ def _layered_direction(points: np.ndarray, direction: np.ndarray) -> tuple[np.nd
     return estimate, layers, sum(count for _, count, _ in layers) / len(points)
 
 
+def _height_profile(points: np.ndarray, source: str, direction: np.ndarray,
+                    camera_centres: np.ndarray | None) -> dict[str, Any]:
+    """The share of ``points`` in each band of height along ``direction``, from the median camera."""
+    reference = (float(np.median(np.asarray(camera_centres) @ direction))
+                 if camera_centres is not None and len(camera_centres) else 0.0)
+    heights = points @ direction - reference
+    low, high = PROFILE_SPAN_M
+    counts, _ = np.histogram(heights, bins=np.linspace(low, high, int(round((high - low) / PROFILE_BAND_M)) + 1))
+    return {"source": source, "tilt_degrees": _tilt(direction),
+            "reference": "median_camera_height" if camera_centres is not None else "origin",
+            "band_m": PROFILE_BAND_M, "from_m": low, "to_m": high,
+            "shares": [round(float(count) / len(points), 5) for count in counts],
+            "below_share": float(np.mean(heights < low)), "above_share": float(np.mean(heights >= high))}
+
+
 def _parallel_level_direction(vertices: np.ndarray, faces: np.ndarray, points: np.ndarray,
                               report: dict[str, Any] | None = None, *,
                               directions: tuple[np.ndarray, ...] = (),
@@ -220,7 +236,8 @@ def _parallel_level_direction(vertices: np.ndarray, faces: np.ndarray, points: n
     is kept. The candidates are the mean shift of the faces' area-weighted normals from +Y, and
     ``directions`` (the largest single level plane's normal: exact for that plane, so a long floor or
     board does not smear across layers). ``report`` receives every candidate, the kept one's densest
-    layers, and the share of points in each band of height around the median camera.
+    layers, and along +Y and each candidate the share of points in each band of height around the
+    median camera.
     """
     normals, areas = _face_normals_and_areas(vertices, faces)
     candidates = [("face_normal_mode", _normal_mode(normals, areas))] if len(areas) else []
@@ -243,14 +260,9 @@ def _parallel_level_direction(vertices: np.ndarray, faces: np.ndarray, points: n
                                            "background_ratio": ratio} for height, count, ratio in
                                           sorted(best[2], key=lambda row: -row[1])[:REPORTED_LAYERS]])
         if len(points):
-            heights = points @ direction - reference
-            low, high = PROFILE_SPAN_M
-            counts, _ = np.histogram(heights, bins=np.linspace(low, high, int(round((high - low) / PROFILE_BAND_M)) + 1))
-            report["height_profile"] = {
-                "reference": "median_camera_height" if camera_centres is not None else "origin",
-                "band_m": PROFILE_BAND_M, "from_m": low, "to_m": high,
-                "shares": [round(float(count) / len(points), 5) for count in counts],
-                "below_share": float(np.mean(heights < low)), "above_share": float(np.mean(heights >= high))}
+            profiles = [("plus_y", np.array([0.0, 1.0, 0.0]))] + [(source, found) for source, found, _, _ in tried]
+            report["height_profiles"] = [_height_profile(points, source, found, camera_centres)
+                                         for source, found in profiles]
     if best is None or best[3] < MIN_LEVEL_SHARE:
         return None
     return best[1]
