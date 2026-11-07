@@ -24,9 +24,11 @@ rigid team scene (``team_scene_packet``, ``website_task_family_scene_inputs``):
   ``scene_revision_digest`` (the base plan digest) and every disclosed assumption.
 
 The current-source identity the screening lane binds (``native_g1_beta_authority.SOURCE_FIELDS``)
-needs a scene intent, which a scene kept as filmed does not have, and the website's scene intake
-accepts no navigation task to make one: ``screening_source`` refuses with
-``website_navigation_scene_inputs_source_identity_unbound`` until it does. Nothing here
+names a scene intent. A scene kept as filmed gets one from the website's scene intake with a navigation
+task (``website_navigation_intake``); its intake receipt, written beside this record once the intent is
+staged, binds the record's source. The record itself stays as sealed (``source`` None, its ``source_gap``
+naming what the receipt supplies). ``screening_source`` returns the receipt's source and refuses with
+``website_navigation_scene_inputs_source_identity_unbound`` while this record has no receipt. Nothing here
 spends, calls a provider, runs a simulator or claims a result; everything stays ``development_only``.
 """
 from __future__ import annotations
@@ -62,10 +64,8 @@ CLAIM_CEILING = "development_only"
 CONTRACT_FIELDS = ("task_success_contract", "task_success_contract_digest")
 #: The G1 preparation's physics rate (``beta_policy_screening_g1_prepare``).
 PHYSICS_FREQUENCY_HZ = 200.0
+#: Why ``screening_source`` names no source: this record has no intake receipt (``website_navigation_intake``).
 SOURCE_UNBOUND = "website_navigation_scene_inputs_source_identity_unbound"
-#: Whether ``screening_source`` can name a source at all. Not while the website's scene intake takes no
-#: navigation task (``screening_source``); readers refuse by name before reading a record.
-SOURCE_IDENTITY_BINDABLE = False
 #: The G1 runtime source is the G1 registration's own record (``beta_policy_screening_g1``), not the scene's.
 RUNTIME_SOURCE_GAP = "website_navigation_scene_inputs_runtime_source_from_g1_registration"
 _PACKET_FILES = (("packet_request", "native_task_arena_packet_request.v1.json"),
@@ -206,7 +206,7 @@ def _assumptions(*, root_height_m: float) -> list[str]:
         "nominal_scenario_cell_only_no_perturbation",
         "appearance_is_the_renderer_unqualified_website_particlefield_no_appearance_variant_recorded",
         "scene_assets_and_task_spec_bound_by_the_handoff_that_wrote_both_not_by_a_shared_digest",
-        "source_identity_unbound_a_scene_kept_as_filmed_has_no_scene_intent",
+        "source_identity_is_bound_by_the_jobs_website_intake_receipt_not_by_this_record",
     ]
 
 
@@ -526,19 +526,27 @@ def derived_profile_row(written: Mapping[str, Any], *, capture_root: str | Path)
 
 
 def screening_source(record: Mapping[str, Any]) -> dict[str, Any]:
-    """The current-source identity the screening lane binds (``SOURCE_FIELDS``): not decided yet.
+    """The current-source identity the screening lane binds (``SOURCE_FIELDS``), from this job's intake receipt.
 
-    A screening source names the scene intent a configured scene was built from; a scene kept as
-    filmed has none. The website makes one only through its scene intake (``prepared-scene``), which
-    accepts a pick-and-place, an articulated open/close or a task family task and no navigation task,
-    and which takes a completed preparation's revision only from a configured scene's offering or a
-    family preparation's reference. So no intake exists for a navigation job to bind, and this refuses
-    by name until the website's intake contract accepts one.
+    ``record`` is the record its reader has just verified. A scene kept as filmed gets its scene intent
+    from the website's navigation intake (``prepared-scene``); the Pipeline's intake receipt beside the
+    record (``website_navigation_intake.bind_navigation_intake_receipt``) binds the intent's id and digest,
+    the capture, the task, the task context and this record's scene revision. Without a receipt (no
+    intake yet, or one the website refused, such as an unconfirmed brief) this refuses by name.
     """
-    raise WebsiteNavigationSceneInputsError(SOURCE_UNBOUND)
+    from .website_navigation_intake import read_navigation_intake_receipt
+
+    try:
+        path = Path(record["packet_root"]).parent / RECORD_FILENAME
+    except (KeyError, TypeError) as exc:
+        raise WebsiteNavigationSceneInputsError(SOURCE_UNBOUND) from exc
+    # A receipt that no longer reads or binds this record refuses by its own name.
+    receipt = read_navigation_intake_receipt(path, record)
+    if receipt is None:
+        raise WebsiteNavigationSceneInputsError(SOURCE_UNBOUND)
+    return dict(receipt["source"])
 
 
-__all__ = ["CLAIM_CEILING", "OUTPUT_DIRECTORY", "RECORD_FILENAME", "SCHEMA", "SOURCE_IDENTITY_BINDABLE",
-           "SOURCE_UNBOUND",
+__all__ = ["CLAIM_CEILING", "OUTPUT_DIRECTORY", "RECORD_FILENAME", "SCHEMA", "SOURCE_UNBOUND",
            "WebsiteNavigationSceneInputsError", "derived_profile_row",
            "read_navigation_scene_inputs", "screening_source", "write_navigation_scene_inputs"]

@@ -246,7 +246,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     settle_hold(root, request, RELEASE)
     outcomes.extend(_scene_preparation_holds(root, packet_root, max_sources=max_sources, newest=newest))
     from .beta_policy_screening_family_sources import enqueue_registered_family_scenes
-    family = enqueue_registered_family_scenes(queue_root=root, max_sources=max_sources)
+    family = enqueue_registered_family_scenes(queue_root=root, max_sources=max_sources, packet_queue_root=packet_root)
     return {"sources": outcomes + family["sources"], "team_scene_packet_requeue": packet_requeue}
 
 

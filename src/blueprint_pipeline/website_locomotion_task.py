@@ -50,12 +50,12 @@ NAVIGATION_PIPELINE_PIECES = (
     "navigation_scene_assets",                    # Isaac appearance/collision for a scene kept as filmed
     "arena_navigation_scene_runtime",             # scene plan, runtime and readback without a task object
     "g1_navigation_preparation",                  # G1 stance at the compiled start, its nominal cell, registration
-    "navigation_source_identity",                 # the website's scene intake takes a navigation task
+    "navigation_source_identity",                 # this job's website intake receipt (website_navigation_intake)
 )
 #: The screening source a navigation scene half binds (``website_navigation_scene_inputs.screening_source``)
-#: is the website's scene intent, and the website's intake accepts no navigation task yet. Until it does
-#: (``SOURCE_IDENTITY_BINDABLE``) this piece is missing for every job, so the hold names it instead of a
-#: job passing the handoff with nothing it can screen.
+#: is the scene intent of the job's website navigation intake, bound by the intake receipt beside its record
+#: (``website_navigation_intake``). The piece is built for a job only once that job's receipt exists, so the
+#: hold names it for every job without one (no intake yet, or one the website refused).
 SOURCE_IDENTITY_PIECE = "navigation_source_identity"
 #: What the G1 lane itself still adds (its perturbed start cells, planning and launch) shows as the
 #: catalog rows' own task-kind support (``_catalog_task_kind_gap``) and the embodiment's missing work.
@@ -64,26 +64,26 @@ SOURCE_IDENTITY_PIECE = "navigation_source_identity"
 #: ``arena_navigation_scene_runtime`` is code alone: the arena runs a scene with no task object (part B,
 #: #3431), for every job; the scene plan and runtime contract a job compiles are its scene half's.
 BUILT_NAVIGATION_PIECES = frozenset({"navigation_task_spec_from_compiled_spec", "navigation_scene_assets",
-                                     "arena_navigation_scene_runtime", "g1_navigation_preparation"})
+                                     "arena_navigation_scene_runtime", "g1_navigation_preparation",
+                                     SOURCE_IDENTITY_PIECE})
 #: Each job-made piece and the handoff output it stands for (``website_scene_handoff``):
-#: ``navigation_task_spec.json``, ``navigation_scene_assets.json``, and the scene-inputs record
-#: (``website_navigation_scene_inputs``: the G1 at the compiled start) with its team registry row.
+#: ``navigation_task_spec.json``, ``navigation_scene_assets.json``, the scene-inputs record
+#: (``website_navigation_scene_inputs``: the G1 at the compiled start) with its team registry row, and
+#: that record's website intake receipt (``website_navigation_intake``).
 NAVIGATION_PIECE_OUTPUTS = {"navigation_task_spec_from_compiled_spec": "navigation_task_spec",
                             "navigation_scene_assets": "navigation_scene_assets",
-                            "g1_navigation_preparation": "navigation_scene_inputs"}
+                            "g1_navigation_preparation": "navigation_scene_inputs",
+                            SOURCE_IDENTITY_PIECE: "navigation_intake_receipt"}
 NAVIGATION_TASK_FILE = "navigation_task_spec.json"
 
 
 def navigation_pieces_built(outputs: Mapping[str, bool]) -> frozenset[str]:
     """What exists for one job: each built piece its handoff wrote the output of, and the code-only ones.
 
-    The source identity counts once the website's intake can bind one (``SOURCE_IDENTITY_PIECE``).
+    The source identity counts only for a job whose own intake receipt exists (``SOURCE_IDENTITY_PIECE``).
     """
-    from .website_navigation_scene_inputs import SOURCE_IDENTITY_BINDABLE
-
-    built = frozenset(piece for piece in BUILT_NAVIGATION_PIECES
-                      if piece not in NAVIGATION_PIECE_OUTPUTS or outputs.get(NAVIGATION_PIECE_OUTPUTS[piece]) is True)
-    return built | {SOURCE_IDENTITY_PIECE} if SOURCE_IDENTITY_BINDABLE is True else built
+    return frozenset(piece for piece in BUILT_NAVIGATION_PIECES
+                     if piece not in NAVIGATION_PIECE_OUTPUTS or outputs.get(NAVIGATION_PIECE_OUTPUTS[piece]) is True)
 
 
 def _sha256(path: Path) -> str:

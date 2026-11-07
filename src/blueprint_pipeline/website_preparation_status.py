@@ -342,8 +342,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         terminal_reason = None
         if before.get("status") == "completed":
             from .website_task_context_contracts import (
-                holds_native_task_preparation, retains_geometry_only_fit, retains_robot_fit_hold,
-                retains_task_family_preparation,
+                holds_native_task_preparation, retains_geometry_only_fit, retains_navigation_preparation,
+                retains_robot_fit_hold, retains_task_family_preparation,
             )
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
             from .website_target_background_correction import retains_rejected_selection
@@ -354,11 +354,13 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                                    or retains_geometry_only_fit(handoff, current)
                                    or retains_robot_fit_hold(handoff, current))
             family_prepared = retains_task_family_preparation(handoff, current)
+            # A navigation job handed to the G1 screening lane reads as handed off; it claims no result.
+            navigation_prepared = retains_navigation_preparation(handoff, current)
             _require(handoff.get("schema_version") == "website_scene_handoff.v1"
                      and handoff.get("scene_id") == selected["scene_id"]
                      and handoff.get("capture_id") == selected["capture_id"]
                      and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
-                     and (native_profile_held or family_prepared or
+                     and (native_profile_held or family_prepared or navigation_prepared or
                           handoff.get("website_intake_outbox", {}).get("state") == "forward_pending"))
             _require(bool(_output_commit(root, scene_id=selected["scene_id"], capture_id=selected["capture_id"])))
             state = ("awaiting_inputs" if native_profile_held or (family_prepared and handoff["status"] == "needs_input")

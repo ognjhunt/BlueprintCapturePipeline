@@ -647,6 +647,12 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         return emit("awaiting_execution", "paused", ["scene_intent_paused"])
     if intent['request']['task'].get('evaluation_source') is not None:
         return emit('awaiting_execution', 'selected_team_evaluation')
+    from .website_navigation_intake import RESULT_PHASE, is_navigation_request, navigation_preparation_result
+    if is_navigation_request(intent['request']):
+        # A navigation intake keeps its scene as filmed: nothing to construct, configure or pay for
+        # (owner, 2026-11-07: it reserves $0 and grants no construction allowance). Its intent
+        # completes here, before any source, attempt or reservation, naming the record's revision.
+        return emit('completed', RESULT_PHASE, [], navigation_preparation_result(intent['request']))
     if is_preparation_only and state.get("activation"):
         from .website_publication_recovery import reconcile_website_publication
         recovery = reconcile_website_publication(intent=intent, config=config, release=release)

@@ -481,14 +481,50 @@ def navigation_site(tmp_path, monkeypatch):
 
 
 def stand_in_source(monkeypatch, site):
-    """A navigation record names no source yet (its scene intent is undecided): a clearly marked stand-in."""
+    """The record's intake receipt's source, stood in for where a test is about something else."""
     monkeypatch.setattr(contract, "navigation_source", lambda record: dict(site.args["source"]))
 
 
-def test_a_navigation_record_names_no_source_yet_so_the_door_refuses_by_name(tmp_path, monkeypatch):
+def test_a_navigation_record_without_an_intake_receipt_is_refused_by_name(tmp_path, monkeypatch):
     site = navigation_site(tmp_path, monkeypatch)
     assert site.record["source"] is None
     with pytest.raises(ValueError, match="^native_g1_install_navigation_source_identity_unbound$"):
+        contract.site_inputs(site.request, site.registry)
+
+
+def write_intake_receipt(site, **changes):
+    """The job's website intake receipt beside its record, as the Pipeline writes it (website_navigation_intake)."""
+    from blueprint_pipeline.website_navigation_intake import RECEIPT_FILENAME, RECEIPT_SCHEMA
+    from blueprint_pipeline.website_navigation_scene_inputs import _write_once
+
+    source = {**site.args["source"], **changes.pop("source", {})}
+    receipt = {"schema_version": RECEIPT_SCHEMA, "claim_ceiling": "development_only", "scene_id": site.record["scene_id"],
+               "scene_inputs_digest": site.record["scene_inputs_digest"],
+               "scene_revision_digest": site.record["scene_revision_digest"], "outbox_digest": "sha256:" + "4" * 64,
+               "request_digest": "sha256:" + "5" * 64,
+               "intent": {"intent_id": source["scene_intent_id"], "intent_digest": source["scene_intent_digest"]},
+               "source": source, "reserved_usd": 0, "construction_allowance_granted": False, **changes}
+    receipt["receipt_digest"] = contract.common.digest(receipt, "receipt_digest")
+    _write_once(Path(site.record["packet_root"]).parent / RECEIPT_FILENAME, receipt)
+
+
+def test_the_door_reads_a_navigation_records_source_from_its_intake_receipt(tmp_path, monkeypatch):
+    site = navigation_site(tmp_path, monkeypatch)
+    write_intake_receipt(site)
+    assert contract.navigation_source(site.record) == site.args["source"]
+    inputs_root, record, *_ = contract.site_inputs(site.request, site.registry)
+    assert record == site.record and inputs_root == Path(site.record["packet_root"]).parent
+
+
+@pytest.mark.parametrize("change,reason", [
+    ({"scene_inputs_digest": "sha256:" + "6" * 64}, "navigation_source_identity_unbound"),
+    ({"intent": {"intent_id": "scene-other", "intent_digest": "sha256:" + "7" * 64}}, "navigation_source_identity_unbound"),
+    ({"source": {"scene_intent_id": "scene-other", "scene_intent_digest": "sha256:" + "7" * 64}}, "current_intent_changed"),
+])
+def test_an_intake_receipt_for_another_record_or_intent_is_refused(tmp_path, monkeypatch, change, reason):
+    site = navigation_site(tmp_path, monkeypatch)
+    write_intake_receipt(site, **change)
+    with pytest.raises(ValueError, match=f"^native_g1_install_{reason}$"):
         contract.site_inputs(site.request, site.registry)
 
 

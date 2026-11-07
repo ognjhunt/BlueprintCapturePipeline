@@ -36,6 +36,7 @@ def run_website_capture_preparation(
         holds_native_task_preparation,
         retains_geometry_only_fit,
         retains_robot_fit_hold,
+        retains_navigation_preparation,
         retains_task_family_preparation,
         sponsors_scene_preparation,
     )
@@ -156,6 +157,7 @@ def run_website_capture_preparation(
     if (outbox.get("state") != "forward_pending"
             and not holds_native_task_preparation(preparation, context)
             and not retains_task_family_preparation(preparation, context)
+            and not retains_navigation_preparation(preparation, context)
             and not retains_geometry_only_fit(preparation, context)
             and not retains_robot_fit_hold(preparation, context)):
         raise StageError("website_scene_preparation", ",".join(

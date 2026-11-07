@@ -156,6 +156,33 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
                 return False
         except (ValueError, TypeError, KeyError):
             return False
+    elif (isinstance(handoff.get("navigation_intake"), Mapping)
+          and handoff["navigation_intake"].get("status") == "refused"
+          and handoff["navigation_intake"].get("reason") == code):
+        # ``website_locomotion_hold.navigation_intake_refusal_hold``: the website refused the navigation
+        # job's intake by this name (``website_navigation_intake``), recorded by the handoff that sent it.
+        # Re-derived from the job's own profile and the options the hold recorded.
+        from .task_spec_compiler import requirements
+        from .website_locomotion_hold import navigation_intake_refusal_hold
+        from .website_task_semantics import effective_task_profile
+        try:
+            semantics = gap.get("task_semantics") if family == "general_task" else None
+            profile = task_profile_for(effective_task_profile(task_context=task_context,
+                task_semantics=semantics, source_video_digest=gap.get("source_video_digest")))
+            if profile is None or profile.requires_manipulation or not profile.requires_locomotion:
+                return False
+            need = requirements(locomote=True, manipulate=False)
+            recorded = gap.get("runnable_options")
+            if (not isinstance(recorded, Mapping)
+                    or dict(handoff["navigation_intake"]) != {"status": "refused", "reason": code}
+                    or gap != navigation_intake_refusal_hold(task_context=task_context, requirements=need,
+                                                             spec_digest=gap.get("compiled_task_spec_digest"),
+                                                             refusal=code, options=recorded, task_semantics=semantics,
+                                                             source_video_digest=gap.get("source_video_digest"))
+                    or handoff.get("compiled_task_spec_digest") != gap.get("compiled_task_spec_digest")):
+                return False
+        except (ValueError, TypeError, KeyError):
+            return False
     elif code == "website_task_family_runtime_preparation_required":
         # ``website_early_task_hold.task_family_runtime_gap``: the job's own family, from its
         # source-bound reading, re-derived here; the catalog is the one recorded at the hold.
@@ -208,6 +235,55 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
         and gap.get("description") == description
         and gap.get("job_disposition") == "held_for_preparation"
     )
+
+
+def retains_navigation_preparation(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
+    """A navigation job handed to the G1 screening lane (``website_locomotion_hold.navigation_preparation``).
+
+    Recognized as a family preparation is: the job's own resolved profile walks and handles nothing,
+    every runnable option recorded is a G1 navigation checkpoint, and the record re-derives from those
+    options, the scene-inputs record and the intake receipt the handoff recorded, for this exact task
+    context. It claims no result and grants no execution; screening reads the registry row.
+    """
+    if not isinstance(handoff, Mapping) or not isinstance(task_context, Mapping):
+        return False
+    from .task_profile_contracts import task_profile_for
+    from .website_locomotion_hold import navigation_preparation
+    from .website_task_semantics import effective_task_profile
+    record = handoff.get("navigation_preparation")
+    intake = handoff.get("navigation_intake")
+    inputs = handoff.get("navigation_scene_inputs")
+    digest = task_context.get("context_digest")
+    try:
+        if (not isinstance(record, Mapping) or not isinstance(intake, Mapping) or not isinstance(inputs, Mapping)
+                or not isinstance(digest, str) or digest != canonical_digest(task_context, digest_field="context_digest")
+                or handoff.get("schema_version") != "website_scene_handoff.v1"
+                or handoff.get("digest") != canonical_digest(handoff, digest_field="digest")
+                or any(handoff.get(key) != task_context.get(key) for key in ("scene_id", "capture_id"))
+                or handoff.get("status") != "intake_ready" or handoff.get("blockers") != []
+                or handoff.get("job_disposition") != "accepted" or handoff.get("simulator_ready") is not False
+                or handoff.get("claim_ceiling") != "development_only"
+                or handoff.get("visual_reconstruction_ready") is not True
+                or "runtime_inputs" in handoff or handoff.get("website_intake_outbox")
+                or "native_task_preparation_gap" in handoff
+                or inputs.get("status") != "written" or intake.get("status") != "forward_pending"
+                or not isinstance(intake.get("receipt"), Mapping)
+                or record.get("compiled_task_spec_digest") != handoff.get("compiled_task_spec_digest")):
+            return False
+        semantics = record.get("task_semantics") if task_context.get("task_family") == "general_task" else None
+        profile = task_profile_for(effective_task_profile(task_context=task_context, task_semantics=semantics,
+                                                          source_video_digest=record.get("source_video_digest")))
+        if profile is None or profile.requires_manipulation or not profile.requires_locomotion:
+            return False
+        source = record.get("source") or {}
+        return (record == navigation_preparation(
+                    task_context=task_context, spec_digest=record.get("compiled_task_spec_digest"),
+                    options=record.get("runnable_options") or {}, scene_inputs=inputs, receipt=intake["receipt"],
+                    task_semantics=semantics, source_video_digest=record.get("source_video_digest"))
+                and source.get("capture_id") == task_context.get("capture_id")
+                and source.get("task_id") == "website-" + digest[7:27])
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return False
 
 
 def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:

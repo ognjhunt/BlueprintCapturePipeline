@@ -41,6 +41,7 @@ from .task_evaluation_scene_intent_contracts import (
     ATTEMPT_SCHEMA,
     CLIENTS_ENV,
     INTENT_SCHEMA,
+    NAVIGATION_STRATEGY,
     REQUEST_SCHEMA,
     ROOT_ENV,
     SUPPORTED_POLICY_CANDIDATE_IDS,
@@ -207,6 +208,10 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         directory = root / intent_id
         _require(not directory.is_symlink(), "record_unsafe")
         intent = _read(directory / "intent.json", "intent_digest")
+        # Owner, 2026-11-07: a navigation intake reserves $0 and grants no construction allowance;
+        # its intent completes without paid configuration, so it can hold no attempt at all.
+        _require(intent["request"]["task"].get("strategy") != NAVIGATION_STRATEGY,
+                 "navigation_intent_reserves_nothing")
         from .website_preparation_revision_identity import requires_retained_authority
         if requires_retained_authority(intent["request"]):
             trusted = {item.strip() for item in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if item.strip()}
@@ -376,11 +381,24 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         result_reference = progress.get("result_reference")
         result_run_id = (progress.get("state") or {}).get("result_run_id")
         _require(result_run_id is None or _identifier(result_run_id), "result_run_id_invalid")
+        from .website_navigation_intake import (
+            RESULT_PHASE as NAVIGATION_PHASE, RESULT_SCHEMA as NAVIGATION_RESULT,
+            validate_navigation_preparation_result,
+        )
         if phase == "family_native_prepared":
             _require(isinstance(result_reference, Mapping)
                      and result_reference.get("schema_version") == "website_task_family_preparation_result.v1",
                      "result_reference_invalid")
-        if (isinstance(result_reference, Mapping)
+        if phase == NAVIGATION_PHASE:
+            _require(isinstance(result_reference, Mapping)
+                     and result_reference.get("schema_version") == NAVIGATION_RESULT, "result_reference_invalid")
+        if isinstance(result_reference, Mapping) and result_reference.get("schema_version") == NAVIGATION_RESULT:
+            try:
+                validate_navigation_preparation_result(result_reference, request=intent["request"],
+                                                       status=status, phase=phase)
+            except (ValueError, KeyError, TypeError):
+                raise SceneIntakeError("scene_intake_result_reference_invalid") from None
+        elif (isinstance(result_reference, Mapping)
                 and result_reference.get("schema_version") == "website_task_family_preparation_result.v1"):
             from .task_family_dispatch_contracts import validate_family_preparation_result_reference
             try:

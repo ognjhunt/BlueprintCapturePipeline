@@ -6,8 +6,9 @@ whether any policy can run.
 
 A navigation job's registered scene inputs (``navigation_scene_inputs_path``,
 ``website_navigation_scene_inputs``) are picked up the same way. Its current-source
-identity comes from ``website_navigation_scene_inputs.screening_source``; until that
-is decided the source holds by that name and the next source goes on.
+identity is the one its website intake receipt binds (``website_navigation_intake``),
+bound here once the Pipeline has staged that intake's intent; while the record has no
+receipt the source holds by name and the next source goes on.
 """
 from __future__ import annotations
 
@@ -46,8 +47,12 @@ def _profile_captures():
     return sorted(captures)
 
 
-def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
-    """Freeze queue work from exact registered facts; never allocate a resource."""
+def enqueue_registered_family_scenes(*, queue_root, max_sources=32, packet_queue_root=None):
+    """Freeze queue work from exact registered facts; never allocate a resource.
+
+    ``packet_queue_root`` is the team scene packet queue the G1 site registration reads
+    (``native_g1_site_registration.ensure_site_registration``), as the packet pass passes it.
+    """
     from .beta_policy_candidate_catalog import load_default_catalog
     from .beta_policy_screening_capabilities import build_planning_inputs
     from .beta_policy_screening_coordinator import (
@@ -86,16 +91,38 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                                   and profile.get('navigation_scene_inputs_path'))
                 if not profile or not (profile.get('family_scene_inputs_path') or navigation):
                     raise ValueError('beta_screening_family_profile_unavailable')
-                catalog = catalog_for_profile(profile, base_catalog)
                 if navigation:
-                    # A scene kept as filmed has no scene intent: the record's reader verifies it and
-                    # screening_source names its current source. While no website intake can name one,
-                    # it refuses by name first, so a pass does not re-hash every record and packet.
+                    # A scene kept as filmed gets its scene intent from the job's website navigation
+                    # intake; its intake receipt binds the source (website_navigation_intake), bound here
+                    # once the intent is staged. With no receipt this refuses by name before the record
+                    # and its packet are read (and hashed) again on every pass.
                     from . import website_navigation_scene_inputs as navigation_inputs
-                    if not navigation_inputs.SOURCE_IDENTITY_BINDABLE:
+                    from .website_navigation_intake import bind_navigation_intake_receipt, receipt_exists
+                    record_path = profile['navigation_scene_inputs_path']
+                    if not receipt_exists(record_path):
+                        bind_navigation_intake_receipt(record_path=record_path, capture_root=profile['capture_root'])
+                    if not receipt_exists(record_path):
                         raise navigation_inputs.WebsiteNavigationSceneInputsError(navigation_inputs.SOURCE_UNBOUND)
                     source = navigation_inputs.screening_source(
-                        navigation_inputs.read_navigation_scene_inputs(profile['navigation_scene_inputs_path']))
+                        navigation_inputs.read_navigation_scene_inputs(record_path))
+                    # The owner's standing approval (2026-11-06): the service registers the site's G1
+                    # candidates itself, before the catalog is read, as the packet pass does. A new row
+                    # changes the catalog's revision, so the site plans again. A G1 problem is recorded,
+                    # never a stop for this site.
+                    try:
+                        from .native_g1_site_registration import ensure_site_registration
+                        from .team_scene_packet_worker import current_release_commit
+
+                        if packet_queue_root is None:
+                            raise ValueError('beta_screening_team_scene_packet_queue_root_not_configured')
+                        registered = ensure_site_registration(site_id=str(profile['scene_id']), source=source,
+                            source_queue=packet_queue_root, release=current_release_commit())
+                        if registered.get('status') == 'registered':
+                            outcome['g1_registration'] = {'status': 'registered'}
+                    except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a site
+                        from .bounded_error import error_description
+
+                        outcome['g1_registration'] = {'status': 'failed', 'error': error_description(exc)}
                 else:
                     retained = read(profile['family_scene_inputs_path'], digest_field='inputs_digest')
                     intent = reopen_scene_intent(retained['references']['scene_intent'])
@@ -107,6 +134,7 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                             or intent['request']['task']['task_success_contract_digest']
                             != inputs['task_success_contract_digest']):
                         raise ValueError('beta_screening_family_source_intent_mismatch')
+                catalog = catalog_for_profile(profile, base_catalog)
                 context = require_current_source(source, site_id=profile['scene_id'])
                 if context['scene_id'] != profile['scene_id']:
                     raise ValueError('beta_screening_family_source_scene_mismatch')
