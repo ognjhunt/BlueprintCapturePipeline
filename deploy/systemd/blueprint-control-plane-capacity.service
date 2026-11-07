@@ -34,6 +34,10 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/capacity
+# The account-wide monthly limit (account_monthly_spend): each tick leaves its OpenAI and
+# World Labs month readings here for the spend guard, which writes the admission report
+# beside them. The directory is the service account's and readable by the paid lanes.
+ReadWritePaths=-/var/lib/blueprint/pipeline-control-plane/account-monthly-spend
 ReadOnlyPaths=/etc/blueprint/provider-secrets /var/lib/blueprint/pipeline-control-plane/disk-reservations
 TasksMax=64
 # Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
@@ -75,4 +79,6 @@ EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 # keeps the optional monitor disabled; activation itself remains fail-closed.
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
 WorkingDirectory=/
+# Never fail the capacity tick over it: without the directory the guard flags the readings as unobserved.
+ExecStartPre=-+/bin/bash -c 'install -d -o blueprint -g blueprint -m 0755 /var/lib/blueprint/pipeline-control-plane/account-monthly-spend'
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.control_plane_capacity_controller'

@@ -2105,6 +2105,30 @@ def _refresh_gcp_monthly_budget() -> None:
         print(f"GCP monthly budget controller failed: {type(exc).__name__}", file=sys.stderr)
 
 
+def _refresh_account_monthly_spend(billing_export: str | None, *, now: float) -> dict[str, Any]:
+    """Rewrite the account-wide monthly report the paid chokepoint reads, and summarize it.
+
+    ``account_monthly_spend`` reads the reconciled billing export, the GCP
+    budget report this run refreshed, the capacity tick's OpenAI and World
+    Labs readings and the per-job meter. A failure here leaves the previous
+    report to age out: with a limit configured, paid admission then refuses.
+    """
+    try:
+        from blueprint_pipeline.account_monthly_spend import summary
+        from blueprint_pipeline.account_monthly_spend_report import refresh_report
+
+        report = refresh_report(now=now, billing_export_path=Path(billing_export) if billing_export else None)
+        limit = report.get("limit_usd")
+        print(f"Account monthly spend: ${report['counted_usd']:.2f}"
+              + (f" of ${float(limit):.2f}" if limit else " (no cap set)")
+              + (" - limit reached, new paid admissions refused" if report.get("limit_reached") else ""),
+              file=sys.stderr)
+        return summary(report)
+    except Exception as exc:
+        print(f"Account monthly spend refresh failed: {type(exc).__name__}", file=sys.stderr)
+        return {"status": "refresh_failed", "error_type": type(exc).__name__}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -2421,6 +2445,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 billing_reconciliation=billing_reconciliation,
                 spend_admission_lock=admission_lock,
             )
+        report["account_monthly_spend"] = _refresh_account_monthly_spend(args.billing_export, now=_now())
         if args.json_report:
             path = Path(args.json_report)
             path.parent.mkdir(parents=True, exist_ok=True)

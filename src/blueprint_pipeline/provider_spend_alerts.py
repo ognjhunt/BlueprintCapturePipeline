@@ -24,16 +24,24 @@ World Labs (Atlas)
 Google Cloud project ``blueprint-8c1ca`` (Gemini bills here)
     The monthly budget guard's own report (``gcp_monthly_budget_guard``). It
     pages at 80 % of the month's effective limit and never changes the limit.
+The account (owner decision 2026-11-07, "Meter + monthly cap")
+    The spend guard's account-wide monthly report (``account_monthly_spend``):
+    a warn at 50 % of the limit, a page at 80 % and at 100 % (where new paid
+    admissions are refused), and a warn that says no cap is set while none is
+    configured. Each tick also leaves its OpenAI and World Labs readings where
+    that report reads them (``configured_spend_check``).
 
 A page code repeats hourly on the capacity alert route while it lasts and makes
 the capacity level critical, as the Vast page does. Missing credentials, an
 unreadable source, a malformed answer or a failed request are warn codes: they
 never page and raise the level to warning at most. Nothing here reserves, admits
-or refuses work, and no launch reads it.
+or refuses work, and no launch reads it: the account limit is enforced from the
+spend guard's report, which only takes these readings as an input.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -44,6 +52,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .account_monthly_spend import ACCOUNT_PAGE_CODES, ACCOUNT_WARN_CODES
+from .account_monthly_spend import account_alerts as _account_alerts
+from .account_monthly_spend import describe as _describe_account
+from .account_monthly_spend import observe_account_spend, persist_provider_observation
 from .gcp_monthly_budget_admission import CONFIG_ENV as GCP_BUDGET_CONFIG_ENV
 
 SCHEMA_VERSION = "provider_spend_observation.v1"
@@ -89,6 +101,7 @@ PAGE_CODES = frozenset({
     "openai_spend_24h_high", "openai_spend_month_high",
     "world_labs_spend_24h_high", "world_labs_spend_month_high",
     "gcp_spend_month_high",
+    *ACCOUNT_PAGE_CODES,
 })
 #: Warn only: the check could not see. ``provider_spend_check_failed`` is the
 #: capacity controller's own, for a check that raised.
@@ -96,6 +109,7 @@ WARN_CODES = frozenset({
     "openai_spend_credentials_missing", "openai_spend_transport_failed", "openai_spend_unverifiable",
     "world_labs_spend_unverifiable", "gcp_spend_unverifiable", "provider_spend_config_invalid",
     "provider_spend_check_failed",
+    *ACCOUNT_WARN_CODES,
 })
 
 DAY_SECONDS = 86_400
@@ -115,10 +129,12 @@ _LINES = (
     ("world_labs_month_usd", WORLD_LABS_MONTH_PAGE_ENV, WORLD_LABS_MONTH_PAGE_USD),
     ("gcp_fraction", GCP_PAGE_FRACTION_ENV, GCP_PAGE_FRACTION),
 )
-_LABELS = {"openai": "OpenAI", "world_labs": "World Labs", "gcp": "Google Cloud"}
+_LABELS = {"openai": "OpenAI", "world_labs": "World Labs", "gcp": "Google Cloud", "account": "Account"}
 _SUMMARY_KEYS = (
     "status", "blockers", "reason", "http_status", "month", "day_usd", "month_to_date_usd", "spend_24h_usd",
     "held_usd", "attempts", "complete", "project_id", "period", "observed_cost_usd", "limit_usd", "generated_at",
+    "cap_status", "spend_usd", "counted_usd", "fraction", "alert_threshold_percent", "alert_lines_usd",
+    "limit_reached", "admission_allowed", "gaps",
 )
 
 
@@ -258,7 +274,18 @@ def _atlas_charge(state_dir: Path, *, since: float) -> dict[str, Any] | None:
     price = _attempt_price(state_dir, state)
     if price is None:
         raise ValueError("world_labs_spend_attempt_unreadable")
-    return {"at_epoch": sent_at, "usd": price, "held": outcome is None}
+    return {"at_epoch": sent_at, "usd": price, "held": outcome is None, "job_id": _atlas_job_id(state_dir),
+            "attempt": "atlas:" + hashlib.sha256(str(state_dir).encode()).hexdigest()[:32]}
+
+
+def _atlas_job_id(state_dir: Path) -> str | None:
+    """The scene the attempt belongs to (``site-<request id>`` for a website job), from its path."""
+
+    parts = state_dir.parts
+    for index in range(len(parts) - 1, 0, -1):
+        if parts[index - 1] == "scenes" and index + 2 < len(parts) and parts[index + 1] == "captures":
+            return parts[index]
+    return None
 
 
 def observe_world_labs_spend(*, now: float, storage_root: Path, deadline_seconds: float = SCAN_DEADLINE_SECONDS,
@@ -314,7 +341,9 @@ def observe_world_labs_spend(*, now: float, storage_root: Path, deadline_seconds
             "spend_24h_usd": round(sum((c["usd"] for c in charges if c["at_epoch"] >= window_start), 0.0), 6),
             "month_to_date_usd": round(sum((c["usd"] for c in month), 0.0), 6),
             "held_usd": round(sum((c["usd"] for c in month if c["held"]), 0.0), 6),
-            "attempts": len(month), "complete": not blockers}
+            "attempts": len(month), "complete": not blockers,
+            # Per attempt, for the per-job meter (``paid_spend_meter.atlas_rows``); not in the door summary.
+            "charges": month}
 
 
 def observe_gcp_spend(*, now: float, config_path: str | None) -> dict[str, Any]:
@@ -413,6 +442,9 @@ def spend_alerts(providers: Mapping[str, Mapping[str, Any]], lines: Mapping[str,
                 alerts.append(_page("gcp_spend_month_high", "gcp", cost, line, f"billing_month:{gcp.get('period')}",
                                     limit_usd=limit))
         alerts.extend(_warns("gcp", gcp))
+    account = providers.get("account")
+    if isinstance(account, Mapping):
+        alerts.extend(_account_alerts(account))
     return alerts
 
 
@@ -428,6 +460,7 @@ def observe_provider_spend(now: float, *, environ: Mapping[str, str] | None = No
         "world_labs": observe_world_labs_spend(
             now=now, storage_root=Path(str(env.get(ATLAS_STORAGE_ROOT_ENV) or DEFAULT_ATLAS_STORAGE_ROOT))),
         "gcp": observe_gcp_spend(now=now, config_path=env.get(GCP_BUDGET_CONFIG_ENV)),
+        "account": observe_account_spend(now=now, environ=env),
     }
     alerts.extend(spend_alerts(providers, lines))
     return {"schema_version": SCHEMA_VERSION, "observed_at_epoch": now, "lines": lines, "providers": providers,
@@ -439,7 +472,14 @@ def configured_spend_check() -> Callable[[float], Mapping[str, Any]] | None:
 
     if str(os.getenv(DISABLE_ENV) or "").strip().lower() in {"0", "false", "no", "off"}:
         return None
-    return lambda now: observe_provider_spend(now)
+
+    def check(now: float) -> Mapping[str, Any]:
+        observation = observe_provider_spend(now)
+        # The spend guard's account report reads these OpenAI and World Labs readings.
+        persist_provider_observation(observation)
+        return observation
+
+    return check
 
 
 def summary_projection(observation: Mapping[str, Any]) -> dict[str, Any]:
@@ -459,6 +499,8 @@ def describe(alert: Mapping[str, Any]) -> str | None:
 
     if alert.get("code") not in PAGE_CODES:
         return None
+    if alert.get("code") in ACCOUNT_PAGE_CODES:
+        return _describe_account(alert)
     provider = str(alert.get("provider") or "")
     spent, line, limit = (_number(alert.get(key)) for key in ("spend_usd", "threshold_usd", "limit_usd"))
     kind, _, value = str(alert.get("window") or "").partition(":")

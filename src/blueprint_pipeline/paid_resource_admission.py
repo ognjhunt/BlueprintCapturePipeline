@@ -132,6 +132,21 @@ def _monthly_budget_blockers(resource_class: str) -> list[str]:
         return ["gcp_monthly_budget_report_unavailable"]
 
 
+def _account_monthly_limit_blockers() -> list[str]:
+    """The account-wide monthly limit (``account_monthly_spend``); ``[]`` while none is configured.
+
+    Checked where a new paid admission is made or about to be reserved, never
+    when an issued grant is re-validated: work already admitted, teardown and
+    reconciliation are never stopped by it.
+    """
+    try:
+        from blueprint_pipeline.account_monthly_spend import admission_blockers
+
+        return admission_blockers()
+    except Exception:
+        return ["account_monthly_spend_limit_unavailable"]
+
+
 def require_paid_resource_budget(*, resource_class: str) -> None:
     """Refuse a known budget blocker before reserving external sponsorship.
 
@@ -139,6 +154,7 @@ def require_paid_resource_budget(*, resource_class: str) -> None:
     current budget again after the remote transaction.
     """
     blockers = _monthly_budget_blockers(resource_class)
+    blockers.extend(_account_monthly_limit_blockers())
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
     blockers.extend(runpod_retirement_blockers(resource_class))
@@ -156,6 +172,7 @@ def require_paid_resource_admission(
     from .core.handoff_lease import handoff_lease_checkpoint, current_handoff_lease_check
     handoff_lease_checkpoint("paid_resource_admission")
     blockers: list[str] = _monthly_budget_blockers(resource_class)
+    blockers.extend(_account_monthly_limit_blockers())
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
     blockers.extend(runpod_retirement_blockers(resource_class))
@@ -174,6 +191,10 @@ def require_paid_resource_admission(
         blockers.append("paid_resource_admission_has_blockers")
     if blockers:
         raise PaidResourceAdmissionBlocked(sorted(set(blockers)))
+    # Every grant is metered against its job (``paid_spend_meter``); never raises.
+    from .paid_spend_meter import meter_chokepoint_admission
+
+    meter_chokepoint_admission(admission, resource_class=resource_class, schema_version=expected_schema_version)
     return PaidResourceAdmissionGrant(
         resource_class=resource_class,
         schema_version=expected_schema_version,
