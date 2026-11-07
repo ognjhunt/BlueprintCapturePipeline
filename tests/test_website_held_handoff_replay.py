@@ -325,3 +325,39 @@ def test_an_integration_gap_keeps_its_bytes_and_is_rerun_once_per_new_release_pa
     assert site.reconcile()["replayed"] == 0 and len(site.runs) == 3
     # Every run read the stage's paid inputs under the sealed parent: nothing was bought again.
     assert site.state["media"] == [site.parent["context_digest"]] * 3
+
+
+def test_a_hold_left_bound_to_the_parent_after_its_context_became_the_confirmed_successor_still_reads_and_replays(site):
+    """A run can replace the retained context with its recorded confirmed successor without rewriting the held
+    handoff: the library-aisle job's 21:22Z restart did, its preparation lane skipped by a stale marker. The
+    hold stays bound to the verified parent; the status still reads and the next release replays it."""
+    from blueprint_pipeline.website_task_context_lineage import LINEAGE_DIRECTORY, record_confirmation_lineage
+
+    site.state["gap"] = True
+    site.deliver()
+    successor = _confirm(site)
+    # What that run left: the successor retained beside its lineage record, the handoff untouched.
+    record_confirmation_lineage(site.root / "pipeline", parent=site.parent, successor=successor)
+    write_json(site.root / "pipeline/website_task_context.json", successor)
+    retain_preparation_wakeup(site.root)
+    selectors = json.loads((site.root / DELIVERY_FILE).read_text())["selectors"]
+    assert selectors["task_context_digest"] == successor["context_digest"]
+    gap = _handoff(site)["native_task_preparation_gap"]
+    assert gap["task_context_digest"] == site.parent["context_digest"]
+    assert replay.held_kind(site.root / "pipeline") == "integration_gap"
+    assert read_preparation_status(capture_root=site.root, selectors=selectors,
+                                   schema_version=STATUS_V6)["state"] == "awaiting_inputs"
+    # Only the verified lineage names the parent: without its record the hold is not accepted.
+    lineage = next((site.root / "pipeline" / LINEAGE_DIRECTORY).iterdir())
+    kept = lineage.read_bytes()
+    lineage.unlink()
+    assert replay.held_kind(site.root / "pipeline") is None
+    lineage.write_bytes(kept)
+    # The next release replays it once, and this run sends the intake under the successor.
+    site.state.update(release="a" * 40, gap=False)
+    assert site.reconcile()["replayed"] == 1 and len(site.runs) == 2
+    handoff = _handoff(site)
+    assert handoff["navigation_intake"]["status"] == "forward_pending"
+    assert handoff["native_task_preparation_gap"]["task_context_digest"] == successor["context_digest"]
+    assert replay.held_kind(site.root / "pipeline") == "intake_receipt"
+    assert site.state["media"] == [site.parent["context_digest"]] * 2

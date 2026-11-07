@@ -355,14 +355,20 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
             from .website_target_background_correction import retains_rejected_selection
             from .observed_room_contracts import retains_observed_room_limit
-            native_profile_held = (holds_native_task_preparation(handoff, bound)
-                                   or retains_rejected_selection(handoff, bound)
-                                   or retains_observed_room_limit(handoff, bound)
-                                   or retains_geometry_only_fit(handoff, bound)
-                                   or retains_robot_fit_hold(handoff, bound))
-            family_prepared = retains_task_family_preparation(handoff, bound)
-            # A navigation job handed to the G1 screening lane reads as handed off; it claims no result.
-            navigation_prepared = retains_navigation_preparation(handoff, bound)
+            from .website_task_context_lineage import binding_contexts
+            # A handoff decided before the brief was confirmed stays bound to the retained context's verified
+            # parent until a run rewrites it; the context itself is tried first.
+            for held_context in binding_contexts(root / "pipeline", bound):
+                native_profile_held = (holds_native_task_preparation(handoff, held_context)
+                                       or retains_rejected_selection(handoff, held_context)
+                                       or retains_observed_room_limit(handoff, held_context)
+                                       or retains_geometry_only_fit(handoff, held_context)
+                                       or retains_robot_fit_hold(handoff, held_context))
+                family_prepared = retains_task_family_preparation(handoff, held_context)
+                # A navigation job handed to the G1 screening lane reads as handed off; it claims no result.
+                navigation_prepared = retains_navigation_preparation(handoff, held_context)
+                if native_profile_held or family_prepared or navigation_prepared:
+                    break
             _require(handoff.get("schema_version") == "website_scene_handoff.v1"
                      and handoff.get("scene_id") == selected["scene_id"]
                      and handoff.get("capture_id") == selected["capture_id"]

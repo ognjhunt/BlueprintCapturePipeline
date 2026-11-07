@@ -83,10 +83,14 @@ def held_kind(pipeline_root: Path) -> str | None:
     can build, so the job is re-evaluated once per release.
     """
     from .website_task_context_contracts import holds_native_task_preparation
+    from .website_task_context_lineage import binding_contexts
 
     root = Path(pipeline_root)
     handoff, context = _handoff(root), _retained_context(root)
-    if handoff is None or context is None or not holds_native_task_preparation(handoff, context):
+    # A hold decided before the brief was confirmed stays bound to the retained context's verified parent
+    # until a run rewrites it (website_task_context_lineage.binding_contexts).
+    if handoff is None or context is None or not any(
+            holds_native_task_preparation(handoff, bound) for bound in binding_contexts(root, context)):
         return None
     blockers = handoff.get("blockers") or []
     if len(blockers) == 1 and blockers[0] in CONSENT_HOLDS and context.get("confirmed") is False:
