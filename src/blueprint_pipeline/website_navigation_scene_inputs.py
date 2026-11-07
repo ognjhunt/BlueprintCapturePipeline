@@ -24,8 +24,9 @@ rigid team scene (``team_scene_packet``, ``website_task_family_scene_inputs``):
   ``scene_revision_digest`` (the base plan digest) and every disclosed assumption.
 
 The current-source identity the screening lane binds (``native_g1_beta_authority.SOURCE_FIELDS``)
-needs a scene intent, which a scene kept as filmed does not have: ``screening_source`` refuses with
-``website_navigation_scene_inputs_source_identity_unbound`` until that is decided. Nothing here
+needs a scene intent, which a scene kept as filmed does not have, and the website's scene intake
+accepts no navigation task to make one: ``screening_source`` refuses with
+``website_navigation_scene_inputs_source_identity_unbound`` until it does. Nothing here
 spends, calls a provider, runs a simulator or claims a result; everything stays ``development_only``.
 """
 from __future__ import annotations
@@ -469,7 +470,11 @@ def screening_source(record: Mapping[str, Any]) -> dict[str, Any]:
     """The current-source identity the screening lane binds (``SOURCE_FIELDS``): not decided yet.
 
     A screening source names the scene intent a configured scene was built from; a scene kept as
-    filmed has none. Until the owner decides what stands in for it, this refuses by name.
+    filmed has none. The website makes one only through its scene intake (``prepared-scene``), which
+    accepts a pick-and-place, an articulated open/close or a task family task and no navigation task,
+    and which takes a completed preparation's revision only from a configured scene's offering or a
+    family preparation's reference. So no intake exists for a navigation job to bind, and this refuses
+    by name until the website's intake contract accepts one.
     """
     raise WebsiteNavigationSceneInputsError(SOURCE_UNBOUND)
 
