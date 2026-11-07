@@ -135,3 +135,50 @@ def test_depth_filter_removes_splat_supported_phantom_and_binds_pose(tmp_path):
     with pytest.raises(ValueError, match="pose_binding_invalid"):
         registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "bad",
             reference_frames=[view("a")], reference_pose_digest="sha256:" + "b" * 64)
+
+
+def _sparse_splat_root(root, points, voxel):
+    """A splat whose Gaussians are sparser than its draft's fusion grid, as a refined Atlas splat can be."""
+    count = len(points)
+    splat = SplatData(count=count, xyz=points.astype(np.float32), opacity=np.full(count, 3.0, np.float32),
+                      f_dc=np.tile(np.array([[1.0, -0.5, 0.0]], np.float32), (count, 1)),
+                      scales=np.full((count, 3), np.log(voxel), np.float32),
+                      quats=np.tile(np.array([[1.0, 0, 0, 0]], np.float32), (count, 1)), properties=PLY_PROPERTIES)
+    root.mkdir(parents=True, exist_ok=True)
+    ply = write_standard_3dgs_ply(splat, root / "atlas_depth_splat.ply")
+    manifest = {"voxel_size": voxel, "units": "provider_world_units",
+                "outputs": [{"role": "splat_ply", "path": ply.name, "sha256": _sha256_file(ply)}]}
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    (root / "atlas_depth_splat_manifest.json").write_text(json.dumps(manifest))
+    return root
+
+
+def test_a_coarser_mesh_than_the_draft_grid_registers_in_its_true_frame(tmp_path):
+    """The library-aisle case: a correctly placed mesh whose triangles are larger than 3 draft voxels."""
+    points, _ = grid(-2.0, extent=0.5, step=0.05)
+    root = _sparse_splat_root(tmp_path / "splat", points, voxel=0.005)
+    coarse = grid(-2.0, extent=0.45, step=0.06, x0=0.013)
+    glb = exported_glb(tmp_path / "mesh.glb", coarse)
+    record = registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+    assert record["glb_frame"] == "atlas_world_rotated_180_x"
+    # The grid-only tolerance (3 draft voxels) is below what this mesh's own spacing allows.
+    residual = record["median_residual_by_frame"]["atlas_world_rotated_180_x"]
+    assert residual > 3 * 0.005 and residual <= record["registration_distance_limit"]
+    assert record["registration_distance_limit"] == pytest.approx(1.5 * record["median_mesh_edge"])
+    assert record["registration_limit_basis"] == "max(3 draft voxels, 1.5 median mesh edges)"
+
+
+def test_a_coarse_mesh_in_no_declared_frame_still_fails_and_says_why(tmp_path):
+    points, _ = grid(-2.0, extent=0.5, step=0.05)
+    root = _sparse_splat_root(tmp_path / "splat", points, voxel=0.005)
+    # Beside the splat in both declared frames: a scene-scale miss no mesh resolution explains.
+    glb = exported_glb(tmp_path / "mesh.glb", grid(-2.0, extent=0.45, step=0.06, x0=3.0))
+    with pytest.raises(ValueError, match="atlas_mesh_not_registered_to_splat"):
+        registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+    failure = json.loads((tmp_path / "registered" / registration.FAILURE_RECORD).read_text())
+    assert failure["reason"] == "atlas_mesh_not_registered_to_splat"
+    assert failure["digest"] == canonical_digest(failure, digest_field="digest")
+    assert failure["median_mesh_edge"] == pytest.approx(0.06)
+    assert set(failure["frame_support"]) == set(registration.GLB_FRAMES)
+    assert failure["mesh_faces"] > 0 and failure["splat_points"] == len(points)
+    assert not (tmp_path / "registered" / "atlas_mesh_registration.json").exists()
