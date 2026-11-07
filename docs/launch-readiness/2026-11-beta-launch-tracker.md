@@ -133,6 +133,14 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - Clean plate: $0.48 held.
   - Intake capture inference: $1.06 known.
   - Known total: about $8.92.
+- **`01ca433` (#3438)**, owner: "Deploy tonight", replacing the 9 AM plan. It adds compact SAM tracks, one resend of an unanswered SAM request (the first is counted as spent) and the expired-lease takeover.
+  - Requested 05:29:33Z (`20261107T052933Z-deploy-f746a3cc`), live 05:42:50Z. Main's CI was fully green.
+  - Before it: no paid lock, no hold, no door request pending, and the last deploy was this session's 69e48f8.
+  - The G1 session was told first. It touches no G1 code and no registration contract.
+  - 05:43:55Z: the first resume (`20261107T054355Z-selected-handoff-39afcb69`) was refused before any work, with `selected_handoff_atlas_preflight_blocked` (`atlas_current_budget_admission_blocked`).
+    - The Google Cloud budget check accepts only a report under 5 minutes old, and this one was older: the spend guard that writes it did not run from 05:36Z to 05:45Z, while the deploy finished.
+    - The month itself was fine: $9.77 of $100, admitted, in the 05:45:00Z report.
+  - 05:46:45Z: resumed again on a fresh status read (`20261107T054645Z-selected-handoff-1692fcb8`). The lease had expired at 03:41Z.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
