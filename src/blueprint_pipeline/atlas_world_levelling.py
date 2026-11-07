@@ -438,6 +438,12 @@ def _replace_uneven_floor(mesh, *, meters_per_unit: float) -> dict[str, Any]:
     near = np.all(np.abs(tri[:, :, 1]) <= FALLBACK_REPLACE_HALF_M, axis=1)
     replaced = level & near & (length > 1e-12)
     corners = tri[replaced].reshape(-1, 3)[:, [0, 2]]
+    if len(corners) < 3:
+        # No face passes the stricter replacement test (a coarse or noisy band): the flat floor still
+        # covers the band, read from its vertices, or the whole scene as a last resort.
+        corners = metres[np.abs(metres[:, 1]) <= FALLBACK_REPLACE_HALF_M][:, [0, 2]]
+    if len(corners) < 3:
+        corners = metres[:, [0, 2]]
     centre = corners.mean(axis=0)
     axes = np.linalg.svd(corners - centre, full_matrices=False)[2]
     along = (corners - centre) @ axes.T

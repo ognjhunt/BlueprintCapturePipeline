@@ -228,6 +228,16 @@ def test_the_flagged_fallback_floor_stands_in_for_an_uneven_one_near_the_provide
     assert np.allclose(np.asarray(value["provider_to_levelled"])[:3, :3], np.eye(3))
 
 
+def test_the_fallback_floor_covers_the_band_when_no_face_passes_the_replacement_test():
+    # Only vertical faces reach the floor band: nothing is replaced, and the flat floor is still built.
+    from tests.atlas_level_room_fixture import _grid
+    vertices, faces = _grid((-2.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0), 81, 41)
+    swapped = levelling._replace_uneven_floor(trimesh.Trimesh(vertices=vertices, faces=faces, process=False),
+                                              meters_per_unit=1.0)
+    assert swapped["replaced_faces"] == 0 and swapped["flat_floor_faces"] > 0
+    assert swapped["flat_floor_extent_m"][0] >= 4.0
+
+
 def test_a_single_dominant_plane_keeps_its_own_basis(tmp_path):
     value, _ = level(tmp_path)
     assert value["level_direction_basis"] == "single_level_plane"
