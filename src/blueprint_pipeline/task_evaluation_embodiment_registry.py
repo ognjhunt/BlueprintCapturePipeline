@@ -281,7 +281,8 @@ def g1_navigation_checkpoint_development_rights_review(candidate_id: str) -> dic
 
 
 #: The owner's words for each stand-in, with the session and UTC time they were said, so a run record that
-#: carries them can be traced to them.
+#: carries them can be traced to them. A run record never says "verified" (the walk's test), so the episode's
+#: promotion is described as the run that "then counts", in the owner's own word.
 CHECKPOINT_TERMS_DECISION = (
     "owner, 2026-11-07 about 13:20Z, library-aisle session, its question 3 (may each navigation checkpoint's "
     "development rights review stand in for its checkpoint-terms review?): \"yes - make sure this is the case "
@@ -290,8 +291,7 @@ CHECKPOINT_TERMS_DECISION = (
 VERIFIED_EPISODE_DECISION = (
     "owner, 2026-11-07 00:05Z, library-aisle session, on how the library job's first G1 navigation run counts: "
     "\"Dev check, then counts\"; made general to the G1 session at 13:43Z (every site and scene, results "
-    "development-only, the first run to pass every check counts as G1's verified navigation episode): "
-    "\"Yes, both confirmed\"")
+    "development-only, and the first run to pass every check then counts): \"Yes, both confirmed\"")
 
 
 #: G1 navigation on every site and scene, development-only (the owner's decisions above; module docstring).
