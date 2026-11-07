@@ -14,8 +14,9 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
 - every run directory, offload pointer and residue pointer under the run roots
   (the ``evidence_cold`` roots and the intent-keyed scene preparation outputs by
   default) that names the site: its scene id or capture id, a scene intent whose
-  website source registration names the site, or a run already bound (a team
-  run naming its source launch). A run is bound only by its own records.
+  website source registration (or, for a navigation job, whose intake outbox in the
+  site's capture) names the site, or a run already bound (a team run naming its
+  source launch). A run is bound only by its own records.
   Offloaded runs are judged by their pointer and retained receipts (one naming
   only another site is that site's), or, with ``scan_offloaded_archives``, by
   the records inside their archive, read through the existing client;
@@ -43,7 +44,8 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   navigation job (a scene kept as filmed) that is everything its handoff writes in the
   capture's workspace: ``navigation_task_spec.json``, ``navigation_scene_assets.json``
   with its authored appearance and collision USDs, and the scene-inputs record's root
-  with its packet, staged scene and G1 USD copies and robot-free probe receipt. The
+  with its packet, staged scene and G1 USD copies, robot-free probe receipt, and the
+  website navigation intake's outbox and intake receipt (``website_navigation_intake``). The
   team registry's derived row naming that record is the team scene section's, which
   refuses a row whose record lies outside the site directory;
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
@@ -201,9 +203,25 @@ def _site_identity(capture_root: Path) -> tuple[Path, dict[str, str]]:
 
 def _lineage_intents(identity: Mapping[str, str], site: Path, intent_root: Path | None,
                      binding_root: Path | None, unresolved: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """Scene intents whose website source registration names the site, and the registrations."""
+    """Scene intents whose website source registration, or navigation intake outbox, names the site.
+
+    A navigation job's website intake (``website_navigation_intake``) has no source registration: its
+    outbox, beside its record in the site's own capture, names the request its intent was staged under.
+    """
 
     request_digests, registrations = set(), []
+    from .website_navigation_intake import OUTBOX_FILENAME, OUTBOX_SCHEMA
+    for path in sorted(site.glob(f"captures/*/pipeline/website_scene_preparation/**/{OUTBOX_FILENAME}")):
+        try:
+            value = _json(path)
+        except WithdrawalDeletionError as error:
+            unresolved.append({"path": str(path), "reason": str(error)})
+            continue
+        if (value.get("schema_version") != OUTBOX_SCHEMA
+                or value.get("outbox_digest") != canonical_digest(value, digest_field="outbox_digest")):
+            unresolved.append({"path": str(path), "reason": "website_withdrawal_deletion_navigation_outbox_unsealed"})
+            continue
+        request_digests.add(value.get("request_digest"))
     if binding_root is not None and binding_root.is_dir():
         for path in sorted(binding_root.glob("*.json")):
             try:

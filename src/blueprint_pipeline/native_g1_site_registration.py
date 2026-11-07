@@ -27,8 +27,9 @@ authority is composed from the G1 packet's plan and the site's retained task con
 (``native_g1_navigation_goal.compose_g1_navigation_goal_authority``) and written beside the packet as
 ``navigation_authority.json``; only its navigation candidates are registered. The authority is deterministic
 from that plan and context, so one that today's contract refuses (an earlier composer's) or that does not read
-is set aside in the same directory and composed again. The door's contract reads such a site only once its
-record names a source (``native_g1_registration_contract.navigation_source``).
+is set aside in the same directory and composed again. The door's contract reads such a site only once the
+record's website intake receipt names a source (``native_g1_registration_contract.navigation_source``,
+``website_navigation_intake``).
 
 Only privacy, rights and money stop work (AGENTS.md). A G1 problem here is a fixed reason in
 ``<root>/<site_id>.status.json``, never an exception. ``BLUEPRINT_NATIVE_G1_AUTO_REGISTRATION=0`` turns

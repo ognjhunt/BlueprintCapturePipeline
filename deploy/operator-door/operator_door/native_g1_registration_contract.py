@@ -43,6 +43,10 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 #: A navigation job's scene half (the Pipeline's ``website_navigation_scene_inputs``): the G1 at the compiled
 #: start of a scene kept as filmed (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C).
 NAVIGATION_SCENE_INPUTS_SCHEMA = "blueprint.website_navigation_scene_inputs.v1"
+#: The website intake receipt the Pipeline writes beside that record (``website_navigation_intake``): it
+#: binds the record's six-field source once the job's navigation intake intent is staged.
+NAVIGATION_INTAKE_RECEIPT_SCHEMA = "blueprint.website_navigation_intake_receipt.v1"
+NAVIGATION_INTAKE_RECEIPT_FILENAME = "website_navigation_intake_receipt.v1.json"
 NAVIGATION_TASK_KIND = "goal_region_navigation"
 NAVIGATION_STANCE_METHOD = "compiled_start_pose"
 
@@ -237,14 +241,28 @@ def site_inputs(request, registry, *, source_queue=SOURCE_QUEUE):
 
 
 def navigation_source(record):
-    """The six-field source a navigation record names; refuses by name while it names none.
+    """The six-field source a navigation record's intake receipt binds; refuses by name while there is none.
 
-    A scene kept as filmed has no scene intent, so the Pipeline's record does not name a source yet
-    (its ``source_gap``, ``website_navigation_scene_inputs.screening_source``). Once it does, the request's
-    source must be exactly that one.
+    A scene kept as filmed gets its scene intent from the job's website navigation intake. The record stays as
+    sealed (``source`` None); the Pipeline's intake receipt beside it (``website_navigation_intake``,
+    ``website_navigation_scene_inputs.screening_source``) binds the record's seal and scene revision and names
+    the source. The request's source must be exactly that one.
     """
-    named = record.get("source")
-    require(isinstance(named, dict) and set(named) == set(SOURCE_FIELDS), "navigation_source_identity_unbound")
+    try:
+        path = Path(record["packet_root"]).parent / NAVIGATION_INTAKE_RECEIPT_FILENAME
+    except (KeyError, TypeError):
+        path = None
+    require(path is not None and path.is_absolute() and path.is_file() and not path.is_symlink(),
+            "navigation_source_identity_unbound")
+    receipt = sealed(path, NAVIGATION_INTAKE_RECEIPT_SCHEMA, "receipt_digest")
+    named, intent = receipt.get("source"), receipt.get("intent") or {}
+    require(isinstance(named, dict) and set(named) == set(SOURCE_FIELDS)
+        and receipt.get("scene_id") == record.get("scene_id")
+        and receipt.get("scene_inputs_digest") == record.get("scene_inputs_digest")
+        and receipt.get("scene_revision_digest") == named.get("scene_revision_digest") == record.get("scene_revision_digest")
+        and named.get("task_id") == record.get("task_id")
+        and named.get("scene_intent_id") == intent.get("intent_id")
+        and named.get("scene_intent_digest") == intent.get("intent_digest"), "navigation_source_identity_unbound")
     return named
 
 
@@ -289,6 +307,9 @@ def navigation_site_inputs(profile, source, site, settings):
     recomputed = {"task_id": base_scene["task_id"], "scene_revision_digest": base_scene["plan_digest"],
                   "task_context_digest": basis.get("task_context_digest")}
     require(all(source[key] == value for key, value in recomputed.items()), "current_navigation_source_changed")
+    # The intake receipt sits beside the record, in the record's own directory inside the capture.
+    require(Path(str(record.get("packet_root") or "")).parent.resolve() == inputs_path.parent.resolve(),
+            "current_site_packet_root_invalid")
     require(navigation_source(record) == source, "current_intent_changed")
     return inputs_path.parent, record, base_receipt, base_request, base_scene
 

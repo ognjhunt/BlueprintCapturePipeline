@@ -492,7 +492,8 @@ def test_the_reader_refuses_a_changed_seal_another_kind_and_a_moved_binding(inpu
     _refused(tmp_path / "missing.json", "website_navigation_scene_inputs_unreadable")
 
 
-def test_the_screening_source_refuses_until_a_source_identity_is_decided(inputs) -> None:
+def test_the_screening_source_refuses_by_name_while_the_record_has_no_intake_receipt(inputs) -> None:
+    """The record stays as sealed; its source comes only from the job's website intake receipt beside it."""
     record = write_navigation_scene_inputs(**inputs)["record"]
     assert set(record["source_gap"]["missing"]) == {"capture_id", "scene_intent_id", "scene_intent_digest"}
     with pytest.raises(WebsiteNavigationSceneInputsError, match=f"^{SOURCE_UNBOUND}$"):

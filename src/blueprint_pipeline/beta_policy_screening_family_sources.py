@@ -6,8 +6,9 @@ whether any policy can run.
 
 A navigation job's registered scene inputs (``navigation_scene_inputs_path``,
 ``website_navigation_scene_inputs``) are picked up the same way. Its current-source
-identity comes from ``website_navigation_scene_inputs.screening_source``; until that
-is decided the source holds by that name and the next source goes on.
+identity is the one its website intake receipt binds (``website_navigation_intake``),
+bound here once the Pipeline has staged that intake's intent; while the record has no
+receipt the source holds by name and the next source goes on.
 """
 from __future__ import annotations
 
@@ -88,14 +89,19 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                     raise ValueError('beta_screening_family_profile_unavailable')
                 catalog = catalog_for_profile(profile, base_catalog)
                 if navigation:
-                    # A scene kept as filmed has no scene intent: the record's reader verifies it and
-                    # screening_source names its current source. While no website intake can name one,
-                    # it refuses by name first, so a pass does not re-hash every record and packet.
+                    # A scene kept as filmed gets its scene intent from the job's website navigation
+                    # intake; its intake receipt binds the source (website_navigation_intake), bound here
+                    # once the intent is staged. With no receipt this refuses by name before the record
+                    # and its packet are read (and hashed) again on every pass.
                     from . import website_navigation_scene_inputs as navigation_inputs
-                    if not navigation_inputs.SOURCE_IDENTITY_BINDABLE:
+                    from .website_navigation_intake import bind_navigation_intake_receipt, receipt_exists
+                    record_path = profile['navigation_scene_inputs_path']
+                    if not receipt_exists(record_path):
+                        bind_navigation_intake_receipt(record_path=record_path, capture_root=profile['capture_root'])
+                    if not receipt_exists(record_path):
                         raise navigation_inputs.WebsiteNavigationSceneInputsError(navigation_inputs.SOURCE_UNBOUND)
                     source = navigation_inputs.screening_source(
-                        navigation_inputs.read_navigation_scene_inputs(profile['navigation_scene_inputs_path']))
+                        navigation_inputs.read_navigation_scene_inputs(record_path))
                 else:
                     retained = read(profile['family_scene_inputs_path'], digest_field='inputs_digest')
                     intent = reopen_scene_intent(retained['references']['scene_intent'])

@@ -18,7 +18,15 @@ from .website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
 
 from .task_family_scoring import FAMILY_ALIASES
 
-TASK_STRATEGIES = ("pick_and_place", "articulated_open_close", *FAMILY_ALIASES)
+#: A navigation job's website intake (``website_navigation_intake``): the robot walks to a goal in a scene
+#: kept as filmed. It names its navigation record's digests and no subject, support or destination, and it
+#: is preparation only. Owner, 2026-11-07: it reserves $0 and grants no construction allowance, because a
+#: scene kept as filmed needs neither, so no attempt is ever reserved for it (``reserve_scene_attempt``).
+NAVIGATION_STRATEGY = "goal_region_navigation"
+NAVIGATION_GEOMETRY_ORIGIN = "kept_as_filmed"
+NAVIGATION_TASK_DIGESTS = ("navigation_task_spec_digest", "compiled_task_spec_digest",
+                           "task_success_contract_digest", "runtime_contract_digest", "scene_revision_digest")
+TASK_STRATEGIES = ("pick_and_place", "articulated_open_close", NAVIGATION_STRATEGY, *FAMILY_ALIASES)
 ARTICULATION_JOINT_TYPES = ("prismatic", "revolute")
 REQUEST_SCHEMA = "task_evaluation_scene_intake_request.v1"
 INTENT_SCHEMA = "task_evaluation_scene_intent.v1"
@@ -96,9 +104,16 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
             validate_family_intake_task(task)
         except (ValueError, KeyError, TypeError) as exc:
             raise SceneIntakeError("scene_intake_task_family_invalid:" + str(exc)) from exc
+    navigation = task["strategy"] == NAVIGATION_STRATEGY
+    if navigation:
+        # The scene as filmed: its record's digests, and nothing placed, removed or moved.
+        _require(set(task) == {"task_id", "strategy", "geometry_origin", *NAVIGATION_TASK_DIGESTS}
+                 and task["geometry_origin"] == NAVIGATION_GEOMETRY_ORIGIN
+                 and all(isinstance(task[key], str) and _DIGEST.fullmatch(task[key]) is not None
+                         for key in NAVIGATION_TASK_DIGESTS), "task_navigation_invalid")
     # A relocation binds a destination; an articulated open/close binds the
     # mechanism instead (the moving part never leaves its assembly).
-    required = (() if family is not None else ("subject", "support", "articulation", "success")
+    required = (() if family is not None or navigation else ("subject", "support", "articulation", "success")
                 if task["strategy"] == "articulated_open_close"
                 else ("subject", "support", "destination", "success"))
     for key in required:
@@ -107,8 +122,9 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
         _require(task["articulation"].get("joint_type") in ARTICULATION_JOINT_TYPES
                  and isinstance(task["articulation"].get("part_label"), str)
                  and task["articulation"]["part_label"].strip() != "", "task_articulation_invalid")
-    from .task_evaluation_scene_execution_scope import validate_execution
+    from .task_evaluation_scene_execution_scope import scene_preparation_only, validate_execution
     validate_execution(value, now=now)
+    _require(not navigation or scene_preparation_only(value), "navigation_must_be_scene_preparation")
     consent = value.get("consent")
     _require(isinstance(consent, Mapping) and set(consent) == {
         "accepted_by", "accepted_at_epoch", "rights_reference", "provider_terms_reference",
@@ -122,6 +138,8 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
              "consent_actor_or_time_invalid")
     _require(all(isinstance(consent[k], str) and 1 <= len(consent[k]) <= 1000
                  for k in ("rights_reference", "provider_terms_reference")), "consent_references_missing")
+    # The site's own confirmation of its brief, as the website read it; never set or assumed here.
+    _require(not navigation or consent["task_confirmed"] is True, "task_context_not_confirmed")
     from .website_preparation_contracts import preparation_consent_valid
     _require(consent["private_processing_authorized"] is True
              and consent["provider_training_authorized"] is False

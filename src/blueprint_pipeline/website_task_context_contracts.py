@@ -156,6 +156,33 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
                 return False
         except (ValueError, TypeError, KeyError):
             return False
+    elif (isinstance(handoff.get("navigation_intake"), Mapping)
+          and handoff["navigation_intake"].get("status") == "refused"
+          and handoff["navigation_intake"].get("reason") == code):
+        # ``website_locomotion_hold.navigation_intake_refusal_hold``: the website refused the navigation
+        # job's intake by this name (``website_navigation_intake``), recorded by the handoff that sent it.
+        # Re-derived from the job's own profile and the options the hold recorded.
+        from .task_spec_compiler import requirements
+        from .website_locomotion_hold import navigation_intake_refusal_hold
+        from .website_task_semantics import effective_task_profile
+        try:
+            semantics = gap.get("task_semantics") if family == "general_task" else None
+            profile = task_profile_for(effective_task_profile(task_context=task_context,
+                task_semantics=semantics, source_video_digest=gap.get("source_video_digest")))
+            if profile is None or profile.requires_manipulation or not profile.requires_locomotion:
+                return False
+            need = requirements(locomote=True, manipulate=False)
+            recorded = gap.get("runnable_options")
+            if (not isinstance(recorded, Mapping)
+                    or dict(handoff["navigation_intake"]) != {"status": "refused", "reason": code}
+                    or gap != navigation_intake_refusal_hold(task_context=task_context, requirements=need,
+                                                             spec_digest=gap.get("compiled_task_spec_digest"),
+                                                             refusal=code, options=recorded, task_semantics=semantics,
+                                                             source_video_digest=gap.get("source_video_digest"))
+                    or handoff.get("compiled_task_spec_digest") != gap.get("compiled_task_spec_digest")):
+                return False
+        except (ValueError, TypeError, KeyError):
+            return False
     elif code == "website_task_family_runtime_preparation_required":
         # ``website_early_task_hold.task_family_runtime_gap``: the job's own family, from its
         # source-bound reading, re-derived here; the catalog is the one recorded at the hold.

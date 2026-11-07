@@ -247,7 +247,7 @@ def _navigation_source(world, tmp_path, monkeypatch, *, derived):
 
 
 @pytest.mark.parametrize('derived', [False, True])
-def test_a_navigation_source_is_picked_up_and_holds_by_name_until_its_source_identity_is_decided(
+def test_a_navigation_source_is_picked_up_and_holds_by_name_until_its_intake_receipt_exists(
         tmp_path, monkeypatch, derived):
     from blueprint_pipeline.website_navigation_scene_inputs import SOURCE_UNBOUND
 
@@ -255,7 +255,8 @@ def test_a_navigation_source_is_picked_up_and_holds_by_name_until_its_source_ide
 
     world = source_world(tmp_path, monkeypatch, 2)
     _navigation_source(world, tmp_path, monkeypatch, derived=derived)
-    # Refused by name before the record and its packet are read (and hashed) again on every pass.
+    # Refused by name before the record and its packet are read (and hashed) again on every pass:
+    # no intake outbox, so nothing to bind and no receipt.
     monkeypatch.setattr(navigation_inputs, 'read_navigation_scene_inputs',
                         lambda _path: pytest.fail('an unbindable source is never read'))
     result = sources.enqueue_registered_family_scenes(queue_root=world.queue)
@@ -270,31 +271,63 @@ def test_a_navigation_source_is_picked_up_and_holds_by_name_until_its_source_ide
         'last': str(tmp_path / 'captures' / 'capture-navigation')}
 
 
-def test_a_navigation_source_with_a_decided_identity_goes_on_through_current_consent_and_planning(
+def test_a_navigation_source_binds_its_staged_intake_and_goes_on_through_current_consent_and_planning(
         tmp_path, monkeypatch):
-    """Once screening_source names a source (a stand-in here: not decided yet), the family path goes on."""
-    from blueprint_pipeline import website_navigation_scene_inputs as navigation_inputs
+    """Once the job's navigation intake is staged, its receipt binds the source and the family path goes on."""
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_intake import stage_scene_intent
+    from blueprint_pipeline.website_navigation_intake import (
+        OUTBOX_FILENAME, OUTBOX_SCHEMA, RECEIPT_FILENAME, navigation_task, read_navigation_intake_receipt,
+    )
+    from blueprint_pipeline.website_navigation_scene_inputs import screening_source, write_navigation_scene_inputs
 
     world = source_world(tmp_path, monkeypatch, 1)
-    written = _navigation_source(world, tmp_path, monkeypatch, derived=False)
-    record = written['record']
-    # The screening source's fields (native_g1_beta_authority.SOURCE_FIELDS); the two scene-intent
-    # values are placeholders, since what stands in for them is the open decision.
-    stand_in = {'scene_intent_id': 'undecided', 'scene_intent_digest': 'sha256:' + '0' * 64,
-                'capture_id': 'capture-navigation', 'task_id': record['task_id'],
-                'task_context_digest': record['source_gap']['known']['task_context_digest'],
-                'scene_revision_digest': record['scene_revision_digest']}
-    seen = []
-
-    def decided(value):
-        seen.append(value)
-        return dict(stand_in)
-
-    monkeypatch.setattr(navigation_inputs, 'screening_source', decided)
-    monkeypatch.setattr(navigation_inputs, 'SOURCE_IDENTITY_BINDABLE', True)
+    arguments = navigation_scene_inputs_arguments(tmp_path, monkeypatch)
+    written = write_navigation_scene_inputs(**arguments)
+    record, capture = written['record'], arguments['capture_root']
+    row = {'capture_root': str(capture), 'scene_id': record['scene_id'], 'task_id': record['task_id'],
+           'scenario_id': 'nominal', 'robot_free_probe_root': str(Path(record['robot_free_probe']['path']).parent),
+           'scene_revision_digest': record['scene_revision_digest'], 'navigation_scene_inputs_path': written['path']}
+    world.registry['profiles'].append(row)
+    world.persist_registry()
+    world.names['family-' + canonical_digest({'capture_root': str(capture)})[7:39]] = 'navigation'
+    # The intake the handoff sent (website_navigation_intake.enqueue_navigation_intake), as its outbox keeps it.
+    now = datetime.now(timezone.utc).timestamp()
+    request = {'schema_version': 'task_evaluation_scene_intake_request.v1', 'submission_id': capture.name,
+               'owner': {'user_id': 'blueprint', 'organization_id': 'blueprint'},
+               'source': {'kind': 'gaussian_splat', 'binding_id': 'website-splat-' + 'a' * 32,
+                          'content_digest': 'sha256:' + 'a' * 64},
+               'task': navigation_task(record),
+               'execution': {'purpose': 'scene_preparation', 'max_total_spend_usd': 20, 'max_paid_attempts': 2,
+                             'max_retries': 0, 'expires_at_epoch': now + 3600,
+                             'allowed_providers': ['vast', 'openai'], 'policy_candidates': [],
+                             'claim_scope': 'development_only'},
+               'consent': {'accepted_by': 'blueprint', 'accepted_at_epoch': now - 60,
+                           'rights_reference': 'sha256:' + 'b' * 64, 'provider_terms_reference': 'sha256:' + 'c' * 64,
+                           'private_processing_authorized': True, 'provider_training_authorized': False,
+                           'task_confirmed': True, 'spend_authorized': True}}
+    staged = stage_scene_intent(value=request, queue_root=world.intents, authenticated_client='blueprint-webapp',
+                                trusted_clients={'blueprint-webapp'}, now=now)
+    outbox = {'schema_version': OUTBOX_SCHEMA, 'claim_ceiling': 'development_only',
+              'scene_inputs_digest': record['scene_inputs_digest'],
+              'scene_revision_digest': record['scene_revision_digest'], 'request': request,
+              'request_digest': cross_runtime_canonical_digest(request),
+              'website_intake': {'id': staged['intent_id'], 'request_digest': cross_runtime_canonical_digest(request),
+                                 'state': 'forward_pending'},
+              'intent_id': staged['intent_id'], 'reserved_usd': 0, 'construction_allowance_granted': False}
+    outbox['outbox_digest'] = canonical_digest(outbox, digest_field='outbox_digest')
+    write_json(Path(written['path']).parent / OUTBOX_FILENAME, outbox)
     result = sources.enqueue_registered_family_scenes(queue_root=world.queue)
     assert _names(world, result) == ['000', 'navigation']
     assert [row['status'] for row in result['sources']] == ['enqueued', 'enqueued']
-    assert seen == [navigation_inputs.read_navigation_scene_inputs(written['path'])]
-    assert world.current_checks == world.planning_calls == ['000', 'navigation']
-    assert world.intent_checks == ['000']  # a scene kept as filmed reopens no scene intent
+    # The pass bound the receipt beside the record; its source names the staged intent.
+    receipt = read_navigation_intake_receipt(written['path'])
+    assert (Path(written['path']).parent / RECEIPT_FILENAME).is_file()
+    assert receipt['source'] == {'scene_intent_id': staged['intent_id'], 'scene_intent_digest': staged['intent_digest'],
+                                 'capture_id': capture.name, 'task_id': record['task_id'],
+                                 'task_context_digest': record['source_gap']['known']['task_context_digest'],
+                                 'scene_revision_digest': record['scene_revision_digest']}
+    assert screening_source(record) == receipt['source']
+    # The world's doubles name a source by its capture: current consent and planning saw the navigation one.
+    assert world.current_checks == world.planning_calls == ['000', capture.name]
+    assert world.intent_checks == ['000']  # the navigation source is bound by its receipt, not a family intent

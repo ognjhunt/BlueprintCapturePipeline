@@ -200,15 +200,17 @@ def _navigation_consent_refusal(*, capture_root: Path, task_context: Mapping[str
 
 def _navigation_scene_inputs(*, result: dict[str, Any], capture_root: Path, root: Path,
                              navigation: Mapping[str, Any], assets: Mapping[str, Any],
-                             task_context: Mapping[str, Any], authority: Mapping[str, Any], now: float) -> bool:
+                             task_context: Mapping[str, Any], authority: Mapping[str, Any],
+                             now: float) -> dict[str, Any] | None:
     """The G1 lane's scene half for a navigation job, on the controller and with no spend.
 
     The base packet with the pinned G1 standing at the compiled start, its robot-free probe receipt and
     the sealed record (``website_navigation_scene_inputs``), kept in the capture's own workspace so the
     site's withdrawal deletes them, and the team registry's derived row naming the record. The robot is
     the G1 registration's own pinned Arena USD (``native_g1_site_registration``). Withdrawn, revoked or
-    expired consent writes neither. Returns whether both exist; anything else is recorded and is this
-    job's missing piece, never a stop. A lost handoff lease stops it, as it stops every write.
+    expired consent writes neither. Returns the written record (``{"path", "record"}``) once both exist,
+    else None; anything else is recorded and is this job's missing piece, never a stop. A lost handoff
+    lease stops it, as it stops every write.
     """
     from .website_navigation_scene_inputs import OUTPUT_DIRECTORY
 
@@ -216,7 +218,7 @@ def _navigation_scene_inputs(*, result: dict[str, Any], capture_root: Path, root
                                           authority=authority, now=now)
     if refusal is not None:
         result["navigation_scene_inputs"] = {"status": "not_written", "reason": refusal}
-        return False
+        return None
     try:
         from . import native_g1_site_registration as registration
         from .team_candidate_quick10_registry import write_derived_profile
@@ -234,14 +236,53 @@ def _navigation_scene_inputs(*, result: dict[str, Any], capture_root: Path, root
     except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a job; this is its missing piece
         reason = str(exc) if str(exc) else type(exc).__name__
         result["navigation_scene_inputs"] = {"status": "failed", "error": reason[:300]}
-        return False
+        return None
     record = written["record"]
     result["navigation_scene_inputs"] = {
         "status": "written" if profile.get("status") == "written" else "not_registered",
         "path": written["path"], "digest": record["scene_inputs_digest"],
         "scene_revision_digest": record["scene_revision_digest"],
         "robot_free_probe_status": record["robot_free_probe"]["status"], "registry": dict(profile)}
-    return profile.get("status") == "written"
+    return dict(written) if profile.get("status") == "written" else None
+
+
+def _navigation_intake(*, result: dict[str, Any], written: Mapping[str, Any], capture_root: Path,
+                       base_scene: Mapping[str, Any], task_context: Mapping[str, Any],
+                       authority: Mapping[str, Any]) -> tuple[bool, str | None]:
+    """The job's website navigation intake, once its scene half is written: (receipt exists, refusal name).
+
+    The request is the record's digests with the job's own sponsorship: its owner, consent and rights
+    exactly as a rigid intake carries them, and the website's own ``task_confirmed`` reading of the brief
+    (``website_navigation_intake``). The website reserves $0 for it and grants no construction allowance.
+    A typed refusal (an unconfirmed brief is ``website_task_context_not_confirmed``) is recorded and
+    returned, and the job holds by that name. Any other failure is recorded and is this job's missing
+    piece. Once the Pipeline has staged the intent (seen by a later handoff), its receipt is bound here.
+    A lost handoff lease stops it, as it stops every write.
+    """
+    if (authority.get("schema_version") != "website_scene_sponsorship.v1"
+            or not isinstance(authority.get("owner"), Mapping) or not isinstance(authority.get("consent"), Mapping)):
+        result["navigation_intake"] = {"status": "not_requested", "reason": "website_scene_execution_authority_required"}
+        return False, None
+    try:
+        from .website_navigation_intake import bind_navigation_intake_receipt, enqueue_navigation_intake
+
+        handoff_lease_checkpoint("website_scene_handoff_navigation_intake")
+        sent = enqueue_navigation_intake(record_path=written["path"], record=written["record"],
+                                         capture_root=capture_root, task_context=task_context,
+                                         authority=authority, base_scene=base_scene)
+        if sent["status"] == "refused":
+            result["navigation_intake"] = dict(sent)
+            return False, sent["reason"]
+        receipt = bind_navigation_intake_receipt(record_path=written["path"], capture_root=capture_root)
+    except HandoffLeaseError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a job; this is its missing piece
+        reason = str(exc) if str(exc) else type(exc).__name__
+        result["navigation_intake"] = {"status": "failed", "error": reason[:300]}
+        return False, None
+    result["navigation_intake"] = {**sent, "receipt": None if receipt is None else {
+        "receipt_digest": receipt["receipt_digest"], "source": receipt["source"]}}
+    return receipt is not None, None
 
 
 def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[str, Any], preparation_path: Path,
@@ -456,7 +497,8 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 from .website_locomotion_task import navigation_pieces_built
                 from .website_navigation_scene_assets import FILE as ASSETS_FILE, navigation_scene_assets
                 outputs = {"navigation_task_spec": True, "navigation_scene_assets": False,
-                           "navigation_scene_inputs": False}
+                           "navigation_scene_inputs": False, "navigation_intake_receipt": False}
+                intake_refusal = None
                 try:
                     assets = navigation_scene_assets(base_scene=base, output_root=root / "navigation_scene")
                 except (ValueError, OSError) as exc:
@@ -469,21 +511,35 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     # The G1 lane's scene half: the G1 at the compiled start, its probe receipt and
                     # the registry row (website_navigation_scene_inputs). A failure is this job's
                     # missing piece (pipeline:g1_navigation_preparation).
-                    outputs["navigation_scene_inputs"] = _navigation_scene_inputs(
+                    authority = metadata.get("website_scene_execution_authority") or {}
+                    written = _navigation_scene_inputs(
                         result=result, capture_root=capture_root, root=root, navigation=navigation, assets=assets,
-                        task_context=context, authority=metadata.get("website_scene_execution_authority") or {},
-                        now=now)
+                        task_context=context, authority=authority, now=now)
+                    outputs["navigation_scene_inputs"] = written is not None
+                    if written is not None:
+                        # Its website intake and, once the intent is staged, the receipt binding its
+                        # screening source (pipeline:navigation_source_identity, for this job only).
+                        outputs["navigation_intake_receipt"], intake_refusal = _navigation_intake(
+                            result=result, written=written, capture_root=capture_root, base_scene=base,
+                            task_context=context, authority=authority)
                 # The pieces built for this job are the outputs it has.
                 built = navigation_pieces_built(outputs)
             result.update(geometry_backend=atlas["source_geometry"]["geometry_backend"],
                           source_geometry_digest=atlas["source_geometry"]["digest"],
                           compiled_task_spec_path=str(root / SPEC_FILE), compiled_task_spec_digest=spec["spec_digest"])
             from .website_locomotion_task import runnable_options
+            options = runnable_options(need, built_pieces=frozenset(built)) if need["locomote"] else None
+            if need["locomote"] and intake_refusal is not None:
+                # The website refused the job's intake by name (an unconfirmed brief is
+                # website_task_context_not_confirmed): the job holds by that name, never passes.
+                from .website_locomotion_hold import navigation_intake_refusal_hold
+                return retain_gap(navigation_intake_refusal_hold(
+                    task_context=context, requirements=need, spec_digest=spec["spec_digest"],
+                    refusal=intake_refusal, options=options, task_semantics=semantics_options["task_semantics"],
+                    source_video_digest=source_video_digest))
             held = runnable_policy_gap(task_context=context, requirements=need, spec_digest=spec["spec_digest"],
                                        task_semantics=semantics_options["task_semantics"],
-                                       source_video_digest=source_video_digest,
-                                       options=runnable_options(need, built_pieces=frozenset(built))
-                                       if need["locomote"] else None)
+                                       source_video_digest=source_video_digest, options=options)
             if held is None:
                 # A runnable policy exists but its execution route is not built: say so, typed.
                 raise ValueError("website_locomotion_task_execution_route_missing")
