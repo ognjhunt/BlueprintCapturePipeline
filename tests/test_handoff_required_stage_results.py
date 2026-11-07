@@ -237,3 +237,29 @@ def test_any_other_supervisor_skip_still_prevents_success_ack(change):
     disposition, blockers = listener._handoff_result_disposition(result)
     assert disposition == "retryable_blocked"
     assert blockers == [f"required_stage_not_complete:task_evaluation_supervisor:{snapshot['status']}"]
+
+
+def test_capture_stage_hands_its_input_binding_to_the_lane_ledger(monkeypatch, tmp_path):
+    """The binding that reruns the capture_pipeline stage (a correction, a recheck, a held replay) reaches
+    run_capture_pipeline, whose lane ledger keys on it; without one, nothing extra is passed."""
+    root, _calls = _setup(monkeypatch, tmp_path)
+    seen = []
+
+    def capture(**kwargs):
+        seen.append(kwargs.get("input_binding_digest", "absent"))
+        return {"status": "completed", "lanes": ["qualification"],
+                "artifact_purpose": "evaluation_preparation", "robot_evaluation_performed": False}
+
+    monkeypatch.setattr(run_e2e, "run_capture_pipeline", capture)
+    monkeypatch.setattr(run_e2e, "run_capture_build_supervisor", lambda **_kwargs: {"status": "non_spend_complete"})
+    binding = "sha256:" + "d" * 64
+    monkeypatch.setattr(run_e2e, "held_replay_binding", lambda _pipeline, base: binding)
+    run_e2e.run_end_to_end(capture_root=str(root), provider="manual")
+    ledger = json.loads((root / "pipeline/run_e2e_stage_ledger.json").read_text())
+    assert seen == [binding]
+    assert ledger["stages"]["capture_pipeline"]["input_binding_digest"] == binding
+
+    monkeypatch.setattr(run_e2e, "held_replay_binding", lambda _pipeline, base: base)
+    (root / "pipeline/run_e2e_stage_ledger.json").unlink()
+    run_e2e.run_end_to_end(capture_root=str(root), provider="manual")
+    assert seen == [binding, "absent"]

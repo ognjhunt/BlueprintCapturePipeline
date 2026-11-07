@@ -13,6 +13,13 @@ exists. Lane semantics, ordering, and fault isolation are unchanged: markers
 are written only after a lane completes successfully, and failed lanes never
 write markers.
 
+A caller that binds the lane's inputs beyond the capture (run_e2e's
+``capture_pipeline`` stage ``input_binding_digest``: a site's target
+correction, a robot fit recheck, a held job's replay) passes that binding, and
+it joins the fingerprint. A marker recorded under another binding, or under
+none, never skips the lane, so a stage run_e2e reruns from its retained outputs
+really reruns. Without a binding the fingerprint is unchanged.
+
 Kill switch: ``BLUEPRINT_LANE_RESUME_DISABLED=1`` disables both marker reads
 and marker writes.
 """
@@ -195,6 +202,7 @@ def lane_ledger_input_fingerprint(
     capture_root: Path,
     descriptor_path: Path,
     raw_root: Optional[Path] = None,
+    input_binding_digest: Optional[str] = None,
 ) -> dict[str, Any]:
     """Retry-stable capture input fingerprint for the lane ledger.
 
@@ -202,7 +210,8 @@ def lane_ledger_input_fingerprint(
     is normalized to exclude the metadata keys qualification writes back into
     the descriptor mid-run, so markers recorded during the first run still
     match when a Cloud Tasks/Cloud Run retry recomputes the fingerprint from
-    the mutated descriptor.
+    the mutated descriptor. ``input_binding_digest``, when given, is the
+    caller's own binding of the lane's inputs and joins the sources.
     """
 
     resolved_raw_root = raw_root if raw_root is not None else capture_root / "raw"
@@ -217,6 +226,8 @@ def lane_ledger_input_fingerprint(
             path=resolved_raw_root / "manifest.json",
         ),
     ]
+    if input_binding_digest is not None:
+        sources.append({"role": "stage_input_binding", "digest": str(input_binding_digest)})
     payload = {
         "schema_version": LANE_LEDGER_FINGERPRINT_SCHEMA_VERSION,
         "sources": sources,

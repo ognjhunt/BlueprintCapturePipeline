@@ -261,6 +261,7 @@ def run_capture_pipeline(
     requested_lanes: Optional[List[str]] = None,
     allow_legacy_lanes: bool = False,
     config: Optional[PipelineConfig] = None,
+    input_binding_digest: Optional[str] = None,
 ) -> Dict[str, Any]:
     cfg = config or PipelineConfig()
     lanes = resolve_requested_lanes(
@@ -279,6 +280,8 @@ def run_capture_pipeline(
     # run_e2e stage ledger, so Cloud Tasks x Cloud Run Job retries would re-run
     # every lane. The lane ledger skips lanes already completed for the same
     # capture input fingerprint. BLUEPRINT_LANE_RESUME_DISABLED=1 disables it.
+    # run_e2e's stage binding (input_binding_digest) joins that fingerprint, so
+    # a stage it reruns from retained outputs is never skipped here.
     resume_root = resolve_local_capture_context(descriptor_path).capture_root
     lane_ledger_fingerprint: Optional[Dict[str, Any]] = None
     if not lane_resume_disabled():
@@ -286,6 +289,7 @@ def run_capture_pipeline(
             lane_ledger_fingerprint = lane_ledger_input_fingerprint(
                 capture_root=resume_root,
                 descriptor_path=descriptor_path,
+                input_binding_digest=input_binding_digest,
             )
         except OSError:
             logger.warning(
