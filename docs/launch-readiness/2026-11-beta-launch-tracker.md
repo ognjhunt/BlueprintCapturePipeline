@@ -168,6 +168,13 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - The floor band's own plane is tilted 1.79 degrees from +Y, in agreement with the face-normal direction (1.75).
   - The floor is not tilted. It is uneven: its best 2 cm plane holds 1.5%, with 1.2% more than 5 cm below it.
   - The next PR levels on those two agreeing directions and declares no floor. Locomotion infers its own floor from the collider; the next stop will show how an uneven floor reads there.
+- **`706255c` (#3446)**, requested 09:38:25Z (`20261107T093825Z-deploy-da130810`), live 09:50Z. This session's wait lost its connection (a 502 from the proxy tunnel), but the door had the request; a watcher saw the release change before resuming. Resumed 09:51:43Z (`20261107T095143Z-selected-handoff-86b5ad56`). **Levelling refused a sixth time.**
+  - **Correction.** The floor band's plane (1.79 degrees from +Y) and the face-normal direction (1.75) tilt by about the same amount but in different directions: they are **3.13 degrees apart**. The commit and PR for #3446 compared only the sizes of their tilts and said "the same way". That was wrong; the v6 record measures it (`direction_agreement_degrees`). #3446's rule needs 0.5 and did not fire, as it should not have.
+  - **Where the job stands:** held at levelling with a precise record.
+    - The up direction is known to about 3 degrees: two estimates that bracket +Y.
+    - The reconstructed floor is uneven: its best 2 cm plane holds 1.5%, while a 20 cm band holds about 6%.
+    - This session stops tuning levelling here. More would be fitting one scene.
+  - **Paid nothing since 06:10Z.** Atlas $7.38 of $25 (15 requests), clean plate $0.69 held, intake $1.06 known: about $9.13 against the $115 ceiling.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
