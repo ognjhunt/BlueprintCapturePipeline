@@ -89,7 +89,7 @@ def __synthesize_pipeline_handoff_body(_listener, /, handoff, *, capture_root):
     return destination
 
 
-def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None, expected_target_choice_correction=None, expected_robot_fit_recheck=None):
+def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None, expected_target_choice_correction=None, expected_robot_fit_recheck=None, expected_held_replay=None):
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
@@ -260,13 +260,15 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             **({'expected_target_choice_correction': expected_target_choice_correction}
                if expected_target_choice_correction is not None else {}),
             **({'expected_robot_fit_recheck': expected_robot_fit_recheck}
-               if expected_robot_fit_recheck is not None else {}))
+               if expected_robot_fit_recheck is not None else {}),
+            **({'expected_held_replay': expected_held_replay} if expected_held_replay is not None else {}))
     except _listener.HandoffCaptureRetired:
         return retired_terminal() or {'schema_version': 'v1', 'status': 'capture_retired_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'blockers': ['handoff_capture_retired_while_claiming']}
     if claim_status == 'prior_delivery_effects_unresolved':
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'blockers': ['selected_handoff_existing_state_requires_reconciliation']}
-    if claim_status in {'assessment_resume_changed', 'reconstruction_resume_changed', 'target_choice_correction_changed'}:
+    if claim_status in {'assessment_resume_changed', 'reconstruction_resume_changed', 'target_choice_correction_changed',
+                        'held_handoff_replay_changed'}:
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                 'blockers': ['website_' + claim_status]}
@@ -367,6 +369,12 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             failure_record[RECHECK_MARK] = expected_robot_fit_recheck.get('inputs')
             if isinstance(expected_robot_fit_recheck.get('record'), dict):
                 kept_recheck[RECHECK_FIELD] = expected_robot_fit_recheck['record']
+        if expected_held_replay is not None:
+            # A replay that stopped short keeps its bytes and its mark; its fact is not replayed again.
+            from .website_held_handoff_replay import FIELD as HELD_FIELD, MARK as HELD_MARK
+            failure_record[HELD_MARK] = (expected_held_replay.get('fact') or {}).get('fact_digest')
+            if isinstance(expected_held_replay.get('record'), dict):
+                kept_recheck[HELD_FIELD] = expected_held_replay['record']
         reconstruction = waiting_record(_listener, exc=exc, payload=payload, payload_digest=digest,
             producer_delivery_key=producer_delivery_key, capture_root=capture_root, attempt_count=attempt_count,
             previous_history=previous_history, recovered_expired_lease=ledger.get('recovered_expired_lease'),
@@ -400,6 +408,13 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         producer_delivery_key=producer_delivery_key, capture_root=capture_root) if terminal_success
         # A recheck that stopped short keeps the bytes it replayed, still owed.
         else (expected_robot_fit_recheck or {}).get('record'))
+    # A job held on a fact a later step brings (a confirmed brief, a bound intake receipt) keeps its bytes.
+    from .website_held_handoff_replay import FIELD as HELD_FIELD, MARK as HELD_MARK, replay_record as held_record
+    if expected_held_replay is not None:
+        completion_record[HELD_MARK] = (expected_held_replay.get('fact') or {}).get('fact_digest')
+    held_replay = (held_record(_listener, payload=payload, payload_digest=digest,
+        producer_delivery_key=producer_delivery_key, capture_root=capture_root) if terminal_success
+        else (expected_held_replay or {}).get('record'))
     ledger_update = {'schema_version': _listener.JOB_LEDGER_SCHEMA_VERSION, 'status': 'completed' if terminal_success else 'retryable_blocked', 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'attempt_count': attempt_count, 'started_at': job_started_at, 'updated_at': completed_at, 'last_attempt_started_at': attempt_started_at, 'completed_at': completed_at, 'run_e2e_status': str(result.get('status') or '') or None, 'last_error_type': None if terminal_success else 'RetryableBlockedResult', 'last_error': None if terminal_success else ','.join(result_blockers), 'retry_blockers': result_blockers, 'queue_disposition': disposition, 'output_commit_status': 'committed' if output_commit else None, 'output_commit_path': _listener.JOB_OUTPUT_COMMIT_FILENAME if output_commit else None, 'output_result_sha256': output_commit.get('result_sha256') if output_commit else None, 'attempt_history': [*previous_history, completion_record]}
     if control_plane_staging:
         ledger_update.update({'control_plane_staging_status': control_plane_staging_status, 'control_plane_staging_path': control_plane_staging_path})
@@ -407,6 +422,8 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         ledger_update[REPLAY_FIELD] = replay
     if recheck:
         ledger_update[RECHECK_FIELD] = recheck
+    if held_replay:
+        ledger_update[HELD_FIELD] = held_replay
     if terminal_success:
         ledger_update.update(output_commit_status='committed', output_commit_path=_listener.JOB_OUTPUT_COMMIT_FILENAME)
         output_commit = _listener._write_output_commit(capture_root, scene_id=handoff.scene_id,
@@ -449,6 +466,11 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
         reconcile_robot_fit_holds(_listener, storage_root=storage_root, limit=1, process_args=process_args)
     except Exception:
         _listener.logger.debug("pubsub_handoff.robot_fit_recheck_unavailable")
+    from .website_held_handoff_replay import reconcile_held_handoffs
+    try:
+        reconcile_held_handoffs(_listener, storage_root=storage_root, limit=1, process_args=process_args)
+    except Exception:
+        _listener.logger.debug("pubsub_handoff.held_handoff_replay_unavailable")
     from google.cloud import pubsub_v1
     from .pubsub_retry_deferrals import clear_deferral, record_deferral, wake_older_release_deferrals
     subscriber = pubsub_v1.SubscriberClient()
