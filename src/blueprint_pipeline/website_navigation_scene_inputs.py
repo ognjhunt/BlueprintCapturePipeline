@@ -63,6 +63,9 @@ CONTRACT_FIELDS = ("task_success_contract", "task_success_contract_digest")
 #: The G1 preparation's physics rate (``beta_policy_screening_g1_prepare``).
 PHYSICS_FREQUENCY_HZ = 200.0
 SOURCE_UNBOUND = "website_navigation_scene_inputs_source_identity_unbound"
+#: Whether ``screening_source`` can name a source at all. Not while the website's scene intake takes no
+#: navigation task (``screening_source``); readers refuse by name before reading a record.
+SOURCE_IDENTITY_BINDABLE = False
 #: The G1 runtime source is the G1 registration's own record (``beta_policy_screening_g1``), not the scene's.
 RUNTIME_SOURCE_GAP = "website_navigation_scene_inputs_runtime_source_from_g1_registration"
 _PACKET_FILES = (("packet_request", "native_task_arena_packet_request.v1.json"),
@@ -535,6 +538,7 @@ def screening_source(record: Mapping[str, Any]) -> dict[str, Any]:
     raise WebsiteNavigationSceneInputsError(SOURCE_UNBOUND)
 
 
-__all__ = ["CLAIM_CEILING", "OUTPUT_DIRECTORY", "RECORD_FILENAME", "SCHEMA", "SOURCE_UNBOUND",
+__all__ = ["CLAIM_CEILING", "OUTPUT_DIRECTORY", "RECORD_FILENAME", "SCHEMA", "SOURCE_IDENTITY_BINDABLE",
+           "SOURCE_UNBOUND",
            "WebsiteNavigationSceneInputsError", "derived_profile_row",
            "read_navigation_scene_inputs", "screening_source", "write_navigation_scene_inputs"]

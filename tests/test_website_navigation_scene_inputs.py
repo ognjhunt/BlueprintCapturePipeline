@@ -303,6 +303,20 @@ def test_a_record_written_under_an_earlier_contract_is_kept_aside_and_written_ag
     assert write_navigation_scene_inputs(**inputs) == second
 
 
+def test_a_probe_receipt_is_valid_only_while_todays_scorer_gives_it(inputs, monkeypatch) -> None:
+    from blueprint_pipeline import navigation_robot_free_probe as probe
+
+    first = write_navigation_scene_inputs(**inputs)
+    real = probe._scorer_identity
+    # The scorer's module changes after the receipt was written: the receipt it records is not today's.
+    monkeypatch.setattr(probe, "_scorer_identity", lambda: {**real(), "module_sha256": "sha256:" + "0" * 64})
+    _refused(Path(first["path"]), "website_navigation_scene_inputs_robot_free_probe_changed")
+    second = write_navigation_scene_inputs(**inputs)
+    receipt = json.loads(Path(second["record"]["robot_free_probe"]["path"]).read_text())
+    assert receipt["scorer"]["module_sha256"] == "sha256:" + "0" * 64
+    assert read_navigation_scene_inputs(second["path"]) == second["record"]
+
+
 def test_an_unreadable_record_is_kept_aside_and_written_again(inputs) -> None:
     first = write_navigation_scene_inputs(**inputs)
     record_path = Path(first["path"])

@@ -251,8 +251,13 @@ def test_a_navigation_source_is_picked_up_and_holds_by_name_until_its_source_ide
         tmp_path, monkeypatch, derived):
     from blueprint_pipeline.website_navigation_scene_inputs import SOURCE_UNBOUND
 
+    from blueprint_pipeline import website_navigation_scene_inputs as navigation_inputs
+
     world = source_world(tmp_path, monkeypatch, 2)
     _navigation_source(world, tmp_path, monkeypatch, derived=derived)
+    # Refused by name before the record and its packet are read (and hashed) again on every pass.
+    monkeypatch.setattr(navigation_inputs, 'read_navigation_scene_inputs',
+                        lambda _path: pytest.fail('an unbindable source is never read'))
     result = sources.enqueue_registered_family_scenes(queue_root=world.queue)
     assert _names(world, result) == ['000', '001', 'navigation']
     navigation = result['sources'][2]
@@ -286,6 +291,7 @@ def test_a_navigation_source_with_a_decided_identity_goes_on_through_current_con
         return dict(stand_in)
 
     monkeypatch.setattr(navigation_inputs, 'screening_source', decided)
+    monkeypatch.setattr(navigation_inputs, 'SOURCE_IDENTITY_BINDABLE', True)
     result = sources.enqueue_registered_family_scenes(queue_root=world.queue)
     assert _names(world, result) == ['000', 'navigation']
     assert [row['status'] for row in result['sources']] == ['enqueued', 'enqueued']
