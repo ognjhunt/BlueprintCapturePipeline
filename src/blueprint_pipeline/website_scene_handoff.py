@@ -225,7 +225,8 @@ def _navigation_scene_inputs(*, result: dict[str, Any], capture_root: Path, root
         handoff_lease_checkpoint("website_scene_handoff_navigation_scene_inputs")
         robot = registration._robot_record(registration.load_shared_inputs())
         written = write_navigation_scene_inputs(navigation_task_spec=navigation, scene_assets=assets,
-                                                robot_record=robot, output_root=root / OUTPUT_DIRECTORY)
+                                                robot_record=robot, output_root=root / OUTPUT_DIRECTORY,
+                                                capture_root=capture_root)
         handoff_lease_checkpoint("website_scene_handoff_navigation_registration")
         profile = write_derived_profile(derived_profile_row(written, capture_root=capture_root))
     except HandoffLeaseError:

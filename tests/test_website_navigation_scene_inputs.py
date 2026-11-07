@@ -80,8 +80,14 @@ def navigation_scene_inputs_arguments(tmp_path: Path, monkeypatch) -> dict:
     asset = g1_like_asset(tmp_path / "robot" / "g1.usda")
     monkeypatch.setattr(robot_config, "G1_USD_SHA256", _record(asset)["sha256"][7:])
     monkeypatch.setattr(robot_config, "G1_USD_SIZE_BYTES", asset.stat().st_size)
-    return {"navigation_task_spec": _navigation_task(), "scene_assets": _scene_assets(tmp_path / "navigation_scene"),
-            "robot_record": _record(asset), "output_root": tmp_path / "navigation_scene_inputs"}
+    task = _navigation_task()
+    # The job's website capture: the record is kept inside it, where the site's withdrawal deletes it.
+    capture = tmp_path / "scenes" / task["site_id"] / "captures" / ("walkthrough-" + task["site_id"][5:])
+    capture.mkdir(parents=True)
+    workspace = capture / "pipeline" / "website_scene_preparation"
+    return {"navigation_task_spec": task, "scene_assets": _scene_assets(workspace / "navigation_scene"),
+            "robot_record": _record(asset), "output_root": workspace / "navigation_scene_inputs",
+            "capture_root": capture}
 
 
 @pytest.fixture
@@ -276,6 +282,84 @@ def test_the_reader_refuses_a_changed_or_another_plans_probe_receipt(inputs, tmp
                        robot_free_probe={**record["robot_free_probe"], **_record(copied)}), code)
     probe_path.unlink()
     _refused(Path(result["path"]), code)
+
+
+def test_a_record_written_under_an_earlier_contract_is_kept_aside_and_written_again(inputs, monkeypatch) -> None:
+    first = write_navigation_scene_inputs(**inputs)
+    record_path = Path(first["path"])
+    old = record_path.read_bytes()
+    # The success contract changes (its criterion), so the reader refuses the record already there.
+    monkeypatch.setattr(navigation_goal, "NAVIGATION_CRITERION", navigation_goal.NAVIGATION_CRITERION + "_v2")
+    _refused(record_path, "website_navigation_scene_inputs_binding_changed")
+    second = write_navigation_scene_inputs(**inputs)
+    assert second["path"] == first["path"] and read_navigation_scene_inputs(record_path) == second["record"]
+    assert second["record"]["task_success_contract"]["criterion"] == navigation_goal.NAVIGATION_CRITERION
+    assert second["record"]["scene_inputs_digest"] != first["record"]["scene_inputs_digest"]
+    # The earlier bytes stay beside it, inside the capture, where the site's withdrawal deletes them.
+    kept = list(record_path.parent.glob("." + record_path.name + ".incomplete-*/" + record_path.name))
+    assert len(kept) == 1 and kept[0].read_bytes() == old
+    assert kept[0].is_relative_to(inputs["capture_root"])
+    # A third call finds the new record and rewrites nothing.
+    assert write_navigation_scene_inputs(**inputs) == second
+
+
+def test_an_unreadable_record_is_kept_aside_and_written_again(inputs) -> None:
+    first = write_navigation_scene_inputs(**inputs)
+    record_path = Path(first["path"])
+    record_path.chmod(0o644)
+    record_path.write_text("{")
+    second = write_navigation_scene_inputs(**inputs)
+    assert second == first and read_navigation_scene_inputs(record_path) == first["record"]
+
+
+def _withdraw(capture: Path) -> None:
+    from blueprint_pipeline import website_capture_withdrawal as withdrawal
+
+    request = capture.parents[1].name[5:]
+    withdrawal.acknowledge_withdrawal(capture_root=capture, command={
+        "schema_version": "website_capture_withdrawal.v1", "request_id": request, "scene_id": capture.parents[1].name,
+        "capture_id": capture.name, "withdrawal_id": "withdrawal-" + request,
+        "requested_at_iso": "2026-11-07T00:00:00Z"})
+
+
+def test_a_withdrawn_capture_writes_nothing(inputs) -> None:
+    _withdraw(inputs["capture_root"])
+    with pytest.raises(WebsiteNavigationSceneInputsError, match="^website_navigation_scene_inputs_capture_withdrawn$"):
+        write_navigation_scene_inputs(**inputs)
+    assert not inputs["output_root"].exists()
+
+
+def test_a_withdrawal_during_the_compile_publishes_neither_the_receipt_nor_the_record(inputs, monkeypatch) -> None:
+    from blueprint_pipeline import navigation_robot_free_probe as probe
+
+    real = probe.score_navigation_robot_free_probe
+
+    def withdrawn_meanwhile(**kwargs):
+        _withdraw(inputs["capture_root"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(probe, "score_navigation_robot_free_probe", withdrawn_meanwhile)
+    with pytest.raises(WebsiteNavigationSceneInputsError, match="^website_navigation_scene_inputs_capture_withdrawn$"):
+        write_navigation_scene_inputs(**inputs)
+    assert not list(inputs["output_root"].rglob(gate.RECEIPT_FILENAME))
+    assert not list(inputs["output_root"].rglob("website_navigation_scene_inputs.v1.json"))
+    # What the compile left is inside the capture: the site's withdrawal deletes it.
+    assert all(path.is_relative_to(inputs["capture_root"]) for path in inputs["output_root"].rglob("*"))
+
+
+def test_only_a_root_inside_the_tasks_own_capture_is_written(inputs, tmp_path) -> None:
+    for output_root in (tmp_path / "elsewhere", inputs["output_root"] / ".." / ".." / ".." / ".." / ".." / "x"):
+        with pytest.raises(WebsiteNavigationSceneInputsError,
+                           match="^website_navigation_scene_inputs_output_root_outside_capture$"):
+            write_navigation_scene_inputs(**{**inputs, "output_root": output_root})
+    other = tmp_path / "scenes/site-other/captures/walkthrough-other"
+    other.mkdir(parents=True)
+    for capture in (other, tmp_path / "not-a-capture"):
+        with pytest.raises(WebsiteNavigationSceneInputsError,
+                           match="^website_navigation_scene_inputs_capture_root_invalid$"):
+            write_navigation_scene_inputs(**{**inputs, "capture_root": capture,
+                                             "output_root": capture / "navigation_scene_inputs"})
+    assert not (tmp_path / "elsewhere").exists() and not inputs["output_root"].exists()
 
 
 def test_a_killed_write_keeps_its_receipt_aside_and_writes_again(inputs) -> None:

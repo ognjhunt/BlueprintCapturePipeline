@@ -25,10 +25,12 @@ from blueprint_pipeline.team_candidate_quick10_registry import write_derived_pro
 from blueprint_pipeline.team_candidate_registry_reader import REGISTRY_ENV
 from blueprint_pipeline.website_locomotion_task import NAVIGATION_TASK_FILE
 from blueprint_pipeline.website_navigation_scene_assets import FILE as ASSETS_FILE
+from blueprint_pipeline.website_navigation_packet import navigation_task_spec
 from blueprint_pipeline.website_navigation_scene_inputs import OUTPUT_DIRECTORY, write_navigation_scene_inputs
 from blueprint_pipeline.website_preparation_revision import workspace
 from tests import test_website_capture_withdrawal_deletion as base
 from tests.test_website_capture_withdrawal_team_scene import _registry
+from tests.test_website_navigation_packet import _context, _spec
 from tests.test_website_navigation_scene_inputs import _scene_assets, navigation_scene_inputs_arguments
 
 world = base.world  # the deletion tests' withdrawn site, runs, B2 and roots
@@ -45,15 +47,22 @@ def navigation(world, tmp_path, monkeypatch):
     root = workspace(capture)
     (tmp_path / "fixture").mkdir()
     arguments = navigation_scene_inputs_arguments(tmp_path / "fixture", monkeypatch)
-    # The A1 task spec and the A2 scene files, in the capture workspace as the handoff writes them.
-    task_path = base._write(root / NAVIGATION_TASK_FILE, arguments["navigation_task_spec"])
+    # The A1 task spec (this site's) and the A2 scene files, in the capture workspace as the handoff writes them.
+    spec = _spec(site_id="site-req1")
+    task = navigation_task_spec(spec, task_context=_context(spec))
+    task_path = base._write(root / NAVIGATION_TASK_FILE, task)
     scene_files = _scene_assets(root / "navigation_scene")
     assets_path = base._write(root / ASSETS_FILE, scene_files)
     usds = [Path(scene_files[role]["path"]) for role in ("appearance", "collision")]
     # The pinned G1 is the robot's own file, outside the site; the record stages a copy of it.
-    written = write_navigation_scene_inputs(navigation_task_spec=arguments["navigation_task_spec"],
-                                            scene_assets=scene_files, robot_record=arguments["robot_record"],
-                                            output_root=root / OUTPUT_DIRECTORY)
+    with monkeypatch.context() as before_the_withdrawal:
+        # The deletion tests' site has already withdrawn, and the writer refuses a withdrawn capture:
+        # this record stands for one written before the withdrawal landed.
+        before_the_withdrawal.setattr("blueprint_pipeline.website_atlas_preview_store.capture_withdrawn",
+                                      lambda _capture: False)
+        written = write_navigation_scene_inputs(navigation_task_spec=task, scene_assets=scene_files,
+                                                robot_record=arguments["robot_record"],
+                                                output_root=root / OUTPUT_DIRECTORY, capture_root=capture)
     record = written["record"]
     record_root = Path(written["path"]).parent
     # The team registry's derived row, written by the registry's own writer.

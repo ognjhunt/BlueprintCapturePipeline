@@ -178,19 +178,27 @@ def test_a_second_handoff_finds_the_same_record_and_row(job):
     assert _rows(job) == row and row[0].read_bytes() == before
 
 
-def test_a_changed_record_is_refused_and_named_as_the_missing_piece(job):
+def test_a_changed_record_is_refused_by_its_readers_and_written_again_by_the_next_handoff(job):
     first, _ = _run(job)
-    record = read_navigation_scene_inputs(first["navigation_scene_inputs"]["path"])
+    path = first["navigation_scene_inputs"]["path"]
+    record = read_navigation_scene_inputs(path)
     plan = Path(record["packet_root"]) / "native_task_arena_scene_plan.v1.json"
     plan.chmod(0o644)
     plan.write_text(plan.read_text().replace("unitree_g1", "unitree_g2", 1))
+    # Nothing reads the changed record as a scene half: its reader and the registry's scene facts refuse it.
+    with pytest.raises(WebsiteNavigationSceneInputsError, match="website_navigation_scene_inputs_packet_changed"):
+        read_navigation_scene_inputs(path)
+    from blueprint_pipeline.team_candidate_quick10_registry import TeamCandidateRegistryError, scene_facts
+    with pytest.raises(TeamCandidateRegistryError):
+        scene_facts(profile_for_capture(job["capture"]))
+    # The next handoff keeps the changed bytes aside, inside the capture, and writes the record again.
     second, _ = _run(job)
-    failed = second["navigation_scene_inputs"]
-    assert failed["status"] == "failed" and failed["error"].startswith("website_navigation_scene_inputs_")
-    assert "pipeline:g1_navigation_preparation" in _missing(second)
-    # The row the first pass wrote names a record its reader now refuses: nothing reads it as a scene half.
-    with pytest.raises(WebsiteNavigationSceneInputsError):
-        read_navigation_scene_inputs(first["navigation_scene_inputs"]["path"])
+    assert second["navigation_scene_inputs"] == first["navigation_scene_inputs"]
+    assert read_navigation_scene_inputs(path) == record
+    kept = list(Path(record["packet_root"]).parent.glob(".native-task-packet.incomplete-*"))
+    assert len(kept) == 1 and kept[0].is_relative_to(job["capture"])
+    assert scene_facts(profile_for_capture(job["capture"]))["inputs"] == record
+    assert not {"pipeline:g1_navigation_preparation"} & _missing(second)
 
 
 def test_a_failed_writer_is_this_jobs_missing_piece_and_the_job_goes_on(job, tmp_path, monkeypatch):

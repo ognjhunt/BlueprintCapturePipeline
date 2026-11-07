@@ -238,13 +238,23 @@ def _request(*, task: Mapping[str, Any], contract: Mapping[str, Any], assets: Ma
 
 @read_scoped
 def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], scene_assets: Mapping[str, Any],
-                                  robot_record: Mapping[str, Any], output_root: str | Path) -> dict[str, Any]:
+                                  robot_record: Mapping[str, Any], output_root: str | Path,
+                                  capture_root: str | Path) -> dict[str, Any]:
     """Compile the base G1 packet under ``output_root/<inputs key>/`` and seal its scene-inputs record.
 
     ``robot_record`` is the pinned G1 USD's file record (``path``, ``sha256``, ``size_bytes``), as the
     G1 preparation takes it. Returns ``{"path", "record"}``. A second call with the same inputs
-    re-verifies and returns the same record without rewriting anything. The robot-free probe receipt
-    is written beside the packet whether it passed or not; the probe gate decides what it admits.
+    re-verifies and returns the same record without rewriting anything; a record its reader refuses
+    (unreadable, changed, or written under an earlier contract) is kept aside, as a killed compile's
+    packet is, and written again. The robot-free probe receipt is written beside the packet whether it
+    passed or not; the probe gate decides what it admits.
+
+    Privacy: ``capture_root`` is the job's website capture (``scenes/<site_id>/captures/<capture>``,
+    the task's own site) and ``output_root`` must lie inside it, so the site's withdrawal deletes
+    everything written here (``website_capture_withdrawal_deletion``); any other root is refused. A
+    capture withdrawn on this host (``website_atlas_preview_store.capture_withdrawn``, the check the
+    rigid team scene compile makes before it compiles) writes nothing, checked again before the probe
+    receipt and the record are published.
     """
     from . import beta_policy_screening_g1_prepare as prepare
     from . import native_g1_arena_robot_configuration as g1_robot
@@ -270,9 +280,13 @@ def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], sc
     bound = {"schema_version": SCHEMA, "navigation_task_spec_digest": task["task_spec_digest"],
              "scene_assets_digest": assets["digest"], "robot_usd_sha256": expected_robot[0]}
     key = canonical_digest(bound)[7:]
+    capture = _capture_root(capture_root, site_id=task["site_id"])
+    _require(".." not in Path(output_root).parts, "website_navigation_scene_inputs_output_root_outside_capture")
     root = Path(output_root).absolute() / key
     _require(not any(part.is_symlink() for part in (root, *root.parents)),
              "website_navigation_scene_inputs_symlink_refused")
+    _require(root.is_relative_to(capture), "website_navigation_scene_inputs_output_root_outside_capture")
+    _require_not_withdrawn(capture)
     path, packet, evidence = root / RECORD_FILENAME, root / PACKET_DIRECTORY, root / INPUTS_DIRECTORY
     probe_path = root / PROBE_RECEIPT_FILENAME
     with ExitStack() as held:
@@ -280,17 +294,25 @@ def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], sc
             held.enter_context(prepare._namespace_lock(root.parent / ("." + key + ".lock")))
         except ValueError as exc:
             raise WebsiteNavigationSceneInputsError("website_navigation_scene_inputs_in_progress") from exc
-        if path.exists():
-            record = read_navigation_scene_inputs(path)
-            _require(all(record.get(name) == bound[name] for name in ("navigation_task_spec_digest",
-                                                                       "scene_assets_digest"))
-                     and record["robot"]["usd_sha256"] == bound["robot_usd_sha256"],
-                     "website_navigation_scene_inputs_existing_conflict")
-            return {"path": str(path), "record": record}
-        for incomplete in (packet, probe_path):
-            if incomplete.exists():
-                # A killed compile left no record: keep its bytes aside and compile the same path again.
-                prepare._preserve_incomplete(incomplete)
+        if path.exists() or path.is_symlink():
+            try:
+                record = read_navigation_scene_inputs(path)
+            except WebsiteNavigationSceneInputsError:
+                record = None  # Unreadable, changed or an earlier contract's: set aside below, compiled again.
+            if record is not None:
+                _require(all(record.get(name) == bound[name] for name in ("navigation_task_spec_digest",
+                                                                           "scene_assets_digest"))
+                         and record["robot"]["usd_sha256"] == bound["robot_usd_sha256"],
+                         "website_navigation_scene_inputs_existing_conflict")
+                return {"path": str(path), "record": record}
+        for incomplete in (path, packet, probe_path):
+            if incomplete.exists() or incomplete.is_symlink():
+                # A killed compile, or a record its reader refuses: keep its bytes aside (inside the
+                # capture, so a withdrawal deletes them too) and compile the same path again.
+                try:
+                    prepare._preserve_incomplete(incomplete)
+                except (OSError, ValueError) as exc:
+                    raise WebsiteNavigationSceneInputsError("website_navigation_scene_inputs_symlink_refused") from exc
         rows = []
         for role, semantic in (("collision", "scene_collision"), ("appearance", "scene_appearance")):
             row = assets[role]
@@ -328,6 +350,7 @@ def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], sc
         except ValueError as exc:
             raise WebsiteNavigationSceneInputsError(
                 "website_navigation_scene_inputs_robot_free_probe_invalid:" + str(exc)[:200]) from exc
+        _require_not_withdrawn(capture)
         _write_once(probe_path, probe)
         value = {
             "schema_version": SCHEMA, "claim_ceiling": CLAIM_CEILING, "task_kind": NAVIGATION_TASK_KIND,
@@ -364,8 +387,25 @@ def write_navigation_scene_inputs(*, navigation_task_spec: Mapping[str, Any], sc
             DIGEST_FIELD: "",
         }
         value[DIGEST_FIELD] = canonical_digest(value, digest_field=DIGEST_FIELD)
+        _require_not_withdrawn(capture)
         _write_once(path, value)
         return {"path": str(path), "record": read_navigation_scene_inputs(path)}
+
+
+def _capture_root(value: str | Path, *, site_id: str) -> Path:
+    """The job's website capture directory, ``scenes/<site_id>/captures/<capture>``, the task's own site."""
+    capture = Path(value).absolute()
+    _require(".." not in Path(value).parts and capture.parent.name == "captures"
+             and capture.parent.parent.name == site_id and site_id.startswith("site-")
+             and not any(part.is_symlink() for part in (capture, *capture.parents)) and capture.is_dir(),
+             "website_navigation_scene_inputs_capture_root_invalid")
+    return capture
+
+
+def _require_not_withdrawn(capture: Path) -> None:
+    from .website_atlas_preview_store import capture_withdrawn
+
+    _require(not capture_withdrawn(capture), "website_navigation_scene_inputs_capture_withdrawn")
 
 
 def _write_once(path: Path, value: Mapping[str, Any]) -> None:
