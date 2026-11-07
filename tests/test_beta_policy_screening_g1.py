@@ -768,3 +768,15 @@ def test_planning_binds_a_navigation_g1_row_and_quotes_only_its_funded_cells(tmp
     assert sealed["task_success_contract"] == kwargs["contract"] and "diagnostic_control_omission_authority" not in sealed
     # The robot-free probe receipt is the record's own, from the directory its scene facts name.
     assert planning["scene"]["robot_free_probe_digest"] == sealed["beta_robot_free_probe_receipt"]["receipt_digest"]
+
+
+def test_the_worker_refuses_a_scene_kind_that_is_not_a_string_by_name_never_by_type_error():
+    from blueprint_pipeline.native_g1_development_worker import scene_kind_admitted
+    assert scene_kind_admitted("rigid_pick_place", DP) and scene_kind_admitted("rigid_pick_place", DP_NAV)
+    assert scene_kind_admitted("goal_region_navigation", DP_NAV) and scene_kind_admitted("goal_region_navigation", PI_NAV)
+    assert not scene_kind_admitted("goal_region_navigation", DP) and not scene_kind_admitted("articulated_open_close", DP)
+    # A malformed plan's kind (unhashable or not a string) is refused, so the worker names
+    # g1_worker_scene_changed_after_preflight instead of raising TypeError.
+    for kind in (["goal_region_navigation"], {"task_kind": "rigid_pick_place"}, None, 3):
+        assert scene_kind_admitted(kind, DP_NAV) is False
+    assert scene_kind_admitted("goal_region_navigation", [DP_NAV]) is False
