@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .native_task_arena_runtime import NativeTaskArenaEnvironment
+from .native_task_runtime_contract import NAVIGATION_TASK_KIND
 
 
 SCHEMA_VERSION = "native_task_arena_device_readback.v1"
@@ -43,18 +44,26 @@ def read_native_task_arena_device_binding(
     env = built.env.unwrapped
     scene = env.scene
     robot = scene["robot"]
-    task_object = scene[built.scene_asset_names["task_object"]]
+    # A goal_region_navigation scene is kept as filmed and has no task object, so only the
+    # robot's devices are probed; every other scene keeps the task asset probes exactly.
+    navigation = (
+        (built.plan or {}).get("task_kind") == NAVIGATION_TASK_KIND
+        and "task_object" not in built.scene_asset_names
+    )
+    task_object = None if navigation else scene[built.scene_asset_names["task_object"]]
     observed: dict[str, str | None] = {
         "requested": expected,
         "config": _device(getattr(built.cfg.sim, "device", None)),
         "environment": _device(getattr(env, "device", None)),
         "robot_asset": _device(getattr(robot, "device", None)),
         "robot_data": _device(getattr(robot.data, "device", None)),
-        "task_asset": _device(getattr(task_object, "device", None)),
-        "task_data": _device(getattr(task_object.data, "device", None)),
+        **({} if navigation else {
+            "task_asset": _device(getattr(task_object, "device", None)),
+            "task_data": _device(getattr(task_object.data, "device", None)),
+        }),
         "physics_manager": None,
         "robot_physx_joint_velocity": None,
-        "task_physx_joint_velocity": None,
+        **({} if navigation else {"task_physx_joint_velocity": None}),
     }
     probe_methods: dict[str, str] = {}
     probe_errors: list[dict[str, str]] = []
@@ -68,7 +77,7 @@ def read_native_task_arena_device_binding(
         )
     for key, asset in (
         ("robot_physx_joint_velocity", robot),
-        ("task_physx_joint_velocity", task_object),
+        *(() if navigation else (("task_physx_joint_velocity", task_object),)),
     ):
         try:
             root_view = getattr(asset, "root_physx_view", None)

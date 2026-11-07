@@ -87,3 +87,34 @@ def test_cpu_physx_array_in_cuda_environment_is_a_typed_blocker(monkeypatch) -> 
     assert receipt["blockers"] == [
         "native_task_arena_device_mismatch:task_physx_joint_velocity"
     ]
+
+
+def test_a_navigation_scene_probes_only_the_robot_and_still_fails_on_a_wrong_device(monkeypatch) -> None:
+    """A scene kept as filmed has no task object: its probes are the robot's alone."""
+    _physics_manager(monkeypatch)
+    built = _built()
+    del built.env.unwrapped.scene["task_object"]
+    navigation = NativeTaskArenaEnvironment(
+        env=built.env, cfg=built.cfg, plan={"task_kind": "goal_region_navigation"},
+        scene_asset_names={"scene_collision": "scene_collision"}, contact_sensor_names={},
+        camera_scene_names={},
+    )
+    receipt = read_native_task_arena_device_binding(navigation, expected_device="cuda:0")
+    assert receipt["passed"] is True and receipt["all_required_read_back"] is True
+    assert "task_asset" not in receipt["observed_devices"]
+    assert "task_physx_joint_velocity" not in receipt["observed_devices"]
+    assert receipt["probe_methods"] == {"robot_physx_joint_velocity": "get_dof_velocities"}
+    built.env.unwrapped.scene["robot"].data.device = "cpu"
+    assert read_native_task_arena_device_binding(navigation, expected_device="cuda:0")["blockers"] == [
+        "native_task_arena_device_mismatch:robot_data"]
+
+
+def test_a_rigid_scene_without_a_task_object_still_fails(monkeypatch) -> None:
+    import pytest
+
+    _physics_manager(monkeypatch)
+    built = _built()
+    rigid = NativeTaskArenaEnvironment(env=built.env, cfg=built.cfg, plan={"task_kind": "rigid_pick_place"},
+                                       scene_asset_names={}, contact_sensor_names={}, camera_scene_names={})
+    with pytest.raises(KeyError):
+        read_native_task_arena_device_binding(rigid, expected_device="cuda:0")
