@@ -204,6 +204,22 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - `pipeline:navigation_source_identity` clears with the navigation intake kind and per-job bindability (the G1 session's O5).
   - Paid nothing: still about $9.13.
 - **The brief, about 14:00Z.** The owner opened the job page to confirm and found no Confirm button. While a job waits on Blueprint, the page showed the brief read-only, so an unconfirmed brief could not be confirmed. The WebApp fix keeps the confirmation on the page during the stop. Until the owner taps it, the brief stays unconfirmed.
+- **14:15–15:30Z.**
+  - **The brief.** WebApp #1232 (live 14:27Z) keeps an unconfirmed brief confirmable during a Blueprint-side stop. The owner confirmed it at 14:30:45Z.
+  - **G1 allowance.** #3449 (the G1 development-run allowance and estimated-floor flag) merged 14:19Z as 637248b; owner: "merge #3449", then "deploy 637248b".
+  - **Transparency-log outage.** Main's CI failed only at the attestation step: Rekor returned 500 from about 14:11Z until 14:49Z, and the owner's re-run hit the same. Nothing deployed.
+  - **Account limit.** #3451 (metering and the USD 200 account limit; owner: "set the monthly cap to $200", then "deploy both together when ready") merged 15:02Z as ce5eeb3. Its Codex findings, all real, were fixed first:
+    - a stop is never blocked;
+    - a failed reading never lowers the month's count;
+    - Atlas shows in the meter CLI.
+  - **Bandit gate.** Main's Bandit gate then refused ce5eeb3, with `untriaged_medium:B103` on the report directory's 0755 traverse mode. PR CI skips that gate. #3452 annotated it inline, as the repo's other traverse-mode directories are, and merged 15:25Z as 4289556.
+  - **Website intake.** WebApp #1233, the `goal_region_navigation` intake ($0, confirmed brief only), merged 14:59Z. Its main CI failed on a runner port clash in the reliability-intake step, which is not the code; it deployed with #1234 (live 15:24Z).
+  - **Owner, about 15:00Z:** "keep working - non stop - i pre-approve everything so dont ask". Keeping the navigation intake's confirmed-brief check was the recommendation, so it stays.
+- **A brief confirmed after preparation strands a held job.**
+  - **What breaks.** The confirmation changes the task context digest (`confirmed` is in it), and nothing re-runs a held stage on that change. The job's status read now fails with `task_context_changed`.
+  - **Why a plain re-run won't do.** It would buy the candidate ranking again (retained by digest) and still refuse at the planner's semantics (bound to the old digest).
+  - **What was done.** The 4289556 deploy runs without the library job's resume. The general fix is being built: a context that differs from the sealed one only in `confirmed: false → true` is its confirmed successor. It inherits every artifact bound to the parent, and a replay re-runs the held stage once, paying nothing.
+  - **Going forward.** Confirm-at-upload (WebApp #1235) makes new jobs arrive confirmed, so this mostly affects older jobs.
 - **The G1 session, 13:43Z:** the owner confirmed to the G1 session directly ("Yes, both confirmed"):
   - each navigation checkpoint's own development rights review stands in for its checkpoint-terms review on every G1 navigation run, on all sites and scenes;
   - results stay development-only, and the first run to pass every check then counts;
