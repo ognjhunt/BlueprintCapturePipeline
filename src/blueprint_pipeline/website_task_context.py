@@ -47,12 +47,13 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
         raise ValueError("preparation_source_kind_invalid")
     if source_kind == "owned_capture" and operation not in {"atlas-configuration", "preparation-spend", "preparation-settlement"}:
         raise ValueError("owned_capture_atlas_control_operation_invalid")
-    if operation in {"prepared-scene", "preparation-spend", "task-item-evidence", "atlas-preview"} or (
+    if operation in {"prepared-scene", "preparation-spend", "task-item-evidence", "atlas-preview", "scene-preview"} or (
             operation in {"scene-sponsorship", "atlas-configuration"} and payload.get("create") is not False):
         from .core.handoff_lease import handoff_lease_checkpoint
         handoff_lease_checkpoint("website_control_effect:" + operation)
     if operation not in {"task-context", "scene-sponsorship", "prepared-scene",
                          "preparation-spend", "preparation-settlement", "atlas-configuration", "atlas-preview",
+                         "scene-preview",
                          "agent-execution-offer", "task-item-evidence", "preparation-status",
                          "task-target-choice"}:
         raise ValueError("website_control_operation_invalid")
