@@ -17,6 +17,7 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_policy_server_supervisor import PINNED_SOURCE_REVISION
 from .native_g1_navigation_goal import (
+    NAVIGATION_TASK_KIND,
     validate_g1_navigation_goal,
     validate_g1_navigation_goal_authority,
 )
@@ -302,7 +303,12 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
                 raise ValueError("g1_beta_robot_asset_mismatch")
         if (
             plan.get("plan_digest") != preflight.get("scene_plan_digest")
-            or plan.get("task_kind") != "rigid_pick_place"
+            # A navigation scene (kept as filmed, no task object) runs only the navigation
+            # checkpoints; every other G1 scene is the rigid pick-and-place it always was.
+            or plan.get("task_kind") not in (
+                {"rigid_pick_place", NAVIGATION_TASK_KIND}
+                if sealed["candidate_id"] in G1_NAVIGATION_CANDIDATES else {"rigid_pick_place"}
+            )
             or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
         ):
             raise ValueError("g1_worker_scene_changed_after_preflight")

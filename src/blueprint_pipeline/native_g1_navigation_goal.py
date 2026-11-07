@@ -289,21 +289,26 @@ def _machine_scope(plan: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, A
     return goal, basis, scope
 
 
-def _confirmed_context(context: Any, *, basis: Mapping[str, Any]) -> dict[str, Any]:
-    """The site's own task context, sealed, for the same site, and confirmed by the site.
+def _site_context(context: Any, *, basis: Mapping[str, Any]) -> dict[str, Any]:
+    """The site's own task context, sealed and for the same site.
 
-    Its digest is recomputed, so ``confirmed`` cannot be asserted by a caller over an unconfirmed
-    context's real digest. An unconfirmed brief refuses (owner decision 4's precondition).
+    Its digest is recomputed, so a caller cannot change a context and keep its seal. Whether the
+    site confirmed its brief is not a stop (owner, 2026-11-07: "these shouldnt be blockers at
+    all"; only privacy, rights and money stop a job). It is disclosed with the authority instead
+    (``site_brief_confirmed``).
     """
     if not isinstance(context, Mapping) or context.get("context_digest") != canonical_digest(
             context, digest_field="context_digest"):
         raise ValueError("g1_navigation_goal_task_context_invalid")
     if context["context_digest"] != basis["task_context_digest"] or context.get("scene_id") != basis["site_id"]:
         raise ValueError("g1_navigation_goal_task_context_invalid")
-    confirmed_at = context.get("confirmed_at")
-    if context.get("confirmed") is not True or not isinstance(confirmed_at, str) or not confirmed_at.strip():
-        raise ValueError("g1_navigation_goal_brief_not_confirmed")
     return dict(context)
+
+
+def _site_brief_confirmed(context: Mapping[str, Any]) -> bool:
+    """True only when the site confirmed its brief, with the time it did."""
+    confirmed_at = context.get("confirmed_at")
+    return context.get("confirmed") is True and isinstance(confirmed_at, str) and bool(confirmed_at.strip())
 
 
 def validate_machine_composed_goal_authority(value: Mapping[str, Any] | None, *,
@@ -314,9 +319,9 @@ def validate_machine_composed_goal_authority(value: Mapping[str, Any] | None, *,
         goal, basis, scope = _machine_scope(plan)
         if (not isinstance(authority, dict)
                 or set(authority) != {"schema_version", "status", "claim_ceiling", "scope", "goal", "goal_digest",
-                                      "task_context", "authority_basis", "composed_by", "human_reviewer",
-                                      "disclosed_assumptions", "reviewed_criterion", "obstacle_clearance_scored",
-                                      "physical_outcome_claimed", "authority_digest"}
+                                      "task_context", "site_brief_confirmed", "authority_basis", "composed_by",
+                                      "human_reviewer", "disclosed_assumptions", "reviewed_criterion",
+                                      "obstacle_clearance_scored", "physical_outcome_claimed", "authority_digest"}
                 or authority["schema_version"] != MACHINE_AUTHORITY_SCHEMA_VERSION
                 or authority["status"] != "confirmed_for_development_simulation"
                 or authority["claim_ceiling"] != "development_only"
@@ -333,7 +338,9 @@ def validate_machine_composed_goal_authority(value: Mapping[str, Any] | None, *,
                 or authority["authority_digest"] != cross_runtime_canonical_digest(
                     authority, digest_field="authority_digest")):
             raise ValueError("invalid")
-        _confirmed_context(authority["task_context"], basis=basis)
+        context = _site_context(authority["task_context"], basis=basis)
+        if authority["site_brief_confirmed"] is not _site_brief_confirmed(context):
+            raise ValueError("invalid")
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("g1_navigation_goal_authority_invalid") from exc
     return authority
@@ -341,15 +348,16 @@ def validate_machine_composed_goal_authority(value: Mapping[str, Any] | None, *,
 
 def compose_g1_navigation_goal_authority(*, plan: Mapping[str, Any],
                                          task_context: Mapping[str, Any]) -> dict[str, Any]:
-    """Compose the goal authority for a navigation scene from the site's own confirmed task context.
+    """Compose the goal authority for a navigation scene from the site's own task context.
 
-    No human reviewer is named or claimed. Refuses a context that is not the one the goal was
-    compiled from (``g1_navigation_goal_task_context_invalid``), an unconfirmed brief
-    (``g1_navigation_goal_brief_not_confirmed``), a goal or basis the plan's compiled spec does
-    not produce (``g1_navigation_goal_spec_binding_invalid``), or a plan that is not a G1
-    navigation scene.
+    No human reviewer is named or claimed. Whether the site confirmed its brief is recorded in
+    ``site_brief_confirmed`` and never stops the run. Refuses a context that is not the one the
+    goal was compiled from (``g1_navigation_goal_task_context_invalid``), a goal or basis the
+    plan's compiled spec does not produce (``g1_navigation_goal_spec_binding_invalid``), or a
+    plan that is not a G1 navigation scene.
     """
     goal, basis, scope = _machine_scope(plan)
+    context = _site_context(task_context, basis=basis)
     authority = {
         "schema_version": MACHINE_AUTHORITY_SCHEMA_VERSION,
         "status": "confirmed_for_development_simulation",
@@ -357,7 +365,8 @@ def compose_g1_navigation_goal_authority(*, plan: Mapping[str, Any],
         "scope": scope,
         "goal": goal,
         "goal_digest": cross_runtime_canonical_digest(goal),
-        "task_context": _confirmed_context(task_context, basis=basis),
+        "task_context": context,
+        "site_brief_confirmed": _site_brief_confirmed(context),
         "authority_basis": MACHINE_AUTHORITY_BASIS,
         "composed_by": MACHINE_AUTHORITY_COMPOSER,
         "human_reviewer": None,
@@ -368,6 +377,48 @@ def compose_g1_navigation_goal_authority(*, plan: Mapping[str, Any],
     }
     authority["authority_digest"] = cross_runtime_canonical_digest(authority, digest_field="authority_digest")
     return validate_machine_composed_goal_authority(authority, plan=plan)
+
+
+#: What a navigation scene's G1 run is scored by: the compiled goal's arrival and terminal hold
+#: (``score_g1_navigation_episode``). Contact off the feet is recorded per step
+#: (``native_task_runtime_contract.NAVIGATION_SAMPLE_BINDING``) and is never part of success.
+NAVIGATION_CONTRACT_SCHEMA_VERSION = "native_g1_navigation_task_success_contract.v1"
+NAVIGATION_CRITERION = "root_xy_goal_arrival_and_terminal_hold"
+
+
+def navigation_task_success_contract(task_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """The success contract of a compiled navigation task spec, bound to its sealed spec and goal."""
+    goal = validate_g1_navigation_goal(task_spec)
+    spec = task_spec.get("compiled_task_spec")
+    if (task_spec.get("task_kind") != NAVIGATION_TASK_KIND or not isinstance(spec, Mapping)
+            or spec.get("spec_digest") != canonical_digest(spec, digest_field="spec_digest")
+            or spec["spec_digest"] != task_spec.get("compiled_task_spec_digest")
+            or spec.get("site_id") != task_spec.get("site_id") or spec.get("task_id") != task_spec.get("task_id")):
+        raise ValueError("g1_navigation_task_success_contract_invalid")
+    contacts = sorted(str(row.get("id")) for row in _compiled_rows(spec, "no_contact"))
+    contract = {
+        "schema_version": NAVIGATION_CONTRACT_SCHEMA_VERSION, "task_kind": NAVIGATION_TASK_KIND,
+        "scope": {"site_id": spec["site_id"], "task_id": spec["task_id"]},
+        "compiled_task_spec_digest": spec["spec_digest"], "goal_digest": cross_runtime_canonical_digest(goal),
+        "criterion": NAVIGATION_CRITERION, "scorer": "native_g1_navigation_goal.score_g1_navigation_episode",
+        "obstacle_contact": {"recorded_per_step": True, "part_of_success": False,
+                             "compiled_predicate_ids": contacts},
+        "claim_ceiling": "development_only", "physical_outcome_claimed": False,
+    }
+    contract["contract_digest"] = canonical_digest(contract, digest_field="contract_digest")
+    return contract
+
+
+def validate_navigation_task_success_contract(value: Any, *, task_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Refuse a navigation contract the task spec does not produce exactly (``..._invalid``)."""
+    expected = navigation_task_success_contract(task_spec)
+    try:
+        observed = json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("g1_navigation_task_success_contract_invalid") from exc
+    if observed != expected:
+        raise ValueError("g1_navigation_task_success_contract_invalid")
+    return expected
 
 
 def score_g1_navigation_episode(
