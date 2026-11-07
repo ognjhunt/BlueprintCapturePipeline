@@ -507,7 +507,9 @@ def _register(*, site_id: str, current: dict[str, Any], source_queue: Path, rele
                 results[key] = {"status": "unavailable", "reason": "g1_current_navigation_goal_authority_missing"}
                 continue
             registrations[key] = {"native_g1": {**records, "navigation_authority": authority}}
-        elif goal:
+        elif goal or navigation:
+            # Planning refuses a manipulation checkpoint on a scene with a navigation goal, and on a navigation
+            # scene by its kind alone (``beta_policy_screening_g1``), whatever its task spec carries.
             results[key] = {"status": "unavailable", "reason": "g1_beta_manipulation_policy_task_mismatch"}
             continue
         else:

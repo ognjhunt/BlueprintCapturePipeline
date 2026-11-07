@@ -831,6 +831,30 @@ def test_a_linked_navigation_authority_is_never_followed(navigation_world, monke
     assert path.is_symlink() and elsewhere.read_bytes() == b"{}" and _kept_aside(path) == []
 
 
+def test_a_navigation_scene_never_registers_a_manipulation_checkpoint_whatever_its_task_spec_carries(
+        navigation_world, monkeypatch):
+    """By its kind alone, as planning refuses one (``beta_policy_screening_g1``), not only by its goal."""
+    kwargs, _, _, _, _ = navigation_world
+    _stand_in_source(monkeypatch, kwargs)
+    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
+    resolve = builder.contract.site_inputs
+
+    def without_goal(*args, **kw):
+        site_root, inputs, base_receipt, request, scene = resolve(*args, **kw)
+        task_spec = {key: value for key, value in scene["task_spec"].items() if key != "g1_navigation_goal"}
+        return site_root, inputs, base_receipt, request, {**scene, "task_spec": task_spec}
+
+    monkeypatch.setattr(builder.contract, "site_inputs", without_goal)
+    overlay_path(kwargs["site_id"]).unlink()
+    monkeypatch.setattr(prepare, "prepare_native_g1_beta_packet", lambda **_: pytest.fail("prepared again"))
+    result = registration.ensure_site_registration(**kwargs)
+    assert result["status"] == "registered", result
+    assert result["candidates"][DP] == result["candidates"][PI] == {
+        "status": "unavailable", "reason": "g1_beta_manipulation_policy_task_mismatch"}
+    row = json.loads(overlay_path(kwargs["site_id"]).read_text())
+    assert set(row["screening_candidates"]) == {DP_NAV, PI_NAV}
+
+
 def test_a_refused_retained_consent_on_a_navigation_site_composes_nothing(navigation_world, monkeypatch, tmp_path):
     kwargs, _, _, _, _ = navigation_world
     _stand_in_source(monkeypatch, kwargs)
