@@ -141,6 +141,17 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - The Google Cloud budget check accepts only a report under 5 minutes old, and this one was older: the spend guard that writes it did not run from 05:36Z to 05:45Z, while the deploy finished.
     - The month itself was fine: $9.77 of $100, admitted, in the 05:45:00Z report.
   - 05:46:45Z: resumed again on a fresh status read (`20261107T054645Z-selected-handoff-1692fcb8`). The lease had expired at 03:41Z.
+- **05:52:50Z: the clean plate finished, then the scene handoff stopped** with `website_atlas_scene_level_unobserved`.
+  - No out-of-memory this time: the host kept at least 5.5 GB free. The native preparation is `failed_retryable` (attempt 7).
+  - The clean plate holds $0.69: SAM $0.35, including the counted-as-spent request and its resend, and Gemini $0.34.
+  - **The cause.** Levelling found no single near-level plane holding 4% of the supported mesh (398,036 faces, 38% of the provider's area).
+    - An aisle's level surface is split across the floor strip and the shelf boards on both sides.
+    - The source views' depth also reaches about 11 m below the floor, so a reflective floor may have been trimmed from the supported copy.
+    - The mesh cannot leave the host, so a replay cannot show which.
+  - **The fix** (general): when no single plane passes, level on the parallel level surfaces together, and record what the search found, refusals included. Rough ground is still refused.
+- **06:10Z: #3439 merged** (part C 1/2), after the G1 session's review. #3440, from another session, had merged at 06:02Z.
+- **Owner, through the G1 session, about 05:50Z:** "yes a confirmed brief counts as consent". The consent rechecks stay as they are. The library job's brief is confirmed only on the website, by its owner.
+- **Job spend at 06:10Z:** Atlas $7.38 of $25, clean plate $0.69 held, intake $1.06 known. About $9.13 in all.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 

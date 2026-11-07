@@ -10,6 +10,13 @@ table: they are parallel) gives the up direction. The lowest such layer, with
 almost nothing below it and every camera standing above it, is the floor,
 declared at y = 0. A scene with no level surface (open terrain) waits for input.
 
+A single level plane holding a twentieth of the surface is the first test. A
+scene whose level surface is split across many parallel planes (an aisle's
+shelf boards on both sides, its floor strip partly trimmed) passes none of
+them alone, though its up direction is plain: there the area-weighted normal
+of every near-level face gives it, and the record says which basis was used.
+The floor is declared by the same rules either way.
+
 The retained Atlas outputs stay unchanged; the base scene points at levelled
 copies in the provider's own units. Every value is an estimate.
 """
@@ -27,7 +34,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-REVISION = "atlas_world_levelling.v1"
+REVISION = "atlas_world_levelling.v2"
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0
@@ -38,6 +45,19 @@ RANSAC_ITERATIONS = 2000
 #: The dominant level plane holds at least this share of the sampled surface
 #: (the dishwasher floor held 8%; a level slice through walls holds about 2%).
 MIN_LEVEL_SHARE = 0.04
+#: Parallel level surfaces: faces within these windows of the current estimate,
+#: narrowed in turn, pull it onto their shared normal (a mean shift on the
+#: sphere). Along it, each level surface is a dense 2 cm layer of points, several
+#: times the walls and clutter around its height; together the layers must hold
+#: the share one level plane would.
+PARALLEL_WINDOWS_DEGREES = (45.0, 30.0, 20.0, 12.0, 8.0, 5.0)
+PARALLEL_SHIFTS = 3
+PARALLEL_BACKGROUND_M = 0.5
+PARALLEL_PEAK_RATIO = 3.0
+PARALLEL_MIN_LAYER_SHARE = 0.005
+PARALLEL_REFITS = 2
+#: Faces read at a time: a room's mesh has millions of faces (capture-447's: 6.5 M).
+FACE_BLOCK = 1 << 20
 #: The floor is the lowest 2 cm layer holding this share, with almost nothing below it.
 MIN_FLOOR_SHARE = 0.01
 MAX_BELOW_FLOOR_SHARE = 0.01
@@ -64,11 +84,15 @@ def _plane(points: np.ndarray) -> tuple[np.ndarray, float]:
     return normal, float(centre @ normal)
 
 
-def _level_direction(points: np.ndarray, rng: np.random.Generator) -> np.ndarray | None:
-    """Unit normal of the dominant near-level plane, refined on all its points; None when there is none."""
+def _level_direction(points: np.ndarray, rng: np.random.Generator,
+                     report: dict[str, Any] | None = None) -> np.ndarray | None:
+    """Unit normal of the dominant near-level plane, refined on all its points; None when there is none.
+
+    ``report`` receives the largest share of the probe any near-level plane held.
+    """
     limit = math.cos(math.radians(MAX_TILT_DEGREES))
     probe = points[rng.choice(len(points), RANSAC_PROBE, replace=False)] if len(points) > RANSAC_PROBE else points
-    best, best_count = None, int(MIN_LEVEL_SHARE * len(probe))
+    best, best_count, largest = None, int(MIN_LEVEL_SHARE * len(probe)), 0
     for _ in range(RANSAC_ITERATIONS):
         a, b, c = probe[rng.choice(len(probe), 3, replace=False)]
         normal = np.cross(b - a, c - a)
@@ -77,12 +101,90 @@ def _level_direction(points: np.ndarray, rng: np.random.Generator) -> np.ndarray
             continue
         normal = normal / length
         count = int(np.count_nonzero(np.abs((probe - a) @ normal) <= PLANE_TOLERANCE_M))
+        largest = max(largest, count)
         if count > best_count:
             best, best_count = (a, normal), count
+    if report is not None:
+        report.update(probe_points=int(len(probe)), largest_level_plane_share=largest / max(len(probe), 1),
+                      minimum_level_plane_share=MIN_LEVEL_SHARE)
     if best is None:
         return None
     normal, _ = _plane(points[np.abs((points - best[0]) @ best[1]) <= PLANE_TOLERANCE_M])
     return normal if normal[1] >= limit else None
+
+
+def _face_normals_and_areas(vertices: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Unit normals turned to non-negative +Y, and areas, of every face with an area, ``FACE_BLOCK`` at a time."""
+    normals, areas = [], []
+    for start in range(0, len(faces), FACE_BLOCK):
+        tri = vertices[faces[start:start + FACE_BLOCK]]
+        cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        length = np.linalg.norm(cross, axis=1)
+        keep = length > 1e-12
+        unit = cross[keep] / length[keep, None]
+        unit[unit[:, 1] < 0] *= -1.0
+        normals.append(unit.astype(np.float32))
+        areas.append((0.5 * length[keep]).astype(np.float32))
+    if not normals:
+        return np.zeros((0, 3), np.float32), np.zeros(0, np.float32)
+    return np.concatenate(normals), np.concatenate(areas)
+
+
+def _parallel_level_direction(vertices: np.ndarray, faces: np.ndarray, points: np.ndarray,
+                              report: dict[str, Any] | None = None) -> np.ndarray | None:
+    """The normal shared by parallel level surfaces; None when their layers hold too little of ``points``.
+
+    ``vertices`` and ``points`` are in metres. A mean shift over the faces'
+    area-weighted normals, from +Y, gives a first direction. Along it, the
+    level surfaces are the dense 2 cm layers of ``points``; the direction is
+    refitted on all of them at once, each about its own height.
+    """
+    from scipy.ndimage import median_filter
+
+    normals, areas = _face_normals_and_areas(vertices, faces)
+    estimate, held = np.array([0.0, 1.0, 0.0]), 0.0
+    for window in PARALLEL_WINDOWS_DEGREES:
+        cosine = math.cos(math.radians(window))
+        for _ in range(PARALLEL_SHIFTS):
+            near = normals @ estimate.astype(np.float32) >= cosine
+            held = float(areas[near].sum(dtype=np.float64))
+            if held <= 0:
+                break
+            mean = (normals[near].astype(np.float64) * areas[near, None]).sum(axis=0)
+            estimate = mean / np.linalg.norm(mean)
+        if held <= 0:
+            break
+    if held <= 0 or len(points) < 3:
+        if report is not None:
+            report.update(parallel_level_layers=0, parallel_level_share=0.0)
+        return None
+    step = PLANE_TOLERANCE_M / 2
+    layers: list[float] = []
+    for _ in range(PARALLEL_REFITS + 1):
+        heights = points @ estimate
+        counts, edges = np.histogram(heights, bins=np.arange(heights.min(), heights.max() + 3 * step, step))
+        pair = (counts[:-1] + counts[1:]).astype(np.float64)
+        background = median_filter(pair, size=2 * int(round(PARALLEL_BACKGROUND_M / step)) + 1, mode="nearest")
+        dense = (pair >= PARALLEL_PEAK_RATIO * np.maximum(background, 1.0)) & (
+            pair >= PARALLEL_MIN_LAYER_SHARE * len(points))
+        # One layer per surface: the densest pair within a tolerance of its neighbours.
+        peaks = [i for i in np.flatnonzero(dense)
+                 if pair[i] == pair[max(0, i - 2):i + 3].max() and not (i > 0 and pair[i - 1] == pair[i])]
+        layers = [float(edges[i + 1]) for i in peaks]
+        share = float(sum(pair[i] for i in peaks)) / len(points)
+        groups = [points[np.abs(heights - height) <= PLANE_TOLERANCE_M] for height in layers]
+        groups = [group - group.mean(axis=0) for group in groups if len(group) >= 3]
+        if not groups:
+            break
+        normal = np.linalg.svd(np.concatenate(groups), full_matrices=False)[2][-1]
+        estimate = normal if normal[1] >= 0 else -normal
+    tilt = math.degrees(math.acos(min(1.0, float(estimate[1]))))
+    if report is not None:
+        report.update(parallel_level_layers=len(layers), parallel_level_share=share,
+                      parallel_level_tilt_degrees=tilt)
+    if not layers or share < MIN_LEVEL_SHARE or tilt > MAX_TILT_DEGREES:
+        return None
+    return estimate
 
 
 def _floor(points: np.ndarray, normal: np.ndarray) -> dict[str, Any] | None:
@@ -164,7 +266,13 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     vertices = np.asarray(mesh.vertices, dtype=np.float64) * meters_per_unit
     rng = np.random.default_rng(607)
     sample = vertices[rng.choice(len(vertices), SAMPLE_CAP, replace=False)] if len(vertices) > SAMPLE_CAP else vertices
-    normal = _level_direction(sample, rng) if len(sample) >= 3 else None
+    search: dict[str, Any] = {"sampled_vertices": int(len(sample))}
+    normal = _level_direction(sample, rng, search) if len(sample) >= 3 else None
+    basis = "single_level_plane"
+    if normal is None:
+        normal = _parallel_level_direction(vertices, np.asarray(mesh.faces, dtype=np.int64), sample, search)
+        basis = "parallel_level_surfaces"
+    value["level_search"] = search
     splat = read_standard_3dgs_ply(splat_path) if normal is not None else None
     if normal is None or splat.sh_rest is not None:
         # Rotating view-dependent colour is not implemented; refuse rather than tilt it.
@@ -198,6 +306,7 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
         status="levelled", provider_to_levelled=transform.tolist(),
         tilt_degrees=math.degrees(math.acos(min(1.0, float(up[1])))),
         up_basis="observed_floor" if floor is not None else "dominant_level_surface",
+        level_direction_basis=basis,
         ground_plane_offset_m=0.0 if floor is not None else None,
         floor=None if floor is None else {
             "height_before_m": floor["height_m"], "inlier_share": floor["inlier_share"],
