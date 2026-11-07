@@ -151,6 +151,7 @@ def test_once_built_the_hold_names_only_what_is_still_lacking(job):
     from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
     from blueprint_pipeline.native_g1_navigation_goal import NAVIGATION_TASK_KIND
     from blueprint_pipeline.task_evaluation_embodiment_registry import EMBODIMENT_REGISTRY
+    from blueprint_pipeline.task_evaluation_g1_catalog import G1_EMBODIMENT_ID
 
     result, context = _run(job)
     assert result["status"] == "needs_input" and result["blockers"] == [HOLD_CODE]
@@ -169,6 +170,10 @@ def test_once_built_the_hold_names_only_what_is_still_lacking(job):
             expected.append("catalog:task_kind_not_supported_by_candidate" if kinds
                             else "catalog:task_kind_support_unverified")
         assert policy["missing"] == expected
+        # No body declares a development-run allowance today, so each body's own gaps are named too.
+        assert {f"embodiment:{item}" for item in bodies[policy["embodiment_id"]].missing} <= set(policy["missing"])
+        assert "claim_ceiling" not in policy and "development_run_allowance" not in policy
+    assert {policy["embodiment_id"] for policy in options["policies"]} == {G1_EMBODIMENT_ID}
     assert holds_native_task_preparation(result, context)
 
 

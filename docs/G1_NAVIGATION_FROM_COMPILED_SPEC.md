@@ -35,6 +35,7 @@ The owner asked on 2026-11-06 at about 18:00Z to "build the missing navigation p
 ## Prerequisites outside code
 
 - **The site's brief.** The library-aisle job's `website_task_context.json` reads `confirmed: false`. That is not a stop (owner, 2026-11-07): the goal authority is composed and discloses it (`site_brief_confirmed: false`, status `composed_for_development_simulation_site_brief_unconfirmed`).
+- **The G1's first-navigation-run allowance is deferred** (owner). No body declares a development-run allowance (`task_evaluation_embodiment_registry.DevelopmentRunAllowance`), so the G1 navigation options still list `embodiment:verified_site_episode` and `embodiment:reviewed_checkpoint_terms`, and the handoff hold names both, with `pipeline:navigation_source_identity` and any catalog gaps. Before one is added it needs a bound (for example, it expires once the site has a navigation result) and the owner's decision on the `reviewed_checkpoint_terms` stand-in (the per-checkpoint development rights reviews): that is a rights call. The allowance type, `development_run_missing` and the registry's check of an allowance stay, so a bounded one can be added once decided.
 - **The Vast top-up** (owner): credit was $7.07 against the $11 page line.
 - **G1 runtime source restore and registration** (G1 session; #3426 fixes the restore's permission error).
 

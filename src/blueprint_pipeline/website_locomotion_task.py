@@ -252,8 +252,9 @@ def runnable_options(requirements: Mapping[str, Any], *, catalog: Mapping[str, A
     bodies = [row for row in EMBODIMENT_REGISTRY if row.meets(requirements)]
     by_profile = {key: row for row in bodies for key in row.policy_robot_profile_ids}
     policies = []
-    # A walk with no manipulation is the navigation profile: a body may name a narrow development-only
-    # allowance for its first run there (``EmbodimentProfile.development_run_missing``); nothing else has one.
+    # A walk with no manipulation is the navigation profile: a body may declare a narrow development-only
+    # allowance for it (``EmbodimentProfile.development_run_missing``). None does today, so each body's
+    # gaps show in full; one declared later is read here and its result recorded development_only.
     navigation = bool(requirements.get("locomote")) and not requirements.get("manipulate")
     for row in catalog["candidates"]:
         body = by_profile.get((row.get("interface") or {}).get("robot_profile_id"))

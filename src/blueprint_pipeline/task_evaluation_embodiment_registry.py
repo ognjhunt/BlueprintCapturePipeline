@@ -12,11 +12,13 @@ Adding a robot: declare its interface and ``missing`` work here. Promoting it
 needs a verified asset, controller adapter, camera rig, reset pose and an
 integration canary receipt; editing ``status`` alone must not make it run.
 
-One narrow, explicit exception exists (``DevelopmentRunAllowance``): a
-development-only run of one named task profile may proceed while named items
+One narrow, explicit exception can be declared (``DevelopmentRunAllowance``):
+a development-only run of one named task profile may proceed while named items
 are still ``missing``, each with the basis that stands in for it, and its
 result is recorded ``development_only``. It never makes a body ``runnable``
-and covers no other task profile.
+and covers no other task profile. No body declares one today: the G1's
+first-navigation-run allowance is deferred until it has a bound and the owner
+has decided on each stand-in (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md).
 """
 
 from __future__ import annotations
@@ -70,7 +72,8 @@ def deployment_embodiment_support_catalog() -> dict[str, Any]:
     return value
 
 
-#: The only task profiles a development-only run allowance may name (owner decision 2026-11-07: G1 navigation).
+#: The only task profiles a development-only run allowance may name. None is granted today; adding one
+#: needs a bound and the owner's decision on each stand-in (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md).
 DEVELOPMENT_RUN_TASK_PROFILES = frozenset({"goal_region_navigation"})
 
 
@@ -173,20 +176,6 @@ def _catalog_arm(row: dict[str, Any]) -> EmbodimentProfile:
     )
 
 
-#: Owner decision 2026-11-07, "dev check, then counts": the first G1 navigation run on a site is a
-#: development-only check; if it passes every check it becomes G1's first verified site episode. Each
-#: navigation checkpoint's development terms are human-reviewed (``approved_for_development_simulation``,
-#: docs/arm_decision_proof_v1/manifests/g1_841757_*_development_rights_review.v1.json) and every G1 run
-#: re-validates that review (``native_g1_beta_authority.validate_beta_authority``). Navigation only.
-G1_FIRST_NAVIGATION_RUN = DevelopmentRunAllowance(
-    task_profile_id="goal_region_navigation",
-    satisfied_by=(
-        ("verified_site_episode", "owner_decision_2026_11_07_first_navigation_run_is_the_development_check"),
-        ("reviewed_checkpoint_terms", "per_checkpoint_development_rights_review_approved_for_development_simulation"),
-    ),
-)
-
-
 EMBODIMENT_REGISTRY: tuple[EmbodimentProfile, ...] = (
     EmbodimentProfile(
         embodiment_id=DROID_EMBODIMENT_ID,
@@ -210,7 +199,6 @@ EMBODIMENT_REGISTRY: tuple[EmbodimentProfile, ...] = (
         missing=("verified_site_episode", "reviewed_checkpoint_terms"),
         reason="No production policy-canary profile has executed a verified G1 episode on a site scene, and its checkpoint terms are pending review.",
         policy_robot_profile_ids=("unitree_g1_dex3_sonic_v1",),
-        development_run_allowances=(G1_FIRST_NAVIGATION_RUN,),
     ),
     EmbodimentProfile(
         embodiment_id="boston_dynamics_atlas",
@@ -260,7 +248,7 @@ def embodiment_registry_violations() -> list[str]:
 
 
 __all__ = [
-    "DevelopmentRunAllowance", "EMBODIMENT_REGISTRY", "EmbodimentProfile", "G1_FIRST_NAVIGATION_RUN",
+    "DevelopmentRunAllowance", "EMBODIMENT_REGISTRY", "EmbodimentProfile",
     "deployment_embodiment_support_catalog",
     "embodiment", "embodiment_registry_violations",
 ]
