@@ -34,7 +34,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-REVISION = "atlas_world_levelling.v6"
+REVISION = "atlas_world_levelling.v7"
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0
@@ -71,6 +71,18 @@ FLOOR_TRIM_DEVIATIONS = 2.5
 #: direction when its own plane and the mean of every surface's normal agree this closely: two
 #: independent estimates. The scene is levelled on it, and no floor is declared.
 DIRECTION_AGREEMENT_DEGREES = 0.5
+#: Fallback floor, a development-only estimate, flagged (owner, 2026-11-07: "build the flagged fallback
+#: floor"). When nothing observed levels the scene, but the floor band's own plane and every
+#: surface's mean normal both lie within FALLBACK_MAX_TILT_DEGREES of the provider's +Y, +Y is taken
+#: as up, and a flat floor at the band's median height stands in for an uneven reconstructed one. In
+#: the collider copy, the near-level faces within FALLBACK_REPLACE_HALF_M of that height are replaced
+#: by the flat floor; walls, shelf sides and the splat are kept as captured.
+FALLBACK_MAX_TILT_DEGREES = 3.0
+FALLBACK_BAND_M = 0.30
+FALLBACK_REPLACE_HALF_M = 0.12
+FALLBACK_LEVEL_FACE_DEGREES = 30.0
+FALLBACK_FLOOR_MARGIN_M = 0.2
+FALLBACK_FLOOR_CELL_M = 0.25
 #: Kept in the record, so a refusal can be read without the mesh: the densest layers along the chosen
 #: direction, and along +Y and every candidate direction the share of points in each 2 cm band of
 #: height around the cameras (a floor shows as a peak a camera height below them, as thick as it is).
@@ -374,6 +386,90 @@ def _band_floor(points: np.ndarray, direction: np.ndarray,
     return value
 
 
+def _fallback_floor(points: np.ndarray) -> dict[str, Any] | None:
+    """A flat floor along +Y at the median height of the lowest band holding a floor's share; None if none.
+
+    The band is the lowest 10 cm holding ``MIN_FLOOR_SHARE`` of the points and the ``FALLBACK_BAND_M``
+    above it. It must be wider than a counter both ways and have almost nothing below it.
+    """
+    if len(points) < 3:
+        return None
+    up = np.array([0.0, 1.0, 0.0])
+    heights = points[:, 1]
+    step = PLANE_TOLERANCE_M
+    counts, edges = np.histogram(heights, bins=np.arange(heights.min(), heights.max() + 2 * step, step))
+    reach = int(round(FLOOR_BAND_FIND_M / step))
+    windows = np.convolve(counts, np.ones(reach, dtype=np.int64), mode="valid")
+    found = np.flatnonzero(windows >= MIN_FLOOR_SHARE * len(points))
+    if not len(found):
+        return None
+    base = float(edges[found[0]])
+    band = points[(heights >= base - BELOW_FLOOR_M) & (heights <= base + FALLBACK_BAND_M)]
+    if len(band) < 3:
+        return None
+    height = float(np.median(band[:, 1]))
+    below = int(np.count_nonzero(heights < base - BELOW_FLOOR_M))
+    flat = band[:, [0, 2]] - band[:, [0, 2]].mean(axis=0)
+    spans = sorted(float(np.subtract(*np.percentile(flat @ axis, [98, 2])))
+                   for axis in np.linalg.svd(flat, full_matrices=False)[2])
+    if below > MAX_BELOW_FLOOR_SHARE * len(points) or spans[0] < MIN_FLOOR_EXTENT_M:
+        return None
+    low, high = np.percentile(band[:, 1], [5, 95])
+    return {"normal": up, "height_m": height, "inlier_share": len(band) / len(points),
+            "below_share": below / len(points), "rms_m": float(np.std(band[:, 1])), "extent_m": spans[::-1],
+            "band_spread_m": [float(low - height), float(high - height)]}
+
+
+def _replace_uneven_floor(mesh, *, meters_per_unit: float) -> dict[str, Any]:
+    """In a levelled mesh (floor at y = 0), swap the near-level faces near the floor for a flat floor grid.
+
+    Returns what was replaced. The flat floor covers the replaced faces' extent, along their own
+    principal axes, plus ``FALLBACK_FLOOR_MARGIN_M``, in cells of ``FALLBACK_FLOOR_CELL_M``.
+    """
+    import trimesh
+
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    metres = vertices * meters_per_unit
+    tri = metres[faces]
+    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    length = np.linalg.norm(cross, axis=1)
+    level = np.abs(cross[:, 1]) >= math.cos(math.radians(FALLBACK_LEVEL_FACE_DEGREES)) * np.maximum(length, 1e-12)
+    near = np.all(np.abs(tri[:, :, 1]) <= FALLBACK_REPLACE_HALF_M, axis=1)
+    replaced = level & near & (length > 1e-12)
+    corners = tri[replaced].reshape(-1, 3)[:, [0, 2]]
+    centre = corners.mean(axis=0)
+    axes = np.linalg.svd(corners - centre, full_matrices=False)[2]
+    along = (corners - centre) @ axes.T
+    low = np.percentile(along, 1, axis=0) - FALLBACK_FLOOR_MARGIN_M
+    high = np.percentile(along, 99, axis=0) + FALLBACK_FLOOR_MARGIN_M
+    counts = np.maximum(1, np.ceil((high - low) / FALLBACK_FLOOR_CELL_M).astype(int))
+    u, v = (np.linspace(low[k], high[k], counts[k] + 1) for k in range(2))
+    grid = np.array([[a, b] for a in u for b in v])
+    xz = centre + grid @ axes
+    floor_vertices = np.column_stack([xz[:, 0], np.zeros(len(xz)), xz[:, 1]]) / meters_per_unit
+    n_v = len(v)
+    cells = [(i * n_v + j, (i + 1) * n_v + j, i * n_v + j + 1, (i + 1) * n_v + j + 1)
+             for i in range(len(u) - 1) for j in range(n_v - 1)]
+    start = len(vertices)
+    # Winding with +Y up for both triangles of each cell.
+    floor_faces = np.array([tri_ for a, b, c, d in cells for tri_ in ((a, c, b), (b, c, d))], dtype=np.int64) + start
+    colours = None
+    visual = getattr(mesh, "visual", None)
+    if visual is not None and getattr(visual, "kind", None) == "vertex":
+        existing = np.asarray(visual.vertex_colors)
+        floor_colour = np.median(existing[np.unique(faces[replaced])], axis=0) if replaced.any() else existing[0]
+        colours = np.vstack([existing, np.tile(floor_colour, (len(floor_vertices), 1))]).astype(np.uint8)
+    rebuilt = trimesh.Trimesh(vertices=np.vstack([vertices, floor_vertices]),
+                              faces=np.vstack([faces[~replaced], floor_faces]), vertex_colors=colours, process=False)
+    rebuilt.remove_unreferenced_vertices()
+    areas = 0.5 * length
+    return {"mesh": rebuilt, "replaced_faces": int(replaced.sum()),
+            "replaced_area_share": float(areas[replaced].sum() / max(areas.sum(), 1e-12)),
+            "flat_floor_extent_m": [float(high[k] - low[k]) for k in range(2)],
+            "flat_floor_faces": int(len(floor_faces))}
+
+
 def _cameras_above(floor: dict[str, Any] | None, centres_m: np.ndarray) -> np.ndarray | None:
     """The cameras' heights over ``floor``, or None when they do not stand above it as people do."""
     if floor is None:
@@ -431,6 +527,7 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     rng = np.random.default_rng(607)
     sample = vertices[rng.choice(len(vertices), SAMPLE_CAP, replace=False)] if len(vertices) > SAMPLE_CAP else vertices
     search: dict[str, Any] = {"sampled_vertices": int(len(sample))}
+    fallback: dict[str, Any] | None = None
     largest: list[np.ndarray] = []
     normal = _level_direction(sample, rng, search, largest) if len(sample) >= 3 else None
     basis = "single_level_plane"
@@ -462,6 +559,23 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
                     and band["extent_m"][1] >= MIN_FLOOR_EXTENT_M and band["normal"][1] >= math.cos(
                         math.radians(MAX_TILT_DEGREES))):
                 normal, basis = band["normal"], "agreeing_normal_mode_and_floor_band"
+        if normal is None and mode is not None and fitted:
+            # The flagged fallback: both observed estimates lie near the provider's +Y; a flat floor
+            # at the uneven band's median height stands in, as a development-only estimate.
+            estimates = {"floor_band_tilt_degrees": _tilt(fitted[0]["normal"]),
+                         "face_normal_mode_tilt_degrees": _tilt(mode),
+                         "separation_degrees": search.get("direction_agreement_degrees")}
+            search["fallback_estimates"] = estimates
+            if max(estimates["floor_band_tilt_degrees"], estimates["face_normal_mode_tilt_degrees"]) \
+                    <= FALLBACK_MAX_TILT_DEGREES:
+                candidate = _fallback_floor(sample)
+                heights = _cameras_above(candidate, centres * meters_per_unit)
+                if heights is not None:
+                    floor, camera_heights = candidate, heights
+                    normal, basis = candidate["normal"], "provider_up_fallback"
+                    fallback = {"basis": "flat_floor_at_uneven_band_median", "claim": "development_only_estimate",
+                                "up_estimates": estimates, "band_spread_m": candidate["band_spread_m"],
+                                "band_share": candidate["inlier_share"]}
     value["level_search"] = search
     splat = read_standard_3dgs_ply(splat_path) if normal is not None else None
     if normal is None or splat.sh_rest is not None:
@@ -478,6 +592,10 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     if floor is not None:
         transform[1, 3] = -floor["height_m"] / meters_per_unit
     mesh.apply_transform(transform)
+    if fallback is not None:
+        swapped = _replace_uneven_floor(mesh, meters_per_unit=meters_per_unit)
+        mesh = swapped.pop("mesh")
+        fallback.update(swapped)
     root.mkdir(parents=True, exist_ok=True)
     mesh.export(str(root / MESH_NAME))
     xyz = splat.xyz.astype(np.float64) @ rotation.T + transform[:3, 3]
@@ -487,8 +605,10 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     value.update(
         status="levelled", provider_to_levelled=transform.tolist(),
         tilt_degrees=math.degrees(math.acos(min(1.0, float(up[1])))),
-        up_basis="observed_floor" if floor is not None else "dominant_level_surface",
+        up_basis=("fallback_fitted_floor" if fallback is not None else
+                  "observed_floor" if floor is not None else "dominant_level_surface"),
         level_direction_basis=basis,
+        **({"fallback_floor": fallback} if fallback is not None else {}),
         ground_plane_offset_m=0.0 if floor is not None else None,
         floor=None if floor is None else {
             "height_before_m": floor["height_m"], "inlier_share": floor["inlier_share"],
