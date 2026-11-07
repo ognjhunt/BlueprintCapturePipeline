@@ -306,6 +306,45 @@ def test_orchestrator_changed_input_reruns_lanes(monkeypatch, tmp_path: Path) ->
     assert calls == {"qualification": 2, "evaluation_prep": 2}
 
 
+def test_orchestrator_stage_binding_reruns_lanes_a_marker_recorded_under_another(monkeypatch, tmp_path: Path) -> None:
+    """run_e2e reruns its capture_pipeline stage when the stage's input binding changes (a site's target
+    correction, a robot fit recheck, a held job's replay). The capture itself is unchanged, so without the
+    binding in the lane fingerprint the earlier lane marker would skip that rerun."""
+    capture_root = _capture_root(tmp_path)
+    descriptor_path = _write_capture_inputs(capture_root)
+    calls: dict[str, int] = {}
+    _orchestrator_lane_stubs(monkeypatch, descriptor_path, calls)
+    descriptor_gcs_uri = "gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json"
+
+    def run(**binding):
+        return run_capture_pipeline(descriptor_gcs_uri=descriptor_gcs_uri,
+                                    config=PipelineConfig(gcs_root=tmp_path), **binding)
+
+    run()                                                    # first run: no binding
+    run(input_binding_digest="sha256:" + "a" * 64)           # a replay binds the stage: the lanes rerun
+    assert calls == {"qualification": 2, "evaluation_prep": 2}
+    retry = run(input_binding_digest="sha256:" + "a" * 64)   # a retry of that same run skips them
+    assert calls == {"qualification": 2, "evaluation_prep": 2}
+    assert all(item.get("resumed_from_lane_ledger") is True for item in retry["results"])
+    run(input_binding_digest="sha256:" + "b" * 64)           # the next fact reruns them again
+    run()                                                    # and so does a run without a binding
+    assert calls == {"qualification": 4, "evaluation_prep": 4}
+
+
+def test_lane_ledger_fingerprint_without_a_binding_is_unchanged(tmp_path: Path) -> None:
+    """Markers recorded before the binding existed still match every caller that passes none."""
+    capture_root = _capture_root(tmp_path)
+    descriptor_path = _write_capture_inputs(capture_root)
+    plain = lane_ledger_input_fingerprint(capture_root=capture_root, descriptor_path=descriptor_path)
+    assert plain == lane_ledger_input_fingerprint(capture_root=capture_root, descriptor_path=descriptor_path,
+                                                  input_binding_digest=None)
+    assert [source["role"] for source in plain["sources"]] == ["capture_descriptor_normalized", "raw_manifest"]
+    bound = lane_ledger_input_fingerprint(capture_root=capture_root, descriptor_path=descriptor_path,
+                                          input_binding_digest="sha256:" + "c" * 64)
+    assert bound["sources"][-1] == {"role": "stage_input_binding", "digest": "sha256:" + "c" * 64}
+    assert bound["fingerprint_sha256"] != plain["fingerprint_sha256"]
+
+
 def test_lane_ledger_fingerprint_survives_pipeline_descriptor_writes(tmp_path: Path) -> None:
     """Qualification writes canonical/provider/worldlabs metadata back into the
     descriptor mid-run (qualification.py canonical-package + worldlabs writes);

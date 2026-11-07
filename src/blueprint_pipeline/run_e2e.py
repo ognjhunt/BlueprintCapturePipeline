@@ -877,6 +877,15 @@ def run_end_to_end(
             detail="descriptor_already_present",
         )
 
+    # A site's correction of the object the robot moves reruns preparation
+    # from its retained stage outputs; a confirmation of the guess does not.
+    # So does a change of the catalog or team registry a robot fit hold was
+    # decided against (website_robot_fit_hold); nothing else changes it.
+    # And a held job's replay once the fact it waited on arrived (website_held_handoff_replay).
+    # The lane ledger keys on the same binding, so its marker never skips a rerun this stage makes.
+    capture_binding = held_replay_binding(Path(context.capture_root) / "pipeline", preparation_binding_digest(
+        Path(context.capture_root) / "pipeline",
+        correction_binding_digest(Path(context.capture_root) / "pipeline")))
     pipeline = _run_stage(
         "capture_pipeline",
         lambda: run_capture_pipeline(
@@ -884,19 +893,13 @@ def run_end_to_end(
             lane=pipeline_lane,
             allow_legacy_lanes=allow_legacy_pipeline_lanes,
             config=PipelineConfig(gcs_root=context.storage_root),
+            **({"input_binding_digest": capture_binding} if capture_binding is not None else {}),
         ),
         artifacts_from_result=lambda value: {
             "descriptor_uri": context.descriptor_uri,
             "lanes": value.get("lanes") if isinstance(value, Mapping) else None,
         },
-        # A site's correction of the object the robot moves reruns preparation
-        # from its retained stage outputs; a confirmation of the guess does not.
-        # So does a change of the catalog or team registry a robot fit hold was
-        # decided against (website_robot_fit_hold); nothing else changes it.
-        # And a held job's replay once the fact it waited on arrived (website_held_handoff_replay).
-        input_binding_digest=held_replay_binding(Path(context.capture_root) / "pipeline", preparation_binding_digest(
-            Path(context.capture_root) / "pipeline",
-            correction_binding_digest(Path(context.capture_root) / "pipeline"))),
+        input_binding_digest=capture_binding,
     )
     if (
         _completed_website_preparation_only(pipeline)
