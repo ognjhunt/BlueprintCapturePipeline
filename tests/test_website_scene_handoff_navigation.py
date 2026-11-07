@@ -516,3 +516,54 @@ def test_the_sites_withdrawal_deletes_everything_this_handoff_wrote(job, tmp_pat
     assert [path for path in job["capture"].parents[1].rglob("*")
             if path.is_file() and "website_withdrawal" not in path.parts] == []
     assert profile_for_capture(job["capture"]) is None
+
+
+def test_the_library_shape_a_brief_confirmed_after_preparation_reaches_the_intake_with_nothing_bought_again(
+        job, monkeypatch):
+    """Prepared and held while unconfirmed, then confirmed on the website: the replayed stage sends the intake
+    with the confirmed consent and the successor's task id, reading every paid input under the sealed parent."""
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import website_candidate_ranking, website_gemini_receipts
+    from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
+    from blueprint_pipeline.website_task_context_lineage import record_confirmation_lineage
+
+    for module, name in ((website_gemini_receipts, "retained_gemini_call"), (website_candidate_ranking, "_gemini")):
+        monkeypatch.setattr(module, name, lambda *_, **__: pytest.fail("nothing paid is bought again"))
+    parent = _context(confirmed=False)
+    first, _ = _run(job, context=parent, authority=_authority(parent))
+    assert first["blockers"] == ["website_task_context_not_confirmed"]
+    assert job["sent"][-1]["consent"]["task_confirmed"] is False
+    # The site confirms its brief on the website (14:30:45Z): the website's own reading, only that changed.
+    successor = {key: value for key, value in parent.items() if key != "context_digest"}
+    successor.update(confirmed=True, confirmed_at="2026-11-07T14:30:45Z")
+    successor["context_digest"] = canonical_digest(successor, digest_field="context_digest")
+    pipeline = job["capture"] / "pipeline"
+    write_json(pipeline / "website_task_context.json", parent)
+    assert record_confirmation_lineage(pipeline, parent=parent, successor=successor) is not None  # the entry
+    write_json(pipeline / "website_task_context.json", successor)
+    authority = _authority(successor)
+    media = []
+
+    def prepare_media(**kwargs):
+        media.append(kwargs["task_context"]["context_digest"])
+        return {"privacy_verified": True, "status": "noop", "source_geometry": None, "task_masks": {},
+                "removal_manifest_path": str(job["removal"]), "privacy_status": "website_capture_admitted"}
+
+    gate = SimpleNamespace(passed=True)
+    metadata = {"site_task_context": successor, "website_scene_execution_authority": authority}
+    outcome = run_website_capture_preparation(
+        descriptor=SimpleNamespace(metadata=metadata, requested_outputs=[], to_dict=lambda: {
+            "capture_id": "walkthrough-req1", "scene_id": "site-req1", "metadata": dict(metadata)}),
+        capture_root=job["capture"], pipeline_dir=pipeline, source_video=None,
+        derived_scene_generation_allowed=True, gates=[], prepare_media=prepare_media,
+        check_privacy=lambda **_: gate, make_gate=lambda *_: gate)
+    # The paid analysis was read under the sealed parent, so its retained calls are reused.
+    assert media == [parent["context_digest"]]
+    sent = job["sent"][-1]
+    assert sent["consent"] == authority["consent"] and sent["consent"]["task_confirmed"] is True
+    assert sent["task"]["task_id"] == "website-" + successor["context_digest"][7:27]
+    assert sent["task"]["task_id"] != "website-" + parent["context_digest"][7:27]
+    result = outcome["website_scene_preparation"]
+    assert result["navigation_intake"]["status"] == "forward_pending"
+    assert result["blockers"] == [HOLD_CODE] and holds_native_task_preparation(result, successor)

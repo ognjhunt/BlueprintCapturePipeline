@@ -26,10 +26,14 @@ def require_current_source(source: Mapping[str, Any], *, site_id: str) -> dict[s
 
     if not re.fullmatch(r"site-[A-Za-z0-9][A-Za-z0-9._:-]{0,191}", site_id):
         raise ValueError("beta_screening_site_identity_invalid")
+    from .website_task_context_lineage import accepts_bound_digest
+
     capture = resolve_capture_root(source)
     retained = _read_json(capture / "pipeline" / "website_task_context.json") or {}
+    # The source binds its own context, or the unconfirmed parent of the retained confirmed successor:
+    # confirming a brief is consent state, not task content (website_task_context_lineage).
     if (retained.get("scene_id") != site_id or retained.get("request_id") != site_id[5:]
-            or retained.get("context_digest") != source.get("task_context_digest")
+            or not accepts_bound_digest(retained, source.get("task_context_digest"))
             or source.get("task_id") != "website-" + str(source.get("task_context_digest"))[7:27]):
         raise ValueError("beta_screening_source_context_mismatch")
     current = load_current_website_task_context(request_id=site_id[5:], scene_id=site_id,
@@ -39,7 +43,7 @@ def require_current_source(source: Mapping[str, Any], *, site_id: str) -> dict[s
             or "robot_evaluation" not in rights.get("consent_scope", [])
             or rights.get("derived_scene_generation_allowed") is not True):
         raise ValueError("beta_screening_current_capture_consent_required")
-    if current.get("context_digest") != source.get("task_context_digest"):
+    if not accepts_bound_digest(current, source.get("task_context_digest")):
         raise ValueError("beta_screening_current_task_context_changed")
     return current
 

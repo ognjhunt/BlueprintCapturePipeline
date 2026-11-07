@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import tempfile
@@ -30,6 +31,16 @@ def prepare_website_task_descriptor(*, descriptor: CaptureDescriptor, capture_ro
         scene_id=descriptor.scene_id, capture_id=descriptor.capture_id,
         purpose="scene_preparation",
     )
+    # A site that confirmed its brief after this capture was prepared: the website's confirmed context is
+    # the sealed one's successor. Its lineage is kept before the sealed context is replaced, so every
+    # reader binds the successor on the parent's artifacts and nothing paid is bought again.
+    from .website_task_context_lineage import record_confirmation_lineage
+    try:
+        sealed = json.loads((pipeline_dir / "website_task_context.json").read_text())
+    except (OSError, ValueError):
+        sealed = None
+    if isinstance(sealed, dict):
+        record_confirmation_lineage(pipeline_dir, parent=sealed, successor=context)
     write_json(pipeline_dir / "website_task_context.json", context)
     evidence = ingest_website_task_evidence(task_context=context, bucket=bucket,
         output_root=pipeline_dir / "website_task_evidence" / context["context_digest"][7:])

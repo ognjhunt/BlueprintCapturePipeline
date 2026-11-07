@@ -14,6 +14,7 @@ from typing import Any, Mapping
 from pydantic import BaseModel, ConfigDict, Field
 
 from .decision_evidence_contracts import canonical_digest
+from .website_task_context_lineage import accepts_bound_digest
 from .atlas_preparation_context import (
     preparation_context_digest_matches, requires_task_semantic_analysis, task_text_sources,
 )
@@ -81,7 +82,9 @@ def task_semantics_from_receipt(*, receipt: Mapping[str, Any], task_context: Map
             or receipt.get("status") != "completed"
             or receipt.get("binding_digest") != canonical_digest(binding)
             or receipt.get("proposal_digest") != canonical_digest(proposal)
-            or binding.get("task_context_digest") != task_context["context_digest"]
+            # Its own context, or the unconfirmed parent of a confirmed successor (consent state, not task
+            # content: website_task_context_lineage); an edited task's reading never binds.
+            or not accepts_bound_digest(task_context, binding.get("task_context_digest"))
             or binding.get("source_video_digest") != source_video_digest):
         raise ValueError("website_task_semantics_planner_binding_invalid")
     semantics = TaskSemantics.model_validate(proposal["task_semantics"]).model_dump(mode="json")
@@ -94,7 +97,7 @@ def task_semantics_from_receipt(*, receipt: Mapping[str, Any], task_context: Map
     # substitute a self-hashed family projection for what the planner proposed.
     value = {"schema_version": "website_task_semantics.v1", "claim_ceiling": "development_only",
              "basis": "source_bound_planner_proposal_not_owner_confirmation",
-             "binding": {"task_context_digest": task_context["context_digest"],
+             "binding": {"task_context_digest": binding["task_context_digest"],
                          "source_video_digest": source_video_digest,
                          "planner_binding_digest": receipt["binding_digest"],
                          "planner_proposal_digest": receipt["proposal_digest"],

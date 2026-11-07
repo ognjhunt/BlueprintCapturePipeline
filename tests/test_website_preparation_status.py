@@ -425,6 +425,29 @@ def test_a_navigation_job_handed_to_the_g1_screening_lane_reads_as_handed_off(pr
     assert _post(prepared_source).json()["state"] == "handed_off"
 
 
+@pytest.mark.parametrize("current_kind", ["successor", "edited"])
+def test_a_brief_confirmed_after_preparation_keeps_the_retained_records_readable(prepared_source, current_kind):
+    """Confirming a brief is consent state: the status still reads what was retained under the sealed context."""
+    root, owner, context, selected, ledger, _ = prepared_source
+    context.update(confirmed=False, confirmed_at=None, purpose="scene_preparation")
+    _complete_navigation_preparation(prepared_source)
+    parent_digest = context["context_digest"]
+    assert selected["task_context_digest"] == parent_digest
+    # The site confirms its brief on the website: its current reading changes only in the confirmation,
+    # or (the other case) the task itself was edited.
+    context.update(confirmed=True, confirmed_at="2026-11-07T14:30:45Z",
+                   **({} if current_kind == "successor" else {"description": "Another task"}))
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    if current_kind == "successor":
+        result = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                                      schema_version=status_reader.STATUS_V6)
+        assert result["state"] == "handed_off" and result["task_context_digest"] == parent_digest
+    else:
+        with pytest.raises(status_reader.PreparationStatusUnavailable):
+            status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                                  schema_version=status_reader.STATUS_V6)
+
+
 @pytest.mark.parametrize("change", [{"embodiment_id": "another_walking_body"},
                                     {"navigation_intake": {"status": "refused", "reason": "x"}},
                                     {"website_intake_outbox": {"state": "forward_pending", "submission_id": "x"}},

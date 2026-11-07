@@ -41,10 +41,15 @@ def run_website_capture_preparation(
         sponsors_scene_preparation,
     )
 
+    from .website_task_context_lineage import artifact_context
+    # What the stage's paid analysis, selection and ranking were bound to: the context itself, or the
+    # unconfirmed parent of a confirmed successor (website_task_context_lineage), so a brief confirmed
+    # after preparation reuses every retained call. The handoff gets the current context.
+    artifact = artifact_context(pipeline_dir, descriptor.metadata.get("site_task_context") or {})
     from .website_target_background_correction import retain_rejected_selection
     handoff_lease_checkpoint("website_preparation_before_target_rejection")
     rejection = (retain_rejected_selection(capture_root=capture_root,
-        task_context=descriptor.metadata.get("site_task_context") or {}, source_video=source_video)
+        task_context=artifact, source_video=source_video)
         if derived_scene_generation_allowed else None)
     if rejection is not None:
         write_json(pipeline_dir / "provider_run_manifest.json", {
@@ -56,7 +61,7 @@ def run_website_capture_preparation(
     from .website_observed_room_limit import retain_observed_room_limit
     handoff_lease_checkpoint('website_preparation_observed_room_limit')
     room_limit = (retain_observed_room_limit(capture_root=capture_root,
-        task_context=descriptor.metadata.get('site_task_context') or {}, source_video=source_video)
+        task_context=artifact, source_video=source_video)
         if derived_scene_generation_allowed else None)
     if room_limit is not None:
         write_json(pipeline_dir / 'provider_run_manifest.json', {'schema_version': 'v1',
@@ -68,7 +73,7 @@ def run_website_capture_preparation(
     from .website_early_task_hold import retain_task_preparation_hold
     handoff_lease_checkpoint("website_preparation_task_preparation_hold")
     early_hold = (retain_task_preparation_hold(capture_root=capture_root,
-        task_context=descriptor.metadata.get("site_task_context") or {}, source_video=source_video)
+        task_context=artifact, source_video=source_video)
         if derived_scene_generation_allowed else None)
     if early_hold is not None:
         write_json(pipeline_dir / "provider_run_manifest.json", {"schema_version": "v1", "provider_name": None,
@@ -90,7 +95,7 @@ def run_website_capture_preparation(
         capture_root=capture_root,
         privacy_processing=privacy_processing,
         worldlabs_input={"status": "not_requested", "manifest_uri": None, "output_video_uri": None},
-        task_context=descriptor.metadata.get("site_task_context"),
+        task_context=artifact or None,
         website_source_video=source_video,
         policy=CleanPlatePolicy(
             enabled=derived_scene_generation_allowed and preview_requested
