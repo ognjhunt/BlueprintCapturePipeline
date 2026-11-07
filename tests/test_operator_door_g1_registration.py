@@ -689,3 +689,28 @@ def test_only_a_confirmation_or_the_own_digest_keeps_a_source(tmp_path, case):
     source = {**request()["source"], "task_context_digest": parent["context_digest"]}
     with pytest.raises(Exception, match="retained_task_consent_invalid"):
         contract._site_context({"capture_root": str(tmp_path / "capture")}, source, "site-development")
+
+
+def test_a_confirmation_with_answers_keeps_the_parent_the_website_states(tmp_path):
+    """Answers accepting Blueprint's proposals: the website names the sealed parent inside the successor's seal."""
+    parent = _context()
+    successor = _context(confirmed=True, confirmed_at="2026-11-07T14:30:45Z",
+                         operator_answers={"taskShape": "single"},
+                         confirmation_parent_context_digest=parent["context_digest"])
+    write(tmp_path / "capture/pipeline/website_task_context.json", successor)
+    source = {**request()["source"], "task_context_digest": parent["context_digest"]}
+    assert contract._site_context({"capture_root": str(tmp_path / "capture")}, source,
+                                  "site-development") == successor
+    # A confirmation-only successor that also states its parent derives the same parent without the field.
+    plain = _context(confirmed=True, confirmed_at="2026-11-07T14:30:45Z",
+                     confirmation_parent_context_digest="sha256:" + "0" * 64)
+    assert contract.accepts_context_digest(plain, parent["context_digest"])
+
+
+@pytest.mark.parametrize("case", ["unconfirmed", "malformed", "other_parent"])
+def test_a_stated_parent_counts_only_on_a_confirmed_context_and_only_itself(tmp_path, case):
+    parent = _context()
+    stated = {"malformed": "not-a-digest", "other_parent": "sha256:" + "1" * 64}.get(case, parent["context_digest"])
+    current = _context(operator_answers={"taskShape": "single"}, confirmation_parent_context_digest=stated,
+                       **({} if case == "unconfirmed" else {"confirmed": True, "confirmed_at": "2026-11-07T14:30:45Z"}))
+    assert not contract.accepts_context_digest(current, parent["context_digest"])
