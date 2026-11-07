@@ -160,6 +160,10 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - **07:29Z: levelling refused a third time** (v3 record). The face-normal direction was 1.75 degrees from +Y, with one layer of 0.61% excess. The largest single plane was tilted 44.5 degrees, with 0.74%.
   - The record's one height profile was taken along the candidate that held most, which was the 44.5-degree one, so it is not a vertical profile. The next PR keeps a 2 cm profile along +Y and every candidate. The search itself is unchanged.
 - **#3443 (part C 2/2) merged 08:10Z** after the G1 session's review and re-review. The first-run allowance is deferred: the owner decides the `reviewed_checkpoint_terms` stand-in (a rights call) and one versus two funded navigation rows.
+- **`e1dd95b` (#3443 and #3444)**, requested 08:22:56Z (`20261107T082256Z-deploy-fed70f2c`), after main's CI and a quiet door; the G1 session was told and agreed. The door's own registration contract copy stays on 8dc96be until a joint `upgrade-door`.
+  - The resume ran at 08:39:47Z (`20261107T083947Z-selected-handoff-7a5acd04`). **Levelling refused a fourth time**, now with the v4 profiles.
+  - Along +Y and along the face-normal direction, the scene runs from 1.6 m below the cameras to 1.6 m above, with nothing below the floor. The lowest band holds 6.3% of the points, spread evenly over 20 cm.
+  - That is a flat floor seen a couple of degrees off its own normal. The next PR fits the floor as its own plane, coarse to fine.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
