@@ -228,7 +228,8 @@ def _parallel_level_direction(vertices: np.ndarray, faces: np.ndarray, points: n
     limit = math.cos(math.radians(MAX_TILT_DEGREES))
     tried = [(source, *_layered_direction(points, direction)) for source, direction in candidates
              if direction is not None and len(points) >= 3 and direction[1] >= limit]
-    best = max(tried, key=lambda row: row[3], default=None)
+    # A refit can carry a candidate past the search's tilt bound; such a direction never levels the scene.
+    best = max((row for row in tried if row[1][1] >= limit), key=lambda row: row[3], default=None)
     if report is not None:
         report["parallel_candidates"] = [{"source": source, "tilt_degrees": _tilt(direction), "layers": len(layers),
                                           "share": share} for source, direction, layers, share in tried]

@@ -91,6 +91,21 @@ def test_a_refusal_keeps_the_height_profile_around_the_cameras(tmp_path):
     assert sum(profile["shares"]) + profile["below_share"] + profile["above_share"] == pytest.approx(1.0, abs=1e-3)
 
 
+def test_a_candidate_refitted_past_the_tilt_bound_never_levels(tmp_path):
+    # Parallel planes whose normal is 47 degrees from +Y; the only candidate starts at 44 degrees.
+    rng = np.random.default_rng(0)
+    steep, start = (np.array([np.sin(np.radians(a)), np.cos(np.radians(a)), 0.0]) for a in (47.0, 44.0))
+    across = np.cross(steep, [0.0, 0.0, 1.0])
+    points = np.concatenate([offset * steep + rng.uniform(-3, 3, (4000, 1)) * across
+                             + rng.uniform(-3, 3, (4000, 1)) * np.array([0.0, 0.0, 1.0])
+                             for offset in (0.0, 0.4, 0.8, 1.2)])
+    search = {}
+    found = levelling._parallel_level_direction(np.zeros((0, 3)), np.zeros((0, 3), np.int64), points, search,
+                                                directions=(start,))
+    assert found is None
+    assert search["parallel_candidates"][0]["tilt_degrees"] > levelling.MAX_TILT_DEGREES
+
+
 def test_rough_open_ground_is_still_refused(tmp_path):
     value, _ = level(tmp_path, terrain=True, cameras=[(0.0, 1.8, 0.0), (1.0, 1.9, 0.5), (-1.0, 1.7, -0.5)])
     assert value["status"] == "needs_input" and value["reason"] == "website_atlas_scene_level_unobserved"
