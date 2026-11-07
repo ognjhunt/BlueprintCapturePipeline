@@ -17,7 +17,7 @@ SCHEMA = 'website_target_background_correction.v1'
 def derive_review(*, review, targets, corrections, task_context, parent_result, task_masks_digest):
     """Derive only observed regions from the selected instance, never new task truth."""
     from .website_task_target_choice import _candidate_rows
-    from .website_track_mask_codec import decode_track_mask
+    from .website_track_mask_codec import canonical_track_digest, decode_track_mask, plain_runs
     from .atlas_automation_plan import AutomationPlan
     result = deepcopy(review)
     removed = [row for row in result['automation']['objects'] if row['disposition'] == 'remove']
@@ -38,11 +38,12 @@ def derive_review(*, review, targets, corrections, task_context, parent_result, 
     # mask for image editing; never resize a depth-grid mask onto cropped RGB.
     from PIL import Image
     import numpy as np
-    source = {canonical_digest(row): row for row in target['source_track']['observations']}
+    # Source observations may hold compact runs; the codec's digest is ``canonical_digest``'s.
+    source = {canonical_track_digest(row): row for row in target['source_track']['observations']}
     for observation in target['track']['observations']:
         original = source.get(observation.get('source_mask_digest'))
         if original is None:
-            original = source.get(canonical_digest(observation))
+            original = source.get(canonical_track_digest(observation))
         if original is None or original['source_frame_id'] != observation['source_frame_id']:
             raise ValueError('website_target_background_correction_mask_binding_changed')
         expected = np.asarray(Image.fromarray(decode_track_mask(original)).resize(
@@ -50,8 +51,9 @@ def derive_review(*, review, targets, corrections, task_context, parent_result, 
         if not np.array_equal(expected, decode_track_mask(observation)):
             raise ValueError('website_target_background_correction_mask_binding_changed')
     observed_ids = {row['source_frame_id'] for row in target['track']['observations']}
-    track = {**deepcopy(target['source_track']), 'observations': [deepcopy(row)
-        for row in target['source_track']['observations'] if row['source_frame_id'] in observed_ids]}
+    # Only the geometry frames' source masks are retained: few enough to hold as plain lists.
+    track = plain_runs({**deepcopy(target['source_track']), 'observations': [deepcopy(row)
+        for row in target['source_track']['observations'] if row['source_frame_id'] in observed_ids]})
     regions = []
     for observation in track['observations']:
         mask = decode_track_mask(observation)

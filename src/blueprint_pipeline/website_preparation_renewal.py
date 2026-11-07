@@ -176,12 +176,15 @@ def _retained_inputs(capture_root: Path, workspace: Path, binding: Mapping[str, 
         _require(atlas.get("status") == "ready", "inputs_unavailable")
         geometry = atlas["source_geometry"]
         _require(geometry.get("digest") == binding["source_geometry_digest"], "inputs_changed")
+        # Kept surfaces' source tracks span the whole video at full resolution: they are read,
+        # hashed and handed to the native inputs compact (``website_track_mask_codec``).
+        from .website_track_mask_codec import canonical_track_digest, load_track_json
         for name in ("task_masks.coverage.json", "task_masks.geometry.json"):
             path = workspace / name
             if path.is_file() and not path.is_symlink():
-                masks = json.loads(path.read_text())
+                masks = load_track_json(path)
                 if (masks.get("digest") == binding["task_masks_digest"]
-                        and masks["digest"] == canonical_digest(masks, digest_field="digest")):
+                        and masks["digest"] == canonical_track_digest(masks, digest_field="digest")):
                     return base, geometry, masks
         raise ValueError("website_preparation_renewal_inputs_changed")
     except ValueError as exc:

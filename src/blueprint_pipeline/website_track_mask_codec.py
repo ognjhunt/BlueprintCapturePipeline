@@ -16,8 +16,11 @@ dicts, and the writers here produce the bytes ``common.write_json`` and
 from __future__ import annotations
 
 import hashlib
+import io
 import itertools
 import json
+import math
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -242,9 +245,209 @@ def _compact_observation(row: dict[str, Any]) -> dict[str, Any]:
 def load_track_json(path: Path) -> Any:
     """``json.loads(path.read_text())`` with each observation's runs compacted as soon as it is read.
 
-    Only one observation's run dicts exist at a time; the text itself is still read whole.
+    The text is read about a MB at a time and each ``"runs"`` list of ``{"start", "length"}`` dicts
+    goes straight into its ``RunLengths``: neither the file's text nor one dict per run is ever
+    held whole. (A retained 4K ``tracks.json`` is about 200 MB of text; ``read_text`` held it as
+    bytes and as a string at once.) Anything this reader does not follow, malformed JSON
+    included, is read again by exactly ``json.loads(path.read_text(), ...)``, which then gives
+    the same value or raises the same error it always did.
     """
+    try:
+        with open(path, encoding=io.text_encoding(None)) as handle:  # read_text's own decoding
+            return _StreamingTrackReader(handle).document()
+    except (OSError, MemoryError):
+        raise
+    except Exception:  # noqa: BLE001 - the exact reader below decides; nothing is guessed
+        pass
     return json.loads(Path(path).read_text(), object_hook=_compact_observation)
+
+
+_WHITESPACE = re.compile(r"[ \t\n\r]*")
+#: ``json``'s C scanner: ASCII digits only; a fraction or exponent makes a float.
+_NUMBER = re.compile(r"(-?(?:0|[1-9][0-9]*))(\.[0-9]+)?([eE][-+]?[0-9]+)?")
+_NUMBER_CHARACTERS = re.compile(r"[-+0-9.eE]*")
+_RUN_TEXT = (r"[ \t\n\r]*\{[ \t\n\r]*\"start\"[ \t\n\r]*:[ \t\n\r]*-?(?:0|[1-9][0-9]*)[ \t\n\r]*,"
+             r"[ \t\n\r]*\"length\"[ \t\n\r]*:[ \t\n\r]*-?(?:0|[1-9][0-9]*)[ \t\n\r]*\}[ \t\n\r]*")
+#: The inside of a non-empty JSON list of ``{"start": int, "length": int}`` objects, keys in order.
+_RUN_LIST = re.compile(_RUN_TEXT + "(?:," + _RUN_TEXT + ")*")
+_INTEGER = re.compile(r"-?[0-9]+")
+_READ_CHARACTERS = 1 << 20
+_CONSTANTS = {"NaN": float("nan"), "Infinity": float("inf"), "-Infinity": float("-inf")}
+
+
+class _StreamingTrackReader:
+    """A JSON reader over a text stream with ``json.loads(..., object_hook=_compact_observation)``'s result.
+
+    Strings are read by ``json``'s own ``scanstring``; numbers and literals as its C scanner reads
+    them; objects are built key by key (a repeated key keeps its first place and last value) and
+    passed through ``_compact_observation``. A ``"runs"`` value that is a list of exactly
+    ``{"start": int, "length": int}`` objects becomes ``RunLengths`` without building its dicts,
+    which is what ``_compact_observation`` makes of those dicts. Any departure raises, and the
+    caller falls back to ``json.loads``.
+    """
+
+    __slots__ = ("_handle", "_text", "_at", "_ended")
+
+    def __init__(self, handle: Any) -> None:
+        self._handle, self._text, self._at, self._ended = handle, "", 0, False
+
+    def _more(self) -> bool:
+        """Read more text after what is unread; False at the end. Read text before ``_at`` is dropped."""
+        if self._ended:
+            return False
+        text = self._handle.read(_READ_CHARACTERS)
+        if not text:
+            self._ended = True
+            return False
+        self._text = self._text[self._at:] + text if self._at < len(self._text) else text
+        self._at = 0
+        return True
+
+    def _next(self) -> str:
+        """The next character after whitespace, not consumed; ``""`` at the end."""
+        while True:
+            self._at = _WHITESPACE.match(self._text, self._at).end()
+            if self._at < len(self._text) or not self._more():
+                return self._text[self._at:self._at + 1]
+
+    def document(self) -> Any:
+        value = self._value()
+        if self._next():
+            raise ValueError("track_json_extra_data")
+        return value
+
+    def _value(self) -> Any:
+        character = self._next()
+        if character == '"':
+            return self._string()
+        if character == "{":
+            return self._object()
+        if character == "[":
+            return self._array()
+        return self._scalar()
+
+    def _string(self) -> str:
+        while True:
+            try:
+                value, end = json.decoder.scanstring(self._text, self._at + 1, True)
+            except json.JSONDecodeError as exc:
+                # Only a string the read text cuts short is read again with more text.
+                if (exc.msg.startswith("Unterminated string") or exc.pos >= len(self._text) - 6) and self._more():
+                    continue
+                raise
+            self._at = end
+            return value
+
+    def _scalar(self) -> Any:
+        while (_NUMBER_CHARACTERS.match(self._text, self._at).end() == len(self._text)
+               or len(self._text) - self._at < 9) and self._more():
+            pass
+        text, at = self._text, self._at
+        for literal, value in (("null", None), ("true", True), ("false", False)):
+            if text.startswith(literal, at):
+                self._at = at + len(literal)
+                return value
+        match = _NUMBER.match(text, at)
+        if match is not None:
+            self._at = match.end()
+            integer, fraction, exponent = match.groups()
+            if fraction or exponent:
+                return float(integer + (fraction or "") + (exponent or ""))
+            return int(integer)
+        for literal, value in _CONSTANTS.items():
+            if text.startswith(literal, at):
+                self._at = at + len(literal)
+                return value
+        raise ValueError("track_json_value_expected")
+
+    def _object(self) -> Any:
+        self._at += 1
+        row: dict[str, Any] = {}
+        character = self._next()
+        if character == "}":
+            self._at += 1
+            return _compact_observation(row)
+        while True:
+            if character != '"':
+                raise ValueError("track_json_key_expected")
+            key = self._string()
+            if self._next() != ":":
+                raise ValueError("track_json_colon_expected")
+            self._at += 1
+            value = self._runs() if key == "runs" and self._next() == "[" else None
+            row[key] = self._value() if value is None else value
+            character = self._next()
+            self._at += 1
+            if character == "}":
+                return _compact_observation(row)
+            if character != ",":
+                raise ValueError("track_json_comma_expected")
+            character = self._next()
+
+    def _array(self) -> list[Any]:
+        self._at += 1
+        items: list[Any] = []
+        if self._next() == "]":
+            self._at += 1
+            return items
+        while True:
+            items.append(self._value())
+            character = self._next()
+            self._at += 1
+            if character == "]":
+                return items
+            if character != ",":
+                raise ValueError("track_json_comma_expected")
+
+    def _runs(self) -> RunLengths | None:
+        """The list at ``_at`` as ``RunLengths`` when it is a non-empty list of exact runs, else None.
+
+        Run objects hold no bracket and no other string, so such a list ends at the first ``]``.
+        Nothing is consumed unless it is one.
+        """
+        while (end := self._text.find("]", self._at)) < 0:
+            if not self._more():
+                return None
+        if _RUN_LIST.fullmatch(self._text, self._at + 1, end) is None:
+            return None
+        values = [int(value) for value in _INTEGER.findall(self._text, self._at + 1, end)]
+        try:
+            runs = RunLengths(values[0::2], values[1::2])
+        except OverflowError:  # beyond int64: kept as its list of dicts, as ``from_runs`` keeps it
+            return None
+        self._at = end + 1
+        return runs
+
+
+def detached_track_json(value: Any) -> Any:
+    """``json.loads(json.dumps(value, allow_nan=False))`` with every ``RunLengths`` kept as it is.
+
+    ``RunLengths`` is immutable and equals its list of dicts, so sharing it is a detached copy,
+    and the round trip never renders it as text. Exact dicts with ``str`` keys, lists and tuples
+    are copied here; ``str``, ``int``, ``bool``, ``None`` and finite ``float`` of exact type are
+    the round trip's own result; every other value takes the round trip itself, so it gives
+    what it gave and refuses what it refused.
+    """
+    return _detached(value, set())
+
+
+def _detached(value: Any, active: set[int]) -> Any:
+    kind = type(value)
+    if kind is RunLengths or kind is str or kind is bool or value is None:
+        return value
+    if (kind is int and value.bit_length() < 4096) or (kind is float and math.isfinite(value)):
+        return value  # (an int of more than 4300 digits is one ``json.dumps`` refuses)
+    if (kind is dict and all(type(key) is str for key in value)) or kind is list or kind is tuple:
+        if id(value) in active:
+            raise ValueError("Circular reference detected")
+        active.add(id(value))
+        try:
+            if kind is dict:
+                return {key: _detached(item, active) for key, item in value.items()}
+            return [_detached(item, active) for item in value]
+        finally:
+            active.discard(id(value))
+    return json.loads(json.dumps(plain_runs(value), allow_nan=False))
 
 
 # ---- exact streaming JSON -------------------------------------------------------------------

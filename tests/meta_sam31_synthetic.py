@@ -227,28 +227,141 @@ def run_clean_plate(set_attribute: Callable[[Any, str, Any], None], root: Path, 
     return {**setup, "task_masks": manifest}
 
 
+def _stored_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
+    """``np.savez`` with fixed member times, so the file's bytes (and every digest bound to it) repeat."""
+    import zipfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, array in arrays.items():
+            buffer = BytesIO()
+            np.save(buffer, array)
+            archive.writestr(zipfile.ZipInfo(name + ".npy", date_time=(1980, 1, 1, 0, 0, 0)), buffer.getvalue())
+
+
+def flat_depth_geometry(source_geometry: dict[str, Any], *, width: int, height: int) -> dict[str, Any]:
+    """The synthetic job's geometry frames as a scene's source geometry: a tilted depth plane each.
+
+    Depth files are written under ``geometry/`` relative to the working directory and named so, so
+    the geometry's digest is the same wherever the job runs.
+    """
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+
+    frames = []
+    for frame in source_geometry["frames"]:
+        w, h = frame["width"], frame["height"]
+        path = Path("geometry") / f"{frame['frame_id']}.npz"
+        _stored_npz(path, {"depth_m": (2.0 + np.arange(h, dtype=np.float32)[:, None] / 1000) * np.ones((1, w), np.float32),
+                           "valid_mask": np.ones((h, w), bool)})
+        frames.append({**frame, "source_width": width, "source_height": height, "geometry_path": str(path),
+                       "geometry_digest": _sha256_file(path),
+                       "intrinsics": [[float(w), 0.0, w / 2], [0.0, float(w), h / 2], [0.0, 0.0, 1.0]],
+                       "world_from_camera": np.eye(4).tolist()})
+    geometry = {"schema_version": "website_source_frames.v1", "geometry_available": True,
+                "geometry_backend": "synthetic_flat_depth", "binding": dict(source_geometry["binding"]),
+                "geometry_input_digest": None, "frames": frames, "metric_measurement_proven": False}
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    return geometry
+
+
+def run_scene_handoff(root: Path, job: dict[str, Any], *, width: int, height: int, compact: bool = True,
+                      after: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """The scene handoff's work on the retained clean plate ``run_clean_plate`` left, stage by stage.
+
+    ``completed``: the deferred kept surfaces are selected from the first paid response
+    (``complete_retained_static_task_masks``, which writes ``task_masks.json``). ``bound``: every
+    target is bound to the scene's geometry and written to ``task_masks.geometry.json`` with the
+    handoff's guarded writer. ``checked``: the input digest check compile, the correction queue
+    and the object observations make. ``family``: a family preparation over the bound masks,
+    whose ``source_targets`` carry every full source track. (The handoff takes the rigid path
+    or the family path; both run here on the same large tracks.) ``compact`` is the handoff's
+    way; ``compact=False`` takes the plain route of the code before it, for reference: plain
+    lists of runs, ``write_json`` and ``canonical_digest``. ``after(stage)`` follows each stage.
+    Runs from the working directory (``flat_depth_geometry``).
+    """
+    from blueprint_pipeline import website_task_masks as masks
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    from blueprint_pipeline.task_family_preparation import prepare_task_family
+
+    if compact:
+        from blueprint_pipeline.core.handoff_lease import guarded_handoff_write_track_json as write
+        from blueprint_pipeline.website_track_mask_codec import canonical_track_digest as digest
+    else:
+        from blueprint_pipeline.core.handoff_lease import guarded_handoff_write_json as write
+        digest = canonical_digest
+    after = after or (lambda stage: None)
+    clean = root / "clean_plate"
+    completed = masks.complete_retained_static_task_masks(
+        plan=job["plan"], source_geometry=job["source_geometry"], task_masks=job["task_masks"],
+        output_root=clean / "task_masks", view_plan_root=clean / "mask_view_plan",
+        **({"compact_runs": True} if compact else {}))
+    after("completed")
+    geometry = flat_depth_geometry(job["source_geometry"], width=width, height=height)
+    bound = masks.bind_task_masks_to_geometry(task_masks=completed, source_geometry=geometry)
+    workspace = root / "website_scene_preparation"
+    write(workspace / "task_masks.geometry.json", bound)
+    after("bound")
+    if bound["digest"] != digest(bound, digest_field="digest"):
+        raise ValueError("synthetic_bound_masks_digest_changed")
+    after("checked")
+    scene = workspace / "scene"
+    scene.mkdir(parents=True, exist_ok=True)
+    (scene / "splat.ply").write_bytes(b"synthetic splat stand-in")
+    (scene / "collision.glb").write_bytes(b"synthetic collision stand-in")
+    base_scene = {"splat_path": "website_scene_preparation/scene/splat.ply",
+                  "splat_digest": _sha256_file(scene / "splat.ply"), "splat_binding_id": "synthetic-splat",
+                  "collision_mesh_path": "website_scene_preparation/scene/collision.glb",
+                  "collision_mesh_digest": _sha256_file(scene / "collision.glb"), "up_axis": "Z",
+                  "meters_per_unit": 1.0}
+    context = {"capture_id": "synthetic-capture", "scene_id": "synthetic-scene", "task_family": "button_press",
+               "description": "Press the button on the end shelf.",
+               "capture_rights": {"derived_scene_generation_allowed": True}}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    preparation = prepare_task_family(task_context=context, task_masks=bound, removal_manifest={"entries": []},
+                                      source_geometry=geometry, base_scene=base_scene,
+                                      output_root=workspace / "family")
+    after("family")
+    return {"completed": completed, "bound": bound, "geometry": geometry, "preparation": preparation}
+
+
 def _peak_rss_bytes() -> int:
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return peak if sys.platform == "darwin" else peak * 1024
 
 
 def main(argv: list[str]) -> int:
-    """``python -m tests.meta_sam31_synthetic ROOT FRAMES WIDTH HEIGHT ADDRESS_SPACE_MIB``.
+    """``python -m tests.meta_sam31_synthetic ROOT FRAMES WIDTH HEIGHT ADDRESS_SPACE_MIB [STAGE]``.
 
-    Prints the peak resident memory before the run (interpreter, imports, synthetic setup) and
-    after it, and the persisted files' digests. The address-space cap makes a memory regression
-    fail inside this process with MemoryError instead of exhausting the host.
+    STAGE ``clean_plate`` (the default): the clean-plate SAM step. ``handoff``: that step, then
+    the scene handoff's stages on its retained output (``run_scene_handoff``, compact runs);
+    ``handoff-plain``: the same through the plain route, for code without compact runs.
+
+    Prints the peak resident memory before the measured work (interpreter, imports, synthetic
+    setup; for the handoff stages, also the clean-plate step) and after it (after each handoff
+    stage too), and the persisted files' digests. The address-space cap makes a memory
+    regression fail inside this process with MemoryError instead of exhausting the host.
     """
-    root, frames, width, height, cap_mib = Path(argv[0]), *map(int, argv[1:5])
+    root, frames, width, height, cap_mib = Path(argv[0]).resolve(), *map(int, argv[1:5])
+    stage = argv[5] if len(argv) > 5 else "clean_plate"
     if sys.platform.startswith("linux"):
         resource.setrlimit(resource.RLIMIT_AS, (cap_mib << 20, cap_mib << 20))
     os.environ.setdefault("META_MODEL_API_KEY", "synthetic-key")
     os.environ["BLUEPRINT_WEBSITE_SAM31_PROVIDER"] = "meta"
-    baseline = {}
-    run_clean_plate(setattr, root, frames=frames, width=width, height=height,
-                    before_run=lambda: baseline.setdefault("rss", _peak_rss_bytes()))
+    baseline: dict[str, int] = {}
+    stages: dict[str, int] = {}
+    job = run_clean_plate(setattr, root, frames=frames, width=width, height=height,
+                          before_run=lambda: baseline.setdefault("rss", _peak_rss_bytes()))
+    if stage != "clean_plate":
+        baseline["rss"] = _peak_rss_bytes()
+        root.mkdir(parents=True, exist_ok=True)
+        os.chdir(root)
+        result = run_scene_handoff(root, job, width=width, height=height, compact=stage == "handoff",
+                                   after=lambda name: stages.setdefault(name, _peak_rss_bytes()))
+        del result
     print(json.dumps({"baseline_peak_rss_bytes": baseline["rss"], "peak_rss_bytes": _peak_rss_bytes(),
-                      "persisted": persisted_digests(root)}))
+                      "stage_peak_rss_bytes": stages, "persisted": persisted_digests(root)}))
     return 0
 
 

@@ -35,6 +35,7 @@ from .core.handoff_lease import handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _probe_video, _sha256_file
 from .website_task_masks import decode_track_mask
+from .website_track_mask_codec import canonical_track_digest
 
 SCHEMA_VERSION = "website_assembly_coverage.v1"
 ARTICULATION_KINDS = frozenset({"prismatic", "revolute"})
@@ -1206,8 +1207,10 @@ def empty_record(*, target_id: str, binding: Mapping[str, Any], articulation_kin
 def coverage_binding(*, target: Mapping[str, Any], source_geometry: Mapping[str, Any],
                      task_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     return {"target_id": target["target_id"],
-            "source_track_digest": canonical_digest(target["source_track"]) if target.get("source_track") else None,
-            "track_digest": canonical_digest(target["track"]), "source_geometry_digest": source_geometry["digest"],
+            # Tracks may hold compact runs (``RunLengths``); the codec's digest is ``canonical_digest``'s.
+            "source_track_digest": canonical_track_digest(target["source_track"]) if target.get("source_track") else None,
+            "track_digest": canonical_track_digest(target["track"]),
+            "source_geometry_digest": source_geometry["digest"],
             "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest"),
             "classifier_model": CLASSIFIER_MODEL, "classifier_revision": CLASSIFIER_REVISION,
             **({"task_context_digest": task_context.get("context_digest") or canonical_digest(task_context)}
@@ -1357,7 +1360,7 @@ def attach_assembly_coverage(*, task_masks: Mapping[str, Any], source_geometry: 
     if not changed:
         return dict(task_masks)
     value = {**task_masks, "targets": targets}
-    value["digest"] = canonical_digest(value, digest_field="digest")
+    value["digest"] = canonical_track_digest(value, digest_field="digest")
     return value
 
 

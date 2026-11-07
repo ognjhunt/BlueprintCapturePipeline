@@ -12,6 +12,7 @@ import time
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .website_track_mask_codec import canonical_track_digest
 from .website_target_background_correction import correction_root, derive_review, _retain
 
 
@@ -61,7 +62,7 @@ def queue_correction(*, capture_root, task_context, task_masks, now=None):
                 or result['digest'] != job.get('result_digest')
                 or result.get('task_context_digest') != task_context['context_digest']
                 or task_masks.get('source_video_digest') != result.get('source_video_digest')
-                or task_masks.get('digest') != canonical_digest(task_masks, digest_field='digest')):
+                or task_masks.get('digest') != canonical_track_digest(task_masks, digest_field='digest')):
             raise ValueError('website_target_correction_source_changed')
         completed = result.get('target_correction') or {}
         if completed.get('corrections_digest') == digest and completed.get('task_context_digest') == task_context['context_digest']:

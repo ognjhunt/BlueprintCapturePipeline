@@ -35,6 +35,7 @@ from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_context_contracts import GEOMETRY_ONLY_BLOCKER
 from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
+from .website_track_mask_codec import canonical_track_digest, load_track_json
 from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start, on_surface_radius,
                                        farthest_supported_destination, footprint_at, ground_on_observed_floor,
                                        nearest_supported_destination, same_support_surface,
@@ -740,11 +741,12 @@ def relocated_destination(preparation: Mapping[str, Any], preparation_path: Path
 
     directory, binding = Path(preparation_path).parent, preparation["binding"]
     base_scene = json.loads((directory / "base_scene.json").read_text(encoding="utf-8"))
-    masks = json.loads((directory / "task_masks.geometry.json").read_text(encoding="utf-8"))
+    # Its source tracks span the whole video at full resolution: read and hashed compact.
+    masks = load_track_json(directory / "task_masks.geometry.json")
     if (base_scene.get("collision_mesh_digest") != binding["collision_mesh_digest"]
             or _sha256_file(Path(base_scene["collision_mesh_path"])) != binding["collision_mesh_digest"]
             or masks.get("digest") != binding["task_masks_digest"]
-            or canonical_digest(masks, digest_field="digest") != masks["digest"]):
+            or canonical_track_digest(masks, digest_field="digest") != masks["digest"]):
         raise ValueError("website_destination_relocation_binding_changed")
     rows = [row for row in masks["targets"] if row.get("target_role") == "destination"]
     if len(rows) != 1:
@@ -1030,8 +1032,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         write_json(output_root / "preparation.json", value)
         return value
 
+    # Task masks may hold compact runs (``RunLengths``); the codec's digest is ``canonical_digest``'s.
     for value, field in ((task_context, "context_digest"), (task_masks, "digest"), (source_geometry, "digest")):
-        if value.get(field) != canonical_digest(value, digest_field=field):
+        if value.get(field) != canonical_track_digest(value, digest_field=field):
             raise ValueError("website_preparation_input_digest_mismatch")
     if gap is not None:
         return retain_gap(gap)

@@ -57,6 +57,17 @@ def guarded_handoff_write_json(path: object, value: Mapping) -> None:
         write_json(path, value)
 
 
+def guarded_handoff_write_track_json(path: object, value: Mapping) -> None:
+    """``guarded_handoff_write_json`` for a value that may hold compact track runs: the same bytes.
+
+    ``RunLengths`` (``website_track_mask_codec``) is written from its array, chunk by chunk.
+    """
+    from ..website_track_mask_codec import write_track_json
+
+    with handoff_effect("shared_artifact_promotion"):
+        write_track_json(path, value)
+
+
 @contextmanager
 def bind_handoff_lease(check: Callable[[str], None], effect: Callable[[str], object] | None = None) -> Iterator[None]:
     token = _CHECKPOINT.set(check)

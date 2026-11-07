@@ -473,8 +473,12 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                           retained_static_masks: Mapping[str, Any] | None = None,
                           recovery_geometry: Mapping[str, Any] | None = None,
                           target_choices: Mapping[str, Mapping[str, Any]] | None = None,
-                          target_guesses: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """``target_guesses``, when given, receives each best supported guess made for an ambiguous object to move."""
+                          target_guesses: list[dict[str, Any]] | None = None,
+                          compact_runs: bool = False) -> dict[str, Any]:
+    """``target_guesses``, when given, receives each best supported guess made for an ambiguous object to move.
+
+    Returned source tracks carry plain lists of runs unless ``compact_runs`` asks for ``RunLengths``.
+    """
     targets = tracked_task_targets(plan)
     if not [target for target in targets if not is_person_removal(target)]:
         raise ValueError("website_task_targets_missing")
@@ -511,7 +515,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             raise ValueError("website_retained_static_recovery_context_changed")
         if (provider != "meta" or not source_video or not task_context or defer_kept_static
                 or retained_static_masks.get("status") != "object_removal_ready"
-                or retained_static_masks.get("digest") != canonical_digest(retained_static_masks, digest_field="digest")
+                or retained_static_masks.get("digest") != canonical_track_digest(retained_static_masks,
+                                                                                 digest_field="digest")
                 or {key: value for key, value in retained_static_masks.get("binding", {}).items()
                     if key != "target_choices_digest"} != binding
                 or not recovery_geometry
@@ -825,8 +830,9 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             raise ValueError("website_retained_static_masks_manifest_changed")
     else:
         write_track_json(manifest_path, manifest)
-    # Selected source tracks leave as plain lists of runs, as callers have always received them.
-    return plain_runs(manifest)
+    # Selected source tracks leave as plain lists of runs, as callers have always received them,
+    # unless the caller handles compact runs.
+    return manifest if compact_runs else plain_runs(manifest)
 
 
 @_plain_ambiguity
@@ -836,7 +842,8 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
                                         output_root: Path, view_plan_root: Path,
                                         task_context: Mapping[str, Any] | None = None,
                                         source_video: Path | None = None,
-                                        recovery_geometry: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                                        recovery_geometry: Mapping[str, Any] | None = None,
+                                        compact_runs: bool = False) -> dict[str, Any]:
     """Select kept objects from the first paid SAM response.
 
     The view-first clip already includes the kept-object prompts. Its tracks were
@@ -845,6 +852,11 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
     to purchase another clip implicitly. Explicit current context, source video
     and calibrated recovery geometry permit an ambiguous kept contact surface
     to use exact-frame grounding and a single-image mask under admission.
+
+    The kept targets' source tracks span the whole video at full resolution (millions of runs
+    for large surfaces on a long 4K clip). They leave as plain lists of runs unless
+    ``compact_runs`` asks for ``RunLengths``, which every consumer must then write and hash
+    with ``website_track_mask_codec`` (the scene handoff does).
     """
     try:
         complete = _select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
@@ -864,13 +876,13 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
                 (row := json.loads(path.read_text())).get("digest") == task_masks["binding"]["view_plan_digest"])
         complete = run_website_task_masks(plan=plan, source_geometry=source_geometry, output_root=output_root,
             task_context=task_context, source_video=source_video, view_plan=view_plan,
-            retained_static_masks=task_masks, recovery_geometry=recovery_geometry)
+            retained_static_masks=task_masks, recovery_geometry=recovery_geometry, compact_runs=True)
     completed_path = output_root.resolve() / canonical_digest(task_masks["binding"])[7:23] / "task_masks.json"
     if completed_path.is_file() and load_track_json(completed_path) != complete:
         raise ValueError("website_retained_static_masks_manifest_changed")
     if not completed_path.is_file():
         write_track_json(completed_path, complete)
-    return plain_runs(complete)
+    return complete if compact_runs else plain_runs(complete)
 
 
 @_plain_ambiguity
@@ -1047,9 +1059,11 @@ def retained_task_surfaces(*, pipeline_root: Path, source_video_digest: str | No
     The clean plate's first, paid SAM response already tracked the kept static
     targets; ``select_retained_static_task_masks`` selects them with every check
     and no provider call or write. ``selected`` carries each target's upright
-    ``source_track`` and the decoded-frame registry. Anything missing, changed,
-    ambiguous or from another video is ``unavailable`` with the reason, never an
-    error: such a capture casts no surface vote.
+    ``source_track``, its runs compact (``RunLengths``: decode them with
+    ``decode_track_mask``, hash them with ``canonical_track_digest``), and the
+    decoded-frame registry. Anything missing, changed, ambiguous or from another
+    video is ``unavailable`` with the reason, never an error: such a capture
+    casts no surface vote.
     """
     from .clean_plate_stage import (
         CLEAN_PLATE_DIRNAME,
@@ -1059,7 +1073,7 @@ def retained_task_surfaces(*, pipeline_root: Path, source_video_digest: str | No
 
     root = pipeline_root / CLEAN_PLATE_DIRNAME
     try:
-        stage = json.loads((root / STAGE_MANIFEST_FILENAME).read_text())
+        stage = load_track_json(root / STAGE_MANIFEST_FILENAME)
         plan = json.loads((root / REMOVAL_PLAN_FILENAME).read_text())
     except (OSError, ValueError):
         return {"status": "unavailable", "reason": "clean_plate_task_masks_unavailable"}
@@ -1070,7 +1084,7 @@ def retained_task_surfaces(*, pipeline_root: Path, source_video_digest: str | No
         return {"status": "unavailable", "reason": "clean_plate_source_video_differs"}
     try:
         if task_masks.get("deferred_target_ids"):
-            task_masks = select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
+            task_masks = _select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
                 task_masks=task_masks, output_root=root / "task_masks", view_plan_root=root / "mask_view_plan")
         elif (task_masks.get("status") != "completed"
               or task_masks.get("digest") != canonical_track_digest(task_masks, digest_field="digest")):

@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+from .website_track_mask_codec import canonical_track_digest
 
 SCHEMA_VERSION = "website_object_spec.v1"
 ENABLE_ENV = "BLUEPRINT_WEBSITE_OBJECT_SPEC_AGENT"
@@ -975,5 +976,6 @@ def attach_object_specs(*, task_masks: Mapping[str, Any], removal_manifest: Mapp
     if not changed:
         return dict(task_masks)
     value = {**task_masks, "targets": targets}
-    value["digest"] = canonical_digest(value, digest_field="digest")
+    # Kept targets' source tracks may hold compact runs; the codec's digest is ``canonical_digest``'s.
+    value["digest"] = canonical_track_digest(value, digest_field="digest")
     return value
