@@ -558,6 +558,26 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - It was active at 02:01:08Z: `deployed`, no blockers, `commit_proven`.
   - Main's CI on 682d098 failed only "GR00T OSCAR external prerequisite pins", on an HTTP fetch of three external repositories. That job passed on the three commits before, and the door's own attestation check passed. No door upgrade was needed, because the release has no door code.
 - Scene retirement leaves the G1 overlay row and `native-g1/` packets in place. That is storage, not privacy, because withdrawal now deletes both. It is a follow-up.
+- **pi0.5 language files, 11-07.**
+  - **Problem.** Screening holds both pi0.5 rows with `g1_beta_selected_pi_tokenizer_invalid`. The retained folder (`native_g1_beta_tokenizer.RETAINED_TOKENIZER_DIR`) exists, but its files fail the pinned inventory. The inventory's own pin (`PI_AUXILIARY["inventory_file_sha256"]`) still matches.
+  - **Owner, relayed by the library-aisle session:** "lets do option 2" (about 23:05Z), a door operation that restores and verifies the files the way `restore-g1-runtime-source` did; then "Gemma terms OK" (about 23:10Z), approving development-simulation use of pi0.5's Gemma tokenizer under Google's Gemma terms. The source is a verified copy from a retained bundle on the host only: no Hugging Face, no credential, no network, no money.
+  - **Operation.** `restore-g1-pi-language-assets` (module `native_g1_pi_language_asset_restore`; plan, then `--apply`).
+    - It searches only `native-g1-team-campaign-work/g1-<64 hex>/bundle/` for the two G1 bundle names and takes the first whose six embedded files all verify. None verifying refuses `g1_pi_language_assets_no_verified_source`, listing every bundle checked with a reason.
+    - It sets the invalid folder aside as `.pi-tokenizer-f1eaa13.invalid-<UTC>` after recording its file names, sizes and hashes. It writes the verified files into a fresh sibling, verifies them, renames that into place and verifies again. Nothing is deleted or overwritten.
+    - A folder that already verifies is a no-op.
+    - Records: `results/<id>.g1-pi-language-assets.json` and `g1-841757-development/pi-language-assets-restore-<UTC>.json`. Neither name contains the word the door refuses to read.
+  - **Ships** with a joint `upgrade-door` and a deploy after the current paid DP run settles. Until then the door answers `kind_unknown`.
+- **First G1 run on a website job, 11-07 (library aisle, `site-capture-5b067498…`).**
+  - **Registration, 22:47:43Z (release 008142c):** the service registered both `_vision_navi` rows by itself (`service_automatic`), bound to the confirmed brief's context (1535db…), with 0 allocations. The manipulation rows were refused as `task_mismatch`.
+  - **Plans:**
+    - The 22:48:54Z plan had both navigation rows unavailable (`g1_beta_scene_packet_missing`): the family pass read the profile before registering (fix in #3463).
+    - The 22:55:48Z plan (`screening-83766945…`) selected DP: 4 episodes, $4.00 cap, `setup_quality_flags: ["g1_scene_floor_estimated", "g1_spawn_foot_unsupported"]`.
+    - π0.5 navigation was `g1_beta_selected_pi_tokenizer_invalid`; see the language files above.
+  - **Paid run:** attempt `screen-baf4d7ec…`, Vast instance 59633791, launched 23:01:22Z, settled 23:18:40Z.
+    - Spend: an estimated $0.40 of the $4 cap ($0.09 runtime, $0.31 transfer; the actual figure isn't available from the provider API). No continuing spend, staged objects absent.
+    - Outcome: the GPU sanity check and the Isaac smoke test passed. The G1 runtime then exited 2 at import (`ModuleNotFoundError: jsonschema`, via `native_g1_beta_runtime._inputs` → `beta_policy_screening_g1` → its catalog module → `beta_policy_candidate_catalog`).
+    - No first observation, no policy query, no episode. Ledger: `blocked`, `g1_beta_native_result_missing_or_invalid`.
+  - **Fix:** #3463 imports `seal_catalog` lazily and adds a guard test with `jsonschema` blocked. The blocker is a harness failure, so after the deploy the DP row is planned again once under the existing bounded retry, inside the site's allowance.
 
 ## Operating notes (2026-11-02)
 

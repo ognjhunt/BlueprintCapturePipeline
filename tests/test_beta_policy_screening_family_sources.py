@@ -338,11 +338,22 @@ def test_a_navigation_source_registers_its_sites_g1_rows_before_the_catalog_is_r
         return {'status': 'registered'}
 
     real_catalog = team.catalog_for_profile
+    from blueprint_pipeline import team_candidate_quick10_registry as quick10
+    real_profile = quick10.profile_for_capture
+
+    def profile_for_capture(capture_root):
+        # The registry reader merges the site's new G1 rows once registration has written them.
+        profile = real_profile(capture_root)
+        return {**profile, 'registered_after': True} if profile and 'register' in order else profile
 
     def catalog(profile, base):
         order.append('catalog:' + ('navigation' if profile.get('navigation_scene_inputs_path') else 'family'))
+        if profile.get('navigation_scene_inputs_path'):
+            seen.append(profile.get('registered_after', False))
         return real_catalog(profile, base)
 
+    seen = []
+    monkeypatch.setattr(quick10, 'profile_for_capture', profile_for_capture)
     monkeypatch.setattr(registration, 'ensure_site_registration', ensure)
     monkeypatch.setattr(packets, 'current_release_commit', lambda: 'a' * 40)
     monkeypatch.setattr(team, 'catalog_for_profile', catalog)
@@ -358,6 +369,8 @@ def test_a_navigation_source_registers_its_sites_g1_rows_before_the_catalog_is_r
         'scene_revision_digest': record['scene_revision_digest']},
         'source_queue': packet_root, 'release': 'a' * 40}]
     assert order.index('register') < order.index('catalog:navigation')
+    # The catalog and plan read the profile as registration left it, not the one read before it.
+    assert seen == [True]
     assert navigation['g1_registration'] == ({'status': 'registered'} if g1 == 'registered' else {
         'status': 'failed', 'error': navigation['g1_registration']['error']})
 

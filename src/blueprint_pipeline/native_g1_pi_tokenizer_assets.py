@@ -126,23 +126,35 @@ def _url(inventory: dict[str, Any], name: str) -> str:
     )
 
 
-def _identity(path: Path, row: dict[str, Any]) -> tuple[str, int]:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("g1_pi_tokenizer_file_missing_or_symlink:" + row["path"])
-    # SHA-1 is the upstream Git blob identifier, not a security digest.
-    digest = hashlib.sha256() if "sha256" in row else hashlib.sha1(usedforsecurity=False)
-    size = path.stat().st_size
+def stream_identity(stream: Any, row: dict[str, Any], *, size: int) -> tuple[str, int]:
+    """Check one inventory row against ``size`` bytes read from ``stream``.
+
+    The one identity rule for a file on disk and for an archive member: the
+    pinned size, then the pinned sha256 or upstream Git blob sha1.
+    """
+
     if size != row["size_bytes"]:
         raise ValueError("g1_pi_tokenizer_file_size_mismatch:" + row["path"])
+    # SHA-1 is the upstream Git blob identifier, not a security digest.
+    digest = hashlib.sha256() if "sha256" in row else hashlib.sha1(usedforsecurity=False)
     if "git_blob_sha1" in row:
         digest.update(f"blob {size}\0".encode("ascii"))
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(block)
     expected = row.get("sha256") or row.get("git_blob_sha1")
     if digest.hexdigest() != expected:
         raise ValueError("g1_pi_tokenizer_file_digest_mismatch:" + row["path"])
     return digest.hexdigest(), size
+
+
+def _identity(path: Path, row: dict[str, Any]) -> tuple[str, int]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("g1_pi_tokenizer_file_missing_or_symlink:" + row["path"])
+    size = path.stat().st_size
+    if size != row["size_bytes"]:
+        raise ValueError("g1_pi_tokenizer_file_size_mismatch:" + row["path"])
+    with path.open("rb") as stream:
+        return stream_identity(stream, row, size=size)
 
 
 def verify_tokenizer_assets(*, inventory_path: Path, asset_dir: Path) -> dict[str, Any]:

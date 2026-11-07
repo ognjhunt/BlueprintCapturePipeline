@@ -1319,6 +1319,38 @@ def test_g1_runtime_source_restore_launches_the_release_module(config: DoorConfi
 
 
 @pytest.mark.parametrize("apply", [False, True])
+def test_g1_pi_language_restore_launches_the_release_module(config: DoorConfig, apply: bool) -> None:
+    """One 15 min unit named by a hash of the mode, with no network and every secret hidden; only the
+    folder's parent, the disk ledger and the result are writable."""
+    request_id = _spooled(config, {"kind": "restore-g1-pi-language-assets", "apply": apply})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    label = hashlib.sha256(b"apply" if apply else b"plan").hexdigest()[:12]
+    unit = f"blueprint-operator-door-g1-pi-language-assets-{label}-{request_id[-8:]}.service"
+    assert call[1] == f"--unit={unit}" and "deploy" not in unit
+    assert "--property=RuntimeMaxSec=15min" in call and "--property=TimeoutStartSec=15min" in call
+    for sandbox in ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+                    "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+                    "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX"):
+        assert f"--property={sandbox}" in call, sandbox
+    results = str(Path(config.spool_root) / "results")
+    assert ("--property=ReadWritePaths=-/var/lib/blueprint/task-evaluation-inputs/g1-841757-development "
+            f"/var/lib/blueprint/pipeline-control-plane/disk-reservations {results}") in call
+    [hidden] = [value.removeprefix("--property=InaccessiblePaths=").split() for value in call
+                if value.startswith("--property=InaccessiblePaths=")]
+    assert hidden == [f"-{path}" for path in config.hidden_paths]
+    for value in ("DOOR_SERVICE_USER=blueprint", "DOOR_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane"):
+        assert f"--setenv={value}" in call, value
+    assert [value for value in call if value.startswith("--setenv=DOOR_APPLY")] == (
+        ["--setenv=DOOR_APPLY=1"] if apply else [])
+    assert not any("tokenizer" in value for value in call)
+    assert call[-1] == "/opt/blueprint/operator-door/door-restore-g1-pi-language-assets.sh"
+    assert _result(config, request_id)["status"] == "launched"
+
+
+@pytest.mark.parametrize("apply", [False, True])
 def test_parked_delivery_retirement_launches_the_release_module(config: DoorConfig, apply: bool) -> None:
     """One 5 min unit named by a hash of the capture and the mode, with no network and every secret
     hidden; only that capture, the delivery index beside the captures and the result are writable."""

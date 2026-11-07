@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .beta_policy_candidate_catalog import seal_catalog
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_beta_authority import CANDIDATE_DIGESTS
 
@@ -24,6 +23,10 @@ def catalog_for_profile(profile: Mapping[str, Any], catalog: Mapping[str, Any]) 
                      if key in CANDIDATES and isinstance(value, Mapping) and "native_g1" in value}
     if not registrations:
         return dict(catalog)
+    # Imported here: the G1 runtime on the rented machine imports this module (through
+    # beta_policy_screening_g1) and its Python has no jsonschema, which the catalog module needs.
+    from .beta_policy_candidate_catalog import seal_catalog
+
     return seal_catalog({**catalog, "revision": catalog["revision"] + ":g1:" + canonical_digest(registrations)[7:]})
 
 

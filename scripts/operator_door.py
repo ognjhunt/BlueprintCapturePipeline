@@ -20,6 +20,7 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py retire-scene-workspace <scene_id> [--bucket B] [--apply] --wait
     python3 scripts/operator_door.py legacy-owner-census --wait
     python3 scripts/operator_door.py restore-g1-runtime-source [--apply] --wait
+    python3 scripts/operator_door.py restore-g1-pi-language-assets [--apply] --wait
     python3 scripts/operator_door.py retire-parked-delivery <bucket>/scenes/site-*/captures/<capture> \
         --approval-evidence "<owner approval>" [--apply] --wait
     python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
@@ -942,6 +943,13 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     )
     g1_source.add_argument("--apply", action="store_true", help="restore; without this only a plan is made")
     _add_wait(g1_source, 2 * 3600 + 600)
+    g1_language = commands.add_parser(
+        "restore-g1-pi-language-assets",
+        help="plan the pi0.5 G1 language files' restore from a verified retained bundle on the host; "
+             "--apply restores them",
+    )
+    g1_language.add_argument("--apply", action="store_true", help="restore; without this only a plan is made")
+    _add_wait(g1_language, 15 * 60 + 600)
     parked = commands.add_parser(
         "retire-parked-delivery",
         help="plan an owner-approved retirement of one parked website preparation delivery; --apply retires it",
@@ -1086,6 +1094,8 @@ def run(args: argparse.Namespace) -> int:
         return _submit({"kind": "legacy-owner-census"}, args)
     elif command == "restore-g1-runtime-source":
         return _submit({"kind": "restore-g1-runtime-source", "apply": args.apply}, args)
+    elif command == "restore-g1-pi-language-assets":
+        return _submit({"kind": "restore-g1-pi-language-assets", "apply": args.apply}, args)
     elif command == "retire-parked-delivery":
         return _submit({"kind": "retire-parked-delivery", "capture": args.capture,
                         "approval_evidence": args.approval_evidence, "apply": args.apply}, args)

@@ -256,6 +256,28 @@ def test_g1_runtime_source_restore_takes_only_apply() -> None:
         assert caught.value.code == code
 
 
+def test_g1_pi_language_restore_takes_only_apply() -> None:
+    """The folder, the search root and the inventory are pinned in the release module, never a field."""
+    assert validate_request({"kind": "restore-g1-pi-language-assets"}) == {
+        "kind": "restore-g1-pi-language-assets", "apply": False}
+    assert validate_request({"kind": "restore-g1-pi-language-assets", "apply": True}) == {
+        "kind": "restore-g1-pi-language-assets", "apply": True}
+    assert required_scope("restore-g1-pi-language-assets") == "operate"
+    for body, code in (
+            ({"kind": "restore-g1-pi-language-assets", "apply": "yes"}, "g1_pi_language_assets_apply_invalid"),
+            ({"kind": "restore-g1-pi-language-assets", "apply": 1}, "g1_pi_language_assets_apply_invalid"),
+            ({"kind": "restore-g1-pi-language-assets", "apply": None}, "g1_pi_language_assets_apply_invalid"),
+            ({"kind": "restore-g1-pi-language-assets", "path": "/var/lib/blueprint/x"}, "request_key_unknown:path"),
+            ({"kind": "restore-g1-pi-language-assets", "bundle": "/var/lib/blueprint/x.zip"},
+             "request_key_unknown:bundle"),
+            ({"kind": "restore-g1-pi-language-assets", "apply": True, "sha256": "a" * 64},
+             "request_key_unknown:sha256"),
+            ({"kind": "restore-g1-pi-language-assets", "url": "https://example.test/x"}, "request_key_unknown:url")):
+        with pytest.raises(RequestRefused) as caught:
+            validate_request(body)
+        assert caught.value.code == code
+
+
 PARKED_CAPTURE = ("blueprint-8c1ca.appspot.com/scenes/site-capture-36ad8b1d/captures/"
                   "walkthrough-capture-36ad8b1d")
 

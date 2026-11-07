@@ -8,6 +8,7 @@
 #   deploy/operator-door/door-restore-scene-workspace.sh
 #   deploy/operator-door/door-provider-output-resume.sh
 #   deploy/operator-door/door-restore-g1-runtime-source.sh
+#   deploy/operator-door/door-restore-g1-pi-language-assets.sh
 #   deploy/operator-door/door-retire-parked-delivery.sh
 #   deploy/operator-door/door-selected-handoff.sh
 #   deploy/operator-door/door-extend-scene-execution-window.sh
@@ -309,6 +310,7 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
                                     "door-lane-scratch.sh", "door-provider-output-resume.sh",
                                     "door-restore-g1-runtime-source.sh",
+                                    "door-restore-g1-pi-language-assets.sh",
                                     "door-retire-parked-delivery.sh",
                                     "door-extend-scene-execution-window.sh", "door-extend-scene-execution-budget.sh",
                                     "door-confirm-owner-success-contract.sh", "install.sh"])
@@ -1459,6 +1461,104 @@ def test_g1_runtime_source_restore_reads_the_store_the_launch_dispatcher_binds()
     for binding in bindings:
         name, value = binding.split("=", 1)
         assert f': "${{{name}:={value}}}"' in script, name
+
+
+# --- restore-g1-pi-language-assets ---------------------------------------------------------------
+
+G1_LANGUAGE_ID = "20261107T231500Z-restore-g1-pi-language-assets-0000abcd"
+G1_LANGUAGE_PYTHON_STUB = r"""#!/bin/bash
+{ echo "restore $*"; echo "cwd $PWD"; echo "pythonpath ${PYTHONPATH:-}"
+  echo "ledger ${BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT:-unset}"
+  echo "from-env-file ${BLUEPRINT_FAKE_FROM_ENV_FILE:-unset}"
+  echo "credentials ${GOOGLE_APPLICATION_CREDENTIALS-unset}"
+  echo "store ${BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE-unset}"; } >> "$STUB_LOG"
+printf '%s\n' "${FAKE_RESTORE:-}"
+exit "${FAKE_TOOL_RC:-0}"
+"""
+G1_LANGUAGE_RECEIPT = ("/var/lib/blueprint/task-evaluation-inputs/g1-841757-development/"
+                       "pi-language-assets-restore-20261107T231512Z.json")
+
+
+@pytest.fixture()
+def g1_language_env(retire_env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "g1-language-python", G1_LANGUAGE_PYTHON_STUB)
+    module = tmp_path / "releases" / SHA / "src" / "blueprint_pipeline" / "native_g1_pi_language_asset_restore.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("# the active release's module\n", encoding="utf-8")
+    values = {key: value for key, value in retire_env.items()
+              if not key.startswith("BLUEPRINT_WAM_OBJECT_STORE_") and key not in {
+                  "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", "GOOGLE_APPLICATION_CREDENTIALS", "DOOR_SCENE_ID"}}
+    return {**values, "DOOR_VENV_PYTHON": str(tmp_path / "g1-language-python"), "DOOR_SERVICE_USER": "blueprint"}
+
+
+@pytest.mark.parametrize(("apply", "result", "status", "code", "rc"), [
+    (None, {"outcome": "planned", "code": None, "receipt_path": None}, "planned", None, 0),
+    ("1", {"outcome": "restored", "code": None, "receipt_path": G1_LANGUAGE_RECEIPT}, "restored", None, 0),
+    ("1", {"outcome": "already_restored", "code": None, "receipt_path": None}, "already_restored", None, 0),
+    ("1", {"outcome": "refused", "code": "g1_pi_language_assets_no_verified_source"}, "refused",
+     "g1_pi_language_assets_no_verified_source", 2),
+    (None, None, "failed", "g1_pi_language_assets_restore_failed", 1),
+])
+def test_g1_pi_language_restore_runs_the_release_module_as_the_service_user(
+        g1_language_env: dict[str, str], tmp_path: Path, apply, result, status, code, rc) -> None:
+    extra = {"FAKE_RESTORE": json.dumps(result)} if result is not None else {}
+    if rc:
+        extra["FAKE_TOOL_RC"] = str(rc)
+    if apply:
+        extra["DOOR_APPLY"] = apply
+    done_rc, outcome, calls = _run("door-restore-g1-pi-language-assets.sh", g1_language_env,
+                                   DOOR_REQUEST_ID=G1_LANGUAGE_ID, **extra)
+
+    assert (done_rc, outcome["status"], outcome["code"], outcome["exit_code"]) == (rc, status, code, rc)
+    assert calls[:2] == ["setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --",
+                         "umask 0077"]
+    assert calls[2] == "restore -m blueprint_pipeline.native_g1_pi_language_asset_restore" + (
+        " --apply" if apply else "")
+    # No object store and no credentials: the module reads bundles already on the host.
+    assert calls[3:] == [f"cwd {tmp_path / 'releases' / SHA}", "pythonpath src",
+                         "ledger /var/lib/blueprint/pipeline-control-plane/disk-reservations",
+                         "from-env-file loaded", "credentials unset", "store unset"]
+    path = Path(g1_language_env["DOOR_RESULTS_DIR"]) / f"{G1_LANGUAGE_ID}.g1-pi-language-assets.json"
+    assert outcome["result"] == str(path) and oct(path.stat().st_mode & 0o777) == oct(0o644)
+    if result is not None:
+        assert json.loads(path.read_text()) == result
+    if status == "restored":
+        assert outcome["receipt"] == G1_LANGUAGE_RECEIPT
+    else:
+        assert "receipt" not in outcome
+    assert not any(call.startswith("install ") for call in calls), "the root script makes no directory"
+
+
+def test_g1_pi_language_restore_never_passes_on_an_unsafe_receipt_path(g1_language_env: dict[str, str]) -> None:
+    result = {"outcome": "restored", "code": None, "receipt_path": "/tmp/x y.json"}
+    rc, outcome, _ = _run("door-restore-g1-pi-language-assets.sh", g1_language_env, DOOR_REQUEST_ID=G1_LANGUAGE_ID,
+                          DOOR_APPLY="1", FAKE_RESTORE=json.dumps(result))
+    assert rc == 0 and outcome["status"] == "restored" and "receipt" not in outcome
+
+
+@pytest.mark.parametrize(("overrides", "code"), [
+    ({"DOOR_APPLY": "yes"}, "g1_pi_language_assets_apply_invalid"),
+    ({"DOOR_APPLY": "1; rm -rf /"}, "g1_pi_language_assets_apply_invalid"),
+    ({"DOOR_SERVICE_USER": "root"}, "g1_pi_language_assets_user_invalid"),
+])
+def test_g1_pi_language_restore_rechecks_its_inputs(g1_language_env: dict[str, str], overrides, code) -> None:
+    rc, outcome, calls = _run("door-restore-g1-pi-language-assets.sh", g1_language_env,
+                              DOOR_REQUEST_ID=G1_LANGUAGE_ID, **overrides)
+    assert rc == 2 and outcome["code"] == code and not calls
+
+
+def test_g1_pi_language_restore_names_a_release_without_the_module(g1_language_env: dict[str, str],
+                                                                   tmp_path: Path) -> None:
+    (tmp_path / "releases" / SHA / "src" / "blueprint_pipeline" / "native_g1_pi_language_asset_restore.py").unlink()
+    rc, outcome, calls = _run("door-restore-g1-pi-language-assets.sh", g1_language_env,
+                              DOOR_REQUEST_ID=G1_LANGUAGE_ID)
+    assert rc == 2 and outcome["code"] == "g1_pi_language_assets_release_lacks_module" and not calls
+
+
+def test_g1_pi_language_restore_refuses_another_kinds_request_id(g1_language_env: dict[str, str]) -> None:
+    rc, _, calls = _run("door-restore-g1-pi-language-assets.sh", g1_language_env, DOOR_REQUEST_ID=G1_SOURCE_ID)
+    assert rc == 2 and not calls and not list(Path(g1_language_env["DOOR_RESULTS_DIR"]).iterdir())
 
 
 # --- retire-parked-delivery ----------------------------------------------------------------------
