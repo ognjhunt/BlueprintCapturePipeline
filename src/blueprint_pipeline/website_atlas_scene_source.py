@@ -434,7 +434,9 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         "up_axis": "Y", "meters_per_unit": runtime_mpu, "provider": PROVIDER, "scale_authority": SCALE_AUTHORITY,
         "ground_plane_offset_m": level["ground_plane_offset_m"], "anchor": anchor,
         "levelling": {"digest": level["digest"], "up_basis": level["up_basis"], "tilt_degrees": level["tilt_degrees"],
-                      "provider_to_levelled": level["provider_to_levelled"], **provider},
+                      "provider_to_levelled": level["provider_to_levelled"], **provider,
+                      # A flat floor that stands in for an uneven one is a flagged development-only estimate.
+                      **({"fallback_floor": level["fallback_floor"]} if "fallback_floor" in level else {})},
         "operation_id": background_pose["operation"]["id"], "atlas_result_digest": result["digest"],
     }
     if completion_admission is not None:

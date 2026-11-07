@@ -199,6 +199,43 @@ def test_an_uneven_floor_that_disagrees_with_the_surfaces_is_refused(tmp_path, m
     value, _ = level(tmp_path, degrees=13.0, aisle=True, floor_wave_m=0.08, floor_tilt_degrees=3.0, cameras=AISLE)
     assert value["status"] == "needs_input" and value["reason"] == "website_atlas_scene_level_unobserved"
     assert value["level_search"]["direction_agreement_degrees"] > levelling.DIRECTION_AGREEMENT_DEGREES
+    # The provider's +Y is 13 degrees off as well, so the fallback floor does not stand in either.
+    estimates = value["level_search"]["fallback_estimates"]
+    assert max(estimates["floor_band_tilt_degrees"], estimates["face_normal_mode_tilt_degrees"]) \
+        > levelling.FALLBACK_MAX_TILT_DEGREES
+
+
+def test_the_flagged_fallback_floor_stands_in_for_an_uneven_one_near_the_providers_up(tmp_path, monkeypatch):
+    _no_plane_found(monkeypatch)
+    value, _ = level(tmp_path, degrees=0.0, aisle=True, floor_wave_m=0.08, floor_tilt_degrees=2.0, cameras=AISLE)
+    assert value["level_search"]["direction_agreement_degrees"] > levelling.DIRECTION_AGREEMENT_DEGREES
+    assert value["status"] == "levelled" and value["up_basis"] == "fallback_fitted_floor"
+    assert value["level_direction_basis"] == "provider_up_fallback" and value["tilt_degrees"] == 0.0
+    assert value["ground_plane_offset_m"] == 0.0 and value["physical_measurement"] is False
+    fallback = value["fallback_floor"]
+    assert fallback["claim"] == "development_only_estimate" and fallback["replaced_faces"] > 0
+    assert fallback["band_spread_m"][0] < -0.05 < 0.05 < fallback["band_spread_m"][1]  # the floor was uneven
+    assert all(1.3 < height < 1.6 for height in value["floor"]["camera_heights_m"])
+    # The collider's floor is flat at y = 0; nothing level is left within the replaced band except it.
+    mesh = trimesh.load(str(outputs(value)["supported_mesh_glb"]), force="mesh", process=False)
+    tri = np.asarray(mesh.vertices)[np.asarray(mesh.faces)] * MPU
+    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    level_faces = np.abs(cross[:, 1]) >= np.cos(np.radians(30.0)) * np.linalg.norm(cross, axis=1)
+    near = np.all(np.abs(tri[:, :, 1]) <= levelling.FALLBACK_REPLACE_HALF_M, axis=1)
+    assert (level_faces & near).sum() == fallback["flat_floor_faces"]
+    assert np.abs(tri[level_faces & near][:, :, 1]).max() < 1e-6
+    # The splat is only moved, never turned.
+    assert np.allclose(np.asarray(value["provider_to_levelled"])[:3, :3], np.eye(3))
+
+
+def test_the_fallback_floor_covers_the_band_when_no_face_passes_the_replacement_test():
+    # Only vertical faces reach the floor band: nothing is replaced, and the flat floor is still built.
+    from tests.atlas_level_room_fixture import _grid
+    vertices, faces = _grid((-2.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0), 81, 41)
+    swapped = levelling._replace_uneven_floor(trimesh.Trimesh(vertices=vertices, faces=faces, process=False),
+                                              meters_per_unit=1.0)
+    assert swapped["replaced_faces"] == 0 and swapped["flat_floor_faces"] > 0
+    assert swapped["flat_floor_extent_m"][0] >= 4.0
 
 
 def test_a_single_dominant_plane_keeps_its_own_basis(tmp_path):
