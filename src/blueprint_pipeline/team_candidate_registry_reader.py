@@ -28,10 +28,12 @@ REGISTRY_ENV = "BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY"
 REGISTRY_SCHEMA = "blueprint.team_candidate_quick10_registry.v1"
 DERIVED_SCHEMA = "blueprint.team_candidate_derived_profile.v1"
 # What a prepared scene's own records determine (the first six are required, plus one scene half:
-# the scene's own compiled packet, or a frozen internal Quick-10 pair).
+# the scene's own compiled packet, a frozen internal Quick-10 pair, a task family's scene inputs, or a
+# navigation job's scene inputs, ``website_navigation_scene_inputs``).
 DERIVED_FIELDS = ("capture_root", "scene_id", "task_id", "scenario_id", "robot_free_probe_root",
                   "scene_revision_digest", "team_scene_inputs_path", "pair_runtime_inputs_path",
-                  "pair_activation_path", "nominal_dynamic_friction", "family_scene_inputs_path")
+                  "pair_activation_path", "nominal_dynamic_friction", "family_scene_inputs_path",
+                  "navigation_scene_inputs_path")
 REQUIRED_DERIVED_FIELDS = DERIVED_FIELDS[:6]
 # What only the operator decides: who may fund a run, at what rate, and each team's rights.
 OPERATOR_FIELDS = ("allowed_founder_approvers", "max_hourly_rate_usd", "open_loop_horizon", "team_rights",
