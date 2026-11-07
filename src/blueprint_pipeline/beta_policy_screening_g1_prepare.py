@@ -8,6 +8,9 @@ and the report is kept beside the packet for planning to read.
 A navigation base packet (``goal_region_navigation``, the G1 at the compiled start) keeps that start as
 its stance (``_navigation_request``), and the body is also measured at each start offset its cells use
 (``native_g1_spawn_clearance.START_OFFSETS_FILENAME``); the rigid request is unchanged (``_request``).
+A scene floor that is a development-only estimate, as the packet's task carries it
+(``native_g1_spawn_clearance.scene_floor_estimate``), is a disclosed assumption of the receipt
+(``scene_floor_estimate``), with its band spread; planning flags the row for it, never refuses it.
 No model, network, simulator, allocation or human-review action occurs here.
 """
 from __future__ import annotations
@@ -539,6 +542,12 @@ def prepare_native_g1_beta_packet(*, base_packet_record: Mapping[str, Any], sour
                 "offsets": {row["offset_id"]: {"status": row["status"], "max_depth_m": row["max_depth_m"],
                                                "unsupported_feet": row["unsupported_feet"]}
                             for row in offsets["offsets"]}}
+        floor = spawn.scene_floor_estimate(request["task_spec"])
+        if floor is not None:
+            # A flat floor standing in for an uneven scanned one: disclosed, flagged at planning, never a gate.
+            # Absent, the receipt is byte for byte the one before.
+            result["scene_floor_estimate"] = {**floor, "setup_quality_flag": spawn.FLOOR_ESTIMATED_REASON,
+                                              "disclosed_assumption": spawn.floor_estimate_assumption(floor)}
         result["preparation_digest"] = canonical_digest(result, digest_field="preparation_digest")
         write_once(destination / FILENAME, result)
         return {**result, "preparation_receipt": _record(destination / FILENAME)}

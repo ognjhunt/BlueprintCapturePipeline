@@ -79,6 +79,37 @@ def test_scene_facts_read_floor_obstacles_and_route_from_the_collider(tmp_path) 
         scene_facts(base_scene=base, camera_path_levelled_m=path)
 
 
+def test_a_fallback_floor_is_carried_into_the_facts_and_spec_only_when_the_levelling_records_one(tmp_path) -> None:
+    from blueprint_pipeline.native_g1_spawn_clearance import scene_floor_estimate
+    from blueprint_pipeline.website_navigation_packet import navigation_task_spec
+
+    base, path = _corridor(tmp_path)
+    plain = scene_facts(base_scene=base, camera_path_levelled_m=path)
+    # Without a fallback floor the evidence is the three fields it always had, so every digest is unchanged.
+    assert list(plain["metric_scale"]["evidence"][0]) == ["source", "meters_per_unit", "levelling_tilt_degrees"]
+    fallback = {"basis": "flat_floor_at_uneven_band_median", "claim": "development_only_estimate",
+                "band_spread_m": [-0.052, 0.048], "band_share": 0.061, "replaced_faces": 412,
+                "up_estimates": {"floor_band_tilt_degrees": 1.4, "face_normal_mode_tilt_degrees": 1.9}}
+    levelled = {**base, "levelling": {**base["levelling"], "fallback_floor": fallback}}
+    facts = scene_facts(base_scene=levelled, camera_path_levelled_m=path)
+    compact = {"claim": "development_only_estimate", "basis": "flat_floor_at_uneven_band_median",
+               "band_spread_m": [-0.052, 0.048]}
+    assert facts["metric_scale"]["evidence"][0]["levelling_floor_estimate"] == compact
+    # Only that field differs: with it removed, the facts and their digest are the plain ones.
+    stripped = copy.deepcopy({key: value for key, value in facts.items() if key != "_obstacles_xy"})
+    stripped["metric_scale"]["evidence"][0].pop("levelling_floor_estimate")
+    assert canonical_digest(stripped, digest_field="facts_digest") == plain["facts_digest"] != facts["facts_digest"]
+    assert {key: value for key, value in stripped.items() if key != "facts_digest"} == {
+        key: value for key, value in plain.items() if key not in ("facts_digest", "_obstacles_xy")}
+    # It travels in the compiled spec and the navigation task that embeds it, which the G1 packet copies.
+    spec = compile_locomotion_spec(task_context=_context(), facts=facts, requirements=WALK)
+    navigation = navigation_task_spec(spec, task_context=_context())
+    assert scene_floor_estimate(navigation) == compact
+    assert scene_floor_estimate(navigation_task_spec(
+        compile_locomotion_spec(task_context=_context(), facts=plain, requirements=WALK),
+        task_context=_context())) is None
+
+
 def test_a_vertical_face_is_a_segment_not_its_whole_line() -> None:
     # A wall's triangle projects onto a line segment; points on that line beyond it are not inside.
     wall = np.array([[[0.0, 10.0], [0.0, 11.0], [0.0, 10.0]]])

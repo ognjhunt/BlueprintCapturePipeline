@@ -147,6 +147,12 @@ def scene_facts(*, base_scene: Mapping[str, Any], camera_path_levelled_m: Sequen
         & (low <= floor_z + OBSTACLE_BAND_M[1])
     path = _stage(np.asarray(camera_path_levelled_m, dtype=np.float64).reshape(-1, 3)) if len(
         camera_path_levelled_m) else np.zeros((0, 3))
+    # A flat floor standing in for an uneven scanned one (``atlas_world_levelling``) is a development-only
+    # estimate; the spec carries it so the G1 lane can flag it. Absent, the facts are as before.
+    fallback = (base_scene.get("levelling") or {}).get("fallback_floor")
+    floor_estimate = ({"levelling_floor_estimate": {key: fallback.get(key)
+                                                    for key in ("claim", "basis", "band_spread_m")}}
+                      if isinstance(fallback, Mapping) else {})
     facts = {
         "schema_version": FACTS_SCHEMA,
         "collision_mesh_digest": base_scene["collision_mesh_digest"],
@@ -156,7 +162,8 @@ def scene_facts(*, base_scene: Mapping[str, Any], camera_path_levelled_m: Sequen
         "metric_scale": {"status": "provider_declared_not_independently_validated",
                          "evidence": [{"source": str(base_scene.get("scale_authority")),
                                        "meters_per_unit": mpu,
-                                       "levelling_tilt_degrees": (base_scene.get("levelling") or {}).get("tilt_degrees")}]},
+                                       "levelling_tilt_degrees": (base_scene.get("levelling") or {}).get("tilt_degrees"),
+                                       **floor_estimate}]},
     }
     facts["facts_digest"] = canonical_digest(facts, digest_field="facts_digest")
     return {**facts, "_obstacles_xy": corners[touching][:, :, :2]}
