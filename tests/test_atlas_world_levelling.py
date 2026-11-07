@@ -176,6 +176,31 @@ def test_a_floor_off_the_shelves_levels_the_world_when_no_single_plane_is_found(
     assert all(1.3 < height < 1.6 for height in heights)
 
 
+def _no_plane_found(monkeypatch):
+    # As on the library aisle: neither the single-plane nor the parallel-layer search finds anything.
+    monkeypatch.setattr(levelling, "_level_direction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(levelling, "_parallel_level_direction", lambda *args, **kwargs: None)
+
+
+def test_an_uneven_floor_agreeing_with_the_surfaces_levels_the_world_but_is_not_declared(tmp_path, monkeypatch):
+    _no_plane_found(monkeypatch)
+    value, _ = level(tmp_path, degrees=13.0, aisle=True, floor_wave_m=0.08, cameras=AISLE)
+    search = value["level_search"]
+    assert search["floor_band"]["inlier_share"] < levelling.MIN_LEVEL_SHARE  # too uneven to declare
+    assert search["direction_agreement_degrees"] <= levelling.DIRECTION_AGREEMENT_DEGREES
+    assert value["status"] == "levelled" and value["level_direction_basis"] == "agreeing_normal_mode_and_floor_band"
+    assert value["tilt_degrees"] == pytest.approx(13.0, abs=0.3)
+    assert value["up_basis"] == "dominant_level_surface" and value["ground_plane_offset_m"] is None
+    assert value["floor"] is None
+
+
+def test_an_uneven_floor_that_disagrees_with_the_surfaces_is_refused(tmp_path, monkeypatch):
+    _no_plane_found(monkeypatch)
+    value, _ = level(tmp_path, degrees=13.0, aisle=True, floor_wave_m=0.08, floor_tilt_degrees=3.0, cameras=AISLE)
+    assert value["status"] == "needs_input" and value["reason"] == "website_atlas_scene_level_unobserved"
+    assert value["level_search"]["direction_agreement_degrees"] > levelling.DIRECTION_AGREEMENT_DEGREES
+
+
 def test_a_single_dominant_plane_keeps_its_own_basis(tmp_path):
     value, _ = level(tmp_path)
     assert value["level_direction_basis"] == "single_level_plane"

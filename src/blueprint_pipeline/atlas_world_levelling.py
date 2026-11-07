@@ -34,7 +34,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-REVISION = "atlas_world_levelling.v5"
+REVISION = "atlas_world_levelling.v6"
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0
@@ -67,6 +67,10 @@ PARALLEL_COARSE_LAYERS = (6.0, 3.0, 1.0)
 FLOOR_BANDS_M = (0.30, 0.15, 0.08, 0.04)
 FLOOR_BAND_FIND_M = 0.10
 FLOOR_TRIM_DEVIATIONS = 2.5
+#: A floor too uneven to declare (no 2 cm plane holds a level plane's share) still gives the up
+#: direction when its own plane and the mean of every surface's normal agree this closely: two
+#: independent estimates. The scene is levelled on it, and no floor is declared.
+DIRECTION_AGREEMENT_DEGREES = 0.5
 #: Kept in the record, so a refusal can be read without the mesh: the densest layers along the chosen
 #: direction, and along +Y and every candidate direction the share of points in each 2 cm band of
 #: height around the cameras (a floor shows as a peak a camera height below them, as thick as it is).
@@ -310,14 +314,15 @@ def _floor(points: np.ndarray, normal: np.ndarray) -> dict[str, Any] | None:
 
 
 def _band_floor(points: np.ndarray, direction: np.ndarray,
-                report: dict[str, Any] | None = None) -> dict[str, Any] | None:
+                report: dict[str, Any] | None = None, fit: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
     """The floor found as the lowest band holding a floor's share, refitted coarse to fine; None if it fails.
 
     Along ``direction`` the lowest 10 cm holding ``MIN_FLOOR_SHARE`` of the points starts a 30 cm
     band; each band is fitted as a plane, points beyond ``FLOOR_TRIM_DEVIATIONS`` robust deviations
     are trimmed, and the band narrows about the new plane. The result must hold a level plane's
     share (``MIN_LEVEL_SHARE``) within 2 cm and meet the floor rules: almost nothing below it, and
-    wider than a counter both ways. ``report`` receives what was found either way.
+    wider than a counter both ways. ``report`` receives what was found either way, and ``fit``
+    the fitted floor whether or not it passed.
     """
     if len(points) < 3:
         return None
@@ -361,6 +366,8 @@ def _band_floor(points: np.ndarray, direction: np.ndarray,
         report["floor_band"] = {"tilt_degrees": _tilt(normal), "inlier_share": value["inlier_share"],
                                 "below_share": value["below_share"], "rms_m": value["rms_m"],
                                 "extent_m": value["extent_m"]}
+    if fit is not None:
+        fit.append(value)
     if (value["inlier_share"] < MIN_LEVEL_SHARE or below > MAX_BELOW_FLOOR_SHARE * len(points)
             or spans[0] < MIN_FLOOR_EXTENT_M):
         return None
@@ -437,13 +444,24 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     if camera_heights is None:
         # No 2 cm floor layer along the level direction: the floor may lie a couple of degrees off it
         # (a reconstructed world's shelves and floor need not be exactly parallel). Fit it on its own.
-        start = normal if normal is not None else _normal_mode(*_face_normals_and_areas(vertices, faces))
-        floor = _band_floor(sample, start if start is not None else np.array([0.0, 1.0, 0.0]), search)
+        mode = _normal_mode(*_face_normals_and_areas(vertices, faces)) if normal is None else None
+        start = normal if normal is not None else mode
+        fitted: list[dict[str, Any]] = []
+        floor = _band_floor(sample, start if start is not None else np.array([0.0, 1.0, 0.0]), search, fitted)
         camera_heights = _cameras_above(floor, centres * meters_per_unit)
         if camera_heights is None:
             floor = None
         elif normal is None:
             normal, basis = floor["normal"], "observed_floor_band"
+        if normal is None and mode is not None and fitted:
+            # The floor is too uneven to declare, but its own plane and every surface's mean normal agree.
+            band = fitted[0]
+            agreement = math.degrees(math.acos(min(1.0, abs(float(band["normal"] @ mode)))))
+            search["direction_agreement_degrees"] = agreement
+            if (agreement <= DIRECTION_AGREEMENT_DEGREES and band["inlier_share"] >= MIN_FLOOR_SHARE
+                    and band["extent_m"][1] >= MIN_FLOOR_EXTENT_M and band["normal"][1] >= math.cos(
+                        math.radians(MAX_TILT_DEGREES))):
+                normal, basis = band["normal"], "agreeing_normal_mode_and_floor_band"
     value["level_search"] = search
     splat = read_standard_3dgs_ply(splat_path) if normal is not None else None
     if normal is None or splat.sh_rest is not None:

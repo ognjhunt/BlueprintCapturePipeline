@@ -164,6 +164,10 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - The resume ran at 08:39:47Z (`20261107T083947Z-selected-handoff-7a5acd04`). **Levelling refused a fourth time**, now with the v4 profiles.
   - Along +Y and along the face-normal direction, the scene runs from 1.6 m below the cameras to 1.6 m above, with nothing below the floor. The lowest band holds 6.3% of the points, spread evenly over 20 cm.
   - That is a flat floor seen a couple of degrees off its own normal. The next PR fits the floor as its own plane, coarse to fine.
+- **`a8d1dc9` (#3445)**, requested 09:00:30Z (`20261107T090030Z-deploy-713aa1db`); resumed 09:15:21Z (`20261107T091521Z-selected-handoff-b7aca83e`). **Levelling refused a fifth time.**
+  - The floor band's own plane is tilted 1.79 degrees from +Y, in agreement with the face-normal direction (1.75).
+  - The floor is not tilted. It is uneven: its best 2 cm plane holds 1.5%, with 1.2% more than 5 cm below it.
+  - The next PR levels on those two agreeing directions and declares no floor. Locomotion infers its own floor from the collider; the next stop will show how an uneven floor reads there.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
