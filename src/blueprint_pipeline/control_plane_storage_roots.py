@@ -97,7 +97,9 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     # A paid lane's bulk beside its root-disk queue (the queue roots below keep the ledgers).
     StorageRoot("/mnt/blueprint-work/beta-policy-screening-work", "evidence_hot", "blueprint",
                 "screening attempts: sealed bundles, allocator job directories, launch intents and "
-                "reconciliation evidence; the budget ledger stays in beta-policy-screening; never evicted"),
+                "reconciliation evidence; the budget ledger stays in beta-policy-screening; never evicted, "
+                "except the bundle of an attempt that provably reached no GPU provider, whose receipts stay "
+                "(owner, 2026-11-08: beta_screening_unspent_bundle_prune)"),
     StorageRoot("/mnt/blueprint-work/rigid-robot-free-probe-work", "work", "blueprint",
                 "rigid robot-free probe attempts' sealed bundles and allocator job directories; the queue "
                 "and attempt records stay in rigid-robot-free-probes"),

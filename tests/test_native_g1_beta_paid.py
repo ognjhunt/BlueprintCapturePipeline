@@ -81,7 +81,7 @@ def test_exact_session_admission_consumes_once_and_rechecks_current_source(tmp_p
     result = dispatch(args, identity)
     assert result["provider_mutations_performed"] == 1 and len(calls) == 1
     assert sources == [(authority["beta_screening_admission"]["source"], authority["beta_screening_admission"]["site_id"])]
-    assert reservations[0]["expected_bytes"] == 4 * paid.MAX_OUTPUT_BYTES + bundle["bundle_size_bytes"]
+    assert reservations[0]["expected_bytes"] == 2 * paid.MAX_OUTPUT_BYTES + bundle["bundle_size_bytes"]
     monkeypatch.setattr(paid, "run_arena_native_control_vast", lambda **kwargs: pytest.fail("replayed allocation"))
     assert "g1_beta_paid_authority_already_consumed" in dispatch(args, identity)["blockers"]
 
@@ -284,3 +284,63 @@ def test_g1_definite_task_context_refusal_is_not_fenced_for_retry(tmp_path, monk
     jobs.run_invocation(path, allocator=lambda argv: dispatch(args, identity))
     assert not (path.parent / "provider_create_intent.json").exists()
     assert not (path.parent / "no_create_fence.json").exists()
+
+
+#: The library site's work-volume headroom above the floor on 2026-11-08, when π0.5's first
+#: G1 run was refused ``g1_beta_collection_capacity_insufficient`` under the old 4x reservation.
+HEADROOM_2026_11_08 = 17_029_824_512
+
+
+def test_collection_reserves_two_output_copies_and_the_bundle_so_todays_headroom_admits_both_rows(
+        tmp_path, monkeypatch):
+    args, _, bundle, identity, reservations, _ = setup(tmp_path, monkeypatch)
+    size = bundle["bundle_size_bytes"]
+    monkeypatch.setattr(disk, "disk_headroom", lambda **kwargs: {"available_bytes": HEADROOM_2026_11_08})
+    monkeypatch.setattr(paid, "run_arena_native_control_vast", lambda **kwargs: {"status": "blocked", "blockers": ["stub"]})
+    result = dispatch(args, identity)
+    assert "g1_beta_collection_capacity_insufficient" not in result["blockers"]
+    assert reservations[-1]["expected_bytes"] == 2 * paid.MAX_OUTPUT_BYTES + size == paid.collection_reservation_bytes(size)
+    # The old 4x reservation refused this headroom; a real ~200 MB bundle shows the same margin.
+    for bundle_bytes in (size, 201_656_701):
+        assert 4 * paid.MAX_OUTPUT_BYTES + bundle_bytes > HEADROOM_2026_11_08
+        first = HEADROOM_2026_11_08 - bundle_bytes  # the next attempt seals its own bundle first
+        assert first >= paid.collection_reservation_bytes(bundle_bytes)
+        # After a successful run keeps its ZIP and extraction (past G1 outputs were up to 2.28 GiB),
+        # the next row still fits.
+        second = first - 2 * int(2.3 * 1024**3) - bundle_bytes
+        assert second >= paid.collection_reservation_bytes(bundle_bytes)
+
+
+def test_collection_runs_inside_the_runs_own_hold_and_restores_the_environment(tmp_path, monkeypatch):
+    args, _, _, identity, _, _ = setup(tmp_path, monkeypatch)
+    monkeypatch.delenv(disk.ENCLOSING_RESERVATIONS_ENV, raising=False)
+
+    class Reservation:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def receipt(self): return {"reservation_token": "c" * 32}
+
+    monkeypatch.setattr(disk, "reserve_control_plane_disk", lambda *a, **k: Reservation())
+    seen = []
+    monkeypatch.setattr(paid, "run_arena_native_control_vast",
+                        lambda **kwargs: seen.append(disk.enclosing_reservation_tokens()) or {"status": "blocked"})
+    dispatch(args, identity)
+    assert seen == [frozenset({"c" * 32})]
+    assert disk.ENCLOSING_RESERVATIONS_ENV not in __import__("os").environ
+
+
+def test_a_forged_oversize_g1_output_still_refuses_by_name(tmp_path, monkeypatch):
+    import zipfile
+    from blueprint_pipeline import native_g1_beta_transport as transport
+
+    archive = tmp_path / "vast_provider_runtime_output.zip"
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("native_g1_beta_session_result.v1.json", "{}")
+        zipped.writestr("cells/huge.bin", b"x" * 4096)
+    monkeypatch.setattr(transport, "MAX_OUTPUT_BYTES", 1024)
+    extracted = arena._extract_provider_output(archive, tmp_path / "immutable_execution",
+                                               result_name="native_g1_beta_session_result.v1.json",
+                                               blocker_prefix="native_g1_beta")
+    assert extracted["status"] == "blocked"
+    assert "native_g1_beta_output_read_budget_exceeded" in extracted["blockers"]
+    assert not (tmp_path / "immutable_execution" / "cells/huge.bin").exists()

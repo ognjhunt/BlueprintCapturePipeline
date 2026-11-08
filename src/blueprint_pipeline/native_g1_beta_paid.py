@@ -1,7 +1,7 @@
 """Canonical paid admission for one sealed G1 beta session; no retry launcher."""
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from decimal import Decimal
 import http.client
 import json
@@ -22,6 +22,47 @@ from .paid_resource_admission import (PAID_LANE_ADMISSION_SCHEMA_VERSION, build_
     require_paid_resource_admission, PaidResourceAdmissionBlocked)
 
 RESULT_SCHEMA = "native_g1_beta_paid_session_result.v1"
+#: Output copies a G1 screening run's collection keeps on the work volume while it holds its
+#: reservation: the downloaded output ZIP (``vast_provider_run``) and its extraction
+#: (``immutable_execution``). Each is bounded by ``MAX_OUTPUT_BYTES``: the runtime stops retaining
+#: past it, and the transport refuses a ZIP or expanded members over it
+#: (``native_g1_beta_output_read_budget_exceeded``). Was 4 until 2026-11-08, when the extraction's
+#: own admission still counted this hold as another writer's (see ``_enclosing``): a 0.35 GB
+#: shortfall then refused the library site's π0.5 run before any rental.
+COLLECTION_OUTPUT_COPIES = 2
+
+
+def collection_reservation_bytes(bundle_size_bytes: int) -> int:
+    """Work-volume bytes one G1 screening run's collection may write under its hold.
+
+    The output copies above, plus the bundle once more for object-store staging. Measured on the
+    library site's paid DP attempt (2026-11-08): besides the 195 MB bundle, the attempt kept only
+    the output ZIP and its extraction; staging is emptied after upload.
+    """
+    return COLLECTION_OUTPUT_COPIES * MAX_OUTPUT_BYTES + bundle_size_bytes
+
+
+@contextmanager
+def _enclosing(token):
+    """Export this run's reservation to its own collection steps, as the embodiment lane does.
+
+    The extraction reserves its expanded bytes inside this hold. Without the export its admission
+    counted the hold as another writer's as well, so a real output (2.2 GiB for past G1 runs) was
+    refused right after a paid run (``control_plane_disk_budget``'s note on
+    public-robot-imports-20261030-05). Every other lane still sees the full hold.
+    """
+    from .control_plane_disk_budget import ENCLOSING_RESERVATIONS_ENV
+
+    previous = os.environ.get(ENCLOSING_RESERVATIONS_ENV)
+    if isinstance(token, str):
+        os.environ[ENCLOSING_RESERVATIONS_ENV] = ",".join(filter(None, (previous, token)))
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(ENCLOSING_RESERVATIONS_ENV, None)
+        else:
+            os.environ[ENCLOSING_RESERVATIONS_ENV] = previous
 
 
 def _read(path):
@@ -95,7 +136,7 @@ def dispatch_session(args, *, control_identity, control_blockers, control_rechec
             collection = {"status": "not_checked"}
             health = None
             if not blockers:
-                amount = 4 * MAX_OUTPUT_BYTES + bundle["bundle_size_bytes"]
+                amount = collection_reservation_bytes(bundle["bundle_size_bytes"])
                 ledger = os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(DEFAULT_RESERVATION_ROOT))
                 headroom = disk_headroom(target_root=job, reservation_root=ledger)
                 collection = {"status": "observed", "expected_bytes": amount, "available_bytes": headroom["available_bytes"]}
@@ -107,6 +148,8 @@ def dispatch_session(args, *, control_identity, control_blockers, control_rechec
                     stack.enter_context(reservation)
                     health = stack.enter_context(keep_reservation_live(reservation))
                     collection.update(status="reserved", reservation=reservation.receipt())
+                    # The download and the extraction run in this process, inside this hold.
+                    stack.enter_context(_enclosing(reservation.receipt().get("reservation_token")))
             binding = {"program_id": "blueprint_beta_policy_screening", "probe_kind": PROBE_KIND,
                 "provider": "vast", "orchestrator_source_commit": commit, "release_authority": release,
                 "authority_digest": authority["authority_digest"] if authority else None,

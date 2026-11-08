@@ -664,6 +664,17 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - `internal-team-evaluation-diagnostic-20261015`: 11 GB
   - **Owner's call:** what to reclaim. No sanctioned door operation deletes these, and nothing was deleted. A smaller collection reservation would be a capacity decision too: real outputs so far were 10 KB–40 MB against the 16 GiB bound.
   - Both rows are blocked unspent and are planned again after the next deploy. G1 spend on the site is still $2.21 of $30.
+- **Owner decision, 11-08 about 18:50Z** (12:50 PM CST), relayed by the library-aisle session, verbatim: "yes prune".
+  - **The question put to them:** delete the bundle file only from attempts that provably never reached a GPU provider (refused before spawn, no qualifying offer, a preflight refusal). Keep every receipt, the bundle's sha256 included. Attempts that ran keep their bundle as evidence.
+  - It amends the "never evicted" note on `beta-policy-screening-work` for those attempts only.
+  - **Change (this PR):** `beta_screening_unspent_bundle_prune` runs once per screening worker tick, before any launch, and writes a `bundle_pruned.v1.json` receipt.
+  - **Measured on the host:** today's three $0 bundles are 195–202 MB each, about 0.59 GB together, not the 1 GB first estimated. The 18.4 GiB under `attempts/` is spent runs' evidence, which stays.
+  - **Effect:** the prune clears the 0.35 GB shortfall for DP's next attempt, but only just. A durable fix needs work-volume space or an audit of the collection reservation's 4× multiplier; both are owner calls.
+  - The approved 10-15 diagnostic folder (11 GB) is on `/`, while the G1 preflight measures `/mnt/blueprint-work`. Deleting it helps the root disk, not G1.
+- **G1 collection reservation audit, 11-08** (asked for by the library-aisle session; capacity accounting, not money):
+  - **Writes during collection:** the run's hold covers the downloaded output ZIP (`vast_provider_run/`) and its extraction (`immutable_execution/`). Both are bounded by the 4 GiB session limit: the runtime stops retaining past it, and the transport refuses an oversize ZIP by name. Staging is emptied after upload. Measured on DP attempt 4: nothing else large stayed.
+  - **Defect found:** the extraction takes its own reservation, but the G1 lane never exported its hold as "enclosing" (the embodiment lane does). So the extraction counted the run's hold as another writer's too, and a real output (2.2 GiB for past G1 runs) would have been refused right after a paid run.
+  - **Fix:** the lane exports its hold to its collection, and reserves 2 × the session bound + the bundle (about 8.8 GB) instead of 4 × + bundle (17.4 GB). Today's 17.03 GB admits DP and, after a full 2.3 GiB run is kept, π0.5. Both refusals stay.
 
 ## Operating notes (2026-11-02)
 
