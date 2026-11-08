@@ -292,7 +292,8 @@ def test_chairs_are_measured_without_asking_the_site_then_moved_only_on_the_owne
         raise ValueError("website_preparation_spend_receipt_invalid")
 
     monkeypatch.setattr(measurement, "run_measurement", functools.partial(
-        measurement.run_measurement, analyze=refused, segment=paid.segment, geometry=lambda *_: {"frames": []}))
+        measurement.run_measurement, analyze=refused, segment=paid.segment, geometry=lambda *_: {"frames": []},
+        frames=lambda **_: []))
     held = worker._measure_furniture(request, due["binding_digest"])
     assert held["status"] == "held"
     assert held["hold"] == "team_scene_robot_access_measurement_held:website_preparation_spend_receipt_invalid"
@@ -305,7 +306,7 @@ def test_chairs_are_measured_without_asking_the_site_then_moved_only_on_the_owne
     # preparation with what each call reserved.
     monkeypatch.setattr(measurement, "run_measurement", functools.partial(
         measurement.run_measurement.func, analyze=paid.analyze, segment=paid.segment,
-        geometry=lambda *_: {"frames": []}))
+        geometry=lambda *_: {"frames": []}, frames=lambda **_: []))
     measured = worker._measure_furniture(request, due["binding_digest"])
     assert measured["status"] == "measured" and measured["reserved_cost_usd"] == 0.22
     assert paid.calls == [("analysis", 0.04), ("segmentation", 0.36, ["wooden chair"])]
@@ -375,12 +376,82 @@ def test_no_proposal_names_what_the_analysis_does_not_call_movable_furniture(tmp
     paid = PaidCalls([{**target, "target_class": "fixed_clutter"} for _, target in CHAIRS])
     sidecar = measurement.run_measurement(scope, binding_digest=offer["binding_digest"],
                                           revision_digest=inputs["revision"]["revision_digest"],
-                                          analyze=paid.analyze, segment=paid.segment)
+                                          analyze=paid.analyze, segment=paid.segment,
+                                          geometry=lambda *_: {"frames": []}, frames=lambda **_: [])
     assert paid.calls == [("analysis", 0.04)] and sidecar["movable_furniture"] is None
     record = _compile(tmp_path, "fixed", inputs, scope)
     assert record["robot_access_removal"]["status"] == "not_proposed"
     assert record["robot_access_removal"]["reason"] == "no_named_movable_furniture"
     assert "movable_obstacle_counterfactual" not in record["robot_station"]["search"]
+
+
+def test_a_republished_atlas_result_refuses_the_measurement_before_anything_is_bought(tmp_path, monkeypatch) -> None:
+    # A rigid job's Atlas result can be republished after its preparation (the one-time splat rebuild,
+    # ``atlas_splat_rebuild``) before the job is derived again. The geometry reopened is then not the one the
+    # preparation is bound to: the measurement refuses ``geometry_changed`` before the analysis or SAM is
+    # called, so the refusal costs nothing, and the worker holds it under the same code as before.
+    import functools
+
+    from blueprint_pipeline import website_atlas_scene_source as atlas_source
+
+    inputs = single._inputs(tmp_path, monkeypatch)
+    scope = inputs["owner_success_confirmation_scope"]
+    capture = renewed_lineage(tmp_path, scope, monkeypatch)
+    revision = inputs["revision"]["revision_digest"]
+    offer = measurement.measurement_offer(scope, revision_digest=revision)
+    assert offer["status"] == "available"
+    bound = offer["binding"]["source_geometry_digest"]
+    sidecar = capture / "pipeline" / "robot_access" / offer["binding"]["lineage"]["preparation_digest"][7:23] / (
+        measurement.SIDECAR_FILENAME)
+    paid = PaidCalls([target for _, target in CHAIRS])
+    decoded: list[str] = []
+
+    def frames(**kwargs: Any) -> list[dict[str, Any]]:
+        assert paid.calls == []  # the source frames are decoded and checked before anything is bought
+        decoded.append(kwargs["video_path"])
+        return [{"source_frame_id": "decoded-000000000", "decoded_pts_seconds": 0.0}]
+
+    atlas_result: dict[str, Any] = {"status": "ready", "source_geometry": {"digest": "sha256:" + "7" * 64,
+                                                                           "frames": []}}
+    monkeypatch.setattr(atlas_source, "atlas_scene_source", lambda **_: atlas_result)
+    measure = functools.partial(measurement.run_measurement, scope, binding_digest=offer["binding_digest"],
+                                revision_digest=revision, analyze=paid.analyze, segment=paid.segment, frames=frames)
+
+    # 1. The republished result's geometry has another digest: refused, and neither paid call is made.
+    with pytest.raises(ValueError, match="^robot_access_measurement_geometry_changed$"):
+        measure()
+    assert paid.calls == [] and decoded == [] and not sidecar.exists()
+    monkeypatch.setattr(worker, "owner_success_confirmation_scope", lambda request: (scope, None))
+    monkeypatch.setattr(measurement, "run_measurement", functools.partial(
+        measurement.run_measurement, analyze=paid.analyze, segment=paid.segment, frames=frames))
+    held = worker._measure_furniture({"scene_revision_digest": revision}, offer["binding_digest"])
+    assert held["status"] == "held" and held["cause"] == "refusal"
+    assert held["hold"] == "team_scene_robot_access_measurement_held:robot_access_measurement_geometry_changed"
+    assert held["binding_digest"] == offer["binding_digest"]
+    assert paid.calls == [] and decoded == [] and not sidecar.exists()
+
+    # 2. An Atlas job that is not ready is refused the same way, before any call.
+    atlas_result = {"status": "pending", "reason": "website_atlas_job_processing"}
+    with pytest.raises(ValueError, match="^robot_access_measurement_geometry_unavailable$"):
+        measure()
+    assert paid.calls == [] and decoded == []
+
+    # 3. The bound geometry, with a frame the decoded source video does not hold at its time: refused after
+    #    the free decode and before any paid call, not after both.
+    atlas_result = {"status": "ready", "source_geometry": {
+        "digest": bound, "frames": [{"frame_id": "decoded-000000000", "timestamp_seconds": 0.5}]}}
+    with pytest.raises(ValueError, match="^robot_access_measurement_geometry_frame_mapping_invalid$"):
+        measure()
+    assert paid.calls == [] and len(decoded) == 1 and not sidecar.exists()
+
+    # 4. The bound geometry, each frame decoded at its time: the measurement buys what it always did.
+    atlas_result = {"status": "ready", "source_geometry": {
+        "digest": bound, "frames": [{"frame_id": "decoded-000000000", "timestamp_seconds": 0.0}]}}
+    monkeypatch.setattr(measurement, "lift", paid.lift)
+    written = measure()
+    assert paid.calls == [("analysis", 0.04), ("segmentation", 0.36, ["wooden chair"])]
+    assert written["sidecar_digest"] == json.loads(sidecar.read_text())["sidecar_digest"]
+    assert len(written["movable_furniture"]["items"]) == len(CHAIRS)
 
 
 def test_only_kept_chairs_and_stools_are_named_and_the_support_is_protected_by_height() -> None:
