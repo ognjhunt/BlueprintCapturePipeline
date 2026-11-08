@@ -735,7 +735,20 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - The packet's spawn check had found no collision near the spawn (`g1_spawn_background_empty_near_robot`, both soles with no floor, hence `g1_spawn_foot_unsupported`).
     - The derivation disclosed `g1_pelvis_0.79m_above_compiled_floor_profile_height_not_measured_from_this_usd`.
   - **Fix (this PR):** a navigation score with root drift past 3 m is void (`g1_robot_fell_through_scene`). The screening harness revision rises to 2, so G1 results made before are not counted and DP is planned once more.
-  - **Root cause (open):** the levelled floor in the collision copy (library session, 11-07 14:04Z) isn't under the spawn at world (1.04, 0.16). Either the collision copy lacks the appearance layer's 0.864 scale and Y-up→Z-up swap, or the spawn sits outside the 3.42 × 2.75 m floor patch. The library session's levelling receipt decides which.
+  - **Root cause (narrowed, open):**
+    - The library session's levelling records show the collision copy already normalized to Z-up metres, with world bounds that cover the spawn, and the spawn on the walked path.
+    - The packet's per-offset spawn reports find collision 15 cm left and right (1,028 and 2,507 samples) but no floor under either sole at any of the four stances. So the scene is roughly in place and the levelled floor patch is not under the robot: either it sits elsewhere, or it lacks an enabled collision API.
+    - The levelling stores only the patch's extent, not its centre.
+  - **Guard and diagnostic (this PR):**
+    - A start offset with no floor under either foot is not funded (`g1_spawn_floor_absent`), and a row with none left is refused before any rental.
+    - Planning then writes `native_g1_spawn_background_diagnostic.v1.json` once beside the packet: per mesh by index, the collision flag, face count, transform scale and world bounds; faces within 1 and 2 m; their height histogram; and faces over the spawn with their height range. Counts only, never mesh bytes.
+    - The patch is the mesh with about 336 faces, so the next planning pass on this site shows which case it is.
+    - Review fix: the plan's descriptor check had accepted only `g1_spawn_overlap` as a dropped-offset reason. It now also accepts `g1_spawn_floor_absent`; both reasons are imported from the spawn check.
+- **π0.5's first G1 run, 11-08 21:35Z: refused at spend admission, $0.**
+  - Attempt `screen-dffb7257…` on 985c482. The money gate refused with `spend_admission_lock_required_provider_billing_missing:vast`: no provider call, no allocation, reservation released.
+  - The gap was temporary. At 22:13Z the lock's billing export covers Vast again ($475.29) and admission is open. The same refusal hit DP at 02:27Z, so it recurs.
+  - The row stays blocked, unspent, and is planned again after the next deploy. With the floor guard live, this navigation row will be refused at planning (`g1_spawn_floor_absent`) and the diagnostic written, which is the next step anyway.
+  - Retrying a `billing_missing` refusal automatically is a money-policy change; it stays the owner's call.
 
 ## Operating notes (2026-11-02)
 

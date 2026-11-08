@@ -283,14 +283,24 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
     # Money: no G1 run starts with its body measured inside the room, as no arm run starts from rest
     # overlap (scene_physics_preflight.require_scene_physics_admission). Unmeasured is only a flag
     # (setup_quality_flags).
-    from .native_g1_spawn_clearance import OVERLAP_REASON, spawn_clearance_status
+    # Money too: no G1 run starts with no collision floor under either foot (``FLOOR_ABSENT_REASON``); it
+    # falls through the scene and measures nothing. The packet's collision facts are kept once, as counts.
+    from .native_g1_spawn_clearance import (FLOOR_ABSENT_REASON, OVERLAP_REASON, ensure_background_diagnostic,
+                                            packet_floor_absent, spawn_clearance_status)
     if navigation:
-        # A start offset that overlaps drops only its own cell (``navigation_start_offsets``); with every one
-        # overlapping there is no cell left to fund.
-        if len(navigation_start_offsets(packet_root, g1["plan_digest"])[0]) == len(NAVIGATION_START_OFFSETS):
-            raise ValueError(OVERLAP_REASON)
+        # A start offset that overlaps, or has no floor, drops only its own cell (``navigation_start_offsets``);
+        # with every one dropped there is no cell left to fund.
+        dropped = navigation_start_offsets(packet_root, g1["plan_digest"])[0]
+        if FLOOR_ABSENT_REASON in dropped.values():
+            ensure_background_diagnostic(packet_root, g1["plan_digest"])
+        if len(dropped) == len(NAVIGATION_START_OFFSETS):
+            raise ValueError(FLOOR_ABSENT_REASON if set(dropped.values()) == {FLOOR_ABSENT_REASON}
+                             else OVERLAP_REASON)
     elif spawn_clearance_status(packet_root, g1["plan_digest"]) == "overlap":
         raise ValueError(OVERLAP_REASON)
+    elif packet_floor_absent(packet_root, g1["plan_digest"]):
+        ensure_background_diagnostic(packet_root, g1["plan_digest"])
+        raise ValueError(FLOOR_ABSENT_REASON)
     verify_g1_publisher_source(_bound_path(records["publisher_source"]).parent)
     runtime = verify_native_task_runtime_source_packet(_bound_path(records["runtime_source"]))
     if runtime.get("runtime_profile") != "unitree_g1" or runtime.get("redistribution_permitted") is not True:
@@ -323,8 +333,8 @@ def navigation_start_offsets(packet_dir: Path, plan_digest: str) -> tuple[dict[s
     that the packet's own report, of the start itself, still counts.
     """
     from .native_g1_spawn_clearance import (
-        OVERLAP_REASON, UNMEASURED_REASON, UNSUPPORTED_FOOT_REASON, spawn_clearance_status, spawn_setup_flags,
-        start_offset_reports, unsupported_feet)
+        FLOOR_ABSENT_REASON, OVERLAP_REASON, UNMEASURED_REASON, UNSUPPORTED_FOOT_REASON, floor_absent,
+        packet_floor_absent, spawn_clearance_status, spawn_setup_flags, start_offset_reports, unsupported_feet)
     rows = {row["offset_id"]: row for row in start_offset_reports(packet_dir, plan_digest) or []}
     dropped, flags = {}, set()
     for offset_id, _, _ in NAVIGATION_START_OFFSETS:
@@ -337,11 +347,12 @@ def navigation_start_offsets(packet_dir: Path, plan_digest: str) -> tuple[dict[s
             dropped[offset_id] = OVERLAP_REASON
         elif status == "unmeasured":
             flags.add(UNMEASURED_REASON)
+        elif floor_absent(row) if row is not None else packet_floor_absent(packet_dir, plan_digest):
+            dropped[offset_id] = FLOOR_ABSENT_REASON
         elif (unsupported_feet(row) if row is not None
               else UNSUPPORTED_FOOT_REASON in spawn_setup_flags(packet_dir, plan_digest)):
             flags.add(UNSUPPORTED_FOOT_REASON)
-    if dropped:
-        flags.add(OVERLAP_REASON)
+    flags.update(dropped.values())
     return dropped, sorted(flags)
 
 
