@@ -45,6 +45,22 @@ def test_native_request_retains_exact_returned_grid_and_linear_depth(tmp_path):
     assert "refine" not in request  # Only the documented, refined-default OpenAPI contract.
 
 
+def test_posed_frames_follow_the_documented_2_to_512_and_pose_capacity_stays_inside_it(tmp_path):
+    from blueprint_pipeline import website_atlas_pose as pose_api
+    schema = json.loads((Path(tasks.__file__).parent / "_atlas_schemas/posedImages2Splats.json").read_text())
+    posed = schema["components"]["schemas"]["PosedImages2SplatsRequest"]["properties"]["posedFrames"]
+    assert (posed["minItems"], posed["maxItems"]) == (2, 512)
+    request, _, _ = native.prepare_splat_request(frames=source_frames(), root=tmp_path)
+    tasks.validate_task_request("posedImages2Splats", {"posedFrames": request["posedFrames"] * 256})
+    for count in (1, 513):
+        frames = (request["posedFrames"] * 257)[:count]
+        with pytest.raises(ValueError, match="request_schema_invalid"):
+            tasks.validate_task_request("posedImages2Splats", {"posedFrames": frames})
+    # Jobs without a refined splat keep 64; a splat job's target leaves room for task-source views.
+    assert pose_api.MAX_POSE_INPUT_IMAGES == 64
+    assert pose_api.SPLAT_FRAME_TARGET == 96 < pose_api.SPLAT_POSE_INPUT_CAPACITY == 128 < 512
+
+
 def test_native_request_refuses_misaligned_depth_before_runner(tmp_path):
     frames = source_frames()
     frames[0]["depth"] = frames[0]["depth"][:-1]

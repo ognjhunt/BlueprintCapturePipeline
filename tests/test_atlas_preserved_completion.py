@@ -190,3 +190,44 @@ def test_an_empty_recovery_must_say_so_in_its_own_sealed_receipt(tmp_path, monke
     monkeypatch.setattr(atlas_scene_recovery, 'recover_reviewed_geometry', recover)
     with pytest.raises(ValueError, match='atlas_preserved_completion_rejection_not_bound'):
         worker.run_preserved_completion(**args)
+
+
+def test_time_spread_splat_views_inform_geometry_but_not_the_completion_context_or_registration(
+        tmp_path, monkeypatch):
+    """The served model's rollout bounds generation context (atlas_scene_chisel.target_batches):
+    a 96-frame splat selection must not become 96 context photographs."""
+    args, source, baseline, _ = fixture(tmp_path, monkeypatch)
+    spread = frame(camera((.2, 0, 0)), plane_depth(camera((.2, 0, 0))), 'spread')
+    seen = {}
+    complete, register = atlas_scene_completion.complete_scene, atlas_scene_recovery.register_generated_completion
+    monkeypatch.setattr(atlas_scene_completion, 'complete_scene',
+                        lambda **kw: seen.update(complete=kw) or complete(**kw))
+    monkeypatch.setattr(atlas_scene_recovery, 'register_generated_completion',
+                        lambda **kw: seen.update(register=kw) or register(**kw))
+    args = {**args, 'frames': [source, spread], 'reference_frame_ids': ['source']}
+    result = worker.run_preserved_completion(**args)
+    assert [f['frame_id'] for f in seen['complete']['frames']] == ['source', 'spread']
+    assert [f['frame_id'] for f in seen['complete']['reference_frames']] == ['source']
+    assert [f['frame_id'] for f in seen['register']['frames']] == ['source']
+    report, splat = result['admission'], result['splat_manifest']
+    assert report['source_frame_ids'] == ['source', 'spread'] and report['registration_frame_ids'] == ['source']
+    assert {row['frame_id'] for row in splat['frames']} == {'source', 'spread', 'registered-addition'}
+    validate = dict(job_root=tmp_path, source_pose_digest=args['pose']['digest'], source_video_digest='capture',
+                    task_context_digest='task', splat=splat)
+    worker.validate_preserved_completion(report=report, **validate)
+    forged = sealed({key: value for key, value in report.items() if key != 'digest'}
+                    | {'registration_frame_ids': ['source', 'elsewhere']})
+    with pytest.raises(ValueError, match='not_admitted'):
+        worker.validate_preserved_completion(report=forged, **validate)
+    with pytest.raises(ValueError, match='reference_frames_invalid'):
+        worker.run_preserved_completion(**{**args, 'reference_frame_ids': ['source', 'missing']})
+
+
+def test_without_a_splat_fill_completion_keeps_every_frame_as_context(tmp_path, monkeypatch):
+    args, source, _, _ = fixture(tmp_path, monkeypatch)
+    seen = {}
+    complete = atlas_scene_completion.complete_scene
+    monkeypatch.setattr(atlas_scene_completion, 'complete_scene',
+                        lambda **kw: seen.update(kw) or complete(**kw))
+    report = worker.run_preserved_completion(**args)['admission']
+    assert seen['reference_frames'] is seen['frames'] and 'registration_frame_ids' not in report

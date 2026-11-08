@@ -302,15 +302,28 @@ def _job_edit_scope(output_root: Path, requested: str | None, *, default="requir
 
 
 def _splat_input_options(pose_root, *, review, policy, edit_scope):
-    """Keep historical inputs immutable; new refined removal jobs use denser real footage."""
-    from .atlas_video_inputs import takes_reviewed_background
-    path = pose_root / "atlas_view_selection.json"
-    if path.is_file():
-        dense = json.loads(path.read_text()).get("frame_policy", {}).get("minimum_source_frames") == 16
+    """Keep historical inputs immutable; new refined-splat jobs pose denser real footage.
+
+    A removal job that cleans every selected view keeps 16 to 30 of them: each is
+    also an edit. A preserved scene's refined splat trains on its posed selection,
+    so that selection fills toward ``SPLAT_FRAME_TARGET`` sharp views spread in
+    time. A retained selection (or its inputs, before the plan is written) keeps
+    the profile it recorded.
+    """
+    from .atlas_video_inputs import GEOMETRY_INPUTS_FILE, takes_reviewed_background
+    from .website_atlas_pose import SPLAT_FRAME_TARGET
+    plan, inputs = pose_root / "atlas_view_selection.json", pose_root / GEOMETRY_INPUTS_FILE
+    if plan.is_file() or inputs.is_file():
+        recorded = (json.loads(plan.read_text()).get("frame_policy", {}) if plan.is_file()
+                    else json.loads(inputs.read_text()).get("binding", {}))
+        dense, target = recorded.get("minimum_source_frames") == 16, recorded.get("splat_frame_target")
     else:
-        dense = ("refined_splat_cost_usd" in policy and edit_scope == "all_selected_views"
-                 and takes_reviewed_background(review))
-    return {"minimum_frames": 16, "maximum_frames": 30} if dense else {}
+        splat = "refined_splat_cost_usd" in policy
+        dense = splat and edit_scope == "all_selected_views" and takes_reviewed_background(review)
+        target = SPLAT_FRAME_TARGET if splat and review.get("subject_origin") in PRESERVED_SCENE_ORIGINS else None
+    if dense:
+        return {"minimum_frames": 16, "maximum_frames": 30}
+    return {"splat_frame_target": target} if target else {}
 
 
 REFINED_APPEARANCE, DRAFT_APPEARANCE = "atlas_refined_splat", "depth_fused_draft_fallback"
@@ -427,7 +440,14 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         else:
             def completion_checkpoint(stage, **_details):
                 check(stage)
-            completion = run_sponsored_website_atlas_automation(preserved_capture=True,
+            # Time-spread views add splat density, not viewpoints: completion's
+            # photographs, generation context and registration keep the rest.
+            plan = pose_root / "atlas_view_selection.json"
+            spread = ({row["frame_id"] for row in json.loads(plan.read_text()).get("diagnostics", [])
+                       if row.get("decision") == "time_spread_view"} if plan.is_file() else set())
+            reference = ({"reference_frame_ids": [f["frame_id"] for f in frames if f["frame_id"] not in spread]}
+                         if spread else {})
+            completion = run_sponsored_website_atlas_automation(preserved_capture=True, **reference,
                 pose_root=source_root, pose=pose, frames=frames, review=review,
                 root=output_root / 'preserved_completion', job_root=output_root, context=task_context,
                 configuration=_current_configuration(task_context, source_digest, configuration), splat_root=splat_root,

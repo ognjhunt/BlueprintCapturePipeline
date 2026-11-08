@@ -73,7 +73,9 @@ def validate_preserved_completion(*, report, job_root, source_pose_digest,
             or registration.get('source_geometry_modified') is not False
             or registration.get('native_outputs_modified') is not False
             or registration.get('depth_basis') != 'joint_pose_depth_registered_to_retained_source_world'
-            or set(registration.get('source_frame_ids', [])) != set(report['source_frame_ids'])
+            or set(registration.get('source_frame_ids', []))
+            != set(report.get('registration_frame_ids', report['source_frame_ids']))
+            or not set(report.get('registration_frame_ids', [])) <= set(report['source_frame_ids'])
             or recovery.get('source_geometry_modified') is not False
             or type(recovery.get('known_pixels_changed')) is not int or recovery['known_pixels_changed'] != 0
             or type(recovery.get('exportable_samples')) is not int or recovery['exportable_samples'] <= 0
@@ -92,12 +94,25 @@ def validate_preserved_completion(*, report, job_root, source_pose_digest,
 
 def run_preserved_completion(*, pose_root, pose, frames, review, root, job_root, context,
                              configuration, splat_root, source_survey_path, task_runner,
-                             planner_runner, pose_runner, release_blockers, max_polls, checkpoint=None):
-    """Survey source first, complete named gaps, register native views, then fuse real additions."""
+                             planner_runner, pose_runner, release_blockers, max_polls, checkpoint=None,
+                             reference_frame_ids=None):
+    """Survey source first, complete named gaps, register native views, then fuse real additions.
+
+    ``reference_frame_ids`` names the selection's viewpoints when a refined-splat
+    selection was filled with near-duplicate views (``time_spread_view``). The gap
+    survey's photographs, the generation context and the joint registration keep
+    those views, so they fit the served model's rollout and cost what they did
+    before the fill; every frame still informs geometry and the export.
+    """
     from .atlas_scene_completion import complete_scene
     from .atlas_scene_recovery import register_generated_completion, recover_reviewed_geometry, _frame_binding
     from .atlas_depth_splat import surface_samples, write_depth_splat
 
+    reference = frames
+    if reference_frame_ids is not None:
+        reference = [frame for frame in frames if frame['frame_id'] in set(reference_frame_ids)]
+        if not reference or len(reference) != len(set(reference_frame_ids)):
+            raise ValueError('atlas_preserved_completion_reference_frames_invalid')
     root, job_root, splat_root = Path(root), Path(job_root), Path(splat_root)
     baseline = json.loads((splat_root / 'atlas_depth_splat_manifest.json').read_text())
     if (baseline.get('digest') != canonical_digest(baseline, digest_field='digest')
@@ -108,7 +123,7 @@ def run_preserved_completion(*, pose_root, pose, frames, review, root, job_root,
     generated, completion = complete_scene(pose_root=pose_root, pose=pose, frames=frames, review=review,
         root=root / 'completion', context=context, configuration=configuration, task_runner=task_runner,
         planner_runner=planner_runner, release_blockers=release_blockers, max_polls=max_polls,
-        checkpoint=checkpoint, splat_root=splat_root, reference_frames=frames,
+        checkpoint=checkpoint, splat_root=splat_root, reference_frames=reference,
         source_survey_path=source_survey_path, context_basis='preserved_capture')
     if generated is None:
         return {**completion, 'stage': completion.get('stage', 'preserved_scene_completion'),
@@ -129,7 +144,7 @@ def run_preserved_completion(*, pose_root, pose, frames, review, root, job_root,
                 'splat_root': str(splat_root), 'completion': completion, 'generated_roots': []}
     if completion.get('review', {}).get('status') != 'passed':
         raise ValueError('atlas_preserved_completion_review_not_bound')
-    registered, registration = register_generated_completion(frames=frames, completion=completion,
+    registered, registration = register_generated_completion(frames=reference, completion=completion,
         root=root / 'joint-registration', pose=pose, context=context, configuration=configuration,
         pose_runner=pose_runner, max_polls=max_polls, checkpoint=checkpoint)
     if registered is None:
@@ -180,6 +195,7 @@ def run_preserved_completion(*, pose_root, pose, frames, review, root, job_root,
         'task_context_digest': context['context_digest'], 'source_splat_manifest_digest': baseline['digest'],
         'splat_manifest_digest': manifest['digest'], 'geometry_provenance': provenance,
         'visual_review_digest': visual, 'source_frame_ids': [f['frame_id'] for f in frames],
+        **({'registration_frame_ids': [f['frame_id'] for f in reference]} if reference is not frames else {}),
         'generated_frame_ids': [f['frame_id'] for f in additions], 'completion': completion,
         'generated_view_registration': registration, 'geometry_recovery': recovery,
         'source_geometry_modified': False, 'known_pixels_changed': 0, 'assets': assets,

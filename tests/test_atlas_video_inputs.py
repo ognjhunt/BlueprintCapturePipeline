@@ -411,3 +411,138 @@ def test_dense_splat_inputs_are_private_digest_bound_and_reused_without_reselect
     assert video.prepare_video_inputs(**options) == first
     with pytest.raises(ValueError, match="retained_video_inputs_invalid"):
         video.prepare_video_inputs(**{**options, "minimum_frames": 0})
+
+
+def test_splat_fill_takes_the_sharpest_view_of_each_empty_time_window_without_the_displacement_rule(monkeypatch):
+    rows = [{**row, "source_image_digest": str(i), "sharpness": 100 if i % 10 == 7 else 50}
+            for i, row in enumerate(_timeline(100))]
+    monkeypatch.setattr(video, "_overlap", lambda *_: (100, 1))  # every candidate barely moved
+    kept, added = video.add_time_spread_views(frames=rows, features=list(range(100)), selected=[0, 99],
+                                              frame_target=10)
+    # Ten equal windows; the kept ends hold the first and last, each other window gives its sharpest view.
+    assert kept == [0, 17, 27, 37, 47, 57, 67, 77, 87, 99]
+    assert [row["decision"] for row in added] == ["time_spread_view"] * 8
+
+
+def test_splat_fill_keeps_the_sharpness_clipping_overlap_and_unique_image_gates(monkeypatch):
+    rows = [{**row, "source_image_digest": str(i)} for i, row in enumerate(_timeline(20))]
+    rows[3]["sharpness"] = 1  # blurred
+    rows[7]["clipped_fraction"] = .9  # blown out
+    rows[15]["source_image_digest"] = rows[0]["source_image_digest"]  # a repeated decoded image
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (2, 40) if 11 in (a, b) else (100, 1))  # 11 matches nothing
+    kept, added = video.add_time_spread_views(frames=rows, features=list(range(20)), selected=[0, 19],
+                                              frame_target=20)
+    assert kept == [i for i in range(20) if i not in {3, 7, 11, 15}]  # short of the target, never padded
+    assert len(added) == 14
+    for policy in ({"minimum_sharpness": 60}, {"maximum_clipped_fraction": -1}, {"minimum_overlap_inliers": 101}):
+        assert video.add_time_spread_views(frames=rows, features=list(range(20)), selected=[0, 19],
+                                           frame_target=20, policy=policy) == ([0, 19], [])
+
+
+def _forward_motion_job(tmp_path, *, count=152, budget=10.0, origin="no_manipulated_subject"):
+    """A 0.1 s survey of a forward dolly: features move 1.5 px a frame and overlap 30 frames ahead."""
+    from PIL import Image
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    root = tmp_path / "survey"
+    root.mkdir(exist_ok=True)
+    rows = []
+    for i in range(count):
+        path = root / f"{i}.png"
+        Image.new("RGB", (32, 24), (i, 90, 160)).save(path)
+        rows.append({"frame_id": str(i), "timestamp_seconds": round(i * .1, 3), "source_image_path": str(path),
+                     "source_image_digest": _sha256_file(path), "sharpness": 80, "clipped_fraction": .01})
+    survey = {"schema_version": video.SURVEY_SCHEMA, "heldout_pixels_included": False, "frames": rows,
+              "display_rotation_degrees": 0, "source_video_digest": "sha256:" + "a" * 64,
+              "sample_count": count, "heldout_frame_count": 0}
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    path = root / "atlas_video_survey.json"
+    path.write_text(json.dumps(survey))
+    review = {"schema_version": video.REVIEW_SCHEMA, "survey_digest": survey["digest"], "moving_people_excluded": True,
+              "same_scene_state": True, "reviewed_by": "test", "scene_state": "unchanged",
+              "subject_origin": origin, "static_intervals_seconds": [[0, count * .1]], "anchor_frame_id": "0",
+              "coverage_requirements": [
+                  {"role": "task_region", "label": "aisle", "required_frame_ids": ["0"]},
+                  {"role": "surrounding_scene", "label": "end shelf", "required_frame_ids": [str(count - 1)]}],
+              "selection_budget": {"maximum_pose_cost_usd": budget, "input_cost_usd": .01,
+                                   "rate_card_reference": "test", "reviewed_by": "test",
+                                   "reviewed_on": datetime.now(timezone.utc).date().isoformat()}}
+    return path, review
+
+
+def _forward_motion(monkeypatch):
+    from blueprint_pipeline import atlas_privacy_screen as screen
+    monkeypatch.setattr(video, "_features", lambda row, _: int(row["frame_id"]))
+    monkeypatch.setattr(video, "_overlap",
+                        lambda a, b: (200, 1.5 * abs(a - b)) if abs(a - b) <= 30 else (0, 0.0))
+    monkeypatch.setattr(screen, "blur_faces", lambda image: (image, []))
+
+
+def test_a_forward_motion_splat_selection_reaches_its_target_instead_of_stalling(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_atlas_pose import SPLAT_FRAME_TARGET, SPLAT_POSE_INPUT_CAPACITY
+    path, review = _forward_motion_job(tmp_path)
+    _forward_motion(monkeypatch)
+    plain = video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "plain")
+    # The near-duplicate rule alone keeps one view per 12 px of motion: the capture-5b067498 stall.
+    assert len(plain["frames"]) < 32
+    options = dict(survey_path=path, review=review, output_root=tmp_path / "splat",
+                   splat_frame_target=SPLAT_FRAME_TARGET)
+    first = video.prepare_video_inputs(**options)
+    plan = json.loads((tmp_path / "splat/atlas_view_selection.json").read_text())
+    policy = plan["frame_policy"]
+    assert len(first["frames"]) == plan["selected_frame_count"] == SPLAT_FRAME_TARGET == 96
+    assert policy == {"basis": "accuracy_first", "provider_input_capacity": SPLAT_POSE_INPUT_CAPACITY,
+                      "frame_target": 96, "connected_cover_frames": policy["connected_cover_frames"],
+                      "distinct_views_added": len(plain["frames"]) - policy["connected_cover_frames"],
+                      "splat_frame_target": 96, "time_spread_views_added": 96 - len(plain["frames"]),
+                      "splat_frame_target_met": True}
+    # The cover and distinct views stay; the fill spreads the rest evenly over the interval.
+    assert {row["frame_id"] for row in plain["frames"]} <= {row["frame_id"] for row in first["frames"]}
+    times = sorted(row["timestamp_seconds"] for row in plan["frames"])
+    assert times[0] == 0 and times[-1] == 15.1
+    assert max(b - a for a, b in zip(times, times[1:])) <= 2 * 15.1 / 96  # never more than two windows apart
+    decisions = [row["decision"] for row in plan["diagnostics"]]
+    assert decisions.count("time_spread_view") == policy["time_spread_views_added"]
+    spread = {row["frame_id"] for row in plan["diagnostics"] if row["decision"] == "time_spread_view"}
+    assert len([row for row in plan["diagnostics"] if row["frame_id"] in spread]) == len(spread)
+    inputs = json.loads((tmp_path / "splat" / video.GEOMETRY_INPUTS_FILE).read_text())
+    assert inputs["binding"]["splat_frame_target"] == 96 and inputs["binding"]["maximum_frames"] == 96
+    # A paid-stage wait reuses the retained handoff; a different profile never rewrites it.
+    monkeypatch.setattr(video, "_features", lambda *_: pytest.fail("retained inputs recomputed"))
+    assert video.prepare_video_inputs(**options) == first
+    for changed in ({"splat_frame_target": 0}, {"splat_frame_target": 64}):
+        with pytest.raises(ValueError, match="retained_video_inputs_invalid"):
+            video.prepare_video_inputs(**{**options, **changed})
+    for invalid in (1, SPLAT_POSE_INPUT_CAPACITY + 1, True):
+        with pytest.raises(ValueError, match="atlas_selection_limit_invalid"):
+            video.prepare_video_inputs(**{**options, "output_root": tmp_path / "invalid",
+                                          "splat_frame_target": invalid})
+
+
+def test_dollars_refuse_a_splat_selection_they_cannot_pose_and_never_shrink_it(tmp_path, monkeypatch):
+    path, review = _forward_motion_job(tmp_path, budget=.5)  # pays for 50 frames, not 96
+    _forward_motion(monkeypatch)
+    with pytest.raises(ValueError, match="budget_below_accurate_inputs"):
+        video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "pose",
+                                   splat_frame_target=96)
+    assert not (tmp_path / "pose" / video.GEOMETRY_INPUTS_FILE).exists()
+
+
+def test_a_selection_retained_at_64_resumes_with_its_own_capacity(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, website_atlas_pose as pose_api
+    path, review = _forward_motion_job(tmp_path)
+    _forward_motion(monkeypatch)
+    output = tmp_path / "pose"
+    # A preserved job with a refined-splat price selected before this release.
+    first = video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
+    plan = json.loads((output / "atlas_view_selection.json").read_text())
+    assert plan["frame_policy"] == {"basis": "accuracy_first", "provider_input_capacity": 64, "frame_target": 64,
+                                    "connected_cover_frames": plan["frame_policy"]["connected_cover_frames"],
+                                    "distinct_views_added": plan["frame_policy"]["distinct_views_added"]}
+    options = pipeline._splat_input_options(output, review=review, policy={"refined_splat_cost_usd": 5},
+                                            edit_scope="all_selected_views")
+    assert options == {}  # the recorded profile, not the new default
+    monkeypatch.setattr(video, "_features", lambda *_: pytest.fail("retained inputs recomputed"))
+    assert video.prepare_video_inputs(survey_path=path, review=review, output_root=output, **options) == first
+    # A later change to the configured capacity reads the plan's own recorded capacity instead.
+    monkeypatch.setattr(pose_api, "MAX_POSE_INPUT_IMAGES", 128)
+    assert video.prepare_video_inputs(survey_path=path, review=review, output_root=output, **options) == first
