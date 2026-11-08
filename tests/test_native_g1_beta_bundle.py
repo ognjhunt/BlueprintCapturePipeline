@@ -174,3 +174,50 @@ def test_entrypoint_installs_the_media_toolchain_before_provisioning(tmp_path):
     path = tmp_path / "entrypoint.sh"
     path.write_text(script)
     subprocess.run(["bash", "-n", str(path)], check=True)
+
+
+def test_every_executable_the_worker_preflight_runs_is_installed_by_the_entrypoint(monkeypatch):
+    """A preflight tool with no install step refuses at bundle build, for $0, not after a launch."""
+    from blueprint_pipeline import native_task_arena_dependency_contract as contract
+
+    bundle.check_media_toolchain_coverage()
+    script = bundle._entrypoint()
+    for executable in contract.NATIVE_TASK_REQUIRED_EXECUTABLES:
+        assert executable in bundle.MEDIA_TOOLCHAIN_PACKAGES
+        assert script.count(f"! command -v {executable} >/dev/null 2>&1") == 2
+    for package in set(bundle.MEDIA_TOOLCHAIN_PACKAGES.values()):
+        assert f"apt-get install -y -qq {package}" in script
+    monkeypatch.setattr(contract, "NATIVE_TASK_REQUIRED_EXECUTABLES",
+                        (*contract.NATIVE_TASK_REQUIRED_EXECUTABLES, "gst-launch-1.0"))
+    with pytest.raises(ValueError, match="g1_beta_media_toolchain_not_covered"):
+        bundle.check_media_toolchain_coverage()
+
+
+#: The G1 worker preflight's imports, every one of which loaded on the pinned image in the library
+#: job's fourth G1 run (2026-11-08, attempt screen-a5b35b46…, 6a181b1). They come from the image and
+#: the runtime source packet, not the entrypoint, so the host cannot prove them before spend; a change
+#: here must be checked against the image first.
+G1_PREFLIGHT_IMPORTS_SEEN_ON_IMAGE = (
+    "warp", "torch", "triton", "cuda", "filelock", "fsspec", "jinja2", "markupsafe", "mpmath", "networkx",
+    "setuptools", "sympy", "numpy", "PIL.Image", "gymnasium", "lazy_loader", "cloudpickle",
+    "farama_notifications", "packaging", "prettytable", "typing_extensions", "wcwidth", "h5py", "yaml",
+    "toml", "antlr4", "omegaconf", "hydra", "hydra.core", "msgpack", "zmq", "tensordict",
+    "importlib_metadata", "zipp", "orjson", "pyvers", "git", "gitdb", "smmap", "lightwheel_sdk",
+    "lightwheel_sdk.loader", "requests", "charset_normalizer", "idna", "urllib3", "certifi", "tqdm",
+    "termcolor", "click", "rsl_rl", "rsl_rl.runners", "pxr.Usd", "pxr.UsdPhysics", "pxr.UsdVol",
+    "isaaclab", "isaaclab.controllers", "isaaclab.utils.math", "isaaclab_assets", "isaaclab_contrib",
+    "isaaclab_experimental", "isaaclab_mimic", "isaaclab_newton", "isaaclab_ov", "isaaclab_physx",
+    "isaaclab_physx.physics", "isaaclab_rl", "isaaclab_tasks", "isaaclab_tasks_experimental",
+    "isaaclab_teleop", "isaaclab_visualizers", "isaaclab_arena", "isaaclab_arena_g1", "coloredlogs",
+    "humanfriendly", "flatbuffers", "isaaclab_arena.environments.arena_env_builder", "pinocchio", "pink",
+    "qpsolvers", "osqp", "onnxruntime", "google.protobuf",
+)
+
+
+def test_g1_worker_preflight_imports_are_the_ones_seen_loading_on_the_image():
+    from blueprint_pipeline.native_task_arena_dependency_contract import (
+        G1_ONLY_DEPENDENCY_IMPORTS, NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS)
+    from blueprint_pipeline.native_task_runtime_capabilities import controller_imports
+
+    assert controller_imports(NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS, G1_ONLY_DEPENDENCY_IMPORTS,
+                              robot_id="unitree_g1", controller_backend="g1_joint") == G1_PREFLIGHT_IMPORTS_SEEN_ON_IMAGE

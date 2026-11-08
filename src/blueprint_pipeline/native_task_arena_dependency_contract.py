@@ -90,6 +90,11 @@ NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS = (
     "google.protobuf",
 )
 
+#: Executables the native worker's dependency preflight runs (``<name> -version``). A provider
+#: entrypoint must supply each one; the G1 screening bundle refuses before any spend when its
+#: install step does not cover them (``native_g1_beta_bundle.check_media_toolchain_coverage``).
+NATIVE_TASK_REQUIRED_EXECUTABLES = ("ffmpeg", "ffprobe")
+
 # These imports arrived with the G1 embodiment and its ONNX policy runtime.
 # Retained Franka packets predate those wheels and do not use that embodiment.
 G1_ONLY_DEPENDENCY_IMPORTS = frozenset({

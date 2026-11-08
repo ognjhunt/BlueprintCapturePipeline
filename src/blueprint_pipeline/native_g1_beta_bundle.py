@@ -36,7 +36,26 @@ def _json_bytes(value):
     return (json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
 
 
+#: Each executable the screening entrypoint guarantees, and the apt package that supplies it.
+MEDIA_TOOLCHAIN_PACKAGES = {"ffmpeg": "ffmpeg", "ffprobe": "ffmpeg"}
+
+
+def check_media_toolchain_coverage() -> None:
+    """The entrypoint supplies every executable the native worker's preflight runs, checked before any spend.
+
+    The library job's fourth G1 run (2026-11-08, $0.62) reached its first cell and stopped there:
+    the worker's preflight runs ffmpeg and ffprobe, which the pinned image lacks and the screening
+    entrypoint did not then install. A tool added to the preflight without an install step here
+    refuses at bundle build, for $0, instead of costing a launch.
+    """
+    from .native_task_arena_dependency_contract import NATIVE_TASK_REQUIRED_EXECUTABLES
+    if set(NATIVE_TASK_REQUIRED_EXECUTABLES) - set(MEDIA_TOOLCHAIN_PACKAGES):
+        raise ValueError("g1_beta_media_toolchain_not_covered")
+
+
 def _entrypoint():
+    missing = " || ".join(f"! command -v {name} >/dev/null 2>&1" for name in MEDIA_TOOLCHAIN_PACKAGES)
+    packages = " ".join(sorted(set(MEDIA_TOOLCHAIN_PACKAGES.values())))
     return '''#!/usr/bin/env bash
 set -u
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -46,11 +65,11 @@ cd "$RUNTIME_DIR"
 export BLUEPRINT_G1_PINNED_ISAAC_IMAGE="nvcr.io/nvidia/isaac-sim:6.0.1@sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
 # The native worker's dependency preflight needs ffmpeg and ffprobe, which the pinned
 # image lacks; the development and team G1 entrypoints install them the same way.
-if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+if @MEDIA_MISSING@; then
   DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && \\
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >>"$OUT_DIR/media_toolchain_install.log" 2>&1
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq @MEDIA_PACKAGES@ >>"$OUT_DIR/media_toolchain_install.log" 2>&1
 fi
-if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+if @MEDIA_MISSING@; then
  /isaac-sim/python.sh -m blueprint_pipeline.native_g1_beta_runtime --runtime-root "$RUNTIME_DIR" \\
    --output-dir "$OUT_DIR" --failure-only g1_beta_media_toolchain_unavailable
  exit 2
@@ -73,7 +92,7 @@ if [ ! -f "$OUT_DIR/native_g1_beta_session_result.v1.json" ]; then
  runner_rc=2
 fi
 exit "$runner_rc"
-'''
+'''.replace("@MEDIA_MISSING@", missing).replace("@MEDIA_PACKAGES@", packages)
 
 
 def check_reused_runtime_wheels(profile, runtime) -> None:
@@ -149,6 +168,7 @@ def build_bundle(*, job_dir: Path, authority, spec, implementation_commit: str,
         sources["provider_runtime/blueprint_pipeline/" + path.relative_to(package).as_posix()] = path
     dependency_profile = artifact_manifest()
     check_reused_runtime_wheels(dependency_profile, runtime)
+    check_media_toolchain_coverage()
     sources["provider_runtime/" + DEPENDENCY_MANIFEST_FILENAME] = package / "_vendor" / DEPENDENCY_MANIFEST_FILENAME
     dependency, contract_sources = _contract_dependency()
     for relative, path in contract_sources:
