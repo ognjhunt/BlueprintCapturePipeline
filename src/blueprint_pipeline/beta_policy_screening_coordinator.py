@@ -77,7 +77,10 @@ OFFER_SHORTAGE_MAX_RETRY_SECONDS = 1800
 # stale lock beside any other spend blocker is not this wait and keeps its refusal.
 SPEND_LOCK_STALE_BLOCKER = "spend_admission:spend_admission_lock_stale"
 SPEND_LOCK_RETRY_CAP = 6
-_SPEND_LOCK_REFUSAL = frozenset({SPEND_LOCK_STALE_BLOCKER, "paid_resource_admission_has_blockers",
+#: The same stale-lock refusal as the G1 lane's allocator words it, without the ``spend_admission:`` prefix
+#: (2026-11-08 02:40Z, the library site's pi0.5 row: blocked outright instead of waiting).
+SPEND_LOCK_STALE_CODES = frozenset({SPEND_LOCK_STALE_BLOCKER, "spend_admission_lock_stale"})
+_SPEND_LOCK_REFUSAL = frozenset({*SPEND_LOCK_STALE_CODES, "paid_resource_admission_has_blockers",
                                  "paid_resource_admission_not_admitted"})
 # A candidate retries a refusal whose control read got no answer (a 429, a 5xx,
 # a timeout) at most this many times in all: a launch preflight read again, or
@@ -755,7 +758,7 @@ def _offer_shortage(observation: Mapping[str, Any]) -> bool:
 def _spend_lock_stale(observation: Mapping[str, Any]) -> bool:
     """Refused before any create only because the spend admission lock was stale."""
     blockers = set(observation.get("blockers") or [])
-    return SPEND_LOCK_STALE_BLOCKER in blockers and blockers <= _SPEND_LOCK_REFUSAL
+    return bool(blockers & SPEND_LOCK_STALE_CODES) and blockers <= _SPEND_LOCK_REFUSAL
 
 
 def _spend_lock_retries(row: Mapping[str, Any]) -> int:
