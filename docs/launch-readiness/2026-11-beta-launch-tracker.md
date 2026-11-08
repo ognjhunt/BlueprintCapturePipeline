@@ -284,6 +284,46 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - the intake lane imported GPU modules through the navigation intake and the scene preview.
   - **Spend this stretch:** G1 attempts about $0.92 (Vast). Total about $10.05 of the $115 ceiling.
 
+- **11-08 04:00Z to 22:00Z: G1 runs reach episodes; the robot falls through; the splat's cause found.**
+  - **Owner words, in order (11-08):**
+    - "deploy anything waiting" (15:59Z);
+    - "option 1" (17:52Z): the owner deletes an old internal folder themselves. Their command ran on their own computer, so nothing on the server changed;
+    - "yes, add it" (18:44Z): a reviewed door operation that deletes only owner-approved folders (#3474, open, paused, see below);
+    - "yes prune" (18:46Z): delete the bundle file of screening attempts that never reached a GPU provider, keeping every receipt;
+    - "can we investigate why our atlas refined splat turned out so badly??" (20:29Z);
+    - "fix the input first, then do the rebuild" (21:02Z);
+    - "go ahead" (21:52Z), approving this order: merge the fixes; find the missing floor's root cause; build one general step that re-derives everything from a changed Atlas result; then rebuild the splat once.
+  - **Deploys by this session:** a13381d (#3471, `20261108T161353Z-deploy-7df3ba7c`, live 16:30Z) and 985c482 (#3473, #3475, live 19:43Z). Each started with a quiet door, and the G1 session had notice. The G1 session deployed 6a181b1 (#3470) in the 15:00Z window. Its entries below give DP attempts 3 to 6.
+  - **Disk.**
+    - π0.5's first run was refused for collection capacity, 0.35 GB short on `/mnt/blueprint-work`.
+    - The G1 session's audit showed a successful G1 output is about 2.2 GiB, so this session's idea of a 1 GiB cap was wrong. The fix sizes the reservation at 2 × the session bound + the bundle (#3475).
+    - The prune, in the same PR, took headroom from 16.80 to 20.98 GB.
+    - #3474 is paused: its one approved folder, `internal-team-evaluation-diagnostic-20261015` (11 GB), sits on `/`, not the work volume the G1 preflight measures. It would help the root disk only, which is the owner's call.
+  - **First episodes, then a correction.** DP attempt 6 (19:59Z, about $1.14) queried the learned policy and scored cells 0 and 1 as failures.
+    - Their root height drifted about 16 km and 15 km: the robot fell through the scene.
+    - #3478 (merged dc56758, 22:02Z) voids such an episode (`g1_robot_fell_through_scene`) and raises the G1 harness revision to 2, so those two cells don't count.
+  - **Floor root cause (open, G1 session).**
+    - From retained JSON, the collision copy is already Z-up metres. Its box (x −5.02..6.54, y −2.54..2.67, z −0.52..3.99) covers the spawn at (1.04, 0.16), and the camera path runs x −1.70..3.91, y 0.03..0.29 at a floor near z 0.
+    - The spawn check still found no collision near the robot, not even the shelves about a metre away. So the suspect is how the packet loads or places that copy.
+    - A host-side diagnostic, reading JSON only, and a `g1_spawn_floor_absent` refusal before any spend are being built.
+  - **Why the refined splat is soft** (investigated at the owner's request, compared with a kitchen job that looked clear):
+    - World Labs did not accept pose refinement, and the opening frames' poses and depth disagree with their neighbours.
+    - The pan frames have no parallax, and the opening frames are soft.
+    - The scene is large, and faces are blurred.
+    - Frame count was the least of it.
+  - **#3477 (merged 05f0883, 22:02Z):**
+    - Frames softer than 0.6 × the clip's median sharpness are dropped.
+    - The splat gets only views whose pose agrees with their neighbours. For this clip that is 19 dolly views.
+    - A ready job whose splat was bought from disagreeing views can be rebuilt once, beside the original, through `--atlas-status` and `--atlas-retry`. Expected about $6.56, at most $10.88, inside the Atlas grant (window ends 11-13 14:44Z). It stops after the pose (about $1.06) if refinement isn't accepted.
+  - **Order (owner, "go ahead"):**
+    1. merge #3477 and #3478 (done 22:02Z);
+    2. the floor root cause and its pre-spend refusal;
+    3. a general step that re-derives the levelled scene, colliders, navigation packet and registration when a job's Atlas result changes;
+    4. one deploy, after π0.5 settles;
+    5. the rebuild.
+  - **π0.5** launched at 21:35:33Z on 985c482, without #3476 or #3478, so the same fall-through is expected and would be void.
+  - **Spend:** G1 $3.35 of the $30 site limit, before π0.5. Atlas $7.38 of $25. Total about $12.48 of the $115 ceiling.
+
 ## Deploys on 2026-11-05 (capture-447 screening)
 
 - Two cloud sessions share the `cloud-scene-runs` door token today. Both merge and deploy on capture-447, so check `door requests` and `deploys.recent_receipts` before deploying.
