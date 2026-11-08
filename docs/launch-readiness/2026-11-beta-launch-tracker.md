@@ -647,6 +647,23 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - **Cause:** the pinned Isaac image has no ffmpeg. The development and team G1 entrypoints install it with apt before provisioning (`native_g1_provider_bundle`, `native_g1_team_provider_bundle`). The screening entrypoint never had that step.
   - **Fix (this PR):** the screening entrypoint installs ffmpeg the same way, before provisioning. If ffmpeg or ffprobe is still missing, it writes a typed failure (`g1_beta_media_toolchain_unavailable`) within the first minute and exits.
   - This is DP's fourth harness failure of the 7 allowed. π0.5 will be held unspent again. Both are planned again after the next deploy.
+- **a13381d (#3471) live, 11-08 16:30Z; DP attempt 5 and π0.5's first run: neither reached a machine, $0.**
+  - The library-aisle session deployed it under the owner's "deploy anything waiting" (`20261108T161353Z-deploy-7df3ba7c`). The coordinator re-planned at 16:38:35Z (`screening-b652ad8f…`).
+  - **DP, 16:43Z** (`screen-1fbd8851…`): no Vast offer qualified. Of 25 offers with ≥48 GB at ≤ $0.80/h, 2 had a known-good Isaac driver, and neither fit the $4 cap once transfer was added. The offer-shortage retry made a fresh attempt on the same reservation.
+  - **DP retry, 17:04Z** (`screen-bedc625e…`): refused before spawn, recording only `beta_screening_prelaunch_refused:ValueError`.
+    - The class's capital letter failed the ledger's code rule, so the row shows `beta_screening_not_allocated`.
+    - The cause can't be recovered. It isn't the quote (valid until 11-09) or the G1 registration (unchanged since 11-07).
+    - #3473 makes such a refusal record its typed reason.
+  - **π0.5, 17:14Z** (`screen-ef4ed3cd…`): its first G1 run passed the pre-launch checks. The G1 paid preflight then refused with `g1_beta_collection_capacity_insufficient`.
+    - It reserves 4 × the output bound plus the bundle (17.38 GB) on the work volume to collect results, and 17.03 GB of headroom was left above the floor.
+    - DP passed the same check at 16:43Z. Each attempt keeps its bundle under `beta-policy-screening-work/attempts` (18.4 GiB), so retries shrink the headroom.
+  - **Host disk:** `/mnt/blueprint-work` is at 90%. Alerts are paging for unclassified storage over budget (206 GB vs 32 GB), unowned scratch (88 GiB in 406 folders) and ineffective reclaim. The largest roots:
+    - `atlas-beta-dishwasher-20261021`: 28 GB
+    - `scene-retirement-runtime-sdk-inputs`: 27 GB
+    - `flora-episode-benchmarks`: 25 GB
+    - `internal-team-evaluation-diagnostic-20261015`: 11 GB
+  - **Owner's call:** what to reclaim. No sanctioned door operation deletes these, and nothing was deleted. A smaller collection reservation would be a capacity decision too: real outputs so far were 10 KB–40 MB against the 16 GiB bound.
+  - Both rows are blocked unspent and are planned again after the next deploy. G1 spend on the site is still $2.21 of $30.
 
 ## Operating notes (2026-11-02)
 
