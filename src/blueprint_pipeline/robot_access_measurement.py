@@ -26,7 +26,13 @@ any other preparation analysis call: never a step for the site.
   source video and geometry, and the most it may cost. The sealed preparation is
   only read.
 - **Spending** (``run_measurement``). The binding is recomputed and must be the
-  one the half recorded, or nothing is spent. The analysis is asked once more,
+  one the half recorded, or nothing is spent. Every local check that can refuse
+  runs before anything is bought, so such a refusal costs nothing: the scene's
+  geometry is reopened and must still be the preparation's (an Atlas result
+  republished after the preparation, as the one-time splat rebuild does, refuses
+  ``geometry_changed``), the preparation's registration matrices are read, and
+  every source frame SAM would track is decoded, each geometry frame among them
+  at its own time (``geometry_frame_mapping_invalid``). The analysis is asked once more,
   only for the movable furniture around the support, through the retained paid
   call (``analyze_movable_obstacles``); SAM masks are made for just those pieces
   (``meta_sam31.run_meta_sam31``). Both reserve through the job's
@@ -314,6 +320,26 @@ def _segment(*, video_path: str, source_video_digest: str, prompts: list[dict[st
     return {"registry": registry, "tracks": result["tracks"], "reserved_cost_usd": unit * len(prompts)}
 
 
+def _frames(*, video_path: str, source_video_digest: str, output_root: Path) -> list[dict[str, Any]]:
+    """Every source frame SAM would track, decoded on the CPU (no spend); ``_segment`` reads the same receipt."""
+
+    from .meta_sam31 import prepare_continuous_video
+
+    registry, _ = prepare_continuous_video(source=Path(video_path), source_digest=source_video_digest,
+                                           root=output_root / "video")
+    return registry
+
+
+def _frames_mapped(registry: Sequence[Mapping[str, Any]], frames: Sequence[Mapping[str, Any]]) -> None:
+    """Every geometry frame is one of the source video's decoded frames, at the same time."""
+
+    by_id = {row["source_frame_id"]: row for row in registry}
+    for frame in frames:
+        row = by_id.get(frame["frame_id"])
+        _require(row is not None and abs(float(row["decoded_pts_seconds"]) - float(frame["timestamp_seconds"])) <= 0.002,
+                 "geometry_frame_mapping_invalid")
+
+
 def _geometry(capture_root: str, current: Mapping[str, Any]) -> dict[str, Any]:
     """The scene's bound source geometry, reopened as the handoff and the renewal reopen it (CPU)."""
 
@@ -346,11 +372,7 @@ def lift(targets: Sequence[Mapping[str, Any]], *, registry: Sequence[Mapping[str
     )
 
     frames = list(geometry["frames"])
-    by_id = {row["source_frame_id"]: row for row in registry}
-    for frame in frames:
-        row = by_id.get(frame["frame_id"])
-        _require(row is not None and abs(float(row["decoded_pts_seconds"]) - float(frame["timestamp_seconds"])) <= 0.002,
-                 "geometry_frame_mapping_invalid")
+    _frames_mapped(registry, frames)
     identity = [{"frame_id": row["source_frame_id"], "timestamp_seconds": row["decoded_pts_seconds"]} for row in registry]
     label = {prompt["text"].casefold(): prompt["output_label"] for prompt in prompts}
     ids = {frame["frame_id"] for frame in frames}
@@ -381,13 +403,16 @@ def run_measurement(scope: Mapping[str, Any], *, binding_digest: str, revision_d
                     sources: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None,
                     analyze: Callable[..., Mapping[str, Any]] | None = None,
                     segment: Callable[..., Mapping[str, Any]] | None = None,
-                    geometry: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                    geometry: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None,
+                    frames: Callable[..., Sequence[Mapping[str, Any]]] | None = None) -> dict[str, Any]:
     """Measure the movable furniture a team half recorded as due, once; return the sealed sidecar.
 
     ``binding_digest`` is the half's ``measurement_due`` binding. It is recomputed from the current
-    preparation, review and video and must be the same, or nothing is spent. An existing sidecar for
-    this preparation is returned as is. ``sources``, ``analyze``, ``segment`` and ``geometry`` replace the
-    host readers and the two paid calls (tests).
+    preparation, review and video and must be the same, or nothing is spent. Every local check that can
+    refuse (the geometry still the preparation's, its frames among the decoded source frames) runs before
+    the first paid call, so such a refusal costs nothing. An existing sidecar for this preparation is
+    returned as is. ``sources``, ``analyze``, ``segment``, ``geometry`` and ``frames`` replace the host
+    readers and the two paid calls (tests).
     """
 
     from .clean_plate_removal_analysis_gemini import analyze_movable_obstacles, movable_obstacle_request
@@ -403,8 +428,6 @@ def run_measurement(scope: Mapping[str, Any], *, binding_digest: str, revision_d
     found = (sources or measurement_sources)(current["capture_root"], current)
     binding = measurement_binding(current=current, sources=found, review=review, revision_digest=revision_digest)
     _require(binding_digest == canonical_digest(binding), "binding_changed")
-    work = path.parent
-    work.mkdir(parents=True, exist_ok=True, mode=0o750)
     request, analysis_usd = movable_obstacle_request(
         source_digest=found["source_video_digest"], duration_seconds=float(found["duration_seconds"]),
         processing=str(found["processing"]), task_context=current["task_context"],
@@ -412,6 +435,14 @@ def run_measurement(scope: Mapping[str, Any], *, binding_digest: str, revision_d
                       for row in review["items"]])
     _require(canonical_digest(request) == binding["analysis"]["request_digest"]
              and analysis_usd <= binding["analysis"]["maximum_cost_usd"], "analysis_exceeds_binding")
+    # Everything local that can refuse, before anything is bought: an Atlas result republished after the
+    # preparation (the one-time splat rebuild) refuses here at USD 0, not after the analysis and SAM.
+    to_world = _to_world(current["preparation"])
+    source_geometry = (geometry or _geometry)(current["capture_root"], current)
+    work = path.parent
+    work.mkdir(parents=True, exist_ok=True, mode=0o750)
+    _frames_mapped((frames or _frames)(video_path=found["video_path"], source_video_digest=found["source_video_digest"],
+                                       output_root=work / "segmentation"), source_geometry["frames"])
     analysis = (analyze or analyze_movable_obstacles)(
         video_path=found["video_path"], task_context=current["task_context"], output_root=work / "analysis",
         binding=request, maximum_cost_usd=analysis_usd)
@@ -433,8 +464,8 @@ def run_measurement(scope: Mapping[str, Any], *, binding_digest: str, revision_d
             output_root=work / "segmentation", task_context=current["task_context"],
             maximum_cost_usd=binding["segmentation"]["maximum_cost_usd"])
         measured, left = lift(targets, registry=segmentation["registry"], tracks=segmentation["tracks"],
-                              prompts=prompts, geometry=(geometry or _geometry)(current["capture_root"], current))
-    record = movable_furniture_record(measured, _to_world(current["preparation"]))
+                              prompts=prompts, geometry=source_geometry)
+    record = movable_furniture_record(measured, to_world)
     value = {"schema_version": SIDECAR_SCHEMA, "lineage": dict(current["lineage"]),
              "measurement": {"binding_digest": binding_digest, "maximum_cost_usd": binding["maximum_cost_usd"],
                              "spend": "website_preparation_spend_within_the_jobs_approved_caps"},

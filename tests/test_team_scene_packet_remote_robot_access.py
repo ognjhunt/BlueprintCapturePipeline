@@ -187,7 +187,8 @@ def test_a_compile_given_the_host_read_offer_writes_the_hosts_half_without_readi
     due = both("measurement_due")["robot_access_removal"]
     assert measurement.run_measurement(scope, binding_digest=due["binding_digest"],
                                        revision_digest=inputs["revision"]["revision_digest"], analyze=paid.analyze,
-                                       segment=paid.segment, geometry=lambda *_: {"frames": []})["sidecar_digest"]
+                                       segment=paid.segment, geometry=lambda *_: {"frames": []},
+                                       frames=lambda **_: [])["sidecar_digest"]
     shutil.rmtree(output)
     proposed = both("proposed")["robot_access_removal"]
     assert [row["obstacle_id"] for row in proposed["items"]] == [chairs.BLOCKING]
