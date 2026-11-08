@@ -558,3 +558,15 @@ def test_a_resealed_navigation_cell_must_stay_a_row_of_the_table(mutation):
     value["scenario_plan_digest"] = canonical_digest({"cells": value["scenario_cells"]})
     with pytest.raises(BetaPolicyScreeningPlanError, match="^beta_screening_scenario_parameters_invalid$"):
         validate_screening_plan(reseal(value))
+
+
+@pytest.mark.parametrize("dropped", [{"back_15cm": "g1_spawn_floor_absent"},
+                                     {"back_15cm": "g1_spawn_floor_absent", "left_15cm": "g1_spawn_overlap"}])
+def test_a_start_offset_with_no_floor_is_a_valid_drop_beside_an_overlap(dropped):
+    catalog = navigation_catalog()
+    candidate = next(row for row in catalog["candidates"] if row["candidate_id"] == g1.CANDIDATES[2])
+    binding, _ = admitted(candidate)
+    spec = {**binding["execution_spec"], "backend": g1.BACKEND, g1.DROPPED_START_OFFSETS_FIELD: dropped}
+    validated = validate_execution_descriptor(spec, candidate_id=candidate["candidate_id"],
+                                              configuration_digest=candidate["configuration_digest"])
+    assert validated[g1.DROPPED_START_OFFSETS_FIELD] == dropped

@@ -191,13 +191,16 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
     if (not isinstance(flags, list) or not flags or flags != sorted(set(flags))
             or not all(isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code) for code in flags)):
         raise BetaPolicyScreeningPlanError("beta_screening_setup_quality_flags_invalid")
-    # A navigation G1 row's start offsets whose spawn overlaps: their cells are not funded (``g1_spawn_overlap``).
+    # A navigation G1 row's start offsets whose cells are not funded: the spawn overlaps the room
+    # (``g1_spawn_overlap``) or has no floor under either foot (``g1_spawn_floor_absent``).
     if DROPPED_START_OFFSETS_FIELD in result:
+        from .native_g1_spawn_clearance import FLOOR_ABSENT_REASON, OVERLAP_REASON
+
         dropped = result[DROPPED_START_OFFSETS_FIELD]
         if (result["backend"] != G1_BACKEND or not isinstance(dropped, dict)
                 or not 1 <= len(dropped) < len(NAVIGATION_START_OFFSETS)
                 or set(dropped) - {row[0] for row in NAVIGATION_START_OFFSETS}
-                or any(reason != "g1_spawn_overlap" for reason in dropped.values())):
+                or any(reason not in (OVERLAP_REASON, FLOOR_ABSENT_REASON) for reason in dropped.values())):
             raise BetaPolicyScreeningPlanError("beta_screening_dropped_start_offsets_invalid")
     if "minimum_gpu_memory_gb" in result:
         memory = result["minimum_gpu_memory_gb"]
