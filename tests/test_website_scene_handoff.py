@@ -451,3 +451,27 @@ def test_identified_targets_gain_published_specs_after_coverage_and_before_compi
     assert seen["attach"]["output_root"] == tmp_path / "pipeline/website_scene_preparation/object_spec"
     assert seen["compile"]["task_masks"] == specified
     assert json.loads((tmp_path / "pipeline/website_scene_preparation/task_masks.coverage.json").read_text()) == specified
+
+
+def test_records_a_base_scene_from_another_atlas_result_named_are_kept_once_before_they_are_replaced(tmp_path):
+    preparation = tmp_path / "pipeline/website_scene_preparation"
+    root = preparation / "revisions" / ("a" * 64)
+    parent, rebuilt = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+    write_json(root / "base_scene.json", {"atlas_result_digest": parent})
+    write_json(root / "native/runtime_inputs.json", {"bound": "old collider"})
+    write_json(preparation / "handoff.json", {"status": "intake_ready"})
+    (root / "level").mkdir()  # content-addressed outputs stay where they are; they are not copied
+    old = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    # The same result: nothing to keep.
+    assert handoff.retain_superseded_records(capture_root=tmp_path, root=root, atlas_result_digest=parent) is None
+    archive = handoff.retain_superseded_records(capture_root=tmp_path, root=root, atlas_result_digest=rebuilt)
+    assert archive == preparation / handoff.SUPERSEDED_DIRECTORY / parent[7:23]
+    copied = {path.relative_to(archive).as_posix(): path.read_bytes() for path in archive.rglob("*") if path.is_file()}
+    assert copied == {"handoff.json": old[preparation / "handoff.json"],
+                      f"revisions/{'a' * 64}/base_scene.json": old[root / "base_scene.json"],
+                      f"revisions/{'a' * 64}/native/runtime_inputs.json": old[root / "native/runtime_inputs.json"]}
+    # Kept once: a later run (or one after a crash) never replaces what was kept, and nothing was moved.
+    write_json(preparation / "handoff.json", {"status": "changed by a later run"})
+    handoff.retain_superseded_records(capture_root=tmp_path, root=root, atlas_result_digest=rebuilt)
+    assert (archive / "handoff.json").read_bytes() == old[preparation / "handoff.json"]
+    assert all(path.is_file() for path in old)

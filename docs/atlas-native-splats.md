@@ -343,13 +343,16 @@ and retained data is never deleted. So a rebuild runs beside the original
   as a new revision. A stop (refinement not accepted, too few consistent views,
   allowance, the new pose's draft refusing) is recorded in `outcome.json` and the
   job is ready again on its parent result. Nothing more is bought, and the stop is final.
-- **Downstream is not automatic.** Scene preparation (levelling, the navigation
+- **Downstream is one door call.** Scene preparation (levelling, the navigation
   scene, the job-page scene preview, G1 registration) reads the Atlas result only
-  when its native preparation runs. A completed native preparation does not run
-  again because the Atlas result changed. `--resume-preparation` replays only a
-  held handoff, and `--reissue-preparation` needs the sponsor's renewed grant. The
-  scene preview prefers the prepared base scene, so it keeps showing the old
-  splat until preparation runs again.
+  when its native preparation runs, and a completed one does not run again by
+  itself. Once the job is `ready` on the rebuilt result, `--resume-preparation`
+  re-runs it once on that result (`website_held_handoff_replay`,
+  `atlas_result_superseded`), writing the new outputs beside the old ones. The
+  scene preview prefers the prepared base scene, so it shows the new splat once
+  that run rewrote the base scene. The website keeps one intake per capture, so
+  the new navigation scene half gets no intake receipt (and no G1 screening)
+  until the website accepts a re-issued one.
 
 ## Reviewed runtime policy
 

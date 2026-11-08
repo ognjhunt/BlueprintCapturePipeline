@@ -464,3 +464,64 @@ def test_the_operator_held_replay_claim_names_the_exact_reviewed_ledger_and_payl
     status, _ = held_claim(site, raw, expected)
     assert status == "held_handoff_replay_changed"
     assert json.loads((site.capture / native.JOB_LEDGER_FILENAME).read_text()) == ledger
+
+
+def _sealed(value):
+    return {**value, "digest": canonical_digest(value, digest_field="digest")}
+
+
+def test_a_completed_preparation_on_a_replaced_atlas_result_is_shown_and_replayed_once(site, monkeypatch):
+    """Handed off on the job's first Atlas result; the job is ready on a rebuilt one. The status names both
+    results, and the same door flag runs the preparation once more through the held-replay claim."""
+    from blueprint_pipeline import website_held_handoff_replay as held
+
+    before = held_native(site, monkeypatch, fact=None)  # nothing held: only the Atlas result changed
+    work = site.capture / "pipeline/website_scene_preparation"
+    work.mkdir(parents=True)
+    parent = _sealed({"schema_version": "website_atlas_pipeline_result.v1", "name": "parent"})
+    rebuilt = _sealed({"schema_version": "website_atlas_pipeline_result.v1", "name": "rebuilt"})
+    (work / "base_scene.json").write_text(json.dumps({"atlas_result_digest": parent["digest"]}))
+    (work / "handoff.json").write_text(json.dumps(_sealed({
+        "schema_version": "website_scene_handoff.v1", "status": "intake_ready",
+        "base_scene_path": str(work / "base_scene.json")})))
+    (site.capture / "pipeline/atlas/result.json").write_text(json.dumps(rebuilt))
+    write_job(site, result_digest=rebuilt["digest"])
+    snapshot = recover(site)["atlas"]
+    assert snapshot["native_preparation"]["atlas_result_superseded"] == {
+        "result_digest": rebuilt["digest"], "superseded_result_digest": parent["digest"]}
+    seen = []
+
+    def process(raw, **kwargs):
+        seen.append(kwargs["expected_held_replay"])
+        status, ledger = held_claim(site, raw, kwargs["expected_held_replay"])
+        assert status == "claimed" and ledger["attempt_history"][:6] == before["attempt_history"]
+        native._finish_job_lease(site.capture, owner="reviewed-recovery", token=ledger["lease_token"],
+                                 update={"status": "completed"})
+        return {"status": "processed", "queue_disposition": "terminal_success"}
+
+    result = resume(site, snapshot["atlas_status_digest"], process)
+    assert result["status"] == "held_preparation_replayed" and len(seen) == 1
+    fact = seen[0]["fact"]
+    assert fact["kind"] == "atlas_result_superseded" and fact["result_digest"] == rebuilt["digest"]
+    assert seen[0]["review_schema"] == held.OPERATOR_SCHEMA and seen[0]["ledger_digest"] == canonical_digest(before)
+    # Once per new result: this handler did not move the base scene, and the same result is refused by name.
+    with pytest.raises(ValueError, match="selected_handoff_atlas_held_handoff_resume_already_replayed"):
+        resume(site, recover(site)["atlas"]["atlas_status_digest"],
+               lambda *_, **__: pytest.fail("the same Atlas result replayed twice"))
+
+
+def test_a_completed_preparation_is_not_replayed_while_its_atlas_job_is_processing(site, monkeypatch):
+    held_native(site, monkeypatch, fact=None)
+    work = site.capture / "pipeline/website_scene_preparation"
+    work.mkdir(parents=True)
+    rebuilt = _sealed({"schema_version": "website_atlas_pipeline_result.v1", "name": "rebuilt"})
+    (work / "base_scene.json").write_text(json.dumps({"atlas_result_digest": "sha256:" + "0" * 64}))
+    (work / "handoff.json").write_text(json.dumps(_sealed({
+        "schema_version": "website_scene_handoff.v1", "base_scene_path": str(work / "base_scene.json")})))
+    (site.capture / "pipeline/atlas/result.json").write_text(json.dumps(rebuilt))
+    # A rebuild in flight: its result is written, the job is not final.
+    write_job(site, state="processing", result_digest=rebuilt["digest"])
+    snapshot = recover(site)["atlas"]
+    assert "atlas_result_superseded" not in snapshot["native_preparation"]
+    with pytest.raises(ValueError, match="selected_handoff_atlas_reconstruction_not_ready"):
+        resume(site, snapshot["atlas_status_digest"], lambda *_, **__: pytest.fail("replayed while processing"))

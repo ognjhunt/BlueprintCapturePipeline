@@ -265,7 +265,8 @@ It buys the splat only after a new pose that World Labs refined and whose views
 agree. On a stop the job is ready again on its parent result.
 [`atlas-native-splats.md`](atlas-native-splats.md) ("Rebuilding a ready job's
 refined splat") has the details. Scene preparation does not re-derive from the
-rebuilt result by itself.
+rebuilt result by itself: once the job is `ready` on it, `--resume-preparation`
+does (below).
 
 `--resume-preparation --atlas-status-digest sha256:...` also resumes a native
 job left `processing` by a process that died holding its lease (for example the
@@ -294,6 +295,23 @@ held-replay claim, which binds the reviewed ledger digest. Nothing is bought
 again. It runs once per fact; otherwise it refuses with
 `selected_handoff_atlas_held_handoff_resume_not_eligible` or
 `selected_handoff_atlas_held_handoff_resume_already_replayed`.
+
+It also re-runs a `completed` preparation, held or handed off, whose Atlas
+result was published again after it (for example a splat rebuild). The status
+then shows `native_preparation.atlas_result_superseded`: the result its base
+scene was built from (`superseded_result_digest`) and the job's current one
+(`result_digest`). Only an Atlas job that is `ready` qualifies: not while it is
+processing (a rebuild in flight), and not when its result is the one the base
+scene names (a stopped rebuild hands the parent back). The run reads the new
+result and writes the levelled scene, the source geometry, the base scene and
+the navigation scene half beside the old ones. It first copies the records the
+old base scene named (the handoff, the base scene, the compiled specs) under
+`pipeline/website_scene_preparation/superseded_atlas_results/<old result>/`, so
+evidence made on the old scene still verifies. It runs once per new result
+digest, through the same claim, and the drain never starts it. The website keeps
+one intake per capture: until it accepts a re-issued navigation intake, a
+re-derived navigation job's new scene half is refused with `idempotency_conflict`
+and the job holds by that name.
 
 `--reissue-preparation --atlas-status-digest sha256:...` (mode
 `preparation-reissue`) re-issues a completed native preparation as a new job

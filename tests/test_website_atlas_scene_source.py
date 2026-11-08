@@ -409,6 +409,52 @@ def test_cameras_that_fix_no_similarity_defer_to_the_depth_of_the_shared_views(t
     assert np.allclose(transform[:3, 3], BACKGROUND_TRANSLATION * base["meters_per_unit"], atol=1e-6)
 
 
+def republish(job_dir: Path) -> dict:
+    """The job's Atlas result published again, as a splat rebuild publishes it: a new source pose of the same
+    video in its own root, its own scale evidence, a new splat and mesh, and a new sealed result."""
+    survey = json.loads((job_dir / "survey/atlas_video_survey.json").read_text())
+    relative = "splat-rebuild/0123456789abcdef/pose"
+    moved = [(rotation_cv, position + np.array([0.05, 0.0, 0.0])) for rotation_cv, position in CAMERAS]
+    _, rebuilt_pose = pose_root_fixture(job_dir / relative, survey["digest"], cameras=moved)
+    measurements = write(job_dir / relative / "scene_measurements.json", digest({
+        "schema_version": "atlas_scene_measurements.v1", "status": "estimated", "meters_per_unit_estimate": MPU,
+        "scale_status": "estimated_from_named_assumptions", "metric_measurement_proven": False}))
+    completed_bundle(job_dir)
+    result = json.loads((job_dir / "result.json").read_text())
+    result["source_pose"].update(pose_relative_path=relative, result_digest=rebuilt_pose["digest"],
+                                 scene_measurements_digest=measurements["digest"])
+    write(job_dir / "result.json", digest(result))
+    write(job_dir / "preview_job.json", {"state": "ready", "result_digest": result["digest"]})
+    return result
+
+
+def test_a_republished_result_is_read_and_its_outputs_go_beside_the_earlier_ones(tmp_path):
+    """Retained data is never overwritten: evidence made on the first scene still verifies against its files."""
+    job_dir = job_fixture(tmp_path)
+    prep = tmp_path / "prep"
+    first = source.atlas_scene_source(capture_root=tmp_path, output_root=prep)
+    kept = {path: path.read_bytes() for path in prep.rglob("*") if path.is_file()}
+    result = republish(job_dir)
+    second = source.atlas_scene_source(capture_root=tmp_path, output_root=prep)
+    assert second["status"] == "ready" and second["base_scene"]["atlas_result_digest"] == result["digest"]
+    assert first["base_scene"]["atlas_result_digest"] != result["digest"]
+    # New levelled copies, in their own directory, of the new splat and mesh.
+    assert Path(second["base_scene"]["splat_path"]).parent != Path(first["base_scene"]["splat_path"]).parent
+    assert second["base_scene"]["splat_digest"] != first["base_scene"]["splat_digest"]
+    # The new pose's source geometry in a directory keyed by that pose and its scale evidence.
+    first_manifest = Path(first["source_geometry"]["manifest_path"])
+    second_manifest = Path(second["source_geometry"]["manifest_path"])
+    assert first_manifest == (prep / "source_geometry/source_geometry.json").resolve()
+    assert second_manifest.parent.parent == first_manifest.parent / "poses"
+    assert second["source_geometry"]["binding"]["atlas_pose_result_digest"] == result["source_pose"]["result_digest"]
+    # Every file the first result's preparation wrote is still there, byte for byte.
+    assert all(path.is_file() and path.read_bytes() == data for path, data in kept.items())
+    # The same result again reuses its own directories.
+    third = source.atlas_scene_source(capture_root=tmp_path, output_root=prep)
+    assert third["base_scene"] == second["base_scene"]
+    assert third["source_geometry"]["digest"] == second["source_geometry"]["digest"]
+
+
 def test_a_background_without_retained_views_leaves_registration_to_scene_preparation(tmp_path):
     completed_bundle(job_fixture(tmp_path, cameras=TURNING))
     value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")

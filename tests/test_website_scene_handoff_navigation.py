@@ -681,3 +681,93 @@ def test_the_library_shape_held_before_the_intake_hook_is_resumed_once_and_sends
     # The record (and so the intake receipt staged from it) binds the confirmed successor's own digest.
     record = read_navigation_scene_inputs(Path(result["navigation_scene_inputs"]["path"]))
     assert record["source_gap"]["known"]["task_context_digest"] == successor["context_digest"]
+
+
+def test_a_republished_atlas_result_derives_a_new_scene_half_beside_the_handed_off_one(job, monkeypatch, tmp_path):
+    """The library-aisle job after a splat rebuild: its handoff runs again on the new Atlas result.
+
+    The new base scene names the new result; the scene half is written again, under its own key, and the
+    team registry's row names it. The handed-off record, its outbox and its receipt stay as they were, so
+    the old screening evidence still verifies, and the records the old base scene named are kept. The old
+    receipt is never read as the new record's. The website keeps one intake per capture and owner (its
+    ``prepared-scene`` route answers a changed request with ``idempotency_conflict``), so the new record
+    gets no intake, no receipt and no screening source, and the job holds by the website's name.
+    """
+    import hashlib
+
+    from blueprint_pipeline.website_scene_handoff import SUPERSEDED_DIRECTORY
+
+    accepted = {}
+
+    def website(*, capture_id, operation, payload, **_):
+        request = payload["request"]
+        job["sent"].append(request)
+        identity = cross_runtime_canonical_digest({"owner": request["owner"], "submission_id": request["submission_id"]})
+        digest = cross_runtime_canonical_digest(request)
+        if accepted.setdefault(identity, digest) != digest:
+            raise ValueError("website_control_prepared-scene_http_409:idempotency_conflict")
+        return {"id": "scene-" + identity[7:], "request_digest": digest, "state": "forward_pending"}
+
+    monkeypatch.setattr("blueprint_pipeline.website_task_context.website_webapp_request", website)
+    (tmp_path / "scene").mkdir()
+    collider, walked = _corridor(tmp_path / "scene")
+    rebuilt_splat = tmp_path / "scene/rebuilt_splat.ply"
+    rebuilt_splat.write_bytes(b"the rebuilt refined splat")
+    scenes = {}
+    for name, splat in (("parent", Path(collider["collision_mesh_path"])), ("rebuilt", rebuilt_splat)):
+        splat_digest = "sha256:" + hashlib.sha256(splat.read_bytes()).hexdigest()
+        scenes[name] = {**collider, "up_axis": "Y", "splat_path": str(splat), "splat_digest": splat_digest,
+                        "splat_binding_id": "website-splat-" + splat_digest[7:39],
+                        "atlas_result_digest": canonical_digest({"atlas_result": name})}
+    current = {"base": scenes["parent"]}
+    monkeypatch.setattr(ATLAS, lambda **_: {
+        "status": "ready", "base_scene": dict(current["base"]), "alignment": "anchored",
+        "camera_path_levelled_m": walked,
+        "source_geometry": {"digest": "atlas-geometry", "geometry_backend": "world_labs_atlas"}})
+
+    def assets(*, base_scene, output_root):
+        # Authored from the base scene's own files, in a directory of their own (as the real authoring is).
+        value = _scene_assets(Path(output_root) / base_scene["splat_digest"][7:23])
+        value["source"] = {key: base_scene[key] for key in ("splat_digest", "collision_mesh_digest")}
+        value["digest"] = canonical_digest(value, digest_field="digest")
+        return value
+
+    monkeypatch.setattr("blueprint_pipeline.website_navigation_scene_assets.navigation_scene_assets", assets)
+    _run(job)
+    _stage(job)
+    handed, _ = _run(job)
+    assert handed["status"] == "intake_ready"
+    old_path = Path(handed["navigation_scene_inputs"]["path"])
+    old_record = read_navigation_scene_inputs(old_path)
+    kept = {path: path.read_bytes() for path in old_path.parent.rglob("*") if path.is_file()}
+    assert {OUTBOX_FILENAME, RECEIPT_FILENAME} <= {path.name for path in kept}
+    handed_bytes = (job["capture"] / "pipeline/website_scene_preparation/handoff.json").read_bytes()
+    # The Atlas job publishes the rebuilt result and the preparation runs once more on it.
+    current["base"] = scenes["rebuilt"]
+    rerun, context = _run(job)
+    base = json.loads((job["root"] / "base_scene.json").read_text())
+    assert base["atlas_result_digest"] == scenes["rebuilt"]["atlas_result_digest"]
+    new_path = Path(rerun["navigation_scene_inputs"]["path"])
+    assert new_path.parent != old_path.parent and new_path.parent.parent == old_path.parent.parent
+    new_record = read_navigation_scene_inputs(new_path)
+    assert new_record["scene_revision_digest"] != old_record["scene_revision_digest"]
+    assert profile_for_capture(job["capture"])["navigation_scene_inputs_path"] == str(new_path)
+    # The handed-off record and everything beside it are unchanged, and still read.
+    assert all(path.read_bytes() == data for path, data in kept.items())
+    assert read_navigation_scene_inputs(old_path) == old_record
+    assert read_navigation_intake_receipt(old_path)["scene_inputs_digest"] == old_record["scene_inputs_digest"]
+    # The records the old base scene named are kept as they were, under its result.
+    archive = (job["capture"] / "pipeline/website_scene_preparation" / SUPERSEDED_DIRECTORY
+               / scenes["parent"]["atlas_result_digest"][7:23])
+    assert (archive / "handoff.json").read_bytes() == handed_bytes
+    assert json.loads((archive / "base_scene.json").read_text())["atlas_result_digest"] == (
+        scenes["parent"]["atlas_result_digest"])
+    # The old receipt is not the new record's: the website refused its intake, so it has none.
+    assert job["sent"][-1]["source"]["content_digest"] == scenes["rebuilt"]["splat_digest"]
+    assert job["sent"][-1]["submission_id"] == job["sent"][0]["submission_id"] == context["capture_id"]
+    assert not (new_path.parent / OUTBOX_FILENAME).exists() and not (new_path.parent / RECEIPT_FILENAME).exists()
+    with pytest.raises(WebsiteNavigationSceneInputsError, match=SOURCE_UNBOUND):
+        screening_source(new_record)
+    assert rerun["status"] == "needs_input" and rerun["blockers"] == ["idempotency_conflict"]
+    assert rerun["navigation_intake"] == {"status": "refused", "reason": "idempotency_conflict"}
+    assert holds_native_task_preparation(rerun, context)
