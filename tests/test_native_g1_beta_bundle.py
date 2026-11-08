@@ -158,3 +158,19 @@ def test_reused_wheels_must_be_the_runtime_packets_exact_wheels_before_any_spend
             check_reused_runtime_wheels(manifest, changed)
     with pytest.raises(ValueError, match="g1_beta_dependency_runtime_packet_wheel_mismatch"):
         check_reused_runtime_wheels(manifest, {"runtime_dependency_wheels": runtime["runtime_dependency_wheels"][1:]})
+
+
+def test_entrypoint_installs_the_media_toolchain_before_provisioning(tmp_path):
+    """The library job's fourth G1 run (2026-11-08) reached its first cell and stopped at the worker's
+    dependency preflight: ffmpeg and ffprobe are not on the pinned image."""
+    import re
+
+    script = bundle._entrypoint()
+    install = script.index("apt-get install -y -qq ffmpeg")
+    assert install < script.index("native_task_runtime_source_provision")
+    assert script.index("command -v ffprobe", install) < script.index("native_task_runtime_source_provision")
+    code = re.search(r"--failure-only (\S+)\n exit 2", script).group(1)
+    assert re.fullmatch(r"g1_[a-z0-9_]{1,120}", code)
+    path = tmp_path / "entrypoint.sh"
+    path.write_text(script)
+    subprocess.run(["bash", "-n", str(path)], check=True)
