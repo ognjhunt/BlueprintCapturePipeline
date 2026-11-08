@@ -1,4 +1,4 @@
-"""Run a held website job's preparation again, once, when the fact it was held on arrives.
+"""Run a website job's completed preparation again, once, when a fact it was held on (or lacks) arrives.
 
 Beta journey step: L3 website scene preparation. A held job is a completed stage: a redelivery never
 reruns it. These holds wait on a fact the job's own preparation cannot produce, so nothing would ever
@@ -27,6 +27,29 @@ always the website's own reading; nothing here sets or assumes it.
 A job held before the ledger kept its bytes is replayed by the operator instead
 (``resume_held_preparation``, the door's ``--resume-preparation``), on the original payload the door
 verified, through the same claim, once per fact.
+
+One more fact makes any completed preparation stale, held or handed off:
+
+- **An Atlas result published after the preparation** (``superseded_atlas_result``). The handoff's base
+  scene names the Atlas result it was built from (``base_scene.atlas_result_digest``); once the job's
+  Atlas lane is final again (``ready``) on another sealed result, such as a splat rebuild
+  (``atlas_splat_rebuild``), the preparation runs once more on it, keyed by the new result's digest. Every
+  run reads the current result, so the levelled scene, the base scene, the navigation scene half and the
+  rest of the handoff are derived from it again, written beside the old ones (``website_atlas_scene_source``,
+  ``website_scene_handoff.retain_superseded_records``). It adds no spend: the stage runs as any run
+  does, under the job's existing admission and allowances (a navigation job's run is CPU only). While
+  the Atlas job is processing (a rebuild in flight) or when its result is the one the base scene names
+  (a stopped rebuild hands the parent back), there is no fact.
+
+  Only the operator replays it, and the drain keeps no bytes for it. Every republish of a ready job is
+  an operator reopening it (``atlas_preparation_job_control.retry_preparation_job``, the door's
+  ``selected-handoff --atlas-retry``), and the door's status then shows the completed preparation's stale
+  base scene (``native_preparation.atlas_result_superseded``). A handed-off job's ledger keeps no bytes
+  (``replay_record``), and keeping them for every completed job would retain each payload indefinitely
+  for an event only an operator causes. And the website keeps one intake per capture: a scene half
+  derived from a new result asks for one it refuses today (``idempotency_conflict``), so the operator
+  chooses when a re-derived job holds by that name. A held job the drain replays for its own fact reads
+  the current result like any run.
 """
 from __future__ import annotations
 
@@ -142,6 +165,45 @@ def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str,
             fact = {"kind": "release", "release_commit": release, "missing_pipeline": missing}
     if fact is None:
         return None
+    fact["fact_digest"] = canonical_digest(fact)
+    return fact
+
+
+def superseded_atlas_result(pipeline_root: Path) -> dict[str, Any] | None:
+    """The Atlas result that replaced the one the retained handoff's base scene was built from; None otherwise.
+
+    ``atlas_result_superseded``: the handoff names its base scene, that base scene names the sealed Atlas
+    result it came from, and the job's Atlas lane is final (``ready``, no recheck pending) on another sealed
+    result. Held or handed off alike. Read-only and never raises: anything unreadable is no fact.
+    """
+    import json
+    import re
+
+    from .website_atlas_preview_store import JOB_FILE, read_job
+
+    root = Path(pipeline_root)
+    digest = re.compile(r"sha256:[0-9a-f]{64}")
+    handoff = _handoff(root)
+    named = (handoff or {}).get("base_scene_path")
+    if not isinstance(named, str):
+        return None
+    try:
+        path, preparation = Path(named).absolute(), (root / "website_scene_preparation").absolute()
+        if (".." in path.parts or not path.is_relative_to(preparation) or not path.is_file()
+                or any(item.is_symlink() for item in (path, *path.parents) if item.is_relative_to(preparation))):
+            return None
+        built = json.loads(path.read_text()).get("atlas_result_digest")
+        job = read_job(root / "atlas" / JOB_FILE)
+        result = json.loads((root / "atlas" / "result.json").read_text())
+        current = result.get("digest")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if (not isinstance(built, str) or not digest.fullmatch(built)
+            or job.get("state") != "ready" or job.get("retry_at_epoch")
+            or not isinstance(current, str) or not digest.fullmatch(current) or current == built
+            or current != job.get("result_digest") or current != canonical_digest(result, digest_field="digest")):
+        return None
+    fact = {"kind": "atlas_result_superseded", "result_digest": current, "superseded_result_digest": built}
     fact["fact_digest"] = canonical_digest(fact)
     return fact
 
@@ -288,14 +350,16 @@ def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path,
     """An operator's replay of a held, completed ledger that keeps no replay bytes (it predates the hook).
 
     ``handoff_payload`` is the original payload the door verified against the producer delivery; the claim
-    re-checks the exact reviewed ledger. Eligible only while the retained handoff holds on a fact that has
-    arrived (a confirmed successor of its context, a bound intake receipt, or a release for its integration
-    gap), and once per fact. Everything else refuses by name; nothing is bought.
+    re-checks the exact reviewed ledger. Eligible once the job's Atlas result replaced the one its base scene
+    was built from (``superseded_atlas_result``, held or handed off), or while the retained handoff holds on
+    a fact that has arrived (a confirmed successor of its context, a bound intake receipt, or a release for
+    its integration gap), and once per fact. Everything else refuses by name; nothing is bought.
     """
     import hashlib
 
     pipeline = Path(capture_root) / "pipeline"
-    fact = arrived_fact(pipeline)
+    # A republished Atlas result first: its run reads the held job's own fact again too.
+    fact = superseded_atlas_result(pipeline) or arrived_fact(pipeline)
     if fact is None:
         raise ValueError("website_held_handoff_resume_not_eligible")
     spent = _state(pipeline)
@@ -314,4 +378,5 @@ def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path,
 
 
 __all__ = ["CONSENT_HOLDS", "FIELD", "MARK", "OPERATOR_SCHEMA", "SCHEMA", "arrived_fact", "claim_matches",
-           "held_kind", "preparation_binding", "reconcile_held_handoffs", "replay_record", "resume_held_preparation"]
+           "held_kind", "preparation_binding", "reconcile_held_handoffs", "replay_record", "resume_held_preparation",
+           "superseded_atlas_result"]

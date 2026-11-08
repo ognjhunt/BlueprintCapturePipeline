@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 from .core.handoff_lease import (
     HandoffLeaseError, guarded_handoff_write_json as write_json, guarded_handoff_write_track_json as write_track_json,
-    handoff_lease_checkpoint,
+    handoff_effect, handoff_lease_checkpoint,
 )
 from .decision_evidence_contracts import canonical_digest
 from .website_task_preparation import (
@@ -373,6 +373,52 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
             and result.get("capability_verdict", {}).get("status") != "abstained")
 
 
+#: Where a run keeps the records a base scene from an earlier Atlas result named (``retain_superseded_records``).
+SUPERSEDED_DIRECTORY = "superseded_atlas_results"
+#: The workspace and its directories whose records each run rewrites in place; what they name is content-addressed.
+_RECORD_DIRECTORIES = ("", "native", "fit_check", "development_test")
+
+
+def retain_superseded_records(*, capture_root: Path, root: Path, atlas_result_digest: Any) -> Path | None:
+    """Copy the records a base scene from another Atlas result named, before this run replaces them.
+
+    The levelled scene, the navigation scene half and every file they name sit in content-addressed
+    directories, and a new Atlas result writes new ones beside them. The records naming them (the handoff,
+    the base scene, the compiled specs, the native inputs) sit at fixed paths each run rewrites. When the
+    base scene this run replaces came from another result (the job's Atlas result was published again,
+    ``website_held_handoff_replay``), each is copied once, as it is, under
+    ``superseded_atlas_results/<that result>/``, so evidence made on the old scene still verifies against
+    the records it named. Nothing is deleted. Returns that directory, or None when nothing was superseded.
+    """
+    import os
+    import re
+    import shutil
+
+    try:
+        previous = json.loads((root / "base_scene.json").read_text())
+    except (OSError, ValueError):
+        return None
+    built = previous.get("atlas_result_digest") if isinstance(previous, dict) else None
+    if (not isinstance(built, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", built)
+            or built == atlas_result_digest):
+        return None
+    preparation = capture_root / "pipeline" / "website_scene_preparation"
+    archive = preparation / SUPERSEDED_DIRECTORY / built[7:23]
+    records = [preparation / "handoff.json", *sorted(path for name in _RECORD_DIRECTORIES
+                                                     for path in (root / name).glob("*"))]
+    for path in dict.fromkeys(records):
+        target = archive / path.relative_to(preparation)
+        if path.is_symlink() or not path.is_file() or target.exists():
+            continue
+        # A whole copy or none: a crash leaves only the staging name, and the next run copies again.
+        staging = target.with_name(target.name + ".partial")
+        with handoff_effect("website_scene_handoff_superseded_records"):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, staging)
+            os.replace(staging, target)
+    return archive
+
+
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
                                  capture_root: Path, now: float,
                                  allow_operation_coverage_review: bool = False,
@@ -429,6 +475,9 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             write_json(handoff_path, result)
             return result
         base = dict(atlas["base_scene"])
+        # A base scene the job's earlier Atlas result built is replaced: its records are kept first.
+        retain_superseded_records(capture_root=capture_root, root=root,
+                                  atlas_result_digest=base.get("atlas_result_digest"))
         write_json(root / "base_scene.json", base)
         result.update(base_scene_path=str(root / "base_scene.json"), visual_reconstruction_ready=True)
         # A geometry-only job keeps its subject in the scene: it ends at the robot fit

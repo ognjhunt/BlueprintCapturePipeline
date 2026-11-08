@@ -1,5 +1,6 @@
 """A held job's preparation runs again, once, when its brief is confirmed, its intake receipt is bound or,
-on a Blueprint integration gap, a new release runs.
+on a Blueprint integration gap, a new release runs; any completed one, held or handed off, once per Atlas
+result published after it.
 
 The actual listener, lease, ledger, capture preparation stage, status reader and drain run. ``run_e2e``
 stands in for the orchestrator around the website preparation stage (its entry keeps the confirmation
@@ -93,6 +94,14 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
         result = {"schema_version": "website_scene_handoff.v1", "claim_ceiling": "development_only",
                   "simulator_ready": False, "visual_reconstruction_ready": True,
                   "capture_id": owner["capture_id"], "scene_id": owner["scene_id"], "compiled_task_spec_digest": spec}
+        atlas = root / "pipeline/atlas/result.json"
+        if atlas.is_file():
+            # The base scene names the job's current Atlas result, as the real scene source's does
+            # (``base_from`` stands in for a run that kept an earlier one).
+            built = state.get("base_from") or json.loads(atlas.read_text())["digest"]
+            write_json(work / "base_scene.json", {"atlas_result_digest": built})
+            # The real handoff's records change with its scene (its navigation record, specs and digests).
+            result.update(base_scene_path=str(work / "base_scene.json"), scene_from_atlas_result=built)
         if state["gap"]:
             # The scene half is written but no intake is sent: the hold names the missing piece only.
             record = write_record(current)
@@ -183,7 +192,7 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
                                               process_args={"provider": "openai", "run_e2e": run_e2e})
 
     return SimpleNamespace(root=root, parent=parent, website=website, runs=runs, state=state, deliver=deliver,
-                           reconcile=reconcile, bind_receipt=bind_receipt, work=work)
+                           reconcile=reconcile, bind_receipt=bind_receipt, work=work, raw=raw, run_e2e=run_e2e)
 
 
 def _confirm(site, **edit) -> dict:
@@ -361,3 +370,132 @@ def test_a_hold_left_bound_to_the_parent_after_its_context_became_the_confirmed_
     assert handoff["native_task_preparation_gap"]["task_context_digest"] == successor["context_digest"]
     assert replay.held_kind(site.root / "pipeline") == "intake_receipt"
     assert site.state["media"] == [site.parent["context_digest"]] * 2
+
+
+# A completed preparation, held or handed off, whose Atlas result was published again after it (a splat
+# rebuild): the door's --resume-preparation runs it once on the new result; the drain never does.
+
+
+def _publish(site, name: str, *, state: str = "ready") -> str:
+    """The job's Atlas lane on a sealed result (``website_atlas_preview_store``); the result's digest."""
+    from blueprint_pipeline.website_atlas_preview_store import JOB_FILE, SCHEMA as JOB_SCHEMA
+
+    result = {"schema_version": "website_atlas_pipeline_result.v1", "name": name}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    write_json(site.root / "pipeline/atlas/result.json", result)
+    write_json(site.root / "pipeline/atlas" / JOB_FILE, {"schema_version": JOB_SCHEMA, "state": state,
+                                                         "result_digest": result["digest"], "retry_at_epoch": None})
+    return result["digest"]
+
+
+def _handed_off(site) -> str:
+    """The library-aisle shape: prepared on the job's first Atlas result, its brief confirmed, its receipt
+    bound and the job handed off to screening. Returns that first result's digest."""
+    parent = _publish(site, "parent")
+    site.deliver()
+    successor = _confirm(site)
+    site.reconcile()
+    site.bind_receipt(successor)
+    site.reconcile()
+    assert _handoff(site)["status"] == "intake_ready" and len(site.runs) == 3
+    return parent
+
+
+def _resume(site, door=None):
+    """The door's ``--resume-preparation`` on the reviewed completed ledger and the original payload."""
+    ledger = listener._read_job_ledger(site.root)
+
+    def process(raw, *, expected_preparation_purpose, **kwargs):
+        # The door names the scene-preparation purpose; this fixture's capture is not such a birth, and the
+        # drain names it only for one that is.
+        assert expected_preparation_purpose == "scene_preparation"
+        return listener.process_handoff_payload(raw, run_e2e=site.run_e2e, **kwargs)
+    door = door or SimpleNamespace(process_handoff_payload=process)
+    return replay.resume_held_preparation(door, capture_root=site.root, storage_root=site.root.parents[4],
+                                          handoff_payload=site.raw, ledger_digest=canonical_digest(ledger),
+                                          ledger_revision=ledger["revision"], provider="openai")
+
+
+def test_a_handed_off_preparation_runs_once_more_on_its_republished_atlas_result_by_the_operator_only(site):
+    parent = _handed_off(site)
+    pipeline = site.root / "pipeline"
+    # Handed off, nothing waits: the ledger keeps no bytes and there is no fact.
+    assert replay.held_kind(pipeline) is None and replay.FIELD not in listener._read_job_ledger(site.root)
+    assert replay.superseded_atlas_result(pipeline) is None
+    # A rebuild in flight: the job is processing, even with its new result already written beside it.
+    rebuilt = _publish(site, "rebuilt", state="processing")
+    assert replay.superseded_atlas_result(pipeline) is None
+    with pytest.raises(ValueError, match="website_held_handoff_resume_not_eligible"):
+        _resume(site)
+    # Final on the rebuilt result: the preparation lacks it, keyed by the new result's digest.
+    assert _publish(site, "rebuilt") == rebuilt
+    fact = replay.superseded_atlas_result(pipeline)
+    assert fact == {"kind": "atlas_result_superseded", "result_digest": rebuilt, "superseded_result_digest": parent,
+                    "fact_digest": fact["fact_digest"]}
+    # The drain never starts it, and the stage binding is unchanged until the replay records its fact.
+    assert site.reconcile() == {"replayed": 0, "held": 0, "already_replayed": 0} and len(site.runs) == 3
+    assert replay.preparation_binding(pipeline, None) is None
+    assert _resume(site)["status"] == "processed" and len(site.runs) == 4
+    ledger = listener._read_job_ledger(site.root)
+    assert ledger["status"] == "completed" and ledger["attempt_history"][-1][replay.MARK] == fact["fact_digest"]
+    state = json.loads((site.work / replay.STATE_FILE).read_text())
+    assert state["fact"] == fact and state["operator"] is True
+    # The run read the rebuilt result; once the base scene names it there is no fact and no binding.
+    assert json.loads(Path(_handoff(site)["base_scene_path"]).read_text())["atlas_result_digest"] == rebuilt
+    assert replay.superseded_atlas_result(pipeline) is None and replay.preparation_binding(pipeline, None) is None
+    with pytest.raises(ValueError, match="website_held_handoff_resume_not_eligible"):
+        _resume(site)
+    assert len(site.runs) == 4
+    # The stage's paid inputs stayed bound to the sealed parent context: nothing was bought again.
+    assert site.state["media"] == [site.parent["context_digest"]] * 4
+
+
+def test_a_stopped_rebuild_hands_the_parent_result_back_and_nothing_runs(site):
+    parent = _handed_off(site)
+    _publish(site, "parent", state="processing")
+    assert _publish(site, "parent") == parent
+    assert replay.superseded_atlas_result(site.root / "pipeline") is None
+    with pytest.raises(ValueError, match="website_held_handoff_resume_not_eligible"):
+        _resume(site)
+    assert len(site.runs) == 3
+
+
+def test_a_republished_result_is_run_once_even_when_its_run_keeps_the_old_base_scene(site):
+    parent = _handed_off(site)
+    _publish(site, "rebuilt")
+    site.state["base_from"] = parent  # this run's handoff still names the parent's base scene
+    assert _resume(site)["status"] == "processed" and len(site.runs) == 4
+    assert replay.superseded_atlas_result(site.root / "pipeline")["superseded_result_digest"] == parent
+    with pytest.raises(ValueError, match="website_held_handoff_resume_already_replayed"):
+        _resume(site)
+    assert len(site.runs) == 4
+
+
+def test_a_republished_result_whose_replay_stopped_before_its_claim_stays_eligible(site):
+    _handed_off(site)
+    _publish(site, "rebuilt")
+    ledger = listener._read_job_ledger(site.root)
+    # A transient owner read returns before the claim: the fact was recorded, but nothing ran.
+    transient = SimpleNamespace(process_handoff_payload=lambda *_, **__: {
+        "status": "capture_owner_observation_unavailable_retryable"})
+    _resume(site, door=transient)
+    assert listener._read_job_ledger(site.root) == ledger and len(site.runs) == 3
+    assert _resume(site)["status"] == "processed" and len(site.runs) == 4
+
+
+def test_a_held_preparation_is_eligible_too_and_still_waits_on_its_own_fact(site):
+    parent = _publish(site, "parent")
+    site.deliver()
+    assert replay.held_kind(site.root / "pipeline") == "consent"
+    rebuilt = _publish(site, "rebuilt")
+    # The drain replays a held job only for its own fact, which has not arrived.
+    assert site.reconcile() == {"replayed": 0, "held": 1, "already_replayed": 0} and len(site.runs) == 1
+    assert replay.superseded_atlas_result(site.root / "pipeline")["superseded_result_digest"] == parent
+    assert _resume(site)["status"] == "processed" and len(site.runs) == 2
+    assert json.loads(Path(_handoff(site)["base_scene_path"]).read_text())["atlas_result_digest"] == rebuilt
+    # Still held on its unconfirmed brief, with its bytes kept for that fact.
+    ledger = listener._read_job_ledger(site.root)
+    assert replay.held_kind(site.root / "pipeline") == "consent"
+    assert ledger[replay.FIELD]["schema_version"] == replay.SCHEMA
+    _confirm(site)
+    assert site.reconcile()["replayed"] == 1 and len(site.runs) == 3

@@ -15,6 +15,11 @@ retained:
 
 Every value stays an estimate: the scale comes from named reference
 assumptions, never a measurement, and nothing here qualifies a scene.
+
+A job whose Atlas result is published again is read the same way, and what it
+writes goes beside what an earlier result wrote, never over it: the levelled
+copies are keyed by the splat and mesh they level, and the source geometry by
+its pose and scale evidence (``_geometry_root``).
 """
 from __future__ import annotations
 
@@ -212,6 +217,25 @@ def _generated_views_added_nothing(result: Mapping[str, Any], completion: Mappin
             and isinstance(recovery.get('digest'), str))
 
 
+def _geometry_root(output_root: Path, *, pose_digest: Any, scale: Mapping[str, Any]) -> Path:
+    """Where this pose's scaled source geometry is kept, so a later Atlas result never overwrites it.
+
+    The first geometry made here, or one made again from the same pose and scale evidence, keeps the
+    fixed ``source_geometry`` directory (so its path and digest stay what earlier receipts bound). A
+    geometry from another pose or scale evidence, such as a job whose Atlas result was published again
+    (``website_held_handoff_replay``), goes to its own directory keyed by both; the retained one stays.
+    """
+    root = output_root / "source_geometry"
+    kept = _read(root / "source_geometry.json")
+    binding = kept.get("binding") if isinstance(kept.get("binding"), Mapping) else {}
+    bound_scale = binding.get("scale") if isinstance(binding.get("scale"), Mapping) else {}
+    if not kept or (binding.get("atlas_pose_result_digest") == pose_digest
+                    and bound_scale.get("evidence_digest") == scale["evidence_digest"]):
+        return root
+    key = canonical_digest({"atlas_pose_result_digest": pose_digest, "scale_evidence_digest": scale["evidence_digest"]})
+    return root / "poses" / key[7:31]
+
+
 def atlas_scene_source(*, capture_root: Path, output_root: Path,
                        retained_result_path: Path | None = None,
                        retained_result_digest: str | None = None) -> dict[str, Any]:
@@ -316,8 +340,10 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     if (measurements.get("reference_agreement") or {}).get("basis"):
         scale["agreement_basis"] = measurements["reference_agreement"]["basis"]
     inputs = _read(_inside(pose_root / GEOMETRY_INPUTS_FILE, job_dir))
+    geometry_root = _geometry_root(output_root, scale=scale,
+                                   pose_digest=_read(pose_root / "atlas_posed_rgbd_result.json").get("digest"))
     geometry = atlas_posed_view_geometry(pose_root=pose_root, rotation=_survey_rotation(job_dir, inputs),
-                                         scale=scale, output_root=output_root / "source_geometry")
+                                         scale=scale, output_root=geometry_root)
 
     automation_root = job_dir / "automation"
     if result.get('target_correction'):

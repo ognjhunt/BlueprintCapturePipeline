@@ -269,6 +269,14 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
                 "status", "revision", "attempt_count", "source_payload_sha256", "producer_delivery_key",
                 "lease_expires_at")},
         }
+        if native.get("status") == "completed":
+            # Built from an Atlas result the job has since replaced: --resume-preparation derives it
+            # again from the current one, once (website_held_handoff_replay).
+            from .website_held_handoff_replay import superseded_atlas_result
+            superseded = superseded_atlas_result(capture_root / "pipeline")
+            if superseded is not None:
+                value["native_preparation"]["atlas_result_superseded"] = {
+                    key: superseded[key] for key in ("result_digest", "superseded_result_digest")}
     if type(job.get("reason")) is str and _CODE.fullmatch(job["reason"]):
         value["job"]["reason"] = job["reason"]
     if type(job.get("stage")) is str and _CODE.fullmatch(job["stage"]):
@@ -404,11 +412,12 @@ def _reissue_preparation(snapshot, native, observation, capture_root):
 
 
 def _resume_held_preparation(snapshot, native, observation, capture_root, storage_root, handoff_payload, listener):
-    """A completed ledger whose retained handoff holds on a fact that has since arrived, run again once.
+    """A completed ledger whose retained handoff lacks a fact that has since arrived, run again once.
 
-    The job's held stage runs again from its retained outputs through the same held-replay claim the drain
-    uses (``website_held_handoff_replay``): on an integration gap a new release can build, or on a consent
-    hold whose current context is the confirmed successor. Everything else refuses by name.
+    The job's stage runs again from its retained outputs through the same held-replay claim the drain
+    uses (``website_held_handoff_replay``): once its Atlas result replaced the one its base scene was built
+    from (held or handed off), on an integration gap a new release can build, or on a consent hold whose
+    current context is the confirmed successor. Everything else refuses by name.
     """
     _require(type(native["producer_delivery_key"]) is str and _SHA.fullmatch(native["producer_delivery_key"])
              and native["producer_delivery_key"] == observation["producer_delivery"].get("delivery_key"),
