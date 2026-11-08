@@ -105,9 +105,12 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
         except (ValueError, KeyError, TypeError) as exc:
             raise SceneIntakeError("scene_intake_task_family_invalid:" + str(exc)) from exc
     navigation = task["strategy"] == NAVIGATION_STRATEGY
+    from .website_preparation_revision_identity import REISSUE_FIELD, reissue
     if navigation:
-        # The scene as filmed: its record's digests, and nothing placed, removed or moved.
-        _require(set(task) == {"task_id", "strategy", "geometry_origin", *NAVIGATION_TASK_DIGESTS}
+        # The scene as filmed: its record's digests, and nothing placed, removed or moved. A navigation
+        # intake re-issued for the same capture (its scene half derived from a later Atlas result) also
+        # names the capture, its parent submission and that result.
+        _require(set(task) - {REISSUE_FIELD} == {"task_id", "strategy", "geometry_origin", *NAVIGATION_TASK_DIGESTS}
                  and task["geometry_origin"] == NAVIGATION_GEOMETRY_ORIGIN
                  and all(isinstance(task[key], str) and _DIGEST.fullmatch(task[key]) is not None
                          for key in NAVIGATION_TASK_DIGESTS), "task_navigation_invalid")
@@ -125,6 +128,12 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     from .task_evaluation_scene_execution_scope import scene_preparation_only, validate_execution
     validate_execution(value, now=now)
     _require(not navigation or scene_preparation_only(value), "navigation_must_be_scene_preparation")
+    # A re-issue's submission is its prefix and the digest of the rest of the request; any other use of the
+    # marker or the prefix is refused.
+    try:
+        reissue(value)
+    except (ValueError, TypeError, AttributeError):
+        raise SceneIntakeError("scene_intake_navigation_reissue_invalid") from None
     consent = value.get("consent")
     _require(isinstance(consent, Mapping) and set(consent) == {
         "accepted_by", "accepted_at_epoch", "rights_reference", "provider_terms_reference",

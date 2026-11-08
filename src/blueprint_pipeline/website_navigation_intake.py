@@ -13,7 +13,10 @@ configuration (``navigation_preparation_result``).
   website's own reading of the site's brief (``confirmed``) as the sponsorship carries it: nothing here
   sets or assumes it. An unconfirmed brief is refused by the website, by name.
 - ``enqueue_navigation_intake``: sends it through ``enqueue_website_prepared_scene`` and keeps the
-  website's acceptance beside the record (the outbox). A typed refusal comes back by its name.
+  website's acceptance beside the record (the outbox). A typed refusal comes back by its name. The
+  website and the Pipeline intake keep one intake per submission, so a record derived after the capture's
+  intake for an earlier one (its Atlas result published again) sends that intake re-issued under its own
+  submission (``reissue_parent``, ``website_preparation_revision_identity.reissue``), same capture.
 - ``bind_navigation_intake_receipt``: once the Pipeline has staged that exact request's intent, writes the
   intake receipt beside the record. It binds the record's six-field source
   (``native_g1_beta_authority.SOURCE_FIELDS``): the intent's id and digest, the capture, the task, the
@@ -73,13 +76,20 @@ def navigation_task(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def navigation_intake_request(*, record: Mapping[str, Any], task_context: Mapping[str, Any],
-                              authority: Mapping[str, Any], base_scene: Mapping[str, Any]) -> dict[str, Any]:
+                              authority: Mapping[str, Any], base_scene: Mapping[str, Any],
+                              parent_submission_id: str | None = None) -> dict[str, Any]:
     """The website intake request for one navigation record, from the job's own records.
 
     ``authority`` is the job's scene sponsorship (``website_scene_sponsorship.v1``), the same record a
     rigid or family intake is built from: its owner and consent (rights reference, provider terms, the
     website's ``task_confirmed`` reading) go in unchanged, and its execution fields as it states them.
     The website checks every one against the current sponsorship and reserves nothing for this kind.
+
+    ``parent_submission_id`` names the intake the capture already holds for an earlier navigation record
+    (``reissue_parent``). The request is then that intake re-issued for this record
+    (``website_preparation_revision_identity.reissue``): the task carries the marker naming the capture,
+    the parent and the Atlas result the base scene was built from, and the submission id is derived from
+    the whole request. Everything else is unchanged, so the capture keeps its limits.
     """
     _require(authority.get("schema_version") == "website_scene_sponsorship.v1"
              and isinstance(authority.get("owner"), Mapping) and isinstance(authority.get("consent"), Mapping),
@@ -89,17 +99,61 @@ def navigation_intake_request(*, record: Mapping[str, Any], task_context: Mappin
              and (record.get("source_gap") or {}).get("known", {}).get("task_context_digest")
              == task_context.get("context_digest"), "website_navigation_intake_task_context_mismatch")
     providers = ["vast", "openai"] + (["anthropic"] if authority.get("authoring_provider") == "anthropic" else [])
-    return {"schema_version": REQUEST_SCHEMA, "submission_id": task_context["capture_id"],
-            "owner": dict(authority["owner"]),
-            "source": {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
-                       "content_digest": base_scene["splat_digest"]},
-            "task": navigation_task(record),
-            "execution": {"purpose": "scene_preparation", "max_total_spend_usd": authority.get("max_total_spend_usd"),
-                          "max_paid_attempts": authority.get("max_paid_attempts"), "max_retries": 0,
-                          "expires_at_epoch": authority.get("expires_at_epoch"),
-                          "allowed_providers": authority.get("allowed_providers", providers),
-                          "policy_candidates": [], "claim_scope": "development_only"},
-            "consent": dict(authority["consent"])}
+    request = {"schema_version": REQUEST_SCHEMA, "submission_id": task_context["capture_id"],
+               "owner": dict(authority["owner"]),
+               "source": {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
+                          "content_digest": base_scene["splat_digest"]},
+               "task": navigation_task(record),
+               "execution": {"purpose": "scene_preparation",
+                             "max_total_spend_usd": authority.get("max_total_spend_usd"),
+                             "max_paid_attempts": authority.get("max_paid_attempts"), "max_retries": 0,
+                             "expires_at_epoch": authority.get("expires_at_epoch"),
+                             "allowed_providers": authority.get("allowed_providers", providers),
+                             "policy_candidates": [], "claim_scope": "development_only"},
+               "consent": dict(authority["consent"])}
+    if parent_submission_id is None:
+        return request
+    from .website_preparation_revision_identity import REISSUE_FIELD, REISSUE_PREFIX, reissue
+
+    atlas = base_scene.get("atlas_result_digest")
+    _require(isinstance(atlas, str) and _DIGEST.fullmatch(atlas) is not None,
+             "website_navigation_intake_reissue_atlas_result_unknown")
+    request["task"][REISSUE_FIELD] = {"capture_id": task_context["capture_id"],
+                                      "parent_submission_id": parent_submission_id, "atlas_result_digest": atlas}
+    request["submission_id"] = REISSUE_PREFIX + cross_runtime_canonical_digest(
+        {key: value for key, value in request.items() if key != "submission_id"})[7:]
+    try:
+        reissue(request)
+    except ValueError as exc:
+        raise WebsiteNavigationIntakeError("website_navigation_intake_reissue_invalid") from exc
+    return request
+
+
+def reissue_parent(record_path: str | Path, *, capture_id: str) -> str | None:
+    """The submission of the latest intake the capture holds for an earlier navigation record; None if none.
+
+    Each earlier record's outbox (beside it, under the same ``navigation_scene_inputs`` directory) holds
+    the request the website accepted for it. Re-issues chain to their parents, so the latest is the one no
+    other names as its parent. If two are (a fork no run of this module makes), the lineage is unknown and
+    the capture's own submission is named instead: every re-issue descends from it. Outboxes are written
+    once and never removed, so a retried run names the same parent and sends the same request.
+    """
+    from .website_preparation_revision_identity import reissue
+
+    own = Path(record_path).parent
+    held: dict[str, str | None] = {}
+    for path in sorted(own.parent.glob(f"*/{OUTBOX_FILENAME}")):
+        if path.parent == own:
+            continue
+        request = _sealed(path, OUTBOX_SCHEMA)["request"]
+        try:
+            held[request["submission_id"]] = (reissue(request) or {}).get("parent_submission_id")
+        except ValueError as exc:
+            raise WebsiteNavigationIntakeError("website_navigation_intake_outbox_unsealed") from exc
+    if not held:
+        return None
+    latest = sorted(set(held) - set(held.values()))
+    return latest[0] if len(latest) == 1 else capture_id
 
 
 def refusal_code(error: BaseException) -> str | None:
@@ -147,7 +201,9 @@ def enqueue_navigation_intake(*, record_path: str | Path, record: Mapping[str, A
     "refused", "reason": <its code>}`` for the website's typed refusal (an unconfirmed brief is
     ``website_task_context_not_confirmed``), and raises for anything else. A withdrawn capture sends
     and writes nothing. A record whose intake the website already holds (its outbox is there) is not
-    sent again: the website keeps one intake per capture, and re-checks it before forwarding.
+    sent again: the website keeps one intake per submission, and re-checks it before forwarding. A
+    record derived after the capture's intake for an earlier record (its Atlas result was published
+    again) sends that intake re-issued (``reissue_parent``), under its own submission.
     """
     from .website_task_context import enqueue_website_prepared_scene
 
@@ -162,7 +218,8 @@ def enqueue_navigation_intake(*, record_path: str | Path, record: Mapping[str, A
         return {"status": "forward_pending", "intent_id": kept["intent_id"], "request_digest": kept["request_digest"],
                 "outbox_path": str(outbox_path), "outbox_digest": kept["outbox_digest"]}
     request = navigation_intake_request(record=record, task_context=task_context, authority=authority,
-                                        base_scene=base_scene)
+                                        base_scene=base_scene, parent_submission_id=reissue_parent(
+                                            record_path, capture_id=task_context["capture_id"]))
     try:
         accepted = enqueue_website_prepared_scene(task_context=task_context, request=request)
     except ValueError as exc:
@@ -214,11 +271,14 @@ def bind_navigation_intake_receipt(*, record_path: str | Path, capture_root: str
     intent_path = root / str(outbox["intent_id"]) / "intent.json"
     if not intent_path.is_file():
         return None
+    from .website_preparation_revision_identity import REISSUE_FIELD, capture_id
+
     record = read_navigation_scene_inputs(record_path)
     request = outbox["request"]
+    task = request.get("task") if isinstance(request.get("task"), Mapping) else {}
     _require(outbox["scene_inputs_digest"] == record["scene_inputs_digest"]
              and outbox["scene_revision_digest"] == record["scene_revision_digest"]
-             and request.get("task") == navigation_task(record)
+             and {key: value for key, value in task.items() if key != REISSUE_FIELD} == navigation_task(record)
              and outbox["request_digest"] == cross_runtime_canonical_digest(request),
              "website_navigation_intake_outbox_record_mismatch")
     try:
@@ -228,10 +288,15 @@ def bind_navigation_intake_receipt(*, record_path: str | Path, capture_root: str
     _require(intent.get("intent_id") == outbox["intent_id"] and intent.get("request") == request,
              "website_navigation_intake_intent_mismatch")
     capture = Path(capture_root)
-    _require(capture.name == request["submission_id"] and record_path.absolute().is_relative_to(capture.absolute()),
+    # A re-issued intake has its own submission; the capture it belongs to is the one its marker names.
+    try:
+        owner_capture = capture_id(request)
+    except ValueError as exc:
+        raise WebsiteNavigationIntakeError("website_navigation_intake_capture_mismatch") from exc
+    _require(capture.name == owner_capture and record_path.absolute().is_relative_to(capture.absolute()),
              "website_navigation_intake_capture_mismatch")
     source = {"scene_intent_id": intent["intent_id"], "scene_intent_digest": intent["intent_digest"],
-              "capture_id": request["submission_id"], "task_id": record["task_id"],
+              "capture_id": owner_capture, "task_id": record["task_id"],
               "task_context_digest": record["source_gap"]["known"]["task_context_digest"],
               "scene_revision_digest": record["scene_revision_digest"]}
     receipt = {"schema_version": RECEIPT_SCHEMA, "claim_ceiling": "development_only",
@@ -293,4 +358,4 @@ __all__ = ["OUTBOX_FILENAME", "OUTBOX_SCHEMA", "RECEIPT_FILENAME", "RECEIPT_SCHE
            "RESULT_SCHEMA", "SOURCE_FIELDS", "WebsiteNavigationIntakeError", "bind_navigation_intake_receipt",
            "enqueue_navigation_intake", "is_navigation_request", "navigation_intake_request",
            "navigation_preparation_result", "navigation_task", "read_navigation_intake_receipt",
-           "receipt_exists", "refusal_code", "validate_navigation_preparation_result"]
+           "receipt_exists", "refusal_code", "reissue_parent", "validate_navigation_preparation_result"]

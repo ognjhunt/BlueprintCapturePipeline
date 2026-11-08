@@ -16,6 +16,9 @@ re-run them:
 - **A Blueprint integration gap.** A hold naming any missing ``pipeline:*`` piece waits on Blueprint
   itself, which a new release can fix. Each release (``current_release_commit``) re-evaluates the job
   once, keyed by that commit and the pipeline pieces the hold names; the drain tick's limit bounds it.
+  A job whose re-derived scene half's intake the website refused as a changed request
+  (``idempotency_conflict``, before the Pipeline could re-issue it) lacks ``pipeline:navigation_intake_reissue``
+  (``_reissue_refused``); its next replay sends the intake re-issued.
 
 Modelled on the robot fit recheck (``website_robot_fit_hold``): the job ledger keeps the run's exact
 handoff bytes while it holds this way (``replay_record``); the existing drain tick replays them once per
@@ -39,17 +42,16 @@ One more fact makes any completed preparation stale, held or handed off:
   ``website_scene_handoff.retain_superseded_records``). It adds no spend: the stage runs as any run
   does, under the job's existing admission and allowances (a navigation job's run is CPU only). While
   the Atlas job is processing (a rebuild in flight) or when its result is the one the base scene names
-  (a stopped rebuild hands the parent back), there is no fact.
+  (a stopped rebuild hands the parent back), there is no fact. The new scene half's intake goes out in
+  the same run, re-issued under its own submission (``website_navigation_intake.reissue_parent``).
 
   Only the operator replays it, and the drain keeps no bytes for it. Every republish of a ready job is
   an operator reopening it (``atlas_preparation_job_control.retry_preparation_job``, the door's
   ``selected-handoff --atlas-retry``), and the door's status then shows the completed preparation's stale
   base scene (``native_preparation.atlas_result_superseded``). A handed-off job's ledger keeps no bytes
   (``replay_record``), and keeping them for every completed job would retain each payload indefinitely
-  for an event only an operator causes. And the website keeps one intake per capture: a scene half
-  derived from a new result asks for one it refuses today (``idempotency_conflict``), so the operator
-  chooses when a re-derived job holds by that name. A held job the drain replays for its own fact reads
-  the current result like any run.
+  for an event only an operator causes. A held job the drain replays for its own fact reads the current
+  result like any run.
 """
 from __future__ import annotations
 
@@ -70,6 +72,9 @@ STATE_FILE = "held_handoff_replay.json"
 #: Holds whose reason is the site's unconfirmed brief (the website's refusal of the job's intake).
 CONSENT_HOLDS = frozenset({"website_task_context_not_confirmed"})
 SOURCE_IDENTITY_MISSING = "pipeline:navigation_source_identity"
+#: What a navigation job lacked when the website refused its re-derived scene half's intake as a changed
+#: request (``idempotency_conflict``): a re-issued intake (``_reissue_refused``).
+REISSUE_MISSING = "pipeline:navigation_intake_reissue"
 _RECORD_FIELDS = frozenset({"schema_version", "payload_base64", "source_payload_sha256", "producer_delivery_key"})
 
 
@@ -93,10 +98,34 @@ def _handoff(pipeline_root: Path) -> dict[str, Any] | None:
         return None
 
 
+def _reissue_refused(handoff: dict[str, Any]) -> bool:
+    """Whether the website refused a re-derived scene half's intake as a changed request of the capture's.
+
+    A release before the re-issued intake (``website_preparation_revision_identity.reissue``) sent a
+    re-derived record's intake under the capture's own submission, which the website already held for an
+    earlier record, and the job held by the website's ``idempotency_conflict``. That is a Blueprint
+    integration gap: the Pipeline could not re-issue the intake.
+    """
+    gap = handoff.get("native_task_preparation_gap") or {}
+    inputs = handoff.get("navigation_scene_inputs") or {}
+    if (gap.get("code") != "idempotency_conflict"
+            or (gap.get("navigation_intake") or {}).get("reason") != "idempotency_conflict"
+            or inputs.get("status") != "written" or not isinstance(inputs.get("path"), str)):
+        return False
+    from .website_navigation_intake import OUTBOX_FILENAME
+
+    own = Path(inputs["path"]).parent
+    return any(path.parent != own and path.is_file() and not path.is_symlink()
+               for path in own.parent.glob(f"*/{OUTBOX_FILENAME}"))
+
+
 def _pipeline_missing(handoff: dict[str, Any]) -> list[str]:
     """The Blueprint integration pieces a hold names as missing (``pipeline:*``)."""
     gap = handoff.get("native_task_preparation_gap") or {}
-    return sorted({item for item in gap.get("missing") or () if isinstance(item, str) and item.startswith("pipeline:")})
+    missing = {item for item in gap.get("missing") or () if isinstance(item, str) and item.startswith("pipeline:")}
+    if _reissue_refused(handoff):
+        missing.add(REISSUE_MISSING)
+    return sorted(missing)
 
 
 def held_kind(pipeline_root: Path) -> str | None:

@@ -683,19 +683,13 @@ def test_the_library_shape_held_before_the_intake_hook_is_resumed_once_and_sends
     assert record["source_gap"]["known"]["task_context_digest"] == successor["context_digest"]
 
 
-def test_a_republished_atlas_result_derives_a_new_scene_half_beside_the_handed_off_one(job, monkeypatch, tmp_path):
-    """The library-aisle job after a splat rebuild: its handoff runs again on the new Atlas result.
+def _republishing(job, monkeypatch, tmp_path) -> tuple[dict, dict]:
+    """A job whose Atlas result can be published again, and the website's one intake per submission.
 
-    The new base scene names the new result; the scene half is written again, under its own key, and the
-    team registry's row names it. The handed-off record, its outbox and its receipt stay as they were, so
-    the old screening evidence still verifies, and the records the old base scene named are kept. The old
-    receipt is never read as the new record's. The website keeps one intake per capture and owner (its
-    ``prepared-scene`` route answers a changed request with ``idempotency_conflict``), so the new record
-    gets no intake, no receipt and no screening source, and the job holds by the website's name.
+    The website double answers as its ``prepared-scene`` route does: one intake per owner and submission,
+    a changed request under the same submission refused by name (``idempotency_conflict``).
     """
     import hashlib
-
-    from blueprint_pipeline.website_scene_handoff import SUPERSEDED_DIRECTORY
 
     accepted = {}
 
@@ -737,11 +731,30 @@ def test_a_republished_atlas_result_derives_a_new_scene_half_beside_the_handed_o
     _stage(job)
     handed, _ = _run(job)
     assert handed["status"] == "intake_ready"
-    old_path = Path(handed["navigation_scene_inputs"]["path"])
+    return scenes, current
+
+
+def test_a_republished_atlas_result_derives_a_new_scene_half_and_reissues_its_intake_in_the_same_run(
+        job, monkeypatch, tmp_path):
+    """The library-aisle job after a splat rebuild: its handoff runs again on the new Atlas result.
+
+    The new base scene names the new result; the scene half is written again, under its own key, and the
+    team registry's row names it. The handed-off record, its outbox and its receipt stay as they were, so
+    the old screening evidence still verifies, and the records the old base scene named are kept. The old
+    receipt is never read as the new record's. The capture already holds an intake for the earlier record,
+    so the new one's is that intake re-issued under its own submission: the website takes it in the same
+    run, the Pipeline intake stages it as its own intent, and its receipt names the capture.
+    """
+    from blueprint_pipeline.website_preparation_revision_identity import REISSUE_FIELD, REISSUE_PREFIX, reissue
+    from blueprint_pipeline.website_scene_handoff import SUPERSEDED_DIRECTORY
+
+    scenes, current = _republishing(job, monkeypatch, tmp_path)
+    handed_bytes = (job["capture"] / "pipeline/website_scene_preparation/handoff.json").read_bytes()
+    old_path = Path(json.loads(handed_bytes)["navigation_scene_inputs"]["path"])
     old_record = read_navigation_scene_inputs(old_path)
+    old_receipt = read_navigation_intake_receipt(old_path)
     kept = {path: path.read_bytes() for path in old_path.parent.rglob("*") if path.is_file()}
     assert {OUTBOX_FILENAME, RECEIPT_FILENAME} <= {path.name for path in kept}
-    handed_bytes = (job["capture"] / "pipeline/website_scene_preparation/handoff.json").read_bytes()
     # The Atlas job publishes the rebuilt result and the preparation runs once more on it.
     current["base"] = scenes["rebuilt"]
     rerun, context = _run(job)
@@ -755,19 +768,79 @@ def test_a_republished_atlas_result_derives_a_new_scene_half_beside_the_handed_o
     # The handed-off record and everything beside it are unchanged, and still read.
     assert all(path.read_bytes() == data for path, data in kept.items())
     assert read_navigation_scene_inputs(old_path) == old_record
-    assert read_navigation_intake_receipt(old_path)["scene_inputs_digest"] == old_record["scene_inputs_digest"]
+    assert read_navigation_intake_receipt(old_path) == old_receipt
     # The records the old base scene named are kept as they were, under its result.
     archive = (job["capture"] / "pipeline/website_scene_preparation" / SUPERSEDED_DIRECTORY
                / scenes["parent"]["atlas_result_digest"][7:23])
     assert (archive / "handoff.json").read_bytes() == handed_bytes
     assert json.loads((archive / "base_scene.json").read_text())["atlas_result_digest"] == (
         scenes["parent"]["atlas_result_digest"])
-    # The old receipt is not the new record's: the website refused its intake, so it has none.
-    assert job["sent"][-1]["source"]["content_digest"] == scenes["rebuilt"]["splat_digest"]
-    assert job["sent"][-1]["submission_id"] == job["sent"][0]["submission_id"] == context["capture_id"]
-    assert not (new_path.parent / OUTBOX_FILENAME).exists() and not (new_path.parent / RECEIPT_FILENAME).exists()
+    # The intake went out re-issued, in this run: same capture, consent, owner and execution; its own
+    # submission, its parent the capture's own, and the Atlas result the new base scene was built from.
+    first, sent = job["sent"][0], job["sent"][-1]
+    assert sent["submission_id"].startswith(REISSUE_PREFIX) and first["submission_id"] == context["capture_id"]
+    assert reissue(sent) == {"capture_id": context["capture_id"], "parent_submission_id": context["capture_id"],
+                             "atlas_result_digest": scenes["rebuilt"]["atlas_result_digest"]}
+    assert {key: value for key, value in sent["task"].items() if key != REISSUE_FIELD} == {
+        "task_id": new_record["task_id"], "strategy": "goal_region_navigation", "geometry_origin": "kept_as_filmed",
+        **{key: new_record[key] for key in ("navigation_task_spec_digest", "compiled_task_spec_digest",
+                                            "task_success_contract_digest", "runtime_contract_digest",
+                                            "scene_revision_digest")}}
+    assert {key: sent[key] for key in ("owner", "consent", "execution")} == {
+        key: first[key] for key in ("owner", "consent", "execution")}
+    assert sent["consent"]["task_confirmed"] is True and sent["source"]["content_digest"] == scenes["rebuilt"]["splat_digest"]
+    assert rerun["navigation_intake"]["status"] == "forward_pending" and rerun["blockers"] != ["idempotency_conflict"]
+    assert (new_path.parent / OUTBOX_FILENAME).is_file() and not (new_path.parent / RECEIPT_FILENAME).exists()
     with pytest.raises(WebsiteNavigationSceneInputsError, match=SOURCE_UNBOUND):
         screening_source(new_record)
-    assert rerun["status"] == "needs_input" and rerun["blockers"] == ["idempotency_conflict"]
-    assert rerun["navigation_intake"] == {"status": "refused", "reason": "idempotency_conflict"}
-    assert holds_native_task_preparation(rerun, context)
+    # The website forwards it and the Pipeline's own intake stages it as its own intent; the next pass
+    # binds the new record's receipt, naming the capture, and the job is handed off on the new scene.
+    staged = _stage(job)
+    assert staged["intent_id"] != old_receipt["intent"]["intent_id"]
+    handed, _ = _run(job)
+    receipt = read_navigation_intake_receipt(new_path)
+    assert receipt["source"] == {"scene_intent_id": staged["intent_id"], "scene_intent_digest": staged["intent_digest"],
+                                 "capture_id": context["capture_id"], "task_id": new_record["task_id"],
+                                 "task_context_digest": context["context_digest"],
+                                 "scene_revision_digest": new_record["scene_revision_digest"]}
+    assert screening_source(new_record) == receipt["source"] and receipt["reserved_usd"] == 0
+    assert handed["status"] == "intake_ready" and handed["navigation_preparation"]["source"] == receipt["source"]
+    # Two intakes in all, the original and the re-issue: nothing is sent again once the website holds one.
+    assert [request["submission_id"] for request in job["sent"]] == [first["submission_id"], sent["submission_id"]]
+
+
+def test_a_job_held_on_the_websites_conflict_from_a_re_derive_is_an_integration_gap_until_it_re_issues(
+        job, monkeypatch, tmp_path):
+    """A re-derive by a release before the re-issued intake held on the website's ``idempotency_conflict``.
+
+    That is a Blueprint integration gap (``pipeline:navigation_intake_reissue``): each release re-evaluates
+    it once, and this release's run sends the intake re-issued.
+    """
+    from blueprint_pipeline import website_held_handoff_replay as held
+    from blueprint_pipeline import website_navigation_intake as intake
+
+    scenes, current = _republishing(job, monkeypatch, tmp_path)
+    pipeline = job["capture"] / "pipeline"
+    write_json(pipeline / "website_task_context.json", _context())
+    # The earlier release: the re-derived record's intake under the capture's own submission.
+    reissue_parent = intake.reissue_parent
+    monkeypatch.setattr(intake, "reissue_parent", lambda *_, **__: None)
+    current["base"] = scenes["rebuilt"]
+    stuck, context = _run(job)
+    assert stuck["blockers"] == ["idempotency_conflict"] and holds_native_task_preparation(stuck, context)
+    assert held.held_kind(pipeline) == "integration_gap"
+    monkeypatch.setattr("blueprint_pipeline.team_scene_packet_worker.current_release_commit", lambda: "a" * 40)
+    fact = held.arrived_fact(pipeline)
+    assert fact["kind"] == "release" and fact["missing_pipeline"] == [held.REISSUE_MISSING]
+    # Not every refusal by that name: a first record's own conflict names no re-derive.
+    first = Path(stuck["navigation_scene_inputs"]["path"])
+    assert not held._reissue_refused({**stuck, "navigation_scene_inputs": {
+        **stuck["navigation_scene_inputs"], "path": str(tmp_path / "elsewhere/key" / first.name)}})
+    # This release: the replayed run re-issues the intake and the job waits only on its receipt.
+    monkeypatch.setattr(intake, "reissue_parent", reissue_parent)
+    replayed, _ = _run(job)
+    assert replayed["navigation_intake"]["status"] == "forward_pending"
+    assert job["sent"][-1]["submission_id"].startswith("website-reissue-")
+    assert held.held_kind(pipeline) == "intake_receipt"
+
+

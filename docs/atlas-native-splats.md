@@ -350,9 +350,11 @@ and retained data is never deleted. So a rebuild runs beside the original
   re-runs it once on that result (`website_held_handoff_replay`,
   `atlas_result_superseded`), writing the new outputs beside the old ones. The
   scene preview prefers the prepared base scene, so it shows the new splat once
-  that run rewrote the base scene. The website keeps one intake per capture, so
-  the new navigation scene half gets no intake receipt (and no G1 screening)
-  until the website accepts a re-issued one.
+  that run rewrote the base scene. The website keeps one intake per submission,
+  so the new navigation scene half's intake goes out in the same run as the
+  capture's intake re-issued under its own submission
+  (`website_preparation_revision_identity.reissue`); its receipt, and then G1
+  screening on the new scene, follow as for any navigation job.
 
 ## Reviewed runtime policy
 

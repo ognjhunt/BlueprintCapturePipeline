@@ -1,0 +1,151 @@
+{
+  "description": "Synthetic offline navigation re-issue identity: a navigation intake sent again for the same capture after its scene half was derived from a later Atlas result; no runtime or spending evidence.",
+  "original": {
+    "schema_version": "task_evaluation_scene_intake_request.v1",
+    "submission_id": "walkthrough-req1",
+    "owner": {
+      "user_id": "u1",
+      "organization_id": "org1"
+    },
+    "source": {
+      "kind": "gaussian_splat",
+      "binding_id": "website-splat-11111111111111111111111111111111",
+      "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "task": {
+      "task_id": "website-test-task",
+      "strategy": "goal_region_navigation",
+      "geometry_origin": "kept_as_filmed",
+      "navigation_task_spec_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "compiled_task_spec_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "task_success_contract_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "runtime_contract_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "scene_revision_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "execution": {
+      "purpose": "scene_preparation",
+      "max_total_spend_usd": 20,
+      "max_paid_attempts": 2,
+      "max_retries": 0,
+      "expires_at_epoch": 1000,
+      "allowed_providers": [
+        "vast",
+        "openai"
+      ],
+      "policy_candidates": [],
+      "claim_scope": "development_only"
+    },
+    "consent": {
+      "accepted_by": "u1",
+      "accepted_at_epoch": 99,
+      "rights_reference": "rights-v1",
+      "provider_terms_reference": "terms-v1",
+      "private_processing_authorized": true,
+      "provider_training_authorized": false,
+      "task_confirmed": true,
+      "spend_authorized": true
+    }
+  },
+  "reissued": {
+    "schema_version": "task_evaluation_scene_intake_request.v1",
+    "submission_id": "website-reissue-4176684b4a784b9e150420ea2817db3aefb61f39729c1ea197edb08a3475f705",
+    "owner": {
+      "user_id": "u1",
+      "organization_id": "org1"
+    },
+    "source": {
+      "kind": "gaussian_splat",
+      "binding_id": "website-splat-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "task": {
+      "task_id": "website-test-task",
+      "strategy": "goal_region_navigation",
+      "geometry_origin": "kept_as_filmed",
+      "navigation_task_spec_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "compiled_task_spec_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "task_success_contract_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "runtime_contract_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "scene_revision_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "website_navigation_reissue": {
+        "capture_id": "walkthrough-req1",
+        "parent_submission_id": "walkthrough-req1",
+        "atlas_result_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "execution": {
+      "purpose": "scene_preparation",
+      "max_total_spend_usd": 20,
+      "max_paid_attempts": 2,
+      "max_retries": 0,
+      "expires_at_epoch": 1000,
+      "allowed_providers": [
+        "vast",
+        "openai"
+      ],
+      "policy_candidates": [],
+      "claim_scope": "development_only"
+    },
+    "consent": {
+      "accepted_by": "u1",
+      "accepted_at_epoch": 99,
+      "rights_reference": "rights-v1",
+      "provider_terms_reference": "terms-v1",
+      "private_processing_authorized": true,
+      "provider_training_authorized": false,
+      "task_confirmed": true,
+      "spend_authorized": true
+    }
+  },
+  "reissued_again": {
+    "schema_version": "task_evaluation_scene_intake_request.v1",
+    "submission_id": "website-reissue-1c2d0d3c82f0ea28fb2735a56528538442e737d6b11c656afd6696f53be8364e",
+    "owner": {
+      "user_id": "u1",
+      "organization_id": "org1"
+    },
+    "source": {
+      "kind": "gaussian_splat",
+      "binding_id": "website-splat-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "content_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "task": {
+      "task_id": "website-test-task",
+      "strategy": "goal_region_navigation",
+      "geometry_origin": "kept_as_filmed",
+      "navigation_task_spec_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "compiled_task_spec_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "task_success_contract_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "runtime_contract_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "scene_revision_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "website_navigation_reissue": {
+        "capture_id": "walkthrough-req1",
+        "parent_submission_id": "website-reissue-4176684b4a784b9e150420ea2817db3aefb61f39729c1ea197edb08a3475f705",
+        "atlas_result_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "execution": {
+      "purpose": "scene_preparation",
+      "max_total_spend_usd": 20,
+      "max_paid_attempts": 2,
+      "max_retries": 0,
+      "expires_at_epoch": 1000,
+      "allowed_providers": [
+        "vast",
+        "openai"
+      ],
+      "policy_candidates": [],
+      "claim_scope": "development_only"
+    },
+    "consent": {
+      "accepted_by": "u1",
+      "accepted_at_epoch": 99,
+      "rights_reference": "rights-v1",
+      "provider_terms_reference": "terms-v1",
+      "private_processing_authorized": true,
+      "provider_training_authorized": false,
+      "task_confirmed": true,
+      "spend_authorized": true
+    }
+  }
+}
