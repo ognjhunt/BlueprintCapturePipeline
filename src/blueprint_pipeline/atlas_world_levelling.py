@@ -498,11 +498,18 @@ def _fill_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: float
         return None
     cell = WALKED_FLOOR_CELL_M
     low = np.floor((footprints.min(axis=0) - WALKED_FLOOR_MARGIN_M) / cell) * cell
-    high = np.ceil((footprints.max(axis=0) + WALKED_FLOOR_MARGIN_M) / cell) * cell
-    counts = np.maximum(1, np.round((high - low) / cell).astype(int))
-    rows = [(i, j) for i in range(counts[0]) for j in range(counts[1])
-            if float(np.min(np.linalg.norm(footprints - (low + (np.array([i, j]) + 0.5) * cell), axis=1)))
-            <= WALKED_FLOOR_MARGIN_M]
+    # Each camera stamps the cells near it: work grows with the cameras, not with the walk's bounding box.
+    reach = int(math.ceil(WALKED_FLOOR_MARGIN_M / cell))
+    cells: set[tuple[int, int]] = set()
+    for footprint in footprints:
+        base = np.floor((footprint - low) / cell).astype(int)
+        for di in range(-reach, reach + 1):
+            for dj in range(-reach, reach + 1):
+                i, j = int(base[0] + di), int(base[1] + dj)
+                if i >= 0 and j >= 0 and float(np.linalg.norm(footprint - (low + (np.array([i, j]) + 0.5) * cell))) \
+                        <= WALKED_FLOOR_MARGIN_M:
+                    cells.add((i, j))
+    rows = sorted(cells)
     if not rows:
         return None
     vertices = np.asarray(mesh.vertices, dtype=np.float64)
