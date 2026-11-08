@@ -524,7 +524,8 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
     reused, not bought again. A job stopped for input (a background that needs
     review) resumes the same way. A ready job reopens only when its minimal
     refined splat left generated views out and the reviewed whole-view form was
-    never tried; that form is then tried once. A withdrawn capture, a job that only a new
+    never tried; that form is then tried once. It also reopens once to rebuild a
+    refined splat bought from views that disagree (``atlas_splat_rebuild``). A withdrawn capture, a job that only a new
     capture can help, or one that cannot recover, is refused.
     """
     def source_check(_job):

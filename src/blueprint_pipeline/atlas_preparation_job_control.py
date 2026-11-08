@@ -92,8 +92,13 @@ def retry_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]
             marker = retained_minimal_marker(path.parent, job.get("result_digest"))
         upgrade = (job["state"] == "ready" and isinstance(marker, Mapping)
                    and marker.get("gap_preserving_form_untried") is True)
-        if ((job["state"] not in {"failed", "needs_input"} and not upgrade) or job["reason"] in _NOT_RETRYABLE
-                or job["reason"] in _NEEDS_NEW_CAPTURE):
+        # Or once to rebuild a refined splat bought from views that disagree (atlas_splat_rebuild).
+        rebuild = None
+        if job["state"] == "ready" and not upgrade:
+            from .atlas_splat_rebuild import rebuild_eligibility
+            rebuild = rebuild_eligibility(path.parent, job)
+        if ((job["state"] not in {"failed", "needs_input"} and not upgrade and not rebuild)
+                or job["reason"] in _NOT_RETRYABLE or job["reason"] in _NEEDS_NEW_CAPTURE):
             raise ValueError("atlas_preview_retry_requires_recoverable_failure")
         current = int(now())
         if current - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
@@ -116,6 +121,10 @@ def retry_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]
             request_gap_preserving_upgrade(root, splat_manifest_digest=marker.get("splat_manifest_digest"),
                                            at_epoch=current)
             reason = "refined_splat_gap_preserving_form_untried"
+        elif rebuild:
+            from .atlas_splat_rebuild import request_rebuild
+            request_rebuild(path.parent, job, at_epoch=current)
+            reason = "refined_splat_rebuild_requested"
         retries = [*job.get("retries", []), {"reason": reason, "at_epoch": current,
                                              **({"request_id": request_id} if request_id is not None else {})}]
         # The failure's own cleanup completed; the resumed run makes new assets,

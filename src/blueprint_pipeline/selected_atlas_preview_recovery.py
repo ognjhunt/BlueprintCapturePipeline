@@ -287,6 +287,16 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
         left = marker.get("left_out_admitted_view_ids")
         value["job"]["gap_preserving_upgrade"] = {
             "left_out_admitted_view_count": len(left) if type(left) is list else None}
+    elif job["state"] == "ready":
+        # The other ready job atlas-retry reopens: one rebuild of a refined splat bought
+        # from views that disagree (atlas_splat_rebuild), shown here before it is approved.
+        from .atlas_splat_rebuild import rebuild_eligibility
+        try:
+            rebuild = rebuild_eligibility(capture_root / "pipeline/atlas", job)
+        except (OSError, ValueError, KeyError, TypeError):
+            rebuild = None
+        if rebuild is not None:
+            value["job"]["splat_rebuild"] = rebuild
     if time.time() - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
         value["preflight_blockers"].append("atlas_preview_expired")
     try:
@@ -338,6 +348,9 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
             value["preflight_blockers"].append("website_atlas_consent_expired")
         if config["remaining_cost_usd"] <= 0 or config.get("remaining_requests", 1) <= 0:
             value["preflight_blockers"].append("website_scene_preparation_budget_exhausted")
+        if "splat_rebuild" in value["job"]:
+            value["job"]["splat_rebuild"]["allowance_covers_maximum"] = (
+                config["remaining_cost_usd"] >= value["job"]["splat_rebuild"]["maximum_cost_usd"])
         try:
             _require_current_price_review(config["policy"])
         except ValueError:
@@ -516,6 +529,10 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
             snapshot = _snapshot(selection, observation, membership, capture_root, storage_root, job)
             _require(not snapshot["preflight_blockers"], "preflight_blocked")
             _require(snapshot["atlas_status_digest"] == selection["atlas_status_digest"], "status_changed")
+            # Money: a rebuild starts only while the job's allowance covers its most it can cost.
+            rebuild = snapshot["job"].get("splat_rebuild")
+            _require(rebuild is None or rebuild.get("allowance_covers_maximum") is True,
+                     "splat_rebuild_allowance_insufficient")
 
         snapshot = None
         retried = retry_failed_job(job_path, preflight=preflight)

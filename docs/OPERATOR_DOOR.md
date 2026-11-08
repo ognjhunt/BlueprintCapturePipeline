@@ -251,6 +251,22 @@ as `blueprint`; retry can write only the selected capture's `pipeline/atlas`
 directory and the door's result directory. This recovery supports the beta scene
 journey and the ADP-009D development rehearsal without raising evidence claims.
 
+The same `--atlas-retry` reopens a `ready` job in two cases only. The first is
+its untried gap-preserving form (`job.gap_preserving_upgrade` in the status).
+The second is one rebuild of its refined splat (`job.splat_rebuild`, owner
+approval 2026-11-08, "fix the input first, then do the rebuild"). It applies when
+the splat was bought before the current input selection, from a pose World Labs
+did not refine or whose views disagree. The status shows why, `expected_cost_usd`,
+`maximum_cost_usd` and `allowance_covers_maximum`, and the retry refuses with
+`selected_handoff_atlas_splat_rebuild_allowance_insufficient` unless the remaining
+Atlas allowance covers the maximum. The rebuild runs in
+`pipeline/atlas/splat-rebuild/<hex>/` and leaves every earlier artifact in place.
+It buys the splat only after a new pose that World Labs refined and whose views
+agree. On a stop the job is ready again on its parent result.
+[`atlas-native-splats.md`](atlas-native-splats.md) ("Rebuilding a ready job's
+refined splat") has the details. Scene preparation does not re-derive from the
+rebuilt result by itself.
+
 `--resume-preparation --atlas-status-digest sha256:...` also resumes a native
 job left `processing` by a process that died holding its lease (for example the
 kernel's OOM killer). The reviewed snapshot shows that ledger's

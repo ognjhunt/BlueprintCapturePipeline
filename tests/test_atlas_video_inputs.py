@@ -546,3 +546,39 @@ def test_a_selection_retained_at_64_resumes_with_its_own_capacity(tmp_path, monk
     # A later change to the configured capacity reads the plan's own recorded capacity instead.
     monkeypatch.setattr(pose_api, "MAX_POSE_INPUT_IMAGES", 128)
     assert video.prepare_video_inputs(survey_path=path, review=review, output_root=output, **options) == first
+
+
+def test_views_added_after_the_cover_clear_the_clips_relative_sharpness_floor(tmp_path, monkeypatch):
+    """capture-5b067498: its soft opening passed the absolute floor at about half the clip's median sharpness."""
+    path, review = _forward_motion_job(tmp_path)
+    survey = json.loads(path.read_text())
+    soft = {str(i) for i in range(30)}
+    for row in survey["frames"]:
+        row["sharpness"] = 40 if row["frame_id"] in soft else 80
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    path.write_text(json.dumps(survey))
+    review["survey_digest"] = survey["digest"]
+    _forward_motion(monkeypatch)
+    options = dict(survey_path=path, review=review, output_root=tmp_path / "pose", splat_frame_target=96,
+                   relative_sharpness_fraction=video.RELATIVE_SHARPNESS_FRACTION)
+    first = video.prepare_video_inputs(**options)
+    plan = json.loads((tmp_path / "pose/atlas_view_selection.json").read_text())
+    policy = plan["frame_policy"]
+    assert policy["relative_sharpness_fraction"] == .6 and policy["relative_sharpness_floor"] == 48.0
+    # The reviewed cover keeps its required soft view, named; no soft view is added after it.
+    below = policy["cover_frames_below_relative_sharpness_floor"]
+    assert "0" in below and set(below) <= soft
+    assert {row["frame_id"] for row in first["frames"]} & soft == set(below)
+    assert len(first["frames"]) == 96 and policy["splat_frame_target_met"] is True
+    named = {row["frame_id"] for row in plan["diagnostics"] if row["decision"] == "below_relative_sharpness_floor"}
+    assert named == soft - set(below)
+    inputs = json.loads((tmp_path / "pose" / video.GEOMETRY_INPUTS_FILE).read_text())
+    assert inputs["binding"]["relative_sharpness_fraction"] == .6
+    # A wait reuses the retained handoff; a different profile never rewrites it.
+    monkeypatch.setattr(video, "_features", lambda *_: pytest.fail("retained inputs recomputed"))
+    assert video.prepare_video_inputs(**options) == first
+    with pytest.raises(ValueError, match="retained_video_inputs_invalid"):
+        video.prepare_video_inputs(**{**options, "relative_sharpness_fraction": 0})
+    for invalid in (1, -.1, True, float("nan")):
+        with pytest.raises(ValueError, match="atlas_selection_sharpness_profile_invalid"):
+            video.prepare_video_inputs(**{**options, "relative_sharpness_fraction": invalid})

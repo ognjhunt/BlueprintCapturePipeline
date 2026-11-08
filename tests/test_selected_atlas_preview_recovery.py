@@ -722,3 +722,33 @@ def test_native_resume_preserves_a_bounded_owner_observation_error(site, monkeyp
     # Only the exact shape is repeated, bounded again here.
     assert result.get('owner_observation_error') == expected
     assert 'secret' not in json.dumps(result) and 'hunter2' not in json.dumps(result)
+
+
+@pytest.mark.parametrize("remaining", [23.5, 5])
+def test_status_shows_a_splat_rebuild_and_retry_requests_it_only_within_the_allowance(site, remaining):
+    from blueprint_pipeline import atlas_splat_rebuild as rebuilds
+    from tests.test_atlas_splat_input_quality import write_preserved_records
+    result = write_preserved_records(site.atlas)
+    write_job(site, state="ready", reason=None, refined_splat=None, result_digest=result["digest"])
+    site.config.update(remaining_cost_usd=remaining, reserved_or_settled_cost_usd=25 - remaining)
+    settled = 24.5 - remaining  # beside the fixture's one 0.5 hold
+    site.config["allowance_accounting"]["reservations"][0].update(
+        maximum_cost_usd=settled, settled_cost_usd=settled, accounted_cost_usd=settled)
+    site.config["allowance_accounting"].update(settled_cost_usd=settled, reserved_or_settled_cost_usd=25 - remaining)
+    status = recover(site)["atlas"]
+    rebuild = status["job"]["splat_rebuild"]
+    assert rebuild["reasons"] == ["pose_refinement_not_accepted", "views_disagree_with_measured_neighbours"]
+    assert rebuild["expected_cost_usd"] == 6.56 and rebuild["allowance_covers_maximum"] is (remaining == 23.5)
+    before = site.job_path.read_bytes()
+    if remaining == 5:
+        # Money: the job's allowance must cover the most the rebuild can cost.
+        with pytest.raises(ValueError, match="selected_handoff_atlas_splat_rebuild_allowance_insufficient"):
+            recover(site, retry_digest=status["atlas_status_digest"])
+        assert site.job_path.read_bytes() == before and not (site.atlas / rebuilds.REQUEST_FILE).exists()
+        return
+    queued = recover(site, retry_digest=status["atlas_status_digest"])
+    assert queued["status"] == "atlas_retry_queued" and queued["later_timer_may_make_paid_calls"] is True
+    after = json.loads(site.job_path.read_text())
+    assert after["state"] == "processing" and after["retries"][-1]["reason"] == "refined_splat_rebuild_requested"
+    request = json.loads((site.atlas / rebuilds.REQUEST_FILE).read_text())
+    assert request["parent_result_digest"] == result["digest"]

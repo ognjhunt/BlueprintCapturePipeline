@@ -27,6 +27,19 @@ GEOMETRY_INPUTS_FILE = "atlas_geometry_inputs.json"
 #: A view that moved less than this (896-px preview pixels) from an overlapping
 #: kept neighbour adds no new viewpoint: the ``select_views`` near-duplicate rule.
 DISTINCT_VIEW_MINIMUM_DISPLACEMENT = 12
+#: Views added beyond the reviewed cover must be at least this sharp relative to
+#: the clip's median: capture-5b067498's soft opening views passed the absolute
+#: floor (450) at about half the clip's median sharpness, and blurred its splat.
+RELATIVE_SHARPNESS_FRACTION = 0.6
+
+
+def relative_sharpness_floor(frames: Sequence[Mapping[str, Any]], fraction: float) -> float | None:
+    """``fraction`` of the candidates' median sharpness; None when the fraction is off."""
+    if not fraction or not frames:
+        return None
+    values = sorted(float(row["sharpness"]) for row in frames)
+    middle = len(values) // 2
+    return fraction * (values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2)
 
 
 def initial_survey_count(times, sampling_policy):
@@ -478,7 +491,7 @@ def selection_frame_budget(review: Mapping[str, Any]) -> int:
 
 
 def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_frames, minimum_frames=0,
-                           splat_frame_target=0):
+                           splat_frame_target=0, relative_sharpness_fraction=0):
     """Reuse a completed CPU handoff only with its current source/privacy bytes.
 
     A later admission wait must not rerun feature matching and face screening.
@@ -529,6 +542,11 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
             == screen_identity())
     selection_profile = {"minimum_source_frames": minimum_frames} if minimum_frames else {}
     splat_profile = {"splat_frame_target": splat_frame_target} if splat_frame_target else {}
+    sharpness_profile = ({"relative_sharpness_fraction": relative_sharpness_fraction}
+                         if relative_sharpness_fraction else {})
+    below = policy.get("cover_frames_below_relative_sharpness_floor")
+    floor = relative_sharpness_floor(frames, relative_sharpness_fraction)
+    require(not relative_sharpness_fraction or (type(below) is list and set(below) <= set(ids)))
     decisions = [row.get("decision") for row in plan.get("diagnostics", [])]
     support_count = decisions.count("overlapping_support_view")
     spread_count = decisions.count("time_spread_view")
@@ -537,7 +555,7 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
         "source_video_digest": survey["source_video_digest"], "maximum_frames": maximum,
         "adapter_version": 3, "survey_digest": survey["digest"],
         "scene_state_review_digest": canonical_digest(review), "privacy_screen": privacy,
-        **splat_profile, **selection_profile})
+        **splat_profile, **sharpness_profile, **selection_profile})
     require(plan.get("maximum_frames") == maximum and plan.get("selected_frame_count") == len(prepared)
             and policy == {"basis": "accuracy_first", "provider_input_capacity": capacity,
                            "frame_target": maximum, "connected_cover_frames": cover_count,
@@ -545,6 +563,9 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
                            **({**splat_profile, "time_spread_views_added": spread_count,
                                "splat_frame_target_met": len(prepared) >= splat_frame_target}
                               if splat_frame_target else {}),
+                           **({**sharpness_profile, "relative_sharpness_floor": round(floor, 4),
+                               "cover_frames_below_relative_sharpness_floor": below}
+                              if relative_sharpness_fraction else {}),
                            **({**selection_profile, "overlapping_support_views_added": support_count,
                                "minimum_source_frames_met": len(prepared) >= minimum_frames} if minimum_frames else {})}
             and plan.get("privacy_screen") == privacy
@@ -567,7 +588,8 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
 
 def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output_root: Path,
                          maximum_frames: int | None = None, minimum_frames: int = 0,
-                         splat_frame_target: int = 0, exclude_transients: bool = False) -> dict[str, Any]:
+                         splat_frame_target: int = 0, relative_sharpness_fraction: float = 0,
+                         exclude_transients: bool = False) -> dict[str, Any]:
     """Build the existing pose producer's pending input from a reviewed survey.
 
     ``exclude_transients`` is for a job no editor works on (geometry only): it
@@ -575,6 +597,11 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     ``splat_frame_target`` is for a job whose refined splat trains on these views:
     after the cover and the distinct views, sharp views spread in time fill the
     set toward it (``add_time_spread_views``) under ``SPLAT_POSE_INPUT_CAPACITY``.
+    ``relative_sharpness_fraction`` raises the sharpness floor of every view added
+    after the reviewed cover to that fraction of the candidates' median sharpness
+    (``RELATIVE_SHARPNESS_FRACTION`` for new jobs). The cover keeps the reviewed
+    floor, so a required view is never refused for it; a soft one is named in the
+    plan. A retained selection keeps the profile it recorded.
     """
     from .website_worldlabs import prepare_atlas_pose_inputs
     from .website_scene_geometry import INPUT_SCHEMA
@@ -613,6 +640,9 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
         raise ValueError("atlas_selection_minimum_invalid")
     if type(splat_frame_target) is not int or splat_frame_target == 1 or not 0 <= splat_frame_target <= capacity:
         raise ValueError("atlas_selection_limit_invalid")
+    if (type(relative_sharpness_fraction) not in (int, float) or not math.isfinite(relative_sharpness_fraction)
+            or not 0 <= relative_sharpness_fraction < 1):
+        raise ValueError("atlas_selection_sharpness_profile_invalid")
     cover_limit = budget_frames if maximum_frames is None else min(maximum_frames, budget_frames)
     # Frames the review judged unusable inside a still interval (someone filling
     # the view, another door state) never become candidates. The direct path
@@ -636,7 +666,8 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
             "required_frame_ids": review["additional_input_frame_ids"]}]
     retained = _retained_video_inputs(root=output_root.resolve(), survey=survey, review=review,
                                      frames=frames, capacity=capacity, budget_frames=budget_frames,
-                                     minimum_frames=minimum_frames, splat_frame_target=splat_frame_target)
+                                     minimum_frames=minimum_frames, splat_frame_target=splat_frame_target,
+                                     relative_sharpness_fraction=relative_sharpness_fraction)
     if retained is not None:
         return retained
     features = [_features(r, rotation) for r in frames]
@@ -650,22 +681,33 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
             "task_and_surrounding_scene_covered": False, "paid_task_started": False})
         raise
     maximum_frames = max(splat_frame_target or capacity, len(cover))
+    # Added views clear the clip's relative floor as well as the reviewed one.
+    floor = relative_sharpness_floor(frames, relative_sharpness_fraction)
+    fill_policy = dict(review.get("selection_policy") or {})
+    if floor is not None:
+        fill_policy["minimum_sharpness"] = max(fill_policy.get("minimum_sharpness", 25), floor)
     selected, added = add_distinct_views(frames=frames, features=features, selected=cover,
-                                         maximum_frames=maximum_frames, policy=review.get("selection_policy"))
+                                         maximum_frames=maximum_frames, policy=fill_policy)
     diagnostics = [*diagnostics, *added]
     distinct_count = len(selected) - len(cover)
     spread = []
     if splat_frame_target:
         selected, spread = add_time_spread_views(frames=frames, features=features, selected=selected,
-            frame_target=maximum_frames, policy=review.get("selection_policy"))
+            frame_target=maximum_frames, policy=fill_policy)
         spread_ids = {row["frame_id"] for row in spread}
         diagnostics = [row for row in diagnostics if row["frame_id"] not in spread_ids] + spread
     support = []
     if minimum_frames:
         selected, support = add_overlapping_support_views(frames=frames, features=features, selected=selected,
-            minimum_frames=minimum_frames, policy=review.get("selection_policy"))
+            minimum_frames=minimum_frames, policy=fill_policy)
         support_ids = {row["frame_id"] for row in support}
         diagnostics = [row for row in diagnostics if row["frame_id"] not in support_ids] + support
+    soft_cover = []
+    if floor is not None:
+        named = {row["frame_id"] for row in diagnostics} | {frames[i]["frame_id"] for i in selected}
+        diagnostics += [{"frame_id": row["frame_id"], "decision": "below_relative_sharpness_floor"}
+                        for row in frames if row["sharpness"] < floor and row["frame_id"] not in named]
+        soft_cover = [frames[i]["frame_id"] for i in sorted(cover) if frames[i]["sharpness"] < floor]
     if len(selected) > budget_frames:
         # Dollars only ever refuse the accurate set; they never pose fewer frames.
         raise ValueError("atlas_selection_budget_below_accurate_inputs")
@@ -693,6 +735,8 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
                           "scene_state_review_digest": canonical_digest(review),
                           "privacy_screen": {**screen_identity(), "blurred_faces_by_frame": blurred},
                           **({"splat_frame_target": splat_frame_target} if splat_frame_target else {}),
+                          **({"relative_sharpness_fraction": relative_sharpness_fraction}
+                             if relative_sharpness_fraction else {}),
                           **({"minimum_source_frames": minimum_frames} if minimum_frames else {})},
               "frames": prepared, "source_sample_count": survey["sample_count"],
               "heldout_frame_count": survey["heldout_frame_count"], "heldout_pixels_included": False}
@@ -715,6 +759,10 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
                              **({"splat_frame_target": splat_frame_target, "time_spread_views_added": len(spread),
                                  "splat_frame_target_met": len(selected) >= splat_frame_target}
                                 if splat_frame_target else {}),
+                             **({"relative_sharpness_fraction": relative_sharpness_fraction,
+                                 "relative_sharpness_floor": round(floor, 4),
+                                 "cover_frames_below_relative_sharpness_floor": soft_cover}
+                                if relative_sharpness_fraction else {}),
                              **({"minimum_source_frames": minimum_frames,
                                  "overlapping_support_views_added": len(support),
                                  "minimum_source_frames_met": len(selected) >= minimum_frames} if minimum_frames else {})},

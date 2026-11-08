@@ -251,7 +251,7 @@ def _refined_marker(form, root: Path, manifest, frames, roots) -> dict:
 
 
 def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_context,
-                     task_runner, max_polls=2, checkpoint=None, retained_only=False):
+                     task_runner, max_polls=2, checkpoint=None, retained_only=False, input_selection_digest=None):
     """Resume one refined-splat operation; publish its original SPZ and lossless decoded PLY.
 
     World Labs documents a posed frame as image, depth and camera only. It
@@ -264,6 +264,8 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
     are adopted or polled, never bought again; a completed splat in any root is
     adopted; no earlier form is newly bought behind a later live or completed
     one unless an operator requested that upgrade (``request_gap_preserving_upgrade``).
+    ``input_selection_digest`` names the recorded choice of ``frames``
+    (``atlas_splat_input_quality``); a new request's input binding keeps it.
     """
     from . import atlas_whole_view_review
 
@@ -290,7 +292,8 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
         try:
             value = _run_form(form=form, root=root, frames=frames, result=result, draft=draft, policy=policy,
                               task_context=task_context, task_runner=task_runner, max_polls=max_polls,
-                              checkpoint=checkpoint, review=review, views=views if form == WHOLE else None)
+                              checkpoint=checkpoint, review=review, views=views if form == WHOLE else None,
+                              input_selection_digest=input_selection_digest)
         except ValueError:
             # The provider failed this form's last attempt; the next form follows.
             if not _provider_failed_and_exhausted(root / "native"):
@@ -303,7 +306,7 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
 
 
 def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, task_runner, max_polls,
-              checkpoint, review=None, views=None):
+              checkpoint, review=None, views=None, input_selection_digest=None):
     """One form's root. A bought root is evaluated by what it sent, never re-derived.
 
     Its request may be an earlier release's form, and its retained uploads stay
@@ -340,6 +343,7 @@ def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, 
                                                              admitted_whole=admitted, views=views)
         binding = {**identity, "request_digest": canonical_digest(request), "request_form": form,
                    "uploads": uploads, "frames": provenance,
+                   **({"input_selection_digest": input_selection_digest} if input_selection_digest else {}),
                    **({"whole_view_review": review} if (review or {}).get("verdicts") else {})}
         # A root that sent nothing follows the current request (one written before merging, say).
         if record.exists() and json.loads(record.read_text()) != binding and _bought(root):
