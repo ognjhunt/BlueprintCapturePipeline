@@ -114,8 +114,10 @@ def frozen_cells(cells: list[dict[str, Any]], dropped_start_offsets: Any = ()) -
 
 
 def _record(record: Mapping[str, Any]) -> dict[str, Any]:
-    from .beta_policy_screening_plan import _receipt
-    return _receipt(record)
+    # Standard library only: the runtime on the rented machine calls this, and its Python has no jsonschema,
+    # which beta_policy_screening_plan needs at load.
+    from .beta_policy_screening_artifact_reference import artifact_reference
+    return artifact_reference(record)
 
 
 def validate_execution_spec(value: Mapping[str, Any], *, candidate_id: str | None = None) -> dict[str, Any]:
