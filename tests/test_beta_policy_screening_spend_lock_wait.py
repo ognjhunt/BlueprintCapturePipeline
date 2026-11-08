@@ -62,3 +62,30 @@ def test_any_other_spend_blocker_or_an_allocated_run_never_waits(tmp_path):
     rows = publication(tmp_path)["candidates"]
     assert [row["status"] for row in rows] == ["blocked", "blocked"]
     assert all(coordinator.CONTROL_WAIT_BLOCKER not in row["blockers"] for row in rows)
+
+
+# 2026-11-08 02:40Z, the library site's pi0.5 G1 row: the G1 lane's allocator words the same refusal without
+# the ``spend_admission:`` prefix and with no admission codes beside it.
+STALE_G1 = {"status": "blocked", "provider_allocation_performed": False, "no_allocation_proven": True,
+            "blockers": ["spend_admission_lock_stale"]}
+
+
+def test_the_g1_lanes_wording_of_a_stale_lock_waits_the_same_way(tmp_path):
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend(STALE_G1)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = publication(tmp_path)["candidates"][0]
+    assert (row["status"], row["blockers"]) == (
+        "preparing", [coordinator.CAPACITY_WAIT_BLOCKER, coordinator.CONTROL_WAIT_BLOCKER])
+    state = coordinator._ledger(coordinator._root(tmp_path))["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    assert state["spend_lock_retries"] == 1
+    assert publication(tmp_path)["budget"]["spent_upper_bound_usd"] == "0"
+
+
+def test_a_stale_lock_beside_another_spend_refusal_keeps_its_refusal(tmp_path):
+    """Only the stale-lock wait retries: a missing provider billing total beside it is not this wait."""
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend({**STALE_G1, "blockers": ["spend_admission_lock_stale",
+                                                "spend_admission_lock_required_provider_billing_missing:vast"]})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    assert publication(tmp_path)["candidates"][0]["status"] == "blocked"
