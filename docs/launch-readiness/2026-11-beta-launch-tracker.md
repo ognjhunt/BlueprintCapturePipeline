@@ -252,6 +252,38 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     3. Expected after that: intake sent → receipt bound → handoff → the two funded G1 runs.
   - **Paid nothing this afternoon.** Atlas $7.38 of $25.
 
+- **21:45Z to 11-08 04:00Z: handoff, the first G1 attempts, the full scene preview.**
+  - **Owner words, in order:**
+    - "lets do option 2" (π0.5 language-file restore as a door operation);
+    - "Gemma terms OK" (source: a verified copy on the host only);
+    - "yes" (the `DISPATCHER_HOLD_ONLY` addition and an off-window door upgrade);
+    - "deploy now" (said to the G1 session);
+    - "deploy 9089cf2";
+    - 11-08 about 02:05Z: "keep working for the next few hrs … i pre-approve all deploys/approvals needed".
+  - **Restarts.**
+    - The 22:04Z restart on 13dbd27 was refused `held_handoff_resume_not_eligible`: the hold was bound to the confirmed context's parent. #3462 (008142c, live 22:41Z) fixes it.
+    - The 22:41Z restart really re-ran:
+      - 22:46Z: handoff rewritten, intake `forward_pending`;
+      - 22:47Z: receipt bound ($0) and the G1 registration made;
+      - **22:55Z: `intake_ready`, `accepted`, lane `g1_navigation_screening` (step 13 done).**
+  - **G1 attempts** (the first beta G1 runs to reach a rented machine):
+    - DP attempt 1 (23:01–23:18Z, about $0.40) crashed at runtime import, `jsonschema` missing on the image. Fixed by #3463, which also carries the π0.5 restore operation and the profile re-read. It deployed with the door upgrade as 18bb85a, at 00:31Z.
+    - The restore plan refused, correctly: the files are intact under `pi-tokenizer-f1eaa13/assets/`. Fixed by #3465.
+    - DP attempt 2 (00:44–00:59Z, about $0.52) hit the same module through a function-level import. Fixed by #3466, which adds a reachability guard.
+    - The G1 session's audit covered 75 functions and 107 modules on the runtime path: `jsonschema` was the only missing third-party import.
+    - 9089cf2 went live at 02:12Z. The 02:22Z plan selected both rows; this was π0.5's first plan.
+    - Both were refused at paid admission before any allocation ($0): DP for missing Vast billing in the report, π0.5 for a stale-lock wording the retry did not match. Fixed by #3468.
+  - **Deploy held by red main CI.** 5fe0fdc (#3468) was not deployed: one main CI job, the GR00T external prerequisite pins check, hit GitHub HTTP errors. This session cannot re-run jobs (403), and a deploy over the red run was refused by its permission check. It ships instead with #3467 as 44d78b7, once main CI is green.
+  - **Scene preview.**
+    - v1 (#3459, WebApp #1238, 22:01Z) showed only the 599,168 largest of 2,000,000 Gaussians, and looked smeared.
+    - v2 (#3464, WebApp #1240) is a compressed PLY with all 2,000,000, rebuilt at 00:32Z.
+    - The remaining softness is Atlas input. Its grid maximum is 1280×720, per World Labs' docs. This job sent 41 frames: the selection's displacement rule dropped 122 of 152 candidates as near-duplicates on a forward-moving clip.
+    - #3467 sends about 96 time-spread sharp frames for new splat jobs. Atlas pose above 64 frames is not yet proven.
+  - **CI on main.** #3467 also fixes two full-suite failures already on main:
+    - the account monthly-spend root was unclassified;
+    - the intake lane imported GPU modules through the navigation intake and the scene preview.
+  - **Spend this stretch:** G1 attempts about $0.92 (Vast). Total about $10.05 of the $115 ceiling.
+
 ## Deploys on 2026-11-05 (capture-447 screening)
 
 - Two cloud sessions share the `cloud-scene-runs` door token today. Both merge and deploy on capture-447, so check `door requests` and `deploys.recent_receipts` before deploying.
