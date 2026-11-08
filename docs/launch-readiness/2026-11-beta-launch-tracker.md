@@ -578,6 +578,15 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - Outcome: the GPU sanity check and the Isaac smoke test passed. The G1 runtime then exited 2 at import (`ModuleNotFoundError: jsonschema`, via `native_g1_beta_runtime._inputs` → `beta_policy_screening_g1` → its catalog module → `beta_policy_candidate_catalog`).
     - No first observation, no policy query, no episode. Ledger: `blocked`, `g1_beta_native_result_missing_or_invalid`.
   - **Fix:** #3463 imports `seal_catalog` lazily and adds a guard test with `jsonschema` blocked. The blocker is a harness failure, so after the deploy the DP row is planned again once under the existing bounded retry, inside the site's allowance.
+- **Deploy 18bb85a (#3463, #3464), 11-08.**
+  - The owner said "deploy now" to this session (about 23:57Z), off-window. Earlier, relayed by the library-aisle session at about 23:55Z, they had said "yes" to the off-window `upgrade-door` and to adding the restore to the restricted door profile.
+  - Pre-checks at 00:14Z: release 008142c, no hold, no request, no paid lock, nothing active. The library-aisle session had notice.
+  - `20261108T001424Z-deploy-27d110dc` made 18bb85a live and proven, with no blockers; the deploy held the paid-launch gate while it ran. `20261108T003142Z-door-upgrade-48bf112f` upgraded the door to 18bb85a.
+- **pi0.5 restore plan, 00:32Z: refused, and the real cause found** (`20261108T003244Z-restore-g1-pi-language-assets-fc397a01`, plan, nothing written).
+  - None of the 12 campaign bundles carries the files (`bundle_member_missing`).
+  - The folder's six files sit under `assets/`, at the pinned sizes, with both sha256-pinned files matching. The resolver read the parent, so every file was "missing" there.
+  - Fix (next PR): `RETAINED_TOKENIZER_DIR` points at `assets/`. Every use still verifies each file. No host write is needed, and the restore becomes a no-op.
+  - The TRLC pi0.5 readers (`trlc_pi05_assets.RETAINED_TOKENIZER_DIR`, the door's `TRLC_TOKENIZER_ROOT`) read the same parent; that's left to the TRLC lane.
 
 ## Operating notes (2026-11-02)
 

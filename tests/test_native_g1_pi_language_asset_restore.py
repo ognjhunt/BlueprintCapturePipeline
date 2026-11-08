@@ -128,8 +128,10 @@ def test_production_pins_are_the_folder_screening_reads_and_the_authority_s_inve
                  "blueprint-native-g1-team-campaign-settlement.service"):
         text = (ROOT / "deploy/systemd" / unit).read_text(encoding="utf-8")
         assert f"BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_WORK_ROOT={pins.source_root}\n" in text
-    # The door's own spool runner names the same parent as the only writable folder.
-    assert spool_runner._G1_PI_LANGUAGE_PARENT == str(pins.parent)
+    # The door's own spool runner names the only writable folder; the restore's parent lies inside it (the
+    # files sit in the retained folder's ``assets/`` directory, so the parent is that folder).
+    writable = Path(spool_runner._G1_PI_LANGUAGE_PARENT)
+    assert writable in (pins.parent, *pins.parent.parents)
 
 
 def test_the_archive_layout_is_the_one_both_bundle_builders_write(world: dict[str, Any]) -> None:
@@ -154,7 +156,8 @@ def test_no_name_the_door_reads_contains_the_refused_word() -> None:
                  "20261107T231500Z-restore-g1-pi-language-assets-0123abcd.g1-pi-language-assets.json",
                  restore.RECEIPT_PREFIX + "20261107T231500Z.json", "door-restore-g1-pi-language-assets.sh"):
         assert not refused_name(name), name
-    assert refused_name(restore.PINS.target_dir.name), "the folder itself stays unreadable through the door"
+    assert any(refused_name(part) for part in restore.PINS.target_dir.parts), \
+        "the folder itself stays unreadable through the door"
 
 
 def test_a_plan_finds_the_verified_bundle_and_writes_nothing(world: dict[str, Any]) -> None:
