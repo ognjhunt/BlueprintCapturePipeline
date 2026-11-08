@@ -308,10 +308,15 @@ the navigation scene half beside the old ones. It first copies the records the
 old base scene named (the handoff, the base scene, the compiled specs) under
 `pipeline/website_scene_preparation/superseded_atlas_results/<old result>/`, so
 evidence made on the old scene still verifies. It runs once per new result
-digest, through the same claim, and the drain never starts it. The website keeps
-one intake per capture: until it accepts a re-issued navigation intake, a
-re-derived navigation job's new scene half is refused with `idempotency_conflict`
-and the job holds by that name.
+digest, through the same claim, and the drain never starts it. The website and
+the Pipeline intake keep one intake per submission, so a re-derived navigation
+job's new scene half sends the capture's intake re-issued in the same run: its
+own `website-reissue-` submission, a `website_navigation_reissue` marker naming
+the capture, the parent submission and the Atlas result, and the same consent,
+owner and $0. The job then waits only for its intake receipt, as any navigation
+job does. A job that a release without the re-issue held on the website's
+`idempotency_conflict` lacks `pipeline:navigation_intake_reissue`: it is
+re-evaluated once per release, and that run sends the re-issue.
 
 `--reissue-preparation --atlas-status-digest sha256:...` (mode
 `preparation-reissue`) re-issues a completed native preparation as a new job
