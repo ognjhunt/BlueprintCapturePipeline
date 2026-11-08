@@ -638,7 +638,15 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - The library-aisle session merged #3470 at 06:33Z, with CI green and Codex clean. The two sessions agreed the G1 session would deploy it in the window. It was not a money, privacy or rights fix, so it was not deployed overnight.
   - Pre-checks at 14:57Z: release 44d78b7 proven, no activation hold, no active units, every paid-launch lock free, no screening row running, launching or preparing, no door request pending. The library-aisle session had notice.
   - `20261108T150013Z-deploy-3c635fc8` (requested 15:00:13Z, waits for idle) made 6a181b1 live and proven by 15:18:00Z, with no blockers. Receipt: `iteration_6a181b180efb_door.json`.
-  - Next: the coordinator plans DP and π0.5 again at this commit on its own. Their outcomes follow here.
+  - The coordinator re-planned by itself: campaign `screening-bbb6ab8b…` at 15:26:48Z, superseding `744c13fa`. DP launched at 15:31:26Z. π0.5 waited, one run at a time.
+- **DP attempt 4, 11-08: through the dependencies to the first cell, stopped at the media toolchain.**
+  - Attempt `screen-a5b35b46…`, launched 15:31:26Z, settled 15:56:15Z.
+  - Spend: an estimated $0.62. G1 spend on this site is now $2.21 of $30.
+  - **The triton fix held.** The policy runtime built (`offline_import_probe_passed`), the selected models staged, and the SONIC CUDA sessions were ready.
+  - **Where it stopped:** cell 0's native worker failed its dependency preflight (`g1_worker_dependency_preflight_failed:native_task_dependency_missing:ffmpeg,…:ffprobe`) at `scene_build`. Cells 1–3 were not attempted. No policy query, nothing scored, all four cells void. Flags as before.
+  - **Cause:** the pinned Isaac image has no ffmpeg. The development and team G1 entrypoints install it with apt before provisioning (`native_g1_provider_bundle`, `native_g1_team_provider_bundle`). The screening entrypoint never had that step.
+  - **Fix (this PR):** the screening entrypoint installs ffmpeg the same way, before provisioning. If ffmpeg or ffprobe is still missing, it writes a typed failure (`g1_beta_media_toolchain_unavailable`) within the first minute and exits.
+  - This is DP's fourth harness failure of the 7 allowed. π0.5 will be held unspent again. Both are planned again after the next deploy.
 
 ## Operating notes (2026-11-02)
 

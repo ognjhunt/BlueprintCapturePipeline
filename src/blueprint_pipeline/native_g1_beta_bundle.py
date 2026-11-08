@@ -44,6 +44,17 @@ OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 mkdir -p "$OUT_DIR"
 cd "$RUNTIME_DIR"
 export BLUEPRINT_G1_PINNED_ISAAC_IMAGE="nvcr.io/nvidia/isaac-sim:6.0.1@sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
+# The native worker's dependency preflight needs ffmpeg and ffprobe, which the pinned
+# image lacks; the development and team G1 entrypoints install them the same way.
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && \\
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >>"$OUT_DIR/media_toolchain_install.log" 2>&1
+fi
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+ /isaac-sim/python.sh -m blueprint_pipeline.native_g1_beta_runtime --runtime-root "$RUNTIME_DIR" \\
+   --output-dir "$OUT_DIR" --failure-only g1_beta_media_toolchain_unavailable
+ exit 2
+fi
 /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \\
  --source-receipt "$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_source_packet.v1.json" \\
  --source-packet "$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_sources.zip" \\
