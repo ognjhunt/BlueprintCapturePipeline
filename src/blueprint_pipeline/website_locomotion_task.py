@@ -149,10 +149,15 @@ def scene_facts(*, base_scene: Mapping[str, Any], camera_path_levelled_m: Sequen
         camera_path_levelled_m) else np.zeros((0, 3))
     # A flat floor standing in for an uneven scanned one (``atlas_world_levelling``) is a development-only
     # estimate; the spec carries it so the G1 lane can flag it. Absent, the facts are as before.
-    fallback = (base_scene.get("levelling") or {}).get("fallback_floor")
-    floor_estimate = ({"levelling_floor_estimate": {key: fallback.get(key)
-                                                    for key in ("claim", "basis", "band_spread_m")}}
-                      if isinstance(fallback, Mapping) else {})
+    # So is a flat floor filled under the filmed path, where the scan kept none (``walked_floor``).
+    levelling = base_scene.get("levelling") or {}
+    fallback, walked = levelling.get("fallback_floor"), levelling.get("walked_floor")
+    estimate = ({key: fallback.get(key) for key in ("claim", "basis", "band_spread_m")}
+                if isinstance(fallback, Mapping) else None)
+    if isinstance(walked, Mapping):
+        estimate = ({**estimate, "basis": f"{estimate.get('basis')}+{walked.get('basis')}"} if estimate
+                    else {"claim": walked.get("claim"), "basis": walked.get("basis"), "band_spread_m": None})
+    floor_estimate = {"levelling_floor_estimate": estimate} if estimate else {}
     facts = {
         "schema_version": FACTS_SCHEMA,
         "collision_mesh_digest": base_scene["collision_mesh_digest"],

@@ -231,3 +231,26 @@ def test_a_runnable_policy_is_never_held() -> None:
     options["policies"][0].update(runnable=True, missing=[])
     assert runnable_policy_gap(task_context=_context(), requirements=WALK, spec_digest="sha256:" + "c" * 64,
                                options=options) is None
+
+
+def test_a_floor_filled_under_the_filmed_path_is_carried_as_a_floor_estimate(tmp_path) -> None:
+    # capture-5b067498 (2026-11-08): a scanned floor with a hole where the walk began gets a flat floor
+    # filled under the filmed path, and the G1 lane must flag it like the fallback floor.
+    from blueprint_pipeline.native_g1_spawn_clearance import scene_floor_estimate
+
+    base, path = _corridor(tmp_path)
+    walked = {"claim": "development_only_estimate", "basis": "floor_under_the_filmed_path", "cells": 40,
+              "faces_added": 80, "cell_m": 0.25, "margin_m": 0.5, "cameras": 41}
+    alone = scene_facts(base_scene={**base, "levelling": {**base["levelling"], "walked_floor": walked}},
+                        camera_path_levelled_m=path)
+    assert alone["metric_scale"]["evidence"][0]["levelling_floor_estimate"] == {
+        "claim": "development_only_estimate", "basis": "floor_under_the_filmed_path", "band_spread_m": None}
+    fallback = {"basis": "flat_floor_at_uneven_band_median", "claim": "development_only_estimate",
+                "band_spread_m": [-0.052, 0.048]}
+    both = scene_facts(base_scene={**base, "levelling": {**base["levelling"], "fallback_floor": fallback,
+                                                         "walked_floor": walked}}, camera_path_levelled_m=path)
+    estimate = both["metric_scale"]["evidence"][0]["levelling_floor_estimate"]
+    assert estimate == {"claim": "development_only_estimate",
+                        "basis": "flat_floor_at_uneven_band_median+floor_under_the_filmed_path",
+                        "band_spread_m": [-0.052, 0.048]}
+    assert scene_floor_estimate({"compiled_task_spec": {"metric_scale": both["metric_scale"]}}) == estimate

@@ -51,7 +51,8 @@ def test_a_tilted_world_is_levelled_on_its_floor_at_zero(tmp_path):
     assert vertices[counter_start:counter_end, 1] == pytest.approx(0.9, abs=0.015)
     # The splat moves with the mesh, and each disc's thin axis now stands vertical.
     splat = read_standard_3dgs_ply(outputs(value)["splat_ply"])
-    assert np.allclose(splat.xyz * MPU, vertices, atol=1e-4)
+    # (The floor filled under the filmed path is appended after the captured vertices.)
+    assert np.allclose(splat.xyz * MPU, vertices[:len(splat.xyz)], atol=1e-4)
     thin = Rotation.from_quat(splat.quats[:, [1, 2, 3, 0]]).apply([0.0, 0.0, 1.0])
     assert np.abs(thin[:, 1]).min() > np.cos(np.radians(0.5))
     assert np.allclose(np.linalg.norm(splat.quats, axis=1), 1.0, atol=1e-5)
@@ -222,7 +223,7 @@ def test_the_flagged_fallback_floor_stands_in_for_an_uneven_one_near_the_provide
     cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     level_faces = np.abs(cross[:, 1]) >= np.cos(np.radians(30.0)) * np.linalg.norm(cross, axis=1)
     near = np.all(np.abs(tri[:, :, 1]) <= levelling.FALLBACK_REPLACE_HALF_M, axis=1)
-    assert (level_faces & near).sum() == fallback["flat_floor_faces"]
+    assert (level_faces & near).sum() == fallback["flat_floor_faces"] + value["walked_floor"]["faces_added"]
     assert np.abs(tri[level_faces & near][:, :, 1]).max() < 1e-6
     # The splat is only moved, never turned.
     assert np.allclose(np.asarray(value["provider_to_levelled"])[:3, :3], np.eye(3))
@@ -270,3 +271,47 @@ def test_a_view_dependent_splat_is_refused_rather_than_tilted(tmp_path):
     value, _ = level(tmp_path, sh_rest=True)
     assert value["status"] == "needs_input"
     assert value["reason"] == "website_atlas_scene_level_splat_view_dependent"
+
+
+def _faces_over(mesh_path: Path, xz) -> int:
+    mesh = trimesh.load(str(mesh_path), force="mesh", process=False)
+    tri = np.asarray(mesh.vertices)[np.asarray(mesh.faces)] * MPU
+    low, high = tri[:, :, [0, 2]].min(axis=1), tri[:, :, [0, 2]].max(axis=1)
+    level_at_floor = np.all(np.abs(tri[:, :, 1]) < 1e-6, axis=1)
+    return int((level_at_floor & np.all(low <= xz, axis=1) & np.all(xz <= high, axis=1)).sum())
+
+
+def test_a_floor_is_filled_under_the_filmed_path_and_disclosed(tmp_path):
+    # capture-5b067498 (2026-11-08): the scan kept no floor where the walk began, and the G1 fell through.
+    value, _ = level(tmp_path)
+    walked = value["walked_floor"]
+    assert walked["claim"] == "development_only_estimate" and walked["basis"] == "floor_under_the_filmed_path"
+    assert walked["faces_added"] == 2 * walked["cells"] > 0 and walked["cameras"] == len(STANDING)
+    levelled = (np.asarray(provider_units(STANDING, rotation=tilt(18.0), offset_m=OFFSET, meters_per_unit=MPU))
+                @ np.asarray(value["provider_to_levelled"])[:3, :3].T
+                + np.asarray(value["provider_to_levelled"])[:3, 3]) * MPU
+    for camera in levelled:
+        assert _faces_over(outputs(value)["supported_mesh_glb"], camera[[0, 2]]) >= 2
+
+
+def test_the_walked_floor_covers_each_footprint_within_its_margin_and_nothing_far_from_it():
+    from tests.atlas_level_room_fixture import _grid
+    # A wall and no floor at all: only the filled cells are level at y = 0.
+    vertices, faces = _grid((-2.0, 0.0, 3.0), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0), 81, 41)
+    footprints = np.array([[0.0, 0.0], [0.3, 0.05], [0.6, 0.1]])
+    filled = levelling._fill_walked_floor(trimesh.Trimesh(vertices=vertices, faces=faces, process=False),
+                                          footprints_m=footprints, meters_per_unit=1.0)
+    mesh = filled.pop("mesh")
+    tri = np.asarray(mesh.vertices)[np.asarray(mesh.faces)]
+    floor = tri[np.all(np.abs(tri[:, :, 1]) < 1e-9, axis=1)]
+    assert len(floor) == filled["faces_added"] == 2 * filled["cells"]
+    low, high = floor[:, :, [0, 2]].min(axis=1), floor[:, :, [0, 2]].max(axis=1)
+    def covered(point):
+        return bool(np.any(np.all(low <= point, axis=1) & np.all(point <= high, axis=1)))
+    # Each footprint and a G1 start offset 15 cm from it stand on the filled floor; 2 m away nothing does.
+    assert all(covered(point + offset) for point in footprints
+               for offset in ([0, 0], [0.15, 0], [-0.15, 0], [0, 0.15], [0, -0.15]))
+    assert not covered(np.array([0.0, 2.0])) and not covered(np.array([3.0, 0.0]))
+    # The captured faces are kept as they were.
+    assert np.array_equal(np.asarray(mesh.faces)[:len(faces)], faces)
+    assert levelling._fill_walked_floor(mesh, footprints_m=np.zeros((0, 2)), meters_per_unit=1.0) is None

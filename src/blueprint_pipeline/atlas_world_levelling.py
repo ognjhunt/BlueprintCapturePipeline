@@ -34,7 +34,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-REVISION = "atlas_world_levelling.v7"
+REVISION = "atlas_world_levelling.v8"
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0
@@ -83,6 +83,14 @@ FALLBACK_REPLACE_HALF_M = 0.12
 FALLBACK_LEVEL_FACE_DEGREES = 30.0
 FALLBACK_FLOOR_MARGIN_M = 0.2
 FALLBACK_FLOOR_CELL_M = 0.25
+#: Floor under the filmed path, a development-only estimate, flagged. A camera never films the floor under
+#: its own feet, so where the walk starts the reconstruction can have no floor at all. capture-5b067498
+#: (2026-11-08): no collision face lay over the compiled start, and the G1 fell through the scene. The
+#: person filming stood and walked there, so a floor is there: in the collider copy of a scene with a
+#: declared floor, a flat floor at its height fills every cell within WALKED_FLOOR_MARGIN_M of a camera's
+#: footprint (a G1 stance and its start offsets fit inside). Walls, shelves and the splat are as captured.
+WALKED_FLOOR_MARGIN_M = 0.5
+WALKED_FLOOR_CELL_M = 0.25
 #: Kept in the record, so a refusal can be read without the mesh: the densest layers along the chosen
 #: direction, and along +Y and every candidate direction the share of points in each 2 cm band of
 #: height around the cameras (a floor shows as a peak a camera height below them, as thick as it is).
@@ -476,6 +484,55 @@ def _replace_uneven_floor(mesh, *, meters_per_unit: float) -> dict[str, Any]:
             "flat_floor_faces": int(len(floor_faces))}
 
 
+def _fill_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: float) -> dict[str, Any] | None:
+    """In a levelled mesh (floor at y = 0), add a flat floor under the cameras' footprints; None without any.
+
+    ``footprints_m`` are the cameras' (x, z) in metres. Every cell of ``WALKED_FLOOR_CELL_M`` whose
+    centre lies within ``WALKED_FLOOR_MARGIN_M`` of a footprint gets two faces at y = 0, so the walked
+    path has a floor whatever the reconstruction kept there. Existing faces are kept.
+    """
+    import trimesh
+
+    footprints = np.asarray(footprints_m, dtype=np.float64).reshape(-1, 2)
+    if not len(footprints):
+        return None
+    cell = WALKED_FLOOR_CELL_M
+    low = np.floor((footprints.min(axis=0) - WALKED_FLOOR_MARGIN_M) / cell) * cell
+    # Each camera stamps the cells near it: work grows with the cameras, not with the walk's bounding box.
+    reach = int(math.ceil(WALKED_FLOOR_MARGIN_M / cell))
+    cells: set[tuple[int, int]] = set()
+    for footprint in footprints:
+        base = np.floor((footprint - low) / cell).astype(int)
+        for di in range(-reach, reach + 1):
+            for dj in range(-reach, reach + 1):
+                i, j = int(base[0] + di), int(base[1] + dj)
+                if i >= 0 and j >= 0 and float(np.linalg.norm(footprint - (low + (np.array([i, j]) + 0.5) * cell))) \
+                        <= WALKED_FLOOR_MARGIN_M:
+                    cells.add((i, j))
+    rows = sorted(cells)
+    if not rows:
+        return None
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    corners = [(low + np.array([i + di, j + dj]) * cell) for i, j in rows for di, dj in ((0, 0), (1, 0), (0, 1), (1, 1))]
+    xz = np.asarray(corners, dtype=np.float64)
+    floor_vertices = np.column_stack([xz[:, 0], np.zeros(len(xz)), xz[:, 1]]) / meters_per_unit
+    start = len(vertices)
+    # Winding with +Y up for both triangles of each cell (a = (x, z), b = (x + 1, z), c = (x, z + 1), d).
+    floor_faces = np.array([tri for k in range(len(rows)) for a, b, c, d in [tuple(start + 4 * k + n for n in range(4))]
+                            for tri in ((a, c, b), (b, c, d))], dtype=np.int64)
+    colours = None
+    visual = getattr(mesh, "visual", None)
+    if visual is not None and getattr(visual, "kind", None) == "vertex":
+        existing = np.asarray(visual.vertex_colors)
+        colours = np.vstack([existing, np.tile(np.median(existing, axis=0), (len(floor_vertices), 1))]).astype(np.uint8)
+    filled = trimesh.Trimesh(vertices=np.vstack([vertices, floor_vertices]), faces=np.vstack([faces, floor_faces]),
+                             vertex_colors=colours, process=False)
+    return {"mesh": filled, "claim": "development_only_estimate", "basis": "floor_under_the_filmed_path",
+            "cells": len(rows), "faces_added": int(len(floor_faces)), "cell_m": cell,
+            "margin_m": WALKED_FLOOR_MARGIN_M, "cameras": int(len(footprints))}
+
+
 def _cameras_above(floor: dict[str, Any] | None, centres_m: np.ndarray) -> np.ndarray | None:
     """The cameras' heights over ``floor``, or None when they do not stand above it as people do."""
     if floor is None:
@@ -602,6 +659,13 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
         swapped = _replace_uneven_floor(mesh, meters_per_unit=meters_per_unit)
         mesh = swapped.pop("mesh")
         fallback.update(swapped)
+    walked = None
+    if floor is not None:
+        # The cameras in the levelled copy, in metres: their (x, z) is where the person filming walked.
+        levelled = (centres @ rotation.T + transform[:3, 3]) * meters_per_unit
+        walked = _fill_walked_floor(mesh, footprints_m=levelled[:, [0, 2]], meters_per_unit=meters_per_unit)
+        if walked is not None:
+            mesh = walked.pop("mesh")
     root.mkdir(parents=True, exist_ok=True)
     mesh.export(str(root / MESH_NAME))
     xyz = splat.xyz.astype(np.float64) @ rotation.T + transform[:3, 3]
@@ -615,6 +679,7 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
                   "observed_floor" if floor is not None else "dominant_level_surface"),
         level_direction_basis=basis,
         **({"fallback_floor": fallback} if fallback is not None else {}),
+        **({"walked_floor": walked} if walked is not None else {}),
         ground_plane_offset_m=0.0 if floor is not None else None,
         floor=None if floor is None else {
             "height_before_m": floor["height_m"], "inlier_share": floor["inlier_share"],
