@@ -86,7 +86,6 @@ _CANDIDATE_ID = re.compile(CANDIDATE_ID_PATTERN)
 _MONEY = re.compile(r"^(?:0|[1-9][0-9]{0,8})\.[0-9]{2}$")
 SOURCE_FIELDS = ("scene_intent_id", "scene_intent_digest", "capture_id", "task_id",
                  "task_context_digest", "scene_revision_digest")
-_RECEIPT_KEYS = {"path", "sha256", "size_bytes"}
 _HOSTED_COST_FIELDS = {"provider_hard_cap_usd", "hosted_inference_maximum_usd", "hosted_inference_payment",
                        "hosted_max_cost_per_request_usd", "hosted_http_request_limit", "credential_origin"}
 _UNIT_PRICE = re.compile(r"^(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,12})?$")
@@ -151,15 +150,10 @@ def _json(value: Any) -> dict[str, Any]:
 
 
 def _receipt(value: Any) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _RECEIPT_KEYS:
-        raise BetaPolicyScreeningPlanError("beta_screening_artifact_reference_invalid")
-    path = value.get("path")
-    if not isinstance(path, str) or not PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts:
-        raise BetaPolicyScreeningPlanError("beta_screening_artifact_reference_invalid")
-    _digest(value.get("sha256"), "beta_screening_artifact_reference_invalid")
-    if type(value.get("size_bytes")) is not int or value["size_bytes"] <= 0:
-        raise BetaPolicyScreeningPlanError("beta_screening_artifact_reference_invalid")
-    return dict(value)
+    # One rule with the G1 runtime's spec check, which cannot load this module (no jsonschema there).
+    from .beta_policy_screening_artifact_reference import artifact_reference
+
+    return artifact_reference(value, error=BetaPolicyScreeningPlanError)
 
 
 def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str,

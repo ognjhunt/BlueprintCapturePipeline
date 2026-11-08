@@ -46,3 +46,74 @@ def test_the_g1_runtime_and_every_module_it_imports_load_without_jsonschema() ->
     result = subprocess.run([sys.executable, "-c", _PROBE, *modules], capture_output=True, text=True,
                             timeout=300, check=False)
     assert result.returncode == 0 and result.stdout.strip().endswith("ok"), result.stderr[-3000:]
+
+
+def _module_facts(name: str, cache: dict) -> tuple[dict, bool, set] | None:
+    if name not in cache:
+        path = RUNTIME.parent / (name + ".py")
+        if not path.exists():
+            cache[name] = None
+        else:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            functions = {node.name: node for node in tree.body
+                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            uses_jsonschema = any(
+                (isinstance(node, ast.ImportFrom) and node.level == 0 and (node.module or "").split(".")[0] == "jsonschema")
+                or (isinstance(node, ast.Import) and any(alias.name.split(".")[0] == "jsonschema" for alias in node.names))
+                for node in tree.body)
+            relative = {(node.module or "").split(".")[0] for node in tree.body
+                        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module}
+            cache[name] = (functions, uses_jsonschema, relative)
+    return cache[name]
+
+
+def _loads_jsonschema(name: str, cache: dict, seen: set) -> list[str]:
+    """Package modules that load jsonschema when ``name`` is imported (its load-time imports, transitively)."""
+    if name in seen:
+        return []
+    seen.add(name)
+    facts = _module_facts(name, cache)
+    if facts is None:
+        return []
+    found = [name] if facts[1] else []
+    for module in facts[2]:
+        found += _loads_jsonschema(module, cache, seen)
+    return found
+
+
+def test_no_function_the_runtime_reaches_imports_a_module_that_loads_jsonschema() -> None:
+    """Imports inside functions count too: the 2026-11-08 retry crashed in ``validate_execution_spec`` →
+    ``_record``, which imported the screening plan module. Walk from ``main`` through same-module calls and
+    every ``from .x import f`` it executes, and check what each such import loads."""
+    cache: dict = {}
+    visited: set = set()
+    offenders: list[str] = []
+
+    def walk(module: str, function: str) -> None:
+        if (module, function) in visited:
+            return
+        visited.add((module, function))
+        facts = _module_facts(module, cache)
+        if facts is None or function not in facts[0]:
+            return
+        for node in ast.walk(facts[0][function]):
+            if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+                target = node.module.split(".")[0]
+                loads = _loads_jsonschema(target, cache, set())
+                if loads:
+                    offenders.append(f"{module}.{function} imports {target}, which loads jsonschema via {loads}")
+                for alias in node.names:
+                    walk(target, alias.name)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in facts[0]:
+                walk(module, node.func.id)
+
+    walk("native_g1_beta_runtime", "main")
+    assert ("beta_policy_screening_g1", "validate_execution_spec") in visited
+    assert offenders == []
+
+
+def test_the_light_reference_check_uses_the_catalog_digest_rule() -> None:
+    from blueprint_pipeline.beta_policy_candidate_catalog import DIGEST_PATTERN
+    from blueprint_pipeline.beta_policy_screening_artifact_reference import DIGEST
+
+    assert DIGEST.pattern == DIGEST_PATTERN
