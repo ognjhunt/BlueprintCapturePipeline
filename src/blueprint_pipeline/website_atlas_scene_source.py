@@ -462,7 +462,9 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         "levelling": {"digest": level["digest"], "up_basis": level["up_basis"], "tilt_degrees": level["tilt_degrees"],
                       "provider_to_levelled": level["provider_to_levelled"], **provider,
                       # A flat floor that stands in for an uneven one is a flagged development-only estimate.
-                      **({"fallback_floor": level["fallback_floor"]} if "fallback_floor" in level else {})},
+                      **({"fallback_floor": level["fallback_floor"]} if "fallback_floor" in level else {}),
+                      # So is a flat floor filled under the filmed path, where the reconstruction kept none.
+                      **({"walked_floor": level["walked_floor"]} if "walked_floor" in level else {})},
         "operation_id": background_pose["operation"]["id"], "atlas_result_digest": result["digest"],
     }
     if completion_admission is not None:
