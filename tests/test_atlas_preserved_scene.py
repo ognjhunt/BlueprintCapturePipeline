@@ -18,8 +18,10 @@ from tests.test_website_atlas_scene_source import job_fixture, write, digest
 from tests.test_atlas_scene_planner import fixture as planner_fixture
 
 
+@pytest.mark.parametrize("refined_splat", [False, True])
 @pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject"])
-def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp_path, monkeypatch, subject_origin):
+def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp_path, monkeypatch, subject_origin,
+                                                                             refined_splat):
     from blueprint_pipeline import atlas_video_inputs as inputs, website_atlas_pose as pose_api
     _, survey, proposal, policy = planner_fixture(tmp_path)
     video = tmp_path / "source.mov"
@@ -31,13 +33,16 @@ def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp
         "scale_references": [], "objects": [], "removal_instruction": "", "mask_margin_fraction": .01})
     proposal["coverage_requirements"][0]["role"] = "task_region"
     policy["reviewed_on"] = datetime.now(timezone.utc).date().isoformat()
+    if refined_splat:
+        policy["refined_splat_cost_usd"] = 5
     monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("configured", "test-non-secret"))
     monkeypatch.setattr(pipeline, "load_configuration", lambda *a: {
-        "policy": policy, "remaining_cost_usd": 4,
+        "policy": policy, "remaining_cost_usd": 9 if refined_splat else 4,
         "authority": {"provider_retention": "project_library_retention_approved"}})
     monkeypatch.setattr(inputs, "survey_video", lambda **kw: write(kw["output_root"] / "atlas_video_survey.json", survey))
     monkeypatch.setattr(pipeline, "accuracy_survey", lambda **kw: kw["base_survey"])
-    monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **kw: {"frames": []})
+    selections = []
+    monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **kw: selections.append(kw) or {"frames": []})
     monkeypatch.setattr(allocator, "run_sponsored_website_atlas_plan", lambda **kw: {"proposal": proposal, "model": "test"})
     routed = []
     monkeypatch.setattr(pipeline, "_preserved_scene", lambda **kw: routed.append(kw) or {"status": "processing"})
@@ -51,6 +56,9 @@ def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp
     assert result["status"] == "processing" and len(routed) == 1
     assert routed[0]["review"]["subject_origin"] == subject_origin
     assert routed[0]["task_context"] == context
+    # Its refined splat trains on the posed selection, so a splat purchase fills it toward the target.
+    assert [kw.get("splat_frame_target") for kw in selections] == [pose_api.SPLAT_FRAME_TARGET if refined_splat else None]
+    assert "minimum_frames" not in selections[0] and "maximum_frames" not in selections[0]
 
 
 @pytest.mark.parametrize("tamper", ["remove", "instruction", "transient"])
@@ -418,3 +426,36 @@ def test_the_handoff_accepts_a_refined_splat_of_the_captured_frames_only(tmp_pat
     else:
         with pytest.raises(ValueError, match='atlas_preserved_completion_not_bound|preserved_scene_pose_mismatch'):
             scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / 'prep')
+
+
+@pytest.mark.parametrize('filled', [False, True])
+def test_completion_context_keeps_the_selection_viewpoints_when_the_splat_selection_was_filled(
+        tmp_path, monkeypatch, filled):
+    pose_root = tmp_path / 'pose'
+    source_root = pose_root / 'full-view-source-v1'
+    source_root.mkdir(parents=True)
+    pose = {'digest': 'source-pose'}
+    write(source_root / 'atlas_posed_rgbd_result.json', pose)
+    write(tmp_path / 'splat/atlas_depth_splat_manifest.json', {'digest': 'draft', 'splat_kind': 'depth_fused_draft'})
+    frames = [{'frame_id': key} for key in ('cover', 'spread-1', 'distinct', 'spread-2', 'task-source')]
+    write(pose_root / 'atlas_view_selection.json', {'diagnostics': [
+        {'frame_id': 'distinct', 'decision': 'distinct_view'}, {'frame_id': 'near', 'decision': 'near_duplicate'},
+        *([{'frame_id': 'spread-1', 'decision': 'time_spread_view'},
+           {'frame_id': 'spread-2', 'decision': 'time_spread_view'}] if filled else [])]})
+    monkeypatch.setattr(pipeline, '_source_pose', lambda **_: {'status': 'completed'})
+    monkeypatch.setattr(source_inputs, 'prepare_source_pose', lambda _: (source_root, {}))
+    monkeypatch.setattr(splats, 'load_posed_rgbd', lambda _: (pose, frames))
+    monkeypatch.setattr(pipeline, 'load_configuration', lambda *args: {'remaining_cost_usd': 23})
+    seen = []
+    monkeypatch.setattr(allocator, 'run_sponsored_website_atlas_automation',
+                        lambda **options: seen.append(options) or {'status': 'processing', 'stage': 'completion'})
+    result = pipeline._preserved_scene(pose_root=pose_root, output_root=tmp_path, inputs={},
+        review={'subject_origin': 'no_manipulated_subject', 'automation': {'objects': [], 'removal_instruction': ''}},
+        policy={'mesh_export_cost_usd': .5, 'rgbd_view_cost_usd': .1, 'refined_splat_cost_usd': 5},
+        task_context={'context_digest': 'task'}, source_digest='capture', configuration={}, check=lambda _: None,
+        experimental=False, max_polls=1, model='test', source_survey_path=tmp_path / 'source-survey.json')
+    assert result['status'] == 'processing' and seen[0]['frames'] is frames
+    if filled:
+        assert seen[0]['reference_frame_ids'] == ['cover', 'distinct', 'task-source']
+    else:
+        assert 'reference_frame_ids' not in seen[0]

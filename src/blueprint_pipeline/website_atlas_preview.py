@@ -429,7 +429,7 @@ def _retract_archive(job: dict[str, Any]) -> dict[str, Any]:
     if job.get("archive_retraction") != "pending":
         return job
     try:
-        from .website_capture_withdrawal_deletion import B2ObjectVersions
+        from .b2_object_versions import B2ObjectVersions
         store, uri = B2ObjectVersions.configured(), job["archive"]["uri"]
         for key, version in store.versions(uri):
             store.delete(key, version)

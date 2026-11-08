@@ -117,6 +117,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/beta-policy-screening", "evidence_hot", "blueprint",
                 "site screening budget ledger, immutable plans, launch intents and reconciliation evidence; never evicted"),
     StorageRoot(f"{_CONTROL_PLANE}/gpu_spend_guard", "evidence_hot", "blueprint", "spend ledger, billing audit, admission lock"),
+    StorageRoot(f"{_CONTROL_PLANE}/account-monthly-spend", "evidence_hot", "blueprint",
+                "account monthly spend report and provider observations, read at paid admission; never evicted"),
     StorageRoot(f"{_CONTROL_PLANE}/deploy-receipts", "evidence_hot", "root", "deploy receipts"),
     StorageRoot(f"{_CONTROL_PLANE}/standing-authorizations", "evidence_hot", "blueprint", "standing launch authorizations"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-profile-catalog.json", "evidence_hot", "blueprint", "public launch profile catalog"),

@@ -381,7 +381,7 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         result_reference = progress.get("result_reference")
         result_run_id = (progress.get("state") or {}).get("result_run_id")
         _require(result_run_id is None or _identifier(result_run_id), "result_run_id_invalid")
-        from .website_navigation_intake import (
+        from .website_navigation_preparation_result import (
             RESULT_PHASE as NAVIGATION_PHASE, RESULT_SCHEMA as NAVIGATION_RESULT,
             validate_navigation_preparation_result,
         )

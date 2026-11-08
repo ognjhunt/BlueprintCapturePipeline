@@ -159,8 +159,9 @@ The refined roots sit beside the draft (`<draft root>-refined*`), and the mesh
 root carries the adopted refined digest, so a new draft gets its own purchase
 and a legacy mesh is never adopted for a refined splat.
 
-Preserved-capture scenes and the plain pose-and-generate route keep the draft
-for now.
+The plain pose-and-generate route keeps the draft for now. Preserved-capture
+scenes buy the refined splat from their source pose (see "Source frames for a
+preserved scene's splat" below).
 
 New object-removal jobs with a reviewed refined-splat price clean every selected
 real view. Selection retains the task/room cover and up to 30 distinct overlapping
@@ -175,6 +176,66 @@ unedited. Generated views address only the recorded uncaptured regions.
 The input binding retains the minimum, the actual support count and whether it
 was met. Existing jobs retain their original edit scope and selection, so this
 change requires a fresh job; it never rewrites job 3's three-view inputs.
+
+## Source frames for a preserved scene's splat
+
+A preserved-capture scene (`no_manipulated_subject` or `synthetic_design`)
+trains its refined splat on its source pose: the video selection plus the
+capture's task-source views. Forward camera motion moves features little, so
+the 12-px near-duplicate rule keeps few views. On capture-5b067498 (a 4K
+forward-motion library aisle), 122 of 152 candidates were near duplicates, and
+the `documented_minimal` splat trained on 41 frames (31 selected, 10
+task-source). It came out soft.
+
+When the policy carries `refined_splat_cost_usd`, a new selection keeps the
+connected cover and distinct views, then fills toward 96 frames
+(`SPLAT_FRAME_TARGET`, under the 128-image `SPLAT_POSE_INPUT_CAPACITY`) with
+`add_time_spread_views`. The admitted still frames' span is cut into 96 equal
+windows. Each step takes the sharpest candidate of the emptiest window that
+passes the sharpness and clipping policy and overlaps a kept time neighbour by
+the policy's inlier count (24 by default). The displacement rule does not apply,
+an identical source image is never repeated, and with fewer usable frames the
+set stays short. These views are labelled `time_spread_view`; the plan's
+`frame_policy` and the input binding record `splat_frame_target`.
+
+Pose is priced on the actual count, about $0.01 a frame (96 frames, about $1).
+A budget that cannot pose the set refuses it
+(`atlas_selection_budget_below_accurate_inputs`) and never poses fewer.
+
+Gap completion runs on the same source pose before the splat, and its
+`atlasGenerate` context shares the served model's rollout: `target_batches`
+keeps the context plus two views per target within 64, so 60 photographs at
+most. capture-5b067498's completion sent all 41 frames. A 106-frame pose would
+have refused there (`atlas_chisel_source_rollout_capacity_insufficient`) and
+stopped the job before its splat. The fill adds density, not viewpoints, so
+preserved completion keeps the views selected before the fill (cover, distinct
+and task-source) as its gap-survey photographs, generation context and joint
+registration (`reference_frame_ids`, recorded as `registration_frame_ids`).
+Every posed frame still feeds the gap geometry, the draft and the refined
+splat. The completion planner's survey still holds every posed frame, so that
+review costs more (capture-5b067498's, at 41 frames, cost $0.28).
+
+Nothing else changes. Jobs that buy no refined splat keep
+`MAX_POSE_INPUT_IMAGES` (64). Removal jobs keep the profile above. A captured
+subject's plain route posts its whole selection as `atlasGenerate` context, and
+keeps its selection. A retained selection resumes with the profile and the
+`provider_input_capacity` it recorded. No Atlas pose request above 64 images
+has run in production yet, so 128 is configured, not verified.
+
+World Labs' limits, read 2026-11-08:
+
+- `images2PosedRGBD`: `targetResolution` must be one of 1280x720, 720x1280,
+  960x720 or 528x704. The page states no maximum image count
+  ([images to posed images](https://docs.atlas-beta.worldlabs.ai/images-to-posed-images)).
+- `posedImages2Splats`: "Provide 2 to 512 ordered posedFrames", and every
+  camera grid must be one of the same four
+  ([posed images to splats](https://docs.atlas-beta.worldlabs.ai/posed-images-to-splats));
+  the reference gives the same 2 to 512
+  ([request/response reference](https://docs.atlas-beta.worldlabs.ai/api-reference/posed-images2-splats)).
+  The pinned schema carries `maxItems: 512`.
+
+The pose grid is already the largest documented one, so the number and spread
+of source frames is what Blueprint can change.
 
 ## Reviewed runtime policy
 

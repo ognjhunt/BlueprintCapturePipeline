@@ -86,6 +86,8 @@ from . import website_capture_withdrawal_screening as screening
 from . import website_capture_withdrawal_team_scene as team_scene
 from .control_plane_storage_roots import roots_of_class
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+# The object-version client and the typed refusal live in a light module (re-exported, the same objects).
+from .b2_object_versions import B2ObjectVersions, WithdrawalDeletionError
 
 PLAN_SCHEMA = "website_capture_withdrawal_deletion_plan.v1"
 RECEIPT_SCHEMA = "website_capture_withdrawal_deletion_receipt.v1"
@@ -130,10 +132,6 @@ _PROVIDER = re.compile(rb"\"provider(?:_name|_kind)?\"\s*:\s*\"([A-Za-z0-9][A-Za
 _CHUNK, _OVERLAP = 1024 * 1024, 4096
 # Run names shorter than this never bind another run: generic names would bind by accident.
 _MIN_CLOSURE_NAME = 12
-
-
-class WithdrawalDeletionError(ValueError):
-    """A typed refusal; never carries file contents."""
 
 
 def _require(value: Any, code: str) -> None:
@@ -399,63 +397,6 @@ class _Bytes:
         chunk = self.raw[self.offset:self.offset + size]
         self.offset += len(chunk)
         return chunk
-
-
-class B2ObjectVersions:
-    """Exact object versions through the existing artifact store client (boto3 S3 API on B2)."""
-
-    def __init__(self, client: Any, bucket: str):
-        self.client, self.bucket = client, bucket
-
-    @classmethod
-    def configured(cls) -> B2ObjectVersions:
-        from .task_evaluation_configured_scene_object_store import _artifact_object_store_client
-        return cls(*_artifact_object_store_client())
-
-    def key(self, uri: str) -> str:
-        prefix = f"s3://{self.bucket}/"
-        _require(uri.startswith(prefix) and len(uri) > len(prefix), "object_outside_artifact_bucket")
-        key = uri[len(prefix):]
-        _require(all(part not in {"", ".", ".."} for part in key.split("/")), "object_key_invalid")
-        return key
-
-    def versions(self, uri: str) -> list[list[str]]:
-        # B2 only hides an object deleted without a version id: absence is an empty version listing.
-        key, rows, markers = self.key(uri), [], {}
-        for _page in range(10_000):
-            page = self.client.list_object_versions(Bucket=self.bucket, Prefix=key, **markers)
-            for row in [*(page.get("Versions") or []), *(page.get("DeleteMarkers") or [])]:
-                if row.get("Key") == key:
-                    _require(row.get("VersionId"), "object_listing_invalid")
-                    rows.append([key, str(row["VersionId"])])
-            if not page.get("IsTruncated"):
-                return sorted(rows)
-            markers = {"KeyMarker": page["NextKeyMarker"], "VersionIdMarker": page["NextVersionIdMarker"]}
-        raise WithdrawalDeletionError("website_withdrawal_deletion_object_listing_unbounded")
-
-    def named(self, prefix: str, filename: str, *, continuation_request_id: str | None = None,
-              suffix: str = ".zip") -> list[str]:
-        """Exact original and job-scoped continuation archive names, in any version."""
-        keys, markers = set(), {}
-        continuation = (re.compile(re.escape(f"{continuation_request_id}-supplement-") + r"[a-f0-9]{40}"
-                                   + re.escape(suffix)) if continuation_request_id is not None else None)
-        for _page in range(10_000):
-            page = self.client.list_object_versions(Bucket=self.bucket, Prefix=prefix, **markers)
-            for row in [*(page.get("Versions") or []), *(page.get("DeleteMarkers") or [])]:
-                key = str(row.get("Key") or "")
-                name = key.rpartition("/")[2]
-                if key.startswith(prefix) and (name == filename or continuation and continuation.fullmatch(name)):
-                    keys.add(key)
-            if not page.get("IsTruncated"):
-                return sorted(f"s3://{self.bucket}/{key}" for key in keys)
-            markers = {"KeyMarker": page["NextKeyMarker"], "VersionIdMarker": page["NextVersionIdMarker"]}
-        raise WithdrawalDeletionError("website_withdrawal_deletion_object_listing_unbounded")
-
-    def delete(self, key: str, version: str) -> None:
-        self.client.delete_object(Bucket=self.bucket, Key=key, VersionId=version)
-
-    def open(self, uri: str) -> BinaryIO:
-        return self.client.get_object(Bucket=self.bucket, Key=self.key(uri))["Body"]
 
 
 def _scene_workspace(site: Path, identity: Mapping[str, str], unresolved: list[dict[str, Any]]) -> dict[str, Any]:

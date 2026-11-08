@@ -430,7 +430,7 @@ def _archive(path: Path, *, identity: Mapping[str, str]) -> dict[str, Any]:
 
 def _retract(uri: str) -> None:
     """Delete every version of an archived preview, and prove none is left."""
-    from .website_capture_withdrawal_deletion import B2ObjectVersions
+    from .b2_object_versions import B2ObjectVersions
     store = B2ObjectVersions.configured()
     for key, version in store.versions(uri):
         store.delete(key, version)

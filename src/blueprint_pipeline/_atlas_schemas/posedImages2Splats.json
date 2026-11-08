@@ -46,6 +46,7 @@
               "$ref": "#/components/schemas/PosedRGBDAsset"
             },
             "type": "array",
+            "maxItems": 512,
             "minItems": 2
           }
         },

@@ -646,6 +646,37 @@ def test_new_refined_splat_inputs_use_real_support_views_without_changing_histor
     assert pipeline._job_edit_scope(historical, None, default="all_selected_views") == "required_and_additional"
 
 
+@pytest.mark.parametrize("origin", ["no_manipulated_subject", "synthetic_design"])
+def test_a_preserved_scene_buying_the_refined_splat_fills_its_selection_and_others_are_unchanged(tmp_path, origin):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    from blueprint_pipeline.atlas_video_inputs import GEOMETRY_INPUTS_FILE
+    from blueprint_pipeline.website_atlas_pose import SPLAT_FRAME_TARGET
+    preserved = {"subject_origin": origin, "automation": {"objects": [{"disposition": "keep"}]}}
+    options = dict(review=preserved, policy={"refined_splat_cost_usd": 5}, edit_scope="all_selected_views")
+    assert pipeline._splat_input_options(tmp_path, **options) == {"splat_frame_target": SPLAT_FRAME_TARGET} \
+        == {"splat_frame_target": 96}
+    # No splat bought (a geometry-only job's policy drops the price): the selection is unchanged.
+    assert pipeline._splat_input_options(tmp_path, **{**options, "policy": {"pose_input_cost_usd": .01}}) == {}
+    # A captured subject's plain route posts its selection as generation context, not to the splat.
+    assert pipeline._splat_input_options(tmp_path, **{**options, "review": {"subject_origin": "captured"}}) == {}
+    # A removal job keeps its own dense profile, or none.
+    removal = {"automation": {"objects": [{"disposition": "remove"}]}}
+    assert pipeline._splat_input_options(tmp_path, **{**options, "review": removal}) == {
+        "minimum_frames": 16, "maximum_frames": 30}
+    assert pipeline._splat_input_options(
+        tmp_path, **{**options, "review": removal, "edit_scope": "required_and_additional"}) == {}
+    # A retained selection, or retained inputs whose plan was not yet written, keeps its recorded profile.
+    for i, (recorded, expected) in enumerate((({}, {}), ({"splat_frame_target": 96}, {"splat_frame_target": 96}),
+            ({"minimum_source_frames": 16}, {"minimum_frames": 16, "maximum_frames": 30}))):
+        plan_root, inputs_root = tmp_path / f"plan-{i}", tmp_path / f"inputs-{i}"
+        plan_root.mkdir()
+        inputs_root.mkdir()
+        (plan_root / "atlas_view_selection.json").write_text(json.dumps({"frame_policy": recorded}))
+        (inputs_root / GEOMETRY_INPUTS_FILE).write_text(json.dumps({"binding": recorded}))
+        assert pipeline._splat_input_options(plan_root, **options) == expected
+        assert pipeline._splat_input_options(inputs_root, **options) == expected
+
+
 def test_resume_checks_current_remaining_allowance_before_any_more_planning(tmp_path, monkeypatch):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, paid_resource_allocator as allocator
     from blueprint_pipeline import website_atlas_pose as pose_api

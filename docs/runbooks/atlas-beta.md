@@ -213,7 +213,9 @@ views stop at the Atlas pose adapter's configured input capacity
 AGENTS.md); the cover is never cut by it. The reviewed dollars are checked only
 after selection and refuse (`atlas_selection_budget_below_accurate_inputs`); they
 never pose fewer frames. Atlas has not published a per-request image limit, so the
-first 64-frame request settles whether it accepts that many.
+first 64-frame request settles whether it accepts that many. A preserved scene that
+buys the refined splat fills its selection toward 96 sharp views spread in time
+(capacity 128); see [Source frames for a preserved scene's splat](../atlas-native-splats.md#source-frames-for-a-preserved-scenes-splat).
 
 ## Review output gaps and refine source inputs
 
