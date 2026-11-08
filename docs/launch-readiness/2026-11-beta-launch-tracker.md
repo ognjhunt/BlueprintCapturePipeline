@@ -703,6 +703,12 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - A start offset with no floor under either foot is not funded (`g1_spawn_floor_absent`), and a row with none left is refused before any rental.
     - Planning then writes `native_g1_spawn_background_diagnostic.v1.json` once beside the packet: per mesh by index, the collision flag, face count, transform scale and world bounds; faces within 1 and 2 m; their height histogram; and faces over the spawn with their height range. Counts only, never mesh bytes.
     - The patch is the mesh with about 336 faces, so the next planning pass on this site shows which case it is.
+    - Review fix: the plan's descriptor check had accepted only `g1_spawn_overlap` as a dropped-offset reason. It now also accepts `g1_spawn_floor_absent`; both reasons are imported from the spawn check.
+- **π0.5's first G1 run, 11-08 21:35Z: refused at spend admission, $0.**
+  - Attempt `screen-dffb7257…` on 985c482. The money gate refused with `spend_admission_lock_required_provider_billing_missing:vast`: no provider call, no allocation, reservation released.
+  - The gap was temporary. At 22:13Z the lock's billing export covers Vast again ($475.29) and admission is open. The same refusal hit DP at 02:27Z, so it recurs.
+  - The row stays blocked, unspent, and is planned again after the next deploy. With the floor guard live, this navigation row will be refused at planning (`g1_spawn_floor_absent`) and the diagnostic written, which is the next step anyway.
+  - Retrying a `billing_missing` refusal automatically is a money-policy change; it stays the owner's call.
 
 ## Operating notes (2026-11-02)
 
