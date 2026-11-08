@@ -872,3 +872,13 @@ def test_the_worker_refuses_a_scene_kind_that_is_not_a_string_by_name_never_by_t
     for kind in (["goal_region_navigation"], {"task_kind": "rigid_pick_place"}, None, 3):
         assert scene_kind_admitted(kind, DP_NAV) is False
     assert scene_kind_admitted("goal_region_navigation", [DP_NAV]) is False
+
+
+@pytest.mark.parametrize(("drift", "fell"), [
+    (16138.972617208958, True), (14653.228476583958, True), (3.5, True), (float("nan"), True),
+    (0.9, False), (0.25, False), (None, False), (True, False)])
+def test_a_navigation_robot_that_fell_through_the_scene_is_void_not_a_policy_failure(drift, fell):
+    """The library job's first scored G1 run (2026-11-08): about 15 km of root drift over 3,001 samples."""
+    score = {"maximum_root_height_drift_observed_m": drift, "outcome": "failure"}
+    assert g1.fell_through_scene(score) is fell
+    assert g1.FELL_THROUGH_REASON == "g1_robot_fell_through_scene"

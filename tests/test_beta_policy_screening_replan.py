@@ -407,7 +407,7 @@ def test_a_finished_candidate_whose_result_is_not_counted_rejoins_the_plan_after
 
 
 def test_only_scored_results_on_an_affected_backend_under_an_older_revision_are_not_counted():
-    robolab, g1 = {"execution_spec": {"backend": "robolab.v1"}}, {"execution_spec": {"backend": G1_BACKEND}}
+    robolab = {"execution_spec": {"backend": "robolab.v1"}}
     scored = {"status": "completed", "summary": {"episodes_scored": 10}}
     partial = {"status": "blocked", "blockers": ["policy_canary_session_stopped"], "summary": {"episodes_scored": 3}}
     harness = {"status": "blocked", "blockers": ["beta_screening_native_result_missing_or_invalid"]}
@@ -416,8 +416,19 @@ def test_only_scored_results_on_an_affected_backend_under_an_older_revision_are_
     assert coordinator._result_not_counted(scored, robolab, before)
     assert coordinator._result_not_counted(partial, robolab, before)
     assert not coordinator._result_not_counted(scored, robolab, current)
-    # Another backend's results, and runs that measured nothing (their own retry rule), are untouched.
-    assert not coordinator._result_not_counted(scored, g1, before)
+    # Runs that measured nothing (their own retry rule) are untouched.
     assert not coordinator._result_not_counted(harness, robolab, before)
     assert not coordinator._result_not_counted(void, robolab, before)
     assert not coordinator._result_not_counted({"status": "pending"}, robolab, before)
+
+
+def test_g1_results_made_before_the_fall_through_rule_are_not_counted():
+    """Revision 2 (2026-11-08): a G1 robot that fell through the scene had been scored a policy failure."""
+    g1 = {"execution_spec": {"backend": G1_BACKEND}}
+    robolab = {"execution_spec": {"backend": "robolab.v1"}}
+    scored = {"status": "completed", "summary": {"episodes_scored": 2}}
+    assert coordinator._result_not_counted(scored, g1, {"screening_harness_revision": 1})
+    assert coordinator._result_not_counted(scored, g1, {})
+    assert not coordinator._result_not_counted(scored, g1, {"screening_harness_revision": 2})
+    # RoboLab's revision-1 results still count.
+    assert not coordinator._result_not_counted(scored, robolab, {"screening_harness_revision": 1})

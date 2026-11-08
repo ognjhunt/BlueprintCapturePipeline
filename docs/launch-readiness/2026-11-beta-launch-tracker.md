@@ -691,6 +691,11 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - the runtime drops a closed cell's frames once its MP4s exist, keeping the frame manifest; nothing verifies against the frames;
     - retention recognizes the G1 layout.
     - DP attempt 6's own videos aren't backfilled, because a recorded `not_retained` is never retried. Future runs keep theirs.
+  - **Correction, the same day: the two "failures" measured the scene, not the policy.** Both cells recorded root height drift of 16,139 m and 14,653 m over 3,001 samples, ending 3,360 m and 3,046 m from the goal. That is free fall: the robot fell through the scene.
+    - The packet's spawn check had found no collision near the spawn (`g1_spawn_background_empty_near_robot`, both soles with no floor, hence `g1_spawn_foot_unsupported`).
+    - The derivation disclosed `g1_pelvis_0.79m_above_compiled_floor_profile_height_not_measured_from_this_usd`.
+  - **Fix (this PR):** a navigation score with root drift past 3 m is void (`g1_robot_fell_through_scene`). The screening harness revision rises to 2, so G1 results made before are not counted and DP is planned once more.
+  - **Root cause (open):** the levelled floor in the collision copy (library session, 11-07 14:04Z) isn't under the spawn at world (1.04, 0.16). Either the collision copy lacks the appearance layer's 0.864 scale and Y-up→Z-up swap, or the spawn sits outside the 3.42 × 2.75 m floor patch. The library session's levelling receipt decides which.
 
 ## Operating notes (2026-11-02)
 

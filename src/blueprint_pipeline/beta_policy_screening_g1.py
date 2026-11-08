@@ -460,10 +460,28 @@ def _episode_outcome(row: Mapping[str, Any], *, candidate_id: str, contract_dige
             or any(artifact.get("ranking_eligible") is not False or artifact.get("physical_outcome_claimed") is not False
                    for artifact in (worker, supervised, episode))):
         raise ValueError("g1_beta_deterministic_score_invalid")
+    if navigation and fell_through_scene(score):
+        return "void", FELL_THROUGH_REASON, True
     success = score.get("outcome") == "success" if navigation else score.get("task_succeeded")
     if type(success) is not bool:
         raise ValueError("g1_beta_deterministic_score_invalid")
     return ("success" if success else "failure"), "g1_native_deterministic_task_score", True
+
+
+#: A navigation episode whose robot left the scene through its floor measured the scene, not the
+#: policy. The library job's first scored G1 run (2026-11-08) recorded 16,139 m and 14,653 m of
+#: root height drift over 3,001 samples: free fall, with no collider under the robot.
+FELL_THROUGH_REASON = "g1_robot_fell_through_scene"
+#: G1's root stands about 0.75 m high, so a fall onto a floor moves it well under a metre and a
+#: navigation scene asks for no climb; drift past this means nothing was under the robot.
+FELL_THROUGH_DRIFT_M = 3.0
+
+
+def fell_through_scene(score: Mapping[str, Any]) -> bool:
+    """Whether a navigation score's root height drifted past any fall onto a floor."""
+    drift = score.get("maximum_root_height_drift_observed_m")
+    return isinstance(drift, (int, float)) and not isinstance(drift, bool) and (
+        drift != drift or drift > FELL_THROUGH_DRIFT_M)
 
 
 def _worker_closed(worker: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
