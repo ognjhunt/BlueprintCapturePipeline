@@ -749,6 +749,14 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - The gap was temporary. At 22:13Z the lock's billing export covers Vast again ($475.29) and admission is open. The same refusal hit DP at 02:27Z, so it recurs.
   - The row stays blocked, unspent, and is planned again after the next deploy. With the floor guard live, this navigation row will be refused at planning (`g1_spawn_floor_absent`) and the diagnostic written, which is the next step anyway.
   - Retrying a `billing_missing` refusal automatically is a money-policy change; it stays the owner's call.
+- **c855bf4 live, 11-08 23:03:53Z** (#3476, #3477, #3478 and #3480, deployed by the library-aisle session).
+  - Re-plan `screening-2f2c4f5f…` at 23:09:34Z. Both navigation G1 rows (DP and π0.5) are refused at planning with `g1_spawn_floor_absent`, at $0. The guard works: no rental for a robot with no floor.
+  - **Floor diagnostic** (`native_g1_spawn_background_diagnostic.v1.json`, counts only):
+    - The packet's scene collision is **one mesh**: 395,205 faces, collision enabled, scale 1, Z-up, metres. Its bounds (x −5.02 to 6.54, y −2.54 to 2.67, z −0.52 to 3.99 m) contain the spawn (1.04, 0.16).
+    - **No face lies over the spawn point**, not even by its xy bounds.
+    - Within 2 m of the spawn there are 72,560 faces. Their mid heights sit mostly between 0.5 and 2.75 m (shelving and walls). Only 2,630 are between −0.75 and +0.25 m, so floor fragments exist nearby but not under the robot.
+  - **Root cause:** the collision is the raw reconstruction, which has a hole in the aisle floor at the spawn, and the levelled floor patch (about 336 faces) is not in the packet's collision at all. It is neither a separate mesh nor merged, or some face would cover the spawn. Nothing on main adds a floor patch to the native G1 scene collision.
+  - **Fix direction** (the library session's floor work): put a collision floor under the walked path into the packet's `scene_collision` USD, either the levelled patch or a plane at the compiled floor height, with an enabled collision API. Then re-derive the packet. The spawn check and this diagnostic will confirm it before any spend.
 
 ## Operating notes (2026-11-02)
 
