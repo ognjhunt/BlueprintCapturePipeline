@@ -1173,6 +1173,13 @@ Nothing runs it on a timer. An operator starts two oneshot units by hand:
 Receipts and plans are root `0644` under `0755`, so the door can read them.
 Run it again and a deleted path reports `already_deleted`.
 
+A direct child of `/var/lib/blueprint/pipeline-control-plane` that no storage class
+covers is neither kind. The owner approves deleting such a folder in
+`config/owner_approved_reclaim_folders.v1.json`, and the door's
+`reclaim-approved-folders` operation deletes it (plan first, `--apply` second; see
+`docs/OPERATOR_DOOR.md`). Its receipts are kept in
+`storage-gc/owner-approved-reclaims/`.
+
 ```bash
 python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion-plan.service   # plan only
 python3 scripts/operator_door.py show blueprint-owner-approved-deletion-plan.service                  # Result=success once done

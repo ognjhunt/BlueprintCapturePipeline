@@ -9,6 +9,7 @@
 #   deploy/operator-door/door-provider-output-resume.sh
 #   deploy/operator-door/door-restore-g1-runtime-source.sh
 #   deploy/operator-door/door-restore-g1-pi-language-assets.sh
+#   deploy/operator-door/door-reclaim-approved-folders.sh
 #   deploy/operator-door/door-retire-parked-delivery.sh
 #   deploy/operator-door/door-selected-handoff.sh
 #   deploy/operator-door/door-extend-scene-execution-window.sh
@@ -311,6 +312,7 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
                                     "door-lane-scratch.sh", "door-provider-output-resume.sh",
                                     "door-restore-g1-runtime-source.sh",
                                     "door-restore-g1-pi-language-assets.sh",
+                                    "door-reclaim-approved-folders.sh",
                                     "door-retire-parked-delivery.sh",
                                     "door-extend-scene-execution-window.sh", "door-extend-scene-execution-budget.sh",
                                     "door-confirm-owner-success-contract.sh", "install.sh"])
@@ -1559,6 +1561,106 @@ def test_g1_pi_language_restore_names_a_release_without_the_module(g1_language_e
 def test_g1_pi_language_restore_refuses_another_kinds_request_id(g1_language_env: dict[str, str]) -> None:
     rc, _, calls = _run("door-restore-g1-pi-language-assets.sh", g1_language_env, DOOR_REQUEST_ID=G1_SOURCE_ID)
     assert rc == 2 and not calls and not list(Path(g1_language_env["DOOR_RESULTS_DIR"]).iterdir())
+
+
+# --- reclaim-approved-folders --------------------------------------------------------------------
+
+RECLAIM_ID = "20261108T190000Z-reclaim-approved-folders-0000abcd"
+RECLAIM_PYTHON_STUB = r"""#!/bin/bash
+{ echo "reclaim $*"; echo "cwd $PWD"; echo "pythonpath ${PYTHONPATH:-}"; echo "umask $(umask)"
+  echo "credentials ${GOOGLE_APPLICATION_CREDENTIALS-unset}"; } >> "$STUB_LOG"
+printf '%s\n' "${FAKE_RECLAIM:-}"
+exit "${FAKE_TOOL_RC:-0}"
+"""
+RECLAIM_RECEIPT = ("/var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-reclaims/"
+                   "reclaim-20261108T190012Z-0123abcd.json")
+
+
+@pytest.fixture()
+def reclaim_env(retire_env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "reclaim-python", RECLAIM_PYTHON_STUB)
+    release = tmp_path / "releases" / SHA
+    module = release / "src" / "blueprint_pipeline" / "owner_approved_folder_reclaim.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("# the active release's module\n", encoding="utf-8")
+    (release / "config").mkdir()
+    (release / "config" / "owner_approved_reclaim_folders.v1.json").write_text("{}\n", encoding="utf-8")
+    values = {key: value for key, value in retire_env.items()
+              if key not in {"DOOR_SCENE_ID", "GOOGLE_APPLICATION_CREDENTIALS"}}
+    return {**values, "DOOR_VENV_PYTHON": str(tmp_path / "reclaim-python")}
+
+
+@pytest.mark.parametrize(("apply", "result", "status", "code", "rc", "receipt"), [
+    (None, {"outcome": "planned", "code": None, "receipt_path": None}, "planned", None, 0, None),
+    ("1", {"outcome": "reclaimed", "code": None, "receipt_path": RECLAIM_RECEIPT}, "reclaimed", None, 0,
+     RECLAIM_RECEIPT),
+    ("1", {"outcome": "already_reclaimed", "code": None, "receipt_path": None}, "already_reclaimed", None, 0, None),
+    ("1", {"outcome": "refused", "code": "reclaim_approved_folders_protected_storage_root", "receipt_path": None},
+     "refused", "reclaim_approved_folders_protected_storage_root", 2, None),
+    ("1", {"outcome": "refused", "code": "reclaim_approved_folders_delete_incomplete",
+           "receipt_path": RECLAIM_RECEIPT}, "refused", "reclaim_approved_folders_delete_incomplete", 1,
+     RECLAIM_RECEIPT),
+    (None, None, "failed", "reclaim_approved_folders_failed", 1, None),
+])
+def test_approved_folder_reclaim_runs_the_release_module_as_root(
+        reclaim_env: dict[str, str], tmp_path: Path, apply, result, status, code, rc, receipt) -> None:
+    extra = {"FAKE_RECLAIM": json.dumps(result)} if result is not None else {}
+    if rc:
+        extra["FAKE_TOOL_RC"] = str(rc)
+    if apply:
+        extra["DOOR_APPLY"] = apply
+    done_rc, outcome, calls = _run("door-reclaim-approved-folders.sh", reclaim_env, DOOR_REQUEST_ID=RECLAIM_ID,
+                                   **extra)
+
+    assert (done_rc, outcome["status"], outcome["code"], outcome["exit_code"]) == (rc, status, code, rc)
+    # Root with the unit's bounding set (CAP_DAC_OVERRIDE only): no service-user switch, no credentials.
+    assert not any(call.startswith("setpriv") for call in calls)
+    assert calls == ["reclaim -m blueprint_pipeline.owner_approved_folder_reclaim" + (" --apply" if apply else ""),
+                     f"cwd {tmp_path / 'releases' / SHA}", "pythonpath src", "umask 0077", "credentials unset"]
+    path = Path(reclaim_env["DOOR_RESULTS_DIR"]) / f"{RECLAIM_ID}.reclaim-approved-folders.json"
+    assert outcome["result"] == str(path) and oct(path.stat().st_mode & 0o777) == oct(0o644)
+    if result is not None:
+        assert json.loads(path.read_text()) == result
+    if receipt:
+        assert outcome["receipt"] == receipt
+    else:
+        assert "receipt" not in outcome
+
+
+def test_approved_folder_reclaim_never_passes_on_an_unsafe_receipt_path(reclaim_env: dict[str, str]) -> None:
+    result = {"outcome": "reclaimed", "code": None, "receipt_path": "/tmp/x y.json"}
+    rc, outcome, _ = _run("door-reclaim-approved-folders.sh", reclaim_env, DOOR_REQUEST_ID=RECLAIM_ID,
+                          DOOR_APPLY="1", FAKE_RECLAIM=json.dumps(result))
+    assert rc == 0 and outcome["status"] == "reclaimed" and "receipt" not in outcome
+
+
+def test_approved_folder_reclaim_never_reports_an_unknown_outcome_as_success(reclaim_env: dict[str, str]) -> None:
+    result = {"outcome": "deleted_everything", "code": None, "receipt_path": None}
+    rc, outcome, _ = _run("door-reclaim-approved-folders.sh", reclaim_env, DOOR_REQUEST_ID=RECLAIM_ID,
+                          DOOR_APPLY="1", FAKE_RECLAIM=json.dumps(result))
+    assert rc == 1 and (outcome["status"], outcome["code"]) == ("failed", "reclaim_approved_folders_failed")
+
+
+@pytest.mark.parametrize("overrides", [{"DOOR_APPLY": "yes"}, {"DOOR_APPLY": "1; rm -rf /"}, {"DOOR_APPLY": "0"}])
+def test_approved_folder_reclaim_rechecks_its_inputs(reclaim_env: dict[str, str], overrides) -> None:
+    rc, outcome, calls = _run("door-reclaim-approved-folders.sh", reclaim_env, DOOR_REQUEST_ID=RECLAIM_ID,
+                              **overrides)
+    assert rc == 2 and outcome["code"] == "reclaim_approved_folders_apply_invalid" and not calls
+
+
+@pytest.mark.parametrize("missing", ["src/blueprint_pipeline/owner_approved_folder_reclaim.py",
+                                     "config/owner_approved_reclaim_folders.v1.json"])
+def test_approved_folder_reclaim_names_a_release_without_the_module(reclaim_env: dict[str, str], tmp_path: Path,
+                                                                    missing: str) -> None:
+    (tmp_path / "releases" / SHA / missing).unlink()
+    rc, outcome, calls = _run("door-reclaim-approved-folders.sh", reclaim_env, DOOR_REQUEST_ID=RECLAIM_ID)
+    assert rc == 2 and outcome["code"] == "reclaim_approved_folders_release_lacks_module" and not calls
+
+
+def test_approved_folder_reclaim_refuses_another_kinds_request_id(reclaim_env: dict[str, str]) -> None:
+    rc, _, calls = _run("door-reclaim-approved-folders.sh", reclaim_env, DOOR_REQUEST_ID=G1_LANGUAGE_ID)
+    assert rc == 2 and not calls and not list(Path(reclaim_env["DOOR_RESULTS_DIR"]).iterdir())
 
 
 # --- retire-parked-delivery ----------------------------------------------------------------------

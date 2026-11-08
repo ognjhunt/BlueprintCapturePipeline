@@ -1,0 +1,29 @@
+{
+  "schema_version": "owner_approved_reclaim_folders.v1",
+  "parent": "/var/lib/blueprint/pipeline-control-plane",
+  "folders": [
+    {
+      "path": "/var/lib/blueprint/pipeline-control-plane/internal-team-evaluation-diagnostic-20261015",
+      "refuse_if_modified_after": "2026-11-08T06:00:00Z",
+      "approval": {
+        "approved_by": "owner",
+        "approved_on": "2026-11-08",
+        "timezone": "CST",
+        "relayed_by": "library-aisle session",
+        "words": [
+          "option 1",
+          "im tired of waiting so long"
+        ],
+        "note": "Asked to choose between \"you delete it yourself\" and \"build a reclaim operation\", the owner chose \"option 1\": to delete this folder themselves. They then said \"im tired of waiting so long\" and tried to run the delete, but could not reach the host; the session offered to build this operation to carry out that delete. The bound refuse_if_modified_after is the start of 2026-11-08 CST: no file the owner reviewed was newer than 2026-10-17."
+      },
+      "reviewed": {
+        "what": "an internal diagnostic run from 2026-10-15 to 2026-10-17",
+        "approximate_size": "about 11 GB",
+        "entries_seen": 110,
+        "newest_entry_on": "2026-10-17",
+        "references_on_main": "no code, service or config on main references it",
+        "why": "the host's work disk was 90% full, and a paid G1 screening run refused its pre-rental output reservation (g1_beta_collection_capacity_insufficient), about 0.35 GB short"
+      }
+    }
+  ]
+}

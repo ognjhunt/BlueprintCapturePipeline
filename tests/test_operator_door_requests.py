@@ -278,6 +278,29 @@ def test_g1_pi_language_restore_takes_only_apply() -> None:
         assert caught.value.code == code
 
 
+def test_approved_folder_reclaim_takes_only_apply() -> None:
+    """The folders are listed only in the release's reviewed allowlist, never in a field."""
+    assert validate_request({"kind": "reclaim-approved-folders"}) == {"kind": "reclaim-approved-folders", "apply": False}
+    assert validate_request({"kind": "reclaim-approved-folders", "apply": True}) == {
+        "kind": "reclaim-approved-folders", "apply": True}
+    assert required_scope("reclaim-approved-folders") == "operate"
+    for body, code in (
+            ({"kind": "reclaim-approved-folders", "apply": "yes"}, "reclaim_approved_folders_apply_invalid"),
+            ({"kind": "reclaim-approved-folders", "apply": 1}, "reclaim_approved_folders_apply_invalid"),
+            ({"kind": "reclaim-approved-folders", "apply": None}, "reclaim_approved_folders_apply_invalid"),
+            ({"kind": "reclaim-approved-folders", "path": "/var/lib/blueprint/pipeline-control-plane/x"},
+             "request_key_unknown:path"),
+            ({"kind": "reclaim-approved-folders", "apply": True, "paths": ["/var/lib/blueprint"]},
+             "request_key_unknown:paths"),
+            ({"kind": "reclaim-approved-folders", "allowlist": "/tmp/allowlist.json"},
+             "request_key_unknown:allowlist"),
+            ({"kind": "reclaim-approved-folders", "apply": True, "approval_evidence": "owner"},
+             "request_key_unknown:approval_evidence")):
+        with pytest.raises(RequestRefused) as caught:
+            validate_request(body)
+        assert caught.value.code == code
+
+
 PARKED_CAPTURE = ("blueprint-8c1ca.appspot.com/scenes/site-capture-36ad8b1d/captures/"
                   "walkthrough-capture-36ad8b1d")
 

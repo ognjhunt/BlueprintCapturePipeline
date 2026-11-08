@@ -1351,6 +1351,38 @@ def test_g1_pi_language_restore_launches_the_release_module(config: DoorConfig, 
 
 
 @pytest.mark.parametrize("apply", [False, True])
+def test_approved_folder_reclaim_launches_the_release_module(config: DoorConfig, apply: bool) -> None:
+    """One 30 min unit named by a hash of the mode, as root with only CAP_DAC_OVERRIDE, no network and
+    every secret hidden; only the control-plane state directory and the result are writable."""
+    request_id = _spooled(config, {"kind": "reclaim-approved-folders", "apply": apply})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    label = hashlib.sha256(b"apply" if apply else b"plan").hexdigest()[:12]
+    unit = f"blueprint-operator-door-reclaim-folders-{label}-{request_id[-8:]}.service"
+    assert call[1] == f"--unit={unit}" and "deploy" not in unit
+    assert "--property=RuntimeMaxSec=30min" in call and "--property=TimeoutStartSec=30min" in call
+    for sandbox in ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+                    "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+                    "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
+                    "CapabilityBoundingSet=CAP_DAC_OVERRIDE"):
+        assert f"--property={sandbox}" in call, sandbox
+    results = str(Path(config.spool_root) / "results")
+    [writable] = [value for value in call if value.startswith("--property=ReadWritePaths=")]
+    assert writable == f"--property=ReadWritePaths=/var/lib/blueprint/pipeline-control-plane {results}"
+    [hidden] = [value.removeprefix("--property=InaccessiblePaths=").split() for value in call
+                if value.startswith("--property=InaccessiblePaths=")]
+    assert hidden == [f"-{path}" for path in config.hidden_paths]
+    assert "--setenv=DOOR_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane" in call
+    assert not any(value.startswith("--setenv=DOOR_SERVICE_USER") for value in call)
+    assert [value for value in call if value.startswith("--setenv=DOOR_APPLY")] == (
+        ["--setenv=DOOR_APPLY=1"] if apply else [])
+    assert call[-1] == "/opt/blueprint/operator-door/door-reclaim-approved-folders.sh"
+    assert _result(config, request_id)["status"] == "launched"
+
+
+@pytest.mark.parametrize("apply", [False, True])
 def test_parked_delivery_retirement_launches_the_release_module(config: DoorConfig, apply: bool) -> None:
     """One 5 min unit named by a hash of the capture and the mode, with no network and every secret
     hidden; only that capture, the delivery index beside the captures and the result are writable."""

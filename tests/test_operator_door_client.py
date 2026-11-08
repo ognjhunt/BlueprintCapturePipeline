@@ -900,6 +900,37 @@ def test_waiting_on_the_g1_pi_language_restore_exits_by_its_outcome(door: dict[s
     assert code == exit_code and json.loads(out)["outcome"] == outcome
 
 
+def test_client_submits_the_approved_folder_reclaim_as_a_plan_or_an_apply(door: dict[str, Any]) -> None:
+    for argv, apply in ((("reclaim-approved-folders",), False), (("reclaim-approved-folders", "--apply"), True)):
+        code, out = _run(*argv)
+        request_id = json.loads(out)["id"]
+        assert re.fullmatch(r"\d{8}T\d{6}Z-reclaim-approved-folders-[0-9a-f]{8}", request_id)
+        spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
+        assert code == 0 and spooled["request"] == {"kind": "reclaim-approved-folders", "apply": apply}
+
+
+def test_the_approved_folder_reclaim_takes_no_path() -> None:
+    with pytest.raises(SystemExit) as caught:
+        client.build_parser().parse_args(["reclaim-approved-folders", "/var/lib/blueprint/pipeline-control-plane/x"])
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize(("status", "exit_code"), [("planned", 0), ("reclaimed", 0), ("already_reclaimed", 0),
+                                                   ("refused", 1), ("failed", 1)])
+def test_waiting_on_the_approved_folder_reclaim_exits_by_its_outcome(door: dict[str, Any], status: str,
+                                                                     exit_code: int) -> None:
+    code, out = _run("reclaim-approved-folders", "--apply")
+    request_id = json.loads(out)["id"]
+    results = door["state"] / "requests" / "results"
+    (results / f"{request_id}.json").write_text(json.dumps({"status": "launched", "unit": "u.service"}))
+    outcome = {"status": status,
+               "code": "reclaim_approved_folders_protected_storage_root" if status == "refused" else None,
+               "exit_code": 0 if exit_code == 0 else 2}
+    (results / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
+    code, out = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+    assert code == exit_code and json.loads(out)["outcome"] == outcome
+
+
 def test_client_submits_a_parked_delivery_retirement_as_a_plan_or_an_apply(door: dict[str, Any]) -> None:
     capture = "bucket/scenes/site-a/captures/walkthrough-a"
     for extra, apply in (((), False), (("--apply",), True)):

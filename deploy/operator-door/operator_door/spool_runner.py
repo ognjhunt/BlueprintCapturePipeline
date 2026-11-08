@@ -391,6 +391,27 @@ def _g1_pi_language_assets_properties(config: DoorConfig, _request: dict[str, An
             f"ReadWritePaths={writable}")
 
 
+def _reclaim_folders_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link}
+    if request["apply"]:
+        values["DOOR_APPLY"] = "1"
+    return values
+
+
+def _reclaim_folders_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """The allowlisted folders are direct children of the control-plane state directory, and removing
+    a child needs its parent writable; the kept receipts lie under it too. Root with only
+    CAP_DAC_OVERRIDE, as blueprint-owner-approved-deletion.service: a folder may hold files another
+    account owns. The module refuses anything its reviewed allowlist does not name. No network, and
+    every secret stays hidden."""
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+            "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
+            "CapabilityBoundingSet=CAP_DAC_OVERRIDE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
+            f"ReadWritePaths={config.control_plane_state} {Path(config.spool_root) / 'results'}")
+
+
 def _parked_delivery_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
             "DOOR_SERVICE_USER": "blueprint",
@@ -530,6 +551,12 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         "blueprint-operator-door-g1-pi-language-assets", "door-restore-g1-pi-language-assets.sh", "15min",
         lambda request: hashlib.sha256(("apply" if request["apply"] else "plan").encode("utf-8")).hexdigest()[:12],
         _g1_pi_language_assets_environment, _g1_pi_language_assets_properties),
+    # Named by a hash of the mode: the request has no other field. Unlinking a few allowlisted
+    # folders on local disk: at most 30 min.
+    "reclaim-approved-folders": _LaunchSpec(
+        "blueprint-operator-door-reclaim-folders", "door-reclaim-approved-folders.sh", "30min",
+        lambda request: hashlib.sha256(("apply" if request["apply"] else "plan").encode("utf-8")).hexdigest()[:12],
+        _reclaim_folders_environment, _reclaim_folders_properties),
     # Named by a hash of the capture and the mode; the approval text never reaches a unit name.
     "retire-parked-delivery": _LaunchSpec(
         "blueprint-operator-door-parked-delivery", "door-retire-parked-delivery.sh", "5min",

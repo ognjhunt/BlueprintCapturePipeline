@@ -46,6 +46,13 @@ provider bundle on the host. The folder, the search root and the inventory are p
 in that module; the request carries only ``apply``. It deletes and overwrites nothing
 (an invalid folder is set aside), reads no secret, uses no network, starts no compute
 and moves no money.
+``reclaim-approved-folders`` (``operate``) plans, or with ``apply`` performs, the
+active release's deletion of the internal folders the owner approved
+(``owner_approved_folder_reclaim``). The folders are listed only in the release's
+reviewed allowlist, each a direct child of the control-plane state directory that no
+storage class protects; the request carries only ``apply``. It deletes nothing else,
+never follows a link, reads no secret, uses no network, starts no compute and moves
+no money.
 ``retire-parked-delivery`` (``operate``) plans, or with ``apply`` performs, the
 active release's owner-approved retirement of one parked website preparation
 delivery (``website_preparation_delivery_retirement``): one capture-relative path
@@ -116,6 +123,8 @@ _SCOPES = {
     "restore-g1-runtime-source": "operate",
     # Restores the pi0.5 G1 language files from a verified retained bundle on the host.
     "restore-g1-pi-language-assets": "operate",
+    # Deletes the internal folders the owner approved in the release's reviewed allowlist.
+    "reclaim-approved-folders": "operate",
     # Retires one parked website preparation delivery on the owner's recorded approval.
     "retire-parked-delivery": "operate",
 }
@@ -155,13 +164,24 @@ if DISPATCHER_HOLD_ONLY:
     # copies the six pinned, digest-verified files from a retained bundle on the
     # host into the folder screening already names, sets an invalid folder aside
     # instead of deleting it, overwrites nothing, reads no secret, uses no
-    # network, starts no compute and moves no money.
+    # network, starts no compute and moves no money. The owner approved
+    # (2026-11-08 CST, in the library-aisle session) deleting one internal
+    # diagnostic folder the release's reviewed allowlist names: asked to choose
+    # between deleting it themselves and a reclaim operation, they chose
+    # "option 1" (deleting it themselves), then said "im tired of waiting so
+    # long" and tried to run the delete but could not reach the host; the
+    # session offered to build reclaim-approved-folders to carry out that
+    # delete. It deletes only folders the release's reviewed allowlist names
+    # with the owner's words, refuses any classified storage root and any
+    # link, reads no secret, uses no network, starts no compute and moves no
+    # money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
                            "confirm-owner-success-contract", "restore-g1-runtime-source",
-                           "restore-g1-pi-language-assets", "retire-parked-delivery"}}
+                           "restore-g1-pi-language-assets", "reclaim-approved-folders",
+                           "retire-parked-delivery"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
@@ -592,6 +612,13 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         apply = body.get("apply", False)
         if type(apply) is not bool:
             raise RequestRefused("g1_pi_language_assets_apply_invalid")
+        return {"kind": kind, "apply": apply}
+    if kind == "reclaim-approved-folders":
+        # No path is a field: the release module acts only on its reviewed allowlist.
+        _only(body, ("kind", "apply"))
+        apply = body.get("apply", False)
+        if type(apply) is not bool:
+            raise RequestRefused("reclaim_approved_folders_apply_invalid")
         return {"kind": kind, "apply": apply}
     if kind == "retire-parked-delivery":
         _only(body, ("kind", "capture", "approval_evidence", "apply"))

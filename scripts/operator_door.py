@@ -21,6 +21,7 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py legacy-owner-census --wait
     python3 scripts/operator_door.py restore-g1-runtime-source [--apply] --wait
     python3 scripts/operator_door.py restore-g1-pi-language-assets [--apply] --wait
+    python3 scripts/operator_door.py reclaim-approved-folders [--apply] --wait
     python3 scripts/operator_door.py retire-parked-delivery <bucket>/scenes/site-*/captures/<capture> \
         --approval-evidence "<owner approval>" [--apply] --wait
     python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
@@ -79,7 +80,8 @@ MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
                 "legacy_owner_census_observed", "repaired", "extended", "already_covered", "superseded",
-                "confirmed", "already_confirmed", "already_restored", "already_retired"}
+                "confirmed", "already_confirmed", "already_restored", "already_retired", "reclaimed",
+                "already_reclaimed"}
 GITHUB_API = "https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline"
 # The only job that attests a main commit. Its success is what a deploy's verification needs.
 ATTESTING_JOB = "SBOM, license, and provenance contract"
@@ -950,6 +952,13 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     )
     g1_language.add_argument("--apply", action="store_true", help="restore; without this only a plan is made")
     _add_wait(g1_language, 15 * 60 + 600)
+    reclaim = commands.add_parser(
+        "reclaim-approved-folders",
+        help="plan deleting the internal folders the owner approved in the release's allowlist; "
+             "--apply deletes them",
+    )
+    reclaim.add_argument("--apply", action="store_true", help="delete; without this only a plan is made")
+    _add_wait(reclaim, 30 * 60 + 600)
     parked = commands.add_parser(
         "retire-parked-delivery",
         help="plan an owner-approved retirement of one parked website preparation delivery; --apply retires it",
@@ -1096,6 +1105,8 @@ def run(args: argparse.Namespace) -> int:
         return _submit({"kind": "restore-g1-runtime-source", "apply": args.apply}, args)
     elif command == "restore-g1-pi-language-assets":
         return _submit({"kind": "restore-g1-pi-language-assets", "apply": args.apply}, args)
+    elif command == "reclaim-approved-folders":
+        return _submit({"kind": "reclaim-approved-folders", "apply": args.apply}, args)
     elif command == "retire-parked-delivery":
         return _submit({"kind": "retire-parked-delivery", "capture": args.capture,
                         "approval_evidence": args.approval_evidence, "apply": args.apply}, args)
