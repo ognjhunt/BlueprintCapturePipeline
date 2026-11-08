@@ -21,6 +21,11 @@ splat or mesh), for a planned cell of this candidate under this attempt's run id
 
     cell_runs/<NN>/episodes/media/<run_id>--<cell_id>--<candidate_id>[--prestart-readiness]/[failed-]<camera>.mp4
 
+or, from the native G1 runtime (``native_g1_beta_runtime``; ``head`` and ``overview`` cameras), kept as
+that planned cell's run videos:
+
+    cells/<cell_id>/episode/media/<candidate_id>/[failed-]<camera>.mp4
+
 ``<camera>`` is a camera id (``[a-z][a-z0-9_]{0,63}``: ``external``, ``wrist``,
 ``overview``, ``exact_policy_input``, ``episode``). Bounds, per attempt:
 ``MAX_VIDEOS`` (ten planned cells, ``DEFAULT_EPISODES``, times two media
@@ -141,12 +146,19 @@ def select_review_videos(members: Iterable[Mapping[str, Any]], *, run_id: str, c
     def omit(reason: str) -> None:
         omitted[reason] = omitted.get(reason, 0) + 1
 
+    positions = {cell_id: position for position, cell_id in enumerate(cell_ids)}
     for member in members:
         path = str(member.get("path") or "")
         if member.get("kind") != "file" or not path.lower().endswith(".mp4"):
             continue
         parts = path.split("/")
         name = _NAME.fullmatch(parts[-1]) if len(parts) == 6 else None
+        if (name is not None and parts[0] == "cells" and parts[1] in positions
+                and parts[2:4] == ["episode", "media"] and parts[4] == candidate_id):
+            # The native G1 runtime's layout: cells/<cell_id>/episode/media/<candidate_id>/<camera>.mp4.
+            position = positions[parts[1]]
+            parts = ["cell_runs", f"{position:02d}", "episodes", "media",
+                     f"{run_id}--{parts[1]}--{candidate_id}", parts[5]]
         if (name is None or parts[0] != "cell_runs" or not _CELL_RUN.fullmatch(parts[1])
                 or parts[2:4] != ["episodes", "media"] or parts[4] not in expected):
             omit("unexpected_member_name")

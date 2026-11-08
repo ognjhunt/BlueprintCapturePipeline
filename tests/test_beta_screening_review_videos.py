@@ -519,3 +519,22 @@ def test_a_video_is_found_however_many_attempts_the_capture_has(world):
     with pytest.raises(PreviewUnavailable):
         videos.open_video(request_id="job-1", capture_id="walkthrough-job-1", digest=video["sha256"],
                           storage_root=world.storage, manifest_digest="sha256:" + "0" * 64)
+
+
+def test_native_g1_runs_videos_are_selected_from_its_own_layout():
+    """The native G1 runtime keeps cells/<cell_id>/episode/media/<candidate_id>/<camera>.mp4 (2026-11-08)."""
+    candidate, cells = "humanoidarena_dp_g1_dex3_sonic_vision_navi", ["screening.site.000", "screening.site.001"]
+    paths = [f"cells/{cell}/episode/media/{candidate}/{camera}.mp4" for cell in cells for camera in ("head", "overview")]
+    paths += [f"cells/{cells[0]}/episode/media/{candidate}/frames/head_0000.png",
+              f"cells/{cells[0]}/episode/media/other_candidate/head.mp4",
+              f"cells/screening.site.009/episode/media/{candidate}/head.mp4"]
+    members = [{"path": path, "kind": "file", "size": 1000, "compressed_size": 900} for path in paths]
+
+    rows, omitted = videos.select_review_videos(members, run_id=RUN, candidate_id=candidate, cell_ids=cells)
+
+    assert [row["relative_path"] for row in rows] == [
+        "videos/00-run-head.mp4", "videos/00-run-overview.mp4", "videos/01-run-head.mp4", "videos/01-run-overview.mp4"]
+    assert [row["cell_id"] for row in rows] == [cells[0], cells[0], cells[1], cells[1]]
+    assert {row["phase"] for row in rows} == {"run"} and {row["camera"] for row in rows} == {"head", "overview"}
+    assert all(row["episode_id"] == f"{RUN}--{row['cell_id']}--{candidate}" for row in rows)
+    assert omitted == {"unexpected_member_name": 2}

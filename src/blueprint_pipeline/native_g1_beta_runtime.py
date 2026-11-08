@@ -216,6 +216,34 @@ def _run_worker(request_path, cell_root, *, deadline, output):
     return process.returncode, reason
 
 
+def drop_encoded_frames(media: Path) -> int:
+    """Remove a closed cell's PNG frames once its review videos are encoded beside them; the bytes freed.
+
+    The worker writes ``media/<candidate>/frames/*.png`` and encodes ``head.mp4`` and ``overview.mp4``
+    from them. Nothing verifies against the frames: the output check reads the JSON records and
+    re-scores from the trace, and review-video retention keeps only the MP4s. The library job's first
+    scored G1 run (2026-11-08) kept 4,000 frames (948 MiB) per cell, so two cells filled the session's
+    4 GiB output budget and voided the other two (``g1_beta_output_byte_budget_exhausted``). The frame
+    manifest stays; a folder without a non-empty MP4 keeps its frames. Never raises.
+    """
+    freed = 0
+    try:
+        if media.is_symlink() or not media.is_dir():
+            return 0
+        for directory in sorted(media.iterdir()):
+            frames = directory / "frames"
+            if (directory.is_symlink() or not directory.is_dir() or frames.is_symlink() or not frames.is_dir()
+                    or not any(video.is_file() and not video.is_symlink() and video.stat().st_size > 0
+                               for video in directory.glob("*.mp4"))):
+                continue
+            size = sum(path.stat().st_size for path in frames.rglob("*") if path.is_file() and not path.is_symlink())
+            shutil.rmtree(frames)
+            freed += size
+    except OSError:
+        pass
+    return freed
+
+
 def _build_runtime(root, output, deadline):
     # The dedicated dependency builder is supplied by the exact offline inventory
     # integration. It must not invoke the legacy online pip/apt bootstrap.
@@ -340,6 +368,7 @@ def run_session(root: Path, output: Path, *, failure_only: str | None = None):
                 episodes[index] = collect_cell(root=output, cell_root=cell_root, cell=cell,
                     scene_plan_digest=derivation["scene_plan_digest"], candidate_id=authority["candidate_ids"][0],
                     request_digest=request["request_digest"], returncode=returncode, reason=reason)
+                drop_encoded_frames(cell_root / "episode" / "media")
             if reason or episodes[index]["status"] != "completed":
                 for pending in episodes[index + 1:]:
                     pending.update(failure_stage="prior_native_cell", reason="g1_beta_prior_native_cell_blocked")
