@@ -664,6 +664,13 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - `internal-team-evaluation-diagnostic-20261015`: 11 GB
   - **Owner's call:** what to reclaim. No sanctioned door operation deletes these, and nothing was deleted. A smaller collection reservation would be a capacity decision too: real outputs so far were 10 KB–40 MB against the 16 GiB bound.
   - Both rows are blocked unspent and are planned again after the next deploy. G1 spend on the site is still $2.21 of $30.
+- **Owner decision, 11-08 about 18:50Z** (12:50 PM CST), relayed by the library-aisle session, verbatim: "yes prune".
+  - **The question put to them:** delete the bundle file only from attempts that provably never reached a GPU provider (refused before spawn, no qualifying offer, a preflight refusal). Keep every receipt, the bundle's sha256 included. Attempts that ran keep their bundle as evidence.
+  - It amends the "never evicted" note on `beta-policy-screening-work` for those attempts only.
+  - **Change (this PR):** `beta_screening_unspent_bundle_prune` runs once per screening worker tick, before any launch, and writes a `bundle_pruned.v1.json` receipt.
+  - **Measured on the host:** today's three $0 bundles are 195–202 MB each, about 0.59 GB together, not the 1 GB first estimated. The 18.4 GiB under `attempts/` is spent runs' evidence, which stays.
+  - **Effect:** the prune clears the 0.35 GB shortfall for DP's next attempt, but only just. A durable fix needs work-volume space or an audit of the collection reservation's 4× multiplier; both are owner calls.
+  - The approved 10-15 diagnostic folder (11 GB) is on `/`, while the G1 preflight measures `/mnt/blueprint-work`. Deleting it helps the root disk, not G1.
 
 ## Operating notes (2026-11-02)
 

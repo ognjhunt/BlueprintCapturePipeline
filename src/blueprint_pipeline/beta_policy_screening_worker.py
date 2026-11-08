@@ -436,6 +436,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = _root(args.queue_root)
     sources = enqueue_prepared_scenes(queue_root=root, packet_queue_root=args.packet_queue_root,
         max_sources=args.max_sources) if args.packet_queue_root else {"status": "source_queue_not_configured"}
+    from .beta_screening_unspent_bundle_prune import prune_unspent_bundles
+
+    # Local and unpaid, before any launch, so a reservation sized against the work volume sees
+    # the space: the bundles of closed attempts that provably reached no GPU provider (owner,
+    # 2026-11-08). A failure here never stops the tick.
+    try:
+        unspent_bundles = prune_unspent_bundles(queue_root=root)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        unspent_bundles = {"status": "failed", "blocker": "beta_screening_bundle_prune_failed",
+                           "error_type": type(exc).__name__}
     # Publish queued rows before a potentially long allocator attempt.
     before = deliver_publications(queue_root=root, refresh_startable=True)
     write_worker_status(root, publication_before=before)
@@ -466,7 +476,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
                       "publication_after": after, "holds": holds, "selections": selections,
                       "runtime_diagnostics_backfill": diagnostics, "review_video_backfill": review_videos,
-                      "worker_status": status},
+                      "unspent_bundle_prune": unspent_bundles, "worker_status": status},
                      sort_keys=True))
     return 0
 
