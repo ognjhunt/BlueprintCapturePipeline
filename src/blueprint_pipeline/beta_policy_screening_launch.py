@@ -98,6 +98,21 @@ def _check_quote(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
         raise ValueError("beta_screening_cost_quote_invalid_or_expired")
 
 
+def prelaunch_refusal_code(exc: BaseException) -> str:
+    """The typed code a refusal before spawn records, in the ledger's public code form.
+
+    A typed lowercase code (``beta_screening_cost_quote_invalid_or_expired``) is kept; anything
+    else is reduced to its exception class, lowercased, since free text may carry paths or URLs.
+    The class alone (``ValueError``) failed the ledger's lowercase code rule, so a refused DP
+    retry on the library site (2026-11-08) showed only ``beta_screening_not_allocated``.
+    """
+    import re
+
+    message = str(exc)
+    reason = message if re.fullmatch(r"[a-z][a-z0-9_]{0,150}", message) else type(exc).__name__.lower()
+    return "beta_screening_prelaunch_refused:" + reason
+
+
 def current_commit() -> str:
     """The commit this release runs.
 
@@ -391,7 +406,7 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         # Claim the same exclusive intent slot as a launch, so a concurrent
         # caller cannot start after this refusal releases its reservation.
         refusal = {"prepared_digest": prepared["prepared_digest"], "status": "refused_before_spawn",
-                   "blocker": "beta_screening_prelaunch_refused:" + type(exc).__name__}
+                   "blocker": prelaunch_refusal_code(exc)}
         try:
             _write(root / "allocator_launch_intent.json", refusal)
         except FileExistsError:

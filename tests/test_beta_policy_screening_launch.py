@@ -401,6 +401,26 @@ def test_definite_control_answer_before_spawn_still_blocks(tmp_path, monkeypatch
     blocked = launch.launch_candidate(**kwargs)
     assert blocked["status"] == "blocked" and "retryable_control_refusal" not in blocked
     assert launch._read(tmp_path / "allocator_launch_intent.json")["status"] == "refused_before_spawn"
+    # The refusal names its typed reason in the ledger's public code form, not the bare class.
+    from blueprint_pipeline.beta_policy_screening_coordinator import _BLOCKER
+    reason = ("beta_screening_current_source_revoked_before_spawn" if answer == "stopped"
+              else f"beta_screening_execution_control_{answer}")
+    assert blocked["blockers"] == ["beta_screening_prelaunch_refused:" + reason]
+    assert _BLOCKER.fullmatch(blocked["blockers"][0])
+
+
+@pytest.mark.parametrize(("exc", "expected"), [
+    (ValueError("g1_beta_prepared_execution_changed"), "g1_beta_prepared_execution_changed"),
+    (ValueError("cannot read /var/lib/blueprint/site/x.json"), "valueerror"),
+    (KeyError("scene_inputs"), "keyerror"),
+    (FileNotFoundError(2, "No such file"), "filenotfounderror"),
+])
+def test_a_refusal_before_spawn_keeps_only_a_typed_reason(exc, expected):
+    from blueprint_pipeline.beta_policy_screening_coordinator import _BLOCKER
+
+    code = launch.prelaunch_refusal_code(exc)
+    assert code == "beta_screening_prelaunch_refused:" + expected
+    assert _BLOCKER.fullmatch(code)
 
 
 def _live_invocation(tmp_path, monkeypatch, *, read):
