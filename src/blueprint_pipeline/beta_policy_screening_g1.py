@@ -291,11 +291,11 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
         # A start offset that overlaps, or has no floor, drops only its own cell (``navigation_start_offsets``);
         # with every one dropped there is no cell left to fund.
         dropped = navigation_start_offsets(packet_root, g1["plan_digest"])[0]
+        if FLOOR_ABSENT_REASON in dropped.values():
+            ensure_background_diagnostic(packet_root, g1["plan_digest"])
         if len(dropped) == len(NAVIGATION_START_OFFSETS):
-            if set(dropped.values()) == {FLOOR_ABSENT_REASON}:
-                ensure_background_diagnostic(packet_root, g1["plan_digest"])
-                raise ValueError(FLOOR_ABSENT_REASON)
-            raise ValueError(OVERLAP_REASON)
+            raise ValueError(FLOOR_ABSENT_REASON if set(dropped.values()) == {FLOOR_ABSENT_REASON}
+                             else OVERLAP_REASON)
     elif spawn_clearance_status(packet_root, g1["plan_digest"]) == "overlap":
         raise ValueError(OVERLAP_REASON)
     elif packet_floor_absent(packet_root, g1["plan_digest"]):

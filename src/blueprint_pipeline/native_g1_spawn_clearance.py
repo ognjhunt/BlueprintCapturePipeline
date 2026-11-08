@@ -76,9 +76,9 @@ UNSUPPORTED_FOOT_REASON = "g1_spawn_foot_unsupported"
 #: the foot support read against that flat floor, so a G1 result there would overstate itself. A flag the row
 #: carries (``setup_quality_flags``), never a gate.
 FLOOR_ESTIMATED_REASON = "g1_scene_floor_estimated"
-#: Money: a stance with no collision floor under either sole, and nothing of the scene near the robot,
-#: is refused before any rental. The library job's first scored G1 run (2026-11-08) spawned so on every
-#: start offset and fell through the scene in every cell it ran.
+#: Money: a stance whose spawn report finds no collision floor under any sole (``floor_absent``) is refused
+#: before any rental. The library job's first scored G1 run (2026-11-08) spawned so on every start offset
+#: and fell through the scene in every cell it ran.
 FLOOR_ABSENT_REASON = "g1_spawn_floor_absent"
 EMPTY_BACKGROUND_NOTICE = "g1_spawn_background_empty_near_robot"
 DIAGNOSTIC_SCHEMA_VERSION = "native_g1_spawn_background_diagnostic.v1"
