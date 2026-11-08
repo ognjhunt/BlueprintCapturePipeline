@@ -21,6 +21,14 @@ WHOLE, MINIMAL = "documented_reviewed_whole", "documented_minimal"
 # Labs does not document: adopted or polled, never bought again.
 FORMS = (("reviewed_masks_and_confidence", ""), ("reviewed_masks", "-masks"), (WHOLE, "-whole"), (MINIMAL, "-minimal"))
 LEGACY_FORMS = frozenset({"reviewed_masks_and_confidence", "reviewed_masks"})
+#: A job that buys Atlas's refined splat trains it on every posed source view, and
+#: forward camera motion leaves few views the near-duplicate rule calls distinct
+#: (capture-5b067498: 31 of 152 candidates). Its selection fills toward
+#: ``SPLAT_FRAME_TARGET`` sharp views spread in time, under this capacity; the
+#: headroom holds the task-source views the source pose adds. posedImages2Splats
+#: takes 2 to 512 frames; no Atlas pose request above 64 images has run yet.
+SPLAT_POSE_INPUT_CAPACITY = 128
+SPLAT_FRAME_TARGET = 96
 
 
 def splat_manifest_path(root: Path) -> Path:

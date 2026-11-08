@@ -321,7 +321,11 @@ def test_a_scene_kept_as_filmed_takes_atlas_refined_splat_with_the_draft_only_as
     write(tmp_path / 'splat/atlas_depth_splat_manifest.json', draft)
     refined_root = tmp_path / 'refined_splat-minimal'
     refined = {'digest': 'sha256:' + 'b' * 64, 'splat_kind': 'atlas_refined'}
-    frames, calls, exports, meshed = ['source-depth'], [], [], []
+    frames, calls, exports, meshed = [{'frame_id': 'kept'}, {'frame_id': 'disagrees'}], [], [], []
+    # The splat input selection (atlas_splat_input_quality) decides once which views are sent.
+    selection = {'digest': 'sha256:' + 'c' * 64, 'flags': ['splat_inconsistent_frames_dropped'],
+                 'sent_frame_ids': ['kept'], 'left_out': [{'frame_id': 'disagrees'}], 'heldout_frame_ids': []}
+    monkeypatch.setattr(pipeline, '_splat_input_selection', lambda **_: selection)
     monkeypatch.setattr(pipeline, '_source_pose', lambda **_: {'status': 'completed'})
     monkeypatch.setattr(source_inputs, 'prepare_source_pose', lambda _: (source_root, {}))
     monkeypatch.setattr(splats, 'load_posed_rgbd', lambda _: (pose, frames))
@@ -343,7 +347,8 @@ def test_a_scene_kept_as_filmed_takes_atlas_refined_splat_with_the_draft_only_as
 
     def native(**options):
         calls.append('refined_splat')
-        assert options['frames'] is frames and options['draft'] == draft
+        assert options['frames'] == frames[:1] and options['draft'] == draft
+        assert options['input_selection_digest'] == selection['digest']
         assert options['output_root'] == tmp_path / 'refined_splat'
         if outcome == 'provider_failed':
             raise ValueError('atlas_task_operation_failed')
@@ -375,7 +380,9 @@ def test_a_scene_kept_as_filmed_takes_atlas_refined_splat_with_the_draft_only_as
     if outcome == 'refined':
         # The refined splat is the appearance, the mesh and the export; the draft stays evidence.
         assert calls == ['completion', 'refined_splat', 'mesh'] and meshed == [refined_root]
-        assert result['appearance'] == {'basis': 'atlas_refined_splat'}
+        assert result['appearance'] == {'basis': 'atlas_refined_splat', 'splat_input': {
+            'digest': selection['digest'], 'flags': selection['flags'], 'sent_frame_count': 1,
+            'left_out_frame_count': 1, 'heldout_frame_ids': []}}
         assert result['splat_kind'] == 'atlas_refined' and result['splat_manifest_digest'] == refined['digest']
         assert exports[0]['splat_root'] == refined_root
         assert json.loads((tmp_path / 'splat/atlas_depth_splat_manifest.json').read_text()) == draft

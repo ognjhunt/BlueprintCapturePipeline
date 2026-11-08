@@ -634,14 +634,16 @@ def test_new_refined_splat_inputs_use_real_support_views_without_changing_histor
     fresh.mkdir()
     assert pipeline._job_edit_scope(fresh, None, default="all_selected_views") == "all_selected_views"
     options = dict(review=review, policy=policy, edit_scope="all_selected_views")
-    assert pipeline._splat_input_options(fresh, **options) == {"minimum_frames": 16, "maximum_frames": 30}
+    # Every new selection's added views also clear the clip's relative sharpness floor.
+    sharp = {"relative_sharpness_fraction": .6}
+    assert pipeline._splat_input_options(fresh, **options) == {"minimum_frames": 16, "maximum_frames": 30, **sharp}
     historical = tmp_path / "old"
     historical.mkdir()
     (historical / "atlas_view_selection.json").write_text(json.dumps({"frame_policy": {}}))
     assert pipeline._splat_input_options(historical, **options) == {}
-    assert pipeline._splat_input_options(fresh, **{**options, "policy": {}}) == {}
-    assert pipeline._splat_input_options(fresh, **{**options, "edit_scope": "required_and_additional"}) == {}
-    assert pipeline._splat_input_options(fresh, **{**options, "review": {}}) == {}
+    assert pipeline._splat_input_options(fresh, **{**options, "policy": {}}) == sharp
+    assert pipeline._splat_input_options(fresh, **{**options, "edit_scope": "required_and_additional"}) == sharp
+    assert pipeline._splat_input_options(fresh, **{**options, "review": {}}) == sharp
     assert pipeline._job_edit_scope(historical, None) == "required_and_additional"
     assert pipeline._job_edit_scope(historical, None, default="all_selected_views") == "required_and_additional"
 
@@ -653,21 +655,23 @@ def test_a_preserved_scene_buying_the_refined_splat_fills_its_selection_and_othe
     from blueprint_pipeline.website_atlas_pose import SPLAT_FRAME_TARGET
     preserved = {"subject_origin": origin, "automation": {"objects": [{"disposition": "keep"}]}}
     options = dict(review=preserved, policy={"refined_splat_cost_usd": 5}, edit_scope="all_selected_views")
-    assert pipeline._splat_input_options(tmp_path, **options) == {"splat_frame_target": SPLAT_FRAME_TARGET} \
-        == {"splat_frame_target": 96}
-    # No splat bought (a geometry-only job's policy drops the price): the selection is unchanged.
-    assert pipeline._splat_input_options(tmp_path, **{**options, "policy": {"pose_input_cost_usd": .01}}) == {}
+    sharp = {"relative_sharpness_fraction": .6}
+    assert pipeline._splat_input_options(tmp_path, **options) == {"splat_frame_target": SPLAT_FRAME_TARGET, **sharp} \
+        == {"splat_frame_target": 96, **sharp}
+    # No splat bought (a geometry-only job's policy drops the price): only the sharpness floor is new.
+    assert pipeline._splat_input_options(tmp_path, **{**options, "policy": {"pose_input_cost_usd": .01}}) == sharp
     # A captured subject's plain route posts its selection as generation context, not to the splat.
-    assert pipeline._splat_input_options(tmp_path, **{**options, "review": {"subject_origin": "captured"}}) == {}
+    assert pipeline._splat_input_options(tmp_path, **{**options, "review": {"subject_origin": "captured"}}) == sharp
     # A removal job keeps its own dense profile, or none.
     removal = {"automation": {"objects": [{"disposition": "remove"}]}}
     assert pipeline._splat_input_options(tmp_path, **{**options, "review": removal}) == {
-        "minimum_frames": 16, "maximum_frames": 30}
+        "minimum_frames": 16, "maximum_frames": 30, **sharp}
     assert pipeline._splat_input_options(
-        tmp_path, **{**options, "review": removal, "edit_scope": "required_and_additional"}) == {}
+        tmp_path, **{**options, "review": removal, "edit_scope": "required_and_additional"}) == sharp
     # A retained selection, or retained inputs whose plan was not yet written, keeps its recorded profile.
     for i, (recorded, expected) in enumerate((({}, {}), ({"splat_frame_target": 96}, {"splat_frame_target": 96}),
-            ({"minimum_source_frames": 16}, {"minimum_frames": 16, "maximum_frames": 30}))):
+            ({"minimum_source_frames": 16}, {"minimum_frames": 16, "maximum_frames": 30}),
+            ({"splat_frame_target": 96, "relative_sharpness_fraction": .6}, {"splat_frame_target": 96, **sharp}))):
         plan_root, inputs_root = tmp_path / f"plan-{i}", tmp_path / f"inputs-{i}"
         plan_root.mkdir()
         inputs_root.mkdir()

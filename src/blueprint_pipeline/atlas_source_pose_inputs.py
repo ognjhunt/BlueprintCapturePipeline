@@ -29,6 +29,11 @@ def task_source_inputs(pose_root: Path, original: dict) -> tuple[Path, dict]:
     from .website_scene_geometry import _bound_frames
 
     clean_root = pose_root.parent.parent / "clean_plate"
+    if not clean_root.is_dir():
+        # A rebuild's pose root sits deeper in the job (``atlas_splat_rebuild``): the
+        # capture's own clean plate is beside its ``pipeline/atlas``.
+        pipeline = next((path for path in pose_root.parents if path.name == "pipeline"), None)
+        clean_root = clean_root if pipeline is None else pipeline / "clean_plate"
     manifest_path = clean_root / "clean_plate_stage_manifest.json"
     if not manifest_path.is_file():
         return pose_root, original

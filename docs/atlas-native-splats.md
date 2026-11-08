@@ -237,6 +237,120 @@ World Labs' limits, read 2026-11-08:
 The pose grid is already the largest documented one, so the number and spread
 of source frames is what Blueprint can change.
 
+## Which posed views a refined splat is sent
+
+capture-5b067498's refined splat (41 frames, `documented_minimal`, 1280x720)
+came out blurry. capture-447ae4f4's kitchen, on the same path and form with 16
+frames, came out clear. The library job's retained records showed why:
+
+- The first ~3 s (10 of 41 views) had poses and depth that disagree. 39 of the
+  draft's 287 cross-view pairs were over the 0.05 limit (worst 10.7), and every
+  one involved views 000–074, 029 or 058. World Labs did not accept pose
+  refinement (`poseRefinementAccepted` false). The only check was the pooled
+  median (0.007), which hid them, and the request sent every view.
+- 22 views stood at one point, panning. The pose then jumped 3.3 units in
+  0.16 s into a straight dolly, which agreed within 1 % on its own.
+- The soft opening views passed the reviewed absolute sharpness floor (450) at
+  about half the clip's median.
+
+Two changes apply to every job. Neither stops one: they filter and flag.
+
+**Selection (before the pose).** Every view added after the reviewed cover
+(distinct, time-spread and support views) must also be at least
+`RELATIVE_SHARPNESS_FRACTION` (0.6) of the candidates' median sharpness
+(`atlas_video_inputs.prepare_video_inputs`). The cover keeps the reviewed
+floor, so a required view is never refused for it. A soft cover view is named in
+the plan (`cover_frames_below_relative_sharpness_floor`), and the views the floor
+kept out are named `below_relative_sharpness_floor`. A retained selection keeps
+the profile it recorded, so an in-flight job's inputs never change.
+
+**The splat request (after the pose, before the purchase).**
+`atlas_splat_input_quality.select_splat_frames` reads the draft's own per-pair
+agreement and the posed cameras, and records its decision once, in
+`refined_splat_input_selection.json` beside the refined-splat roots. The new
+request's input binding names it (`input_selection_digest`). It works in three steps:
+
+1. **Consistency, per view.** It drops the worst view while any view's own
+   median residual against its measured neighbours is over the limit, and then
+   any group that agrees only with itself after every member disagreed with its
+   other neighbours (029 and 058 matched each other at 0.007 and nothing else). A
+   view with no measured pair stays and is named. Below 8 consistent views it
+   flags and continues; below the provider's 2 it restores the least
+   inconsistent views.
+2. **Motion.** It splits the views in time at pose jumps (a step of a quarter of
+   the scene depth at ten times the clip's median speed, or a fast 45° turn) and
+   around no-parallax runs (within 2 % of the scene depth for at least 1 s). It
+   keeps the moving segment covering most of the reviewed task route, then most
+   baseline, plus every other moving segment on the same side of any jump. It
+   keeps at most 4 views of each no-parallax run, spread widest in viewing
+   direction. Measured pairs only compare nearest cameras, so they never compare
+   views across a jump. A segment beyond a jump is left out unless measured pairs
+   tie it to the kept side. A capture that never moved keeps every view.
+3. **Held out.** When at least 24 views would still be sent, it holds back 2
+   sharp, measured, interior views of the kept segment, never task-route views.
+   When the splat returns, `heldout_render_score.json` beside its manifest records
+   a render-vs-photo score at those views and at their nearest sent views. The
+   render takes each pixel's nearest opaque Gaussian centre at 320 px width, a CPU
+   stand-in for rasterising the splat. It compares views with each other and is no
+   image-quality measurement. Held-out views more than 3 dB below the training
+   views are flagged. It never blocks.
+
+On the library job's retained records this keeps the 19 dolly views. It drops the
+10 opening views, leaves out the 12 consistent pan views across the jump, and
+flags `pose_refinement_not_accepted` and `task_route_frames_left_out` (views 000
+and 199). 19 views are too few to hold any back. The kitchen's 16 views are sent
+unchanged. A splat bought before this record existed keeps what it was sent.
+The draft, gap completion and mesh registration still use every posed view. The
+result's `appearance` carries `splat_input` (flags and counts) and
+`heldout_quality`.
+
+## Rebuilding a ready job's refined splat
+
+Owner approval 2026-11-08, about 20:45Z: "fix the input first, then do the
+rebuild". A refinement needs a new job root (`atlas_refinement_requires_new_job`),
+and retained data is never deleted. So a rebuild runs beside the original
+(`atlas_splat_rebuild`, `website_atlas_pipeline._run_splat_rebuild`):
+
+- **Who qualifies.** A ready website job whose scene was kept as filmed, with
+  Atlas's refined splat of the captured views and no generated geometry, bought
+  before this release recorded an input selection, whose own pose shows the
+  cause: refinement not accepted, or a view that disagrees with its measured
+  neighbours. One rebuild per job.
+- **How it starts.** Only through the door's existing
+  `selected-handoff --atlas-retry`, after `--atlas-status` shows
+  `job.splat_rebuild` (reasons, `expected_cost_usd`, `maximum_cost_usd`,
+  `allowance_covers_maximum`). The retry refuses with
+  `selected_handoff_atlas_splat_rebuild_allowance_insufficient` unless the job's
+  remaining Atlas allowance covers the maximum. It writes
+  `pipeline/atlas/splat_rebuild_request.json` and reopens the job.
+- **What it buys**, in `pipeline/atlas/splat-rebuild/<parent digest hex>/`, on
+  the next controller ticks, through the job's own allowance and paid admission:
+  - a new selection under the current policy (96 time-spread views, relative
+    sharpness floor);
+  - a new source pose (about $0.01 a view);
+  - the scale measurement on it: one segmentation call for the named references
+    (`atlas_reference_masks`, on the upstream ledger), and a planner scale review
+    only if they disagree;
+  - then the refined splat ($5) and the mesh ($0.50), but only if World Labs
+    accepted pose refinement, enough views agree and the allowance still covers
+    both.
+
+  It buys no completion and no new task review.
+- **What it leaves.** The parent's result stays as
+  `splat-rebuild/<hex>/parent_result.json`, and every earlier pose, splat, mesh and
+  bundle stays where it is. A completed rebuild becomes the job's `result.json`
+  (`splat_rebuild` names the parent), and the controller archives and delivers it
+  as a new revision. A stop (refinement not accepted, too few consistent views,
+  allowance, the new pose's draft refusing) is recorded in `outcome.json` and the
+  job is ready again on its parent result. Nothing more is bought, and the stop is final.
+- **Downstream is not automatic.** Scene preparation (levelling, the navigation
+  scene, the job-page scene preview, G1 registration) reads the Atlas result only
+  when its native preparation runs. A completed native preparation does not run
+  again because the Atlas result changed. `--resume-preparation` replays only a
+  held handoff, and `--reissue-preparation` needs the sponsor's renewed grant. The
+  scene preview prefers the prepared base scene, so it keeps showing the old
+  splat until preparation runs again.
+
 ## Reviewed runtime policy
 
 The signed WebApp policy (`BLUEPRINT_WEBSITE_ATLAS_RUNTIME_POLICY_JSON`) is the

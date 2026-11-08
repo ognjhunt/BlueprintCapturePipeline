@@ -307,35 +307,105 @@ def _splat_input_options(pose_root, *, review, policy, edit_scope):
     A removal job that cleans every selected view keeps 16 to 30 of them: each is
     also an edit. A preserved scene's refined splat trains on its posed selection,
     so that selection fills toward ``SPLAT_FRAME_TARGET`` sharp views spread in
-    time. A retained selection (or its inputs, before the plan is written) keeps
-    the profile it recorded.
+    time. Every new selection's added views also clear the clip's relative
+    sharpness floor (``RELATIVE_SHARPNESS_FRACTION``). A retained selection (or
+    its inputs, before the plan is written) keeps the profile it recorded.
     """
-    from .atlas_video_inputs import GEOMETRY_INPUTS_FILE, takes_reviewed_background
+    from .atlas_video_inputs import GEOMETRY_INPUTS_FILE, RELATIVE_SHARPNESS_FRACTION, takes_reviewed_background
     from .website_atlas_pose import SPLAT_FRAME_TARGET
     plan, inputs = pose_root / "atlas_view_selection.json", pose_root / GEOMETRY_INPUTS_FILE
     if plan.is_file() or inputs.is_file():
         recorded = (json.loads(plan.read_text()).get("frame_policy", {}) if plan.is_file()
                     else json.loads(inputs.read_text()).get("binding", {}))
         dense, target = recorded.get("minimum_source_frames") == 16, recorded.get("splat_frame_target")
+        sharpness = recorded.get("relative_sharpness_fraction")
     else:
         splat = "refined_splat_cost_usd" in policy
         dense = splat and edit_scope == "all_selected_views" and takes_reviewed_background(review)
         target = SPLAT_FRAME_TARGET if splat and review.get("subject_origin") in PRESERVED_SCENE_ORIGINS else None
+        sharpness = RELATIVE_SHARPNESS_FRACTION
+    profile = {"relative_sharpness_fraction": sharpness} if sharpness else {}
     if dense:
-        return {"minimum_frames": 16, "maximum_frames": 30}
-    return {"splat_frame_target": target} if target else {}
+        return {"minimum_frames": 16, "maximum_frames": 30, **profile}
+    return {**({"splat_frame_target": target} if target else {}), **profile}
 
 
 REFINED_APPEARANCE, DRAFT_APPEARANCE = "atlas_refined_splat", "depth_fused_draft_fallback"
 
 
+def _splat_input_selection(*, frames, pose, draft, output_root, review, source_root, bought):
+    """The posed views the refined splat is sent, decided once before its purchase and recorded.
+
+    ``atlas_splat_input_quality.select_splat_frames`` reads the draft's per-pair
+    agreement and the posed cameras. A splat bought before that record existed
+    keeps the views it was sent (None: every posed view); a recorded selection
+    is read back, never re-derived.
+    """
+    from .atlas_splat_input_quality import SELECTION_FILE, scene_depth, select_splat_frames
+    from .atlas_video_inputs import GEOMETRY_INPUTS_FILE, WORKING_AREA_ROLES
+    path = output_root / SELECTION_FILE
+    if path.is_symlink():
+        raise ValueError("atlas_splat_input_selection_invalid")
+    if path.is_file():
+        record = json.loads(path.read_text())
+        if (record.get("digest") != canonical_digest(record, digest_field="digest")
+                or record.get("pose_result_digest") != pose["digest"]
+                or record.get("draft_splat_manifest_digest") != draft["digest"]
+                or record.get("posed_frame_ids") != [frame["frame_id"] for frame in frames]):
+            raise ValueError("atlas_splat_input_selection_changed")
+        return record
+    if bought:
+        return None
+    inputs_path = source_root / GEOMETRY_INPUTS_FILE
+    rows = json.loads(inputs_path.read_text()).get("frames", []) if inputs_path.is_file() else []
+    agreement = draft.get("cross_view_agreement") if draft.get("pose_result_digest") == pose["digest"] else None
+    record = select_splat_frames(frames=frames, agreement=agreement,
+        timestamps={row["frame_id"]: row.get("timestamp_seconds") for row in rows},
+        sharpness={row["frame_id"]: row.get("sharpness") for row in rows
+                   if isinstance(row.get("sharpness"), (int, float))},
+        scene_depth=scene_depth(frames),
+        pose_refinement_accepted=pose["operation"]["response"].get("poseRefinementAccepted"),
+        route_frame_ids={key for group in review.get("coverage_requirements") or []
+                         if group.get("role") in WORKING_AREA_ROLES for key in group.get("required_frame_ids", [])})
+    record.pop("digest")
+    record.update(pose_result_digest=pose["digest"], draft_splat_manifest_digest=draft["digest"])
+    record["digest"] = canonical_digest(record, digest_field="digest")
+    write_json(path, record)
+    return record
+
+
+def _heldout_quality(*, frames, selection, splat_root):
+    """Score the returned splat against the views held back from it, once; record and flag only."""
+    from .atlas_splat_input_quality import SCORE_FILE, heldout_quality
+    path = Path(splat_root) / SCORE_FILE
+    if path.is_file() and not path.is_symlink():
+        return json.loads(path.read_text())
+    try:
+        from .atlas_depth_splat import decode_spz
+        splat = decode_spz((Path(splat_root) / "atlas_refined_splat.spz").read_bytes())
+        record = heldout_quality(splat=splat, frames=frames, selection=selection)
+    except Exception as exc:  # noqa: BLE001 - a score never blocks the splat it describes
+        record = {"schema_version": "atlas_splat_heldout_score.v1", "status": "not_scored",
+                  "reason": type(exc).__name__, "selection_digest": selection.get("digest")}
+    write_json(path, record)
+    return record
+
+
 def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_context, source_digest,
-                          configuration, check, experimental, max_polls, admitted_completion):
+                          configuration, check, experimental, max_polls, admitted_completion,
+                          review=None, source_root=None, rebuild=False):
     """Atlas's refined splat of the captured frames, or the draft with the reason it is the fallback.
 
     The draft is the fallback only when the job's Atlas money cannot cover the refined splat and
     the mesh after it, when Atlas fails every attempt, or when admitted generated geometry would
     be left out of a captured-frames-only request. A splat already bought is always adopted.
+    A new purchase sends the views ``_splat_input_selection`` keeps (consistent, with
+    parallax, a few held back to score the result).
+
+    A ``rebuild`` replaces a refined splat the job already has, so it never falls back
+    to the draft: before buying, it needs World Labs to have accepted pose refinement,
+    enough consistent views and the money for the splat and mesh, or it stops by name
+    with nothing more bought.
     """
     from .atlas_native_splat import _form_roots, _started, run_native_splat
     from .atlas_pricing import splat_cost
@@ -346,32 +416,59 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     if admitted_completion and not bought:
         return {"status": "completed", "basis": DRAFT_APPEARANCE,
                 "fallback_reason": "atlas_refined_splat_would_omit_admitted_completion"}
+    selection = (_splat_input_selection(frames=frames, pose=pose, draft=draft, output_root=output_root,
+                                        review=review or {}, source_root=source_root, bought=bought)
+                 if source_root is not None else None)
+    if rebuild and not bought:
+        flags = set((selection or {}).get("flags") or [])
+        stop = ("atlas_splat_rebuild_input_selection_missing" if selection is None
+                else "atlas_splat_rebuild_pose_refinement_not_accepted"
+                if selection.get("pose_refinement_accepted") is not True
+                else "atlas_splat_rebuild_consistent_views_insufficient"
+                if flags & {"splat_consistent_frames_below_floor", "splat_consistent_frames_below_provider_minimum"}
+                else None)
+        if stop:
+            return {"status": "needs_input", "stage": "refined_splat", "reason": stop}
     if not bought:
         remaining = _current_configuration(task_context, source_digest, configuration).get("remaining_cost_usd")
         needed = splat_cost(policy) + float(policy.get("mesh_export_cost_usd", 0))
         if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or remaining < needed:
+            if rebuild:
+                return {"status": "needs_input", "stage": "refined_splat",
+                        "reason": "atlas_splat_rebuild_allowance_insufficient"}
             return {"status": "completed", "basis": DRAFT_APPEARANCE,
                     "fallback_reason": "atlas_refined_splat_unaffordable"}
+    sent = frames if selection is None else [f for f in frames if f["frame_id"] in set(selection["sent_frame_ids"])]
     check("refined_splat")
     try:
-        native = run_native_splat(frames=frames, result=pose, draft=draft, output_root=root, policy=policy,
+        native = run_native_splat(frames=sent, result=pose, draft=draft, output_root=root, policy=policy,
             task_context=task_context, max_polls=max_polls,
-            task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw))
+            task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
+            **({"input_selection_digest": selection["digest"]} if selection is not None else {}))
     except ValueError as exc:
-        if str(exc) != "atlas_task_operation_failed":
+        if str(exc) != "atlas_task_operation_failed" or rebuild:
             raise
         return {"status": "completed", "basis": DRAFT_APPEARANCE,
                 "fallback_reason": "atlas_refined_splat_provider_failed"}
     if native["status"] != "completed":
         return {"status": "processing", "stage": "refined_splat", "operation_id": native.get("operation_id")}
-    return {"status": "completed", "basis": REFINED_APPEARANCE, "splat_root": native["splat_root"],
-            "splat_manifest": native["splat_manifest"]}
+    appearance = {"status": "completed", "basis": REFINED_APPEARANCE, "splat_root": native["splat_root"],
+                  "splat_manifest": native["splat_manifest"]}
+    if selection is not None:
+        appearance["splat_input"] = {key: selection[key] for key in ("digest", "flags")}
+        appearance["splat_input"].update(sent_frame_count=len(selection["sent_frame_ids"]),
+            left_out_frame_count=len(selection["left_out"]), heldout_frame_ids=selection["heldout_frame_ids"])
+        if selection["heldout_frame_ids"]:
+            score = _heldout_quality(frames=frames, selection=selection, splat_root=native["splat_root"])
+            appearance["heldout_quality"] = {key: score.get(key) for key in (
+                "status", "median_heldout_psnr_db", "median_training_psnr_db", "flags", "reason") if key in score}
+    return appearance
 
 
 def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
                      source_digest, configuration, check, experimental, max_polls, model,
                      source_survey_path=None, reconstruction_only=False, task_evidence_limitation=None,
-                     geometry_only=False):
+                     geometry_only=False, rebuild=False):
     """Reconstruct an environment-preserving task from full-view observations.
 
     Selection and scale still use the production agents and validators. Missing
@@ -381,6 +478,11 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     ``geometry_only`` keeps any task's scene as filmed, a captured subject
     included, and buys only the pose, the scale review and the mesh: no
     completion. Its inputs already left out every frame showing a transient.
+
+    ``rebuild`` (``atlas_splat_rebuild``) buys a fresh pose, then the refined
+    splat and the mesh, and no completion: the parent's completion admitted no
+    generated geometry. It stops by name, with the parent's scene left as it was,
+    when its pose or money cannot support the splat.
     """
     from .atlas_source_pose_inputs import prepare_source_pose
     from .atlas_depth_splat import write_depth_splat, load_posed_rgbd, splats2mesh_attempt
@@ -433,7 +535,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         blockers.append(source_pose.get("reason", "atlas_source_pose_unavailable"))
     elif not reconstruction_only and "mesh_export_cost_usd" not in policy:
         blockers.append("atlas_mesh_export_price_unreviewed")
-    elif 'rgbd_view_cost_usd' in policy and not reconstruction_only and not geometry_only:
+    elif 'rgbd_view_cost_usd' in policy and not reconstruction_only and not geometry_only and not rebuild:
         if source_survey_path is None:
             completion_stopped = True
             blockers.append('atlas_original_capture_survey_required')
@@ -472,11 +574,17 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             and not completion_stopped and 'refined_splat_cost_usd' in policy):
         appearance = _preserved_appearance(frames=frames, pose=pose, draft=splat, output_root=output_root,
             policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
-            check=check, experimental=experimental, max_polls=max_polls, admitted_completion=admitted_completion)
-        if appearance['status'] == 'processing':
+            check=check, experimental=experimental, max_polls=max_polls, admitted_completion=admitted_completion,
+            review=review, source_root=source_root, rebuild=rebuild)
+        if appearance['status'] in ('processing', 'needs_input'):
             return appearance
         if appearance['basis'] == REFINED_APPEARANCE:
             splat_root, splat = Path(appearance['splat_root']), appearance['splat_manifest']
+    if rebuild and (appearance or {}).get('basis') != REFINED_APPEARANCE:
+        # A rebuild only ever replaces the scene with a new refined splat; nothing else is bought.
+        return {'status': 'needs_input', 'stage': 'source_pose' if source_pose['status'] != 'completed'
+                else 'refined_splat', 'reason': source_pose.get('reason') if source_pose['status'] != 'completed'
+                else 'atlas_splat_rebuild_refined_splat_unpriced'}
     if (not reconstruction_only and source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
             and not completion_stopped):
         mesh_destination = (output_root / 'mesh-refined' / splat['digest'][7:23]
@@ -531,7 +639,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         "scale_status": source_pose.get("scale_status", "unscaled_provider_world_units"),
         "billing_status": "provider_usage_unreported"}
     if appearance is not None:
-        result['appearance'] = {key: appearance[key] for key in ('basis', 'fallback_reason') if key in appearance}
+        result['appearance'] = {key: appearance[key] for key in (
+            'basis', 'fallback_reason', 'splat_input', 'heldout_quality') if key in appearance}
     if completion is not None:
         result['scene_completion'] = {'status': completion['status'], 'reason': completion.get('reason'),
             'failure_class': completion.get('failure_class'),
@@ -555,6 +664,46 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result
+
+
+def _run_splat_rebuild(*, job_dir, task_context, policy, held_policy, configuration, source_digest, check,
+                       experimental, max_polls):
+    """Advance the operator's reviewed rebuild (``atlas_splat_rebuild``) in its own root.
+
+    A new selection under the current policy, a new source pose, then the refined
+    splat and the mesh, each through the job's own allowance and paid admission.
+    Returns the result the job publishes: the rebuilt one, or on a stop the parent's.
+    """
+    from . import atlas_splat_rebuild as rebuilds
+    from .atlas_video_inputs import prepare_video_inputs
+
+    request, root, parent = rebuilds.load_request(job_dir)
+    finished = rebuilds.retained_outcome(job_dir, root, parent)
+    if finished is not None:
+        return finished
+    selection = json.loads((job_dir / "selection_binding.json").read_text())
+    survey_path = job_dir / selection["survey_relative_path"]
+    if survey_path.is_symlink() or not survey_path.resolve().is_relative_to(job_dir.resolve()):
+        raise ValueError("atlas_runtime_selection_escape")
+    review, pose_root = selection["review"], root / "pose"
+    pose_root.mkdir(parents=True, exist_ok=True)
+    # The rebuilt bundle carries the same reviewed scene the parent's did.
+    write_json(root / "atlas_scene_review.json", review)
+    try:
+        inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root,
+            **_splat_input_options(pose_root, review=review, policy=held_policy, edit_scope="required_and_additional"))
+        result = _preserved_scene(pose_root=pose_root, output_root=root, inputs=inputs, review=review,
+            policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
+            check=check, experimental=experimental, max_polls=max_polls, model=parent.get("model"), rebuild=True)
+    except ValueError as exc:
+        if not str(exc).startswith(rebuilds.STOP_PREFIXES):
+            raise
+        result = {"status": "needs_input", "reason": str(exc).partition(":")[0]}
+    if result.get("status") == "processing":
+        return result
+    if not result.get("download") or (result.get("appearance") or {}).get("basis") != REFINED_APPEARANCE:
+        return rebuilds.record_stop(root, request, parent, result)
+    return rebuilds.publish(job_dir, root, request, parent, result)
 
 
 def _checkpoint_with_details(checkpoint):
@@ -637,6 +786,12 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                      and not selection_path.exists() and not reviews.exists() else "required_and_additional")
     edit_scope = _job_edit_scope(output_root, edit_scope, default=default_scope)
     os.environ[ATLAS_PROVIDER_RETENTION_ENV] = current["authority"]["provider_retention"]
+    from .atlas_splat_rebuild import REQUEST_FILE as REBUILD_REQUEST
+    if refinement_feedback is None and (output_root / REBUILD_REQUEST).is_file():
+        # An operator's reviewed rebuild of this ready job's refined splat (atlas_splat_rebuild).
+        return _run_splat_rebuild(job_dir=output_root, task_context=task_context, policy=policy, held_policy=held,
+            configuration=_current_configuration(task_context, source_digest, config), source_digest=source_digest,
+            check=check, experimental=experimental, max_polls=max_polls)
     feedback = None
     if refinement_feedback is not None:
         from .atlas_refinement import load_refinement_feedback
