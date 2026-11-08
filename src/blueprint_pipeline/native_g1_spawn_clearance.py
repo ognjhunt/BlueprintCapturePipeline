@@ -659,18 +659,33 @@ def packet_floor_estimate(packet_dir: str | Path, plan_digest: str) -> dict[str,
     return scene_floor_estimate(plan.get("task_spec") or {})
 
 
+#: The levelling's floor filled under the filmed path, where the scan kept no floor (``atlas_world_levelling``).
+WALKED_FLOOR_BASIS = "floor_under_the_filmed_path"
+
+
 def floor_estimate_assumption(estimate: Mapping[str, Any]) -> str:
-    """The disclosed assumption a G1 preparation records for a scene floor that is an estimate."""
-    spread = estimate.get("band_spread_m")
-    try:
-        low, high = (float(value) for value in spread)
-        band = f"the scanned floor band spans {low:+.3f} m to {high:+.3f} m about that height (5th to 95th percentile)"
-    except (TypeError, ValueError):
-        band = "the scanned floor band's spread is not recorded"
-    return (f"Scene floor: {estimate.get('claim')} ({estimate.get('basis')}). In the scene collision a flat floor "
-            f"at the uneven scanned floor's median height stands in for it; {band}. The spawn check, each start "
-            "offset and the foot support read against that flat floor, so a clear or supported reading does not "
-            "describe the floor as scanned.")
+    """The disclosed assumption a G1 preparation records for a scene floor that is an estimate.
+
+    The basis names each estimate, joined by ``+``: the floor filled under the filmed path
+    (``WALKED_FLOOR_BASIS``) and any other, which is the flat floor at the uneven scanned band's median.
+    """
+    bases = set(str(estimate.get("basis") or "").split("+"))
+    clauses = []
+    if bases - {WALKED_FLOOR_BASIS}:
+        spread = estimate.get("band_spread_m")
+        try:
+            low, high = (float(value) for value in spread)
+            band = (f"the scanned floor band spans {low:+.3f} m to {high:+.3f} m about that height "
+                    "(5th to 95th percentile)")
+        except (TypeError, ValueError):
+            band = "the scanned floor band's spread is not recorded"
+        clauses.append(f"a flat floor at the uneven scanned floor's median height stands in for it; {band}")
+    if WALKED_FLOOR_BASIS in bases:
+        clauses.append("where the scan kept no floor near the filmed path, a flat floor at the levelled floor height "
+                       "is filled in under the camera's footprints, because the person filming walked there")
+    return (f"Scene floor: {estimate.get('claim')} ({estimate.get('basis')}). In the scene collision "
+            f"{'; and '.join(clauses)}. The spawn check, each start offset and the foot support read against that "
+            "flat floor, so a clear or supported reading does not describe the floor as scanned.")
 
 
 def spawn_clearance_status(packet_dir: str | Path, plan_digest: str) -> str:

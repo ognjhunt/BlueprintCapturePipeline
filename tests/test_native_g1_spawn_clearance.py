@@ -323,6 +323,14 @@ def test_a_floor_estimate_is_read_only_from_the_compiled_spec_evidence_and_discl
     assert "development_only_estimate (flat_floor_at_uneven_band_median)" in text
     assert "-0.052 m to +0.048 m" in text
     assert "spread is not recorded" in spawn.floor_estimate_assumption({**estimate, "band_spread_m": None})
+    # The floor filled under the filmed path is described as such, alone or beside the median floor.
+    walked = spawn.floor_estimate_assumption({"claim": "development_only_estimate", "basis": spawn.WALKED_FLOOR_BASIS,
+                                              "band_spread_m": None})
+    assert "filled in under the camera's footprints" in walked and "median height" not in walked
+    both = spawn.floor_estimate_assumption({**estimate, "basis": "flat_floor_at_uneven_band_median+"
+                                            + spawn.WALKED_FLOOR_BASIS})
+    assert "median height" in both and "-0.052 m to +0.048 m" in both and "filled in under" in both
+    assert "filled in" not in text
     # The packet's own plan is read, and only the plan it is asked about.
     plan = {"plan_digest": "sha256:" + "1" * 64, "task_spec": task}
     (tmp_path / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
