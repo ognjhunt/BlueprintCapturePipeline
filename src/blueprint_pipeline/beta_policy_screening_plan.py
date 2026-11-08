@@ -43,10 +43,13 @@ PLAN_SCHEMA_VERSION = "beta_policy_screening_plan.v1"
 #: candidate again once. Revision 1 (2026-11-05): on the RoboLab backend every DROID policy was
 #: told its gripper was closed when it was open, and the rigid readback placed the jaws at the
 #: inner-finger body origins instead of the pad centres the convention probe calibrates.
-SCREENING_HARNESS_REVISION = 1
+#: Revision 2 (2026-11-08): on the native G1 backend a navigation robot that fell through the
+#: scene (no collider under it) was scored a policy failure; such an episode is now void
+#: (``beta_policy_screening_g1.FELL_THROUGH_REASON``), so G1 results made before are not counted.
+SCREENING_HARNESS_REVISION = 2
 HARNESS_REVISION_FIELD = "screening_harness_revision"
 #: Results on each backend made under a lower harness revision are not counted (see above).
-RESULTS_NOT_COUNTED_BELOW = {"robolab.v1": 1}
+RESULTS_NOT_COUNTED_BELOW = {"robolab.v1": 1, "native_g1.v1": 2}
 EXECUTION_SCHEMA_VERSION = "blueprint.beta_policy_screening_execution.v1"
 QUOTE_SCHEMA_VERSION = "beta_policy_screening_cost_quote.v1"
 # Runtime ceiling shared with the native session: beta runs never become Arm
