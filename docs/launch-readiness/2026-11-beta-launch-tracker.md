@@ -671,6 +671,10 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - **Measured on the host:** today's three $0 bundles are 195–202 MB each, about 0.59 GB together, not the 1 GB first estimated. The 18.4 GiB under `attempts/` is spent runs' evidence, which stays.
   - **Effect:** the prune clears the 0.35 GB shortfall for DP's next attempt, but only just. A durable fix needs work-volume space or an audit of the collection reservation's 4× multiplier; both are owner calls.
   - The approved 10-15 diagnostic folder (11 GB) is on `/`, while the G1 preflight measures `/mnt/blueprint-work`. Deleting it helps the root disk, not G1.
+- **G1 collection reservation audit, 11-08** (asked for by the library-aisle session; capacity accounting, not money):
+  - **Writes during collection:** the run's hold covers the downloaded output ZIP (`vast_provider_run/`) and its extraction (`immutable_execution/`). Both are bounded by the 4 GiB session limit: the runtime stops retaining past it, and the transport refuses an oversize ZIP by name. Staging is emptied after upload. Measured on DP attempt 4: nothing else large stayed.
+  - **Defect found:** the extraction takes its own reservation, but the G1 lane never exported its hold as "enclosing" (the embodiment lane does). So the extraction counted the run's hold as another writer's too, and a real output (2.2 GiB for past G1 runs) would have been refused right after a paid run.
+  - **Fix:** the lane exports its hold to its collection, and reserves 2 × the session bound + the bundle (about 8.8 GB) instead of 4 × + bundle (17.4 GB). Today's 17.03 GB admits DP and, after a full 2.3 GiB run is kept, π0.5. Both refusals stay.
 
 ## Operating notes (2026-11-02)
 
