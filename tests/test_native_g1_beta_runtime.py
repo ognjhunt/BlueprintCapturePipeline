@@ -129,3 +129,35 @@ def test_a_bootstrap_failure_reason_never_exceeds_the_projection_bound():
 
     reason = runtime.failure_reason("policy_dependencies", ValueError("g1_beta_dependency_wheel_file_invalid:" + "a" * 200 + ".whl"))
     assert re.fullmatch(r"g1_[a-z0-9_]{1,120}", reason)
+
+
+def test_a_closed_cells_frames_go_once_its_videos_are_encoded(tmp_path):
+    media = tmp_path / "episode" / "media"
+    encoded, unencoded, empty = (media / name for name in ("dp", "no_video", "empty_video"))
+    for directory in (encoded, unencoded, empty):
+        (directory / "frames").mkdir(parents=True)
+        (directory / "frames" / "head_0000.png").write_bytes(b"p" * 100)
+        (directory / "multicamera_frame_manifest.json").write_text("{}")
+    (encoded / "head.mp4").write_bytes(b"m" * 10)
+    (empty / "head.mp4").write_bytes(b"")
+
+    assert runtime.drop_encoded_frames(media) == 100
+    assert not (encoded / "frames").exists() and (encoded / "head.mp4").is_file()
+    assert (encoded / "multicamera_frame_manifest.json").is_file()
+    assert (unencoded / "frames/head_0000.png").is_file() and (empty / "frames/head_0000.png").is_file()
+    assert runtime.drop_encoded_frames(tmp_path / "missing") == 0
+
+
+def test_symlinked_frames_are_never_followed(tmp_path):
+    import os
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.png").write_bytes(b"k")
+    directory = tmp_path / "media" / "dp"
+    directory.mkdir(parents=True)
+    (directory / "head.mp4").write_bytes(b"m")
+    os.symlink(outside, directory / "frames")
+
+    assert runtime.drop_encoded_frames(tmp_path / "media") == 0
+    assert (outside / "keep.png").is_file()

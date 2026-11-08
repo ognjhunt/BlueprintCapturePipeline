@@ -675,6 +675,22 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - **Writes during collection:** the run's hold covers the downloaded output ZIP (`vast_provider_run/`) and its extraction (`immutable_execution/`). Both are bounded by the 4 GiB session limit: the runtime stops retaining past it, and the transport refuses an oversize ZIP by name. Staging is emptied after upload. Measured on DP attempt 4: nothing else large stayed.
   - **Defect found:** the extraction takes its own reservation, but the G1 lane never exported its hold as "enclosing" (the embodiment lane does). So the extraction counted the run's hold as another writer's too, and a real output (2.2 GiB for past G1 runs) would have been refused right after a paid run.
   - **Fix:** the lane exports its hold to its collection, and reserves 2 × the session bound + the bundle (about 8.8 GB) instead of 4 × + bundle (17.4 GB). Today's 17.03 GB admits DP and, after a full 2.3 GiB run is kept, π0.5. Both refusals stay.
+- **985c482 live, 11-08 19:43Z** (#3473, #3475, deployed by the library-aisle session).
+  - The first worker ticks pruned 16 older $0 bundles, then today's three (195.6, 195.6 and 202.6 MB, each with its receipt). Work-volume headroom went from 16.80 to 20.98 GB.
+  - Re-plan: `screening-a3b3c62f…` at 19:49:30Z.
+- **Milestone: DP attempt 6, the first G1 episodes scored on a website job, 11-08.**
+  - Attempt `screen-2185c755…` on Vast 59772559: up at 19:59Z, settled at an estimated $1.14. G1 spend on the site is now $3.35 of $30.
+  - The learned policy was queried (3 rollouts, no scripted controller).
+    - Cells 0 and 1 scored failure (`g1_native_deterministic_task_score`): 0 of 2, success rate 0.0.
+    - Cell 2 is void with `g1_beta_output_byte_budget_exhausted`; cell 3 was not attempted.
+    - Flags: floor estimated, spawn foot unsupported. Development-only, under the navigation allowance.
+  - Collection worked under the new hold: a 3.94 GB output ZIP was downloaded and extracted.
+  - **Cause of the void cells:** each cell keeps 4,000 PNG frames under `episode/media/<candidate>/frames/` (948 MiB) beside the `head.mp4` and `overview.mp4` encoded from them (26 MiB). Two cells' frames fill the 4 GiB session budget.
+  - **Second finding:** review videos were reported `none_found`. Retention recognized only the DROID layout (`cell_runs/NN/episodes/media/…`), not G1's `cells/<cell>/episode/media/<candidate>/<camera>.mp4`.
+  - **Fix (this PR):**
+    - the runtime drops a closed cell's frames once its MP4s exist, keeping the frame manifest; nothing verifies against the frames;
+    - retention recognizes the G1 layout.
+    - DP attempt 6's own videos aren't backfilled, because a recorded `not_retained` is never retried. Future runs keep theirs.
 
 ## Operating notes (2026-11-02)
 
