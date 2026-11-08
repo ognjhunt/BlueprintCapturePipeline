@@ -634,6 +634,11 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - the bundle compares every reused wheel with the packet before any spend (`g1_beta_dependency_runtime_packet_wheel_mismatch`);
     - the runtime keeps a bounded specific reason, such as `g1_beta_dependency_wheel_file_invalid__triton_…`, or the stage plus the exception class. No URL or path is kept.
   - G1 spend on this site so far: $1.59 ($0.40 + $0.52 + $0.67), inside the $30 site limit.
+- **Deploy 6a181b1 (#3470), 11-08, in the 15:00 UTC window (D-08).**
+  - The library-aisle session merged #3470 at 06:33Z, with CI green and Codex clean. The two sessions agreed the G1 session would deploy it in the window. It was not a money, privacy or rights fix, so it was not deployed overnight.
+  - Pre-checks at 14:57Z: release 44d78b7 proven, no activation hold, no active units, every paid-launch lock free, no screening row running, launching or preparing, no door request pending. The library-aisle session had notice.
+  - `20261108T150013Z-deploy-3c635fc8` (requested 15:00:13Z, waits for idle) made 6a181b1 live and proven by 15:18:00Z, with no blockers. Receipt: `iteration_6a181b180efb_door.json`.
+  - Next: the coordinator plans DP and π0.5 again at this commit on its own. Their outcomes follow here.
 
 ## Operating notes (2026-11-02)
 
