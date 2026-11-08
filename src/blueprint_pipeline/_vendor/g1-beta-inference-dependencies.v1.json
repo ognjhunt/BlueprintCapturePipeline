@@ -52,7 +52,7 @@
     "path": "/isaac-sim/python.sh",
     "source": "existing_pinned_isaac_image"
   },
-  "manifest_digest": "sha256:5ad43668b6903fa2682680c59f90f6daf3c4ee3a07b48930f74d96a53206a5de",
+  "manifest_digest": "sha256:175244d4d7f27df348284836dd42af4449166622188d984d8f2bb98ae733fafb",
   "maximum_expanded_bytes": 17179869184,
   "notes": [
     "Only the pinned publisher policy/server import graph is covered; hardware drivers and training entrypoints are excluded.",
@@ -82,7 +82,7 @@
     "platform": "Linux",
     "version": "3.12"
   },
-  "reused_runtime_wheel_bytes": 4132469228,
+  "reused_runtime_wheel_bytes": 4132475924,
   "schema": "native_g1_beta_dependency_manifest.v1",
   "source_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9",
   "total_download_bytes": 261777389,
@@ -1974,22 +1974,22 @@
     },
     {
       "archive_path": "runtime_dependencies/wheels/triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
-      "evidence": "pypi_release_metadata_and_sha256",
+      "evidence": "publisher_index_hash_pep658_metadata_and_head_size",
       "filename": "triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
       "license_metadata": "MIT",
       "license_provenance": {
         "installed_notices": "Retain all license and notice members in the exact wheel; this field is not a substitute for those terms.",
         "kind": "published_distribution_metadata",
-        "metadata_url": "https://pypi.org/pypi/triton/3.6.0/json"
+        "metadata_url": "https://download-r2.pytorch.org/whl/triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata"
       },
       "name": "triton",
       "requested_extras": [],
       "requires_dist": [],
       "requires_python": "<3.15,>=3.10",
-      "sha256": "74caf5e34b66d9f3a429af689c1c7128daba1d8208df60e81106b115c00d6fca",
-      "size_bytes": 188266850,
+      "sha256": "6f5928e6d44c34a97bbe164cceddc0ef2007121c89ebcfba5415cf452de7ee9f",
+      "size_bytes": 188273546,
       "source": "runtime_source_packet",
-      "url": "https://files.pythonhosted.org/packages/ab/a8/cdf8b3e4c98132f965f88c2313a4b493266832ad47fb52f23d14d4f86bb5/triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "url": "https://download-r2.pytorch.org/whl/triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
       "version": "3.6.0"
     },
     {

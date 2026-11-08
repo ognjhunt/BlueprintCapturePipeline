@@ -243,6 +243,30 @@ def _recover_cells(root, output, authority, spec, base, episodes):
             request_digest=request["request_digest"], returncode=None, reason="g1_beta_wrapper_interrupted")
 
 
+def failure_reason(stage: str, exc: BaseException) -> str:
+    """A bounded machine reason that survives the private projection (``g1_[a-z0-9_]{1,120}``).
+
+    Arbitrary exception text may carry URLs, paths or runtime details, so only these are kept:
+    a ``g1_`` code as is; a ``g1_``/``local_policy_`` code with a ``:<file name>`` suffix (no ``/``),
+    reduced to lowercase code characters; otherwise the stage plus the exception's class name. The
+    library job's third G1 run (2026-11-08) recorded only ``g1_beta_policy_dependencies_failed``
+    for ``g1_beta_dependency_wheel_file_invalid:triton-3.6.0-…whl``.
+    """
+    message = str(exc)
+    if re.fullmatch(r"g1_[a-z0-9_]{1,120}", message):
+        return message
+    coded = re.fullmatch(r"((?:g1|local_policy)_[a-z0-9_]{1,100})(?::([A-Za-z0-9._+-]{1,200}))?", message)
+    if coded:
+        code = coded.group(1) if coded.group(1).startswith("g1_") else "g1_beta_" + stage + "_" + coded.group(1)
+        suffix = re.sub(r"[^a-z0-9]+", "_", (coded.group(2) or "").lower()).strip("_")
+        reason = code + ("__" + suffix if suffix else "")
+    else:
+        name = re.sub(r"[^a-z0-9]+", "_", type(exc).__name__.lower()).strip("_")
+        reason = "g1_beta_" + stage + "_failed" + ("__" + name if name else "")
+    reason = reason[:123].rstrip("_")
+    return reason if re.fullmatch(r"g1_[a-z0-9_]{1,120}", reason) else "g1_beta_" + stage + "_failed"
+
+
 def run_session(root: Path, output: Path, *, failure_only: str | None = None):
     from .native_g1_beta_download import stage_selected_assets
     from .native_g1_beta_assets import needs_pi_tokenizer
@@ -321,11 +345,7 @@ def run_session(root: Path, output: Path, *, failure_only: str | None = None):
                     pending.update(failure_stage="prior_native_cell", reason="g1_beta_prior_native_cell_blocked")
                 break
     except Exception as exc:  # retain every not-attempted cell on bounded bootstrap failure
-        # Preserve a bounded machine reason through the private projection;
-        # arbitrary exception text may contain URLs or runtime details.
-        message = str(exc)
-        blockers.append(message if re.fullmatch(r"g1_[a-z0-9_]{1,120}", message)
-                        else "g1_beta_" + stage + "_failed")
+        blockers.append(failure_reason(stage, exc))
         for row in episodes:
             if row["status"] == "not_attempted":
                 row.update(failure_stage=stage, reason=blockers[-1])

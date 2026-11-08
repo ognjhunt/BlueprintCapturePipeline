@@ -619,6 +619,21 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - The folder's six files sit under `assets/`, at the pinned sizes, with both sha256-pinned files matching. The resolver read the parent, so every file was "missing" there.
   - Fix (next PR): `RETAINED_TOKENIZER_DIR` points at `assets/`. Every use still verifies each file. No host write is needed, and the restore becomes a no-op.
   - The TRLC pi0.5 readers (`trlc_pi05_assets.RETAINED_TOKENIZER_DIR`, the door's `TRLC_TOKENIZER_ROOT`) read the same parent; that's left to the TRLC lane.
+- **DP attempt 3, 11-08: the runtime got past start-up and stopped at the policy's dependencies.**
+  - 44d78b7 (#3467, #3468) was live at about 04:38Z. Campaign `screening-744c13fa…` (04:47Z) selected DP. π0.5 was queued behind it.
+  - **Paid run:** attempt `screen-5c16f94b…`, Vast instance 59667028, launched 04:53:46Z, settled 05:25:31Z.
+    - Spend: an estimated $0.67 of the $4 cap ($0.23 runtime, $0.43 transfer; the provider API gives no actual figure). No continuing spend, staged objects absent.
+    - The GPU check, Isaac smoke, bundle, native provisioning and the import preflight all passed. All four cells were void at `policy_dependencies` (`g1_beta_policy_dependencies_failed`): no policy query, no episode scored. Flags: `g1_scene_floor_estimated`, `g1_spawn_foot_unsupported`.
+  - **Cause:** the runtime collapsed the exception to the stage's generic code, so the G1 session worked it out from the code and the host's JSON.
+    - A free local re-run of the 55 public wheel downloads, with the production code, verified all 55.
+    - The other 41 wheels are reused from the runtime source packet. On the host packet's receipt, 40 match the dependency profile and triton 3.6.0 does not: the profile pinned PyPI's build (188,266,850 bytes, `74caf5e3…`), while the packet carries the PyTorch index's build of the same version (188,273,546 bytes, `6f5928e6…`, listed on the index with that sha).
+    - `verify_wheelhouse` refuses the mismatch. Its code ends `:<file name>`, which the projection drops. π0.5 uses the same profile and would have failed the same way.
+  - π0.5 is `blocked` with `beta_screening_held_after_launch_failure`, unspent. Both rows are planned again after the next deploy: DP's all-void run is its third harness failure of the 7 allowed.
+  - **Fix (PR below):**
+    - the profile reuses the packet's triton, with the manifest resealed;
+    - the bundle compares every reused wheel with the packet before any spend (`g1_beta_dependency_runtime_packet_wheel_mismatch`);
+    - the runtime keeps a bounded specific reason, such as `g1_beta_dependency_wheel_file_invalid__triton_…`, or the stage plus the exception class. No URL or path is kept.
+  - G1 spend on this site so far: $1.59 ($0.40 + $0.52 + $0.67), inside the $30 site limit.
 
 ## Operating notes (2026-11-02)
 

@@ -106,3 +106,26 @@ def test_missing_image_git_retains_each_cell_reason_without_install_or_model_fet
     for row in result["episodes"]:
         assert row["reason"] == "g1_beta_image_git_unavailable"
         assert _episode_outcome(row, candidate_id=DP, contract_digest=spec["task_success_contract_digest"])[1] == row["reason"]
+
+
+@pytest.mark.parametrize(("message", "expected"), [
+    ("g1_beta_dependency_environment_invalid", "g1_beta_dependency_environment_invalid"),
+    ("g1_beta_dependency_wheel_file_invalid:triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+     "g1_beta_dependency_wheel_file_invalid__triton_3_6_0_cp312_cp312_manylinux_2_27_x86_64_manylinux_2_28_x86_64_whl"),
+    ("local_policy_download_bytes_changed", "g1_beta_policy_dependencies_local_policy_download_bytes_changed"),
+    ("fetch failed for https://files.example/a.whl", "g1_beta_policy_dependencies_failed__valueerror"),
+    ("g1_beta_x:/var/lib/blueprint/site", "g1_beta_policy_dependencies_failed__valueerror"),
+])
+def test_a_bootstrap_failure_keeps_a_bounded_specific_reason(message, expected):
+    import re
+
+    reason = runtime.failure_reason("policy_dependencies", ValueError(message))
+    assert reason == expected
+    assert re.fullmatch(r"g1_[a-z0-9_]{1,120}", reason)
+
+
+def test_a_bootstrap_failure_reason_never_exceeds_the_projection_bound():
+    import re
+
+    reason = runtime.failure_reason("policy_dependencies", ValueError("g1_beta_dependency_wheel_file_invalid:" + "a" * 200 + ".whl"))
+    assert re.fullmatch(r"g1_[a-z0-9_]{1,120}", reason)
