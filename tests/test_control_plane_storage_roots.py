@@ -134,6 +134,7 @@ def test_chain_preflight_treats_scene_workspaces_as_written_storage():
 @pytest.mark.parametrize(("path", "storage_class", "owner"), [
     ("/var/lib/blueprint/pipeline-control-plane/completed-replay-cache-retention", "evidence_hot", "root"),
     ("/var/lib/blueprint/pipeline-control-plane/scene-project-spend", "evidence_hot", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/account-monthly-spend", "evidence_hot", "blueprint"),
     ("/var/lib/blueprint/task-evaluation-inputs/task-evaluation-terminal-results", "evidence_hot", "blueprint"),
     ("/var/lib/blueprint/pipeline-control-plane/result-artifact-cache", "cache", "blueprint"),
     ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents", "work", "blueprint"),

@@ -34,6 +34,15 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+# The result reference the intake checks lives in a light module (re-exported, the same objects).
+from .website_navigation_preparation_result import (
+    RESULT_PHASE,
+    RESULT_SCHEMA,
+    WebsiteNavigationIntakeError,
+    is_navigation_request,
+    navigation_preparation_result,
+    validate_navigation_preparation_result,
+)
 from .task_evaluation_scene_intent_contracts import (
     NAVIGATION_GEOMETRY_ORIGIN,
     NAVIGATION_STRATEGY,
@@ -46,18 +55,10 @@ OUTBOX_SCHEMA = "blueprint.website_navigation_intake_outbox.v1"
 OUTBOX_FILENAME = "website_navigation_intake_outbox.v1.json"
 RECEIPT_SCHEMA = "blueprint.website_navigation_intake_receipt.v1"
 RECEIPT_FILENAME = "website_navigation_intake_receipt.v1.json"
-#: The completed intent's result reference and phase (``scene_intent_status``; the website's
-#: ``navigationPreparationReference``). Its digest is the record's ``scene_revision_digest``.
-RESULT_SCHEMA = "website_navigation_preparation_result.v1"
-RESULT_PHASE = "navigation_scene_prepared"
 SOURCE_FIELDS = ("scene_intent_id", "scene_intent_digest", "capture_id", "task_id",
                  "task_context_digest", "scene_revision_digest")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _REFUSAL = re.compile(r"website_control_prepared-scene_http_409:([a-z][a-z0-9_]{0,99})\Z")
-
-
-class WebsiteNavigationIntakeError(ValueError):
-    """A typed reason a navigation intake cannot be built, kept or read."""
 
 
 def _require(condition: bool, code: str) -> None:
@@ -286,36 +287,6 @@ def read_navigation_intake_receipt(record_path: str | Path,
              and source["scene_intent_digest"] == (receipt.get("intent") or {}).get("intent_digest"),
              "website_navigation_intake_receipt_record_mismatch")
     return json.loads(json.dumps(receipt, allow_nan=False))
-
-
-def navigation_preparation_result(request: Mapping[str, Any]) -> dict[str, Any]:
-    """The completed navigation intent's result reference: the scene as filmed, nothing paid for or run.
-
-    Its digest is the navigation record's ``scene_revision_digest``, as the request names it; the other
-    digests are the request's own. It claims no native application, policy episode or construction.
-    """
-    task = request["task"]
-    return {"schema_version": RESULT_SCHEMA, "digest": task["scene_revision_digest"],
-            "task_kind": NAVIGATION_STRATEGY,
-            **{key: task[key] for key in NAVIGATION_TASK_DIGESTS if key != "scene_revision_digest"},
-            "native_application_claimed": False, "policy_episode_claimed": False,
-            "paid_construction_performed": False}
-
-
-def validate_navigation_preparation_result(value: Any, *, request: Mapping[str, Any], status: str,
-                                           phase: str | None) -> dict[str, Any]:
-    """The result reference a completed navigation intent reports, exactly; raises otherwise."""
-    task = request.get("task") or {}
-    if (task.get("strategy") != NAVIGATION_STRATEGY or status != "completed" or phase != RESULT_PHASE
-            or (request.get("execution") or {}).get("purpose") != "scene_preparation"
-            or (request.get("execution") or {}).get("policy_candidates") != []
-            or not isinstance(value, Mapping) or dict(value) != navigation_preparation_result(request)):
-        raise WebsiteNavigationIntakeError("website_navigation_preparation_result_reference_invalid")
-    return dict(value)
-
-
-def is_navigation_request(request: Any) -> bool:
-    return isinstance(request, Mapping) and (request.get("task") or {}).get("strategy") == NAVIGATION_STRATEGY
 
 
 __all__ = ["OUTBOX_FILENAME", "OUTBOX_SCHEMA", "RECEIPT_FILENAME", "RECEIPT_SCHEMA", "RESULT_PHASE",
