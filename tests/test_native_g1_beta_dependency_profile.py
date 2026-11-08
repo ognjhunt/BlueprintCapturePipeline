@@ -155,3 +155,12 @@ def test_wheelhouse_rejects_archived_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(profile, "artifact_manifest", lambda: manifest)
     with pytest.raises(ValueError, match="wheel_member_invalid"):
         profile.verify_wheelhouse(paths)
+
+
+def test_reused_triton_is_the_pytorch_index_build_the_runtime_packet_carries():
+    """The 2026-11-08 library run lost all four cells to PyPI's triton pin; the packet holds the PyTorch index build."""
+    row = next(row for row in profile.artifact_manifest()["wheels"] if row["name"] == "triton")
+    assert row["source"] == "runtime_source_packet"
+    assert (row["sha256"], row["size_bytes"]) == (
+        "6f5928e6d44c34a97bbe164cceddc0ef2007121c89ebcfba5415cf452de7ee9f", 188_273_546)
+    assert row["url"].startswith("https://download-r2.pytorch.org/whl/")

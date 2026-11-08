@@ -65,6 +65,25 @@ exit "$runner_rc"
 '''
 
 
+def check_reused_runtime_wheels(profile, runtime) -> None:
+    """Each wheel the dependency profile reuses is the runtime source packet's exact wheel, checked before any spend.
+
+    The rented machine refuses a reused wheel whose size or sha256 differs from the profile
+    (``verify_wheelhouse``). The library job's third G1 run (2026-11-08, $0.67) reached that check
+    and lost all four cells: the profile pinned PyPI's triton 3.6.0 build, the packet carries the
+    PyTorch index's build of the same version.
+    """
+    held = {row.get("archive_path"): row for row in runtime.get("runtime_dependency_wheels", [])
+            if isinstance(row, dict)}
+    for row in profile["wheels"]:
+        if row["source"] != "runtime_source_packet":
+            continue
+        packet_row = held.get(row["archive_path"], {})
+        if (packet_row.get("size_bytes") != row["size_bytes"]
+                or packet_row.get("sha256") not in {row["sha256"], "sha256:" + row["sha256"]}):
+            raise ValueError("g1_beta_dependency_runtime_packet_wheel_mismatch")
+
+
 def build_bundle(*, job_dir: Path, authority, spec, implementation_commit: str,
                  tokenizer_dir: Path | None = None):
     from .beta_policy_screening_g1 import validate_execution_spec
@@ -118,6 +137,7 @@ def build_bundle(*, job_dir: Path, authority, spec, implementation_commit: str,
     for path in _runtime_code_files(package):
         sources["provider_runtime/blueprint_pipeline/" + path.relative_to(package).as_posix()] = path
     dependency_profile = artifact_manifest()
+    check_reused_runtime_wheels(dependency_profile, runtime)
     sources["provider_runtime/" + DEPENDENCY_MANIFEST_FILENAME] = package / "_vendor" / DEPENDENCY_MANIFEST_FILENAME
     dependency, contract_sources = _contract_dependency()
     for relative, path in contract_sources:

@@ -84,6 +84,8 @@ def fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(bundle, "verify_g1_publisher_source", lambda path: {})
     monkeypatch.setattr(bundle, "verify_native_task_runtime_source_packet", lambda path: runtime)
     monkeypatch.setattr(bundle, "_review_g1_runtime_wheels", lambda *a: {"status": "exact_g1_wheels_approved"})
+    # This packet carries no wheels; the reused-wheel check has its own test below.
+    monkeypatch.setattr(bundle, "check_reused_runtime_wheels", lambda *a: None)
     return authority, spec
 
 
@@ -134,3 +136,25 @@ def test_resealed_manifest_cannot_change_selected_candidate(tmp_path, monkeypatc
         manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
         with pytest.raises(ValueError, match="selected_binding_changed"):
             bundle.validate_bundle_archive(archive, manifest)
+
+
+def test_reused_wheels_must_be_the_runtime_packets_exact_wheels_before_any_spend():
+    from blueprint_pipeline.native_g1_beta_bundle import check_reused_runtime_wheels
+    from blueprint_pipeline.native_g1_beta_dependency_profile import artifact_manifest
+
+    manifest = artifact_manifest()
+    reused = [row for row in manifest["wheels"] if row["source"] == "runtime_source_packet"]
+    runtime = {"runtime_dependency_wheels": [
+        {"archive_path": row["archive_path"], "sha256": "sha256:" + row["sha256"], "size_bytes": row["size_bytes"]}
+        for row in reused]}
+    check_reused_runtime_wheels(manifest, runtime)
+    for change in ({"sha256": "sha256:" + "74caf5e34b66d9f3a429af689c1c7128daba1d8208df60e81106b115c00d6fca"},
+                   {"size_bytes": 188_266_850}):
+        changed = {"runtime_dependency_wheels": [
+            {**row, **change} if row["archive_path"].endswith("/" + next(
+                w["filename"] for w in reused if w["name"] == "triton")) else row
+            for row in runtime["runtime_dependency_wheels"]]}
+        with pytest.raises(ValueError, match="g1_beta_dependency_runtime_packet_wheel_mismatch"):
+            check_reused_runtime_wheels(manifest, changed)
+    with pytest.raises(ValueError, match="g1_beta_dependency_runtime_packet_wheel_mismatch"):
+        check_reused_runtime_wheels(manifest, {"runtime_dependency_wheels": runtime["runtime_dependency_wheels"][1:]})
