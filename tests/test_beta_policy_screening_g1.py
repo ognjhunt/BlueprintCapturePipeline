@@ -648,10 +648,55 @@ def test_an_overlapping_start_offset_drops_only_its_cell(tmp_path, monkeypatch):
     assert kept == navigation_cells()[:3]
 
 
-def test_a_foot_with_no_floor_at_one_offset_is_a_flag_for_the_row(tmp_path, monkeypatch):
+def test_an_offset_with_no_floor_under_either_foot_drops_only_its_cell(tmp_path, monkeypatch):
+    # The floor ends 4 cm behind the start: 15 cm back neither foot has any floor under it, so that cell
+    # would fall through the scene (2026-11-08) and is not funded; the row keeps the other three.
     kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch, floor_x_min=-0.04)
     spec = g1.candidate_execution_spec(**kwargs)
-    assert g1.dropped_start_offsets(spec) == {} and g1.setup_quality_flags(spec) == ["g1_spawn_foot_unsupported"]
+    assert g1.dropped_start_offsets(spec) == {"back_15cm": "g1_spawn_floor_absent"}
+    assert g1.setup_quality_flags(spec) == ["g1_spawn_floor_absent"]
+    kept = g1.frozen_cells(navigation_cells(), g1.dropped_start_offsets(spec))
+    assert [cell["resolved_scenario"]["ordinal"] for cell in kept] == [0, 1, 2]
+
+
+def test_with_no_floor_at_any_start_offset_the_row_is_refused_before_spend_and_the_collision_is_counted(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch)
+    for name, rows in ((spawn.START_OFFSETS_FILENAME, "offsets"), (spawn.FILENAME, None)):
+        path = packet / name
+        report = json.loads(path.read_text())
+        for row in (report[rows] if rows else [report]):
+            for sole in row["foot_support"]["soles"].values():
+                sole.update(floor_z_m=None, gap_m=None)
+        path.chmod(0o644)
+        path.write_text(json.dumps(reseal(report, "report_digest")))
+    with pytest.raises(ValueError, match="^g1_spawn_floor_absent$"):
+        g1.candidate_execution_spec(**kwargs)
+    diagnostic = json.loads((packet / spawn.DIAGNOSTIC_FILENAME).read_text())
+    assert diagnostic["schema_version"] == spawn.DIAGNOSTIC_SCHEMA_VERSION
+    assert diagnostic["stage_up_axis"] == "Z" and diagnostic["stage_meters_per_unit"] == 1.0
+    assert diagnostic["meshes"] and all({"index", "collision_enabled", "faces", "transform_scale", "world_bounds_m"}
+                                        == set(mesh) for mesh in diagnostic["meshes"])
+    assert diagnostic["collision_faces_within_2m_xy"] >= diagnostic["collision_faces_within_1m_xy"] > 0
+    # The synthetic room's floor is under the spawn: the reports were edited, the collision was not.
+    assert diagnostic["collision_faces_over_spawn_xy"] > 0
+    assert diagnostic["collision_height_range_over_spawn_m"][0] <= 0.0
+    assert set(diagnostic) == {"schema_version", "spawn_xy_m", "stage_up_axis", "stage_meters_per_unit", "meshes",
+                               "collision_faces_within_1m_xy", "collision_faces_within_2m_xy",
+                               "collision_face_height_histogram_within_2m", "collision_faces_over_spawn_xy",
+                               "collision_height_range_over_spawn_m", "claim_boundary", "report_digest"}
+
+
+@pytest.mark.parametrize(("soles", "absent"), [
+    ({"l": {"floor_z_m": None}, "r": {"floor_z_m": None}}, True),
+    ({"l": {"floor_z_m": None}, "r": {"floor_z_m": 0.0, "gap_m": 0.0}}, False),
+    ({"l": {"floor_z_m": None}}, False),
+    ({}, False)])
+def test_floor_absent_needs_no_floor_under_both_feet(soles, absent):
+    from blueprint_pipeline import native_g1_spawn_clearance as spawn
+    assert spawn.floor_absent({"foot_support": {"soles": soles}}) is absent
+    assert spawn.floor_absent(None) is False
 
 
 def test_with_every_start_offset_overlapping_no_navigation_spec_is_composed(tmp_path, monkeypatch):

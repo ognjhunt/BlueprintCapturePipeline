@@ -76,6 +76,13 @@ UNSUPPORTED_FOOT_REASON = "g1_spawn_foot_unsupported"
 #: the foot support read against that flat floor, so a G1 result there would overstate itself. A flag the row
 #: carries (``setup_quality_flags``), never a gate.
 FLOOR_ESTIMATED_REASON = "g1_scene_floor_estimated"
+#: Money: a stance with no collision floor under either sole, and nothing of the scene near the robot,
+#: is refused before any rental. The library job's first scored G1 run (2026-11-08) spawned so on every
+#: start offset and fell through the scene in every cell it ran.
+FLOOR_ABSENT_REASON = "g1_spawn_floor_absent"
+EMPTY_BACKGROUND_NOTICE = "g1_spawn_background_empty_near_robot"
+DIAGNOSTIC_SCHEMA_VERSION = "native_g1_spawn_background_diagnostic.v1"
+DIAGNOSTIC_FILENAME = DIAGNOSTIC_SCHEMA_VERSION + ".json"
 CLAIM_BOUNDARY = ("cpu_geometry_at_the_reset_pose_only: the G1 USD's colliders against sampled static scene "
                   "collision before the first physics step; no simulator ran; nothing about contact after "
                   "spawn, balance, reach or the task")
@@ -236,6 +243,106 @@ def unsupported_feet(report: Mapping[str, Any]) -> list[str]:
     """The report's unsupported feet, from its sole readings (so a report written before the flag counts)."""
     soles = (report.get("foot_support") or {}).get("soles") if isinstance(report.get("foot_support"), Mapping) else None
     return _unsupported(soles) if isinstance(soles, Mapping) else []
+
+
+def floor_absent(report: Mapping[str, Any] | None) -> bool:
+    """Whether a stance's report found no floor under either sole (``unsupported_feet``, both with no floor)."""
+    if not isinstance(report, Mapping):
+        return False
+    soles = (report.get("foot_support") or {}).get("soles") if isinstance(report.get("foot_support"), Mapping) else None
+    return (isinstance(soles, Mapping) and len(soles) >= 2
+            and all(isinstance(sole, Mapping) and sole.get("floor_z_m") is None for sole in soles.values()))
+
+
+def background_diagnostic(background_usd: str | Path, *, spawn_xy: Sequence[float],
+                          background_pose_world: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Aggregate facts about a packet's scene collision as the spawn check loads it; never mesh bytes.
+
+    For each mesh (by index, never by name): whether it carries an enabled collision API, its face count,
+    the scale of its world transform and its world bounds. Over the collision meshes: the faces whose xy
+    bounds come within 1 and 2 m of the spawn, a histogram of their mid heights, and the faces over the
+    spawn point itself with their height range (what could hold the robot up).
+    """
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    from .scene_physics_preflight import _usd_matrix
+    from .usd_binary_read_cache import readable
+
+    stage = Usd.Stage.Open(readable(background_usd))
+    world_from_stage = None if background_pose_world is None else _pose_matrix(background_pose_world)
+    cache, spawn = UsdGeom.XformCache(), np.asarray(spawn_xy[:2], dtype=float)
+    meshes, near_one, near_two, heights, under = [], 0, 0, [], []
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        collision = bool(prim.HasAPI(UsdPhysics.CollisionAPI)
+                         and UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get() is not False)
+        points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=float).reshape(-1, 3)
+        counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get() or [], dtype=np.int64)
+        matrix = _usd_matrix(cache, prim)
+        if world_from_stage is not None:
+            matrix = world_from_stage @ matrix
+        world = points @ matrix[:3, :3].T + matrix[:3, 3] if len(points) else points
+        row = {"index": len(meshes), "collision_enabled": collision, "faces": int(len(counts)),
+               "transform_scale": [round(float(v), 6) for v in np.linalg.norm(matrix[:3, :3], axis=0)],
+               "world_bounds_m": ({"minimum": [round(float(v), 4) for v in world.min(axis=0)],
+                                   "maximum": [round(float(v), 4) for v in world.max(axis=0)]} if len(world) else None)}
+        meshes.append(row)
+        if collision and len(world) and len(counts):
+            indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get() or [], dtype=np.int64)
+            starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+            faces = [world[indices[start:start + count]] for start, count in zip(starts, counts) if count >= 3]
+            if not faces:
+                continue
+            low = np.stack([face.min(axis=0) for face in faces])
+            high = np.stack([face.max(axis=0) for face in faces])
+            # Distance in xy from the spawn to each face's bounds: a large floor face counts where it lies.
+            gap = np.maximum(np.maximum(low[:, :2] - spawn, spawn - high[:, :2]), 0.0)
+            distance = np.linalg.norm(gap, axis=1)
+            near_one += int((distance <= 1.0).sum())
+            near_two += int((distance <= 2.0).sum())
+            heights.extend(float(z) for z in ((low[:, 2] + high[:, 2]) / 2)[distance <= 2.0])
+            under.extend((float(a), float(b)) for a, b in zip(low[distance == 0.0, 2], high[distance == 0.0, 2]))
+    histogram = None
+    if heights:
+        counts, edges = np.histogram(np.asarray(heights), bins=np.arange(-1.0, 3.01, 0.25))
+        histogram = {"edges_m": [round(float(v), 2) for v in edges], "faces": [int(v) for v in counts],
+                     "below": int(sum(h < -1.0 for h in heights)), "above": int(sum(h > 3.0 for h in heights))}
+    value = {"schema_version": DIAGNOSTIC_SCHEMA_VERSION, "spawn_xy_m": [float(v) for v in spawn],
+             "stage_up_axis": str(UsdGeom.GetStageUpAxis(stage)),
+             "stage_meters_per_unit": float(UsdGeom.GetStageMetersPerUnit(stage)),
+             "meshes": meshes, "collision_faces_within_1m_xy": near_one, "collision_faces_within_2m_xy": near_two,
+             "collision_face_height_histogram_within_2m": histogram,
+             "collision_faces_over_spawn_xy": len(under),
+             "collision_height_range_over_spawn_m": ([round(min(a for a, _ in under), 4), round(max(b for _, b in under), 4)]
+                                                     if under else None),
+             "claim_boundary": "aggregate_geometry_counts_only: no vertex, face or name leaves the host"}
+    value["report_digest"] = canonical_digest(value, digest_field="report_digest")
+    return value
+
+
+def ensure_background_diagnostic(packet_dir: str | Path, plan_digest: str) -> dict[str, Any] | None:
+    """Write the packet's background diagnostic once when its spawn report found no floor; never raises."""
+    from .deployment_embodiment_preparation_contract import write_once
+
+    root = Path(packet_dir)
+    path = root / DIAGNOSTIC_FILENAME
+    try:
+        if path.is_file() and not path.is_symlink():
+            return json.loads(path.read_text(encoding="utf-8"))
+        report = _plan_report(root, plan_digest)
+        if not floor_absent(report):
+            return None
+        plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8"))
+        collisions = [row for row in plan["objects"] if row.get("semantic_role") == "scene_collision"]
+        background = _bound_file(root, collisions[0]["usd_path"], collisions[0]["sha256"])
+        value = background_diagnostic(background, spawn_xy=report["base_pose_world"]["position_world_m"],
+                                      background_pose_world=collisions[0].get("pose_world"))
+        write_once(path, value)
+        return value
+    except Exception:  # noqa: BLE001 - a diagnostic never blocks planning
+        return None
 
 
 def _measure_stances(model: Any, reset: Mapping[str, float], poses: Sequence[Mapping[str, Any]],
@@ -507,6 +614,11 @@ def _plan_report(packet_dir: str | Path, plan_digest: str) -> dict[str, Any] | N
             or value.get("scene_plan_digest") != plan_digest or value.get("status") not in ("clear", "overlap")):
         return None
     return value
+
+
+def packet_floor_absent(packet_dir: str | Path, plan_digest: str) -> bool:
+    """Whether the packet's own sealed spawn report of this plan found no floor under either sole."""
+    return floor_absent(_plan_report(packet_dir, plan_digest))
 
 
 def spawn_setup_flags(packet_dir: str | Path, plan_digest: str) -> list[str]:
