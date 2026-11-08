@@ -79,3 +79,11 @@ def test_dp_does_not_read_tokenizer_even_when_override_is_invalid(tmp_path, monk
     monkeypatch.setenv(binding.TOKENIZER_DIR_ENV, str(tmp_path / "missing"))
     monkeypatch.setattr(binding, "verify_tokenizer_assets", lambda **kwargs: pytest.fail("DP read Pi inputs"))
     assert binding.resolve_selected_tokenizer([candidate]) == (None, None)
+
+
+def test_the_retained_folder_is_the_staged_assets_directory() -> None:
+    """The host's folder keeps the six files in ``assets/`` (``--asset-dir``), its receipt beside it."""
+    from blueprint_pipeline import native_g1_beta_tokenizer as binding
+
+    assert binding.RETAINED_TOKENIZER_DIR.name == "assets"
+    assert binding.RETAINED_TOKENIZER_DIR.parent.name == "pi-tokenizer-f1eaa13"

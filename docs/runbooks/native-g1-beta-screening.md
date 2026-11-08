@@ -336,7 +336,10 @@ produces a per-cell bootstrap reason; the lane never installs it with apt.
 Pi readiness uses an explicit tokenizer directory when supplied, then the
 existing `BLUEPRINT_G1_PI_TOKENIZER_DIR` override, then the retained model-only
 cache at
-`/var/lib/blueprint/task-evaluation-inputs/g1-841757-development/pi-tokenizer-f1eaa13`.
+`/var/lib/blueprint/task-evaluation-inputs/g1-841757-development/pi-tokenizer-f1eaa13/assets`:
+the six files sit in that folder's `assets/` directory, as `native_g1_pi_tokenizer_assets --asset-dir`
+staged them, beside its receipt (found by the 2026-11-08 restore plan; the parent was read before and
+every pi0.5 row read `g1_beta_selected_pi_tokenizer_invalid`).
 Planning and bundle preparation recheck the exact reviewed six-file inventory;
 the directory name alone establishes neither current bytes nor task authority.
 An absent or inaccessible directory yields
@@ -364,7 +367,7 @@ tokenizer, so the operation and its records avoid that word.
 2. Restore it: `python3 scripts/operator_door.py restore-g1-pi-language-assets --apply --wait`.
    The outcome is `restored`, or `already_restored` when a run before it
    finished. The invalid folder is kept as the hidden sibling
-   `.pi-tokenizer-f1eaa13.invalid-<UTC>`; nothing is deleted or overwritten.
+   `.assets.invalid-<UTC>` inside the retained folder; nothing is deleted or overwritten. With the files present (2026-11-08) the restore is a no-op.
 3. Read the record with `operator_door.py cat` on the outcome's `receipt`
    (`g1-841757-development/pi-language-assets-restore-<UTC>.json`) or on
    `results/<id>.g1-pi-language-assets.json`. The next screening plan is the

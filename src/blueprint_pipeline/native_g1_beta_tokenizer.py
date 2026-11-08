@@ -16,7 +16,12 @@ from .native_g1_beta_authority import PI_AUXILIARY
 from .native_g1_pi_tokenizer_assets import verify_tokenizer_assets
 
 TOKENIZER_DIR_ENV = "BLUEPRINT_G1_PI_TOKENIZER_DIR"
-RETAINED_TOKENIZER_DIR = Path("/var/lib/blueprint/task-evaluation-inputs/g1-841757-development/pi-tokenizer-f1eaa13")
+#: The six files sit in the folder's ``assets/`` directory, as ``native_g1_pi_tokenizer_assets --asset-dir``
+#: staged them; the folder's top level holds that staging's receipt and inventory copy. Measured on the host
+#: 2026-11-08 by the restore plan (``restore-g1-pi-language-assets``, refused: no bundle carries the files):
+#: all six present under ``assets/`` at the pinned sizes, and both sha256-pinned files matching. Every use
+#: still verifies each file against the pinned inventory.
+RETAINED_TOKENIZER_DIR = Path("/var/lib/blueprint/task-evaluation-inputs/g1-841757-development/pi-tokenizer-f1eaa13/assets")
 INVENTORY = Path(__file__).resolve().parents[2] / "configs/g1_paligemma_tokenizer_inventory.v1.json"
 
 
