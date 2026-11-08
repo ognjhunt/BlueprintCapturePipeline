@@ -30,6 +30,7 @@ from blueprint_pipeline.native_franka_grasp_geometry import (
 from blueprint_pipeline.native_task_arena_dependency_contract import (
     G1_ONLY_DEPENDENCY_IMPORTS,
     NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS as DEPENDENCY_IMPORTS,
+    NATIVE_TASK_REQUIRED_EXECUTABLES,
 )
 from blueprint_pipeline.native_task_arena_feedback_bootstrap_runtime import (
     feedback_bootstrap_result,
@@ -263,7 +264,7 @@ def preflight_native_dependency_matrix(*, robot_id: str, controller_backend: str
             )
             blockers.append(f"native_task_dependency_missing:{name}")
     tools = []
-    for executable in ("ffmpeg", "ffprobe"):
+    for executable in NATIVE_TASK_REQUIRED_EXECUTABLES:
         try:
             completed = subprocess.run(
                 [executable, "-version"],
