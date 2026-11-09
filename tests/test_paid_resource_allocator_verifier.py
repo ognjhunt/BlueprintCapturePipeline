@@ -552,3 +552,150 @@ def test_shared_admission_must_keep_runpod_retired(tmp_path: Path) -> None:
         "    admission_resource_class"))
     assert bypassed.read_text() != source
     assert verifier._runpod_retirement_blockers(bypassed) == ["runpod_retirement_admission_refusal_missing"]
+
+
+def test_api_priced_call_sites_are_detected_for_each_provider():
+    cases = {
+        "from openai import OpenAI\ndef f():\n    return OpenAI()\n": ("openai", "f", "openai_client_construction"),
+        "from openai import AsyncOpenAI as Client\ndef f():\n    return Client()\n": (
+            "openai", "f", "openai_client_construction"),
+        "def f(agent):\n    return Runner.run_sync(agent, 'x')\n": ("openai", "f", "openai_agents_sdk_runner"),
+        "URL = 'https://api.openai.com/v1/responses'\n": ("openai", "<module>", "openai_api_url"),
+        "from google import genai\ndef f():\n    return genai.Client(api_key='k')\n": (
+            "gemini", "f", "gemini_client_construction"),
+        "from google.genai import Client\ndef f():\n    return Client()\n": (
+            "gemini", "f", "gemini_client_construction"),
+        "U = 'https://generativelanguage.googleapis.com/v1beta'\n": ("gemini", "<module>", "gemini_api_url"),
+        "class A:\n    def f(self):\n        return pose.atlas_api_config()\n": (
+            "world_labs", "A.f", "world_labs_atlas_credentials"),
+        "U = 'https://api.worldlabs.ai'\n": ("world_labs", "<module>", "world_labs_api_url"),
+        "def f():\n    return meta_api_key()\n": ("meta_sam", "f", "meta_sam_credentials"),
+        "U = 'https://api.meta.ai/v1/responses'\n": ("meta_sam", "<module>", "meta_sam_api_url"),
+    }
+    for source, (provider, scope, signal) in cases.items():
+        sites = verifier._api_call_sites("scripts/x.py", source)
+        assert sites == {f"scripts/x.py::{scope}::{signal}": (provider, sites[f"scripts/x.py::{scope}::{signal}"][1])}
+    # Documentation links and bare allowlist hosts are not call sites.
+    assert verifier._api_call_sites("scripts/x.py", "D = 'https://atlas-beta.worldlabs.ai/docs'\n"
+                                    "A = ['api.openai.com']\n") == {}
+
+
+def test_unclassified_api_call_site_fails_with_classification_instructions():
+    table = json.loads(verifier.API_CALL_SITE_TABLE.read_text())
+    sites = {"src/blueprint_pipeline/scratch.py::f::openai_client_construction": ("openai", 3)}
+    blockers = verifier._api_call_site_blockers(sites, table)
+    assert len(blockers) == 1
+    assert blockers[0].startswith(
+        "unclassified_paid_api_call_site:src/blueprint_pipeline/scratch.py::f::openai_client_construction (line 3)")
+    assert "admitted" in blockers[0] and "not_paid" in blockers[0] and "UNADMITTED_API_CALL_SITES" in blockers[0]
+
+
+def test_unadmitted_api_call_site_must_be_named_in_the_verifier_set():
+    table = json.loads(verifier.API_CALL_SITE_TABLE.read_text())
+    named = {key for key, row in table["sites"].items() if row["class"] == "unadmitted"}
+    assert named == set(verifier.UNADMITTED_API_CALL_SITES)
+    new = "src/blueprint_pipeline/scratch.py::f::openai_client_construction"
+    grown = {**table, "sites": {**table["sites"], new: {"class": "unadmitted", "provider": "openai"}}}
+    assert verifier._api_call_site_blockers({new: ("openai", 3)}, grown) == [
+        f"new_unadmitted_paid_api_call_site:{new}: route it through an existing admission or ledger;"
+        " adding an unadmitted site needs an explicit edit to the pinned list in"
+        " tests/test_paid_resource_allocator_verifier.py"]
+    # Removing an unadmitted site (no longer found in the code) passes.
+    assert verifier._api_call_site_blockers({}, table) == []
+
+
+def test_admitted_api_call_site_must_name_a_reachable_admission():
+    table = json.loads(verifier.API_CALL_SITE_TABLE.read_text())
+    key = "src/blueprint_pipeline/website_task_grounding.py::ground_task_target.invoke::gemini_client_construction"
+    assert table["sites"][key]["class"] == "admitted"
+    broken = {**table, "sites": {**table["sites"], key: {**table["sites"][key],
+                                                        "admission": "src/blueprint_pipeline/website_task_grounding.py::no_such"}}}
+    assert verifier._api_call_site_blockers({key: ("gemini", 1)}, broken) == [
+        "paid_api_call_site_admission_missing:" + key]
+
+
+#: The unadmitted API-priced call sites, pinned here so that adding one needs an
+#: explicit, reviewed edit to this test. Removing an entry (once the site is
+#: admitted or gone) passes; the verifier's set must stay within this one.
+PINNED_UNADMITTED_API_CALL_SITES = frozenset({
+    "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>::openai_codex_cli",
+    "src/blueprint_pipeline/agent_execution/openai_transport.py::OpenAIAgentsHTTP.request::openai_api_url",
+    "src/blueprint_pipeline/agent_operator_runtime.py::run_agents_sdk_operator._run::openai_agents_sdk_runner",
+    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_cli_operator::openai_codex_cli",
+    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator::openai_codex_client_construction",
+    "src/blueprint_pipeline/agent_runtime/openai_phase2.py::CodexOpenAIPhase2Runner.__call__::openai_codex_cli",
+    "src/blueprint_pipeline/agent_runtime/openai_phase2.py::_OpenAISDKRunner.__call__::openai_client_construction",
+    "src/blueprint_pipeline/arena_result_ingest.py::_run_agents_sdk_operator._run::openai_agents_sdk_runner",
+    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_cli",
+    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_client_construction",
+    "src/blueprint_pipeline/capture_enrichment_llm.py::_ClaudeHTTPRunner.__call__::anthropic_api_url",
+    "src/blueprint_pipeline/capture_enrichment_llm.py::_CodexRunner.__call__::openai_codex_cli",
+    "src/blueprint_pipeline/capture_enrichment_llm.py::_OpenAISDKRunner.__call__::openai_client_construction",
+    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_agentic_video::gemini_client_construction",
+    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_text_repair::gemini_client_construction",
+    "src/blueprint_pipeline/dreamlabs_policy_client.py::<module>::dreamlabs_api_url",
+    "src/blueprint_pipeline/hosted_image_generation_preflight.py::<module>::openai_api_url",
+    "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::nvidia_nim_api_url",
+    "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::openai_api_url",
+    "src/blueprint_pipeline/nvidia_nim_model_preflight.py::<module>::nvidia_nim_api_url",
+    "src/blueprint_pipeline/openai_prompt_cache_canary.py::run_mechanics_canary::openai_client_construction",
+    "src/blueprint_pipeline/palatial_physready.py::<module>::palatial_api_url",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini.py::run_canary::gemini_client_construction",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::submit_pilot::gemini_client_construction",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai.py::run_canary::openai_client_construction",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai_batch.py::submit_shard::openai_client_construction",
+    "src/blueprint_pipeline/policy_ranking_roboarena_evaluator_openai.py::run_evaluator_inventory::openai_client_construction",
+    "src/blueprint_pipeline/policy_ranking_thesis_judge_openai.py::run_inventory::openai_client_construction",
+    "src/blueprint_pipeline/policy_ranking_thesis_judge_openai.py::run_inventory_v2::openai_client_construction",
+    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider._upload_video_as_media_asset::world_labs_marble_request",
+    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.submit::world_labs_marble_request",
+    "src/blueprint_pipeline/render_visual_qc.py::_gemini_review_image::gemini_client_construction",
+    "src/blueprint_pipeline/rollout_vision_label_openai.py::_openai_label::openai_client_construction",
+    "src/blueprint_pipeline/scene_placement/target_resolver.py::_gemini_resolve_text::gemini_client_construction",
+    "src/blueprint_pipeline/scene_semantics.py::_infer_capture_review_with_gemini_video::gemini_client_construction",
+    "src/blueprint_pipeline/scene_semantics.py::_infer_with_gemini_video::gemini_client_construction",
+    "src/blueprint_pipeline/simulation_automation.py::CodexSdkSimulationAutomationAgentAdapter.build_ledger::openai_codex_cli",
+    "src/blueprint_pipeline/site_eval_director.py::CodexSdkCodeMaintainerAdapter.build_request_manifest::openai_codex_cli",
+    "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_agents_sdk_runner",
+    "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_credentials",
+    "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_provider",
+    "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_sdk_runner",
+    "src/blueprint_pipeline/task_object_artisan_bridge.py::main::openai_client_construction",
+    "src/blueprint_pipeline/wam_compute_providers.py::_deepinfra_api_base_url::deepinfra_api_url",
+    "src/blueprint_pipeline/wam_episode_consistency_label_gemini.py::build_gemini_wam_episode_consistency_labels::gemini_client_construction",
+    "src/blueprint_pipeline/wam_episode_consistency_label_openai.py::_openai_score_one::openai_client_construction",
+    "src/blueprint_pipeline/wam_generated_video_success_label_gemini.py::build_gemini_wam_success_labels::gemini_client_construction",
+    "src/blueprint_pipeline/wam_generated_video_success_label_openai.py::_openai_label_one::openai_client_construction",
+    "src/blueprint_pipeline/website_image_completion.py::_verify_completed_background::gemini_client_construction",
+})
+
+
+def test_unadmitted_api_call_sites_stay_within_the_pinned_list():
+    assert verifier.UNADMITTED_API_CALL_SITES <= PINNED_UNADMITTED_API_CALL_SITES, sorted(
+        verifier.UNADMITTED_API_CALL_SITES - PINNED_UNADMITTED_API_CALL_SITES)
+
+
+def test_s3_capability_string_reference_is_still_caught():
+    source = ("import m\n"
+              "def bypass():\n"
+              "    return getattr(m, '_issue_transport_execution_capability')()\n")
+    assert verifier._s3_transport_capability_callers({"scripts/bypass.py": source}) == {
+        ("scripts/bypass.py", "bypass")}
+
+
+def test_anthropic_codex_cli_and_agents_provider_sites_are_detected():
+    cases = {
+        "def f(b):\n    return urlopen(Request('https://api.anthropic.com/v1/messages', data=b))\n": (
+            "anthropic", "anthropic_api_url"),
+        "def f(codex_path):\n    return subprocess.run([codex_path, 'exec', '-'])\n": (
+            "openai", "openai_codex_cli"),
+        "def f(prefix):\n    return subprocess.run([*prefix, 'exec', '--skip-git-repo-check'])\n": (
+            "openai", "openai_codex_cli"),
+        "def f():\n    return OpenAIProvider().get_model('m')\n": ("openai", "openai_agents_provider"),
+        "def f():\n    return Anthropic().messages.create()\n": ("anthropic", "anthropic_client_construction"),
+    }
+    for source, (provider, signal) in cases.items():
+        assert set(verifier._api_call_sites("scripts/x.py", source)) == {f"scripts/x.py::f::{signal}"}, source
+        assert next(iter(verifier._api_call_sites("scripts/x.py", source).values()))[0] == provider
+    # ``docker exec`` is not the Codex CLI.
+    assert verifier._api_call_sites("scripts/x.py", "def f(n):\n    return ['docker', 'exec', n]\n") == {}
