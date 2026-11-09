@@ -873,6 +873,18 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - About 2,695 s live at $0.599/h, **$0.92 estimated** ($0.45 runtime, $0.47 transfer), **no episode**. Teardown destroyed the instance (HTTP 200), with no continuing spend.
   - That is π0.5's third harness failure. DP (6) stays held, and neither re-plans until the next deploy changes the commit.
   - The library session started deploying `08371e4` (#3503, #3504) at about 16:56Z. π0.5 re-plans first on it, with the compile check.
+- **08371e4 live, 11-09 17:10:28Z** (#3503, #3504). Re-plan `screening-d3956788…` at 17:18:17Z, with π0.5 first.
+  - **π0.5's fifth walking run** (`screen-3e9f1064…`, Vast instance 59921455 created 17:23:34Z) never reached the compile check:
+    - markers: media toolchain `READY` on the default mirror (the install now also waits for `gcc`); `runtime_source_provisioning_exit:0`; `policy_runtime_build` (6.9 GB) and `policy_runtime_ready`; then `runtime_exit:1`;
+    - every cell is void with `g1_beta_selected_model_staging_failed__timeouterror`, at about 17:50Z. One selected-asset read went 45 s without a byte (urllib's read timeout). `_fetch` made one transfer per file with no resume, so one stall ended the run;
+    - the policy was never queried.
+  - About 1,614 s live at $0.599/h, **$0.74 estimated** ($0.27 runtime, $0.47 transfer), **no episode**. Teardown destroyed the instance (HTTP 200).
+  - That is π0.5's fourth harness failure; DP (6) is held. Site: $7.89 spent of $30, nothing reserved.
+  - **Cause:** the largest selected file is π0.5's 9.35 GB `model.safetensors`, served from a ModelScope CDN in China (`cdn-lfs-cn-1.modelscope.cn`). Which file stalled is not in the diagnostics.
+  - **Fix (this PR):**
+    - A stalled or dropped transfer resumes from the byte it reached, up to 3 times per file, inside the same deadline. It asks only for the bytes still missing (`Range: bytes=N-`) and accepts only a 206 whose `Content-Range` is exactly those bytes. Anything else ends the transfer, and the full-file SHA-256 check before publication is unchanged.
+    - Model staging now prints `selected_model_staging` / `selected_models_ready` and growth lines, so a stall shows which stage it is in.
+    - No limit changes: the transfer byte bound, hard cap and deadline are unchanged. Both sources return 206 with that exact `Content-Range` (checked 11-09 with 16- and 20-byte ranges).
 
 ## Operating notes (2026-11-02)
 
