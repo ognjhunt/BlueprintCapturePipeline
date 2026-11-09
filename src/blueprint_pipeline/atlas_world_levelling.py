@@ -636,7 +636,7 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
                 grew = True
 
     def local_floor(key: tuple[int, int], point: np.ndarray) -> float:
-        """The floor's height at a face: its cell's, else the accepted cells around it, else the fitted surface."""
+        """The floor's height at a point: its cell's, else the accepted cells around it, else the fitted surface."""
         if key in floor_height:
             return floor_height[key]
         around = [floor_height[n] for n in ((key[0] + di, key[1] + dj) for di in (-1, 0, 1) for dj in (-1, 0, 1))
@@ -648,9 +648,12 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
     # floor already.
     layer = WALKED_FLOOR_LAYER_M
     rows = np.flatnonzero(candidate)
-    local = np.array([local_floor((int(owner[face, 0]), int(owner[face, 1])), centroid[face, [0, 2]]) for face in rows])
     corners = tri[rows]
-    off = np.abs(corners[:, :, 1] - local[:, None])
+    # Each corner against the floor at its own position: a large face on a slope spans several cells' heights.
+    plan = corners[:, :, [0, 2]].reshape(-1, 2)
+    at = np.floor((plan - low) / cell).astype(np.int64)
+    local = np.array([local_floor((int(i), int(j)), point) for (i, j), point in zip(at, plan)]).reshape(-1, 3)
+    off = np.abs(corners[:, :, 1] - local)
     flat = np.all(np.abs(corners[:, :, 1]) <= 1e-6, axis=1)
     dropped = np.all(off <= layer, axis=1) & ~flat
     floor_layer = np.zeros(len(faces), dtype=bool)

@@ -422,6 +422,19 @@ def test_a_floor_that_also_slopes_across_the_walk_is_followed_cell_by_cell():
     assert end and all(row["floor"] and row["dropped_faces"] > 0 and row["left_faces"] == 0 for row in end)
 
 
+def test_a_large_floor_face_on_a_slope_is_judged_corner_by_corner():
+    # Codex on #3511: a floor triangle spanning cells on an 8 cm/m slope has corners more than the layer apart.
+    from tests.atlas_level_room_fixture import _grid
+    fine, fine_faces = _grid((-0.5, 0.0, -0.5), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 51, 21)
+    fine[:, 1] = 0.08 * fine[:, 0]
+    big = np.array([[0.0, 0.0, 0.1], [2.0, 0.16, 0.1], [1.0, 0.08, 0.4]])
+    mesh = trimesh.Trimesh(vertices=np.vstack([fine, big]),
+                           faces=np.vstack([fine_faces, [[len(fine), len(fine) + 2, len(fine) + 1]]]), process=False)
+    footprints = np.column_stack([np.linspace(0.0, 2.0, 9), np.zeros(9)])
+    record = levelling._planarize_walked_floor(mesh, footprints_m=footprints, meters_per_unit=1.0)
+    assert not np.any(np.asarray(record["mesh"].faces).max(axis=1) >= len(fine))  # the large face went too
+
+
 def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
     from tests.atlas_level_room_fixture import _grid
     vertices, faces = _grid((-1.0, 0.0, -1.0), (0.1, 0.0, 0.0), (0.0, 0.0, 0.1), 21, 21)
