@@ -21,7 +21,7 @@ def seal(value, key):
 
 def fixture(tmp_path, monkeypatch, *, completed=False):
     plan, candidate, spec = inputs(tmp_path, monkeypatch)
-    authority = session.build_session_authority(plan=plan, candidate=candidate, spec=spec)
+    authority = session.build_session_authority(plan=plan, candidate=candidate, spec=spec, attempt_id="screen-" + "a" * 32)
     common = {"scene_id": spec["site_id"], "task_id": spec["source"]["task_id"]}
     task = {"task_success_contract_digest": spec["task_success_contract_digest"]}
     samples = []

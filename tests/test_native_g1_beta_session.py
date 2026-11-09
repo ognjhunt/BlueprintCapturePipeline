@@ -37,7 +37,7 @@ def inputs(tmp_path, monkeypatch):
 
 def test_session_is_exact_selected_candidate_budget_and_one_shot(tmp_path, monkeypatch):
     plan, candidate, spec = inputs(tmp_path, monkeypatch)
-    authority = session.build_session_authority(plan=plan, candidate=candidate, spec=spec)
+    authority = session.build_session_authority(plan=plan, candidate=candidate, spec=spec, attempt_id="screen-" + "a" * 32)
     assert authority["candidate_ids"] == [DP]
     assert len(authority["cells"]) == g1.CELLS_PER_SESSION == 4
     assert authority["resource_name"] == session.RESOURCE_PREFIX + authority["run_id"]
@@ -53,7 +53,7 @@ def test_session_is_exact_selected_candidate_budget_and_one_shot(tmp_path, monke
     ("automatic_retry_authorized", True), ("resource_name", "arbitrary-resource")])
 def test_resealed_budget_scope_or_name_escalation_is_rejected(tmp_path, monkeypatch, field, value):
     plan, candidate, spec = inputs(tmp_path, monkeypatch)
-    row = deepcopy(session.build_session_authority(plan=plan, candidate=candidate, spec=spec))
+    row = deepcopy(session.build_session_authority(plan=plan, candidate=candidate, spec=spec, attempt_id="screen-" + "a" * 32))
     row[field] = value
     row["authority_digest"] = canonical_digest(row, digest_field="authority_digest")
     with pytest.raises(ValueError):
@@ -72,5 +72,21 @@ def test_transfer_quote_accounts_selected_exact_models_and_output():
 def test_generated_authority_uses_real_parent_child_provider_and_fleet_contracts(tmp_path, monkeypatch):
     from tests.test_native_g1_beta_watchdog import exercise_native_g1_watchdog
     plan, candidate, spec = inputs(tmp_path, monkeypatch)
-    authority = session.build_session_authority(plan=plan, candidate=candidate, spec=spec)
+    authority = session.build_session_authority(plan=plan, candidate=candidate, spec=spec, attempt_id="screen-" + "a" * 32)
     exercise_native_g1_watchdog(tmp_path, monkeypatch, authority["resource_name"])
+
+
+def test_each_attempt_is_its_own_run_so_a_readmitted_candidate_is_a_new_execution(tmp_path, monkeypatch):
+    """2026-11-09 04:33Z, the library site's pi0.5 row: re-admitted under a fresh attempt after a stale spend lock,
+    it reused the first attempt's resource name and the website's execution control refused it (identity conflict,
+    HTTP 409). The website refuses any second control binding that repeats an attempt id, invocation or resource."""
+    plan, candidate, spec = inputs(tmp_path, monkeypatch)
+    first, again, readmitted = (session.build_session_authority(plan=plan, candidate=candidate, spec=spec,
+                                                                attempt_id=attempt)
+                                for attempt in ("screen-" + "a" * 32, "screen-" + "a" * 32, "screen-" + "b" * 32))
+    # A restart of the same attempt rebuilds the same run; a fresh attempt gets its own run and resource.
+    assert first["run_id"] == again["run_id"]
+    assert readmitted["run_id"] != first["run_id"] and readmitted["resource_name"] != first["resource_name"]
+    for bad in ("", "..", "a/b", "../screen-" + "a" * 32, None):
+        with pytest.raises(ValueError, match="g1_beta_session_attempt_id_invalid"):
+            session.build_session_authority(plan=plan, candidate=candidate, spec=spec, attempt_id=bad)
