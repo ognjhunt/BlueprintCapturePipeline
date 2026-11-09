@@ -29,7 +29,6 @@ import sys
 
 import pytest
 
-
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
 # (module to import, friendly name, distribution/extra that provides it, why it matters)
@@ -86,8 +85,10 @@ REQUIRED_MODULES = [
         "cv2",
         "opencv-python-headless (cv2)",
         "dev / runtime extra (opencv-python-headless>=4.10.0)",
-        "image I/O for the oscar/cosmos WAM, visual-augmentation, and video-review tests "
-        "(absent cv2 silently skips ~32 of them)",
+        (
+            "image I/O for the oscar/cosmos WAM, visual-augmentation, and video-review tests "
+            "(absent cv2 silently skips ~32 of them)"
+        ),
     ),
 ]
 
@@ -148,9 +149,23 @@ def test_canonical_cpu_env_collects_without_errors():
     This is intentionally a hard-failing subprocess meta-test, not a skip. The
     child pytest run uses --collect-only, so it imports test modules and catches
     missing module-level dependencies without executing the full suite.
+
+    What this protects is an import contract, not a performance budget: every
+    test module (and every module it imports) must import in this interpreter.
+
+    ``--assert=plain`` keeps pytest from rewriting the asserts of all ~2,700
+    test modules before importing them. That rewrite only improves failure
+    messages, and the shards that run these tests rewrite and import the same
+    modules anyway, so here it was pure cost: CI sets PYTHONDONTWRITEBYTECODE,
+    so every run re-parsed and re-compiled ~125,000 asserts with no cache.
+    Measured cold (no __pycache__, PYTHONDONTWRITEBYTECODE=1, 4 vCPU, 2026-11-09):
+    ~135 s with rewriting, ~40 s without, same 42,580/44,697 items collected
+    (~163 s before test_paid_lane_bundle_cli_contract stopped parsing every
+    source module at collection time).
+    The 180 s limit is a hang guard with >4x margin over that figure.
     """
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", "tests"],
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "--assert=plain", "tests"],
         check=False,
         capture_output=True,
         text=True,
