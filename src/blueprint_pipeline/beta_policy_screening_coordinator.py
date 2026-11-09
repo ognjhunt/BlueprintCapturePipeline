@@ -82,6 +82,18 @@ SPEND_LOCK_RETRY_CAP = 6
 SPEND_LOCK_STALE_CODES = frozenset({SPEND_LOCK_STALE_BLOCKER, "spend_admission_lock_stale"})
 _SPEND_LOCK_REFUSAL = frozenset({*SPEND_LOCK_STALE_CODES, "paid_resource_admission_has_blockers",
                                  "paid_resource_admission_not_admitted"})
+# A run refused only because the spend admission lock held no billing reading for its provider
+# (``spend_admission_lock_required_provider_billing_missing:<provider>``), with nothing spent and no
+# provider call, is admitted again once the lock covers that provider. Owner decision 2026-11-09
+# about 04:32Z, "yes", relayed by the library-aisle session; three such refusals in a day had each
+# waited for a deploy. Every money check runs again unchanged at the next launch preflight. Bounded:
+# at most BILLING_MISSING_RETRY_CAP re-admissions per row, 2, 4, 8, 16, then 30 minutes apart, and
+# none past BILLING_MISSING_WAIT_SECONDS after the row's first such refusal. Never a harness failure.
+BILLING_MISSING_PREFIX = "spend_admission_lock_required_provider_billing_missing:"
+BILLING_MISSING_RETRY_CAP = 6
+BILLING_MISSING_WAIT_SECONDS = 24 * 3600
+BILLING_WAIT_PROVIDER_FIELD = "billing_wait_provider"
+_ADMISSION_WRAPPER_CODES = frozenset({"paid_resource_admission_has_blockers", "paid_resource_admission_not_admitted"})
 # A candidate retries a refusal whose control read got no answer (a 429, a 5xx,
 # a timeout) at most this many times in all: a launch preflight read again, or
 # a fresh attempt after its allocator fenced its own create. Each fresh attempt
@@ -767,6 +779,52 @@ def _spend_lock_retries(row: Mapping[str, Any]) -> int:
     return value if type(value) is int and 0 <= value <= SPEND_LOCK_RETRY_CAP else SPEND_LOCK_RETRY_CAP
 
 
+def _billing_missing_provider(observation: Mapping[str, Any]) -> str | None:
+    """The one provider whose missing billing reading was the refusal's only spend reason, else None."""
+    blockers = {str(code).removeprefix("spend_admission:") for code in observation.get("blockers") or []}
+    providers = {code[len(BILLING_MISSING_PREFIX):] for code in blockers if code.startswith(BILLING_MISSING_PREFIX)}
+    if len(providers) != 1:
+        return None
+    provider = next(iter(providers))
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", provider):
+        return None
+    return provider if blockers <= {BILLING_MISSING_PREFIX + provider, *_ADMISSION_WRAPPER_CODES} else None
+
+
+def _billing_missing_retries(row: Mapping[str, Any]) -> int:
+    value = row.get("billing_missing_retries", 0)
+    # An unreadable count is treated as spent, so the cap always holds.
+    return value if type(value) is int and 0 <= value <= BILLING_MISSING_RETRY_CAP else BILLING_MISSING_RETRY_CAP
+
+
+def _billing_wait_open(row: Mapping[str, Any]) -> bool:
+    """Whether the row is still inside its billing wait (unreadable reads as closed)."""
+    try:
+        until = datetime.fromisoformat(str(row.get("billing_wait_until")).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return until.tzinfo is not None and datetime.now(timezone.utc) < until
+
+
+def _billing_covers(provider: str) -> bool:
+    """Whether the spend admission lock now holds a billing reading for ``provider``.
+
+    Only the eligibility signal: the launch preflight still validates the whole lock and every limit.
+    A missing, unreadable or malformed lock reads as not covered.
+    """
+    from .paid_lane_guard import SPEND_ADMISSION_LOCK_PATH_ENV
+
+    path = str(os.environ.get(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
+    if not path:
+        return False
+    try:
+        lock = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    covered = lock.get("billing_covered_provider_ids") if isinstance(lock, dict) else None
+    return isinstance(covered, list) and provider in covered
+
+
 def _offer_shortage_retries(row: Mapping[str, Any]) -> int:
     value = row.get("offer_shortage_retries", 0)
     # An unreadable count is treated as spent, so the cap always holds.
@@ -1130,6 +1188,28 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                 # The website words this pair "Waiting to confirm this job can still run."
                 row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER, CONTROL_WAIT_BLOCKER])
                 return
+            provider = _billing_missing_provider(observation)
+            if provider is not None:
+                row.setdefault("billing_wait_until", (datetime.now(timezone.utc)
+                                                      + timedelta(seconds=BILLING_MISSING_WAIT_SECONDS)).isoformat())
+            if provider is not None and _billing_missing_retries(row) < BILLING_MISSING_RETRY_CAP \
+                    and _billing_wait_open(row):
+                # Proven zero allocation: the money check had no billing reading for this provider.
+                # A fresh identity holds the same reservation and launches once the lock covers the
+                # provider again; its preflight runs every money check again. Past the bounds the
+                # refusal below stands.
+                retries = _billing_missing_retries(row)
+                attempt.update(reservation_status="released", closed_at=_now(),
+                               terminal_reason="spend_admission_lock_provider_billing_missing",
+                               billing_missing_provider=provider, no_policy_api_calls_proven=True)
+                row["billing_missing_retries"] = retries + 1
+                row.setdefault("attempt_history", []).append(json.loads(json.dumps(attempt)))
+                row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
+                                  "retry_not_before": _retry_after_offer_shortage(retries),
+                                  BILLING_WAIT_PROVIDER_FIELD: provider}
+                # The website words this pair "Waiting to confirm this job can still run."
+                row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER, CONTROL_WAIT_BLOCKER])
+                return
             attempt["reservation_status"] = "released"
             row.update(status="blocked", blockers=_safe_blockers(observation.get("blockers"),
                                                                 "beta_screening_not_allocated"))
@@ -1266,6 +1346,10 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
         return False
     attempt = row["attempt"]
     if row["status"] == "preparing" and not _capacity_retry_ready(attempt):
+        return False
+    waiting_for = attempt.get(BILLING_WAIT_PROVIDER_FIELD)
+    if (row["status"] == "preparing" and isinstance(waiting_for, str) and _billing_wait_open(row)
+            and not _billing_covers(waiting_for)):
         return False
     attempt_dir = _attempt_root(root, attempt)
     if row["status"] != "preparing":
