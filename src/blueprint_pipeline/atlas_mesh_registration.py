@@ -59,7 +59,7 @@ def mesh_depth_free_space_filter(
     each batch of faces is gathered on its own instead of all of them at once.
     """
     import hashlib
-    from .atlas_depth_splat import _rotation_matrix, _seen_ratio
+    from .atlas_depth_splat import _rotation_matrix, _seen_ratio, frame_arrays
 
     triangles = np.asarray(triangles, dtype=np.float64)
     if faces is None:
@@ -82,15 +82,18 @@ def mesh_depth_free_space_filter(
     references, voting_frames, seen_references = [], [], set()
     for frame in frames:
         camera, k = frame["extrinsics"], frame["intrinsics"]
-        if (camera.get("coordinateSystem", "rub") != "rub"
-                or np.shape(frame["depth"]) != (k["height"], k["width"])
-                or np.shape(frame["confidence"]) != np.shape(frame["depth"])
+        if camera.get("coordinateSystem", "rub") != "rub":
+            raise ValueError("atlas_mesh_depth_filter_camera_binding_invalid")
+        # One view's depth at a time: a retained pose's views stay in their files.
+        depth, confidence = frame_arrays(frame, "depth", "confidence")
+        if (np.shape(depth) != (k["height"], k["width"])
+                or np.shape(confidence) != np.shape(depth)
                 or not np.allclose(frame["position"], camera["position"], rtol=0, atol=1e-12)
                 or not np.allclose(frame["rotation"], _rotation_matrix(camera["quaternion"]), rtol=0, atol=1e-12)):
             raise ValueError("atlas_mesh_depth_filter_camera_binding_invalid")
         arrays = {}
-        for name in ("depth", "confidence"):
-            value = np.ascontiguousarray(frame[name])
+        for name, value in (("depth", depth), ("confidence", confidence)):
+            value = np.ascontiguousarray(value)
             arrays[name] = {"shape": list(value.shape), "dtype": str(value.dtype),
                            "sha256": "sha256:" + hashlib.sha256(value.tobytes()).hexdigest()}
         reference = {"intrinsics": dict(frame["intrinsics"]),
@@ -100,24 +103,27 @@ def mesh_depth_free_space_filter(
         if identity not in seen_references:
             voting_frames.append(frame)
             seen_references.add(identity)
-    keep = np.ones(count, dtype=bool)
-    for start in range(0, count, 4096):
-        batch = triangles[start:start + 4096] if faces is None else triangles[faces[start:start + 4096]]
-        samples = np.concatenate([batch, batch.mean(axis=1)[:, None]], axis=1).reshape(-1, 3)
-        clear = np.zeros(len(samples), dtype=np.uint32)
-        agreement = np.zeros(len(samples), dtype=bool)
-        for frame in voting_frames:
-            local = (samples - frame["position"]) @ frame["rotation"]
+    # Each sample's views that see past it (counted up to the two that decide) and
+    # whether any view agrees with it, gathered one view at a time.
+    clear = np.zeros((count, 4), dtype=np.uint8)
+    agreement = np.zeros((count, 4), dtype=bool)
+    for frame in voting_frames:
+        depth, confidence = frame_arrays(frame, "depth", "confidence")
+        view = {"intrinsics": frame["intrinsics"], "position": frame["position"], "rotation": frame["rotation"],
+                "depth": depth, "confidence": confidence}
+        for start in range(0, count, 4096):
+            batch = triangles[start:start + 4096] if faces is None else triangles[faces[start:start + 4096]]
+            samples = np.concatenate([batch, batch.mean(axis=1)[:, None]], axis=1).reshape(-1, 3)
+            local = (samples - view["position"]) @ view["rotation"]
             distance = -local[:, 2]
-            ratio = _seen_ratio(frame, samples)
+            ratio = _seen_ratio(view, samples)
             residual = (ratio - 1.0) * distance
             valid = np.isfinite(residual) & (distance > 0)
             tolerance = np.maximum(absolute_tolerance, distance * relative_tolerance)
-            clear += valid & (residual > tolerance)
-            agreement |= valid & (np.abs(residual) <= tolerance)
-        contradicted = np.all(clear.reshape(-1, 4) >= 2, axis=1)
-        protected = np.any(agreement.reshape(-1, 4), axis=1)
-        keep[start:start + len(batch)] = ~contradicted | protected
+            rows = slice(start, start + len(batch))
+            clear[rows] = np.minimum(clear[rows] + (valid & (residual > tolerance)).reshape(-1, 4), 2)
+            agreement[rows] |= (valid & (np.abs(residual) <= tolerance)).reshape(-1, 4)
+    keep = ~np.all(clear >= 2, axis=1) | np.any(agreement, axis=1)
     report = {"schema_version": "atlas_mesh_depth_free_space_filter.v1",
               "method": "all_vertices_and_centroid_two_views_no_agreeing_sample",
               "absolute_tolerance_provider_units": float(absolute_tolerance),
