@@ -909,6 +909,21 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
 - **Disk, 11-09:** `/mnt/blueprint-work` was critical, with 5.16 GB available against a 15.8 GB floor. A G1 run's collection hold is 2 × 4 GiB + bundle, about 8.8 GB, checked before any provider call, so the next G1 admission is refused at **$0** (`g1_beta_collection_capacity_insufficient`, not a harness failure).
   - **Owner, 20:50:12Z (relayed by the library session): "go with option A for the disk cleanup".** The existing bundle prune also removes the sealed `bundle/` of settled spent attempts sealed more than two days ago, keeping every receipt and output (this PR).
   - Measured from door listings at about 20:55Z: 38 settled spent attempts in campaigns with nothing live, 27 of them sealed more than two days ago, about **7.68 GB**.
+- **Deploys by the library session, 11-09, under the owner's 48 h permission (quiet door, nothing reserved):**
+  - `7723c8d`: #3509 (route profile v2), #3510 (spent-bundle prune) and #3511 (levelling v10). After the first pass, available went from 5.16 GB to **11.03 GB**, so the G1 collection hold fits again.
+  - `f05431e`: #3514 (levelling v11).
+  - `53c97c1`: #3521 (levelling v12).
+- **The library G1 packet after each re-derive.** π0.5 and DP stayed `unavailable` or `deferred` at **$0** throughout:
+  - **v10:** the start still overlapped. A second sheet of floor 6–9 cm above the followed floor stayed (top 9.6 cm in the start cell).
+  - **v11:** both soles stand on the flat floor (gap +5.9 mm). Only the knees overlapped: 1.5–2.2 cm into steep faces 4–10 cm up, with a sideways clearing push, i.e. the sheet's side walls.
+  - **v12** (steep low pieces dropped, walls kept whole): spawn **clear** at the start and all four offsets.
+- **v12 changed the task geometry, a flag for the owner and the library session.**
+  - The re-derive moved the start to (0.216, 0.185) and the goal to (−0.295, 0.175), with acceptance radius 0.26 m. Start to goal is **0.51 m**, so about 0.25 m of travel reaches the goal; before it was 2.85 m.
+  - The goal view is `partly_in_view`, with the centre in frame.
+  - A run here would measure a quarter-metre walk, not "from the near end of the visible aisle".
+- **Money, a hard stop.** Campaign `screening-ac715863…` (23:34Z) defers both G1 rows with `website_job_ceiling_insufficient`.
+  - The job's ceiling is $25 (`atlas_authorization`): preparation $15.48 and screening $7.89 leave **$1.63**, below a G1 row's $4 reservation.
+  - Raising it is the owner's decision.
 
 ## Operating notes (2026-11-02)
 
