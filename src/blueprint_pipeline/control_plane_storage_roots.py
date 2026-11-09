@@ -98,8 +98,9 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/mnt/blueprint-work/beta-policy-screening-work", "evidence_hot", "blueprint",
                 "screening attempts: sealed bundles, allocator job directories, launch intents and "
                 "reconciliation evidence; the budget ledger stays in beta-policy-screening; never evicted, "
-                "except the bundle of an attempt that provably reached no GPU provider, whose receipts stay "
-                "(owner, 2026-11-08: beta_screening_unspent_bundle_prune)"),
+                "except the bundle of an attempt that provably reached no GPU provider (owner, 2026-11-08) or "
+                "of a settled spent attempt sealed more than two days ago (owner, 2026-11-09), whose receipts "
+                "and outputs stay (beta_screening_unspent_bundle_prune)"),
     StorageRoot("/mnt/blueprint-work/rigid-robot-free-probe-work", "work", "blueprint",
                 "rigid robot-free probe attempts' sealed bundles and allocator job directories; the queue "
                 "and attempt records stay in rigid-robot-free-probes"),
