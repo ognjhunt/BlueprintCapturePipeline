@@ -175,7 +175,9 @@ above is required as well: the wait and the verification run in both modes.
 requires `Full Test Lane / Full pytest lane on CPU runner` to have passed in a
 fresh `workflow_dispatch` run with reason `production_deployment_promotion`
 on that exact protected-main commit SHA, and it has no bypass
-(`deploy/scripts/deploy.sh:88-91`, `:352-355`).
+(`deploy/scripts/deploy.sh:88-91`, `:352-355`; the run's event, branch and
+reason are checked by `scripts/verify_deploy_release_provenance.py:170-177`,
+which `deploy/scripts/deploy.sh:370` runs).
 
 The commit only has to remain on `main`; a later merge does not void its
 promotion. The lane plans twelve independent serial shards from measured
