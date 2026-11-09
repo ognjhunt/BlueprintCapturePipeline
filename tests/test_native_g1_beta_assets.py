@@ -100,6 +100,42 @@ def test_a_stalled_transfer_resumes_from_the_byte_it_reached(tmp_path, capsys):
     assert not (tmp_path / "model.partial").exists()
 
 
+def test_a_body_that_ends_early_resumes_too(tmp_path, capsys):
+    """Codex on #3506: ``HTTPResponse.read(amt)`` returns b"" when a CDN closes the connection after part of
+    the body, without raising ``IncompleteRead``. That is an interrupted transfer, resumed the same way."""
+    content = bytes(range(10)) * 300
+    requests = []
+
+    def opener(request, timeout):
+        requests.append(request.get_header("Range"))
+        if len(requests) == 1:
+            short = Stalling(content)
+            short.truncate(700)  # the source closes after 700 bytes; read() then returns b""
+            return short
+        offset = int(request.get_header("Range")[len("bytes="):-1])
+        return Stalling(content, offset=offset, status=206,
+                        content_range=f"bytes {offset}-{len(content) - 1}/{len(content)}")
+
+    _fetch(_row(content), tmp_path / "model", deadline=time.time() + 30, opener=opener)
+    assert requests == [None, "bytes=700-"] and (tmp_path / "model").read_bytes() == content
+    assert capsys.readouterr().out.splitlines() == ["BLUEPRINT_G1_ASSET_RESUME:1:bytes=700"]
+
+    ends = []
+
+    def always_short(request, timeout):
+        ends.append(request.get_header("Range"))
+        offset = 0 if len(ends) == 1 else int(request.get_header("Range")[len("bytes="):-1])
+        body = Stalling(content, offset=offset, status=206 if offset else 200,
+                        content_range=f"bytes {offset}-{len(content) - 1}/{len(content)}" if offset else None)
+        body.truncate(100)
+        return body
+
+    with pytest.raises(ConnectionResetError, match="g1_beta_asset_transfer_ended_early"):
+        _fetch(_row(content), tmp_path / "short", deadline=time.time() + 30, opener=always_short)
+    assert len(ends) == download.TRANSFER_RESUMES + 1
+    assert not (tmp_path / "short").exists() and not (tmp_path / "short.partial").exists()
+
+
 def test_a_stall_before_the_first_byte_asks_again_from_the_start(tmp_path):
     content = b"xyz" * 50
     requests = []

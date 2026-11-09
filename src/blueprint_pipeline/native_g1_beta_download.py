@@ -31,6 +31,7 @@ class _HTTPSOnly(urllib.request.HTTPRedirectHandler):
 #: never one it already has, so the transfer bound, the run's hard cap and its deadline are unchanged. A source
 #: that answers a resume with anything but exactly those bytes (206, matching Content-Range) ends the transfer.
 TRANSFER_RESUMES = 3
+#: A stall, a dropped connection, or a body that ends before the file does (raised as ConnectionResetError).
 _INTERRUPTED = (TimeoutError, ConnectionError, http.client.IncompleteRead)
 
 
@@ -83,6 +84,10 @@ def _fetch(row, destination: Path, *, deadline: float, opener=None):
                             remaining_seconds(deadline)
                             chunk = response.read(min(1024 * 1024, total - size + 1))
                             if not chunk:
+                                if size < total:
+                                    # ``HTTPResponse.read(amt)`` returns b"" when the source closes the
+                                    # connection early, without raising: an interrupted transfer too.
+                                    raise ConnectionResetError("g1_beta_asset_transfer_ended_early")
                                 break
                             size += len(chunk)
                             if size > total:
