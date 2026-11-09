@@ -851,7 +851,7 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - Both `_vision_navi` checkpoints were trained on "Avoid obstacles and move to the yellow marked area." For navigation candidates the episode sends exactly that prompt and refuses any other. The site sentence in `compiled_task_spec` ("Move to the green marked area…") is not sent.
   - The scene spawns one flat yellow disc (radius 0.43 m) at the goal. The compiled green marker is not spawned.
   - In the library packet the robot starts facing the goal dead-on, 1.78 m away. Worked through the plan's head camera (45° down, 640×480, f = 500 px), the disc sits well inside the frame at reset.
-  - **Built (this PR):** `native_g1_goal_marker_view.v1`, a $0 planning-time projection of the disc's centre and rim through the plan's head camera at the reset pose (status, centre pixel, in-frame fraction, pixel radius), written once beside the spawn check. A walking row whose disc centre starts out of frame carries `g1_goal_marker_not_in_initial_view`. It is a flag, never a gate, and it does not check occlusion by the scene.
+  - **Built (#3498):** `native_g1_goal_marker_view.v1`, a $0 planning-time projection of the disc's centre and rim through the plan's head camera at the reset pose (status, centre pixel, in-frame fraction, pixel radius), written once beside the spawn check. A walking row whose disc centre starts out of frame carries `g1_goal_marker_not_in_initial_view`. It is a flag, never a gate, and it does not check occlusion by the scene.
 - **74d0af8 live, 11-09 about 14:25Z** (#3497). Re-plan `screening-f68661c6…` at 14:32:35Z, with no disk, billing or lock refusal.
   - **π0.5's third walking run** (`screen-18953a74…`, launched 14:36Z, π0.5 first, DP pending) **reached the policy for the first time**:
     - the policy runtime built (8.09 GB, with growth lines), SONIC loaded, and the server lease was `server_ready_process_bound` with the checkpoint loaded and verified;
@@ -859,10 +859,20 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - the first inference failed after 21 s with HTTP 500. The server's log has `torch._inductor.exc.InductorError: RuntimeError: Failed to find C compiler` from `modeling_pi05.predict_action_chunk`, which runs torch.compile because the checkpoint's config sets `compile_model: true`.
   - Inference count 0, so the policy was never queried; cells 1–3 were not attempted. About 2,510 s live, **$0.90, no episode**. That is π0.5's second harness failure. DP (6) is held for the next deploy.
   - **Cause:** the pinned Isaac image has no C compiler, and Inductor/Triton needs one to build kernels. Any policy server that compiles hits this.
-  - **Fix (this PR):**
+  - **Fix (#3503, merged as `08371e4`):**
     - The entrypoint's toolchain install now also brings `gcc` and `libc6-dev`, with the same retries, time bounds and mirror fallback, and it runs if either ffmpeg or gcc is missing. A missing compiler is never the media refusal.
     - Before the first episode, when the selected checkpoint's config sets `compile_model: true`, the runtime compiles and runs a tiny function with torch.compile on the GPU in the policy runtime. A failure ends the run with `g1_beta_policy_compile_toolchain_unavailable` before any episode (about 15 minutes in instead of 40), and the probe's last lines go to the provider log.
     - No `_PROGRESS:` payload, and no limit changes.
+    - The compile probe runs isolated like the beta policy server (`-I`, without `PYTHONPATH`, `PYTHONHOME`, `PYTHONEXE`, `VIRTUAL_ENV`), so it tests the venv's own torch (Codex P1 on #3503).
+- **661c780 live, 11-09 15:52:14Z** (#3498, #3502). Re-plan `screening-33b7858f…` at 16:01:36Z.
+  - **π0.5 went first, not DP.** The near-limit ordering (#3495) puts DP (6 harness failures) behind a sibling with fewer, and π0.5 had 2. The compiler fix (#3503) was not live. The library session did not deploy under π0.5's $4 reservation (a paid stage under D-08).
+  - **π0.5's fourth walking run** (`screen-9439d7b7…`, Vast instance 59911312 created 16:09:46Z) failed the same way as the third:
+    - markers: `MEDIA_TOOLCHAIN_INSTALL_STARTED`, `ATTEMPT:default`, `READY`; `runtime_source_provisioning_exit:0`; `policy_runtime_build` with growth lines (6.4 GB) and `policy_runtime_ready`; `CELL_STARTED` for cell 000 with six `RUNTIME_WORKING` lines; `CELL_EXITED:…000:0:exited`; `runtime_exit:1`;
+    - the provider diagnostics have `torch._inductor.exc.InductorError: RuntimeError: Failed to find C compiler.`, then the server stopped on SIGTERM. The last Isaac line before it is 16:49:16Z, so the first inference came about 40 minutes after the machine was created;
+    - the policy was never queried; cells 001–003 were not attempted.
+  - About 2,695 s live at $0.599/h, **$0.92 estimated** ($0.45 runtime, $0.47 transfer), **no episode**. Teardown destroyed the instance (HTTP 200), with no continuing spend.
+  - That is π0.5's third harness failure. DP (6) stays held, and neither re-plans until the next deploy changes the commit.
+  - The library session started deploying `08371e4` (#3503, #3504) at about 16:56Z. π0.5 re-plans first on it, with the compile check.
 
 ## Operating notes (2026-11-02)
 
