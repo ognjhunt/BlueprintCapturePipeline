@@ -327,7 +327,7 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
 - **11-08 22:00Z to 11-09 12:20Z: the walked floor, the re-derive, the re-issued intake, and the runs that still found no episode.**
   - **Owner words (CST in brackets):**
     - "yes" (11-09 04:32Z, 10:32 PM): retry a run refused only for a missing provider billing reading once the reading is back. Every money check runs again.
-    - "yes, deploy" (about 08:00Z, 2:00 AM): fe6a58c, after this session's permission check refused the deploy command. That refusal was reported, not worked around.
+    - "yes, deploy" (12:15Z, 6:15 AM): fe6a58c, after this session's permission check refused the deploy command. That refusal was reported, not worked around. (An earlier version of this entry gave about 08:00Z; 12:15Z is the time of the owner's message.)
   - **Floor root cause:**
     - The G1 diagnostic (#3480) found no collision face over the spawn. A camera never films the floor under its own feet, and the 11-07 fallback patch sat where the scan saw floor, not where the walk began.
     - #3484 fills a flat floor at the levelled floor height within 0.5 m of every camera footprint, disclosed as `walked_floor` (`development_only_estimate`) and flagged `g1_scene_floor_estimated`. #3485 words that flag.
@@ -349,6 +349,15 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - #3494 prints install and step progress lines so a slow install is not taken for a dead machine. #3495 adds stage markers and runs a near-limit candidate after a same-backend sibling, so π0.5 goes before DP.
   - **Deploys this stretch:** d337b41 (02:10Z), f1d69a9 (03:53Z), b85ac9e (05:25Z). fe6a58c (#3494, #3495) did not deploy: main CI failed only on GitHub release downloads of ffmpeg-static (HTTP 504, 07:58–08:00Z), and this session cannot re-run jobs (403). This tracker update gives main a fresh CI run to deploy from.
   - **Spend:** G1 about $4.48 of the $30 site limit. Atlas about $8.43 of $25. Total about $14.7 of the $115 ceiling.
+
+- **11-09 12:20Z to 14:30Z: the deploys before π0.5's walking run, and a standing deploy permission.**
+  - **Owner words (CST in brackets):**
+    - "yes, deploy latest main" (12:26Z, 6:26 AM): 9b9bd6e (#3493 to #3496, so #3494 and #3495 from fe6a58c too), live 12:43Z.
+    - "yes, deploy latest main" (14:12Z, 8:12 AM): 74d0af8 (#3497, the G1 runtime's progress lines while a worker's episodes run), live 14:26:57Z. The door was quiet (no paid lock, hold, pending request or active unit), and the G1 session was told before and after.
+    - "you can deploy latest main when green - for next 48 hrs" (14:26Z, 8:26 AM): a standing deploy permission until 14:26Z on 11-11 (8:26 AM Wednesday). It covers deploying the latest main once main's CI is green. Every other deploy rule still holds: a quiet door, no deploy during a paid stage, telling the G1 session before each deploy, a line here for each deploy, and never `install-native-g1-policies`. It widens no money grant, cap, retry limit or allowance.
+  - **π0.5 runs first.** π0.5 has 1 harness failure and DP has 6 of 7, so π0.5 goes before DP (#3495). The G1 session was told at 14:27Z that 74d0af8 is live.
+  - **#3498 (G1 session):** a $0 planning-time projection of the yellow goal disc through the head camera. A walking row whose goal starts out of frame is flagged `g1_goal_marker_not_in_initial_view`, never gated. It is not needed for π0.5's run and deploys at the next quiet window.
+  - **Control-plane disk, 14:28Z:** headroom reads `low`, with 12.9 GB available against a 15.8 GB floor. Two roles are refused: `embodiment_preparation` and `g1_checkpoint_cache` (a new checkpoint download). A checkpoint already in the cache needs no reservation (`cache_ready`). Any other refusal on disk headroom goes in this tracker as it happens.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
