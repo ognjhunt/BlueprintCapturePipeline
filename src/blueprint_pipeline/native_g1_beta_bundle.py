@@ -46,6 +46,12 @@ MEDIA_TOOLCHAIN_FALLBACK_MIRROR = "https://mirrors.edge.kernel.org/ubuntu"
 MEDIA_TOOLCHAIN_APT_RETRIES = 3
 MEDIA_TOOLCHAIN_UPDATE_SECONDS = 180
 MEDIA_TOOLCHAIN_INSTALL_SECONDS = 300
+#: Until the runtime starts, the provider log is a G1 run's only sign of life, and the controller ends a run
+#: whose log is silent for its no-progress window (600 s). The install prints a line this often, and one at
+#: each step, so a slow but working install is not ended (2026-11-09 06:24Z, the library job's DP run: the
+#: log stopped at the entrypoint start, the controller gave up after 32 minutes live, $0.64, no output).
+#: The lines carry no ``_PROGRESS:`` payload, which would switch the controller to structured tracking.
+MEDIA_TOOLCHAIN_TICK_SECONDS = 60
 
 
 def check_media_toolchain_coverage() -> None:
@@ -80,6 +86,11 @@ def media_toolchain_install_shell() -> str:
 # uses another Ubuntu mirror over HTTPS.
 if @MEDIA_MISSING@; then
   : >"$OUT_DIR/media_toolchain_install.log"
+  echo "BLUEPRINT_G1_MEDIA_TOOLCHAIN_INSTALL_STARTED"
+  ( tick=; trap 'kill $tick 2>/dev/null; exit 0' TERM; waited=0
+    while :; do sleep @TICK_SECONDS@ & tick=$!; wait $tick; waited=$((waited + @TICK_SECONDS@))
+      echo "BLUEPRINT_G1_MEDIA_TOOLCHAIN_INSTALLING:${waited}s"; done ) &
+  media_ticker=$!
   APT_ETC="${BLUEPRINT_MEDIA_TOOLCHAIN_APT_ETC:-/etc/apt}"
   printf 'Acquire::Retries "@APT_RETRIES@";\\nAcquire::http::Timeout "30";\\nAcquire::https::Timeout "30";\\n' \\
     >"$APT_ETC/apt.conf.d/99blueprint-media-toolchain" 2>>"$OUT_DIR/media_toolchain_install.log"
@@ -91,12 +102,22 @@ if @MEDIA_MISSING@; then
       done
     fi
     echo "media toolchain install: attempt $attempt" >>"$OUT_DIR/media_toolchain_install.log"
+    echo "BLUEPRINT_G1_MEDIA_TOOLCHAIN_ATTEMPT:$attempt"
     DEBIAN_FRONTEND=noninteractive timeout @UPDATE_SECONDS@ apt-get update -qq >>"$OUT_DIR/media_toolchain_install.log" 2>&1 && \\
     DEBIAN_FRONTEND=noninteractive timeout @INSTALL_SECONDS@ apt-get install -y -qq @MEDIA_PACKAGES@ >>"$OUT_DIR/media_toolchain_install.log" 2>&1
     if ! { @MEDIA_MISSING@; }; then break; fi
   done
+  kill "$media_ticker" 2>/dev/null
+  wait "$media_ticker" 2>/dev/null
+  if @MEDIA_MISSING@; then
+    # The output may never leave the machine, so the reason goes to the provider log as well.
+    echo "BLUEPRINT_G1_MEDIA_TOOLCHAIN_UNAVAILABLE"
+    tail -n 15 "$OUT_DIR/media_toolchain_install.log"
+  else
+    echo "BLUEPRINT_G1_MEDIA_TOOLCHAIN_READY"
+  fi
 fi
-'''.replace("@MEDIA_MISSING@", _media_missing()).replace("@MEDIA_PACKAGES@", packages).replace(
+'''.replace("@TICK_SECONDS@", str(MEDIA_TOOLCHAIN_TICK_SECONDS)).replace("@MEDIA_MISSING@", _media_missing()).replace("@MEDIA_PACKAGES@", packages).replace(
         "@INSTALL_ATTEMPTS@", " ".join(MEDIA_TOOLCHAIN_INSTALL_ATTEMPTS)).replace(
         "@FALLBACK_MIRROR@", MEDIA_TOOLCHAIN_FALLBACK_MIRROR).replace(
         "@APT_RETRIES@", str(MEDIA_TOOLCHAIN_APT_RETRIES)).replace(

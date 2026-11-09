@@ -177,7 +177,7 @@ def test_entrypoint_installs_the_media_toolchain_before_provisioning(tmp_path):
     subprocess.run(["bash", "-n", str(path)], check=True)
 
 
-def _media_install_block(tmp_path, *, fallback_works: bool):
+def _media_install_block(tmp_path, *, fallback_works: bool, apt_seconds: int = 0):
     """Run the entrypoint up to provisioning with a stub apt: the default archive never delivers."""
     script = bundle._entrypoint()
     script = script[:script.index("/isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision")]
@@ -193,6 +193,7 @@ def _media_install_block(tmp_path, *, fallback_works: bool):
     (bin_dir / "apt-get").write_text(f"""#!/usr/bin/env bash
 echo "apt-get $*"
 [ "$1" = update ] && exit 0
+sleep {apt_seconds}
 grep -q {works} "$BLUEPRINT_MEDIA_TOOLCHAIN_APT_ETC/sources.list.d/ubuntu.sources" || \\
   {{ echo "E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/universe/f/ffmpeg/ffmpeg.deb"; exit 100; }}
 printf '#!/bin/sh\\n' > "{bin_dir}/ffmpeg"; cp "{bin_dir}/ffmpeg" "{bin_dir}/ffprobe"
@@ -204,11 +205,11 @@ chmod +x "{bin_dir}/ffmpeg" "{bin_dir}/ffprobe"
     # Only the tools the block uses, so an ffmpeg on the test machine cannot satisfy it.
     tools = tmp_path / "tools"
     tools.mkdir()
-    for name in ("bash", "timeout", "grep", "sed", "cp", "chmod", "mkdir", "dirname", "cat"):
+    for name in ("bash", "timeout", "grep", "sed", "cp", "chmod", "mkdir", "dirname", "cat", "sleep", "tail"):
         (tools / name).symlink_to(shutil.which(name))
     env = {"PATH": f"{bin_dir}:{tools}", "BLUEPRINT_ADP_ARENA_OUTPUT_DIR": str(out),
            "BLUEPRINT_MEDIA_TOOLCHAIN_APT_ETC": str(apt_etc)}
-    run = subprocess.run(["bash", str(path)], env=env, capture_output=True, text=True)
+    run = subprocess.run(["bash", str(path)], env=env, capture_output=True, text=True, timeout=120)
     return run, (out / "media_toolchain_install.log").read_text(), apt_etc
 
 
@@ -219,6 +220,10 @@ def test_the_media_toolchain_install_falls_back_to_another_mirror_when_the_archi
         pytest.skip("coreutils timeout is not installed")
     run, log, apt_etc = _media_install_block(tmp_path, fallback_works=True)
     assert "MEDIA_READY" in run.stdout and "REFUSED" not in run.stdout
+    # The provider log shows each step, so the controller sees life and a failure shows where it was.
+    out = run.stdout
+    assert (out.index("BLUEPRINT_G1_MEDIA_TOOLCHAIN_INSTALL_STARTED") < out.index("BLUEPRINT_G1_MEDIA_TOOLCHAIN_ATTEMPT:default")
+            < out.index("BLUEPRINT_G1_MEDIA_TOOLCHAIN_ATTEMPT:fallback") < out.index("BLUEPRINT_G1_MEDIA_TOOLCHAIN_READY"))
     assert log.index("attempt default") < log.index("E: Failed to fetch") < log.index("attempt fallback")
     sources = (apt_etc / "sources.list.d" / "ubuntu.sources").read_text()
     assert "archive.ubuntu.com" not in sources and "security.ubuntu.com" not in sources
@@ -237,6 +242,23 @@ def test_the_typed_refusal_stands_when_no_mirror_delivers(tmp_path):
     run, log, _ = _media_install_block(tmp_path, fallback_works=False)
     assert "REFUSED" in run.stdout and "MEDIA_READY" not in run.stdout and run.returncode == 2
     assert log.count("media toolchain install: attempt") == len(bundle.MEDIA_TOOLCHAIN_INSTALL_ATTEMPTS)
+    # The output may never leave the machine: the reason is in the provider log too.
+    assert "BLUEPRINT_G1_MEDIA_TOOLCHAIN_UNAVAILABLE" in run.stdout and "E: Failed to fetch" in run.stdout
+
+
+def test_a_slow_install_keeps_printing_so_the_controller_does_not_end_the_run(tmp_path, monkeypatch):
+    """2026-11-09 06:24Z, the library job's DP run: the provider log stopped at the entrypoint start, and the
+    controller ended the run after its no-progress window, 32 minutes live, $0.64, with no output."""
+    if shutil.which("timeout") is None:
+        pytest.skip("coreutils timeout is not installed")
+    monkeypatch.setattr(bundle, "MEDIA_TOOLCHAIN_TICK_SECONDS", 1)
+    run, _, _ = _media_install_block(tmp_path, fallback_works=True, apt_seconds=3)
+    assert "BLUEPRINT_G1_MEDIA_TOOLCHAIN_INSTALLING:" in run.stdout and "MEDIA_READY" in run.stdout
+    # The ticker stops with the install: nothing prints after the toolchain is ready.
+    assert "BLUEPRINT_G1_MEDIA_TOOLCHAIN_INSTALLING:" not in run.stdout.split("BLUEPRINT_G1_MEDIA_TOOLCHAIN_READY")[1]
+    # Well inside the controller's 600 s window, and never a structured progress payload.
+    script = bundle._entrypoint()
+    assert bundle.MEDIA_TOOLCHAIN_TICK_SECONDS < 600 and "_PROGRESS:" not in script
 
 
 def test_every_executable_the_worker_preflight_runs_is_installed_by_the_entrypoint(monkeypatch):
@@ -247,8 +269,8 @@ def test_every_executable_the_worker_preflight_runs_is_installed_by_the_entrypoi
     script = bundle._entrypoint()
     for executable in contract.NATIVE_TASK_REQUIRED_EXECUTABLES:
         assert executable in bundle.MEDIA_TOOLCHAIN_PACKAGES
-        # Checked before installing, after each install try, and before the typed refusal.
-        assert script.count(f"! command -v {executable} >/dev/null 2>&1") == 3
+        # Checked before installing, after each install try, to report the outcome, and before the refusal.
+        assert script.count(f"! command -v {executable} >/dev/null 2>&1") == 4
     for package in set(bundle.MEDIA_TOOLCHAIN_PACKAGES.values()):
         assert f"apt-get install -y -qq {package}" in script
     monkeypatch.setattr(contract, "NATIVE_TASK_REQUIRED_EXECUTABLES",
