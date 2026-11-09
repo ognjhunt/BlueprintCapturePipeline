@@ -315,8 +315,12 @@ These steps need no further approval in this session:
   opening PRs; editing the tracker and the plan;
 - retrying a command that is safe to repeat;
 - merging your own PR when its CI is green and a verifier approved it;
-- deploying the latest green `main` when D-08 allows it, or under the owner's
-  standing permission while it lasts (until 2026-11-11 14:26Z);
+- deploying the latest green `main` inside D-08. While the owner's standing
+  permission lasts (until 2026-11-11 14:26Z), such a deploy needs no further
+  ask. The permission keeps every other deploy rule (the daily batching and
+  its out-of-window exceptions, a quiet door, no deploy during a paid stage,
+  telling the other sessions, a tracker line, and never
+  `install-native-g1-policies`), and it widens no money grant;
 - door operations that only read.
 
 These need the owner first. Put each one in the owner list with your
