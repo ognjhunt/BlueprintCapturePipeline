@@ -241,6 +241,7 @@ def _spawn_reports_missing(row: Mapping[str, Any] | None) -> bool:
     A navigation packet's per-offset report counts only while planning's reader accepts it for the packet's
     plan; another is set aside and measured again (``ensure_packet_start_offsets``).
     """
+    from .native_g1_route_floor import FILENAME as ROUTE_FLOOR_FILENAME
     from .native_g1_spawn_clearance import FILENAME, start_offset_reports
 
     for packet in _packet_dirs(row):
@@ -248,6 +249,9 @@ def _spawn_reports_missing(row: Mapping[str, Any] | None) -> bool:
             return True
         plan = _navigation_plan(packet)
         if plan is not None and start_offset_reports(packet, plan.get("plan_digest")) is None:
+            return True
+        # A navigation packet's route floor profile is written once, measured or not, so this asks at most once.
+        if plan is not None and not (Path(packet) / ROUTE_FLOOR_FILENAME).is_file():
             return True
     return False
 
@@ -260,13 +264,19 @@ def _measure_spawns(row: Mapping[str, Any] | None) -> None:
     A failure leaves it missing: planning then flags the row and funds it. A report is new data derived
     from the site's scene, so every caller reads the site's consent live first (``_require_current_consent``).
     """
-    from .native_g1_spawn_clearance import ensure_packet_spawn_clearance, ensure_packet_start_offsets
+    from .native_g1_route_floor import ensure_packet_route_floor_profile
+    from .native_g1_spawn_clearance import (ensure_packet_goal_marker_view, ensure_packet_spawn_clearance,
+                                            ensure_packet_start_offsets)
 
     for packet in _packet_dirs(row):
         try:
             ensure_packet_spawn_clearance(packet)
             if _navigation_packet(packet):  # Each start offset its cells use, too.
                 ensure_packet_start_offsets(packet)
+                # Evidence for the scene, never a gate: the floor along the route and the goal disc's view,
+                # also when an overlap keeps planning from reaching the row's setup flags.
+                ensure_packet_route_floor_profile(packet)
+                ensure_packet_goal_marker_view(packet)
         except Exception:  # noqa: BLE001 - a G1 problem never stops the site's other candidates
             continue
 
