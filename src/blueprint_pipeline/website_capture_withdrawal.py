@@ -8,32 +8,23 @@ operator deletion to every copy the Pipeline controls: launch runs, their eviden
 and B2 offload. It is its own command, never reached from here: the intake's HTTP
 withdrawal route imports this module, and the deletion reaches the screening
 ledger and the paid launch path (tests/test_live_pipeline_import_isolation.py).
-After each acknowledgement the route starts that command's plan-only
-``--record-automatic-plan`` in its own process (``request_automatic_deletion_plan``),
-so the plan exists beside the tombstone without an operator; ``--apply`` stays an
-operator command that needs the owner's approval.
 """
 from __future__ import annotations
 
 import fcntl
 import hashlib
 import json
-import logging
 import os
 import re
 import stat
-import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import website_capture_withdrawal_automatic_plan as automatic_plan
 from .capture_lifecycle import _sha256_file, _write_once
 from .decision_evidence_contracts import canonical_digest
-
-_logger = logging.getLogger(__name__)
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -349,44 +340,6 @@ def acknowledge_withdrawal(*, capture_root: Path, command: Mapping[str, Any]) ->
             tombstone["digest"] = canonical_digest(tombstone, digest_field="digest")
             _persist(existing, tombstone)
         return _inspection(site, journal)
-
-
-AUTOMATIC_PLAN_FILE = automatic_plan.PLAN_FILE
-
-
-def _launch_detached(command: list[str]) -> int:
-    return automatic_plan.launch_detached(command)
-
-
-def request_automatic_deletion_plan(*, capture_root: Path, launch: Callable[[list[str]], Any] | None = None,
-                                    lock_path: Path | None = None) -> str:
-    """After an acknowledgement, start the bounded, plan-only deletion plan if this site is due one.
-
-    The decision, the backoff and the records are ``website_capture_withdrawal_automatic_plan.request``:
-    ``recorded``, ``refused``, ``running``, ``backoff``, ``stopped``, ``owed``, ``failed`` or
-    ``started``. The command has no ``--apply`` and no authorization. Its own process keeps
-    the deletion module, which reaches the screening ledger and the paid launch path, out
-    of the intake. A stopped plan logs a warning on every acknowledgement until an operator
-    runs it; the withdrawal itself never waits on this.
-    """
-    root = Path(capture_root).absolute()
-    site = _site(root)
-    journal = site / "website_withdrawal"
-    if not (journal / "tombstone.json").is_file():
-        raise ValueError("website_withdrawal_tombstone_required")
-    try:
-        result = automatic_plan.request(journal, [sys.executable, "-m", automatic_plan.CHILD_MODULE,
-                                                  "--capture-root", str(root)],
-                                        launch=launch or _launch_detached, lock_path=lock_path)
-    except Exception as error:
-        # Never no plan and no trace: the request itself failing (an unwritable lock, say) is recorded too.
-        automatic_plan.record_failure(journal, "automatic_plan_request_failed_" + type(error).__name__)
-        raise
-    if result in {"stopped", "refused", "failed"}:
-        _logger.warning("website_withdrawal_automatic_plan_%s site=%s state=%s", result, site.name,
-                        automatic_plan.read_state(journal).get("needs_operator")
-                        or (automatic_plan.read_state(journal).get("last_failure") or {}).get("reason"))
-    return result
 
 
 def inspect_withdrawal(*, capture_root: Path) -> dict[str, Any]:

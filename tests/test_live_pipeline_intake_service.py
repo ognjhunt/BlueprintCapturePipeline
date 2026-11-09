@@ -137,12 +137,6 @@ def test_signed_website_withdrawal_uses_server_scope_and_never_deletes(tmp_path,
     monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "work"))
     monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON", json.dumps({"test-client": {"req1": str(root)}}))
     monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, "false")
-    from blueprint_pipeline import website_capture_withdrawal
-    launched: list[list[str]] = []
-    # The "child" is this live process, so the second acknowledgement finds the plan running.
-    monkeypatch.setattr(website_capture_withdrawal, "_launch_detached",
-                        lambda command: (launched.append(command), os.getpid())[1])
-    monkeypatch.setenv("BLUEPRINT_WEBSITE_WITHDRAWAL_PLAN_LOCK", str(tmp_path / "host-lock/plan.lock"))
     client = TestClient(create_app())
     vector = json.loads((Path(__file__).parent / "fixtures/website-withdrawal-vector.json").read_text())
     payload = vector["command"]
@@ -162,9 +156,6 @@ def test_signed_website_withdrawal_uses_server_scope_and_never_deletes(tmp_path,
     assert post(payload, "ack-replay").json() == accepted.json()
     assert read_consent_state(root)["state"] == "revoked"
     assert (root / "raw/video.mp4").read_bytes() == b"synthetic-media"
-    # The first acknowledgement starts the bounded plan-only child by itself; the replay finds it running.
-    assert launched == [[sys.executable, "-m", "blueprint_pipeline.website_capture_withdrawal_automatic_plan",
-                         "--capture-root", str(root.absolute())]]
 
 
 def _capture_root(tmp_path: Path) -> Path:

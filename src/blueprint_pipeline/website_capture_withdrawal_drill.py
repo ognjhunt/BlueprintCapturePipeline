@@ -9,9 +9,8 @@ The drill walks the real path:
 
 1. the WebApp's withdrawal command (``tests/fixtures/website-withdrawal-vector.json``,
    shared with the WebApp) is acknowledged as a tombstone (``acknowledge_withdrawal``);
-2. the plan the intake starts by itself after an acknowledgement is recorded beside
-   the tombstone (``request_automatic_deletion_plan`` running the deletion CLI's
-   ``--record-automatic-plan``), and nothing is deleted;
+2. a dry-run plan (``plan_withdrawal_deletion``, what an operator runs first) deletes
+   nothing;
 3. the paid screening launch's current-source check for the site now refuses
    (``beta_policy_screening_worker.require_current_source``, which resolves the
    capture through ``team_scene_capture_root.resolve_capture_root``);
@@ -213,19 +212,6 @@ def build_world(work: Path, request_id: str) -> dict[str, Any]:
             "other_capture": other_capture, "other_uri": other_uri}
 
 
-def _cli_root_arguments(resolution: dict[str, Any]) -> list[str]:
-    arguments = []
-    for root in resolution["run_roots"]:
-        arguments += ["--run-root", str(root)]
-    for root in resolution["uncovered_roots"]:
-        arguments += ["--uncovered-root", str(root)]
-    for key in ("intent_root", "binding_root", "screening_queue_root", "screening_work_root",
-                "native_g1_registration_root", "team_scene_halves_root", "team_registry",
-                "team_scene_packet_queue_root", "rigid_probe_queue_root", "rigid_probe_work_root"):
-        arguments += ["--" + key.replace("_", "-"), str(resolution[key])]
-    return arguments
-
-
 def _snapshot(paths: list[Path]) -> dict[str, str]:
     rows = {}
     for base in paths:
@@ -297,11 +283,8 @@ def _confined(work: Path) -> Iterator[None]:
 
     Every file-system change Python audits is checked (relative names against their
     directory descriptor, or against ``work``, which the drill runs in), and the work
-    root's parent directory must list the same entries afterwards. The host lock is
-    redirected into ``work``.
+    root's parent directory must list the same entries afterwards.
     """
-    from .website_capture_withdrawal_automatic_plan import LOCK_ENV
-
     root = str(Path(work).resolve())
     if not _HOOKED:
         import sys
@@ -311,14 +294,13 @@ def _confined(work: Path) -> Iterator[None]:
     siblings = sorted(os.listdir(parent))
     previous = os.getcwd()
     confinement = {"root": root, "violations": []}
-    with _environment(LOCK_ENV, str(Path(root) / "host-lock/website-withdrawal-automatic-plan.lock")):
-        os.chdir(root)
-        _CONFINED.append(confinement)
-        try:
-            yield
-        finally:
-            _CONFINED.remove(confinement)
-            os.chdir(previous)
+    os.chdir(root)
+    _CONFINED.append(confinement)
+    try:
+        yield
+    finally:
+        _CONFINED.remove(confinement)
+        os.chdir(previous)
     _check(not confinement["violations"], "drill_wrote_outside_work_root: " + ", ".join(confinement["violations"][:5]))
     _check(sorted(os.listdir(parent)) == siblings, "drill_changed_the_work_roots_parent")
 
@@ -362,27 +344,15 @@ def _run_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
            and acknowledgement["pipeline_acknowledged"] is True and acknowledgement["deletion_confirmed"] is False
            and acknowledgement["future_processing_allowed"] is False, "drill_acknowledgement_unexpected")
 
-    # 2. The plan the intake starts by itself: the exact CLI command, run here with the drill's roots.
-    started: list[list[str]] = []
-
-    def launch(arguments: list[str]) -> None:
-        started.append(arguments)
-        _check("--apply" not in arguments and "--authorize-complete-deletion" not in arguments,
-               "drill_automatic_plan_would_apply")
-        # The child would bound itself first (``website_capture_withdrawal_automatic_plan.main``); here the
-        # same plan-only command runs in-process on the drill's roots.
-        deletion.main([*arguments[3:], "--record-automatic-plan", *_cli_root_arguments(world["resolution"])])
-
-    with contextlib.redirect_stdout(io.StringIO()):
-        state = withdrawal.request_automatic_deletion_plan(capture_root=capture, launch=launch)
-    automatic = json.loads((site / "website_withdrawal" / withdrawal.AUTOMATIC_PLAN_FILE).read_text())
-    _check(state == "started" and len(started) == 1, "drill_automatic_plan_not_started")
-    _check(automatic["applied"] is False and automatic["tombstone_digest"] == acknowledgement["tombstone_digest"],
-           "drill_automatic_plan_unexpected")
-    _check(store.deleted == [] and _site_files(site) == automatic["summary"]["scene_files"],
-           "drill_automatic_plan_deleted_something")
-    _check(withdrawal.request_automatic_deletion_plan(capture_root=capture, launch=launch) == "recorded"
-           and len(started) == 1, "drill_automatic_plan_not_idempotent")
+    # 2. A dry-run plan, without the object store, deletes nothing.
+    files_before = _snapshot([site])
+    dry_run = deletion.plan_withdrawal_deletion(capture_root=capture, **world["resolution"])
+    _check(dry_run["tombstone_digest"] == acknowledgement["tombstone_digest"]
+           and dry_run["scene_files"]["count"] == _site_files(site), "drill_dry_run_plan_unexpected")
+    _check(store.deleted == [] and {path: digest for path, digest in _snapshot([site]).items()
+                                    if "/website_withdrawal/" not in path} == {
+               path: digest for path, digest in files_before.items() if "/website_withdrawal/" not in path},
+           "drill_dry_run_plan_deleted_something")
 
     # 3. A new paid admission for the site is refused once the tombstone exists.
     with _environment(CAPTURE_PARTITION_ENV, str(world["partition"])):
@@ -435,7 +405,7 @@ def _run_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
     rows += [{"copy_class": f"remaining:{row['holder']}", "before": None, "after": None,
               "remaining_reason": row["reason"]} for row in receipt["remaining"]]
     return {"vector_command_digest": vector["command_digest"], "acknowledgement": acknowledgement,
-            "automatic_plan": automatic, "paid_admission_refusal": admission_refusal, "plan": plan,
+            "dry_run_plan": dry_run, "paid_admission_refusal": admission_refusal, "plan": plan,
             "receipt": receipt, "record": rows}
 
 
@@ -464,7 +434,7 @@ def main(argv: list[str] | None = None) -> int:
             result = run_drill(Path(work), vector_path=args.vector)
     print(format_record(result["record"]))
     print(f"paid admission after tombstone: refused ({result['paid_admission_refusal']})")
-    print(f"automatic plan: {result['automatic_plan']['plan_digest']} (applied: false)")
+    print(f"dry-run plan: {result['dry_run_plan']['digest']} (deleted nothing)")
     print(f"receipt: {result['receipt']['digest']}")
     return 0
 
