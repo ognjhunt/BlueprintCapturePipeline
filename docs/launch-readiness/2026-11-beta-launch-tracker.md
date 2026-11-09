@@ -348,7 +348,7 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - #3491 adds the owner-approved billing-gap re-admission.
     - #3494 prints install and step progress lines so a slow install is not taken for a dead machine. #3495 adds stage markers and runs a near-limit candidate after a same-backend sibling, so π0.5 goes before DP.
   - **Deploys this stretch:** d337b41 (02:10Z), f1d69a9 (03:53Z), b85ac9e (05:25Z). fe6a58c (#3494, #3495) did not deploy: main CI failed only on GitHub release downloads of ffmpeg-static (HTTP 504, 07:58–08:00Z), and this session cannot re-run jobs (403). This tracker update gives main a fresh CI run to deploy from.
-  - **Spend:** G1 about $4.48 of the $30 site limit. Atlas about $8.43 of $25. Total about $14.75 of the $115 ceiling.
+  - **Spend:** G1 about $4.48 of the $30 site limit. Atlas about $8.43 of $25. Total about $14.7 of the $115 ceiling.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 
