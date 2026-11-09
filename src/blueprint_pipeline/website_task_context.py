@@ -327,6 +327,27 @@ def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: 
     return "current"
 
 
+def read_scene_sponsorship_ending(*, task_context: Mapping[str, Any]) -> ValueError | None:
+    """The WebApp's ``consent_expired`` refusal of this context's retained grant, or None.
+
+    The ``create: false`` scene-sponsorship read: the WebApp never creates,
+    renews or writes a grant for it, applies a verified owner window extension
+    (``honour_execution_window``), and answers ``website_scene_sponsorship_missing``
+    rather than issuing one. A confirmed context carries no ``purpose`` field but
+    is read under the scene_preparation scope it was loaded with. A returned grant,
+    or any other refusal, is None. Transport errors propagate.
+    """
+    payload = {"request_id": task_context["request_id"], "scene_id": task_context["scene_id"],
+               "purpose": "scene_preparation", "expected_task_context_digest": task_context["context_digest"],
+               "create": False}
+    try:
+        website_webapp_request(capture_id=task_context["capture_id"], operation="scene-sponsorship",
+                               payload=payload)
+    except ValueError as exc:
+        return exc if str(exc) == _SPONSORSHIP_EXPIRED else None
+    return None
+
+
 def enqueue_website_prepared_scene(*, task_context: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:
     value = website_webapp_request(capture_id=task_context["capture_id"], operation="prepared-scene",
         payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "request": request})
