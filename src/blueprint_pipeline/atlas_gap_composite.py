@@ -62,6 +62,9 @@ FEATHER_PIXELS = 4
 MAX_SPLAT_RADIUS = 8
 # Another reference replaces a nearer camera's pixel only if clearly in front of it.
 OCCLUSION_MARGIN = EDGE_RELATIVE_JUMP
+# Smoothed reference depths kept while every gap view is composited (3.7 MB a 1280x720
+# reference, so about 70); smoothing one costs about as much as rendering it (0.45 s).
+COMPOSITE_RESIDENT_DEPTH_BYTES = 256 * 2**20
 
 
 def _digest(value) -> str:
@@ -70,10 +73,11 @@ def _digest(value) -> str:
 
 def _interior(frame) -> np.ndarray:
     """Valid depth away from discontinuities: edge pixels splat across the gap they bound."""
+    from .atlas_depth_splat import frame_arrays
     from .atlas_scene_preservation import _valid
 
     valid = _valid(frame)
-    depth = frame["depth"]
+    depth = frame_arrays(frame, "depth")[0]
     center = depth[1:-1, 1:-1]
     inner = valid[1:-1, 1:-1].copy()
     for neighbour in (depth[1:-1, 2:], depth[1:-1, :-2], depth[2:, 1:-1], depth[:-2, 1:-1]):
@@ -85,10 +89,12 @@ def _interior(frame) -> np.ndarray:
 
 def _incidence(frame) -> np.ndarray:
     """Per source pixel, the cosine between its ray and its surface normal (0 grazing, 1 face-on)."""
+    from .atlas_depth_splat import frame_arrays
     from .atlas_scene_preservation import _world
 
-    points = np.full((*frame["depth"].shape, 3), np.nan)
-    valid = np.isfinite(frame["depth"]) & (frame["depth"] > 0)
+    depth = frame_arrays(frame, "depth")[0]
+    points = np.full((*depth.shape, 3), np.nan)
+    valid = np.isfinite(depth) & (depth > 0)
     world, y, x = _world(frame, valid)
     points[y, x] = world
     across = np.zeros_like(points)
@@ -110,8 +116,10 @@ def _splat_depth(frame, camera, height, width, minimum_region):
     quality planes are the winning pixel's footprint (its view-angle stretch),
     its depth confidence and its incidence cosine in the reference.
     """
+    from .atlas_depth_splat import decoded_frame
     from .atlas_scene_preservation import _project, _world
 
+    frame = decoded_frame(frame, "depth", "confidence")
     zbuffer = np.full(height * width, np.inf)
     quality = np.zeros((3, height * width))
     interior = _interior(frame)
@@ -190,7 +198,7 @@ def _drop_specks(observed, minimum_region):
 def _sample(references, owner, depth, observed, camera):
     """Each observed pixel's colour, sampled bilinearly from the reference that rendered it."""
     from scipy.ndimage import map_coordinates
-    from .atlas_depth_splat import _rotation_matrix
+    from .atlas_depth_splat import _rotation_matrix, frame_arrays
     from .atlas_scene_preservation import _project, _world
 
     target = {"intrinsics": camera["intrinsics"], "depth": depth,
@@ -203,20 +211,44 @@ def _sample(references, owner, depth, observed, camera):
         _, u, v, _ = _project(points, frame)
         # Pixel i spans [i, i + 1); its sample sits at its centre.
         coordinates = np.stack([v - .5, u - .5])
-        rgb[y, x] = np.stack([map_coordinates(frame["rgb"][..., c], coordinates, order=1, mode="nearest")
+        image = frame_arrays(frame, "rgb")[0]
+        rgb[y, x] = np.stack([map_coordinates(image[..., c], coordinates, order=1, mode="nearest")
                               for c in range(3)], axis=-1)
     return rgb
 
 
 def observation_references(frames):
-    """Real frames with the draft fusion's terrace-free depth (``smoothed_depth``), prepared once.
+    """Real frames with the draft fusion's terrace-free depth (``smoothed_depth``).
 
     Atlas depth arrives in plateaus of a few pixels; rendered close up from a new
     camera, raw plateaus become stripes across a surface the capture saw whole.
+    Each is a ``LazyFrame`` that reads its pixels when used and keeps none, so a
+    render holds one reference's pixels at a time, however many there are. The
+    smoothed depths that fit in ``COMPOSITE_RESIDENT_DEPTH_BYTES`` are kept, so
+    those references are smoothed once for every view the composite renders.
     """
-    from .atlas_depth_splat import smoothed_depth
+    from .atlas_depth_splat import PIXEL_KEYS, LazyFrame, frame_arrays, smoothed_depth
 
-    return [{**frame, "depth": smoothed_depth(frame["depth"])} for frame in frames]
+    room = [COMPOSITE_RESIDENT_DEPTH_BYTES]
+
+    def reference(frame):
+        kept = {}
+
+        def depth():
+            if "depth" in kept:
+                return kept["depth"]
+            value = smoothed_depth(frame_arrays(frame, "depth")[0])
+            if value.nbytes <= room[0]:
+                room[0] -= value.nbytes
+                kept["depth"] = value
+            return value
+
+        def pixels(key):
+            return depth if key == "depth" else lambda: frame_arrays(frame, key)[0]
+        keys = list(frame)
+        return LazyFrame({key: frame[key] for key in keys if key not in PIXEL_KEYS},
+                         {key: pixels(key) for key in keys if key in PIXEL_KEYS}, keys)
+    return [reference(frame) for frame in frames]
 
 
 def render_observed(references, camera):

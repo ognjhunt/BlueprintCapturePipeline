@@ -24,9 +24,12 @@ FURNITURE = (((-0.6, 0.6), (-1.4, -0.65), (-0.8, 0.0)),
 
 
 def room_camera(index: int, count: int, *, width: int = 1280, height: int = 720) -> dict:
-    """A walk around the room's centre, looking inwards with a little yaw and pitch of its own."""
+    """A walk around the room's centre, looking inwards with a little yaw and pitch of its own.
+
+    Views past ``count`` walk it again, 2 cm higher each lap: more views of the same room.
+    """
     angle = 2.0 * math.pi * index / count
-    position = [1.6 * math.cos(angle), 0.05 * math.sin(3 * angle), 2.6 * math.sin(angle)]
+    position = [1.6 * math.cos(angle), 0.05 * math.sin(3 * angle) + 0.02 * (index // count), 2.6 * math.sin(angle)]
     yaw = math.atan2(position[0], position[2]) + 0.35 * math.sin(5 * angle)
     pitch = -0.15 + 0.1 * math.cos(7 * angle)
     qy = (0.0, math.sin(yaw / 2), 0.0, math.cos(yaw / 2))
@@ -52,10 +55,10 @@ def _box_entry(origin, rays, bounds):
     return np.where((far >= near) & (near > 0), near, np.inf)
 
 
-def room_frame(index: int, count: int, *, width: int = 1280, height: int = 720):
-    """The camera, the image, Atlas-like terraced depth and the confidence of one view."""
-    cam = room_camera(index, count, width=width, height=height)
+def render_room(cam: dict, shade: float = 0.0):
+    """The room seen from any RUB camera: image, exact planar depth and the world point of each pixel."""
     k, e = cam["intrinsics"], cam["extrinsics"]
+    width, height = int(k["width"]), int(k["height"])
     origin = np.asarray(e["position"], dtype=np.float64)
     u = (np.arange(width) + 0.5 - k["cx"]) / k["fx"]
     v = (np.arange(height) + 0.5 - k["cy"]) / k["fy"]
@@ -69,7 +72,20 @@ def room_frame(index: int, count: int, *, width: int = 1280, height: int = 720):
     for box in FURNITURE:
         depth = np.minimum(depth, _box_entry(origin, rays, box))
     world = origin + depth[..., None] * rays
-    rgb = np.clip(128 + 90 * np.sin(world * np.array([5.0, 7.0, 3.0]) + index * 0.01), 0, 255).astype(np.uint8)
+    rgb = np.clip(128 + 90 * np.sin(world * np.array([5.0, 7.0, 3.0]) + shade), 0, 255).astype(np.uint8)
+    return rgb, depth, world
+
+
+def room_frame(index: int, count: int, *, width: int = 1280, height: int = 720, holes=()):
+    """The camera, the image, Atlas-like terraced depth and the confidence of one view.
+
+    ``holes`` are world boxes whose surfaces no view ranged: zero confidence there.
+    """
+    cam = room_camera(index, count, width=width, height=height)
+    k = cam["intrinsics"]
+    rgb, depth, world = render_room(cam, index * 0.01)
+    u = (np.arange(width) + 0.5 - k["cx"]) / k["fx"]
+    v = (np.arange(height) + 0.5 - k["cy"]) / k["fy"]
     # Each view's own low-frequency error, within the few percent views share.
     rng = np.random.default_rng(index)
     tilt = rng.uniform(-0.008, 0.008, 3)
@@ -78,17 +94,19 @@ def room_frame(index: int, count: int, *, width: int = 1280, height: int = 720):
     confidence = np.full((height, width), 255, np.uint8)
     confidence[:, :4] = 0
     confidence[(np.indices((height, width)).sum(axis=0) // 37) % 11 == 0] = 140
+    for low, high in holes:
+        confidence[np.all((world >= low) & (world <= high), axis=-1)] = 0
     return cam, rgb, terraced.astype(np.float32), confidence
 
 
 def write_room_pose_root(root: Path, count: int, *, width: int = 1280, height: int = 720,
-                         views: int | None = None) -> Path:
+                         views: int | None = None, holes=()) -> Path:
     """Write the first ``views`` (all) of a ``count``-view walk as a digest-bound retained pose result."""
     import cv2
 
     cameras, usage = [], []
     for index in range(count if views is None else views):
-        cam, rgb, depth, confidence = room_frame(index, count, width=width, height=height)
+        cam, rgb, depth, confidence = room_frame(index, count, width=width, height=height, holes=holes)
         folder = root / "atlas_pose" / "outputs" / f"{index:06d}"
         folder.mkdir(parents=True)
         write_exr(folder / "depth.bin", depth)

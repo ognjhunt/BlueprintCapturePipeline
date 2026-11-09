@@ -67,7 +67,7 @@ def merge_duplicate_views(frames):
     admissions unite; depth and confidence start from the whole (or first) view
     and take each partial duplicate's values where its review admitted them.
     """
-    from .atlas_depth_splat import frame_arrays
+    from .atlas_depth_splat import decoded_frame, frame_arrays
 
     groups = []
     for index, frame in enumerate(frames):
@@ -84,11 +84,13 @@ def merge_duplicate_views(frames):
         base = next((i for i in members if keeps[i] is None), members[0])
         view = frames[base]
         if len(members) > 1:
+            view = decoded_frame(view)
             depth, confidence = np.array(view["depth"], copy=True), np.array(view["confidence"], copy=True)
             for i in members:
                 if i != base and keeps[i] is not None:
-                    depth[keeps[i]] = frames[i]["depth"][keeps[i]]
-                    confidence[keeps[i]] = frames[i]["confidence"][keeps[i]]
+                    other_depth, other_confidence = frame_arrays(frames[i], "depth", "confidence")
+                    depth[keeps[i]] = other_depth[keeps[i]]
+                    confidence[keeps[i]] = other_confidence[keeps[i]]
             whole = any(keep is None for keep in keeps.values())
             view = {**view, "depth": depth, "confidence": confidence,
                     "keep_mask": None if whole else np.logical_or.reduce(list(keeps.values()))}
@@ -182,10 +184,17 @@ def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None
             views.append((key, root / f"{key}.png", write_exr_depth(root / f"{key}.exr", depth),
                           {"intrinsics": view["intrinsics"], "extrinsics": view["extrinsics"]}))
     else:
+        from .atlas_depth_splat import PIXEL_KEYS, LazyFrame, frame_shape
         from .atlas_scene_chisel import prepare_source_photographs, project_source_depth
 
-        sources = {key: {**view, "frame_id": key, "confidence": np.ones(view["depth"].shape, np.float32)}
-                   for key, (view, _, _) in posted.items()}
+        def source(key, view):
+            """The view under its position's key with full confidence, its pixels read when used."""
+            order = list(dict.fromkeys([*view, "frame_id", "confidence"]))
+            fields = {**{name: view[name] for name in view if name not in PIXEL_KEYS}, "frame_id": key}
+            pixels = {name: (lambda name=name: frame_arrays(view, name)[0]) for name in ("rgb", "depth")}
+            pixels["confidence"] = lambda: np.ones(frame_shape(view, "depth"), np.float32)
+            return LazyFrame(fields, pixels, order)
+        sources = {key: source(key, view) for key, (view, _, _) in posted.items()}
         for photo in prepare_source_photographs(frames=list(sources.values()), root=root / "photographs"):
             key = photo["frame_id"]
             depth = project_source_depth([sources[photo["source_frame_id"]]], photo["camera"])

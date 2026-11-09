@@ -164,10 +164,10 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
     )
     if state["status"] != "completed":
         return None, state
-    from .atlas_depth_splat import load_posed_rgbd
+    from .atlas_depth_splat import load_posed_rgbd, read_in_turn
 
     result, frames = load_posed_rgbd(pose_root)
-    verify_pose_context_fov(pose_root=pose_root, frames=frames, output_root=pose_root)
+    verify_pose_context_fov(pose_root=pose_root, frames=read_in_turn(frames), output_root=pose_root)
     return (result, frames, pose_root), state
 
 
