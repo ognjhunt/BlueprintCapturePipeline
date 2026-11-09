@@ -369,7 +369,9 @@ def _run_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
         started.append(arguments)
         _check("--apply" not in arguments and "--authorize-complete-deletion" not in arguments,
                "drill_automatic_plan_would_apply")
-        deletion.main([*arguments[3:], *_cli_root_arguments(world["resolution"])])
+        # The child would bound itself first (``website_capture_withdrawal_automatic_plan.main``); here the
+        # same plan-only command runs in-process on the drill's roots.
+        deletion.main([*arguments[3:], "--record-automatic-plan", *_cli_root_arguments(world["resolution"])])
 
     with contextlib.redirect_stdout(io.StringIO()):
         state = withdrawal.request_automatic_deletion_plan(capture_root=capture, launch=launch)

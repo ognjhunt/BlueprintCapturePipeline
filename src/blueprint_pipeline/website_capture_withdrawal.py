@@ -18,6 +18,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
@@ -31,6 +32,8 @@ from typing import Any
 from . import website_capture_withdrawal_automatic_plan as automatic_plan
 from .capture_lifecycle import _sha256_file, _write_once
 from .decision_evidence_contracts import canonical_digest
+
+_logger = logging.getLogger(__name__)
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -349,51 +352,41 @@ def acknowledge_withdrawal(*, capture_root: Path, command: Mapping[str, Any]) ->
 
 
 AUTOMATIC_PLAN_FILE = automatic_plan.PLAN_FILE
-_PLAN_COMMAND = ("-m", "blueprint_pipeline.website_capture_withdrawal_deletion")
 
 
-def _launch_detached(command: list[str]) -> None:
-    automatic_plan.launch_detached(command)
+def _launch_detached(command: list[str]) -> int:
+    return automatic_plan.launch_detached(command)
 
 
 def request_automatic_deletion_plan(*, capture_root: Path, launch: Callable[[list[str]], Any] | None = None,
                                     lock_path: Path | None = None) -> str:
-    """After an acknowledgement, start the bounded deletion plan unless it is recorded or another runs.
+    """After an acknowledgement, start the bounded, plan-only deletion plan if this site is due one.
 
-    ``recorded``: the plan exists. ``owed``: another automatic plan holds the host
-    lock, so nothing starts; the WebApp's hourly resend of this acknowledgement asks
-    again. ``refused``: the plan path is not a regular file (a failure is recorded
-    and nothing is scanned). ``started``: the child runs. Plan only: the command has
-    no ``--apply`` and no authorization. Its own process keeps the deletion module,
-    which reaches the screening ledger and the paid launch path, out of the intake;
-    ``website_capture_withdrawal_automatic_plan`` bounds that process.
+    The decision, the backoff and the records are ``website_capture_withdrawal_automatic_plan.request``:
+    ``recorded``, ``refused``, ``running``, ``backoff``, ``stopped``, ``owed``, ``failed`` or
+    ``started``. The command has no ``--apply`` and no authorization. Its own process keeps
+    the deletion module, which reaches the screening ledger and the paid launch path, out
+    of the intake. A stopped plan logs a warning on every acknowledgement until an operator
+    runs it; the withdrawal itself never waits on this.
     """
     root = Path(capture_root).absolute()
     site = _site(root)
     journal = site / "website_withdrawal"
-    plan = journal / AUTOMATIC_PLAN_FILE
-    if plan.is_symlink() or (plan.exists() and not plan.is_file()):
-        automatic_plan.record_failure(journal, "website_withdrawal_deletion_automatic_plan_path_unsafe")
-        return "refused"
-    if plan.is_file():
-        return "recorded"
     if not (journal / "tombstone.json").is_file():
         raise ValueError("website_withdrawal_tombstone_required")
-    lock = automatic_plan.host_lock(lock_path)
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "a+") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            if automatic_plan.reap_stale(lock) != "reaped":
-                return "owed"
-        else:
-            automatic_plan.reap_stale(lock)  # records a holder that died without recording its end
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    (launch or _launch_detached)([sys.executable, *_PLAN_COMMAND, "--capture-root", str(root),
-                                  "--record-automatic-plan"])
-    return "started"
+    try:
+        result = automatic_plan.request(journal, [sys.executable, "-m", automatic_plan.CHILD_MODULE,
+                                                  "--capture-root", str(root)],
+                                        launch=launch or _launch_detached, lock_path=lock_path)
+    except Exception as error:
+        # Never no plan and no trace: the request itself failing (an unwritable lock, say) is recorded too.
+        automatic_plan.record_failure(journal, "automatic_plan_request_failed_" + type(error).__name__)
+        raise
+    if result in {"stopped", "refused", "failed"}:
+        _logger.warning("website_withdrawal_automatic_plan_%s site=%s state=%s", result, site.name,
+                        automatic_plan.read_state(journal).get("needs_operator")
+                        or (automatic_plan.read_state(journal).get("last_failure") or {}).get("reason"))
+    return result
 
 
 def inspect_withdrawal(*, capture_root: Path) -> dict[str, Any]:

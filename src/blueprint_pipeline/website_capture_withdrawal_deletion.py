@@ -60,9 +60,9 @@ the intake only because it is bounded (``website_capture_withdrawal_automatic_pl
 one at a time on the host, a 30-minute wall clock, 1 GiB of address space, lowest CPU
 and IO priority, the kernel's first OOM choice, and only the environment it needs).
 It records the plan, its summary and the copies that would remain beside the
-tombstone (``website_withdrawal/automatic_deletion_plan.json``), or why it did not
-(``automatic_deletion_plan_failure.json``); it lists no B2 object and deletes
-nothing. Anything it cannot resolve fails
+tombstone (``website_withdrawal/automatic_deletion_plan.json``), and every attempt's
+state, failure and backoff in ``automatic_deletion_plan_state.json``; it lists no B2
+object and deletes nothing. Anything it cannot resolve fails
 closed into ``unresolved`` (a link or special
 file in a run, an unreadable record, a run that also names another site, an
 offloaded run whose binding is unknown, an object outside the artifact bucket or
@@ -688,7 +688,7 @@ def record_automatic_plan(*, capture_root: Path, lock_path: Path | None = None,
     Only one runs on the host at a time (``website_capture_withdrawal_automatic_plan``):
     while another holds the host lock this returns ``{"state": "owed"}`` and scans
     nothing. Any failure, including the wall clock, is recorded beside the tombstone
-    (``automatic_deletion_plan_failure.json``) before it is raised.
+    (``automatic_deletion_plan_state.json``) before it is raised.
     """
 
     from . import website_capture_withdrawal_automatic_plan as bounds
@@ -698,7 +698,7 @@ def record_automatic_plan(*, capture_root: Path, lock_path: Path | None = None,
     path = journal / bounds.PLAN_FILE
     _require(not journal.is_symlink() and journal.is_dir(), "tombstone_required")
     if path.is_symlink() or (path.exists() and not path.is_file()):
-        # Never follow or replace it, and never rescan for it: the failure says why, once per request.
+        # Never follow or replace it, and never scan for it: the state record says why.
         bounds.record_failure(journal, "website_withdrawal_deletion_automatic_plan_path_unsafe")
         raise WithdrawalDeletionError("website_withdrawal_deletion_automatic_plan_path_unsafe")
     if path.is_file():
@@ -714,6 +714,7 @@ def record_automatic_plan(*, capture_root: Path, lock_path: Path | None = None,
                       else "automatic_plan_failed_" + type(error).__name__)
             bounds.record_failure(journal, reason)
             raise
+        bounds.record_recorded(journal, record["plan_digest"])
     return record
 
 
@@ -924,8 +925,8 @@ def run_cli(args: Any) -> dict[str, Any]:
     if getattr(args, "record_automatic_plan", False):
         _require(not args.apply, "automatic_plan_never_applies")
         from . import website_capture_withdrawal_automatic_plan as bounds
-        # Only the intake's own child bounds itself; an operator or a test running this in-process does not.
-        limits = bounds.apply_child_limits() if os.environ.get(bounds.CHILD_ENV) == "1" else None
+        # Set only in the intake's own child, which bounded itself before importing this module.
+        limits = bounds.APPLIED_LIMITS
         record = record_automatic_plan(capture_root=args.capture_root, child_limits=limits, **resolution)
         if record.get("state") == "owed":
             return {"mode": "automatic_plan_owed"}

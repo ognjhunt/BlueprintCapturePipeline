@@ -545,32 +545,37 @@ acknowledgement within 10 business days and completion within 30 days
    `beta_policy_screening_worker.require_current_source`, which resolves the
    capture with `team_scene_capture_root.resolve_capture_root`. The Atlas preview
    queue and the scene preview publisher refuse a withdrawn capture too.
-3. After each acknowledgement, the intake starts the deletion plan in its own
-   process unless a plan is already recorded
-   (`website_capture_withdrawal_http.py`, `request_automatic_deletion_plan`). The
-   process runs `python -m blueprint_pipeline.website_capture_withdrawal_deletion
-   --capture-root <capture> --record-automatic-plan`. It writes
+3. After each acknowledgement, the intake decides whether this site is due a
+   deletion plan (`website_capture_withdrawal_http.py`, then
+   `website_capture_withdrawal_automatic_plan.request`). If it is, the intake
+   starts `python -m blueprint_pipeline.website_capture_withdrawal_automatic_plan
+   --capture-root <capture>` as its own process. That process runs the deletion
+   module's plan-only `--record-automatic-plan` and writes
    `<site>/website_withdrawal/automatic_deletion_plan.json` once. It lists no B2
    object, makes no provider call and deletes nothing.
 4. The plan process runs in the intake's own systemd unit, so it is bounded
    (`website_capture_withdrawal_automatic_plan.py`):
-   - Only one runs on the host at a time. The lock is
-     `/var/lib/blueprint/pipeline-control-plane/website-withdrawal-automatic-plan.lock`.
-     A request made while another plan runs starts nothing. The plan stays owed,
-     and the WebApp's hourly resend asks again.
-   - It stops after 30 minutes and may use at most 1 GiB of address space. It
-     runs at nice 19 in the idle IO class, with `oom_score_adj` 1000, so the
-     kernel kills it before the intake. Each limit is best effort, and the plan
-     records which ones held in `child_limits`.
-   - A holder that is dead, or still running more than 35 minutes after it
-     started, is stale. A hung holder is killed.
+   - Only one runs on the host at a time. The intake decides under the lock
+     `/var/lib/blueprint/pipeline-control-plane/website-withdrawal-automatic-plan.lock`,
+     and holds the host for one site until its process has started.
+   - As the process's very first step it sets `oom_score_adj` 1000, so the
+     kernel kills it before the intake. It also sets nice 19, the idle IO class,
+     a 1 GiB address-space limit and a 30-minute wall clock. Each limit is best
+     effort, and the plan records which ones held in `child_limits`.
+   - A lock holder that is dead, or still running more than 35 minutes after it
+     started, is stale. A hung holder is killed. A holder that survives the kill
+     stays the holder, and its site is recorded as `stuck`.
    - The process gets only `PATH`, the locale, `PYTHONPATH`, the lock path and
-     the `BLUEPRINT_*_ROOT`, `_PATH` and `_REGISTRY` variables. It never gets a
-     variable whose name contains `SECRET`, `TOKEN`, `KEY`, `CREDENTIAL`,
-     `PASSWORD`, `PRIVATE` or `_FILE`.
-   - When a plan fails, times out or dies, the reason and the time are recorded
-     in `<site>/website_withdrawal/automatic_deletion_plan_failure.json`. The
-     next acknowledgement tries again.
+     the root variables the plan reads (`PLAN_ROOT_VARIABLES`). It never gets a
+     provider key file, token or webhook URL.
+   - After a failure the next attempt waits 1 hour, then 4 hours, then 24
+     hours. After the 4th failure no automatic attempt starts again. The intake
+     then logs `website_withdrawal_automatic_plan_stopped` at WARNING on every
+     acknowledgement. To find these sites, run
+     `door journal blueprint-pipeline-intake.service --since -1d` and search for
+     that text.
+   - The backoff and the stop apply only to the plan. The tombstone, the
+     acknowledgement and the refusal of new work do not wait for it.
 
 Nothing is deleted by itself. Deleting needs the owner's approval every time.
 
@@ -590,10 +595,28 @@ Known gaps:
 ### How to read the plan
 
 `door cat <site>/website_withdrawal/automatic_deletion_plan.json`. The `<site>`
-directory is `scenes/site-<request id>/` under the intake's capture root. If the
-plan is missing, read `door cat <site>/website_withdrawal/automatic_deletion_plan_failure.json`:
-it holds the reason, the time and the number of attempts. No plan and no failure
-record means the plan is still owed, because another site's plan holds the lock.
+directory is `scenes/site-<request id>/` under the intake's capture root.
+
+If the plan is missing, run
+`door cat <site>/website_withdrawal/automatic_deletion_plan_state.json`. Its
+`state` field says why. Every state below is written by the intake or by the
+plan process:
+
+| `state` | What it means | What to check |
+|---|---|---|
+| `launching` / `launched` | The intake started the process, or is starting it. | `last_launch` gives the pid, the time and the attempt. If that pid is gone, the next acknowledgement records a failure (`automatic_plan_child_died_before_recording`). |
+| `planning` | The process holds the host lock and is scanning. | The pid is in `planning`. |
+| `owed` | Another site's plan holds the host lock. This is not a failure. | `owed_behind` names that site's journal. The next acknowledgement asks again. |
+| `failed` | The last attempt failed. A failed launch, a timeout, an OOM kill, a death before the lock and a plan error all count. | `last_failure.reason` and `at_iso`. `failed_attempts` counts the failures. No new attempt starts before `next_attempt_not_before_epoch`. |
+| `stopped_needs_operator` | Four attempts failed, so no automatic attempt starts again. | `needs_operator` and `last_failure`. Run the plan by hand, as in step 6 below, without `--apply`. |
+| `stuck` | This site's process survived SIGKILL and still holds the host lock. | `stuck.pid`. Every other site stays `owed` until that process ends. |
+| `recorded` | The plan exists. | `superseded_failure` keeps the last failure, if there was one. |
+
+If there is no state file and no plan, one of two things is true. Either the
+intake has not handled an acknowledgement for this site yet (the tombstone's
+time shows when it received the withdrawal), or it could not write in the site's
+journal at all. In the second case the intake logs
+`website_withdrawal_automatic_plan_not_started` at WARNING.
 
 - `summary`: how many scene files, runs, run files and B2 objects the plan found,
   and `unresolved` with a count for each reason. If `object_store_listed` is
@@ -639,7 +662,8 @@ A host drill on a fresh synthetic job:
    Read `door cat <site>/website_withdrawal/tombstone.json`, then
    `door cat <site>/website_withdrawal/automatic_deletion_plan.json`. No operator
    started that plan. Check `started_by: pipeline_after_withdrawal_acknowledgement`
-   and `applied: false`.
+   and `applied: false`. If the plan is missing, read the state file as
+   described above.
 5. Read the plan as described above. Record `summary`, `remaining` and
    `policy_copy_classes` in the tracker row G-02.
 6. Deleting is not a step of the drill unless the owner approves it for this
