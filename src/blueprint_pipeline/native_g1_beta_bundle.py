@@ -38,6 +38,14 @@ def _json_bytes(value):
 
 #: Each executable the screening entrypoint guarantees, and the apt package that supplies it.
 MEDIA_TOOLCHAIN_PACKAGES = {"ffmpeg": "ffmpeg", "ffprobe": "ffmpeg"}
+#: The media toolchain install's tries: the image's own Ubuntu sources, then this mirror over HTTPS
+#: (it carries noble, noble-updates and noble-security). Each apt step is bounded in seconds, so an
+#: unreachable network costs at most a few minutes of rented time before the typed refusal.
+MEDIA_TOOLCHAIN_INSTALL_ATTEMPTS = ("default", "fallback")
+MEDIA_TOOLCHAIN_FALLBACK_MIRROR = "https://mirrors.edge.kernel.org/ubuntu"
+MEDIA_TOOLCHAIN_APT_RETRIES = 3
+MEDIA_TOOLCHAIN_UPDATE_SECONDS = 180
+MEDIA_TOOLCHAIN_INSTALL_SECONDS = 300
 
 
 def check_media_toolchain_coverage() -> None:
@@ -65,9 +73,27 @@ cd "$RUNTIME_DIR"
 export BLUEPRINT_G1_PINNED_ISAAC_IMAGE="nvcr.io/nvidia/isaac-sim:6.0.1@sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
 # The native worker's dependency preflight needs ffmpeg and ffprobe, which the pinned
 # image lacks; the development and team G1 entrypoints install them the same way.
+# A rented machine can lose the default Ubuntu archive mid-download (2026-11-09, the library
+# job's DP run: every package fetch from archive.ubuntu.com:80 timed out after its index
+# update worked), so apt retries each fetch, each step is bounded in time, and a second try
+# uses another Ubuntu mirror over HTTPS.
 if @MEDIA_MISSING@; then
-  DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && \\
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq @MEDIA_PACKAGES@ >>"$OUT_DIR/media_toolchain_install.log" 2>&1
+  : >"$OUT_DIR/media_toolchain_install.log"
+  APT_ETC="${BLUEPRINT_MEDIA_TOOLCHAIN_APT_ETC:-/etc/apt}"
+  printf 'Acquire::Retries "@APT_RETRIES@";\\nAcquire::http::Timeout "30";\\nAcquire::https::Timeout "30";\\n' \\
+    >"$APT_ETC/apt.conf.d/99blueprint-media-toolchain" 2>>"$OUT_DIR/media_toolchain_install.log"
+  for attempt in @INSTALL_ATTEMPTS@; do
+    if [ "$attempt" = "fallback" ]; then
+      for list in "$APT_ETC/sources.list" "$APT_ETC"/sources.list.d/*.list "$APT_ETC"/sources.list.d/*.sources; do
+        [ -f "$list" ] && sed -i -e 's#https\\?://archive\\.ubuntu\\.com/ubuntu#@FALLBACK_MIRROR@#g' \\
+          -e 's#https\\?://security\\.ubuntu\\.com/ubuntu#@FALLBACK_MIRROR@#g' "$list"
+      done
+    fi
+    echo "media toolchain install: attempt $attempt" >>"$OUT_DIR/media_toolchain_install.log"
+    DEBIAN_FRONTEND=noninteractive timeout @UPDATE_SECONDS@ apt-get update -qq >>"$OUT_DIR/media_toolchain_install.log" 2>&1 && \\
+    DEBIAN_FRONTEND=noninteractive timeout @INSTALL_SECONDS@ apt-get install -y -qq @MEDIA_PACKAGES@ >>"$OUT_DIR/media_toolchain_install.log" 2>&1
+    if ! { @MEDIA_MISSING@; }; then break; fi
+  done
 fi
 if @MEDIA_MISSING@; then
  /isaac-sim/python.sh -m blueprint_pipeline.native_g1_beta_runtime --runtime-root "$RUNTIME_DIR" \\
@@ -92,7 +118,12 @@ if [ ! -f "$OUT_DIR/native_g1_beta_session_result.v1.json" ]; then
  runner_rc=2
 fi
 exit "$runner_rc"
-'''.replace("@MEDIA_MISSING@", missing).replace("@MEDIA_PACKAGES@", packages)
+'''.replace("@MEDIA_MISSING@", missing).replace("@MEDIA_PACKAGES@", packages).replace(
+        "@INSTALL_ATTEMPTS@", " ".join(MEDIA_TOOLCHAIN_INSTALL_ATTEMPTS)).replace(
+        "@FALLBACK_MIRROR@", MEDIA_TOOLCHAIN_FALLBACK_MIRROR).replace(
+        "@APT_RETRIES@", str(MEDIA_TOOLCHAIN_APT_RETRIES)).replace(
+        "@UPDATE_SECONDS@", str(MEDIA_TOOLCHAIN_UPDATE_SECONDS)).replace(
+        "@INSTALL_SECONDS@", str(MEDIA_TOOLCHAIN_INSTALL_SECONDS))
 
 
 def check_reused_runtime_wheels(profile, runtime) -> None:
