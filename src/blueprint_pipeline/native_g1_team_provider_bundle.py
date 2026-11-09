@@ -142,6 +142,9 @@ def _sonic_assets(root: Path, inventory: Path) -> list[dict[str, Any]]:
 
 
 def _entrypoint() -> str:
+    # The same media toolchain install as the screening lane: retries, bounded steps, a mirror fallback.
+    from .native_g1_beta_bundle import media_toolchain_install_shell
+
     return '''#!/usr/bin/env bash
 set -u
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -151,11 +154,7 @@ cd "$RUNTIME_DIR"
 export BLUEPRINT_G1_PINNED_ISAAC_IMAGE="nvcr.io/nvidia/isaac-sim:6.0.1@sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
 phase=media-toolchain
 rc=0
-if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
-  DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && \
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >>"$OUT_DIR/media_toolchain_install.log" 2>&1
-fi
-if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+@MEDIA_INSTALL@if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
   rc=2
 else
   phase=runtime-source-provisioning
@@ -188,7 +187,7 @@ PY
   rc=2
 fi
 exit "$rc"
-'''
+'''.replace("@MEDIA_INSTALL@", media_toolchain_install_shell())
 
 
 def _verify_artifacts(manifest: Mapping[str, Any], read, names: set[str]) -> None:
