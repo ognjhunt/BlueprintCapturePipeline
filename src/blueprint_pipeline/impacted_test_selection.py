@@ -64,6 +64,10 @@ SENTINEL_TESTS = (
     "tests/test_materializer_reachability.py::test_unreachable_materializers_only_ever_decrease",
     # Doctrine: no executable code names one customer's scene, capture or task.
     "tests/test_no_scene_specific_code.py::test_executable_code_names_no_customer_scene",
+    # Import closures: a leak from a CPU-only lane into the GPU/provider hot lane can come
+    # from any module in the closure, so a reverse-import mapping rarely selects these.
+    # About 25 s; without them a leak first fails the nightly full lane.
+    "tests/test_live_pipeline_import_isolation.py",
 )
 
 # A change to code that calls Isaac Lab or Arena, or to a test faking them, runs
