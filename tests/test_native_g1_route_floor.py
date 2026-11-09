@@ -50,6 +50,21 @@ def test_the_samples_follow_the_route_both_sides_and_the_goal_rim():
         route.sample_points([1.0, 1.0], [1.0, 1.0], 0.5)
 
 
+def test_a_floor_face_wound_downward_is_still_floor():
+    """The library job's rebuilt mesh: floor faces wound downward. v1 skipped them; the spawn check never did."""
+    from blueprint_pipeline.native_g1_spawn_clearance import FLOOR_NORMAL_MIN_Z
+
+    assert route.FLOOR_NORMAL_MIN_Z == FLOOR_NORMAL_MIN_Z and route.SCHEMA_VERSION.endswith(".v2")
+    flipped = np.asarray([[a, c, b] for a, b, c in _quad(2.0, 3.5, -0.5, 0.6, FLOOR_Z + 0.07)], dtype=float)
+    walked = np.asarray(_quad(-1.0, 4.0, -1.0, 1.0, FLOOR_Z), dtype=float)
+    [row] = route.surface_heights(np.concatenate([walked, flipped]), np.array([[2.75, 0.0]]), FLOOR_Z)
+    assert row["scanned_top_m"] == pytest.approx(0.07, abs=1e-4) and row["walked_floor"] is True
+    # A walked-floor face wound downward is still the walked floor, not scanned floor.
+    upside_down = np.asarray([[a, c, b] for a, b, c in _quad(-1.0, 4.0, -1.0, 1.0, FLOOR_Z)], dtype=float)
+    assert route.surface_heights(upside_down, np.array([[0.2, 0.0]]), FLOOR_Z)[0] == {
+        "scanned_top_m": None, "scanned_faces": 0, "walked_floor": True}
+
+
 def test_heights_read_the_scanned_floor_apart_from_the_walked_one():
     rows = route.surface_heights(_room(), np.array([[2.75, 0.0], [1.25, 0.0], [0.2, 0.0], [5.0, 0.0]]), FLOOR_Z)
     on_patch, under_shelf, walked_only, outside = rows
