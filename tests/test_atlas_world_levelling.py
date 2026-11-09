@@ -455,6 +455,10 @@ def test_a_second_floor_sheet_a_few_centimetres_up_goes_with_the_floor():
     assert not np.any(on_walk & (centroid[:, 1] < 0.15))  # both sheets are gone along the walk
     assert int((np.asarray(record["mesh"].faces).min(axis=1) >= len(lower) + len(upper)).sum()) == len(step_faces)
     assert record["clear_m"] == levelling.WALKED_FLOOR_CLEAR_M and record["left_near_level_faces"] >= len(step_faces)
+    # The faces taken above the layer are counted per cell with their top, so a sheet reads apart from an object.
+    high = [row for row in record["cells"] if "dropped_above_layer_faces" in row]
+    assert record["dropped_above_layer_faces"] > 0 and len(high) == record["cells_with_faces_dropped_above_layer"] > 10
+    assert all(0.07 <= row["dropped_above_layer_top_m"] <= 0.10 for row in high)
 
 
 def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():

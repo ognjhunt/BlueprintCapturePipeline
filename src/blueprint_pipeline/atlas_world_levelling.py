@@ -669,18 +669,27 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
     floor_layer[rows[dropped]] = True
     # Per corridor cell, heights only: its seed, whether it is floor, and the near-level faces dropped and
     # left in it (with how far the highest one left stands above the levelled plane).
+    # A dropped face reaching above the layer (up to the clear height) is counted apart, with its top: a
+    # second floor sheet shows in every cell along the walk, a low object (a mat, a threshold) in a few.
+    above = dropped & np.any(off > layer, axis=1)
     per_cell: dict[tuple[int, int], list[float]] = {}
-    for face, gone in zip(rows, dropped | flat):
-        entry = per_cell.setdefault((int(owner[face, 0]), int(owner[face, 1])), [0, 0, -1.0])
+    for face, gone, high, top in zip(rows, dropped | flat, above, corners[:, :, 1].max(axis=1)):
+        entry = per_cell.setdefault((int(owner[face, 0]), int(owner[face, 1])), [0, 0, -1.0, 0, -1.0])
         if gone:
             entry[0] += 1
+            if high:
+                entry[3] += 1
+                entry[4] = max(entry[4], float(top))
         else:
             entry[1] += 1
             entry[2] = max(entry[2], float(centroid[face, 1]))
     cell_rows = [{"x_m": round(float(low[0] + (key[0] + 0.5) * cell), 3), "z_m": round(float(low[1] + (key[1] + 0.5) * cell), 3),
                   "seed_m": None if key not in seeded else round(seeded[key], 4), "floor": key in floor_height,
                   "dropped_faces": int(per_cell.get(key, [0, 0, 0])[0]), "left_faces": int(per_cell.get(key, [0, 0, 0])[1]),
-                  **({"left_top_m": round(per_cell[key][2], 4)} if per_cell.get(key, [0, 0, 0])[1] else {})}
+                  **({"left_top_m": round(per_cell[key][2], 4)} if per_cell.get(key, [0, 0, 0])[1] else {}),
+                  **({"dropped_above_layer_faces": int(per_cell[key][3]),
+                      "dropped_above_layer_top_m": round(per_cell[key][4], 4)}
+                     if key in per_cell and per_cell[key][3] else {})}
                  for key in sorted(cells)]
     # Every cell a dropped face covered, beyond the corridor too, gets the flat floor: no hole is left.
     extra: set[tuple[int, int]] = set()
@@ -705,6 +714,8 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
             "surface_offset_m": {"min": round(float(offsets.min()), 4), "median": round(float(np.median(offsets)), 4),
                                  "max": round(float(offsets.max()), 4)},
             "left_near_level_faces": int(sum(row["left_faces"] for row in cell_rows)),
+            "dropped_above_layer_faces": int(above.sum()),
+            "cells_with_faces_dropped_above_layer": int(sum("dropped_above_layer_faces" in row for row in cell_rows)),
             "layer_m": round(layer, 4), "clear_m": WALKED_FLOOR_CLEAR_M, "step_m": WALKED_FLOOR_STEP_M,
             "search_m": WALKED_FLOOR_SEARCH_M,
             "cells": cell_rows}
