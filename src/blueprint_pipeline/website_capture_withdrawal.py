@@ -8,6 +8,10 @@ operator deletion to every copy the Pipeline controls: launch runs, their eviden
 and B2 offload. It is its own command, never reached from here: the intake's HTTP
 withdrawal route imports this module, and the deletion reaches the screening
 ledger and the paid launch path (tests/test_live_pipeline_import_isolation.py).
+After each acknowledgement the route starts that command's plan-only
+``--record-automatic-plan`` in its own process (``request_automatic_deletion_plan``),
+so the plan exists beside the tombstone without an operator; ``--apply`` stays an
+operator command that needs the owner's approval.
 """
 from __future__ import annotations
 
@@ -17,7 +21,8 @@ import json
 import os
 import re
 import stat
-from collections.abc import Mapping
+import sys
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -340,6 +345,38 @@ def acknowledge_withdrawal(*, capture_root: Path, command: Mapping[str, Any]) ->
             tombstone["digest"] = canonical_digest(tombstone, digest_field="digest")
             _persist(existing, tombstone)
         return _inspection(site, journal)
+
+
+AUTOMATIC_PLAN_FILE = "automatic_deletion_plan.json"
+_PLAN_COMMAND = ("-m", "blueprint_pipeline.website_capture_withdrawal_deletion")
+
+
+def _launch_detached(command: list[str]) -> None:
+    import subprocess
+    import threading
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               start_new_session=True, close_fds=True)
+    threading.Thread(target=process.wait, daemon=True).start()  # reaped, never awaited by the request
+
+
+def request_automatic_deletion_plan(*, capture_root: Path,
+                                    launch: Callable[[list[str]], Any] | None = None) -> str:
+    """After an acknowledgement, start the deletion plan in its own process unless it is recorded.
+
+    Plan only: the command has no ``--apply`` and no authorization, so nothing is
+    deleted. Its own process keeps the deletion module, which reaches the screening
+    ledger and the paid launch path, out of the intake. A run already in progress
+    refuses as busy; the WebApp's next acknowledgement starts it again until recorded.
+    """
+    root = Path(capture_root).absolute()
+    site = _site(root)
+    if (site / "website_withdrawal" / AUTOMATIC_PLAN_FILE).exists():
+        return "recorded"
+    if not (site / "website_withdrawal" / "tombstone.json").is_file():
+        raise ValueError("website_withdrawal_tombstone_required")
+    (launch or _launch_detached)([sys.executable, *_PLAN_COMMAND, "--capture-root", str(root),
+                                  "--record-automatic-plan"])
+    return "started"
 
 
 def inspect_withdrawal(*, capture_root: Path) -> dict[str, Any]:

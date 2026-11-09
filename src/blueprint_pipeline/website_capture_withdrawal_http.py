@@ -1,13 +1,20 @@
-"""Signed denial handoff. No remotely callable deletion operation."""
+"""Signed denial handoff. No remotely callable deletion operation.
+
+After an acknowledgement it starts the plan-only deletion plan in its own process
+(``website_capture_withdrawal.request_automatic_deletion_plan``); nothing is deleted.
+"""
+import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
+from . import website_capture_withdrawal
 from .common import read_json_any
 from .live_pipeline_intake_runtime_controls import _string
-from .website_capture_withdrawal import acknowledge_withdrawal
+
+logger = logging.getLogger(__name__)
 
 
 def register_server_website_withdrawal_routes(app: FastAPI, *, require_admission: Callable,
@@ -40,6 +47,12 @@ def register_website_withdrawal_routes(app: FastAPI, *, require_admission: Calla
             root = resolve_root(payload, request.state.intake_client_id)
             if root is None:
                 raise HTTPException(status_code=503, detail="website_withdrawal_server_root_unavailable")
-            return acknowledge_withdrawal(capture_root=root, command=payload)
+            receipt = website_capture_withdrawal.acknowledge_withdrawal(capture_root=root, command=payload)
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        try:
+            # The acknowledgement stands whatever happens here; the WebApp's next one retries the plan.
+            website_capture_withdrawal.request_automatic_deletion_plan(capture_root=root)
+        except Exception:  # never fail an acknowledged withdrawal
+            logger.warning("website_withdrawal_automatic_plan_not_started", exc_info=True)
+        return receipt

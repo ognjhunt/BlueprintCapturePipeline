@@ -52,8 +52,12 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   refuses a row whose record lies outside the site directory;
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
 
-The plan reads every run's JSON records once (streamed, any size), so it is an
-operator tool for a quiet host, not a timer. Anything it cannot resolve fails
+The plan reads every run's JSON records once (streamed, any size), so it is not a
+timer. It runs once by itself per withdrawal: after the intake acknowledges a
+tombstone it starts ``--record-automatic-plan`` (``record_automatic_plan``), which
+records the plan, its summary and the copies that would remain beside the tombstone
+(``website_withdrawal/automatic_deletion_plan.json``), lists no B2 object and deletes
+nothing. Anything it cannot resolve fails
 closed into ``unresolved`` (a link or special
 file in a run, an unreadable record, a run that also names another site, an
 offloaded run whose binding is unknown, an object outside the artifact bucket or
@@ -91,6 +95,7 @@ from .b2_object_versions import B2ObjectVersions, WithdrawalDeletionError
 
 PLAN_SCHEMA = "website_capture_withdrawal_deletion_plan.v1"
 RECEIPT_SCHEMA = "website_capture_withdrawal_deletion_receipt.v1"
+AUTOMATIC_PLAN_SCHEMA = "website_capture_withdrawal_automatic_deletion_plan.v1"
 _CONTROL_PLANE = Path("/var/lib/blueprint/pipeline-control-plane")
 _INPUTS = Path("/var/lib/blueprint/task-evaluation-inputs")
 DEFAULT_RUN_ROOTS = (*(Path(root) for root in roots_of_class("evidence_cold")),
@@ -113,7 +118,44 @@ PROVIDER_COPIES = (
     {"holder": "webapp_and_delivered_copies", "reason": "WebApp records and copies delivered to robot teams are "
      "outside the Pipeline"},
 )
-POINTER_SUFFIXES = (".offloaded.v1.json", ".residue.v1.json", ".residue-restore.v1.json")
+# Why each one stays uncovered: what control_plane_storage_roots says it holds. No per-site
+# binding on disk has been verified for any of them, so none is scanned yet.
+UNCOVERED_ROOT_HOLDS = {
+    "completed-scene-preparation-inputs": "mixed owner-scoped materialized preparation work and a shared "
+                                          "content-addressed store",
+    "sam31-preparations": "reproducible SAM preparation artifacts",
+    "compiled-episodes": "compiled episodes and a shared adapter member store",
+    "prepared-references": "materialized references and a shared content store",
+    "task-evaluation-terminal-results": "sealed terminal result indexes and lineage",
+    "scene-object-discovery-outputs": "scene object discovery outputs",
+    "result-artifact-cache": "a download cache rehydrated from verified remote artifacts under read leases",
+    "capture-reconstruction-derived": "derived reconstruction bytes",
+    "scene-configuration-diagnostics": "sealed diagnostic bundles with their own retention tool",
+}
+# Every data class the beta retention policy names (docs/beta_data_retention_policy_2026-07-09.json,
+# ``data_classes``) and what this deletion does about it; a receipt names each one.
+POLICY_COPY_CLASSES = {
+    "raw_capture_truth": {
+        "covered": ("the site's local capture files under scenes/site-<id>/",
+                    "the site's capture source bucket prefix scenes/site-<id>/ (with a source bucket)"),
+        "not_covered": "targets/ objects are not keyed by the site's scene id and are not scanned"},
+    "temporary_processing": {
+        "covered": (),
+        "not_covered": "bucket prefixes tmp/, staging/ and debug/ are not scanned; the policy deletes them "
+                       "after 14 days unless a legal hold overrides"},
+    "buyer_eval_hosted_artifacts": {
+        "covered": (),
+        "not_covered": "bucket prefixes buyer_delivery/, marketplace/, hosted_sessions/ and robot_eval_jobs/ "
+                       "and copies delivered to robot teams are not scanned; the policy deletes them after "
+                       "365 days unless a contract hold overrides"},
+    "local_output_snapshots": {
+        "covered": (),
+        "not_covered": "repo-local output/ snapshots are not scanned; the output retention tool ages them out"},
+    "local_robot_eval_jobs_cache": {
+        "covered": (),
+        "not_covered": "the repo-root robot_eval_jobs/ cache is not scanned; the policy deletes it after 30 days"},
+}
+POINTER_SUFFIXES = (".offloaded.v1.json",".residue.v1.json", ".residue-restore.v1.json")
 # Each sidecar's writer seals it: (schemas, digest field, the field naming its run).
 _POINTER_SEALS = {
     ".offloaded.v1.json": ({"control_plane_evidence_offload_pointer.v1"}, "pointer_digest", "directory"),
@@ -329,7 +371,13 @@ class _Units:
                 unresolved.append({"path": str(root), "reason": "website_withdrawal_deletion_root_unsafe"})
                 continue
             dots = []
-            for child in sorted(root.iterdir()):
+            try:
+                children = sorted(root.iterdir())
+            except OSError:
+                # A root this user cannot list (the intake's automatic plan) is unresolved, never skipped.
+                unresolved.append({"path": str(root), "reason": "website_withdrawal_deletion_root_unreadable"})
+                continue
+            for child in children:
                 name = child.name
                 pointer = next((suffix for suffix in POINTER_SUFFIXES if name.endswith(suffix)), None)
                 if name.startswith("."):
@@ -592,7 +640,9 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
         remaining.append({"holder": "capture_source_bucket", "prefix": f"scenes/{plan['scene_id']}/",
                           "reason": "no source bucket was named for this deletion; use --bucket"})
     remaining.extend({"holder": "pipeline_root_not_covered", "path": path,
-                      "reason": "not scanned by withdrawal deletion v1; may hold derived copies"}
+                      "reason": "not scanned by withdrawal deletion v1; may hold derived copies"
+                                + (f" ({UNCOVERED_ROOT_HOLDS[Path(path).name]}; no per-site binding on disk is "
+                                   "verified for it)" if Path(path).name in UNCOVERED_ROOT_HOLDS else "")}
                      for path in plan["uncovered_pipeline_roots"])
     remaining.append({"holder": "retained_audit_and_lineage_metadata",
                       "paths": [str(Path(plan["site_root"]) / "website_withdrawal"),
@@ -604,6 +654,73 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
     remaining.extend(native_g1.remaining(plan["native_g1"]))
     remaining.extend(team_scene.remaining(plan["team_scene"]))
     return remaining
+
+
+def policy_copy_classes(plan: Mapping[str, Any], *, cloud_deleted: bool, applied: bool) -> list[dict[str, Any]]:
+    """Each retention-policy data class: what this deletion removes (or plans to) and what remains, and why."""
+
+    rows = []
+    for name, row in POLICY_COPY_CLASSES.items():
+        covered = list(row["covered"])
+        remaining = [{"what": name, "reason": row["not_covered"]}]
+        if name == "raw_capture_truth" and not cloud_deleted:
+            covered = covered[:1]
+            remaining.append({"what": f"scenes/{plan['scene_id']}/ in the capture source bucket",
+                              "reason": "no source bucket was named for this deletion; use --bucket"})
+        rows.append({"class": name, "status": "removed_in_part" if covered else "remaining",
+                     "removed" if applied else "planned_removal": covered, "remaining": remaining})
+    return rows
+
+
+def record_automatic_plan(*, capture_root: Path, **resolution: Any) -> dict[str, Any]:
+    """Record the deletion plan beside an acknowledged tombstone, once; never deletes or applies.
+
+    The intake starts this after each acknowledgement (``website_capture_withdrawal.
+    request_automatic_deletion_plan``) until the record exists. It lists no B2 object
+    unless an object store is passed, so the intake's own run makes no provider call;
+    an operator's ``--object-store`` plan resolves the objects before any ``--apply``.
+    """
+
+    site = withdrawal._site(Path(capture_root))
+    journal = site / "website_withdrawal"
+    path = journal / withdrawal.AUTOMATIC_PLAN_FILE
+    _require(not journal.is_symlink() and journal.is_dir(), "tombstone_required")
+    descriptor = os.open(journal / "automatic_deletion_plan.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "a+") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise WithdrawalDeletionError("website_withdrawal_deletion_automatic_plan_busy") from None
+        if path.exists():
+            return _json(path)
+        plan = plan_withdrawal_deletion(capture_root=Path(capture_root), **resolution)
+        reasons: dict[str, int] = {}
+        for row in plan["unresolved"]:
+            reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
+        cloud_planned = resolution.get("cloud_storage") is not None
+        record: dict[str, Any] = {
+            "schema_version": AUTOMATIC_PLAN_SCHEMA,
+            **{key: plan[key] for key in ("request_id", "scene_id", "capture_id", "tombstone_digest", "legal_hold")},
+            "plan_digest": plan["digest"], "recorded_at_iso": datetime.now(timezone.utc).isoformat(),
+            "started_by": "pipeline_after_withdrawal_acknowledgement", "applied": False,
+            "apply_requires": "the owner's explicit approval each time: an operator re-plans with --object-store "
+                              "(and --bucket) and runs --apply with that plan's digest and "
+                              "--authorize-complete-deletion",
+            "summary": {"scene_files": plan["scene_files"]["count"], "runs": len(plan["runs"]),
+                        "run_files": sum(run["file_count"] for run in plan["runs"]),
+                        "objects": len(plan["objects"]),
+                        "object_versions": sum(len(row["versions"]) for row in plan["objects"]),
+                        "object_store_listed": resolution.get("object_store") is not None,
+                        "lineage_intents": len(plan["lineage"]["intents"]),
+                        "uncovered_pipeline_roots": len(plan["uncovered_pipeline_roots"]),
+                        "unresolved": len(plan["unresolved"]), "unresolved_reasons": reasons},
+            "remaining": _remaining(plan, cloud_planned),
+            "policy_copy_classes": policy_copy_classes(plan, cloud_deleted=cloud_planned, applied=False),
+            "plan": plan,
+        }
+        record["digest"] = canonical_digest(record, digest_field="digest")
+        withdrawal._persist(path, record)
+        return record
 
 
 def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
@@ -745,6 +862,7 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                                                                 screening_objects),
                     "native_g1": g1_deleted, "team_scene": team_deleted},
         "remaining": remaining,
+        "policy_copy_classes": policy_copy_classes(plan, cloud_deleted=cloud_storage is not None, applied=True),
         # A deferred screening attempt is covered but not yet deleted.
         "covered_copies_deleted": not plan["screening"]["deferred"],
         "pipeline_controlled_deletion_complete": (not plan["uncovered_pipeline_roots"] and cloud_storage is not None
@@ -765,7 +883,9 @@ def run_cli(args: Any) -> dict[str, Any]:
 
     store = B2ObjectVersions.configured() if args.object_store else None
     cloud = withdrawal.GoogleWebsiteCleanupStorage(args.bucket) if args.bucket else None
-    resolution = {"run_roots": tuple(args.run_root or DEFAULT_RUN_ROOTS), "intent_root": args.intent_root,
+    resolution = {"run_roots": tuple(args.run_root or DEFAULT_RUN_ROOTS),
+                  "uncovered_roots": tuple(getattr(args, "uncovered_root", None) or UNCOVERED_ROOTS),
+                  "intent_root": args.intent_root,
                   "binding_root": args.binding_root, "object_store": store, "cloud_storage": cloud,
                   "scan_offloaded_archives": args.scan_offloaded_archives,
                   "screening_queue_root": args.screening_queue_root, "screening_work_root": args.screening_work_root,
@@ -774,6 +894,11 @@ def run_cli(args: Any) -> dict[str, Any]:
                   "team_scene_packet_queue_root": args.team_scene_packet_queue_root,
                   "rigid_probe_queue_root": args.rigid_probe_queue_root,
                   "rigid_probe_work_root": args.rigid_probe_work_root}
+    if getattr(args, "record_automatic_plan", False):
+        _require(not args.apply, "automatic_plan_never_applies")
+        record = record_automatic_plan(capture_root=args.capture_root, **resolution)
+        return {"mode": "automatic_plan_recorded", "plan_digest": record["plan_digest"],
+                "summary": record["summary"]}
     if not args.apply:
         return {"mode": "dry_run", "plan": plan_withdrawal_deletion(capture_root=args.capture_root, **resolution)}
     return apply_withdrawal_deletion(capture_root=args.capture_root, expected_plan_digest=args.expected_plan_digest
@@ -784,6 +909,8 @@ def run_cli(args: Any) -> dict[str, Any]:
 def add_cli_arguments(parser: Any) -> None:
     parser.add_argument("--run-root", type=Path, action="append",
                         help="Run root to search (repeatable); defaults to the evidence_cold roots")
+    parser.add_argument("--uncovered-root", type=Path, action="append",
+                        help="Pipeline root reported as not covered (repeatable); defaults to UNCOVERED_ROOTS")
     parser.add_argument("--intent-root", type=Path, default=DEFAULT_INTENT_ROOT)
     parser.add_argument("--binding-root", type=Path, default=DEFAULT_BINDING_ROOT)
     parser.add_argument("--object-store", action="store_true",
@@ -806,6 +933,9 @@ def add_cli_arguments(parser: Any) -> None:
                         help="The rigid robot-free probe bulk volume holding each attempt's bundle and run output")
     parser.add_argument("--scan-offloaded-archives", action="store_true",
                         help="Read offloaded run archives whose pointer cannot show their site")
+    parser.add_argument("--record-automatic-plan", action="store_true",
+                        help="Record the plan beside the tombstone once (what the intake starts after an "
+                             "acknowledgement); never deletes")
     parser.add_argument("--apply", action="store_true", help="Delete; without it the deletion is a dry run")
     parser.add_argument("--authorize-complete-deletion", action="store_true")
 
@@ -834,6 +964,8 @@ __all__ = [
     "WithdrawalDeletionError",
     "apply_withdrawal_deletion",
     "plan_withdrawal_deletion",
+    "policy_copy_classes",
+    "record_automatic_plan",
 ]
 
 
