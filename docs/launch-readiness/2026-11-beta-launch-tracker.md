@@ -324,6 +324,32 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - **π0.5** launched at 21:35:33Z on 985c482, without #3476 or #3478, so the same fall-through is expected and would be void.
   - **Spend:** G1 $3.35 of the $30 site limit, before π0.5. Atlas $7.38 of $25. Total about $12.48 of the $115 ceiling.
 
+- **11-08 22:00Z to 11-09 12:20Z: the walked floor, the re-derive, the re-issued intake, and the runs that still found no episode.**
+  - **Owner words (CST in brackets):**
+    - "yes" (11-09 04:32Z, 10:32 PM): retry a run refused only for a missing provider billing reading once the reading is back. Every money check runs again.
+    - "yes, deploy" (about 08:00Z, 2:00 AM): fe6a58c, after this session's permission check refused the deploy command. That refusal was reported, not worked around.
+  - **Floor root cause:**
+    - The G1 diagnostic (#3480) found no collision face over the spawn. A camera never films the floor under its own feet, and the 11-07 fallback patch sat where the scan saw floor, not where the walk began.
+    - #3484 fills a flat floor at the levelled floor height within 0.5 m of every camera footprint, disclosed as `walked_floor` (`development_only_estimate`) and flagged `g1_scene_floor_estimated`. #3485 words that flag.
+  - **Splat rebuild (#3477):**
+    - The 105-view pose came back at 23:59:52Z with `poseRefinementAccepted: false`, costing about $1.05.
+    - The Atlas worker was then OOM-killed each tick (5.4 GB) fusing a draft the rebuild would not use. A door hold on its timer was refused by this session's permission check and not worked around.
+    - #3487 stops a rebuild right after an unrefined pose; it stopped cleanly at 02:26Z, and the job keeps its parent splat.
+    - #3488 makes the draft fusion hold one view at a time: peak 2.7 GB to 1.3 GB at 105 views, byte-identical.
+  - **Re-derive:**
+    - #3481 re-derives a completed preparation on a republished Atlas result. #3487 adds a levelling revision newer than the base scene's.
+    - #1243 (WebApp) and #3486 re-issue the navigation intake under its own submission (`website-reissue-…`), same capture, $0.
+    - Deploys d337b41 (02:10Z) and then `--resume-preparation` (02:27–02:38Z) re-levelled the scene at v8: 71 cells, 142 faces, from 41 cameras. The re-issued intake was accepted, and the job was `intake_ready` at 02:47Z.
+    - The G1 spawn check now reads **clear**: both soles have floor at 0.0 m at the spawn and all four offsets.
+  - **Runs on the floored scene:**
+    - **DP, 02:51Z, about $0.49:** no episode. The rented machine could not fetch ffmpeg from archive.ubuntu.com. #3489 adds retries and a mirror fallback; #3490 does the same for the team lane.
+    - **DP 6th try, 05:51–06:24Z, about $0.64:** passed GPU sanity and the Isaac smoke, then the provider log stopped at the entrypoint start and no output came back. It counts as harness failure 6 of 7, and two runs remain under the rule.
+    - **π0.5:** each attempt was refused before any rental ($0), for a stale spend lock and then a missing billing reading. Its re-admission hit an execution-control identity conflict (409) because the run id ignored the attempt; #3492 binds the run to the attempt.
+    - #3491 adds the owner-approved billing-gap re-admission.
+    - #3494 prints install and step progress lines so a slow install is not taken for a dead machine. #3495 adds stage markers and runs a near-limit candidate after a same-backend sibling, so π0.5 goes before DP.
+  - **Deploys this stretch:** d337b41 (02:10Z), f1d69a9 (03:53Z), b85ac9e (05:25Z). fe6a58c (#3494, #3495) did not deploy: main CI failed only on GitHub release downloads of ffmpeg-static (HTTP 504, 07:58–08:00Z), and this session cannot re-run jobs (403). This tracker update gives main a fresh CI run to deploy from.
+  - **Spend:** G1 about $4.48 of the $30 site limit. Atlas about $8.43 of $25. Total about $14.7 of the $115 ceiling.
+
 ## Deploys on 2026-11-05 (capture-447 screening)
 
 - Two cloud sessions share the `cloud-scene-runs` door token today. Both merge and deploy on capture-447, so check `door requests` and `deploys.recent_receipts` before deploying.
