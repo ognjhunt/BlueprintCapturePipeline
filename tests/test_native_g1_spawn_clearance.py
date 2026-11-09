@@ -337,3 +337,58 @@ def test_a_floor_estimate_is_read_only_from_the_compiled_spec_evidence_and_discl
     assert spawn.packet_floor_estimate(tmp_path, plan["plan_digest"]) == estimate
     assert spawn.packet_floor_estimate(tmp_path, "sha256:" + "2" * 64) is None
     assert spawn.packet_floor_estimate(tmp_path / "missing", plan["plan_digest"]) is None
+
+
+def _marker(x: float, y: float = 0.0, radius: float = 0.43) -> dict:
+    return {"schema_version": "native_task_target_marker.v1", "shape": "flat_yellow_disc", "non_colliding": True,
+            "radius_m": radius, "surface_position_world_m": [x, y, 0.0]}
+
+
+def test_the_goal_marker_view_projects_the_disc_through_the_head_camera_at_reset(tmp_path):
+    """2026-11-09, asked before pi0.5's walking run: is the yellow goal in the policy's head view at the start?"""
+    from blueprint_pipeline.beta_policy_screening_g1_prepare import HEAD_CAMERA
+
+    asset = g1_like_asset(tmp_path / "g1.usda")
+    ahead = spawn.goal_marker_view(robot_usd=asset, joint_reset_positions=RESET, base_pose_world=stance(),
+                                   camera=HEAD_CAMERA, marker=_marker(1.7))
+    assert ahead["status"] == "in_view" and ahead["centre_in_frame"] and ahead["rim_in_frame_fraction"] == 1.0
+    assert 0 < ahead["centre_pixel"][0] < 640 and 0 < ahead["centre_pixel"][1] < 480 and ahead["pixel_radius"] > 20
+    behind = spawn.goal_marker_view(robot_usd=asset, joint_reset_positions=RESET, base_pose_world=stance(),
+                                    camera=HEAD_CAMERA, marker=_marker(-1.7))
+    assert behind["status"] == "not_in_view" and behind["centre_pixel"] is None
+    aside = spawn.goal_marker_view(robot_usd=asset, joint_reset_positions=RESET, base_pose_world=stance(),
+                                   camera=HEAD_CAMERA, marker=_marker(0.3, 3.0))
+    assert aside["status"] == "not_in_view" and not aside["centre_in_frame"]
+
+
+def _goal_packet(root: Path, marker: dict, *, goal: bool = True) -> str:
+    from blueprint_pipeline.beta_policy_screening_g1_prepare import HEAD_CAMERA
+
+    root.mkdir()
+    asset = g1_like_asset(root / "g1.usda")
+    plan = {"plan_digest": "sha256:" + "7" * 64,
+            "robot": {"usd_path": "g1.usda", "usd_sha256": spawn._file_sha256(asset), "base_pose_world": stance(),
+                      "joint_reset_positions_rad": RESET},
+            "cameras": [HEAD_CAMERA],
+            "task_spec": {"g1_navigation_goal": {"visible_target_marker": marker}} if goal else {}}
+    (root / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    return plan["plan_digest"]
+
+
+def test_a_goal_out_of_the_initial_view_flags_the_row_and_never_gates_it(tmp_path):
+    behind = tmp_path / "behind"
+    digest = _goal_packet(behind, _marker(-1.7))
+    assert spawn.goal_view_flags(behind, digest) == [spawn.GOAL_NOT_IN_VIEW_REASON]
+    written = json.loads((behind / spawn.GOAL_VIEW_FILENAME).read_text())
+    assert written["schema_version"] == spawn.GOAL_VIEW_SCHEMA_VERSION and written["scene_plan_digest"] == digest
+    # Another plan's report is not this row's evidence.
+    assert spawn.goal_view_flags(behind, "sha256:" + "8" * 64) == []
+    ahead = tmp_path / "ahead"
+    assert spawn.goal_view_flags(ahead, _goal_packet(ahead, _marker(1.7))) == []
+    # A manipulation packet (no G1 goal) has no view; a packet that cannot be read is no flag and no error.
+    plain = tmp_path / "plain"
+    assert spawn.goal_view_flags(plain, _goal_packet(plain, _marker(1.7), goal=False)) == []
+    broken = tmp_path / "broken"
+    digest = _goal_packet(broken, _marker(-1.7))
+    (broken / "g1.usda").write_text("#usda 1.0\n")  # no longer the bound file
+    assert spawn.goal_view_flags(broken, digest) == [] and not (broken / spawn.GOAL_VIEW_FILENAME).exists()

@@ -831,6 +831,11 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - **Fix (this PR):**
     - While a worker runs, the runtime prints `BLUEPRINT_G1_RUNTIME_WORKING:cell=…:log_bytes=…:output_bytes=…` every 60 s, but only if the worker's log or output grew. A stalled worker prints nothing, so a hung run still ends at the window.
     - Markers at each cell's start and exit, and around the policy runtime build. While that build (a wheel fetch, then an 8 GB local install, bounded only by the session deadline) grows its directory, a growth-gated line too.
+- **The goal the walking checkpoints see, 11-09** (asked by the owner through the library-aisle session before π0.5's next run):
+  - Both `_vision_navi` checkpoints were trained on "Avoid obstacles and move to the yellow marked area." For navigation candidates the episode sends exactly that prompt and refuses any other. The site sentence in `compiled_task_spec` ("Move to the green marked area…") is not sent.
+  - The scene spawns one flat yellow disc (radius 0.43 m) at the goal. The compiled green marker is not spawned.
+  - In the library packet the robot starts facing the goal dead-on, 1.78 m away. Worked through the plan's head camera (45° down, 640×480, f = 500 px), the disc sits well inside the frame at reset.
+  - **Built (this PR):** `native_g1_goal_marker_view.v1`, a $0 planning-time projection of the disc's centre and rim through the plan's head camera at the reset pose (status, centre pixel, in-frame fraction, pixel radius), written once beside the spawn check. A walking row whose disc centre starts out of frame carries `g1_goal_marker_not_in_initial_view`. It is a flag, never a gate, and it does not check occlusion by the scene.
     - No `_PROGRESS:` payload, and no limit changes.
 
 ## Operating notes (2026-11-02)
