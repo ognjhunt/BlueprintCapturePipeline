@@ -457,6 +457,33 @@ def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any
     return any(row["status"] in ACTIVE_STATUSES for key, row in rows.items() if key != candidate_id)
 
 
+#: A candidate with at most this many runs left under ``HARNESS_RETRY_LIMIT`` waits for a sibling.
+SCARCE_RUNS_LEFT = 2
+
+
+def _scarce_retry_waits(ledger: Mapping[str, Any], state: Mapping[str, Any],
+                        plan: Mapping[str, Any]) -> dict[str, int]:
+    """Launch order within a campaign: a candidate with at most ``SCARCE_RUNS_LEFT`` runs left goes after a
+    sibling on the same backend with fewer harness failures on this site (0 for those in plan order).
+
+    With ``_unproven_retry_in_flight`` running one candidate at a time and a sibling's harness failure
+    holding the rest until the next deploy (``_reserve``), a release is proven by a candidate with runs to
+    spare before one near its limit spends another. A candidate with runs to spare keeps today's order,
+    where the one whose fix is being retried goes first. 2026-11-09, the library site: DP had six harness
+    failures (two runs left) and pi0.5 none. No limit changes; only the order.
+    """
+    failures = {row["candidate_id"]: _harness_failures(ledger, state["site_id"], row["candidate_id"])
+                for row in plan["candidates"]}
+    backend = {row["candidate_id"]: (row.get("execution_spec") or {}).get("backend") for row in plan["candidates"]}
+
+    def waits(key: str) -> bool:
+        runs_left = HARNESS_RETRY_LIMIT - failures[key] + 1
+        return 0 < failures[key] and runs_left <= SCARCE_RUNS_LEFT and any(
+            other != key and backend[other] == backend[key] and failures[other] < failures[key]
+            for other in failures)
+    return {key: failures[key] if waits(key) else 0 for key in failures}
+
+
 def _result_not_counted(row: Mapping[str, Any], candidate: Mapping[str, Any], plan: Mapping[str, Any]) -> bool:
     """A result made under a harness revision a later one corrected for this candidate's backend.
 
@@ -1478,8 +1505,10 @@ def process_screening_queue(
                 # Reconcile allocated/uncertain work before reserving another
                 # candidate; new work follows the plan's (ranked) priority order.
                 position = {row["candidate_id"]: index for index, row in enumerate(plan["candidates"])}
+                waits = _scarce_retry_waits(ledger, state, plan)
                 ordered = sorted(plan["candidates"], key=lambda value: (
                     state["candidates"][value["candidate_id"]]["status"] not in ACTIVE_STATUSES,
+                    waits[value["candidate_id"]],
                     position[value["candidate_id"]],
                 ))
                 for candidate in ordered:

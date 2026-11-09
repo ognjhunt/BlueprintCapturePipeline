@@ -142,3 +142,30 @@ def test_an_unreadable_lock_reads_as_not_covered(tmp_path, monkeypatch):
     assert coordinator._billing_covers("vast") is False
     path.write_text(json.dumps({"billing_covered_provider_ids": "vast"}))
     assert coordinator._billing_covers("vast") is False
+
+
+def test_a_candidate_with_more_harness_failures_goes_after_a_sibling_on_the_same_backend(tmp_path, monkeypatch):
+    """2026-11-09, the library site: DP had six harness failures and pi0.5 none. pi0.5 proves the release first;
+    the one-at-a-time retry guard and the sibling hold do the rest. No limit changes."""
+    failures = {"candidate-000": 6, "candidate-001": 0}
+    monkeypatch.setattr(coordinator, "_harness_failures", lambda _ledger, _site, key: failures.get(key, 0))
+    launched = []
+
+    class Recording(Backend):
+        def launch_candidate(self, **kwargs):
+            launched.append(kwargs["candidate"]["candidate_id"])
+            return super().launch_candidate(**kwargs)
+
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    _run(tmp_path, Recording({"status": "running"}))
+    assert launched == ["candidate-001"]
+    # Without a sibling on the same backend with fewer failures, the plan's order stands.
+    ledger = coordinator._ledger(coordinator._root(tmp_path))
+    state = ledger["campaigns"]["campaign-1"]
+    plan_value = coordinator._plan(coordinator._root(tmp_path), "campaign-1", state["plan_digest"])
+    assert coordinator._scarce_retry_waits(ledger, state, plan_value) == {"candidate-000": 6, "candidate-001": 0}
+    failures.update({"candidate-001": 6})
+    assert coordinator._scarce_retry_waits(ledger, state, plan_value) == {"candidate-000": 0, "candidate-001": 0}
+    # A candidate with runs to spare keeps today's order: the one whose fix is being retried goes first.
+    failures.update({"candidate-000": coordinator.HARNESS_RETRY_LIMIT - coordinator.SCARCE_RUNS_LEFT, "candidate-001": 0})
+    assert coordinator._scarce_retry_waits(ledger, state, plan_value) == {"candidate-000": 0, "candidate-001": 0}

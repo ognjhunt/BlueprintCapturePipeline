@@ -246,6 +246,21 @@ def test_the_typed_refusal_stands_when_no_mirror_delivers(tmp_path):
     assert "BLUEPRINT_G1_MEDIA_TOOLCHAIN_UNAVAILABLE" in run.stdout and "E: Failed to fetch" in run.stdout
 
 
+def test_each_entrypoint_stage_announces_itself_without_a_ticker():
+    """After the install, a marker as each stage starts names where a run stopped (2026-11-09: the log ended at
+    the entrypoint start), and no ticker keeps a hung stage alive past the controller's no-progress window."""
+    script = bundle._entrypoint()
+    order = ["BLUEPRINT_G1_MEDIA_TOOLCHAIN_INSTALL_STARTED", 'BLUEPRINT_G1_STAGE:runtime_source_provisioning"',
+             "native_task_runtime_source_provision", "BLUEPRINT_G1_STAGE:runtime_source_provisioning_exit:",
+             "BLUEPRINT_G1_STAGE:runtime_start", "native_g1_beta_runtime --runtime-root",
+             "BLUEPRINT_G1_STAGE:runtime_exit:"]
+    position = 0
+    for marker in order:  # each found after the one before it
+        position = script.index(marker, position) + len(marker)
+    # The only background loop is the install's, which its own time bounds end.
+    assert script.count("while :; do sleep") == 1
+
+
 def test_a_slow_install_keeps_printing_so_the_controller_does_not_end_the_run(tmp_path, monkeypatch):
     """2026-11-09 06:24Z, the library job's DP run: the provider log stopped at the entrypoint start, and the
     controller ended the run after its no-progress window, 32 minutes live, $0.64, with no output."""

@@ -139,15 +139,21 @@ export BLUEPRINT_G1_PINNED_ISAAC_IMAGE="nvcr.io/nvidia/isaac-sim:6.0.1@sha256:b1
    --output-dir "$OUT_DIR" --failure-only g1_beta_media_toolchain_unavailable
  exit 2
 fi
+# One marker as each stage starts: the provider log names where a run stopped, and each stage gets
+# the controller's no-progress window afresh. No ticker here, so a hung stage still ends at that window.
+echo "BLUEPRINT_G1_STAGE:runtime_source_provisioning"
 /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \\
  --source-receipt "$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_source_packet.v1.json" \\
  --source-packet "$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_sources.zip" \\
  --extraction-dir "$RUNTIME_DIR/provisioned_runtime_sources" \\
  --output "$OUT_DIR/native_task_runtime_source_provisioning.v1.json" --simulator-root /isaac-sim
 provision_rc=$?
+echo "BLUEPRINT_G1_STAGE:runtime_source_provisioning_exit:$provision_rc"
 if [ "$provision_rc" -eq 0 ]; then
+ echo "BLUEPRINT_G1_STAGE:runtime_start"
  /isaac-sim/python.sh -m blueprint_pipeline.native_g1_beta_runtime --runtime-root "$RUNTIME_DIR" --output-dir "$OUT_DIR"
  runner_rc=$?
+ echo "BLUEPRINT_G1_STAGE:runtime_exit:$runner_rc"
 else
  runner_rc="$provision_rc"
 fi
