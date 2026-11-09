@@ -409,6 +409,22 @@ a pose, and nothing fed the earlier pose's findings into the next request
   new pose's cameras, so the navigation start, which is read from that path, is
   re-derived on the new footage by `--resume-preparation`. It sits on the new
   walked floor, and the spawn check still reports it.
+- **A warped scanned floor along the walk** (capture-5b067498, 11-09). The
+  rebuilt splat kept a real floor along its forward-only dolly, but warped: at
+  the new start it sat 6.5–9.4 cm above the levelled plane, so the spawn check
+  read `overlap` and no G1 row was funded. Levelling v9
+  (`atlas_world_levelling._planarize_walked_floor`, owner: "flatten the
+  corridor floor", 20:01Z) planarizes the corridor's floor in the collider copy:
+  - it fits a smooth surface to the corridor's near-level faces, along the
+    corridor's own axes, trimmed like the floor bands;
+  - it replaces the faces lying within 5 cm of that surface with the flat walked
+    floor at y = 0;
+  - anything standing higher, such as a shelf's bottom board or an object on the
+    floor, stays, and so does everything outside the corridor.
+
+  It's disclosed as `walked_floor.planarized` (`development_only_estimate`), with
+  the scanned floor's offset range before the change. This is the floor analogue
+  of a rigid task's support pad (`rigid_support_pad`). The splat is as captured.
 - **New jobs** get the same windowed pose before their refined splat (below).
 
 ### A new job's one windowed re-pose before its refined splat

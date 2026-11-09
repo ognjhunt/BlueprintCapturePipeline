@@ -34,7 +34,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-REVISION = "atlas_world_levelling.v8"
+REVISION = "atlas_world_levelling.v9"
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0
@@ -91,6 +91,31 @@ FALLBACK_FLOOR_CELL_M = 0.25
 #: footprint (a G1 stance and its start offsets fit inside). Walls, shelves and the splat are as captured.
 WALKED_FLOOR_MARGIN_M = 0.5
 WALKED_FLOOR_CELL_M = 0.25
+#: The scanned floor in that corridor, planarized (owner, 2026-11-09: "flatten the corridor floor"). The
+#: floor analogue of a rigid task's support pad (``rigid_support_pad``) and of the fallback floor above.
+#: capture-5b067498's rebuilt splat kept a real floor along its forward-only dolly, but warped: at the
+#: navigation start it sat 6.5-9.4 cm above the levelled plane and sloped 5-10 cm/m, so a G1 stood there
+#: inside it (``g1_spawn_overlap``) and no row was funded. A walked floor is flat. In the collider copy, a
+#: smooth surface is fitted to each corridor cell's floor seed (the median of the lowest layer of its near-level faces
+#: within WALKED_FLOOR_SEARCH_M of the levelled floor, so a board over the floor is never the floor), trimmed
+#: like the floor bands; the near-level faces reaching into the corridor within the floor layer of it (at most
+#: WALKED_FLOOR_LAYER_M) are the scanned floor and are replaced by the flat walked floor at y = 0, over every
+#: cell they covered. Anything standing
+#: higher (a shelf's bottom board, an object on the floor) is outside that layer and stays, as do walls,
+#: shelf sides and everything outside the corridor. The splat is as captured.
+WALKED_FLOOR_SEARCH_M = 0.30
+#: The floor layer is 3 x the seeds' RMS about the surface, within these bounds (m).
+WALKED_FLOOR_LAYER_MIN_M = 0.02
+WALKED_FLOOR_LAYER_M = 0.05
+WALKED_FLOOR_LEVEL_FACE_DEGREES = 30.0
+#: Each corridor cell's floor seed: the median of its lowest layer (within WALKED_FLOOR_LAYER_M of this percentile
+#: of its near-level faces' heights), from at least this many faces.
+WALKED_FLOOR_SEED_PERCENTILE = 20.0
+WALKED_FLOOR_SEED_MIN_FACES = 2
+#: The fitted surface bends along a corridor axis (its own principal axes) with this many cells and extent (m).
+WALKED_FLOOR_QUADRATIC_MIN_CELLS = 12
+WALKED_FLOOR_QUADRATIC_MIN_EXTENT_M = 1.0
+WALKED_FLOOR_MIN_CELLS = 4
 #: Kept in the record, so a refusal can be read without the mesh: the densest layers along the chosen
 #: direction, and along +Y and every candidate direction the share of points in each 2 cm band of
 #: height around the cameras (a floor shows as a peak a camera height below them, as thick as it is).
@@ -484,18 +509,9 @@ def _replace_uneven_floor(mesh, *, meters_per_unit: float) -> dict[str, Any]:
             "flat_floor_faces": int(len(floor_faces))}
 
 
-def _fill_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: float) -> dict[str, Any] | None:
-    """In a levelled mesh (floor at y = 0), add a flat floor under the cameras' footprints; None without any.
-
-    ``footprints_m`` are the cameras' (x, z) in metres. Every cell of ``WALKED_FLOOR_CELL_M`` whose
-    centre lies within ``WALKED_FLOOR_MARGIN_M`` of a footprint gets two faces at y = 0, so the walked
-    path has a floor whatever the reconstruction kept there. Existing faces are kept.
-    """
-    import trimesh
-
-    footprints = np.asarray(footprints_m, dtype=np.float64).reshape(-1, 2)
-    if not len(footprints):
-        return None
+def _walked_cells(footprints: np.ndarray) -> tuple[np.ndarray, set[tuple[int, int]]]:
+    """The corridor's grid origin and cells: every ``WALKED_FLOOR_CELL_M`` cell whose centre lies within
+    ``WALKED_FLOOR_MARGIN_M`` of a camera footprint (x, z in metres)."""
     cell = WALKED_FLOOR_CELL_M
     low = np.floor((footprints.min(axis=0) - WALKED_FLOOR_MARGIN_M) / cell) * cell
     # Each camera stamps the cells near it: work grows with the cameras, not with the walk's bounding box.
@@ -509,7 +525,143 @@ def _fill_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: float
                 if i >= 0 and j >= 0 and float(np.linalg.norm(footprint - (low + (np.array([i, j]) + 0.5) * cell))) \
                         <= WALKED_FLOOR_MARGIN_M:
                     cells.add((i, j))
-    rows = sorted(cells)
+    return low, cells
+
+
+def _surface_terms(xz: np.ndarray, centre: np.ndarray, axes: np.ndarray, curved: tuple[bool, bool]) -> np.ndarray:
+    """A plane over the corridor's own principal axes, curved along each axis long enough to bend over."""
+    u, v = ((xz - centre) @ axes.T).T
+    return np.column_stack([np.ones_like(u), u, v] + ([u * u] if curved[0] else []) + ([v * v] if curved[1] else [])
+                           + ([u * v] if all(curved) else []))
+
+
+def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: float) -> dict[str, Any] | None:
+    """In a levelled mesh (floor at y = 0), drop the scanned floor's faces that reach into the walked corridor.
+
+    The flat walked floor (``_fill_walked_floor``) then stands in for them, over the corridor and over every
+    cell a dropped face covered (``extra_cells``), so a face crossing the corridor's edge leaves no hole beyond
+    it. The floor is told from anything standing on it cell by cell before any fit: each corridor cell's
+    floor seed is the median of its lowest layer of near-level faces, so a shelf board or a platform over the
+    floor never pulls the surface up to itself. Returns the record with the rebuilt ``mesh``, or None when
+    too few corridor cells hold near-level faces to fit a floor to.
+    """
+    import trimesh
+
+    footprints = np.asarray(footprints_m, dtype=np.float64).reshape(-1, 2)
+    if not len(footprints):
+        return None
+    low, cells = _walked_cells(footprints)
+    cell = WALKED_FLOOR_CELL_M
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    tri = vertices[faces] * meters_per_unit
+    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    length = np.linalg.norm(cross, axis=1)
+    level = (length > 1e-12) & (np.abs(cross[:, 1]) >= math.cos(math.radians(WALKED_FLOOR_LEVEL_FACE_DEGREES))
+                                * np.maximum(length, 1e-12))
+    centroid = tri.mean(axis=1)
+    near = level & (np.abs(centroid[:, 1]) <= WALKED_FLOOR_SEARCH_M)
+
+    def in_corridor(points: np.ndarray) -> np.ndarray:
+        index = np.floor((points - low) / cell).astype(np.int64)
+        return np.array([(int(i), int(j)) in cells for i, j in index], dtype=bool)
+
+    # A near-level face reaches into the corridor when its centroid or any corner lies in a corridor cell.
+    touches = np.zeros(len(faces), dtype=bool)
+    rows = np.flatnonzero(near)
+    if len(rows):
+        points = np.concatenate([centroid[rows][:, None, [0, 2]], tri[rows][:, :, [0, 2]]], axis=1)
+        touches[rows] = in_corridor(points.reshape(-1, 2)).reshape(-1, 4).any(axis=1)
+    candidate = near & touches
+    # Each corridor cell's floor seed, from the heights of the near-level faces centred in it.
+    owner = np.floor((centroid[:, [0, 2]] - low) / cell).astype(np.int64)
+    by_cell: dict[tuple[int, int], list[float]] = {}
+    for face in np.flatnonzero(candidate):
+        key = (int(owner[face, 0]), int(owner[face, 1]))
+        if key in cells:
+            by_cell.setdefault(key, []).append(float(centroid[face, 1]))
+    keys = sorted(key for key, heights in by_cell.items() if len(heights) >= WALKED_FLOOR_SEED_MIN_FACES)
+    if len(keys) < WALKED_FLOOR_MIN_CELLS:
+        return None
+    xz = low + (np.array(keys, dtype=np.float64) + 0.5) * cell
+    def seed(heights: list[float]) -> float:
+        # The median of the cell's lowest layer: unbiased on a sloped floor, and never a board above it.
+        values = np.asarray(heights)
+        bottom = float(np.percentile(values, WALKED_FLOOR_SEED_PERCENTILE))
+        return float(np.median(values[(values >= bottom - WALKED_FLOOR_LAYER_M) & (values <= bottom + WALKED_FLOOR_LAYER_M)]))
+
+    height = np.array([seed(by_cell[key]) for key in keys])
+    centre = xz.mean(axis=0)
+    axes = np.linalg.svd(xz - centre, full_matrices=False)[2]
+    along = (xz - centre) @ axes.T
+    extent = along.max(axis=0) - along.min(axis=0)
+    curved = tuple(bool(len(xz) >= WALKED_FLOOR_QUADRATIC_MIN_CELLS and extent[k] >= WALKED_FLOOR_QUADRATIC_MIN_EXTENT_M)
+                   for k in range(2))
+    kept = np.ones(len(xz), dtype=bool)
+    for _ in range(6):
+        # Least squares over the cells' seeds, trimmed like the floor bands: a cell holding only a board is an outlier.
+        coefficients = np.linalg.lstsq(_surface_terms(xz[kept], centre, axes, curved), height[kept], rcond=None)[0]
+        residual = height - _surface_terms(xz, centre, axes, curved) @ coefficients
+        spread = 1.4826 * float(np.median(np.abs(residual[kept] - np.median(residual[kept]))))
+        updated = np.abs(residual) <= max(WALKED_FLOOR_LAYER_MIN_M, FLOOR_TRIM_DEVIATIONS * spread)
+        if int(updated.sum()) < WALKED_FLOOR_MIN_CELLS or np.array_equal(updated, kept):
+            break
+        kept = updated
+    rms = float(np.sqrt(np.mean(residual[kept] ** 2)))
+    # The floor layer is as thick as the scanned floor is rough, within bounds: never thick enough to take a board.
+    layer = min(WALKED_FLOOR_LAYER_M, max(WALKED_FLOOR_LAYER_MIN_M, 3.0 * rms))
+
+    def surface(points: np.ndarray) -> np.ndarray:
+        return _surface_terms(points, centre, axes, curved) @ coefficients
+
+    # A scanned floor face: near-level, reaching into the corridor, every corner within the layer of the surface.
+    # A face already flat at y = 0 (an exact floor, the fallback floor's grid) is the walked floor already.
+    corners = tri[candidate]
+    off = np.abs(corners[:, :, 1] - surface(corners[:, :, [0, 2]].reshape(-1, 2)).reshape(-1, 3))
+    flat = np.all(np.abs(corners[:, :, 1]) <= 1e-6, axis=1)
+    floor_layer = np.zeros(len(faces), dtype=bool)
+    floor_layer[np.flatnonzero(candidate)[np.all(off <= layer, axis=1) & ~flat]] = True
+    # Every cell a dropped face covered, beyond the corridor too, gets the flat floor: no hole is left.
+    extra: set[tuple[int, int]] = set()
+    for face in np.flatnonzero(floor_layer):
+        lo = np.floor((tri[face][:, [0, 2]].min(axis=0) - low) / cell).astype(int)
+        hi = np.floor((tri[face][:, [0, 2]].max(axis=0) - low) / cell).astype(int)
+        extra.update((i, j) for i in range(lo[0], hi[0] + 1) for j in range(lo[1], hi[1] + 1))
+    extra -= cells
+    offsets = surface(low + (np.array(sorted(cells), dtype=np.float64) + 0.5) * cell)
+    rebuilt = trimesh.Trimesh(vertices=vertices, faces=faces[~floor_layer],
+                              vertex_colors=(np.asarray(mesh.visual.vertex_colors)
+                                             if getattr(getattr(mesh, "visual", None), "kind", None) == "vertex"
+                                             else None), process=False)
+    return {"mesh": rebuilt, "extra_cells": extra, "claim": "development_only_estimate",
+            "basis": "scanned_floor_in_the_walked_corridor_planarized",
+            "replaced_faces": int(floor_layer.sum()), "replaced_area_m2": round(float(0.5 * length[floor_layer].sum()), 4),
+            "cells_beyond_corridor": len(extra),
+            "surface_curved_along": [axis for axis, bent in zip(("walk", "across"), curved) if bent],
+            "seed_cells": len(keys), "inlier_cells": int(kept.sum()), "inlier_rms_m": round(rms, 4),
+            # How far the scanned floor lay from the levelled plane across the corridor, before this.
+            "surface_offset_m": {"min": round(float(offsets.min()), 4), "median": round(float(np.median(offsets)), 4),
+                                 "max": round(float(offsets.max()), 4)},
+            "layer_m": round(layer, 4), "search_m": WALKED_FLOOR_SEARCH_M}
+
+
+def _fill_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: float,
+                       extra_cells: set[tuple[int, int]] | None = None) -> dict[str, Any] | None:
+    """In a levelled mesh (floor at y = 0), add a flat floor under the cameras' footprints; None without any.
+
+    ``footprints_m`` are the cameras' (x, z) in metres. Every cell of ``WALKED_FLOOR_CELL_M`` whose
+    centre lies within ``WALKED_FLOOR_MARGIN_M`` of a footprint gets two faces at y = 0, so the walked
+    path has a floor whatever the reconstruction kept there. Existing faces are kept. ``extra_cells`` (same
+    grid) are filled too: those a planarized floor face covered beyond the corridor (``_planarize_walked_floor``).
+    """
+    import trimesh
+
+    footprints = np.asarray(footprints_m, dtype=np.float64).reshape(-1, 2)
+    if not len(footprints):
+        return None
+    cell = WALKED_FLOOR_CELL_M
+    low, cells = _walked_cells(footprints)
+    rows = sorted(cells | set(extra_cells or ()))
     if not rows:
         return None
     vertices = np.asarray(mesh.vertices, dtype=np.float64)
@@ -663,9 +815,16 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     if floor is not None:
         # The cameras in the levelled copy, in metres: their (x, z) is where the person filming walked.
         levelled = (centres @ rotation.T + transform[:3, 3]) * meters_per_unit
-        walked = _fill_walked_floor(mesh, footprints_m=levelled[:, [0, 2]], meters_per_unit=meters_per_unit)
+        # The scanned floor along the walk is planarized first; the flat walked floor then covers the corridor.
+        planarized = _planarize_walked_floor(mesh, footprints_m=levelled[:, [0, 2]], meters_per_unit=meters_per_unit)
+        if planarized is not None:
+            mesh = planarized.pop("mesh")
+        walked = _fill_walked_floor(mesh, footprints_m=levelled[:, [0, 2]], meters_per_unit=meters_per_unit,
+                                    extra_cells=planarized.pop("extra_cells") if planarized is not None else None)
         if walked is not None:
             mesh = walked.pop("mesh")
+            if planarized is not None:
+                walked["planarized"] = planarized
     root.mkdir(parents=True, exist_ok=True)
     mesh.export(str(root / MESH_NAME))
     xyz = splat.xyz.astype(np.float64) @ rotation.T + transform[:3, 3]
