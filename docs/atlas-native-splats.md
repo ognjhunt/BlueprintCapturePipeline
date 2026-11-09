@@ -356,6 +356,64 @@ and retained data is never deleted. So a rebuild runs beside the original
   (`website_preparation_revision_identity.reissue`); its receipt, and then G1
   screening on the new scene, follow as for any navigation job.
 
+### The one windowed retry of an unrefined rebuild pose
+
+Owner, 2026-11-09: "yes" to a windowed retry. capture-5b067498's rebuild
+re-selected views across the whole clip, so its new pose was sent the same
+footage that broke the first: a stationary opening, then a pose jump into the
+moving shot. World Labs again did not accept refinement, and the rebuild
+stopped there (about $1.05). `select_splat_frames` finds such footage only after
+a pose, and nothing fed the earlier pose's findings into the next request
+(`atlas_splat_rebuild_window`).
+
+- **Who qualifies.** A ready job back on its parent result whose rebuild stopped
+  at `source_pose` with `atlas_splat_rebuild_pose_refinement_not_accepted`, from a
+  request that was not itself windowed. `--atlas-status` shows it as
+  `job.splat_rebuild` with `attempt: pose_window`, the previous request's digest,
+  and the same `expected_cost_usd` and `maximum_cost_usd` as the first rebuild;
+  `--atlas-retry` checks the allowance as before. One retry, never a third
+  attempt.
+- **What it keeps.** It runs in `splat-rebuild/<hex>-pose-window/`. The first
+  request is kept in the first root as `request.json` and named by digest in the
+  new request; the first root's pose and `outcome.json` are untouched.
+- **The window.** Before any purchase, the runner reads the earlier pose (its
+  cameras, source times and depth, and the draft's cross-view pairs if one was
+  fused) and runs `select_splat_frames` on it with the reviewed task route. Each
+  run of segments that choice keeps (primary, kept, capped) becomes a time
+  interval. The views it dropped as inconsistent, and every source frame of a
+  capped no-parallax run except the views the cap kept, are excluded. Several
+  cuts or jumps keep the segments the splat selection keeps (task route first,
+  then baseline); measured pairs can tie a segment across a jump.
+- **The derived review.** The new selection (96 time-spread views, relative
+  sharpness floor) uses a review derived from the reviewed one: its intervals and
+  exclusions are the window's. A reviewed coverage frame outside the window is
+  left out, named in `uncaptured_regions` and flagged (`task_route_frames_left_out`
+  for working-area frames). An anchor outside moves to the in-window reviewed frame
+  nearest it in time, kept as `original_task_anchor_frame_id`. `pose_window` in the
+  derived review names the original review's digest. The capture's task-source
+  views join the pose only inside the window
+  (`atlas_source_pose_inputs.task_source_inputs`). Everything is recorded once in
+  `pose/atlas_pose_window.json` and read back.
+- **When it stops, with nothing bought.** The earlier pose cannot be read or
+  segmented (missing timestamps or depth); it has no moving segment (a pan or a
+  tripod shot); its kept segments already span every timed view with nothing
+  excluded (one clean moving shot); the window would leave a reviewed coverage
+  role with no frame; or the selection refuses the window's footage. Each is
+  recorded in `outcome.json` with stage `pose_window`, and the job stays on its
+  parent result.
+- **What it buys.** The same as a rebuild: the pose (about $0.01 a view), then
+  the $5 splat and the $0.50 mesh only if World Labs accepts refinement. A
+  published result's `splat_rebuild.pose_window` names the intervals, the
+  reviewed frames left out and the derived review's digest.
+- **Downstream.** The scene's filmed path and walked floor (#3484) come from the
+  new pose's cameras, so the navigation start, which is read from that path, is
+  re-derived on the new footage by `--resume-preparation`. It sits on the new
+  walked floor, and the spawn check still reports it.
+- **Not yet for new jobs.** A new job's first pose that comes back unrefined
+  still goes on to its splat with `select_splat_frames`. A windowed re-pose there
+  would add a second pose to a quoted job, so it waits for an owner decision on
+  its cost.
+
 ## Reviewed runtime policy
 
 The signed WebApp policy (`BLUEPRINT_WEBSITE_ATLAS_RUNTIME_POLICY_JSON`) is the

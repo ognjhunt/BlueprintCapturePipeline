@@ -358,6 +358,11 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
   - **π0.5 runs first.** π0.5 has 1 harness failure and DP has 6 of 7, so π0.5 goes before DP (#3495). The G1 session was told at 14:27Z that 74d0af8 is live.
   - **#3498 (G1 session):** a $0 planning-time projection of the yellow goal disc through the head camera. A walking row whose goal starts out of frame is flagged `g1_goal_marker_not_in_initial_view`, never gated. It is not needed for π0.5's run and deploys at the next quiet window.
   - **Control-plane disk, 14:28Z:** headroom reads `low`, with 12.9 GB available against a 15.8 GB floor. Two roles are refused: `embodiment_preparation` and `g1_checkpoint_cache` (a new checkpoint download). A checkpoint already in the cache needs no reservation (`cache_ready`). Any other refusal on disk headroom goes in this tracker as it happens.
+  - **Splat retry, windowed (owner "yes", 11-09 about 14:45Z, at most about $6.55 of the Atlas allowance):**
+    - Why the second splat never came: the rebuild re-selected views across the whole clip, so World Labs got the same stationary opening and pose jump that broke the first pose, and again did not accept refinement.
+    - The fix (`atlas_splat_rebuild_window`): one windowed retry of a rebuild stopped at an unrefined pose. Before anything is bought, it reads the earlier pose, keeps the segments `select_splat_frames` keeps, and poses only that footage, densely. Reviewed frames left outside the window are named in `uncaptured_regions`, and the anchor moves to the nearest frame in the window.
+    - If there is no usable window, the retry stops by name with nothing bought. Money is unchanged: the same expected and maximum cost, allowance check and paid admission.
+    - Not yet for new jobs: a second pose there would change a quoted job's cost, so it waits for the owner.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 

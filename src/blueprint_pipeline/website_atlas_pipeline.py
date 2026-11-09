@@ -681,6 +681,10 @@ def _run_splat_rebuild(*, job_dir, task_context, policy, held_policy, configurat
     A new selection under the current policy, a new source pose, then the refined
     splat and the mesh, each through the job's own allowance and paid admission.
     Returns the result the job publishes: the rebuilt one, or on a stop the parent's.
+
+    A windowed retry first reads the earlier rebuild's pose (``atlas_splat_rebuild_window``):
+    its selection draws only from that pose's consistent moving footage, under the review
+    the window derives. With no usable window it stops by name before buying anything.
     """
     from . import atlas_splat_rebuild as rebuilds
     from .atlas_video_inputs import prepare_video_inputs
@@ -695,11 +699,30 @@ def _run_splat_rebuild(*, job_dir, task_context, policy, held_policy, configurat
         raise ValueError("atlas_runtime_selection_escape")
     review, pose_root = selection["review"], root / "pose"
     pose_root.mkdir(parents=True, exist_ok=True)
-    # The rebuilt bundle carries the same reviewed scene the parent's did.
+    window = None
+    if request.get("attempt") == rebuilds.WINDOW_ATTEMPT:
+        from .atlas_splat_rebuild_window import pose_window
+        window = pose_window(job_dir=job_dir, request=request, review=review,
+                             survey=json.loads(survey_path.read_text()), pose_root=pose_root)
+        if window["status"] != "windowed":
+            return rebuilds.record_stop(root, request, parent, {
+                "stage": "pose_window", "reason": "atlas_splat_rebuild_pose_window_" + window["status"],
+                "flags": window["flags"]})
+        review = window["review"]
+    # The rebuilt bundle carries the reviewed scene the parent's did (a windowed retry: the one it derived).
     write_json(root / "atlas_scene_review.json", review)
     try:
-        inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root,
-            **_splat_input_options(pose_root, review=review, policy=held_policy, edit_scope="required_and_additional"))
+        try:
+            inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root,
+                **_splat_input_options(pose_root, review=review, policy=held_policy,
+                                       edit_scope="required_and_additional"))
+        except ValueError as exc:
+            if window is None:
+                raise
+            # The window's footage cannot carry the reviewed selection: the retry stops, nothing bought.
+            return rebuilds.record_stop(root, request, parent, {
+                "stage": "pose_window", "reason": "atlas_splat_rebuild_pose_window_selection_refused",
+                "flags": [*window["flags"], str(exc).partition(":")[0]]})
         result = _preserved_scene(pose_root=pose_root, output_root=root, inputs=inputs, review=review,
             policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
             check=check, experimental=experimental, max_polls=max_polls, model=parent.get("model"), rebuild=True)
@@ -711,7 +734,7 @@ def _run_splat_rebuild(*, job_dir, task_context, policy, held_policy, configurat
         return result
     if not result.get("download") or (result.get("appearance") or {}).get("basis") != REFINED_APPEARANCE:
         return rebuilds.record_stop(root, request, parent, result)
-    return rebuilds.publish(job_dir, root, request, parent, result)
+    return rebuilds.publish(job_dir, root, request, parent, result, window=window)
 
 
 def _checkpoint_with_details(checkpoint):

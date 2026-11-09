@@ -54,11 +54,17 @@ def task_source_inputs(pose_root: Path, original: dict) -> tuple[Path, dict]:
     source_frames = _bound_frames(candidate, source_root, geometry=False)
     existing = {row["frame_id"] for row in original["frames"]}
     additional = [row for row in source_frames if row["frame_id"] not in existing]
+    # A rebuild's windowed retry (``atlas_splat_rebuild_window``) poses only footage inside its window:
+    # a task view from the pan or across the jump it left out would bring the same disagreement back.
+    from .atlas_splat_rebuild_window import frame_in_window, window_for_pose_root
+    window = window_for_pose_root(pose_root)
+    if window is not None:
+        additional = [row for row in additional if frame_in_window(row, window)]
     if not additional:
         return pose_root, original
     binding = {**original["binding"], "background_input_digest": original["digest"],
                "task_source_frames_digest": sources["digest"], "source_image_rotation_degrees": 0,
-               "object_geometry_only": True}
+               "object_geometry_only": True, **({"pose_window_digest": window["digest"]} if window else {})}
     binding["maximum_frames"] = len(original["frames"]) + len(additional)
     root = pose_root / ("task-coverage-" + canonical_digest(binding)[7:23])
     path = root / "atlas_geometry_inputs.json"
