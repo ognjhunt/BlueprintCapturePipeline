@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
+import re
 from pathlib import Path
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -21,8 +24,31 @@ class _HTTPSOnly(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, response, code, message, headers, url)
 
 
+#: A transfer that stalls (no byte for the 45 s read timeout) or drops resumes from the byte it reached, at
+#: most this many times per file, inside the same deadline. 2026-11-09, the library job's pi0.5 run: one
+#: selected-asset read stalled 27 minutes in and, with no resume, the whole run ended with no episode
+#: (``g1_beta_selected_model_staging_failed__timeouterror``). A resume asks only for the bytes still missing,
+#: never one it already has, so the transfer bound, the run's hard cap and its deadline are unchanged. A source
+#: that answers a resume with anything but exactly those bytes (206, matching Content-Range) ends the transfer.
+TRANSFER_RESUMES = 3
+_INTERRUPTED = (TimeoutError, ConnectionError, http.client.IncompleteRead)
+
+
+def _interrupted(error: BaseException) -> bool:
+    """A stall or a dropped connection, while connecting or reading; never an HTTP status."""
+    return isinstance(error, _INTERRUPTED) or (type(error) is urllib.error.URLError
+                                                and isinstance(error.reason, _INTERRUPTED))
+
+
+def _resume_matches(response, *, offset: int, total: int) -> bool:
+    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", (response.headers.get("Content-Range") or "").strip())
+    return (getattr(response, "status", None) == 206 and match is not None
+            and (int(match[1]), int(match[2]), int(match[3])) == (offset, total - 1, total))
+
+
 def _fetch(row, destination: Path, *, deadline: float, opener=None):
-    """One transfer, no retries; full bytes are checked before atomic publication."""
+    """One transfer per file, resumed (``TRANSFER_RESUMES``) only from the byte a stall or drop reached; the
+    full bytes are checked before atomic publication."""
     if (destination.exists() or destination.is_symlink()
             or any(p.is_symlink() for p in destination.parents)):
         raise ValueError("g1_beta_asset_destination_exists_or_symlink")
@@ -33,31 +59,46 @@ def _fetch(row, destination: Path, *, deadline: float, opener=None):
     partial = destination.with_name(destination.name + ".partial")
     if partial.exists() or partial.is_symlink():
         raise ValueError("g1_beta_asset_partial_exists")
-    digest, size = hashlib.sha256(), 0
+    digest, size, total = hashlib.sha256(), 0, row["size_bytes"]
     open_url = opener or urllib.request.build_opener(_HTTPSOnly()).open
     try:
         with partial.open("xb") as output:
-            with open_url(urllib.request.Request(url, headers={"Accept-Encoding": "identity"}),
-                          timeout=min(45, remaining_seconds(deadline))) as response:
-                if urllib.parse.urlsplit(response.geturl()).scheme != "https":
-                    raise ValueError("g1_beta_asset_insecure_response")
-                declared = response.headers.get("Content-Length")
-                if declared is not None and int(declared) != row["size_bytes"]:
-                    raise ValueError("g1_beta_asset_size_header_mismatch")
-                while True:
-                    remaining_seconds(deadline)
-                    chunk = response.read(min(1024 * 1024, row["size_bytes"] - size + 1))
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > row["size_bytes"]:
-                        raise ValueError("g1_beta_asset_size_bound_exceeded")
-                    output.write(chunk)
-                    digest.update(chunk)
+            for resume in range(TRANSFER_RESUMES + 1):
+                headers = {"Accept-Encoding": "identity"}
+                if size:
+                    headers["Range"] = f"bytes={size}-"
+                if resume:
+                    print(f"BLUEPRINT_G1_ASSET_RESUME:{resume}:bytes={size}", flush=True)
+                try:
+                    with open_url(urllib.request.Request(url, headers=headers),
+                                  timeout=min(45, remaining_seconds(deadline))) as response:
+                        if urllib.parse.urlsplit(response.geturl()).scheme != "https":
+                            raise ValueError("g1_beta_asset_insecure_response")
+                        if size and not _resume_matches(response, offset=size, total=total):
+                            raise ValueError("g1_beta_asset_resume_unsupported")
+                        declared = response.headers.get("Content-Length")
+                        if declared is not None and int(declared) != total - size:
+                            raise ValueError("g1_beta_asset_size_header_mismatch")
+                        while True:
+                            remaining_seconds(deadline)
+                            chunk = response.read(min(1024 * 1024, total - size + 1))
+                            if not chunk:
+                                break
+                            size += len(chunk)
+                            if size > total:
+                                raise ValueError("g1_beta_asset_size_bound_exceeded")
+                            output.write(chunk)
+                            digest.update(chunk)
+                    break
+                except (*_INTERRUPTED, urllib.error.URLError) as error:
+                    if size == total and _interrupted(error):
+                        break  # every byte arrived; the identity check below decides
+                    if resume == TRANSFER_RESUMES or not _interrupted(error):
+                        raise
             output.flush()
             os.fsync(output.fileno())
         remaining_seconds(deadline)
-        if size != row["size_bytes"] or "sha256:" + digest.hexdigest() != row["sha256"]:
+        if size != total or "sha256:" + digest.hexdigest() != row["sha256"]:
             raise ValueError("g1_beta_asset_identity_mismatch")
         os.link(partial, destination)
     finally:

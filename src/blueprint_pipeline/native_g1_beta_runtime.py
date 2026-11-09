@@ -443,7 +443,11 @@ def run_session(root: Path, output: Path, *, failure_only: str | None = None):
                                                bundled_dir=root / "inputs/pi_tokenizer")
             _write(output / "native_g1_pi_tokenizer_stage.v1.json", tokenizer)
         stage = "selected_model_staging"
-        models = stage_selected_assets(root=root, output=output, candidate_ids=authority["candidate_ids"], deadline=deadline - 120)
+        _say("BLUEPRINT_G1_STAGE:selected_model_staging")
+        with _GrowthReporter(output / "models", "selected_model_staging"):
+            models = stage_selected_assets(root=root, output=output, candidate_ids=authority["candidate_ids"],
+                                           deadline=deadline - 120)
+        _say("BLUEPRINT_G1_STAGE:selected_models_ready")
         _write(output / "models/sonic_cuda_preflight.json", preflight_sonic_cuda_models(models["sonic"]))
         from .native_g1_policy_server_supervisor import _candidate_policy_dir
         policy_dir = _candidate_policy_dir(root.parent / "configs/g1_humanoidarena_checkpoint_inventory.v1.json",
