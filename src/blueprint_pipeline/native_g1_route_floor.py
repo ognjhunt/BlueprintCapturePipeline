@@ -25,12 +25,16 @@ import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
 
-SCHEMA_VERSION = "native_g1_route_floor_profile.v1"
+#: v2 (2026-11-09): a face's normal is read either way up, as the spawn check reads it (``|n_z|``). v1 counted
+#: only faces wound upward, and the library job's rebuilt mesh has floor faces wound downward: v1 found no scanned
+#: floor at the start where the spawn check found it 6.5-8.5 cm above the levelled floor.
+SCHEMA_VERSION = "native_g1_route_floor_profile.v2"
 FILENAME = SCHEMA_VERSION + ".json"
 STEP_M = 0.25
 LATERAL_M = 0.3
 RIM_POINTS = 8
-#: An upward-facing surface at most about 25° from level reads as floor-like.
+#: A surface at most about 25° from level reads as floor-like, whichever way its face is wound
+#: (``native_g1_spawn_clearance.FLOOR_NORMAL_MIN_Z``, read as ``|n_z|`` there too).
 FLOOR_NORMAL_MIN_Z = 0.9
 #: Heights searched, relative to the levelled floor: what a foot could stand on or sink under.
 WINDOW_M = (-0.3, 0.5)
@@ -73,7 +77,7 @@ def surface_heights(triangles: np.ndarray, points_xy: np.ndarray, floor_z: float
     if len(triangles):
         normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
         norms = np.linalg.norm(normals, axis=1)
-        unit_z = np.divide(normals[:, 2], norms, out=np.zeros(len(norms)), where=norms > 0)
+        unit_z = np.abs(np.divide(normals[:, 2], norms, out=np.zeros(len(norms)), where=norms > 0))
         heights = triangles[:, :, 2] - floor_z
         keep = ((unit_z >= FLOOR_NORMAL_MIN_Z) & (heights.max(axis=1) >= WINDOW_M[0])
                 & (heights.min(axis=1) <= WINDOW_M[1]))
