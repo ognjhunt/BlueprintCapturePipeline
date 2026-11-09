@@ -670,13 +670,14 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
     floor_layer = np.zeros(len(faces), dtype=bool)
     floor_layer[rows[dropped]] = True
     # What the sheets leave standing (v12): their skirts and fins, steep faces a few centimetres tall. Among the
-    # faces left near the corridor, an edge-connected piece that reaches into the corridor and lies wholly inside
-    # the band goes too. A wall or a shelf side is connected to faces above the band, so all of it stays.
+    # steep faces left near the corridor, an edge-connected piece that reaches into the corridor and lies wholly
+    # inside the band goes too. A wall or a shelf side rises out of the band through steep faces, so all of it
+    # stays. Near-level faces are left out of the grouping: a scan's floor joins everything it touches, and a
+    # fin joined to a wall only through the floor beside the corridor is still a fin.
     cell_list = np.array(sorted(cells), dtype=np.float64)
     box_low = low + cell_list.min(axis=0) * cell - WALKED_FLOOR_MARGIN_M
     box_high = low + (cell_list.max(axis=0) + 1) * cell + WALKED_FLOOR_MARGIN_M
-    # A face already flat at y = 0 is the floor itself, never a piece on it.
-    nearby = np.flatnonzero(~floor_layer & (length > 1e-12) & ~np.all(np.abs(tri[:, :, 1]) <= 1e-6, axis=1)
+    nearby = np.flatnonzero(~floor_layer & (length > 1e-12) & ~level
                             & np.all((centroid[:, [0, 2]] >= box_low) & (centroid[:, [0, 2]] <= box_high), axis=1)
                             & (centroid[:, 1] >= -WALKED_FLOOR_SEARCH_M) & (centroid[:, 1] <= 2 * WALKED_FLOOR_SEARCH_M))
     debris = np.zeros(len(faces), dtype=bool)
@@ -768,7 +769,7 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
                                  "max": round(float(offsets.max()), 4)},
             "left_near_level_faces": int(sum(row["left_faces"] for row in cell_rows)),
             "dropped_above_layer_faces": int(above.sum()),
-            # Faces of any slope in low pieces wholly inside the band (the sheets' skirts and fins), per cell above.
+            # Steep faces in low pieces wholly inside the band (the sheets' skirts and fins), per cell above.
             "dropped_low_piece_faces": int(debris.sum()),
             "cells_with_faces_dropped_above_layer": int(sum("dropped_above_layer_faces" in row for row in cell_rows)),
             "layer_m": round(layer, 4), "clear_m": WALKED_FLOOR_CLEAR_M, "step_m": WALKED_FLOOR_STEP_M,

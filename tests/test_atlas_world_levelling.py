@@ -466,13 +466,14 @@ def test_the_low_pieces_a_floor_sheet_leaves_standing_go_and_a_wall_stays_whole(
     # faces 4-10 cm up: the skirts of the second sheet, left standing once its top faces went.
     from tests.atlas_level_room_fixture import _grid
     floor, floor_faces = _grid((-1.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 81, 41)
-    floor[:, 1] = 0.03 + 0.003 * np.sin(floor[:, 0] * 7.0)
-    # A fin across the walk: steep, from 4 to 10 cm, joined to nothing taller. Stored one triangle at a time.
-    fin, fin_faces = _grid((1.0, 0.04, -0.2), (0.0, 0.02, 0.0), (0.0, 0.0, 0.05), 4, 9)
+    floor[:, 1] = 0.03
+    # A fin across the walk: steep, from the scanned floor to 9 cm. Stored one triangle at a time, and joined
+    # to the wall below only through the floor beside the corridor (shared positions).
+    fin, fin_faces = _grid((1.0, 0.03, -0.2), (0.0, 0.02, 0.0), (0.0, 0.0, 0.05), 4, 9)
     fin = fin[fin_faces].reshape(-1, 3)
     fin_faces = np.arange(len(fin)).reshape(-1, 3)
-    # A wall inside the corridor, from the floor to 1 m: its lowest faces lie in the band and stay with it.
-    wall, wall_faces = _grid((0.2, 0.0, 0.4), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0), 21, 21)
+    # A wall inside the corridor, from the scanned floor to 1 m: its lowest faces lie in the band and stay with it.
+    wall, wall_faces = _grid((0.2, 0.03, 0.4), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0), 21, 21)
     mesh = trimesh.Trimesh(vertices=np.vstack([floor, fin, wall]), faces=np.vstack([
         floor_faces, fin_faces + len(floor), wall_faces + len(floor) + len(fin)]), process=False)
     footprints = np.column_stack([np.linspace(0.0, 2.0, 9), np.zeros(9)])
@@ -482,7 +483,7 @@ def test_the_low_pieces_a_floor_sheet_leaves_standing_go_and_a_wall_stays_whole(
     assert int((kept.min(axis=1) >= len(floor) + len(fin)).sum()) == len(wall_faces)  # every wall face stays
     assert record["dropped_low_piece_faces"] == len(fin_faces)
     pieces = [row for row in record["cells"] if "dropped_low_piece_faces" in row]
-    assert pieces and all(0.09 <= row["dropped_low_piece_top_m"] <= 0.11 for row in pieces)
+    assert pieces and all(0.08 <= row["dropped_low_piece_top_m"] <= 0.10 for row in pieces)
 
 
 def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
