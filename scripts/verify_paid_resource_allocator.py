@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import re
 import sys
@@ -174,6 +175,77 @@ ATLAS_PLAN_CAPABILITIES = frozenset({"review_survey"})
 APPROVED_ATLAS_PLAN_CALLERS = {
     ("src/blueprint_pipeline/paid_resource_allocator.py", "run_sponsored_website_atlas_plan"),
 }
+#: API-priced call sites (OpenAI, Gemini, World Labs, the hosted SAM service).
+#: Every site the signals below find is classified in this table; see
+#: ``_api_call_site_blockers``.
+API_CALL_SITE_TABLE = ROOT / "scripts/paid_api_call_sites.json"
+API_CALL_SITE_CLASSES = frozenset({"admitted", "not_paid", "unadmitted"})
+#: Sites that can spend and pass no admission, reservation or ledger. This list
+#: may only shrink: a site classified ``unadmitted`` that is not named here fails.
+UNADMITTED_API_CALL_SITES = frozenset({
+    "src/blueprint_pipeline/agent_operator_runtime.py::run_agents_sdk_operator._run::openai_agents_sdk_runner",
+    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator::openai_codex_client_construction",
+    "src/blueprint_pipeline/agent_runtime/openai_phase2.py::_OpenAISDKRunner.__call__::openai_client_construction",
+    "src/blueprint_pipeline/arena_result_ingest.py::_run_agents_sdk_operator._run::openai_agents_sdk_runner",
+    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_client_construction",
+    "src/blueprint_pipeline/capture_enrichment_llm.py::_OpenAISDKRunner.__call__::openai_client_construction",
+    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_agentic_video::gemini_client_construction",
+    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_text_repair::gemini_client_construction",
+    "src/blueprint_pipeline/hosted_image_generation_preflight.py::<module>::openai_api_url",
+    "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::openai_api_url",
+    "src/blueprint_pipeline/openai_prompt_cache_canary.py::run_mechanics_canary::openai_client_construction",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini.py::run_canary::gemini_client_construction",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::submit_pilot::gemini_client_construction",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai.py::run_canary::openai_client_construction",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai_batch.py::submit_shard::openai_client_construction",
+    "src/blueprint_pipeline/policy_ranking_roboarena_evaluator_openai.py::run_evaluator_inventory::openai_client_construction",
+    "src/blueprint_pipeline/policy_ranking_thesis_judge_openai.py::run_inventory::openai_client_construction",
+    "src/blueprint_pipeline/policy_ranking_thesis_judge_openai.py::run_inventory_v2::openai_client_construction",
+    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider._upload_video_as_media_asset::world_labs_marble_request",
+    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.submit::world_labs_marble_request",
+    "src/blueprint_pipeline/render_visual_qc.py::_gemini_review_image::gemini_client_construction",
+    "src/blueprint_pipeline/rollout_vision_label_openai.py::_openai_label::openai_client_construction",
+    "src/blueprint_pipeline/scene_placement/target_resolver.py::_gemini_resolve_text::gemini_client_construction",
+    "src/blueprint_pipeline/scene_semantics.py::_infer_capture_review_with_gemini_video::gemini_client_construction",
+    "src/blueprint_pipeline/scene_semantics.py::_infer_with_gemini_video::gemini_client_construction",
+    "src/blueprint_pipeline/wam_episode_consistency_label_gemini.py::build_gemini_wam_episode_consistency_labels::gemini_client_construction",
+    "src/blueprint_pipeline/wam_episode_consistency_label_openai.py::_openai_score_one::openai_client_construction",
+    "src/blueprint_pipeline/wam_generated_video_success_label_gemini.py::build_gemini_wam_success_labels::gemini_client_construction",
+    "src/blueprint_pipeline/wam_generated_video_success_label_openai.py::_openai_label_one::openai_client_construction",
+    "src/blueprint_pipeline/website_image_completion.py::_verify_completed_background::gemini_client_construction",
+})
+_API_HOSTS = {
+    "openai": re.compile(r"https://api\.openai\.com(?![\w.-])"),
+    "gemini": re.compile(r"https://generativelanguage\.googleapis\.com(?![\w.-])"),
+    "world_labs": re.compile(r"https://api\.(?:atlas-beta\.)?worldlabs\.ai(?![\w.-])"),
+    "meta_sam": re.compile(r"https://api\.meta\.ai(?![\w.-])"),
+}
+#: Calls that open a priced client or reach the repository's own provider wrappers.
+_API_CALLS = {
+    "OpenAI": ("openai", "openai_client_construction"),
+    "AsyncOpenAI": ("openai", "openai_client_construction"),
+    "AzureOpenAI": ("openai", "openai_client_construction"),
+    "Codex": ("openai", "openai_codex_client_construction"),
+    "_file_based_openai_api_key": ("openai", "openai_credentials"),
+    "_execute_frame_request": ("openai", "openai_image_edit_request"),
+    "atlas_api_config": ("world_labs", "world_labs_atlas_credentials"),
+    "_worldlabs_api_request": ("world_labs", "world_labs_marble_request"),
+    "meta_api_key": ("meta_sam", "meta_sam_credentials"),
+}
+_API_SDK_IMPORTS = {
+    "openai": {"OpenAI", "AsyncOpenAI", "AzureOpenAI"},
+    "openai_codex": {"Codex"},
+    "google.genai": {"Client"},
+}
+_API_SDK_IMPORT_TEXT = re.compile(
+    r"from\s+(?:openai|openai_codex|google\.genai|google)\s+import|import\s+google\.genai"
+)
+#: Text every signal needs; a module without any of it is not parsed.
+_API_PREFILTER = (
+    "OpenAI", "openai.com", "Codex", "genai", "generativelanguage", "worldlabs.ai", "atlas_api_config",
+    "_worldlabs_api_request", "meta_api_key", "api.meta.ai", "Runner", "_file_based_openai_api_key",
+    "_execute_frame_request",
+)
 SURFACE_CLASSIFICATIONS = {
     "canonical_allocator",
     "canonical_adapter",
@@ -439,7 +511,7 @@ def _s3_transport_capability_callers(
                     references.add(aliases.get(child.id, child.id))
                 elif isinstance(child, ast.Attribute):
                     references.add(child.attr)
-                elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                elif isinstance(child, ast.Constant) and isinstance(child.value, str) and "https://" in child.value:
                     if child.value in protected:
                         references.add(child.value)
             return references
@@ -635,6 +707,145 @@ def _verify_mutation_surface_contract() -> list[str]:
     return blockers
 
 
+def _api_call_sites(relative: str, source: str) -> dict[str, tuple[str, int]]:
+    """Each API-priced call site in one module: ``path::scope::signal`` -> (provider, first line)."""
+
+    if not any(text in source for text in _API_PREFILTER):
+        return {}
+    tree = ast.parse(source, filename=relative)
+    aliases: dict[str, str] = {}  # local name -> SDK class it binds
+    genai_modules = {"genai"}
+    imports_sdk = _API_SDK_IMPORT_TEXT.search(source) is not None
+    for node in ast.walk(tree) if imports_sdk else ():
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _API_SDK_IMPORTS.get(node.module or "", ()):
+                    aliases[alias.asname or alias.name] = alias.name
+                if node.module == "google" and alias.name == "genai":
+                    genai_modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "google.genai" and alias.asname:
+                    genai_modules.add(alias.asname)
+    sites: dict[str, tuple[str, int]] = {}
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = scope
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = (*scope, child.name)
+            hit = None
+            if isinstance(child, ast.Call):
+                target = child.func
+                if isinstance(target, ast.Name):
+                    name = aliases.get(target.id, target.id)
+                    hit = _API_CALLS.get(name)
+                    if name == "Client" and target.id in aliases:
+                        hit = ("gemini", "gemini_client_construction")
+                elif isinstance(target, ast.Attribute):
+                    if target.attr in {"Client", "GenerativeModel"} and ast.unparse(target.value) in {
+                        *genai_modules, "google.genai"
+                    }:
+                        hit = ("gemini", "gemini_client_construction")
+                    else:
+                        hit = _API_CALLS.get(target.attr)
+            elif (isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name)
+                  and child.value.id == "Runner" and child.attr.startswith("run")):
+                hit = ("openai", "openai_agents_sdk_runner")  # the Agents SDK's model loop
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str) and "https://" in child.value:
+                for provider, pattern in _API_HOSTS.items():
+                    if pattern.search(child.value):
+                        hit = (provider, provider + "_api_url")
+            if hit is not None:
+                key = f"{relative}::{'.'.join(scope) or '<module>'}::{hit[1]}"
+                sites.setdefault(key, (hit[0], child.lineno))
+            visit(child, inner)
+
+    visit(tree, ())
+    return sites
+
+
+def _repository_api_call_sites(root: Path = ROOT) -> dict[str, tuple[str, int]]:
+    sites: dict[str, tuple[str, int]] = {}
+    for path in _production_python_paths(root):
+        sites.update(_api_call_sites(path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")))
+    return sites
+
+
+@functools.lru_cache(maxsize=None)
+def _reference_lines(path: Path) -> tuple[dict[str, int], dict[str, int]]:
+    """First line calling, and first line defining, each name in ``path``."""
+
+    calls: dict[str, int] = {}
+    defs: dict[str, int] = {}
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        return calls, defs
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            target = node.func
+            called = target.id if isinstance(target, ast.Name) else getattr(target, "attr", None)
+            if called:
+                calls[called] = min(node.lineno, calls.get(called, node.lineno))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defs[node.name] = min(node.lineno, defs.get(node.name, node.lineno))
+    return calls, defs
+
+
+def _first_reference_line(path: Path, name: str) -> int | None:
+    """The line defining ``name`` in ``path``, else the first line calling it."""
+
+    calls, defs = _reference_lines(path)
+    return defs.get(name, calls.get(name))
+
+
+def _api_call_site_blockers(
+    sites: dict[str, tuple[str, int]],
+    table: dict,
+    root: Path = ROOT,
+    unadmitted_ceiling: frozenset[str] = UNADMITTED_API_CALL_SITES,
+) -> list[str]:
+    """Every API-priced call site is admitted, not paid, or a named unadmitted site."""
+
+    if table.get("schema_version") != "paid_api_call_sites.v1" or not isinstance(table.get("sites"), dict):
+        return ["paid_api_call_site_table_invalid"]
+    rows: dict = table["sites"]
+    how = (f"classify it in {API_CALL_SITE_TABLE.relative_to(ROOT).as_posix()} as admitted"
+           " (with via and admission), not_paid (with reason) or unadmitted (and name it in"
+           " UNADMITTED_API_CALL_SITES)")
+    blockers: list[str] = []
+    for key, (_provider, line) in sorted(sites.items()):
+        row = rows.get(key)
+        if not isinstance(row, dict):
+            blockers.append(f"unclassified_paid_api_call_site:{key} (line {line}): {how}")
+            continue
+        kind = row.get("class")
+        if kind not in API_CALL_SITE_CLASSES:
+            blockers.append(f"paid_api_call_site_class_invalid:{key}: {how}")
+        elif kind == "not_paid" and not str(row.get("reason") or "").strip():
+            blockers.append(f"paid_api_call_site_not_paid_reason_missing:{key}")
+        elif kind == "unadmitted" and key not in unadmitted_ceiling:
+            blockers.append(f"new_unadmitted_paid_api_call_site:{key}: route it through an existing"
+                            " admission or ledger; the unadmitted list may only shrink")
+        elif kind == "admitted":
+            # ``via``: where the site's path reaches the admission; ``admission``: the
+            # admission, reservation or ledger function. Both are ``path::name``.
+            for field in ("via", "admission"):
+                path, _, name = str(row.get(field) or "").partition("::")
+                if not name or _first_reference_line(root / path, name) is None:
+                    blockers.append(f"paid_api_call_site_{field}_missing:{key}")
+    return blockers
+
+
+def _verify_api_call_sites() -> list[str]:
+    try:
+        table = json.loads(API_CALL_SITE_TABLE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ["paid_api_call_site_table_unreadable"]
+    return _api_call_site_blockers(_repository_api_call_sites(), table)
+
+
 def _runpod_retirement_blockers(path: Path = SHARED_ADMISSION) -> list[str]:
     """The shared admission keeps RunPod retired at every entry that can open paid work."""
 
@@ -653,6 +864,7 @@ def verify() -> list[str]:
         *_verify_mutation_surface_contract(),
         *_verify_operator_docs(),
         *_runpod_retirement_blockers(),
+        *_verify_api_call_sites(),
     ]
     canonical = CANONICAL.read_text(encoding="utf-8")
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")

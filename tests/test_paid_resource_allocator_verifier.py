@@ -552,3 +552,62 @@ def test_shared_admission_must_keep_runpod_retired(tmp_path: Path) -> None:
         "    admission_resource_class"))
     assert bypassed.read_text() != source
     assert verifier._runpod_retirement_blockers(bypassed) == ["runpod_retirement_admission_refusal_missing"]
+
+
+def test_api_priced_call_sites_are_detected_for_each_provider():
+    cases = {
+        "from openai import OpenAI\ndef f():\n    return OpenAI()\n": ("openai", "f", "openai_client_construction"),
+        "from openai import AsyncOpenAI as Client\ndef f():\n    return Client()\n": (
+            "openai", "f", "openai_client_construction"),
+        "def f(agent):\n    return Runner.run_sync(agent, 'x')\n": ("openai", "f", "openai_agents_sdk_runner"),
+        "URL = 'https://api.openai.com/v1/responses'\n": ("openai", "<module>", "openai_api_url"),
+        "from google import genai\ndef f():\n    return genai.Client(api_key='k')\n": (
+            "gemini", "f", "gemini_client_construction"),
+        "from google.genai import Client\ndef f():\n    return Client()\n": (
+            "gemini", "f", "gemini_client_construction"),
+        "U = 'https://generativelanguage.googleapis.com/v1beta'\n": ("gemini", "<module>", "gemini_api_url"),
+        "class A:\n    def f(self):\n        return pose.atlas_api_config()\n": (
+            "world_labs", "A.f", "world_labs_atlas_credentials"),
+        "U = 'https://api.worldlabs.ai'\n": ("world_labs", "<module>", "world_labs_api_url"),
+        "def f():\n    return meta_api_key()\n": ("meta_sam", "f", "meta_sam_credentials"),
+        "U = 'https://api.meta.ai/v1/responses'\n": ("meta_sam", "<module>", "meta_sam_api_url"),
+    }
+    for source, (provider, scope, signal) in cases.items():
+        sites = verifier._api_call_sites("scripts/x.py", source)
+        assert sites == {f"scripts/x.py::{scope}::{signal}": (provider, sites[f"scripts/x.py::{scope}::{signal}"][1])}
+    # Documentation links and bare allowlist hosts are not call sites.
+    assert verifier._api_call_sites("scripts/x.py", "D = 'https://atlas-beta.worldlabs.ai/docs'\n"
+                                    "A = ['api.openai.com']\n") == {}
+
+
+def test_unclassified_api_call_site_fails_with_classification_instructions():
+    table = json.loads(verifier.API_CALL_SITE_TABLE.read_text())
+    sites = {"src/blueprint_pipeline/scratch.py::f::openai_client_construction": ("openai", 3)}
+    blockers = verifier._api_call_site_blockers(sites, table)
+    assert len(blockers) == 1
+    assert blockers[0].startswith(
+        "unclassified_paid_api_call_site:src/blueprint_pipeline/scratch.py::f::openai_client_construction (line 3)")
+    assert "admitted" in blockers[0] and "not_paid" in blockers[0] and "UNADMITTED_API_CALL_SITES" in blockers[0]
+
+
+def test_unadmitted_api_call_sites_may_only_shrink():
+    table = json.loads(verifier.API_CALL_SITE_TABLE.read_text())
+    named = {key for key, row in table["sites"].items() if row["class"] == "unadmitted"}
+    assert named == set(verifier.UNADMITTED_API_CALL_SITES)
+    new = "src/blueprint_pipeline/scratch.py::f::openai_client_construction"
+    grown = {**table, "sites": {**table["sites"], new: {"class": "unadmitted", "provider": "openai"}}}
+    assert verifier._api_call_site_blockers({new: ("openai", 3)}, grown) == [
+        f"new_unadmitted_paid_api_call_site:{new}: route it through an existing admission or ledger;"
+        " the unadmitted list may only shrink"]
+    # Removing an unadmitted site (no longer found in the code) passes.
+    assert verifier._api_call_site_blockers({}, table) == []
+
+
+def test_admitted_api_call_site_must_name_a_reachable_admission():
+    table = json.loads(verifier.API_CALL_SITE_TABLE.read_text())
+    key = "src/blueprint_pipeline/website_task_grounding.py::ground_task_target.invoke::gemini_client_construction"
+    assert table["sites"][key]["class"] == "admitted"
+    broken = {**table, "sites": {**table["sites"], key: {**table["sites"][key],
+                                                        "admission": "src/blueprint_pipeline/website_task_grounding.py::no_such"}}}
+    assert verifier._api_call_site_blockers({key: ("gemini", 1)}, broken) == [
+        "paid_api_call_site_admission_missing:" + key]
