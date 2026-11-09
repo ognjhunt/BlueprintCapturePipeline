@@ -61,18 +61,19 @@ def check_media_toolchain_coverage() -> None:
         raise ValueError("g1_beta_media_toolchain_not_covered")
 
 
-def _entrypoint():
-    missing = " || ".join(f"! command -v {name} >/dev/null 2>&1" for name in MEDIA_TOOLCHAIN_PACKAGES)
+def _media_missing() -> str:
+    return " || ".join(f"! command -v {name} >/dev/null 2>&1" for name in MEDIA_TOOLCHAIN_PACKAGES)
+
+
+def media_toolchain_install_shell() -> str:
+    """The bash block every G1 entrypoint runs to install the media toolchain the pinned image lacks.
+
+    Shared by the screening entrypoint here and the team lane's (``native_g1_team_provider_bundle``).
+    It leaves ``$OUT_DIR/media_toolchain_install.log``; the caller checks the toolchain after it.
+    """
     packages = " ".join(sorted(set(MEDIA_TOOLCHAIN_PACKAGES.values())))
-    return '''#!/usr/bin/env bash
-set -u
-RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
-mkdir -p "$OUT_DIR"
-cd "$RUNTIME_DIR"
-export BLUEPRINT_G1_PINNED_ISAAC_IMAGE="nvcr.io/nvidia/isaac-sim:6.0.1@sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
-# The native worker's dependency preflight needs ffmpeg and ffprobe, which the pinned
-# image lacks; the development and team G1 entrypoints install them the same way.
+    return '''# The native worker's dependency preflight needs ffmpeg and ffprobe, which the pinned
+# image lacks.
 # A rented machine can lose the default Ubuntu archive mid-download (2026-11-09, the library
 # job's DP run: every package fetch from archive.ubuntu.com:80 timed out after its index
 # update worked), so apt retries each fetch, each step is bounded in time, and a second try
@@ -95,7 +96,24 @@ if @MEDIA_MISSING@; then
     if ! { @MEDIA_MISSING@; }; then break; fi
   done
 fi
-if @MEDIA_MISSING@; then
+'''.replace("@MEDIA_MISSING@", _media_missing()).replace("@MEDIA_PACKAGES@", packages).replace(
+        "@INSTALL_ATTEMPTS@", " ".join(MEDIA_TOOLCHAIN_INSTALL_ATTEMPTS)).replace(
+        "@FALLBACK_MIRROR@", MEDIA_TOOLCHAIN_FALLBACK_MIRROR).replace(
+        "@APT_RETRIES@", str(MEDIA_TOOLCHAIN_APT_RETRIES)).replace(
+        "@UPDATE_SECONDS@", str(MEDIA_TOOLCHAIN_UPDATE_SECONDS)).replace(
+        "@INSTALL_SECONDS@", str(MEDIA_TOOLCHAIN_INSTALL_SECONDS))
+
+
+def _entrypoint():
+    missing = _media_missing()
+    return '''#!/usr/bin/env bash
+set -u
+RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
+OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
+mkdir -p "$OUT_DIR"
+cd "$RUNTIME_DIR"
+export BLUEPRINT_G1_PINNED_ISAAC_IMAGE="nvcr.io/nvidia/isaac-sim:6.0.1@sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
+@MEDIA_INSTALL@if @MEDIA_MISSING@; then
  /isaac-sim/python.sh -m blueprint_pipeline.native_g1_beta_runtime --runtime-root "$RUNTIME_DIR" \\
    --output-dir "$OUT_DIR" --failure-only g1_beta_media_toolchain_unavailable
  exit 2
@@ -118,12 +136,7 @@ if [ ! -f "$OUT_DIR/native_g1_beta_session_result.v1.json" ]; then
  runner_rc=2
 fi
 exit "$runner_rc"
-'''.replace("@MEDIA_MISSING@", missing).replace("@MEDIA_PACKAGES@", packages).replace(
-        "@INSTALL_ATTEMPTS@", " ".join(MEDIA_TOOLCHAIN_INSTALL_ATTEMPTS)).replace(
-        "@FALLBACK_MIRROR@", MEDIA_TOOLCHAIN_FALLBACK_MIRROR).replace(
-        "@APT_RETRIES@", str(MEDIA_TOOLCHAIN_APT_RETRIES)).replace(
-        "@UPDATE_SECONDS@", str(MEDIA_TOOLCHAIN_UPDATE_SECONDS)).replace(
-        "@INSTALL_SECONDS@", str(MEDIA_TOOLCHAIN_INSTALL_SECONDS))
+'''.replace("@MEDIA_INSTALL@", media_toolchain_install_shell()).replace("@MEDIA_MISSING@", missing)
 
 
 def check_reused_runtime_wheels(profile, runtime) -> None:

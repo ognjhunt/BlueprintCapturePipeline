@@ -487,3 +487,18 @@ def test_retained_reader_requires_exact_commit_before_opening_inputs(tmp_path, c
         bundle.read_retained_g1_team_provider_bundle(
             tmp_path / "absent.json", expected_implementation_commit=commit,
         )
+
+
+def test_team_entrypoint_installs_the_media_toolchain_like_the_screening_lane(tmp_path):
+    """The team lane had the bare apt install the library job's DP run lost on 2026-11-09 (archive
+    unreachable mid-download); it now runs the screening lane's block, with retries and a mirror fallback."""
+    import subprocess
+
+    from blueprint_pipeline import native_g1_beta_bundle as screening
+
+    script = bundle._entrypoint()
+    assert screening.media_toolchain_install_shell() in script
+    assert script.index("media toolchain install: attempt") < script.index("native_task_runtime_source_provision")
+    path = tmp_path / "entrypoint.sh"
+    path.write_text(script)
+    subprocess.run(["bash", "-n", str(path)], check=True)
