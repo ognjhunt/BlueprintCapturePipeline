@@ -56,8 +56,15 @@ def test_slow_identity_probe_is_bounded_and_not_multiplied_by_polling(monkeypatc
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=service.create_app()),
                                     base_url="http://test") as client:
             try:
+                # What proves each request is bounded is its payload: a 503 with
+                # `deployment_identity_probe_timeout` exists only if the request
+                # stopped waiting while the probe was still blocked. The outer
+                # bound is a hang guard. It stays below the probe's 5 s
+                # release.wait, so a handler that waited for the probe still
+                # fails here, but it no longer races runner load: a 0.5 s bound
+                # timed out on a loaded nightly runner (2026-11-08).
                 responses = await asyncio.wait_for(asyncio.gather(*(
-                    client.get("/api/live-pipeline/version") for _ in range(12))), 0.5)
+                    client.get("/api/live-pipeline/version") for _ in range(12))), 4.0)
                 assert entered.is_set() and len(calls) == 1
                 for response in responses:
                     assert response.status_code == 503
@@ -68,7 +75,10 @@ def test_slow_identity_probe_is_bounded_and_not_multiplied_by_polling(monkeypatc
                     assert payload["disk_headroom"]["refused_roles"] == list(service.CHAIN_ROLES)
             finally:
                 release.set()
-            await asyncio.sleep(0.03)
+            # Give the released probe (the in-flight one, or a fresh one if it
+            # already returned) time to answer, instead of sleeping a fixed
+            # 0.03 s and hoping its thread has returned by then.
+            monkeypatch.setattr(service, "DEPLOYMENT_DIAGNOSTIC_TIMEOUT_SECONDS", 4.0)
             response = await client.get("/api/live-pipeline/version")
             assert response.status_code == 200
             assert response.json()["source_commit"] == "b" * 40
