@@ -115,9 +115,68 @@ marker, source-artifact digests, and zero continuing spend. This is exact-image
 startup evidence only. It is not WAM/policy execution or SC3 rank-fidelity
 evidence and does not close `EVID-03`.
 
-Deploying a Pipeline commit requires `Full Test Lane / Full pytest lane on CPU
-runner` to have passed in a fresh `workflow_dispatch` run with reason
-`production_deployment_promotion` on that exact protected-main commit SHA.
+## Deploy gates
+
+Which gate a deploy must pass depends on what is deployed and how. *When* a
+Pipeline deploy may happen at all is a separate rule: `AGENTS.md`, "Beta Deploy
+Policy" (decision D-08), with the procedure in
+[`runbooks/beta-operations.md`](runbooks/beta-operations.md) section 6. Neither
+gate below replaces it.
+
+**Beta: a control-plane deploy through the operator door (iteration deploy).**
+This is how the control plane is deployed during the invited beta: `python3
+scripts/operator_door.py deploy <sha on main>` or `deploy --latest-attested`,
+without `--release-provenance` (`scripts/operator_door.py:871`: "absent means
+iteration deploy"). Its gate is main CI's supply-chain attestation, not the Full
+Test Lane:
+
+- the door runs the target commit's `scripts/deploy_control_plane_commit.py`
+  with `--iteration` when no provenance was sent
+  (`deploy/operator-door/door-deploy.sh:24-25`);
+- the commit must be an ancestor of `origin/main`
+  (`scripts/deploy_control_plane_commit.py:5191-5193`, and the door's own check,
+  `deploy/operator-door/door-common.sh:201`);
+- before anything pauses, the tool waits for main CI to list the commit's source
+  attestation (`scripts/deploy_control_plane_commit.py:5390-5395`), and the
+  signed proof is then verified with `gh attestation verify` before the
+  privileged installer runs (`scripts/deploy_control_plane_commit.py:5430`,
+  `:4946`, `:4779`, `:4620-4627`). A commit without that attestation does not
+  deploy;
+- that attestation is made only by the `SBOM, license, and provenance contract`
+  job of `.github/workflows/ci.yml`, which runs only on a push and only after
+  the impacted gate, lint, typecheck, SAST, source governance, dependency
+  security and container contract jobs all succeeded
+  (`.github/workflows/ci.yml:738-751`, attest step `:818-830`). It is the job
+  `deploy --latest-attested` looks for (`scripts/operator_door.py:85`,
+  `:482-494`).
+
+An iteration deploy skips the Full Test Lane on purpose
+(`scripts/deploy_control_plane_commit.py:5145-5158`). Its receipt,
+`deploy-receipts/iteration_<sha12>_door.json`
+(`deploy/operator-door/door-deploy.sh:143`), records `status: "iteration"`,
+`promotion_eligible: false` and `canonical_full_lane_verified: false`
+(`scripts/deploy_control_plane_commit.py:5194-5204`), so it can never be read as
+a promoted release.
+
+**Production: a control-plane deploy with release provenance.** A door deploy
+that carries `--release-provenance <receipt> --release-provenance-sha256 <hex>`
+runs the deploy tool with `--release-provenance` instead of `--iteration`
+(`deploy/operator-door/door-deploy.sh:26-51`); its receipt is
+`deploy-receipts/production_<sha12>_door.json`. Without provenance a
+non-iteration deploy refuses (`deploy_release_provenance_missing`,
+`scripts/deploy_control_plane_commit.py:5209-5210`), and the provenance must be a
+`verified` receipt of `Full Test Lane / Full pytest lane on CPU runner`
+(`.github/workflows/full-test-lane.yml`) for that exact commit, with a positive
+test count and `canonical_full_lane_verified: true`
+(`scripts/deploy_control_plane_commit.py:804-840`). The supply-chain attestation
+above is required as well: the wait and the verification run in both modes.
+
+**Cloud images: `deploy/scripts/deploy.sh`.** The Cloud Run / Terraform deploy
+requires `Full Test Lane / Full pytest lane on CPU runner` to have passed in a
+fresh `workflow_dispatch` run with reason `production_deployment_promotion`
+on that exact protected-main commit SHA, and it has no bypass
+(`deploy/scripts/deploy.sh:88-91`, `:352-355`).
+
 The commit only has to remain on `main`; a later merge does not void its
 promotion. The lane plans twelve independent serial shards from measured
 durations (`.github/full-test-lane-duration-baseline.json`): every file stays
@@ -139,9 +198,11 @@ FULL_TEST_LANE_EVIDENCE_URI="https://github.com/.../actions/runs/..." \
 ```
 
 The nightly scheduled run is supplementary health evidence only; it is not deploy
-proof for a different commit. Emergency rollback remains available through
+proof for a different commit, and no deploy gate reads it. Emergency rollback of
+the cloud images remains available through
 `deploy/scripts/deploy.sh --rollback --rollback-image-tag <tag>` and has its own
-rollback verification/health checks.
+rollback verification/health checks. A control-plane rollback is an ordinary door
+deploy of an earlier commit (`runbooks/beta-operations.md` section 5).
 
 Release build tags are SHA-derived and deployed images are digest pinned. `deploy/scripts/deploy.sh`
 defaults `IMAGE_TAG` to the current git SHA prefix, refuses `latest`/`dev`/`test`

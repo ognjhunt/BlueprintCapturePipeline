@@ -491,6 +491,12 @@ Before you deploy:
    python3 scripts/operator_door.py deploy <sha on origin/main> --wait
    ```
 
+   Without `--release-provenance` this is an iteration deploy. Its gate is main
+   CI's supply-chain attestation for the commit, not a Full Test Lane run: a
+   commit main CI has not attested does not deploy, and nothing pauses before
+   the attestation is listed
+   ([`../CI_REQUIRED_CHECKS.md`](../CI_REQUIRED_CHECKS.md), "Deploy gates").
+
 5. Record the deploy in
    [`../launch-readiness/2026-11-beta-launch-tracker.md`](../launch-readiness/2026-11-beta-launch-tracker.md):
    the commit, the time, and what it carried.
