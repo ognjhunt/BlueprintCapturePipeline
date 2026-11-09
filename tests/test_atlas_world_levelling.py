@@ -395,6 +395,46 @@ def test_a_floor_face_crossing_the_corridor_edge_leaves_no_hole_beyond_it():
     assert np.any(np.all(low <= point, axis=1) & np.all(point <= high, axis=1))
 
 
+def test_a_floor_that_also_slopes_across_the_walk_is_followed_cell_by_cell():
+    # capture-5b067498, levelling v9 (2026-11-09): the floor under the start stood 6.5-9.4 cm up and sloped
+    # across the walk, outside the one fitted surface's layer, so it stayed and the G1 still overlapped it.
+    from tests.atlas_level_room_fixture import _grid
+    floor, floor_faces = _grid((-1.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 101, 41)
+    x, z = floor[:, 0], floor[:, 2]
+    # Level until x = 2, then climbing to 8 cm at x = 3 and tilting 10 cm/m across the walk there.
+    rise = np.clip(x - 2.0, 0.0, 1.0)
+    floor[:, 1] = 0.08 * rise + 0.10 * rise * z
+    floor_faces = floor_faces[:, ::-1]  # wound downward, as the scan's faces under the start were
+    board, board_faces = _grid((2.4, 0.0, 0.3), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 9, 5)
+    board[:, 1] = 0.25
+    mesh = trimesh.Trimesh(vertices=np.vstack([floor, board]),
+                           faces=np.vstack([floor_faces, board_faces + len(floor)]), process=False)
+    footprints = np.column_stack([np.linspace(0.0, 3.0, 13), np.zeros(13)])
+    record = levelling._planarize_walked_floor(mesh, footprints_m=footprints, meters_per_unit=1.0)
+    rebuilt = record.pop("mesh")
+    tri = np.asarray(rebuilt.vertices)[np.asarray(rebuilt.faces)]
+    centroid = tri.mean(axis=1)
+    stance = (np.abs(centroid[:, 0] - 2.95) <= 0.3) & (np.abs(centroid[:, 2]) <= 0.3) & (centroid[:, 1] < 0.2)
+    assert not np.any(stance)  # nothing of the scanned floor is left under a stance at the walk's end
+    assert int((np.asarray(rebuilt.faces).min(axis=1) >= len(floor)).sum()) == len(board_faces)  # the board stays
+    assert record["floor_cells"] > record["inlier_cells"] and record["surface_offset_m"]["max"] > 0.06
+    end = [row for row in record["cells"] if abs(row["x_m"] - 2.875) < 0.2 and abs(row["z_m"]) < 0.3]
+    assert end and all(row["floor"] and row["dropped_faces"] > 0 and row["left_faces"] == 0 for row in end)
+
+
+def test_a_large_floor_face_on_a_slope_is_judged_corner_by_corner():
+    # Codex on #3511: a floor triangle spanning cells on an 8 cm/m slope has corners more than the layer apart.
+    from tests.atlas_level_room_fixture import _grid
+    fine, fine_faces = _grid((-0.5, 0.0, -0.5), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 51, 21)
+    fine[:, 1] = 0.08 * fine[:, 0]
+    big = np.array([[0.0, 0.0, 0.1], [2.0, 0.16, 0.1], [1.0, 0.08, 0.4]])
+    mesh = trimesh.Trimesh(vertices=np.vstack([fine, big]),
+                           faces=np.vstack([fine_faces, [[len(fine), len(fine) + 2, len(fine) + 1]]]), process=False)
+    footprints = np.column_stack([np.linspace(0.0, 2.0, 9), np.zeros(9)])
+    record = levelling._planarize_walked_floor(mesh, footprints_m=footprints, meters_per_unit=1.0)
+    assert not np.any(np.asarray(record["mesh"].faces).max(axis=1) >= len(fine))  # the large face went too
+
+
 def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
     from tests.atlas_level_room_fixture import _grid
     vertices, faces = _grid((-1.0, 0.0, -1.0), (0.1, 0.0, 0.0), (0.0, 0.0, 0.1), 21, 21)
@@ -411,7 +451,7 @@ def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
 
 def test_a_levelled_world_with_a_warped_floor_records_its_planarized_corridor(tmp_path):
     value, _ = level(tmp_path)
-    assert value["binding"]["revision"] == levelling.REVISION == "atlas_world_levelling.v9"
+    assert value["binding"]["revision"] == levelling.REVISION == "atlas_world_levelling.v10"
     planarized = value["walked_floor"].get("planarized")
     # The fixture's floor is flat: the corridor's floor is fitted, and nothing off the plane needed replacing.
     assert planarized is not None and planarized["surface_offset_m"]["max"] < 0.02

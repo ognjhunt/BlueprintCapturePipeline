@@ -422,6 +422,15 @@ a pose, and nothing fed the earlier pose's findings into the next request
   - anything standing higher, such as a shelf's bottom board or an object on the
     floor, stays, and so does everything outside the corridor.
 
+  **v10 (same day).** v9's one fitted surface left the floor under the start in
+  place: it stood 6.5–9.4 cm up and sloped across the walk, outside the surface's
+  layer, and the spawn check still read `overlap` ($0). The floor is now followed
+  cell by cell: the fit's inlier cells, plus every seeded cell within 4 cm of a
+  floor cell beside it, so a warped floor is followed and a board (a jump) is
+  not. A face is floor when every corner is within 5 cm of the floor where it
+  lies. The record lists each corridor cell's seed, whether it is floor, and the
+  near-level faces dropped and left (`cells`, heights only).
+
   It's disclosed as `walked_floor.planarized` (`development_only_estimate`), with
   the scanned floor's offset range before the change. This is the floor analogue
   of a rigid task's support pad (`rigid_support_pad`). The splat is as captured.
