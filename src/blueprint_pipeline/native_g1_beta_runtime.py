@@ -186,21 +186,44 @@ def _retained_bytes(root):
     return total
 
 
+#: The worker's own output goes to its log file, so the provider log, which is all the controller watches,
+#: is silent while episodes run, and the controller ends a G1 run after 30 minutes with no new provider-log
+#: line (2026-11-09: DP and pi0.5 each ended about 30 minutes after their last line, no output). While the
+#: worker's log or output grows, a line goes to the provider log this often; a worker that stops growing
+#: prints nothing, so a hung run still ends at that window. No ``_PROGRESS:`` payload, which would switch
+#: the controller to structured tracking.
+PROGRESS_REPORT_SECONDS = 60
+
+
+def _say(line: str) -> None:
+    print(line, flush=True)
+
+
 def _run_worker(request_path, cell_root, *, deadline, output):
     log_path = cell_root.parent / (cell_root.name + ".worker.log")
     argv = ["/isaac-sim/python.sh", "-m", "blueprint_pipeline.native_g1_development_worker",
             "--request", str(request_path), "--output-dir", str(cell_root)]
+    _say(f"BLUEPRINT_G1_CELL_STARTED:{cell_root.name}")
     with log_path.open("xb") as log:
         process = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         reason = None
+        reported, last_report = None, time.time()
         try:
             while process.poll() is None:
                 if time.time() >= deadline:
                     reason = "g1_beta_native_worker_deadline"
                     break
-                if _retained_bytes(output) > MAX_OUTPUT_BYTES - OUTPUT_MARGIN:
+                retained = _retained_bytes(output)
+                if retained > MAX_OUTPUT_BYTES - OUTPUT_MARGIN:
                     reason = "g1_beta_output_byte_budget_exhausted"
                     break
+                if time.time() - last_report >= PROGRESS_REPORT_SECONDS:
+                    growth = (log_path.stat().st_size, retained)
+                    if growth != reported:
+                        _say(f"BLUEPRINT_G1_RUNTIME_WORKING:cell={cell_root.name}:log_bytes={growth[0]}"
+                             f":output_bytes={growth[1]}")
+                        reported = growth
+                    last_report = time.time()
                 try:
                     process.wait(timeout=min(5, remaining_seconds(deadline)))
                 except subprocess.TimeoutExpired:
@@ -213,6 +236,7 @@ def _run_worker(request_path, cell_root, *, deadline, output):
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=5)
+    _say(f"BLUEPRINT_G1_CELL_EXITED:{cell_root.name}:{process.returncode}:{reason or 'exited'}")
     return process.returncode, reason
 
 
@@ -326,7 +350,9 @@ def run_session(root: Path, output: Path, *, failure_only: str | None = None):
         if _preflight_g1_runtime_imports(output)["status"] != "passed":
             raise ValueError("g1_beta_runtime_import_failure")
         stage = "policy_dependencies"
+        _say("BLUEPRINT_G1_STAGE:policy_runtime_build")
         runtime_python = Path(_build_runtime(root, output, deadline - 120)["python_executable"])
+        _say("BLUEPRINT_G1_STAGE:policy_runtime_ready")
         if needs_pi_tokenizer(authority["candidate_ids"]):
             stage = "pi_tokenizer"
             tokenizer = stage_provider_tokenizer(inventory_path=root.parent / "configs/g1_paligemma_tokenizer_inventory.v1.json",

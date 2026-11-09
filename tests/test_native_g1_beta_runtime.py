@@ -161,3 +161,48 @@ def test_symlinked_frames_are_never_followed(tmp_path):
 
     assert runtime.drop_encoded_frames(tmp_path / "media") == 0
     assert (outside / "keep.png").is_file()
+
+
+def test_a_worker_that_keeps_growing_prints_progress_and_a_stalled_one_goes_quiet(tmp_path, monkeypatch, capsys):
+    """2026-11-09: DP and pi0.5 each ended about 30 minutes after their provider log's last line, with no output:
+    the worker writes only to its own log, and the controller watches only the provider log."""
+    import itertools
+    import re
+    import subprocess
+
+    from blueprint_pipeline import native_g1_beta_runtime as runtime
+
+    class Worker:
+        def __init__(self, argv, stdout, **_):
+            self.log, self.calls, self.returncode, self.pid = stdout, 0, None, 1
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.calls += 1
+            if self.calls <= 3:  # episodes running: the worker's log grows
+                self.log.write(b"x" * 10)
+                self.log.flush()
+                raise subprocess.TimeoutExpired("worker", timeout)
+            if self.calls <= 6:  # stalled: nothing grows, so nothing is printed
+                raise subprocess.TimeoutExpired("worker", timeout)
+            self.returncode = 0
+            return 0
+
+    clock = itertools.count(1_000_000, 61)
+    monkeypatch.setattr(runtime.time, "time", lambda: next(clock))
+    monkeypatch.setattr(runtime, "remaining_seconds", lambda _deadline: 5)
+    monkeypatch.setattr(runtime, "_retained_bytes", lambda _output: 0)
+    monkeypatch.setattr(runtime.subprocess, "Popen", Worker)
+    cell_root = tmp_path / "cells" / "cell-000"
+    cell_root.parent.mkdir()
+
+    assert runtime._run_worker(tmp_path / "request.json", cell_root, deadline=10**12, output=tmp_path) == (0, None)
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("BLUEPRINT_G1_")]
+    assert lines[0] == "BLUEPRINT_G1_CELL_STARTED:cell-000"
+    assert lines[-1] == "BLUEPRINT_G1_CELL_EXITED:cell-000:0:exited"
+    working = [int(re.search(r":log_bytes=(\d+):", line).group(1)) for line in lines if "RUNTIME_WORKING" in line]
+    # Each line reports growth; the stalled stretch adds none, so a hung worker still trips the controller.
+    assert len(working) >= 2 and working == sorted(set(working))
+    assert all("_PROGRESS:" not in line for line in lines)

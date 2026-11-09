@@ -820,6 +820,18 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - **Also (this PR):**
     - The entrypoint prints `BLUEPRINT_G1_STAGE:<stage>` as provisioning and the runtime start, and as each exits. Each stage gets the controller's no-progress window afresh, and the provider log names where a run stopped. There is no ticker after the install, so a hung stage still ends at that window.
     - The coordinator's launch order: a candidate with at most two runs left (`SCARCE_RUNS_LEFT`) goes after a sibling on the same backend with fewer harness failures. The one-at-a-time retry guard and the sibling hold then mean π0.5 proves the release before DP spends another run. A candidate with runs to spare keeps today's order. No limit changes.
+- **9b9bd6e live, 11-09 12:43:51Z** (#3493–#3496, deployed by the library-aisle session on the owner's "yes, deploy latest main"). Re-plan `screening-d5253cb3…` at 12:53Z.
+  - **The ordering worked:** π0.5 launched first (`screen-ef1b9db9…`, 12:58:49Z) and DP waited. The provider log reached `BLUEPRINT_G1_MEDIA_TOOLCHAIN_READY` on the default try (no heartbeat lines needed), then `runtime_source_provisioning`, `…_exit:0` and `runtime_start`. Nothing after that.
+  - About 36 minutes live (2,156 s): no upload, torn down, `g1_beta_native_result_missing_or_invalid`, **$0.82, no episode**. That is π0.5's first harness failure. DP was held unspent (`beta_screening_held_after_launch_failure`) and still has two runs left.
+  - **Cause:**
+    - The arena lane ends a run after `heartbeat_no_progress_seconds=1800` with no new provider-log line.
+    - The G1 runtime sends its worker's output to a per-cell log file and prints nothing to the provider log. Every session longer than 30 minutes is therefore ended, here and in DP's b85ac9e run, each about 30 minutes after its last line.
+    - Attempt 6 (11-08, 82 minutes) was just as silent and survived: its provider log has nothing between the entrypoint start and the final lines, consistent with a log channel that delivered nothing while it ran, which leaves the watchdog on the output store.
+    - The media install was not the cause (#3494 still helps diagnosis).
+  - **Fix (this PR):**
+    - While a worker runs, the runtime prints `BLUEPRINT_G1_RUNTIME_WORKING:cell=…:log_bytes=…:output_bytes=…` every 60 s, but only if the worker's log or output grew. A stalled worker prints nothing, so a hung run still ends at the window.
+    - Markers at each cell's start and exit, and around the policy runtime build.
+    - No `_PROGRESS:` payload, and no limit changes.
 
 ## Operating notes (2026-11-02)
 
