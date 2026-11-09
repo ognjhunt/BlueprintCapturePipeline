@@ -1,0 +1,170 @@
+{
+ "schema_version": "blueprint_replay_set_manifest.v1",
+ "set_id": "replay_set_v1",
+ "synthetic": true,
+ "materialize_root": "/tmp/blueprint-replay-set-v1",
+ "built_by": "PYTHONPATH=src python -m tests.replay_set_v1_build --out tests/fixtures/replay_set_v1",
+ "records": [
+  {
+   "record_id": "rigid-pick-place-1080p-short",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "rigid_pick_and_place",
+   "description": "A completed rigid pick-and-place preparation with its robot-free probe trace retained.",
+   "input_variety": {
+    "video_resolution": "1080p",
+    "clip_length": "short",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [],
+   "file_count": 28,
+   "tools": [
+    {
+     "tool": "task_evaluation_downstream_replay",
+     "until": "screening_plan",
+     "inputs": {
+      "launch_run": "launch-runs/scene-website-qualifying",
+      "intent_dir": "intents/scene-8d4f549f6526a335a28ba235cf0e9b771b2ccaf750c58ed601f4915194ef17c2",
+      "capture_dir": "partition/scenes/site-req-1/captures/walkthrough-req-1",
+      "registry": "operator/team-evaluation-registry.json",
+      "mirror": "mirror",
+      "webapp_snapshots": "webapp"
+     },
+     "expected_stop": {
+      "kind": "completed",
+      "stage": "screening_plan",
+      "code": "until_screening_plan"
+     }
+    }
+   ]
+  },
+  {
+   "record_id": "rigid-pick-place-4k-long",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "rigid_pick_and_place",
+   "description": "A completed rigid pick-and-place preparation with no probe trace: the probe must run, so the chain stops where the probe lane would buy its GPU run.",
+   "input_variety": {
+    "video_resolution": "4k",
+    "clip_length": "long",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [],
+   "file_count": 93,
+   "tools": [
+    {
+     "tool": "task_evaluation_downstream_replay",
+     "until": "screening_plan",
+     "inputs": {
+      "launch_run": "launch-runs/scene-website-qualifying",
+      "intent_dir": "intents/scene-8d4f549f6526a335a28ba235cf0e9b771b2ccaf750c58ed601f4915194ef17c2",
+      "capture_dir": "partition/scenes/site-req-1/captures/walkthrough-req-1",
+      "registry": "operator/team-evaluation-registry.json",
+      "mirror": "mirror",
+      "webapp_snapshots": "webapp"
+     },
+     "expected_stop": {
+      "kind": "would_buy",
+      "stage": "probe_enqueue",
+      "code": "paid_resource_allocator:gpu-canary:rigid-robot-free-probe"
+     }
+    }
+   ]
+  },
+  {
+   "record_id": "rigid-pick-place-1080p-long-closure-missing",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "rigid_pick_and_place",
+   "description": "A rigid pick-and-place launch whose post-teardown provider-zero receipt was not retained: the join names the file to pull.",
+   "input_variety": {
+    "video_resolution": "1080p",
+    "clip_length": "long",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [],
+   "file_count": 27,
+   "tools": [
+    {
+     "tool": "task_evaluation_downstream_replay",
+     "until": "screening_plan",
+     "inputs": {
+      "launch_run": "launch-runs/scene-website-qualifying",
+      "intent_dir": "intents/scene-8d4f549f6526a335a28ba235cf0e9b771b2ccaf750c58ed601f4915194ef17c2",
+      "capture_dir": "partition/scenes/site-req-1/captures/walkthrough-req-1",
+      "registry": "operator/team-evaluation-registry.json",
+      "mirror": "mirror",
+      "webapp_snapshots": "webapp"
+     },
+     "expected_stop": {
+      "kind": "missing_input",
+      "stage": "completion",
+      "code": "{host}/launch-runs/scene-website-qualifying/post_teardown_provider_zero_receipt.json"
+     }
+    }
+   ]
+  },
+  {
+   "record_id": "navigation-4k-short",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "navigation",
+   "description": "A navigation job prepared with its scene kept as filmed (no launch). The post-completion chain is the launched preparation's; its join does not adopt this job, by name.",
+   "input_variety": {
+    "video_resolution": "4k",
+    "clip_length": "short",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [
+    "launch-runs/none"
+   ],
+   "file_count": 4,
+   "tools": [
+    {
+     "tool": "task_evaluation_downstream_replay",
+     "until": "screening_plan",
+     "inputs": {
+      "launch_run": "launch-runs/none",
+      "intent_dir": "intents/scene-c09dee8eab582b003dc09e9a5d3552a597be87d87f57925674f3c6ceef4c7ed3"
+     },
+     "expected_stop": {
+      "kind": "refusal",
+      "stage": "completion",
+      "code": "preparation_completion_not_adopted"
+     }
+    }
+   ]
+  },
+  {
+   "record_id": "navigation-1080p-long",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "navigation",
+   "description": "A second navigation job, as above, under its own submission.",
+   "input_variety": {
+    "video_resolution": "1080p",
+    "clip_length": "long",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [
+    "launch-runs/none"
+   ],
+   "file_count": 4,
+   "tools": [
+    {
+     "tool": "task_evaluation_downstream_replay",
+     "until": "screening_plan",
+     "inputs": {
+      "launch_run": "launch-runs/none",
+      "intent_dir": "intents/scene-adff486e4f0be12d651c8e058c97898948c11a7fc8a3ae1231bbd15dced7d879"
+     },
+     "expected_stop": {
+      "kind": "refusal",
+      "stage": "completion",
+      "code": "preparation_completion_not_adopted"
+     }
+    }
+   ]
+  }
+ ]
+}
