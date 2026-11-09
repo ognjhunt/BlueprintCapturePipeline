@@ -127,6 +127,8 @@ def test_a_candidate_our_harness_failed_is_planned_again_after_a_deploy_within_t
     planned again after the deploy, inside the site's allowance, at most twice; the first failure
     in a campaign holds its siblings unspent."""
     monkeypatch.setattr(coordinator, "HARNESS_RETRY_LIMIT", 2)  # the bound's behavior, at a small limit
+    # The bound, not the launch order: at this small limit every retried candidate would be near it.
+    monkeypatch.setattr(coordinator, "SCARCE_RUNS_LEFT", 0)
     coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
     for _ in range(2):  # One launch per pass, as in production.
         coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
