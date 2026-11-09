@@ -177,7 +177,7 @@ def test_entrypoint_installs_the_media_toolchain_before_provisioning(tmp_path):
     subprocess.run(["bash", "-n", str(path)], check=True)
 
 
-def _media_install_block(tmp_path, *, fallback_works: bool, apt_seconds: int = 0):
+def _media_install_block(tmp_path, *, fallback_works: bool, apt_seconds: int = 0, compiler: bool = True):
     """Run the entrypoint up to provisioning with a stub apt: the default archive never delivers."""
     script = bundle._entrypoint()
     script = script[:script.index("/isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision")]
@@ -198,6 +198,7 @@ grep -q {works} "$BLUEPRINT_MEDIA_TOOLCHAIN_APT_ETC/sources.list.d/ubuntu.source
   {{ echo "E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/universe/f/ffmpeg/ffmpeg.deb"; exit 100; }}
 printf '#!/bin/sh\\n' > "{bin_dir}/ffmpeg"; cp "{bin_dir}/ffmpeg" "{bin_dir}/ffprobe"
 chmod +x "{bin_dir}/ffmpeg" "{bin_dir}/ffprobe"
+{'cp "' + str(bin_dir) + '/ffmpeg" "' + str(bin_dir) + '/gcc"' if compiler else ':'}
 """)
     (bin_dir / "apt-get").chmod(0o755)
     path = tmp_path / "entrypoint.sh"
@@ -259,6 +260,20 @@ def test_each_entrypoint_stage_announces_itself_without_a_ticker():
         position = script.index(marker, position) + len(marker)
     # The only background loop is the install's, which its own time bounds end.
     assert script.count("while :; do sleep") == 1
+
+
+def test_the_install_brings_a_c_compiler_and_a_missing_one_never_refuses_the_run(tmp_path):
+    """2026-11-09, the library job's pi0.5 run: torch.compile failed on its first inference, ``Failed to find C
+    compiler``. The compiler comes with the media toolchain; only a compiling policy needs it, so its absence is
+    the runtime's compile check to judge, never the entrypoint's media refusal."""
+    if shutil.which("timeout") is None:
+        pytest.skip("coreutils timeout is not installed")
+    script = bundle._entrypoint()
+    assert all(package in script.split("apt-get install -y -qq", 1)[1].split(">>", 1)[0]
+               for package in bundle.COMPILER_TOOLCHAIN_PACKAGES)
+    run, log, _ = _media_install_block(tmp_path, fallback_works=True, compiler=False)
+    assert "MEDIA_READY" in run.stdout and "REFUSED" not in run.stdout
+    assert log.count("media toolchain install: attempt") == len(bundle.MEDIA_TOOLCHAIN_INSTALL_ATTEMPTS)
 
 
 def test_a_slow_install_keeps_printing_so_the_controller_does_not_end_the_run(tmp_path, monkeypatch):

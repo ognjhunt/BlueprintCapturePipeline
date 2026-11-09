@@ -240,6 +240,42 @@ class _GrowthReporter:
         return False
 
 
+#: A policy server that compiles its model (``compile_model`` in its checkpoint's config) needs a working
+#: torch.compile toolchain (a C compiler for Inductor/Triton). 2026-11-09, the library job's pi0.5 run: SONIC
+#: and the checkpoint loaded, then the first inference failed (``Failed to find C compiler``) about 40 minutes
+#: in. The same compile on a tiny function runs before the first episode instead.
+COMPILE_CHECK_SECONDS = 600
+COMPILE_CHECK_PROBE = (
+    "import torch\n"
+    "probe = torch.compile(lambda x: x * 2 + 1)\n"
+    "assert float(probe(torch.ones(8, device='cuda')).sum()) == 24.0\n"
+)
+COMPILE_TOOLCHAIN_REASON = "g1_beta_policy_compile_toolchain_unavailable"
+
+
+def policy_compiles(policy_dir: Path) -> bool:
+    """Whether the checkpoint's own config asks its server to compile the model (as the server reads it)."""
+    settings = json.loads((policy_dir / "config.json").read_text(encoding="utf-8"))
+    return isinstance(settings, dict) and settings.get("compile_model") is True
+
+
+def check_policy_compile(runtime_python: Path, *, deadline: float) -> None:
+    """Compile and run a tiny function with torch.compile on the GPU in the policy runtime; raise the typed
+    reason, with the probe's last lines in the provider log, if the toolchain cannot."""
+    _say("BLUEPRINT_G1_STAGE:policy_compile_check")
+    try:
+        run = subprocess.run([str(runtime_python), "-c", COMPILE_CHECK_PROBE], capture_output=True, text=True,
+                             timeout=max(1.0, min(COMPILE_CHECK_SECONDS, deadline - time.time())))
+    except subprocess.TimeoutExpired:
+        run = None
+    if run is None or run.returncode != 0:
+        tail = ((run.stderr or run.stdout) if run is not None else "compile check timed out").splitlines()[-8:]
+        for line in tail:
+            _say("BLUEPRINT_G1_COMPILE_CHECK:" + line[:240])
+        raise ValueError(COMPILE_TOOLCHAIN_REASON)
+    _say("BLUEPRINT_G1_STAGE:policy_compile_ready")
+
+
 def _run_worker(request_path, cell_root, *, deadline, output):
     log_path = cell_root.parent / (cell_root.name + ".worker.log")
     argv = ["/isaac-sim/python.sh", "-m", "blueprint_pipeline.native_g1_development_worker",
@@ -403,6 +439,12 @@ def run_session(root: Path, output: Path, *, failure_only: str | None = None):
         stage = "selected_model_staging"
         models = stage_selected_assets(root=root, output=output, candidate_ids=authority["candidate_ids"], deadline=deadline - 120)
         _write(output / "models/sonic_cuda_preflight.json", preflight_sonic_cuda_models(models["sonic"]))
+        from .native_g1_policy_server_supervisor import _candidate_policy_dir
+        policy_dir = _candidate_policy_dir(root.parent / "configs/g1_humanoidarena_checkpoint_inventory.v1.json",
+                                           authority["candidate_ids"][0], output / "models" / "checkpoints")
+        if policy_compiles(policy_dir):
+            stage = "policy_compile_check"
+            check_policy_compile(runtime_python, deadline=deadline - 120)
         os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1",
                           TORCH_HOME=str(output / "models/torch"))
         for index, cell in enumerate(authority["cells"]):

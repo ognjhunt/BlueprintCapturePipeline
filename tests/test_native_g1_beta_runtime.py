@@ -228,3 +228,49 @@ def test_the_policy_runtime_build_prints_while_it_grows_and_nothing_while_it_sta
     sizes = [int(re.search(r":bytes=(\d+)$", line).group(1)) for line in capsys.readouterr().out.splitlines()
              if line.startswith("BLUEPRINT_G1_RUNTIME_WORKING:stage=policy_runtime_build:")]
     assert len(sizes) >= 2 and sizes == sorted(set(sizes)) and sizes[-1] == 3000
+
+
+def test_a_compiling_policy_checks_its_toolchain_before_the_first_episode(tmp_path, monkeypatch, capsys):
+    """2026-11-09, the library job's pi0.5 run: its first inference failed in torch.compile, ``Failed to find C
+    compiler``, about 40 minutes in. The same compile on a tiny function now runs before any episode."""
+    import json
+    import subprocess
+    import types
+
+    from blueprint_pipeline import native_g1_beta_runtime as runtime
+
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "config.json").write_text(json.dumps({"type": "pi05", "compile_model": True}))
+    assert runtime.policy_compiles(policy)
+    (policy / "config.json").write_text(json.dumps({"type": "diffusion", "compile_model": False}))
+    assert not runtime.policy_compiles(policy)
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return outcome
+
+    monkeypatch.setattr(runtime.subprocess, "run", run)
+    outcome = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    runtime.check_policy_compile(tmp_path / "python", deadline=runtime.time.time() + 3600)
+    assert "torch.compile" in calls[0][-1] and "cuda" in calls[0][-1]
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == ["BLUEPRINT_G1_STAGE:policy_compile_check", "BLUEPRINT_G1_STAGE:policy_compile_ready"]
+
+    outcome = types.SimpleNamespace(returncode=1, stdout="", stderr="Traceback\ntorch._inductor.exc.InductorError: "
+                                    "RuntimeError: Failed to find C compiler.")
+    with pytest.raises(ValueError, match=runtime.COMPILE_TOOLCHAIN_REASON):
+        runtime.check_policy_compile(tmp_path / "python", deadline=runtime.time.time() + 3600)
+    out = capsys.readouterr().out
+    assert "BLUEPRINT_G1_COMPILE_CHECK:" in out and "Failed to find C compiler" in out
+    assert runtime.failure_reason("policy_compile_check", ValueError(runtime.COMPILE_TOOLCHAIN_REASON)) \
+        == runtime.COMPILE_TOOLCHAIN_REASON
+
+    def timed_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+    monkeypatch.setattr(runtime.subprocess, "run", timed_out)
+    with pytest.raises(ValueError, match=runtime.COMPILE_TOOLCHAIN_REASON):
+        runtime.check_policy_compile(tmp_path / "python", deadline=runtime.time.time() + 3600)
