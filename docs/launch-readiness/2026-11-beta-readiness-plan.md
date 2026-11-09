@@ -199,23 +199,23 @@ Not packaged, and why:
 
 ## 6. Progress
 
-Updated after every wave. Last update: 2026-11-09 23:00Z, after waves 1 and 2.
+Updated after every wave. Last update: 2026-11-09 23:10Z, after waves 1 and 2.
 Status: merged, PR (open, with its CI result), or deferred with a reason. "CI"
 counts the checks that ran; checks the workflow skipped are not counted.
 
 | ID | Status | Pull request | CI | Note |
 |---|---|---|---|---|
 | WP-01 | merged | [#3517](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3517) | green, 3 passed | The leak came from one import added by #3488. The import-closure tests now run on every pull request (about 25 s). |
-| WP-02 | PR open | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | its own check green; one full-suite shard failed after the update from `main`, under diagnosis | 5 synthetic records, 2 job kinds, 7 s. Covers the downstream replay only; resolution and clip length are labels the replayed chain does not read. |
+| WP-02 | PR open, not merged | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | red: its own check and shards 0–10 passed; shard 11 failed on `test_canonical_cpu_env_collects_without_errors`, a 180 s limit on collecting the whole suite (G58) | 5 synthetic records, 2 job kinds, 7 s. Covers the downstream replay only; resolution and clip length are labels the replayed chain does not read. Merge once G58 is fixed. |
 | WP-03 | PR open, verifier approved, merge held | [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516) | green, 4 passed | Merge held on purpose: see O-18. The first version was refused by its verifier (it ended extended and renewed jobs); the second asks the WebApp and ends only on its refusal. |
 | WP-04 | merged | [WebApp #1245](https://github.com/ognjhunt/Blueprint-WebApp/pull/1245) | green, 9 passed | The first version was refused by its verifier (3 bypasses). Enforced only once `BLUEPRINT_INVITEE_ALLOWLIST` is set. |
-| WP-05 | PR open, rework after verifier | [#3518](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3518) | running on the reworked head | 85 call sites classified; 30 can spend with no admission, none reachable from an automatic website job. The verifier found a weakened guard, missed Anthropic and `codex` calls and one wrong row; all sent back. |
-| WP-06 | PR open, two verifier passes, last fixes pushed | [WebApp #1246](https://github.com/ognjhunt/Blueprint-WebApp/pull/1246) | green on the previous head, 9 passed; running on the last head | One held sentence per early-hold reason, one email, a tolerant task kind. |
+| WP-05 | PR open, reworked, waits on a second verifier | [#3518](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3518) | 13 passed, 1 still running at 23:10Z, none failed | 30 call sites can spend with no admission, none reachable from an automatic website job. The first verifier found a weakened guard, missed Anthropic and `codex` calls and one wrong row; the rework is pushed and not yet re-verified. |
+| WP-06 | PR open, two verifier passes, last fixes pushed | [WebApp #1246](https://github.com/ognjhunt/Blueprint-WebApp/pull/1246) | 8 passed, `test` still running at 23:10Z, none failed | One held sentence per early-hold reason, one email, a tolerant task kind. Merge when `test` is green. |
 | WP-07 | merged | [#3520](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3520) | green, 3 passed | Verifier approved. New clips are normalized to at most 1920 px and 30 fps; jobs in flight keep their original. Operator note: O-19. |
-| WP-08 | PR open, rework after verifier | [#3519](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3519) | green on the first head, 4 passed | Offline drill and automatic plan built. The verifier refused the plan process for having no limits inside the intake service; sent back. |
+| WP-08 | PR open, reworked, waits on a second verifier | [#3519](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3519) | green on the first head (4 passed); running on the reworked head | Offline drill and automatic plan built. The verifier refused the plan process for having no limits inside the intake service; the rework is pushed and not yet re-verified. |
 | WP-09 | deferred | | | Not started: this session reached its turn limit after wave 2. Nothing blocks it. Add to it: a planned screening campaign can still reserve for a withdrawn site (G52). |
 | WP-10 | deferred | | | Not started (turn limit). Depends on WP-03, which is not merged. |
-| WP-11 | started | | | Executor running: the three intake suites in CI, full scope for job-page files, a reference-only case. |
+| WP-11 | PR open | [WebApp #1247](https://github.com/ognjhunt/Blueprint-WebApp/pull/1247) | 7 passed, `test` and `e2e` still running at 23:10Z, none failed | The three intake suites in CI, full scope for job-page files, a reference-only case. No executor report yet. |
 | WP-12 | deferred | | | Not started (turn limit). Nothing blocks it. |
 | WP-13 | deferred | | | Not started (turn limit). The host drill also needs O-14. |
 | WP-14 | deferred | | | Not started (turn limit). Depends on WP-03 and WP-06. Add to it: the `authority_ended` sentence (G51). |
@@ -243,6 +243,7 @@ Gaps found while doing the work, added to the register:
 | G55 | The replay set covers one of four replay tools, and no real job | E3 | #3515 | after O-03 |
 | G56 | Normalization leftovers: a killed encode leaves a scratch folder, a failing encode runs twice, the one-hour limit may be short for long 4K 60 fps clips | E7 | #3520 verifier | polish |
 | G57 | None of the nine uncovered storage roots has a per-site binding, so a withdrawal cannot find a site's files in them | E5 | #3519 | open |
+| G58 | Collecting the whole test suite takes about 185 s on `main` against a 180 s limit, so one full-suite shard fails on any pull request that runs it, and the nightly lane is at risk | E6 | `tests/test_cpu_env_contract.py::test_canonical_cpu_env_collects_without_errors`; #3515 shard 11 | WP-15 |
 
 Added to the owner list:
 
