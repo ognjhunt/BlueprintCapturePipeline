@@ -58,13 +58,16 @@ def test_slow_identity_probe_is_bounded_and_not_multiplied_by_polling(monkeypatc
             try:
                 # What proves each request is bounded is its payload: a 503 with
                 # `deployment_identity_probe_timeout` exists only if the request
-                # stopped waiting while the probe was still blocked. The outer
-                # bound is a hang guard. It stays below the probe's 5 s
-                # release.wait, so a handler that waited for the probe still
-                # fails here, but it no longer races runner load: a 0.5 s bound
-                # timed out on a loaded nightly runner (2026-11-08).
+                # stopped waiting while the probe was still blocked (release is
+                # set only after this burst). The outer bound proves the
+                # configured 0.03 s timeout is the one used: it stays below the
+                # service's 2.0 s default, so a handler that ignored the setting
+                # (or waited for the 5 s probe) still fails. The burst takes
+                # ~35 ms; a 0.5 s bound timed out once in a 3,368-test nightly
+                # shard process (2026-11-08), so the bound is no tighter than
+                # that distinction needs.
                 responses = await asyncio.wait_for(asyncio.gather(*(
-                    client.get("/api/live-pipeline/version") for _ in range(12))), 4.0)
+                    client.get("/api/live-pipeline/version") for _ in range(12))), 1.5)
                 assert entered.is_set() and len(calls) == 1
                 for response in responses:
                     assert response.status_code == 503
