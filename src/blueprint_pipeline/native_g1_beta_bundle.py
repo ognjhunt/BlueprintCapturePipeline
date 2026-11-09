@@ -38,6 +38,12 @@ def _json_bytes(value):
 
 #: Each executable the screening entrypoint guarantees, and the apt package that supplies it.
 MEDIA_TOOLCHAIN_PACKAGES = {"ffmpeg": "ffmpeg", "ffprobe": "ffmpeg"}
+#: A C compiler for a policy server that compiles its model (torch.compile: Inductor/Triton build their
+#: kernels with it), which the pinned image lacks (2026-11-09, the library job's pi0.5 run: its first
+#: inference failed with ``Failed to find C compiler``). Installed with the media toolchain, the same
+#: retries and mirror; never a refusal here, since only a compiling policy needs it. The runtime checks
+#: it before the first episode (``native_g1_beta_runtime.check_policy_compile``).
+COMPILER_TOOLCHAIN_PACKAGES = ("gcc", "libc6-dev")
 #: The media toolchain install's tries: the image's own Ubuntu sources, then this mirror over HTTPS
 #: (it carries noble, noble-updates and noble-security). Each apt step is bounded in seconds, so an
 #: unreachable network costs at most a few minutes of rented time before the typed refusal.
@@ -77,14 +83,14 @@ def media_toolchain_install_shell() -> str:
     Shared by the screening entrypoint here and the team lane's (``native_g1_team_provider_bundle``).
     It leaves ``$OUT_DIR/media_toolchain_install.log``; the caller checks the toolchain after it.
     """
-    packages = " ".join(sorted(set(MEDIA_TOOLCHAIN_PACKAGES.values())))
+    packages = " ".join(sorted(set(MEDIA_TOOLCHAIN_PACKAGES.values()) | set(COMPILER_TOOLCHAIN_PACKAGES)))
     return '''# The native worker's dependency preflight needs ffmpeg and ffprobe, which the pinned
-# image lacks.
+# image lacks; a policy server that compiles its model needs a C compiler, which it lacks too.
 # A rented machine can lose the default Ubuntu archive mid-download (2026-11-09, the library
 # job's DP run: every package fetch from archive.ubuntu.com:80 timed out after its index
 # update worked), so apt retries each fetch, each step is bounded in time, and a second try
 # uses another Ubuntu mirror over HTTPS.
-if @MEDIA_MISSING@; then
+if @MEDIA_MISSING@ || ! command -v gcc >/dev/null 2>&1; then
   : >"$OUT_DIR/media_toolchain_install.log"
   echo "BLUEPRINT_G1_MEDIA_TOOLCHAIN_INSTALL_STARTED"
   ( tick=; trap 'kill $tick 2>/dev/null; exit 0' TERM; waited=0
@@ -105,7 +111,7 @@ if @MEDIA_MISSING@; then
     echo "BLUEPRINT_G1_MEDIA_TOOLCHAIN_ATTEMPT:$attempt"
     DEBIAN_FRONTEND=noninteractive timeout @UPDATE_SECONDS@ apt-get update -qq >>"$OUT_DIR/media_toolchain_install.log" 2>&1 && \\
     DEBIAN_FRONTEND=noninteractive timeout @INSTALL_SECONDS@ apt-get install -y -qq @MEDIA_PACKAGES@ >>"$OUT_DIR/media_toolchain_install.log" 2>&1
-    if ! { @MEDIA_MISSING@; }; then break; fi
+    if ! { @MEDIA_MISSING@ || ! command -v gcc >/dev/null 2>&1; }; then break; fi
   done
   kill "$media_ticker" 2>/dev/null
   wait "$media_ticker" 2>/dev/null

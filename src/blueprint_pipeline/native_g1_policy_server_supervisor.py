@@ -23,6 +23,9 @@ from .native_g1_humanoidarena_policy_client import NativeG1HumanoidArenaPolicyCl
 from .native_g1_pi_tokenizer_assets import require_policy_tokenizer_reference
 from .native_g1_run_preflight import preflight_g1_shared_scene_run
 
+# Isaac's Python variables a policy venv's interpreter must not inherit (it runs with ``-I`` too).
+ISOLATED_POLICY_ENV_DROP = frozenset({"PYTHONPATH", "PYTHONHOME", "PYTHONEXE", "VIRTUAL_ENV"})
+
 
 PINNED_SOURCE_REVISION = "68479287a784a69be9ce6ad739311d2f11f75ef9"
 LOOPBACK_HOST = "127.0.0.1"
@@ -310,7 +313,7 @@ def start_g1_policy_server(
         # search paths: this Python is copied from that same pinned image.
         argv[1:1] = ["-I", "-u"]
         child_environment = {key: value for key, value in os.environ.items()
-                             if key not in {"PYTHONPATH", "PYTHONHOME", "PYTHONEXE", "VIRTUAL_ENV"}}
+                             if key not in ISOLATED_POLICY_ENV_DROP}
         child_environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
