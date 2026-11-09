@@ -356,12 +356,12 @@ def test_the_warped_scanned_floor_in_the_walked_corridor_is_planarized_and_discl
 
 
 def test_a_board_over_the_floor_is_never_taken_for_the_floor():
-    # Codex on #3508: equally tessellated layers at 0 and 8 cm must not fit at 4 cm and lose the board.
+    # Codex on #3508: equally tessellated layers at 0 and 16 cm must not fit between them and lose the board.
     from tests.atlas_level_room_fixture import _grid
     floor, floor_faces = _grid((-1.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 81, 41)
     floor[:, 1] = 0.003 * np.sin(floor[:, 0] * 7.0)  # a scanned floor is never exactly flat
     board, board_faces = _grid((-1.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 81, 41)
-    board[:, 1] = 0.08
+    board[:, 1] = 0.16
     mesh = trimesh.Trimesh(vertices=np.vstack([floor, board]),
                            faces=np.vstack([floor_faces, board_faces + len(floor)]), process=False)
     footprints = np.column_stack([np.linspace(0.0, 2.0, 9), np.zeros(9)])
@@ -435,6 +435,28 @@ def test_a_large_floor_face_on_a_slope_is_judged_corner_by_corner():
     assert not np.any(np.asarray(record["mesh"].faces).max(axis=1) >= len(fine))  # the large face went too
 
 
+def test_a_second_floor_sheet_a_few_centimetres_up_goes_with_the_floor():
+    # capture-5b067498 at v10 (2026-11-09): the lowest layer was replaced and a second near-level sheet 6-9 cm
+    # above it stayed along the whole walk, so the G1 still stood inside it.
+    from tests.atlas_level_room_fixture import _grid
+    lower, lower_faces = _grid((-1.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 81, 41)
+    lower[:, 1] = 0.02 + 0.003 * np.sin(lower[:, 0] * 7.0)
+    upper, upper_faces = _grid((-1.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 81, 41)
+    upper[:, 1] = 0.085 + 0.01 * np.sin(upper[:, 2] * 5.0)
+    step, step_faces = _grid((0.5, 0.0, 0.2), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 9, 5)
+    step[:, 1] = 0.18
+    mesh = trimesh.Trimesh(vertices=np.vstack([lower, upper, step]), faces=np.vstack([
+        lower_faces, upper_faces[:, ::-1] + len(lower), step_faces + len(lower) + len(upper)]), process=False)
+    footprints = np.column_stack([np.linspace(0.0, 2.0, 9), np.zeros(9)])
+    record = levelling._planarize_walked_floor(mesh, footprints_m=footprints, meters_per_unit=1.0)
+    tri = np.asarray(record["mesh"].vertices)[np.asarray(record["mesh"].faces)]
+    centroid = tri.mean(axis=1)
+    on_walk = (centroid[:, 0] >= 0.0) & (centroid[:, 0] <= 2.0) & (np.abs(centroid[:, 2]) <= 0.25)
+    assert not np.any(on_walk & (centroid[:, 1] < 0.15))  # both sheets are gone along the walk
+    assert int((np.asarray(record["mesh"].faces).min(axis=1) >= len(lower) + len(upper)).sum()) == len(step_faces)
+    assert record["clear_m"] == levelling.WALKED_FLOOR_CLEAR_M and record["left_near_level_faces"] >= len(step_faces)
+
+
 def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
     from tests.atlas_level_room_fixture import _grid
     vertices, faces = _grid((-1.0, 0.0, -1.0), (0.1, 0.0, 0.0), (0.0, 0.0, 0.1), 21, 21)
@@ -451,7 +473,7 @@ def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
 
 def test_a_levelled_world_with_a_warped_floor_records_its_planarized_corridor(tmp_path):
     value, _ = level(tmp_path)
-    assert value["binding"]["revision"] == levelling.REVISION == "atlas_world_levelling.v10"
+    assert value["binding"]["revision"] == levelling.REVISION == "atlas_world_levelling.v11"
     planarized = value["walked_floor"].get("planarized")
     # The fixture's floor is flat: the corridor's floor is fitted, and nothing off the plane needed replacing.
     assert planarized is not None and planarized["surface_offset_m"]["max"] < 0.02

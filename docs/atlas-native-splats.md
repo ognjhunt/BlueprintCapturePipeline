@@ -431,6 +431,14 @@ a pose, and nothing fed the earlier pose's findings into the next request
   lies. The record lists each corridor cell's seed, whether it is floor, and the
   near-level faces dropped and left (`cells`, heights only).
 
+  **v11 (same day).** At v10 the record showed a second near-level sheet 6–9 cm
+  above the floor all along the walk (1,132 faces left, up to 9.6 cm above the
+  levelled plane under the start). A reconstruction's floor is a thick, often
+  doubled sheet. Near-level faces up to 12 cm (`WALKED_FLOOR_CLEAR_M`) above the
+  floor where they lie now go with it: the person filming walked there, so
+  nothing that low stood on the floor. Higher near-level faces and every wall
+  or side face stay.
+
   It's disclosed as `walked_floor.planarized` (`development_only_estimate`), with
   the scanned floor's offset range before the change. This is the floor analogue
   of a rigid task's support pad (`rigid_support_pad`). The splat is as captured.
