@@ -2,6 +2,7 @@
 from copy import deepcopy
 from pathlib import Path
 import json
+import shutil
 import subprocess
 import zipfile
 
@@ -176,6 +177,68 @@ def test_entrypoint_installs_the_media_toolchain_before_provisioning(tmp_path):
     subprocess.run(["bash", "-n", str(path)], check=True)
 
 
+def _media_install_block(tmp_path, *, fallback_works: bool):
+    """Run the entrypoint up to provisioning with a stub apt: the default archive never delivers."""
+    script = bundle._entrypoint()
+    script = script[:script.index("/isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision")]
+    script = script.replace("/isaac-sim/python.sh -m blueprint_pipeline.native_g1_beta_runtime", "echo REFUSED")
+    apt_etc, bin_dir, out = tmp_path / "apt", tmp_path / "bin", tmp_path / "out"
+    (apt_etc / "apt.conf.d").mkdir(parents=True)
+    (apt_etc / "sources.list.d").mkdir()
+    (apt_etc / "sources.list.d" / "ubuntu.sources").write_text(
+        "Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates\n\n"
+        "Types: deb\nURIs: http://security.ubuntu.com/ubuntu/\nSuites: noble-security\n")
+    bin_dir.mkdir()
+    works = "mirrors.edge.kernel.org" if fallback_works else "never-delivers"
+    (bin_dir / "apt-get").write_text(f"""#!/usr/bin/env bash
+echo "apt-get $*"
+[ "$1" = update ] && exit 0
+grep -q {works} "$BLUEPRINT_MEDIA_TOOLCHAIN_APT_ETC/sources.list.d/ubuntu.sources" || \\
+  {{ echo "E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/universe/f/ffmpeg/ffmpeg.deb"; exit 100; }}
+printf '#!/bin/sh\\n' > "{bin_dir}/ffmpeg"; cp "{bin_dir}/ffmpeg" "{bin_dir}/ffprobe"
+chmod +x "{bin_dir}/ffmpeg" "{bin_dir}/ffprobe"
+""")
+    (bin_dir / "apt-get").chmod(0o755)
+    path = tmp_path / "entrypoint.sh"
+    path.write_text(script + "echo MEDIA_READY\n")
+    # Only the tools the block uses, so an ffmpeg on the test machine cannot satisfy it.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("bash", "timeout", "grep", "sed", "cp", "chmod", "mkdir", "dirname", "cat"):
+        (tools / name).symlink_to(shutil.which(name))
+    env = {"PATH": f"{bin_dir}:{tools}", "BLUEPRINT_ADP_ARENA_OUTPUT_DIR": str(out),
+           "BLUEPRINT_MEDIA_TOOLCHAIN_APT_ETC": str(apt_etc)}
+    run = subprocess.run(["bash", str(path)], env=env, capture_output=True, text=True)
+    return run, (out / "media_toolchain_install.log").read_text(), apt_etc
+
+
+def test_the_media_toolchain_install_falls_back_to_another_mirror_when_the_archive_never_delivers(tmp_path):
+    """The library job's DP run (2026-11-09, $0.50): every fetch from archive.ubuntu.com timed out after
+    the index update worked, so the runtime refused with ``g1_beta_media_toolchain_unavailable``."""
+    if shutil.which("timeout") is None:
+        pytest.skip("coreutils timeout is not installed")
+    run, log, apt_etc = _media_install_block(tmp_path, fallback_works=True)
+    assert "MEDIA_READY" in run.stdout and "REFUSED" not in run.stdout
+    assert log.index("attempt default") < log.index("E: Failed to fetch") < log.index("attempt fallback")
+    sources = (apt_etc / "sources.list.d" / "ubuntu.sources").read_text()
+    assert "archive.ubuntu.com" not in sources and "security.ubuntu.com" not in sources
+    assert sources.count(bundle.MEDIA_TOOLCHAIN_FALLBACK_MIRROR) == 2
+    conf = (apt_etc / "apt.conf.d" / "99blueprint-media-toolchain").read_text()
+    assert f'Acquire::Retries "{bundle.MEDIA_TOOLCHAIN_APT_RETRIES}";' in conf
+    # Every apt step is bounded in time, so a dead network cannot run up rented time.
+    script = bundle._entrypoint()
+    assert f"timeout {bundle.MEDIA_TOOLCHAIN_UPDATE_SECONDS} apt-get update" in script
+    assert f"timeout {bundle.MEDIA_TOOLCHAIN_INSTALL_SECONDS} apt-get install" in script
+
+
+def test_the_typed_refusal_stands_when_no_mirror_delivers(tmp_path):
+    if shutil.which("timeout") is None:
+        pytest.skip("coreutils timeout is not installed")
+    run, log, _ = _media_install_block(tmp_path, fallback_works=False)
+    assert "REFUSED" in run.stdout and "MEDIA_READY" not in run.stdout and run.returncode == 2
+    assert log.count("media toolchain install: attempt") == len(bundle.MEDIA_TOOLCHAIN_INSTALL_ATTEMPTS)
+
+
 def test_every_executable_the_worker_preflight_runs_is_installed_by_the_entrypoint(monkeypatch):
     """A preflight tool with no install step refuses at bundle build, for $0, not after a launch."""
     from blueprint_pipeline import native_task_arena_dependency_contract as contract
@@ -184,7 +247,8 @@ def test_every_executable_the_worker_preflight_runs_is_installed_by_the_entrypoi
     script = bundle._entrypoint()
     for executable in contract.NATIVE_TASK_REQUIRED_EXECUTABLES:
         assert executable in bundle.MEDIA_TOOLCHAIN_PACKAGES
-        assert script.count(f"! command -v {executable} >/dev/null 2>&1") == 2
+        # Checked before installing, after each install try, and before the typed refusal.
+        assert script.count(f"! command -v {executable} >/dev/null 2>&1") == 3
     for package in set(bundle.MEDIA_TOOLCHAIN_PACKAGES.values()):
         assert f"apt-get install -y -qq {package}" in script
     monkeypatch.setattr(contract, "NATIVE_TASK_REQUIRED_EXECUTABLES",
