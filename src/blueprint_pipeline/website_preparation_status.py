@@ -498,8 +498,12 @@ def accepted_status_version(acceptance: Mapping[str, Any]) -> str:
 
 
 def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
-                                 now_epoch: float | None = None) -> dict[str, int]:
-    """Existing listener tick retries delivery independently of provider work."""
+                                 now_epoch: float | None = None, listener: Any = None) -> dict[str, int]:
+    """Existing listener tick retries delivery independently of provider work.
+
+    With the running listener module, a silent job the WebApp refuses as expired
+    is also ended (``end_expired_preparation``).
+    """
     from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .website_preparation_terminal import (
         end_expired_preparation, note_sweep_liveness, record_unretried_preparation,
@@ -532,7 +536,8 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
         try:
             if alive_since is not None:
                 # An expired grant ends the job; anything else silent is only overdue.
-                end_expired_preparation(root, alive_since=alive_since)
+                if listener is not None:
+                    end_expired_preparation(root, alive_since=alive_since, listener=listener)
                 record_unretried_preparation(root, alive_since=alive_since)
             retain_preparation_wakeup(root)
         except Exception:

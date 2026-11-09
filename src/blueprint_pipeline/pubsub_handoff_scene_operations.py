@@ -441,7 +441,7 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
     # It reads committed ledgers; no provider processing is reopened by delivery.
     from .website_preparation_status import reconcile_preparation_wakeups
     try:
-        reconcile_preparation_wakeups(storage_root, limit=1)
+        reconcile_preparation_wakeups(storage_root, limit=1, listener=_listener)
     except Exception:
         _listener.logger.debug("pubsub_handoff.preparation_delivery_retry_unavailable")
     from .website_assessment_resume import reconcile_waiting_assessments

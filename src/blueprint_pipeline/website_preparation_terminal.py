@@ -272,18 +272,23 @@ def _webapp_ended(capture_root: Path, ledger: Mapping[str, Any]) -> ValueError |
     One non-creating, window-honouring ``scene-sponsorship`` read; any other
     answer, an error or a missing retained context is None.
     """
-    from .website_preparation_status import _retained_context_or_none
     from .website_task_context import read_scene_sponsorship_ending
     try:
-        context = _retained_context_or_none(Path(capture_root))
-        if context is None or any(context.get(key) != ledger.get(key) for key in ("scene_id", "capture_id")):
+        # The context the job's delivery retained (website_task_evidence), never a fresh one.
+        path = Path(capture_root) / "pipeline" / "website_task_context.json"
+        if path.is_symlink() or not path.is_file():
+            return None
+        context = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(context, dict) or type(context.get("request_id")) is not str
+                or context.get("context_digest") != canonical_digest(context, digest_field="context_digest")
+                or any(context.get(key) != ledger.get(key) for key in ("scene_id", "capture_id"))):
             return None
         return read_scene_sponsorship_ending(task_context=context)
     except Exception:  # noqa: BLE001 - nothing but the typed refusal may end a job
         return None
 
 
-def end_expired_preparation(capture_root: Path, *, alive_since: datetime,
+def end_expired_preparation(capture_root: Path, *, alive_since: datetime, listener: Any,
                             now: datetime | None = None) -> dict[str, Any] | None:
     """End a silent preparation once the WebApp refuses its grant as expired, as a delivery would.
 
@@ -297,9 +302,10 @@ def end_expired_preparation(capture_root: Path, *, alive_since: datetime,
     ending is the listener's ``_finish_terminal_authority_ending`` on a claim of
     the revision read here, so it is written once. Nothing is retried, bought,
     renewed or released here. Returns the committed terminal ledger, or None.
-    """
-    from . import pubsub_handoff_listener as listener
 
+    ``listener`` is the running ``pubsub_handoff_listener`` module, passed in as
+    ``reconcile_waiting_assessments`` receives it, so this lane never imports it.
+    """
     root = Path(capture_root)
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     with _existing_job_ledger_lock(root) as state:

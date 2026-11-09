@@ -73,13 +73,13 @@ def _ledger(source):
 
 
 def _end(source):
-    return terminal.end_expired_preparation(source.root, alive_since=LONG_AGO)
+    return terminal.end_expired_preparation(source.root, alive_since=LONG_AGO, listener=listener)
 
 
 def test_webapp_refusal_ends_the_job_once_and_the_site_is_told(website_capture, monkeypatch):
     stopped, webapp = _silent(website_capture, monkeypatch, grant_expires=-timedelta(minutes=1),
                               answer=ValueError(EXPIRED))
-    status_reader.reconcile_preparation_wakeups(website_capture.storage_root)
+    status_reader.reconcile_preparation_wakeups(website_capture.storage_root, listener=listener)
     # The read is the non-creating, window-honouring one, bound to the retained context.
     assert webapp.reads == [{"request_id": website_capture.owner["request_id"],
                              "scene_id": website_capture.owner["scene_id"], "purpose": "scene_preparation",
@@ -100,7 +100,7 @@ def test_webapp_refusal_ends_the_job_once_and_the_site_is_told(website_capture, 
     delivered = json.loads((website_capture.root / status_reader.DELIVERY_FILE).read_text())
     assert delivered["state"] == "delivered" and delivered["acceptance"]["state"] == "authority_ended"
     # The next sweep neither asks again nor writes: the ending is recorded once.
-    status_reader.reconcile_preparation_wakeups(website_capture.storage_root)
+    status_reader.reconcile_preparation_wakeups(website_capture.storage_root, listener=listener)
     assert _ledger(website_capture) == ended and len(webapp.reads) == 1
     assert _end(website_capture) is None and len(webapp.reads) == 1
     # A redelivery of the same message is answered from the ending, never run again.
@@ -127,7 +127,7 @@ def test_only_the_webapp_refusal_ends_a_job(website_capture, monkeypatch, answer
     assert _end(website_capture) is None and len(webapp.reads) == 1
     assert _ledger(website_capture) == stopped
     # The sweep still records the overdue observation, as today.
-    status_reader.reconcile_preparation_wakeups(website_capture.storage_root)
+    status_reader.reconcile_preparation_wakeups(website_capture.storage_root, listener=listener)
     ledger = _ledger(website_capture)
     assert ledger["status"] == "failed_retryable" and ledger[terminal.OVERDUE_FIELD]["reason"] == "recovery_needed"
     assert "terminal_code" not in ledger
@@ -138,7 +138,7 @@ def test_only_the_webapp_refusal_ends_a_job(website_capture, monkeypatch, answer
 def test_valid_grant_and_silence_record_the_overdue_observation_only(website_capture, monkeypatch):
     stopped, webapp = _silent(website_capture, monkeypatch, grant_expires=timedelta(days=1),
                               answer=ValueError(EXPIRED))
-    status_reader.reconcile_preparation_wakeups(website_capture.storage_root)
+    status_reader.reconcile_preparation_wakeups(website_capture.storage_root, listener=listener)
     ledger = _ledger(website_capture)
     assert webapp.reads == []  # A grant whose own expiry is ahead is valid: nothing is asked.
     assert ledger["status"] == "failed_retryable" and ledger["revision"] == stopped["revision"] + 1
@@ -156,7 +156,7 @@ def test_a_running_preparation_is_untouched(website_capture, monkeypatch, grant_
     _grant(website_capture, expires_at=now + grant_expires)
     webapp = WebApp(website_capture, ValueError(EXPIRED))
     monkeypatch.setattr(context_reader, "website_webapp_request", webapp)
-    status_reader.reconcile_preparation_wakeups(website_capture.storage_root)
+    status_reader.reconcile_preparation_wakeups(website_capture.storage_root, listener=listener)
     assert _end(website_capture) is None
     assert _ledger(website_capture) == running and webapp.reads == []
 
@@ -196,7 +196,8 @@ def test_a_grant_file_not_for_this_capture_never_triggers(website_capture, monke
 def test_inside_the_silence_window_nothing_is_asked(website_capture, monkeypatch):
     stopped, webapp = _silent(website_capture, monkeypatch, grant_expires=-timedelta(minutes=1),
                               answer=ValueError(EXPIRED))
-    assert terminal.end_expired_preparation(website_capture.root, alive_since=datetime.now(timezone.utc)) is None
+    assert terminal.end_expired_preparation(website_capture.root, alive_since=datetime.now(timezone.utc),
+                                            listener=listener) is None
     assert webapp.reads == [] and _ledger(website_capture) == stopped
 
 
@@ -261,3 +262,12 @@ def test_the_assessment_wait_is_never_asked_about(website_capture, monkeypatch):
                               assessment_resume={"schema_version": "website_assessment_resume.v1"})
     assert _end(website_capture) is None
     assert webapp.reads == [] and _ledger(website_capture) == stopped
+
+
+def test_without_the_running_listener_the_sweep_only_observes(website_capture, monkeypatch):
+    """The listener tick passes its own module in; any other caller keeps the overdue-only sweep."""
+    stopped, webapp = _silent(website_capture, monkeypatch, grant_expires=-timedelta(minutes=1),
+                              answer=ValueError(EXPIRED))
+    status_reader.reconcile_preparation_wakeups(website_capture.storage_root)
+    assert webapp.reads == [] and _ledger(website_capture)["status"] == "failed_retryable"
+    assert terminal.OVERDUE_FIELD in _ledger(website_capture)
