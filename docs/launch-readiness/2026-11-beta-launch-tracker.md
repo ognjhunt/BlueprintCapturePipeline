@@ -779,6 +779,12 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - It launches only once `billing_covered_provider_ids` in the lock includes the provider, and the launch preflight then runs every money check again.
     - At most 6 re-admissions per row, 2, 4, 8, 16, 30 and 30 minutes apart, and none more than 24 h after the row's first such refusal. Past either bound the refusal stands.
     - Each closed attempt keeps `terminal_reason` `spend_admission_lock_provider_billing_missing` and the provider, and the row counts `billing_missing_retries`.
+- **π0.5's first walking run, 11-09: no rental, $0.**
+  - Attempt `screen-a279bdb2…` (04:19Z) was refused by the G1 allocator with `spend_admission_lock_stale`. The coordinator's stale-lock wait re-admitted it as `screen-7be27d37…` (generation 1).
+  - At 04:33Z the website's execution control refused the fresh attempt with HTTP 409 (`beta_screening_prelaunch_refused:beta_screening_execution_control_http_409`). The row is blocked, unspent, and is not a harness failure (π0.5 at 0 of 7).
+  - **Cause:** the G1 session derived its run id, and so its resource name, from the plan, candidate and admission only. Every re-admitted attempt therefore reused the first attempt's resource name. The website refuses a control binding that repeats an earlier attempt's resource as `screening_control_identity_conflict`, which it returns as a 409. The native-arena lane binds its run to the attempt directory and never hit this.
+    - Every in-campaign G1 re-admission was affected: the stale-lock wait, the GPU-offer wait, transport retries, and the billing wait above.
+  - **Fix (this PR):** the G1 session authority takes the attempt id, and its run id and resource name are bound to it. A restart of the same attempt rebuilds the same run, and an attempt already prepared keeps its own.
 
 ## Operating notes (2026-11-02)
 

@@ -64,7 +64,15 @@ def _copy(value):
 
 
 def build_session_authority(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
-                            spec: Mapping[str, Any]) -> dict[str, Any]:
+                            spec: Mapping[str, Any], attempt_id: str) -> dict[str, Any]:
+    """The G1 session authority of one screening attempt.
+
+    ``attempt_id`` binds the run (and so its resource name) to this attempt, as the native-arena lane
+    binds its own to the attempt directory. A candidate re-admitted under a fresh attempt identity (a
+    stale spend lock, no GPU offer, a missing billing reading) is a new execution the website's control
+    accepts; with one run per plan and candidate, the library site's pi0.5 re-admission (2026-11-09
+    04:33Z) reused the first attempt's resource name and the control refused it as an identity conflict.
+    """
     from .beta_policy_screening_g1 import validate_execution_spec
     from .beta_policy_screening_launch import _check_quote, _identity
     identity = _identity(plan, candidate)
@@ -81,7 +89,11 @@ def build_session_authority(*, plan: Mapping[str, Any], candidate: Mapping[str, 
         "site_id": plan["site_id"], "runtime_identity_digest": execution["runtime_digest"],
         "scenario_plan_digest": plan["scenario_plan_digest"], "maximum_cost_usd": candidate["max_cost_usd"],
         "cost_quote": candidate["cost_quote"]}
-    run_id = canonical_digest({**identity, "admission_digest": candidate["admission_digest"]})[7:39]
+    if (not isinstance(attempt_id, str) or attempt_id in {".", ".."}
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", attempt_id) is None):
+        raise ValueError("g1_beta_session_attempt_id_invalid")
+    run_id = canonical_digest({**identity, "admission_digest": candidate["admission_digest"],
+                               "attempt_id": attempt_id})[7:39]
     value = {"schema_version": SCHEMA, "run_kind": RUN_KIND, "run_id": run_id,
         "candidate_ids": [candidate["candidate_id"]], "episodes_per_policy": candidate["episode_count"],
         "cells": candidate["scenario_cells"], "beta_screening_admission": admission,
