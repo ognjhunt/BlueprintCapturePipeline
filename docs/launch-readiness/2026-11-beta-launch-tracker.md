@@ -9,6 +9,8 @@ batched Pipeline deploy) · **not started**.
 
 Last updated: 2026-11-06 22:40Z (library-aisle run and the 11-06 deploys). Pipeline live: `8dc96bee0` (22:32Z). Earlier header as of 2026-11-03 14:49Z: Pipeline live: `333b1f74a` (11-03 14:29Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
 
+Readiness plan (2026-11-09): [`2026-11-beta-readiness-plan.md`](2026-11-beta-readiness-plan.md) holds exit criteria E1–E9 with thresholds, the gap register from a recon of both repos, the owner list and the work packages. Its two pressing facts, from `door status` on 11-09: November spend is $136.43 of the $200 account limit, and `/mnt/blueprint-work` has 3.55 GB available against its 15.8 GB floor.
+
 ## Library-aisle navigation run (2026-11-06)
 
 The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.
