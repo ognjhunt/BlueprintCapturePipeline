@@ -365,6 +365,19 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - New jobs: owner "yes", 11-09 15:27:24Z, to one windowed re-pose (about $1) before the refined splat when a new job's first pose is not refined and its motion analysis finds a jump or a stationary run.
       - Built as `website_atlas_windowed_repose`. A new job records the term before its first purchase: the maximum cost includes 128 views at the per-view price, which the selection budget holds back; the expected cost leaves it out.
       - In-flight jobs have no term and keep their quote. The re-pose is used only when World Labs refines it; anything else leaves the job on its first pose, never a third.
+  - **The windowed retry worked (11-09):**
+    - **Pose.** The pose went to World Labs at 17:55Z: 85 views from 8.08–17.44 s, $0.85. It came back with `poseRefinementAccepted: true`, the first accepted refinement on this capture.
+    - **Splat and mesh.** Bought for $5 and $0.50, published 19:14:51Z as result `797ab5aa…`: 83 sent views and 2 held out, with held-out PSNR 17.4 dB against 17.3 dB training. Atlas spend is about $14.78 of $25.
+    - **Re-derive.** `--resume-preparation` ran 19:23–19:37Z. The owner's job-page preview showed the new splat from 19:34Z, and the re-issued intake was accepted, `intake_ready`, at 19:48Z.
+    - **New G1 campaign** `screening-359d33ff…` was created at 19:46Z and held both rows at $0 with `g1_spawn_overlap`. At the new start (2.965, 0.196), 1.93 m further down the aisle, the scanned floor sat 6.5–9.4 cm above the levelled plane and sloped 5–10 cm/m, so the soles and knees were inside it.
+    - **Cause.** The levelling now finds an observed floor (tilt 1.82°), but a forward-only dolly warps a long floor, and the walked floor of #3484 was added only where the scan had none.
+  - **Owner, 20:01Z (2:01 PM): "flatten the corridor floor, go ahead".** Levelling v9 planarizes the scanned floor inside the walked corridor, the floor analogue of `rigid_support_pad`:
+    - a smooth surface is fitted to the corridor's near-level faces;
+    - faces within 5 cm of it are replaced by the flat walked floor at y = 0;
+    - shelf boards, objects and everything outside the corridor stay;
+    - it's disclosed as `walked_floor.planarized`.
+
+    The revision change re-derives the scene with `--resume-preparation`. The spawn check and the goal-marker view then confirm the new packet before any rent.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 

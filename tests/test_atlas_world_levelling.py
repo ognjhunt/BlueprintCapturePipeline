@@ -315,3 +315,62 @@ def test_the_walked_floor_covers_each_footprint_within_its_margin_and_nothing_fa
     # The captured faces are kept as they were.
     assert np.array_equal(np.asarray(mesh.faces)[:len(faces)], faces)
     assert levelling._fill_walked_floor(mesh, footprints_m=np.zeros((0, 2)), meters_per_unit=1.0) is None
+
+
+def _warped_aisle(mpu=1.0):
+    """A floor rising along +x (0 at x = 0, 9 cm at x = 3, slightly curved, as a forward-only dolly warps it),
+    a shelf's bottom board 15 cm above it inside the corridor, and the same floor beyond the corridor."""
+    from tests.atlas_level_room_fixture import _grid
+    vertices, faces = _grid((-1.0, 0.0, -2.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 101, 81)
+    vertices[:, 1] = 0.03 * vertices[:, 0] + 0.002 * vertices[:, 0] ** 2
+    board, board_faces = _grid((0.5, 0.0, 0.35), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 41, 6)
+    board[:, 1] = 0.03 * board[:, 0] + 0.002 * board[:, 0] ** 2 + 0.15
+    mesh = trimesh.Trimesh(vertices=np.vstack([vertices, board]) / mpu,
+                           faces=np.vstack([faces, board_faces + len(vertices)]), process=False)
+    return mesh, len(vertices), len(board_faces)
+
+
+def test_the_warped_scanned_floor_in_the_walked_corridor_is_planarized_and_disclosed():
+    # capture-5b067498 (2026-11-09): the rebuilt splat kept a warped floor, 6.5-9.4 cm above the levelled plane at
+    # the start, so a G1 stood inside it. Owner: "flatten the corridor floor".
+    mesh, floor_vertices, board_faces = _warped_aisle()
+    footprints = np.column_stack([np.linspace(0.0, 3.0, 13), np.zeros(13)])
+    planarized = levelling._planarize_walked_floor(mesh, footprints_m=footprints, meters_per_unit=1.0)
+    rebuilt = planarized.pop("mesh")
+    assert planarized["claim"] == "development_only_estimate"
+    assert planarized["basis"] == "scanned_floor_in_the_walked_corridor_planarized"
+    assert planarized["surface_curved_along"] == ["walk"] and planarized["replaced_faces"] > 0
+    assert 0.09 <= planarized["surface_offset_m"]["max"] <= 0.16 and planarized["inlier_rms_m"] < 0.01
+    tri = np.asarray(rebuilt.vertices)[np.asarray(rebuilt.faces)]
+    centroid = tri.mean(axis=1)
+    near_path = (np.abs(centroid[:, 2]) <= 0.25) & (centroid[:, 0] >= 0.0) & (centroid[:, 0] <= 3.0)
+    # No scanned floor face is left on the walk; the shelf board above it and the floor beyond the corridor stay.
+    assert not np.any(near_path & (centroid[:, 1] < 0.13))
+    assert int((np.asarray(rebuilt.faces).min(axis=1) >= floor_vertices).sum()) == board_faces
+    assert np.any((np.abs(centroid[:, 2]) >= 1.2) & (centroid[:, 0] > 2.0) & (centroid[:, 1] > 0.06))
+    # The walked floor then stands at y = 0 under every footprint and its 15 cm start offsets.
+    filled = levelling._fill_walked_floor(rebuilt, footprints_m=footprints, meters_per_unit=1.0)
+    floor = np.asarray(filled.pop("mesh").vertices)[np.asarray(rebuilt.faces).max() + 1:]
+    assert np.all(np.abs(floor[:, 1]) < 1e-9)
+
+
+def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
+    from tests.atlas_level_room_fixture import _grid
+    vertices, faces = _grid((-1.0, 0.0, -1.0), (0.1, 0.0, 0.0), (0.0, 0.0, 0.1), 21, 21)
+    flat = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    footprints = np.array([[0.0, 0.0], [0.5, 0.0]])
+    record = levelling._planarize_walked_floor(flat, footprints_m=footprints, meters_per_unit=1.0)
+    # A floor already flat at y = 0 is the walked floor already: nothing is replaced.
+    assert record["replaced_faces"] == 0 and len(record.pop("mesh").faces) == len(faces)
+    wall, wall_faces = _grid((-2.0, 0.0, 3.0), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0), 81, 41)
+    assert levelling._planarize_walked_floor(trimesh.Trimesh(vertices=wall, faces=wall_faces, process=False),
+                                             footprints_m=footprints, meters_per_unit=1.0) is None
+    assert levelling._planarize_walked_floor(flat, footprints_m=np.zeros((0, 2)), meters_per_unit=1.0) is None
+
+
+def test_a_levelled_world_with_a_warped_floor_records_its_planarized_corridor(tmp_path):
+    value, _ = level(tmp_path)
+    assert value["binding"]["revision"] == levelling.REVISION == "atlas_world_levelling.v9"
+    planarized = value["walked_floor"].get("planarized")
+    # The fixture's floor is flat: the corridor's floor is fitted, and nothing off the plane needed replacing.
+    assert planarized is not None and planarized["surface_offset_m"]["max"] < 0.02
