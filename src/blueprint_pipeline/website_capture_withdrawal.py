@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import website_capture_withdrawal_automatic_plan as automatic_plan
 from .capture_lifecycle import _sha256_file, _write_once
 from .decision_evidence_contracts import canonical_digest
 
@@ -347,33 +348,49 @@ def acknowledge_withdrawal(*, capture_root: Path, command: Mapping[str, Any]) ->
         return _inspection(site, journal)
 
 
-AUTOMATIC_PLAN_FILE = "automatic_deletion_plan.json"
+AUTOMATIC_PLAN_FILE = automatic_plan.PLAN_FILE
 _PLAN_COMMAND = ("-m", "blueprint_pipeline.website_capture_withdrawal_deletion")
 
 
 def _launch_detached(command: list[str]) -> None:
-    import subprocess
-    import threading
-    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               start_new_session=True, close_fds=True)
-    threading.Thread(target=process.wait, daemon=True).start()  # reaped, never awaited by the request
+    automatic_plan.launch_detached(command)
 
 
-def request_automatic_deletion_plan(*, capture_root: Path,
-                                    launch: Callable[[list[str]], Any] | None = None) -> str:
-    """After an acknowledgement, start the deletion plan in its own process unless it is recorded.
+def request_automatic_deletion_plan(*, capture_root: Path, launch: Callable[[list[str]], Any] | None = None,
+                                    lock_path: Path | None = None) -> str:
+    """After an acknowledgement, start the bounded deletion plan unless it is recorded or another runs.
 
-    Plan only: the command has no ``--apply`` and no authorization, so nothing is
-    deleted. Its own process keeps the deletion module, which reaches the screening
-    ledger and the paid launch path, out of the intake. A run already in progress
-    refuses as busy; the WebApp's next acknowledgement starts it again until recorded.
+    ``recorded``: the plan exists. ``owed``: another automatic plan holds the host
+    lock, so nothing starts; the WebApp's hourly resend of this acknowledgement asks
+    again. ``refused``: the plan path is not a regular file (a failure is recorded
+    and nothing is scanned). ``started``: the child runs. Plan only: the command has
+    no ``--apply`` and no authorization. Its own process keeps the deletion module,
+    which reaches the screening ledger and the paid launch path, out of the intake;
+    ``website_capture_withdrawal_automatic_plan`` bounds that process.
     """
     root = Path(capture_root).absolute()
     site = _site(root)
-    if (site / "website_withdrawal" / AUTOMATIC_PLAN_FILE).exists():
+    journal = site / "website_withdrawal"
+    plan = journal / AUTOMATIC_PLAN_FILE
+    if plan.is_symlink() or (plan.exists() and not plan.is_file()):
+        automatic_plan.record_failure(journal, "website_withdrawal_deletion_automatic_plan_path_unsafe")
+        return "refused"
+    if plan.is_file():
         return "recorded"
-    if not (site / "website_withdrawal" / "tombstone.json").is_file():
+    if not (journal / "tombstone.json").is_file():
         raise ValueError("website_withdrawal_tombstone_required")
+    lock = automatic_plan.host_lock(lock_path)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            if automatic_plan.reap_stale(lock) != "reaped":
+                return "owed"
+        else:
+            automatic_plan.reap_stale(lock)  # records a holder that died without recording its end
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     (launch or _launch_detached)([sys.executable, *_PLAN_COMMAND, "--capture-root", str(root),
                                   "--record-automatic-plan"])
     return "started"

@@ -52,11 +52,16 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   refuses a row whose record lies outside the site directory;
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
 
-The plan reads every run's JSON records once (streamed, any size), so it is not a
-timer. It runs once by itself per withdrawal: after the intake acknowledges a
-tombstone it starts ``--record-automatic-plan`` (``record_automatic_plan``), which
-records the plan, its summary and the copies that would remain beside the tombstone
-(``website_withdrawal/automatic_deletion_plan.json``), lists no B2 object and deletes
+The plan reads every run's JSON records once (streamed, any size), so a full plan
+belongs on a quiet host and is never a timer. It also runs by itself once per
+withdrawal: after the intake acknowledges a tombstone it starts
+``--record-automatic-plan`` (``record_automatic_plan``) in a child that is safe beside
+the intake only because it is bounded (``website_capture_withdrawal_automatic_plan``:
+one at a time on the host, a 30-minute wall clock, 1 GiB of address space, lowest CPU
+and IO priority, the kernel's first OOM choice, and only the environment it needs).
+It records the plan, its summary and the copies that would remain beside the
+tombstone (``website_withdrawal/automatic_deletion_plan.json``), or why it did not
+(``automatic_deletion_plan_failure.json``); it lists no B2 object and deletes
 nothing. Anything it cannot resolve fails
 closed into ``unresolved`` (a link or special
 file in a run, an unreadable record, a run that also names another site, an
@@ -672,55 +677,77 @@ def policy_copy_classes(plan: Mapping[str, Any], *, cloud_deleted: bool, applied
     return rows
 
 
-def record_automatic_plan(*, capture_root: Path, **resolution: Any) -> dict[str, Any]:
+def record_automatic_plan(*, capture_root: Path, lock_path: Path | None = None,
+                          child_limits: Mapping[str, Any] | None = None, **resolution: Any) -> dict[str, Any]:
     """Record the deletion plan beside an acknowledged tombstone, once; never deletes or applies.
 
     The intake starts this after each acknowledgement (``website_capture_withdrawal.
     request_automatic_deletion_plan``) until the record exists. It lists no B2 object
     unless an object store is passed, so the intake's own run makes no provider call;
     an operator's ``--object-store`` plan resolves the objects before any ``--apply``.
+    Only one runs on the host at a time (``website_capture_withdrawal_automatic_plan``):
+    while another holds the host lock this returns ``{"state": "owed"}`` and scans
+    nothing. Any failure, including the wall clock, is recorded beside the tombstone
+    (``automatic_deletion_plan_failure.json``) before it is raised.
     """
+
+    from . import website_capture_withdrawal_automatic_plan as bounds
 
     site = withdrawal._site(Path(capture_root))
     journal = site / "website_withdrawal"
-    path = journal / withdrawal.AUTOMATIC_PLAN_FILE
+    path = journal / bounds.PLAN_FILE
     _require(not journal.is_symlink() and journal.is_dir(), "tombstone_required")
-    descriptor = os.open(journal / "automatic_deletion_plan.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "a+") as lock:
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        # Never follow or replace it, and never rescan for it: the failure says why, once per request.
+        bounds.record_failure(journal, "website_withdrawal_deletion_automatic_plan_path_unsafe")
+        raise WithdrawalDeletionError("website_withdrawal_deletion_automatic_plan_path_unsafe")
+    if path.is_file():
+        return _json(path)
+    with bounds.hold_host_lock(bounds.host_lock(lock_path), journal) as held:
+        if not held:
+            return {"state": "owed"}
         try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise WithdrawalDeletionError("website_withdrawal_deletion_automatic_plan_busy") from None
-        if path.exists():
-            return _json(path)
-        plan = plan_withdrawal_deletion(capture_root=Path(capture_root), **resolution)
-        reasons: dict[str, int] = {}
-        for row in plan["unresolved"]:
-            reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
-        cloud_planned = resolution.get("cloud_storage") is not None
-        record: dict[str, Any] = {
-            "schema_version": AUTOMATIC_PLAN_SCHEMA,
-            **{key: plan[key] for key in ("request_id", "scene_id", "capture_id", "tombstone_digest", "legal_hold")},
-            "plan_digest": plan["digest"], "recorded_at_iso": datetime.now(timezone.utc).isoformat(),
-            "started_by": "pipeline_after_withdrawal_acknowledgement", "applied": False,
-            "apply_requires": "the owner's explicit approval each time: an operator re-plans with --object-store "
-                              "(and --bucket) and runs --apply with that plan's digest and "
-                              "--authorize-complete-deletion",
-            "summary": {"scene_files": plan["scene_files"]["count"], "runs": len(plan["runs"]),
-                        "run_files": sum(run["file_count"] for run in plan["runs"]),
-                        "objects": len(plan["objects"]),
-                        "object_versions": sum(len(row["versions"]) for row in plan["objects"]),
-                        "object_store_listed": resolution.get("object_store") is not None,
-                        "lineage_intents": len(plan["lineage"]["intents"]),
-                        "uncovered_pipeline_roots": len(plan["uncovered_pipeline_roots"]),
-                        "unresolved": len(plan["unresolved"]), "unresolved_reasons": reasons},
-            "remaining": _remaining(plan, cloud_planned),
-            "policy_copy_classes": policy_copy_classes(plan, cloud_deleted=cloud_planned, applied=False),
-            "plan": plan,
-        }
-        record["digest"] = canonical_digest(record, digest_field="digest")
-        withdrawal._persist(path, record)
-        return record
+            record = _automatic_plan_record(capture_root, path, resolution, child_limits)
+        except BaseException as error:
+            reason = (str(error) if isinstance(error, WithdrawalDeletionError)
+                      else "automatic_plan_timed_out" if isinstance(error, bounds.PlanTimedOut)
+                      else "automatic_plan_failed_" + type(error).__name__)
+            bounds.record_failure(journal, reason)
+            raise
+    return record
+
+
+def _automatic_plan_record(capture_root: Path, path: Path, resolution: Mapping[str, Any],
+                           child_limits: Mapping[str, Any] | None) -> dict[str, Any]:
+    plan = plan_withdrawal_deletion(capture_root=Path(capture_root), **resolution)
+    reasons: dict[str, int] = {}
+    for row in plan["unresolved"]:
+        reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
+    cloud_planned = resolution.get("cloud_storage") is not None
+    record: dict[str, Any] = {
+        "schema_version": AUTOMATIC_PLAN_SCHEMA,
+        **{key: plan[key] for key in ("request_id", "scene_id", "capture_id", "tombstone_digest", "legal_hold")},
+        "plan_digest": plan["digest"], "recorded_at_iso": datetime.now(timezone.utc).isoformat(),
+        "started_by": "pipeline_after_withdrawal_acknowledgement", "applied": False,
+        "child_limits": dict(child_limits) if child_limits else None,
+        "apply_requires": "the owner's explicit approval each time: a fresh plan with --object-store "
+                          "(and --bucket), then --apply with that plan's digest and "
+                          "--authorize-complete-deletion",
+        "summary": {"scene_files": plan["scene_files"]["count"], "runs": len(plan["runs"]),
+                    "run_files": sum(run["file_count"] for run in plan["runs"]),
+                    "objects": len(plan["objects"]),
+                    "object_versions": sum(len(row["versions"]) for row in plan["objects"]),
+                    "object_store_listed": resolution.get("object_store") is not None,
+                    "lineage_intents": len(plan["lineage"]["intents"]),
+                    "uncovered_pipeline_roots": len(plan["uncovered_pipeline_roots"]),
+                    "unresolved": len(plan["unresolved"]), "unresolved_reasons": reasons},
+        "remaining": _remaining(plan, cloud_planned),
+        "policy_copy_classes": policy_copy_classes(plan, cloud_deleted=cloud_planned, applied=False),
+        "plan": plan,
+    }
+    record["digest"] = canonical_digest(record, digest_field="digest")
+    withdrawal._persist(path, record)
+    return record
 
 
 def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
@@ -896,7 +923,12 @@ def run_cli(args: Any) -> dict[str, Any]:
                   "rigid_probe_work_root": args.rigid_probe_work_root}
     if getattr(args, "record_automatic_plan", False):
         _require(not args.apply, "automatic_plan_never_applies")
-        record = record_automatic_plan(capture_root=args.capture_root, **resolution)
+        from . import website_capture_withdrawal_automatic_plan as bounds
+        # Only the intake's own child bounds itself; an operator or a test running this in-process does not.
+        limits = bounds.apply_child_limits() if os.environ.get(bounds.CHILD_ENV) == "1" else None
+        record = record_automatic_plan(capture_root=args.capture_root, child_limits=limits, **resolution)
+        if record.get("state") == "owed":
+            return {"mode": "automatic_plan_owed"}
         return {"mode": "automatic_plan_recorded", "plan_digest": record["plan_digest"],
                 "summary": record["summary"]}
     if not args.apply:

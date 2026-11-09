@@ -252,9 +252,87 @@ def _site_files(site: Path) -> int:
     return sum(1 for path in site.rglob("*") if path.is_file() and "website_withdrawal" not in path.parts)
 
 
+# Audit events that change the file system, and the positions of their (path, dir_fd) pairs.
+_MUTATING = {"os.remove": ((0, 1),), "os.rmdir": ((0, 1),), "os.mkdir": ((0, 2),), "shutil.rmtree": ((0, 1),),
+             "os.rename": ((0, 2), (1, 3)), "os.link": ((1, 3),), "os.symlink": ((1, 2),),
+             "os.chmod": ((0, 2),), "os.utime": ((0, 3),), "os.truncate": ((0, None),)}
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+_CONFINED: list[dict[str, Any]] = []
+_HOOKED: list[bool] = []
+
+
+def _resolve(path: Any, dir_fd: Any) -> str | None:
+    if isinstance(path, int) or path is None:
+        return None
+    path = os.fsdecode(path)
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+    base = os.readlink(f"/proc/self/fd/{dir_fd}") if isinstance(dir_fd, int) and dir_fd >= 0 else os.getcwd()
+    return os.path.normpath(os.path.join(base, path))
+
+
+def _audit(event: str, arguments: tuple[Any, ...]) -> None:
+    if not _CONFINED:
+        return
+    confinement = _CONFINED[-1]
+    if event == "open":
+        path, mode, flags = (tuple(arguments) + (None, None, None))[:3]
+        writing = (isinstance(mode, str) and any(char in mode for char in "wax+")) or (
+            isinstance(flags, int) and flags & _WRITE_FLAGS)
+        pairs = [(path, None)] if writing else []
+    else:
+        pairs = [(arguments[index], arguments[fd] if fd is not None else None)
+                 for index, fd in _MUTATING.get(event, ())]
+    for path, dir_fd in pairs:
+        target = _resolve(path, dir_fd)
+        # Bytecode caches are the interpreter's, not the drill's.
+        if target and not (target == confinement["root"] or target.startswith(confinement["root"] + os.sep)
+                           or f"{os.sep}__pycache__{os.sep}" in target):
+            confinement["violations"].append(f"{event}:{target}")
+
+
+@contextlib.contextmanager
+def _confined(work: Path) -> Iterator[None]:
+    """Fail the drill if it writes, removes, renames or creates anything outside ``work``.
+
+    Every file-system change Python audits is checked (relative names against their
+    directory descriptor, or against ``work``, which the drill runs in), and the work
+    root's parent directory must list the same entries afterwards. The host lock is
+    redirected into ``work``.
+    """
+    from .website_capture_withdrawal_automatic_plan import LOCK_ENV
+
+    root = str(Path(work).resolve())
+    if not _HOOKED:
+        import sys
+        sys.addaudithook(_audit)
+        _HOOKED.append(True)
+    parent = Path(root).parent
+    siblings = sorted(os.listdir(parent))
+    previous = os.getcwd()
+    confinement = {"root": root, "violations": []}
+    with _environment(LOCK_ENV, str(Path(root) / "host-lock/website-withdrawal-automatic-plan.lock")):
+        os.chdir(root)
+        _CONFINED.append(confinement)
+        try:
+            yield
+        finally:
+            _CONFINED.remove(confinement)
+            os.chdir(previous)
+    _check(not confinement["violations"], "drill_wrote_outside_work_root: " + ", ".join(confinement["violations"][:5]))
+    _check(sorted(os.listdir(parent)) == siblings, "drill_changed_the_work_roots_parent")
+
+
 def run_drill(work: Path, *, vector_path: Path = DEFAULT_VECTOR) -> dict[str, Any]:
     """Run the whole drill under ``work``; raises ``DrillFailure`` when a property does not hold."""
 
+    with _confined(Path(work)):
+        result = _run_drill(Path(work), vector_path=vector_path)
+    result["outside_work_root_unchanged"] = True
+    return result
+
+
+def _run_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
     from . import website_capture_withdrawal as withdrawal
     from . import website_capture_withdrawal_deletion as deletion
     from .beta_policy_screening_worker import require_current_source
@@ -338,7 +416,7 @@ def run_drill(work: Path, *, vector_path: Path = DEFAULT_VECTOR) -> dict[str, An
            "drill_policy_class_without_reason")
     _check(all(row.get("reason") for row in receipt["remaining"]), "drill_remaining_without_reason")
 
-    # Nothing outside the site's copies changed.
+    # Nothing outside the site's copies changed (and ``_confined`` checks nothing outside ``work`` did).
     _check(_snapshot(outside) == outside_before, "drill_touched_another_site")
     _check((store.versions_of(world["other_uri"]),
             [row for row in gcs.rows if "drill-other" in row["name"]]) == other_before, "drill_touched_another_object")

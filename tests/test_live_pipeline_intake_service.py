@@ -140,6 +140,7 @@ def test_signed_website_withdrawal_uses_server_scope_and_never_deletes(tmp_path,
     from blueprint_pipeline import website_capture_withdrawal
     launched: list[list[str]] = []
     monkeypatch.setattr(website_capture_withdrawal, "_launch_detached", launched.append)
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_WITHDRAWAL_PLAN_LOCK", str(tmp_path / "host-lock/plan.lock"))
     client = TestClient(create_app())
     vector = json.loads((Path(__file__).parent / "fixtures/website-withdrawal-vector.json").read_text())
     payload = vector["command"]

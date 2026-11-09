@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import website_capture_withdrawal as withdrawal
+from blueprint_pipeline import website_capture_withdrawal_automatic_plan as bounds
 from blueprint_pipeline import website_capture_withdrawal_deletion as deletion
 from blueprint_pipeline import website_capture_withdrawal_drill as drill
 
@@ -31,6 +32,12 @@ WEBAPP_RECEIPT_KEYS = {
     "cloud_storage_cleanup_verified", "delivered_copy_cleanup_verified", "retained_audit_records", "legal_hold",
     "cloud_object_absence_verified", "cloud_object_cleanup_receipt_digest", "cloud_object_current_absence_status",
     "cloud_object_absence_observed_at_iso", "cleanup_scope", "external_cleanup_required"}
+
+
+@pytest.fixture(autouse=True)
+def _host_lock_in_tmp(tmp_path, monkeypatch):
+    # Never the host's lock path: every automatic plan here locks inside the test's own directory.
+    monkeypatch.setenv(bounds.LOCK_ENV, str(tmp_path / "host-lock/plan.lock"))
 
 
 def test_withdrawal_drill_runs_offline_from_the_webapp_vector_to_a_sealed_receipt(tmp_path, capsys):
@@ -97,7 +104,7 @@ def test_the_deletion_plan_is_recorded_after_an_acknowledgement_with_no_operator
     # Plan only: every file that existed before is still there, unchanged.
     after = drill._snapshot([tmp_path])
     assert {key: value for key, value in after.items() if key in before} == before
-    assert all("/website_withdrawal/" in key for key in set(after) - set(before))
+    assert all("/website_withdrawal/" in key or "/host-lock/" in key for key in set(after) - set(before))
     # Recorded once: the next acknowledgement starts nothing, and a record never changes.
     assert withdrawal.request_automatic_deletion_plan(capture_root=world["capture"], launch=launch) == "recorded"
     assert len(started) == 1 and json.loads(path.read_text()) == record
@@ -138,3 +145,156 @@ def test_a_run_root_the_planner_cannot_list_is_unresolved_not_skipped(tmp_path, 
     monkeypatch.setattr(Path, "iterdir", iterdir)
     plan = deletion.plan_withdrawal_deletion(capture_root=world["capture"], **world["resolution"])
     assert {"path": str(unreadable), "reason": "website_withdrawal_deletion_root_unreadable"} in plan["unresolved"]
+
+
+def _acknowledged(tmp_path, request_id="req1"):
+    world = drill.build_world(tmp_path / request_id, request_id)
+    command = json.loads(VECTOR.read_text())["command"]
+    if request_id != "req1":
+        command = {**command, "request_id": request_id, "scene_id": f"site-{request_id}",
+                   "capture_id": f"walkthrough-{request_id}"}
+    withdrawal.acknowledge_withdrawal(capture_root=world["capture"], command=command)
+    return world
+
+
+def _plan_path(world):
+    return world["site"] / "website_withdrawal" / withdrawal.AUTOMATIC_PLAN_FILE
+
+
+def _failure(world):
+    return json.loads((world["site"] / "website_withdrawal" / bounds.FAILURE_FILE).read_text())
+
+
+def test_one_automatic_plan_at_a_time_on_the_host_and_a_second_request_leaves_it_owed(tmp_path):
+    first, second = _acknowledged(tmp_path, "req1"), _acknowledged(tmp_path, "req2")
+    lock = bounds.host_lock()
+    started = []
+    with bounds.hold_host_lock(lock, first["site"] / "website_withdrawal") as held:
+        assert held
+        # Another site's request while the first scan runs starts nothing, scans nothing and records nothing.
+        assert withdrawal.request_automatic_deletion_plan(capture_root=second["capture"], launch=started.append) == "owed"
+        assert deletion.record_automatic_plan(capture_root=second["capture"], **second["resolution"]) == {"state": "owed"}
+        assert started == [] and not _plan_path(second).exists()
+        assert not (second["site"] / "website_withdrawal" / bounds.FAILURE_FILE).exists()
+    # Once it is free, the next acknowledgement picks the owed plan up.
+    assert withdrawal.request_automatic_deletion_plan(capture_root=second["capture"], launch=started.append) == "started"
+    assert deletion.record_automatic_plan(capture_root=second["capture"], **second["resolution"])["applied"] is False
+
+
+def test_a_dead_or_overdue_lock_holder_is_stale_and_its_site_gets_a_failure_record(tmp_path):
+    import subprocess
+    import time
+
+    dead_site, overdue_site, next_site = (_acknowledged(tmp_path, name) for name in ("req1", "req2", "req3"))
+    lock = bounds.host_lock()
+    lock.parent.mkdir(parents=True)
+    finished = subprocess.Popen(["true"])
+    finished.wait()
+    holder = lock.with_name(lock.name + ".holder.json")
+    holder.write_text(json.dumps({"pid": finished.pid, "process_start": "1", "started_at_epoch": time.time(),
+                                  "journal": str(dead_site["site"] / "website_withdrawal")}))
+    started = []
+    # Dead: nothing holds the flock, so the request records the death and starts the plan.
+    assert withdrawal.request_automatic_deletion_plan(capture_root=next_site["capture"], launch=started.append) == "started"
+    assert _failure(dead_site)["reason"] == "automatic_plan_process_died" and not holder.exists()
+    # Overdue: a live holder past the wall clock plus grace is killed, only if its start time still matches.
+    hung = subprocess.Popen(["sleep", "60"])
+    try:
+        record = {"pid": hung.pid, "process_start": bounds._process_start(hung.pid),
+                  "started_at_epoch": time.time() - bounds.WALL_CLOCK_SECONDS - bounds.STALE_GRACE_SECONDS - 1,
+                  "journal": str(overdue_site["site"] / "website_withdrawal")}
+        holder.write_text(json.dumps(record))
+        with open(lock, "a+") as handle:  # the hung holder's flock
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            assert withdrawal.request_automatic_deletion_plan(capture_root=next_site["capture"],
+                                                              launch=started.append) == "started"
+        assert hung.wait(timeout=10) == -9
+        assert _failure(overdue_site)["reason"] == "automatic_plan_timed_out_killed"
+        # A live holder within its limit stays the holder: the request leaves the plan owed.
+        fresh = subprocess.Popen(["sleep", "60"])
+        holder.write_text(json.dumps({**record, "pid": fresh.pid, "process_start": bounds._process_start(fresh.pid),
+                                      "started_at_epoch": time.time()}))
+        with open(lock, "a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            assert withdrawal.request_automatic_deletion_plan(capture_root=next_site["capture"],
+                                                              launch=started.append) == "owed"
+        assert fresh.poll() is None
+        fresh.kill()
+        fresh.wait()
+    finally:
+        hung.kill()
+    assert len(started) == 2
+
+
+@pytest.mark.parametrize("error, reason", [
+    (lambda: bounds.PlanTimedOut(), "automatic_plan_timed_out"),
+    (lambda: RuntimeError("boom"), "automatic_plan_failed_RuntimeError"),
+    (lambda: deletion.WithdrawalDeletionError("website_withdrawal_deletion_record_unreadable"),
+     "website_withdrawal_deletion_record_unreadable")])
+def test_a_failed_or_timed_out_plan_is_recorded_beside_the_tombstone_and_retried(tmp_path, monkeypatch, error, reason):
+    world = _acknowledged(tmp_path)
+    original = deletion.plan_withdrawal_deletion
+
+    def fail(**_kwargs):
+        raise error()
+
+    monkeypatch.setattr(deletion, "plan_withdrawal_deletion", fail)
+    with pytest.raises(type(error())):
+        deletion.record_automatic_plan(capture_root=world["capture"], **world["resolution"])
+    failure = _failure(world)
+    assert failure["reason"] == reason and failure["attempts"] == 1 and failure["at_iso"]
+    assert not _plan_path(world).exists()
+    assert not bounds.host_lock().with_name(bounds.host_lock().name + ".holder.json").exists()
+    # The next acknowledgement retries, and a later success lands.
+    assert withdrawal.request_automatic_deletion_plan(capture_root=world["capture"], launch=lambda _: None) == "started"
+    monkeypatch.setattr(deletion, "plan_withdrawal_deletion", original)
+    assert deletion.record_automatic_plan(capture_root=world["capture"], **world["resolution"])["applied"] is False
+
+
+def test_a_dangling_symlink_at_the_plan_path_is_refused_once_per_request_without_a_scan(tmp_path, monkeypatch):
+    world = _acknowledged(tmp_path)
+    _plan_path(world).symlink_to(tmp_path / "nowhere.json")
+    scans = []
+    monkeypatch.setattr(deletion, "plan_withdrawal_deletion", lambda **kwargs: scans.append(kwargs))
+    started = []
+    assert withdrawal.request_automatic_deletion_plan(capture_root=world["capture"], launch=started.append) == "refused"
+    assert started == [] and _failure(world)["reason"] == "website_withdrawal_deletion_automatic_plan_path_unsafe"
+    with pytest.raises(deletion.WithdrawalDeletionError, match="automatic_plan_path_unsafe"):
+        deletion.record_automatic_plan(capture_root=world["capture"], **world["resolution"])
+    assert scans == [] and _plan_path(world).is_symlink() and not (tmp_path / "nowhere.json").exists()
+    assert _failure(world)["attempts"] == 2
+
+
+def test_the_child_environment_carries_roots_and_paths_but_no_secret():
+    environment = bounds.child_environment({
+        "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT": "/q", "BLUEPRINT_TEAM_EVALUATION_REGISTRY_PATH": "/r",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE": "/etc/secret",
+        "BLUEPRINT_PIPELINE_SYNC_TOKEN_PATH": "/etc/token", "PIPELINE_SYNC_WEBAPP_URL": "https://x",
+        "BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL": "https://hook", "AWS_SECRET_ACCESS_KEY": "s"})
+    assert environment["BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT"] == "/q"
+    assert environment["BLUEPRINT_TEAM_EVALUATION_REGISTRY_PATH"] == "/r"
+    assert set(environment) == {"PATH", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE", "PYTHONPATH", bounds.CHILD_ENV,
+                                bounds.LOCK_ENV, "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT",
+                                "BLUEPRINT_TEAM_EVALUATION_REGISTRY_PATH"}
+
+
+def test_the_bounded_child_records_its_plan_and_its_limits(tmp_path):
+    import resource
+    import subprocess
+
+    world = _acknowledged(tmp_path)
+    command = [sys.executable, "-m", "blueprint_pipeline.website_capture_withdrawal_deletion", "--capture-root",
+               str(world["capture"]), "--record-automatic-plan", *drill._cli_root_arguments(world["resolution"]),
+               "--uncovered-root", str(tmp_path / "absent")]
+    environment = bounds.child_environment()
+    environment[bounds.LOCK_ENV] = str(bounds.host_lock())
+    completed = subprocess.run(command, env=environment, cwd="/", capture_output=True, text=True, timeout=120, check=False)
+    assert completed.returncode == 0, completed.stderr
+    record = json.loads(_plan_path(world).read_text())
+    limits = record["child_limits"]
+    assert limits["wall_clock_seconds"] == bounds.WALL_CLOCK_SECONDS
+    assert limits["address_space_bytes"] is True and limits["cpu_seconds"] is True and limits["nice_19"] is True
+    assert set(limits) >= {"io_class_idle", "oom_score_adj_1000"}  # best effort; recorded either way
+    # This test process itself is not bounded.
+    assert resource.getrlimit(resource.RLIMIT_AS)[0] != bounds.ADDRESS_SPACE_BYTES
