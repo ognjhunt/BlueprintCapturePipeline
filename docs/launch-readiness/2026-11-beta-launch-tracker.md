@@ -362,7 +362,9 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - Why the second splat never came: the rebuild re-selected views across the whole clip, so World Labs got the same stationary opening and pose jump that broke the first pose, and again did not accept refinement.
     - The fix (`atlas_splat_rebuild_window`): one windowed retry of a rebuild stopped at an unrefined pose. Before anything is bought, it reads the earlier pose, keeps the segments `select_splat_frames` keeps, and poses only that footage, densely. Reviewed frames left outside the window are named in `uncaptured_regions`, and the anchor moves to the nearest frame in the window.
     - If there is no usable window, the retry stops by name with nothing bought. Money is unchanged: the same expected and maximum cost, allowance check and paid admission.
-    - Not yet for new jobs: a second pose there would change a quoted job's cost, so it waits for the owner.
+    - New jobs: owner "yes", 11-09 15:27:24Z, to one windowed re-pose (about $1) before the refined splat when a new job's first pose is not refined and its motion analysis finds a jump or a stationary run.
+      - Built as `website_atlas_windowed_repose`. A new job records the term before its first purchase: the maximum cost includes 128 views at the per-view price, which the selection budget holds back; the expected cost leaves it out.
+      - In-flight jobs have no term and keep their quote. The re-pose is used only when World Labs refines it; anything else leaves the job on its first pose, never a third.
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 

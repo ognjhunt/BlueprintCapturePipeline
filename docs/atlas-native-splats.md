@@ -409,10 +409,54 @@ a pose, and nothing fed the earlier pose's findings into the next request
   new pose's cameras, so the navigation start, which is read from that path, is
   re-derived on the new footage by `--resume-preparation`. It sits on the new
   walked floor, and the spawn check still reports it.
-- **Not yet for new jobs.** A new job's first pose that comes back unrefined
-  still goes on to its splat with `select_splat_frames`. A windowed re-pose there
-  would add a second pose to a quoted job, so it waits for an owner decision on
-  its cost.
+- **New jobs** get the same windowed pose before their refined splat (below).
+
+### A new job's one windowed re-pose before its refined splat
+
+Owner decision 2026-11-09 15:27:24Z: "yes". A new job pays for one windowed
+re-pose (about $1) before it buys the refined splat when all three hold: its first
+source pose came back without pose refinement, its route buys a refined splat,
+and the window on that pose is `windowed`. A shot with no window (one clean
+moving shot, a pan or tripod, an unreadable pose) buys nothing extra
+(`website_atlas_windowed_repose`, `website_atlas_pipeline._windowed_repose`).
+
+- **The term, before the first purchase.** A new job records
+  `windowed_repose.json` once, before its first paid review. It holds the owner's
+  decision, the per-view price, the input bound (`SPLAT_POSE_INPUT_CAPACITY`,
+  128) and the most the re-pose can cost (128 x the per-view price, $1.28 at
+  $0.01). That last figure counts toward the job's maximum but not its expected
+  cost, and the term says what it is conditional on. The job's selection budget
+  holds that maximum back, so the scene review's recorded `selection_budget` (the
+  first pose's price review) leaves room for it. An allowance that cannot hold it
+  back records the term disabled, and the job runs as before. A recorded term is
+  read back and never re-decided.
+- **In-flight jobs keep their quote.** A job that bought anything before this
+  release has no term: it never re-poses and is never re-priced.
+- **The re-pose.** It sits in `pose-windowed/` beside the first pose and shares
+  the job's clean plate. Its window and derived review are recorded once in
+  `pose-windowed/atlas_pose_window.json`, bound to the first pose's digest and the
+  term. The selection uses the profile the first pose recorded (splat target,
+  sharpness floor, input capacity), and task-source views join only inside the
+  window. Before it is bought:
+  - its inputs must fit the term's bound and the first pose's own count;
+  - its price must be the term's;
+  - the job's remaining allowance must cover it and the final outputs still to buy.
+
+  Otherwise it stops by name, nothing extra is bought, and the job goes on as
+  before. It goes through the job's paid admission like any pose. It buys no
+  scale review, and an unscaled re-pose is not used where the first pose had a
+  scale.
+- **The outcome**, recorded once in `pose-windowed/repose_outcome.json`. Only
+  `adopted` (World Labs refined the re-pose) replaces the first pose: the draft,
+  the splat selection, the refined splat, the mesh and the bundle all come from
+  the re-pose, under its derived review, whose `uncaptured_regions` name the
+  reviewed frames the window left out. Any other outcome (`no_window`,
+  `price_changed`, `selection_refused`, `inputs_over_term_bound`,
+  `allowance_insufficient`, `repose_unavailable`, `not_accepted`,
+  `scale_unresolved`) leaves the job on its first pose, exactly as before. There
+  is never a third pose. The result's `windowed_repose` names the outcome and,
+  with a window, its intervals and the reviewed frames left out; the window and
+  the outcome travel in the bundle's analysis.
 
 ## Reviewed runtime policy
 

@@ -34,13 +34,16 @@ No window is made, and the retry stops by name with nothing bought, when:
 
 Every decision is recorded once, in the retry's pose root (``WINDOW_FILE``), and
 read back on later ticks, never re-derived. Nothing here buys or uploads anything.
+
+A new job's own first pose gets the same window (``first_pose_window``) for its one
+windowed re-pose before the refined splat (``website_atlas_windowed_repose``).
 """
 from __future__ import annotations
 
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -173,23 +176,19 @@ def windowed_review(review: Mapping[str, Any], survey_frames: Sequence[Mapping[s
             "anchor_frame_id": anchor, "original_anchor_frame_id": moved, "flags": flags}
 
 
-def _earlier_selection(previous_root: Path, review: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, float]]:
-    """``select_splat_frames`` on the earlier attempt's pose: its cameras, times, depth and any draft pairs."""
+def selection_on_pose(source_root: Path, draft_path: Path | None,
+                      review: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, float]]:
+    """``select_splat_frames`` on a retained pose: its cameras, times, depth and any draft pairs, read only."""
     from .atlas_depth_splat import load_posed_rgbd
     from .atlas_splat_input_quality import scene_depth, select_splat_frames
-    from .atlas_splat_rebuild import earlier_pose
     from .atlas_video_inputs import GEOMETRY_INPUTS_FILE, WORKING_AREA_ROLES
 
-    found = earlier_pose(previous_root / "pose")
-    if found is None:
-        raise ValueError("earlier_pose_unreadable")
-    source_root = Path(found["_source_root"])
-    pose, frames = load_posed_rgbd(source_root)
-    inputs = source_root / GEOMETRY_INPUTS_FILE
+    pose, frames = load_posed_rgbd(Path(source_root))
+    inputs = Path(source_root) / GEOMETRY_INPUTS_FILE
     rows = json.loads(inputs.read_text()).get("frames", []) if inputs.is_file() else []
     timestamps = {row["frame_id"]: row.get("timestamp_seconds") for row in rows}
-    draft_path = previous_root / "splat/atlas_depth_splat_manifest.json"
-    draft = json.loads(draft_path.read_text()) if draft_path.is_file() and not draft_path.is_symlink() else {}
+    draft = (json.loads(draft_path.read_text())
+             if draft_path is not None and draft_path.is_file() and not draft_path.is_symlink() else {})
     try:
         depth = scene_depth(frames)
     except (OSError, ValueError, KeyError):
@@ -204,26 +203,40 @@ def _earlier_selection(previous_root: Path, review: Mapping[str, Any]) -> tuple[
     return {**record, "pose_result_digest": pose["digest"]}, timestamps
 
 
-def pose_window(*, job_dir: Path, request: Mapping[str, Any], review: Mapping[str, Any],
-                survey: Mapping[str, Any], pose_root: Path) -> dict[str, Any]:
-    """The retry's window and derived review, recorded once in ``pose_root`` and read back; never raises.
+def _earlier_selection(previous_root: Path, review: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, float]]:
+    """``selection_on_pose`` on the pose a stopped rebuild left in ``previous_root``."""
+    from .atlas_splat_rebuild import earlier_pose
 
-    ``status`` is ``windowed`` (use ``review``) or names why no window was made.
+    found = earlier_pose(previous_root / "pose")
+    if found is None:
+        raise ValueError("earlier_pose_unreadable")
+    return selection_on_pose(Path(found["_source_root"]), previous_root / "splat/atlas_depth_splat_manifest.json",
+                             review)
+
+
+def record_window(*, pose_root: Path, binding: Mapping[str, Any],
+                  select: Callable[[], tuple[dict[str, Any], dict[str, float]]], review: Mapping[str, Any],
+                  survey: Mapping[str, Any]) -> dict[str, Any]:
+    """A window and its derived review, recorded once in ``pose_root`` and read back; never raises.
+
+    ``binding`` names what the window was made for (a rebuild request, or a job's first pose); a
+    recorded window is read back only for the same binding. ``select`` returns ``selection_on_pose``'s
+    record on the earlier pose. ``status`` is ``windowed`` (use ``review``) or names why there is none.
     """
-    from .atlas_splat_rebuild import WINDOW_FILE, WINDOW_SCHEMA, _inside as inside_job
+    from .atlas_splat_rebuild import WINDOW_FILE, WINDOW_SCHEMA
 
     path = Path(pose_root) / WINDOW_FILE
     if path.is_file() and not path.is_symlink():
         record = json.loads(path.read_text())
-        if (record.get("schema_version") != WINDOW_SCHEMA or record.get("request_digest") != request["digest"]
+        if (record.get("schema_version") != WINDOW_SCHEMA
+                or any(record.get(key) != value for key, value in binding.items())
                 or record.get("digest") != canonical_digest(record, digest_field="digest")):
             raise ValueError("atlas_splat_rebuild_pose_window_changed")
         return record
     flags: list[str] = []
     selection = None
     try:
-        previous_root = inside_job(Path(job_dir), str(request.get("previous_root") or "missing"))
-        selection, timestamps = _earlier_selection(previous_root, review)
+        selection, timestamps = select()
         window = window_from_selection(selection, timestamps)
         if window["status"] == "windowed":
             window = {**window, **windowed_review(review, survey.get("frames") or [], window)}
@@ -232,8 +245,7 @@ def pose_window(*, job_dir: Path, request: Mapping[str, Any], review: Mapping[st
                   "error": type(exc).__name__ + ":" + str(exc).partition(":")[0][:120]}
     if window["status"] != "windowed":
         flags.append("pose_window_" + window["status"])
-    record = {"schema_version": WINDOW_SCHEMA, "request_digest": request["digest"],
-              "previous_request_digest": request.get("previous_request_digest"),
+    record = {"schema_version": WINDOW_SCHEMA, **binding,
               "status": window["status"], "reason": window.get("reason"),
               "earlier_pose_result_digest": (selection or {}).get("pose_result_digest"),
               "earlier_selection": None if selection is None else {
@@ -260,6 +272,26 @@ def pose_window(*, job_dir: Path, request: Mapping[str, Any], review: Mapping[st
     Path(pose_root).mkdir(parents=True, exist_ok=True)
     write_json(path, record)
     return record
+
+
+def pose_window(*, job_dir: Path, request: Mapping[str, Any], review: Mapping[str, Any],
+                survey: Mapping[str, Any], pose_root: Path) -> dict[str, Any]:
+    """A rebuild retry's window from the pose its stopped rebuild left (``record_window``); never raises."""
+    from .atlas_splat_rebuild import _inside as inside_job
+
+    def select():
+        return _earlier_selection(inside_job(Path(job_dir), str(request.get("previous_root") or "missing")), review)
+    return record_window(pose_root=pose_root, binding={"request_digest": request["digest"],
+                                                       "previous_request_digest": request.get("previous_request_digest")},
+                         select=select, review=review, survey=survey)
+
+
+def first_pose_window(*, source_root: Path, binding: Mapping[str, Any], review: Mapping[str, Any],
+                      survey: Mapping[str, Any], pose_root: Path) -> dict[str, Any]:
+    """A new job's windowed re-pose window from its own first pose (``record_window``); never raises."""
+    return record_window(pose_root=pose_root, binding=binding,
+                         select=lambda: selection_on_pose(Path(source_root), None, review),
+                         review=review, survey=survey)
 
 
 def window_for_pose_root(pose_root: Path) -> dict[str, Any] | None:
