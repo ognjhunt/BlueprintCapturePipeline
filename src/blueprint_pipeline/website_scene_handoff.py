@@ -379,7 +379,8 @@ SUPERSEDED_DIRECTORY = "superseded_atlas_results"
 _RECORD_DIRECTORIES = ("", "native", "fit_check", "development_test")
 
 
-def retain_superseded_records(*, capture_root: Path, root: Path, atlas_result_digest: Any) -> Path | None:
+def retain_superseded_records(*, capture_root: Path, root: Path, atlas_result_digest: Any,
+                              levelling_digest: Any = None) -> Path | None:
     """Copy the records a base scene from another Atlas result named, before this run replaces them.
 
     The levelled scene, the navigation scene half and every file they name sit in content-addressed
@@ -399,11 +400,18 @@ def retain_superseded_records(*, capture_root: Path, root: Path, atlas_result_di
     except (OSError, ValueError):
         return None
     built = previous.get("atlas_result_digest") if isinstance(previous, dict) else None
-    if (not isinstance(built, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", built)
-            or built == atlas_result_digest):
+    levelled = (previous.get("levelling") or {}).get("digest") if isinstance(previous, dict) else None
+    if not isinstance(built, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", built):
         return None
     preparation = capture_root / "pipeline" / "website_scene_preparation"
-    archive = preparation / SUPERSEDED_DIRECTORY / built[7:23]
+    if built != atlas_result_digest:
+        archive = preparation / SUPERSEDED_DIRECTORY / built[7:23]
+    elif (levelling_digest is not None and isinstance(levelled, str)
+          and re.fullmatch(r"sha256:[0-9a-f]{64}", levelled) and levelled != levelling_digest):
+        # The same Atlas result levelled again by a newer levelling revision (``superseded_levelling``).
+        archive = preparation / SUPERSEDED_DIRECTORY / f"{built[7:23]}-levelling-{levelled[7:23]}"
+    else:
+        return None
     records = [preparation / "handoff.json", *sorted(path for name in _RECORD_DIRECTORIES
                                                      for path in (root / name).glob("*"))]
     for path in dict.fromkeys(records):
@@ -477,7 +485,8 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         base = dict(atlas["base_scene"])
         # A base scene the job's earlier Atlas result built is replaced: its records are kept first.
         retain_superseded_records(capture_root=capture_root, root=root,
-                                  atlas_result_digest=base.get("atlas_result_digest"))
+                                  atlas_result_digest=base.get("atlas_result_digest"),
+                                  levelling_digest=(base.get("levelling") or {}).get("digest"))
         write_json(root / "base_scene.json", base)
         result.update(base_scene_path=str(root / "base_scene.json"), visual_reconstruction_ready=True)
         # A geometry-only job keeps its subject in the scene: it ends at the robot fit

@@ -391,7 +391,9 @@ def test_a_rebuild_scene_skips_completion_and_buys_the_mesh_only_on_its_new_refi
     from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pipeline as pipeline
     source_root = tmp_path / "pose/full-view-source-v1"
     source_root.mkdir(parents=True)
-    (source_root / "atlas_posed_rgbd_result.json").write_text("{}")
+    # A refined pose: the rebuild goes on to its splat step (an unrefined one stops right after the pose).
+    (source_root / "atlas_posed_rgbd_result.json").write_text(json.dumps(
+        {"operation": {"response": {"poseRefinementAccepted": True}}}))
     (source_root / "scene_measurements.json").write_text("{}")
     (tmp_path / "atlas_scene_review.json").write_text("{}")
     (tmp_path / "splat").mkdir()
@@ -435,3 +437,28 @@ def test_a_rebuild_scene_skips_completion_and_buys_the_mesh_only_on_its_new_refi
     assert len(meshes) == 1 and meshes[0]["output_root"] == tmp_path / "mesh-refined" / refined["digest"][7:23]
     assert result["appearance"]["basis"] == "atlas_refined_splat" and result["generated_completion_performed"] is False
     assert "scene_completion" not in result and result["download"] == {"zip_path": "rebuilt.zip"}
+
+
+@pytest.mark.parametrize("accepted", [False, None])
+def test_a_rebuild_stops_right_after_a_pose_world_labs_did_not_refine(tmp_path, monkeypatch, accepted):
+    # capture-5b067498 (2026-11-09): 105 posed views, refinement not accepted, and the draft fusion was
+    # killed out of memory every tick before the splat step could stop. The stop comes first now.
+    from blueprint_pipeline import atlas_depth_splat, atlas_source_pose_inputs
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+
+    source_root = tmp_path / "pose" / "full-view-source-v1"
+    source_root.mkdir(parents=True)
+    response = {} if accepted is None else {"poseRefinementAccepted": accepted}
+    (source_root / "atlas_posed_rgbd_result.json").write_text(json.dumps({"operation": {"response": response}}))
+    monkeypatch.setattr(pipeline, "_source_pose", lambda **_: {"status": "completed"})
+    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda _root: (source_root, {}))
+    monkeypatch.setattr(atlas_depth_splat, "load_posed_rgbd", lambda _root: pytest.fail("posed views decoded"))
+    review = {"subject_origin": "no_manipulated_subject", "automation": {"objects": [{"disposition": "keep"}]}}
+    options = dict(pose_root=tmp_path / "pose", output_root=tmp_path, inputs={}, review=review, policy={},
+                   task_context={}, source_digest="sha256:" + "1" * 64, configuration={}, check=lambda *_a, **_k: None,
+                   experimental=False, max_polls=1, model=None)
+    assert pipeline._preserved_scene(**options, rebuild=True) == {
+        "status": "needs_input", "stage": "source_pose", "reason": "atlas_splat_rebuild_pose_refinement_not_accepted"}
+    # A first build keeps going: the draft stands in when the refined splat is not bought.
+    with pytest.raises(pytest.fail.Exception, match="posed views decoded"):
+        pipeline._preserved_scene(**options)

@@ -45,6 +45,10 @@ One more fact makes any completed preparation stale, held or handed off:
   (a stopped rebuild hands the parent back), there is no fact. The new scene half's intake goes out in
   the same run, re-issued under its own submission (``website_navigation_intake.reissue_parent``).
 
+  The same holds for a base scene levelled by an older levelling revision than the running release's
+  (``superseded_levelling``): a newer levelling changes the collider copy the navigation scene half is
+  derived from, so the preparation runs once more per revision.
+
   Only the operator replays it, and the drain keeps no bytes for it. Every republish of a ready job is
   an operator reopening it (``atlas_preparation_job_control.retry_preparation_job``, the door's
   ``selected-handoff --atlas-retry``), and the door's status then shows the completed preparation's stale
@@ -237,6 +241,54 @@ def superseded_atlas_result(pipeline_root: Path) -> dict[str, Any] | None:
     return fact
 
 
+def superseded_levelling(pipeline_root: Path) -> dict[str, Any] | None:
+    """The current levelling revision, when the retained base scene was levelled by an older one; else None.
+
+    ``levelling_superseded``: the handoff names its base scene, that base scene was levelled from an Atlas
+    result the job still holds as final (``ready``, the same sealed result), and its levelling revision is
+    not the running release's (``atlas_world_levelling.REVISION``; a base scene from before the revision
+    was recorded counts as older). A newer levelling changes the collider copy the navigation scene half
+    is derived from: capture-5b067498 (2026-11-08) had no floor under the robot's start until levelling v8
+    filled one under the filmed path. Keyed by the revision, so each one runs once. Read-only, never raises.
+    """
+    import json
+    import re
+
+    from .atlas_world_levelling import REVISION
+    from .website_atlas_preview_store import JOB_FILE, read_job
+
+    root = Path(pipeline_root)
+    handoff = _handoff(root)
+    named = (handoff or {}).get("base_scene_path")
+    if not isinstance(named, str):
+        return None
+    try:
+        path, preparation = Path(named).absolute(), (root / "website_scene_preparation").absolute()
+        if (".." in path.parts or not path.is_relative_to(preparation) or not path.is_file()
+                or any(item.is_symlink() for item in (path, *path.parents) if item.is_relative_to(preparation))):
+            return None
+        base = json.loads(path.read_text())
+        job = read_job(root / "atlas" / JOB_FILE)
+    except (OSError, ValueError, AttributeError):
+        return None
+    levelling = base.get("levelling") if isinstance(base, dict) else None
+    built = base.get("atlas_result_digest") if isinstance(base, dict) else None
+    if (not isinstance(levelling, dict) or not isinstance(built, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", built) is None
+            or job.get("state") != "ready" or job.get("retry_at_epoch") or job.get("result_digest") != built
+            or levelling.get("revision") == REVISION):
+        return None
+    fact = {"kind": "levelling_superseded", "levelling_revision": REVISION,
+            "superseded_levelling_revision": levelling.get("revision"), "result_digest": built}
+    fact["fact_digest"] = canonical_digest(fact)
+    return fact
+
+
+def superseded_scene(pipeline_root: Path) -> dict[str, Any] | None:
+    """The fact that the retained base scene is stale: a newer Atlas result first, else a newer levelling."""
+    return superseded_atlas_result(pipeline_root) or superseded_levelling(pipeline_root)
+
+
 def replay_record(listener, *, payload, payload_digest, producer_delivery_key, capture_root: Path) -> dict | None:
     """The exact handoff bytes a replay runs again, kept while the run's handoff waits this way. Never raises."""
     from .website_assessment_resume import _payload_bytes
@@ -388,7 +440,7 @@ def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path,
 
     pipeline = Path(capture_root) / "pipeline"
     # A republished Atlas result first: its run reads the held job's own fact again too.
-    fact = superseded_atlas_result(pipeline) or arrived_fact(pipeline)
+    fact = superseded_scene(pipeline) or arrived_fact(pipeline)
     if fact is None:
         raise ValueError("website_held_handoff_resume_not_eligible")
     spent = _state(pipeline)
@@ -408,4 +460,4 @@ def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path,
 
 __all__ = ["CONSENT_HOLDS", "FIELD", "MARK", "OPERATOR_SCHEMA", "SCHEMA", "arrived_fact", "claim_matches",
            "held_kind", "preparation_binding", "reconcile_held_handoffs", "replay_record", "resume_held_preparation",
-           "superseded_atlas_result"]
+           "superseded_atlas_result", "superseded_levelling", "superseded_scene"]

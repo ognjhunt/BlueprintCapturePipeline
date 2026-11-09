@@ -499,3 +499,49 @@ def test_a_held_preparation_is_eligible_too_and_still_waits_on_its_own_fact(site
     assert ledger[replay.FIELD]["schema_version"] == replay.SCHEMA
     _confirm(site)
     assert site.reconcile()["replayed"] == 1 and len(site.runs) == 3
+
+
+def test_a_handed_off_preparation_levelled_by_an_older_revision_runs_once_more_by_the_operator(site):
+    # capture-5b067498 (2026-11-08): the robot's start had no floor until levelling v8 filled one under the
+    # filmed path. The Atlas result is unchanged, so only a newer levelling revision makes the scene stale.
+    from blueprint_pipeline.atlas_world_levelling import REVISION
+    parent = _handed_off(site)
+    pipeline = site.root / "pipeline"
+    base_path = Path(_handoff(site)["base_scene_path"])
+    base = json.loads(base_path.read_text())
+    assert replay.superseded_levelling(pipeline) is None  # no levelling record: nothing to compare
+    for recorded in ("atlas_world_levelling.v7", None):
+        levelling = {"digest": "sha256:" + "4" * 64, **({"revision": recorded} if recorded else {})}
+        base_path.write_text(json.dumps({**base, "levelling": levelling}))
+        fact = replay.superseded_levelling(pipeline)
+        assert fact == {"kind": "levelling_superseded", "levelling_revision": REVISION,
+                        "superseded_levelling_revision": recorded, "result_digest": parent,
+                        "fact_digest": fact["fact_digest"]}
+        assert replay.superseded_scene(pipeline) == fact
+    # Levelled by this release's revision, or while the Atlas job is processing: no fact.
+    base_path.write_text(json.dumps({**base, "levelling": {"digest": "sha256:" + "4" * 64, "revision": REVISION}}))
+    assert replay.superseded_levelling(pipeline) is None
+    base_path.write_text(json.dumps({**base, "levelling": {"digest": "sha256:" + "4" * 64,
+                                                           "revision": "atlas_world_levelling.v7"}}))
+    _publish(site, "parent-again", state="processing")
+    assert replay.superseded_levelling(pipeline) is None
+    # A republished result is the stronger fact and is named first.
+    rebuilt = _publish(site, "rebuilt")
+    assert replay.superseded_scene(pipeline)["kind"] == "atlas_result_superseded"
+    assert replay.superseded_scene(pipeline)["result_digest"] == rebuilt
+
+
+def test_the_operator_resume_runs_a_preparation_levelled_by_an_older_revision_once(site):
+    _handed_off(site)
+    pipeline = site.root / "pipeline"
+    base_path = Path(_handoff(site)["base_scene_path"])
+    base = json.loads(base_path.read_text())
+    base_path.write_text(json.dumps({**base, "levelling": {"digest": "sha256:" + "4" * 64,
+                                                           "revision": "atlas_world_levelling.v7"}}))
+    fact = replay.superseded_levelling(pipeline)
+    # The drain never starts it; the operator's resume runs the stage once more, keyed by the revision.
+    assert site.reconcile() == {"replayed": 0, "held": 0, "already_replayed": 0} and len(site.runs) == 3
+    assert _resume(site)["status"] == "processed" and len(site.runs) == 4
+    state = json.loads((site.work / replay.STATE_FILE).read_text())
+    assert state["fact"] == fact and state["operator"] is True
+    assert listener._read_job_ledger(site.root)["attempt_history"][-1][replay.MARK] == fact["fact_digest"]

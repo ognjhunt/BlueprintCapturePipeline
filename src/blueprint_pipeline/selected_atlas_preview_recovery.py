@@ -272,11 +272,17 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
         if native.get("status") == "completed":
             # Built from an Atlas result the job has since replaced: --resume-preparation derives it
             # again from the current one, once (website_held_handoff_replay).
-            from .website_held_handoff_replay import superseded_atlas_result
+            # Or levelled by an older levelling revision than this release's: derived again once per revision.
+            from .website_held_handoff_replay import superseded_atlas_result, superseded_levelling
             superseded = superseded_atlas_result(capture_root / "pipeline")
             if superseded is not None:
                 value["native_preparation"]["atlas_result_superseded"] = {
                     key: superseded[key] for key in ("result_digest", "superseded_result_digest")}
+            else:
+                levelling = superseded_levelling(capture_root / "pipeline")
+                if levelling is not None:
+                    value["native_preparation"]["levelling_superseded"] = {
+                        key: levelling[key] for key in ("levelling_revision", "superseded_levelling_revision")}
     if type(job.get("reason")) is str and _CODE.fullmatch(job["reason"]):
         value["job"]["reason"] = job["reason"]
     if type(job.get("stage")) is str and _CODE.fullmatch(job["stage"]):

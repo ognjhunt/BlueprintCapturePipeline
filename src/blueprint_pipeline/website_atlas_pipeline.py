@@ -518,6 +518,14 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         return {"status": "needs_input", "stage": "source_pose", "source_pose": source_pose,
                 "reason": source_pose.get("reason", "atlas_source_pose_unavailable"),
                 "blockers": [source_pose.get("reason", "atlas_source_pose_unavailable")]}
+    if rebuild and ((json.loads((source_root / "atlas_posed_rgbd_result.json").read_text()).get("operation") or {})
+                    .get("response") or {}).get("poseRefinementAccepted") is not True:
+        # A rebuild buys its splat only on a pose World Labs refined (``_preserved_appearance``), so it
+        # stops here, before decoding and fusing every posed view for a draft it would not use.
+        # capture-5b067498 (2026-11-09): 105 views, refinement not accepted, and the fusion was killed
+        # out of memory each tick instead of reaching this stop.
+        return {"status": "needs_input", "stage": "source_pose",
+                "reason": "atlas_splat_rebuild_pose_refinement_not_accepted"}
     pose, frames = load_posed_rgbd(source_root)
     splat_root = output_root / "splat"
     manifest = splat_root / "atlas_depth_splat_manifest.json"
