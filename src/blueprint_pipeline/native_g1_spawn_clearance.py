@@ -621,6 +621,113 @@ def packet_floor_absent(packet_dir: str | Path, plan_digest: str) -> bool:
     return floor_absent(_plan_report(packet_dir, plan_digest))
 
 
+#: Where a navigation packet's goal marker sits in the policy's head camera at the reset pose: a $0 CPU
+#: projection beside the spawn check (2026-11-09, asked of the library job's walking rows before pi0.5 ran).
+GOAL_VIEW_SCHEMA_VERSION = "native_g1_goal_marker_view.v1"
+GOAL_VIEW_FILENAME = GOAL_VIEW_SCHEMA_VERSION + ".json"
+#: A flag, never a refusal: the policy starts without its goal in view, so a failed episode reads as that.
+GOAL_NOT_IN_VIEW_REASON = "g1_goal_marker_not_in_initial_view"
+GOAL_VIEW_RIM_POINTS = 32
+GOAL_VIEW_CLAIM_BOUNDARY = ("cpu_projection_at_the_reset_pose: the plan's head camera as a pinhole on its "
+                            "mount; nothing rendered, nothing in the scene checked for occlusion")
+
+
+def goal_marker_view(*, robot_usd: str | Path, joint_reset_positions: Mapping[str, float],
+                     base_pose_world: Mapping[str, Sequence[float]], camera: Mapping[str, Any],
+                     marker: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a flat goal disc's centre and rim through a body-mounted camera at the reset pose.
+
+    The camera's parent body is posed as the spawn check poses every body (the root body at the stance,
+    the reset joints applied); its ``frame_from_camera_matrix`` (OpenCV optical frame) and pinhole
+    intrinsics give each point's pixel. Reports whether the centre is in frame, the fraction of rim points
+    in frame and the disc's radius in pixels.
+    """
+    model = _model(robot_usd, joint_reset_positions)
+    poses = body_poses(model, joint_reset_positions)
+    parent = str(camera["parent_prim_path"]).rsplit("/", 1)[-1]
+    matches = [body for body in poses if body.rsplit("/", 1)[-1] == parent]
+    if len(matches) != 1 or camera.get("optical_convention") != "opencv":
+        raise ScenePhysicsPreflightError("g1_goal_view_camera_unbound")
+    world_from_asset = _pose_matrix(base_pose_world) @ np.linalg.inv(model.asset_from_body[model.root_body])
+    frame_from_camera = np.asarray(camera["frame_from_camera_matrix"], dtype=float).reshape(4, 4)
+    camera_from_world = np.linalg.inv(world_from_asset @ poses[matches[0]] @ frame_from_camera)
+    k = camera["intrinsics"]
+    width, height = int(k["width"]), int(k["height"])
+    centre = np.asarray(marker["surface_position_world_m"], dtype=float)
+    radius = float(marker["radius_m"])
+    angles = np.linspace(0.0, 2.0 * np.pi, GOAL_VIEW_RIM_POINTS, endpoint=False)
+    rim = centre + radius * np.stack([np.cos(angles), np.sin(angles), np.zeros_like(angles)], axis=1)
+    points = np.vstack([centre, rim])
+    local = (camera_from_world @ np.hstack([points, np.ones((len(points), 1))]).T).T[:, :3]
+    front = local[:, 2] > 1e-6
+    depth = np.where(front, local[:, 2], 1.0)
+    u = float(k["fx"]) * local[:, 0] / depth + float(k["cx"])
+    v = float(k["fy"]) * local[:, 1] / depth + float(k["cy"])
+    inside = front & (u >= 0) & (u <= width - 1) & (v >= 0) & (v <= height - 1)
+    rim_in = float(inside[1:].mean())
+    pixel_radius = (float(np.median(np.hypot(u[1:][front[1:]] - u[0], v[1:][front[1:]] - v[0])))
+                    if front[0] and front[1:].any() else None)
+    status = ("in_view" if inside[0] and rim_in == 1.0 else "partly_in_view" if inside[0] or rim_in > 0
+              else "not_in_view")
+    return {"camera_role": camera.get("role"), "camera_parent_body": parent, "status": status,
+            "centre_in_frame": bool(inside[0]),
+            "centre_pixel": [round(float(u[0]), 1), round(float(v[0]), 1)] if front[0] else None,
+            "rim_in_frame_fraction": round(rim_in, 4),
+            "pixel_radius": None if pixel_radius is None else round(pixel_radius, 1),
+            "image_size": [width, height]}
+
+
+def packet_goal_marker_view(packet_dir: str | Path) -> dict[str, Any] | None:
+    """A navigation packet's goal-marker view at its plan's reset pose; None for a packet with no G1 goal."""
+    root = Path(packet_dir)
+    plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text(encoding="utf-8"))
+    goal = (plan.get("task_spec") or {}).get("g1_navigation_goal")
+    if not isinstance(goal, Mapping):
+        return None
+    heads = [row for row in plan.get("cameras") or [] if isinstance(row, Mapping) and row.get("role") == "head"]
+    robot = plan["robot"]
+    if len(heads) != 1:
+        raise ScenePhysicsPreflightError("g1_goal_view_head_camera_count_invalid")
+    view = goal_marker_view(robot_usd=_bound_file(root, robot["usd_path"], robot["usd_sha256"]),
+                            joint_reset_positions=robot["joint_reset_positions_rad"],
+                            base_pose_world=robot["base_pose_world"], camera=heads[0],
+                            marker=goal["visible_target_marker"])
+    value = {**view, "schema_version": GOAL_VIEW_SCHEMA_VERSION, "claim_boundary": GOAL_VIEW_CLAIM_BOUNDARY,
+             "scene_plan_digest": plan["plan_digest"], "simulator_executed": False,
+             "provider_mutation_performed": False}
+    value["report_digest"] = canonical_digest(value, digest_field="report_digest")
+    return value
+
+
+@read_scoped
+def ensure_packet_goal_marker_view(packet_dir: str | Path) -> dict[str, Any] | None:
+    """Write the packet's goal-marker view once beside it; None when it has no G1 goal or cannot be read.
+
+    Never raises: the view is a flag's evidence, never a gate.
+    """
+    from .deployment_embodiment_preparation_contract import write_once
+
+    path = Path(packet_dir) / GOAL_VIEW_FILENAME
+    try:
+        if path.is_file() and not path.is_symlink():
+            return json.loads(path.read_text(encoding="utf-8"))
+        value = packet_goal_marker_view(packet_dir)
+        if value is not None:
+            write_once(path, value)
+        return value
+    except Exception:  # noqa: BLE001 - a flag's evidence never blocks planning
+        return None
+
+
+def goal_view_flags(packet_dir: str | Path, plan_digest: str) -> list[str]:
+    """``GOAL_NOT_IN_VIEW_REASON`` when the packet's goal-marker centre is out of the head camera's frame."""
+    view = ensure_packet_goal_marker_view(packet_dir)
+    if (isinstance(view, Mapping) and view.get("scene_plan_digest") == plan_digest
+            and view.get("centre_in_frame") is False):
+        return [GOAL_NOT_IN_VIEW_REASON]
+    return []
+
+
 def spawn_setup_flags(packet_dir: str | Path, plan_digest: str) -> list[str]:
     """The flags a funded row carries from its packet's spawn check: unmeasured, or an unsupported foot."""
     report = _plan_report(packet_dir, plan_digest)
