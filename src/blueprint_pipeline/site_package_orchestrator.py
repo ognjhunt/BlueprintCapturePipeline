@@ -4417,10 +4417,18 @@ def run_qualification_pipeline(
         if is_website_entry_source(descriptor.metadata.get("capture_entry_source")):
             stage = "website_task_context"
             from .website_atlas_preview import enqueue_preview
+            from .website_source_video import preparation_source_video
             from .website_task_evidence import prepare_website_task_descriptor
+
+            # The one file every website preparation stage reads: a new intake's clip normalized
+            # once (long edge <= 1920 px, <= 30 fps, original kept), or the input a job started with.
+            def website_source_video() -> Path | None:
+                return preparation_source_video(
+                    capture_root=capture_root,
+                    raw_video=_resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root))
             # A routed upload's Atlas preview is a side lane: recording it never raises or holds this run.
             enqueue_preview(descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir,
-                            source_video=lambda: _resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root))
+                            source_video=website_source_video)
             descriptor = prepare_website_task_descriptor(
                 descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir, bucket=bucket,
                 load_task_context=load_current_website_task_context, load_sponsorship=load_website_scene_sponsorship)
@@ -4428,7 +4436,7 @@ def run_qualification_pipeline(
             from .website_capture_preparation import run_website_capture_preparation
             return run_website_capture_preparation(
                 descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir,
-                source_video=_resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root),
+                source_video=website_source_video(),
                 derived_scene_generation_allowed=_worldlabs_derived_rights_allowed(metadata=descriptor.metadata),
                 gates=gates, prepare_media=run_clean_plate_stage,
                 check_privacy=_privacy_postprocess_gate, make_gate=QualificationGate,
