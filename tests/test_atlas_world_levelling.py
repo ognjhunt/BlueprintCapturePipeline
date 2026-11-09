@@ -341,6 +341,7 @@ def test_the_warped_scanned_floor_in_the_walked_corridor_is_planarized_and_discl
     assert planarized["basis"] == "scanned_floor_in_the_walked_corridor_planarized"
     assert planarized["surface_curved_along"] == ["walk"] and planarized["replaced_faces"] > 0
     assert 0.09 <= planarized["surface_offset_m"]["max"] <= 0.16 and planarized["inlier_rms_m"] < 0.01
+    planarized.pop("extra_cells")
     tri = np.asarray(rebuilt.vertices)[np.asarray(rebuilt.faces)]
     centroid = tri.mean(axis=1)
     near_path = (np.abs(centroid[:, 2]) <= 0.25) & (centroid[:, 0] >= 0.0) & (centroid[:, 0] <= 3.0)
@@ -352,6 +353,46 @@ def test_the_warped_scanned_floor_in_the_walked_corridor_is_planarized_and_discl
     filled = levelling._fill_walked_floor(rebuilt, footprints_m=footprints, meters_per_unit=1.0)
     floor = np.asarray(filled.pop("mesh").vertices)[np.asarray(rebuilt.faces).max() + 1:]
     assert np.all(np.abs(floor[:, 1]) < 1e-9)
+
+
+def test_a_board_over_the_floor_is_never_taken_for_the_floor():
+    # Codex on #3508: equally tessellated layers at 0 and 8 cm must not fit at 4 cm and lose the board.
+    from tests.atlas_level_room_fixture import _grid
+    floor, floor_faces = _grid((-1.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 81, 41)
+    floor[:, 1] = 0.003 * np.sin(floor[:, 0] * 7.0)  # a scanned floor is never exactly flat
+    board, board_faces = _grid((-1.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 81, 41)
+    board[:, 1] = 0.08
+    mesh = trimesh.Trimesh(vertices=np.vstack([floor, board]),
+                           faces=np.vstack([floor_faces, board_faces + len(floor)]), process=False)
+    footprints = np.column_stack([np.linspace(0.0, 2.0, 9), np.zeros(9)])
+    record = levelling._planarize_walked_floor(mesh, footprints_m=footprints, meters_per_unit=1.0)
+    rebuilt = record.pop("mesh")
+    assert abs(record["surface_offset_m"]["median"]) < 0.01 and record["layer_m"] <= 0.05
+    kept = np.asarray(rebuilt.faces)
+    assert int((kept.min(axis=1) >= len(floor)).sum()) == len(board_faces)
+    assert record["replaced_faces"] > 0 and int((kept.max(axis=1) < len(floor)).sum()) < len(floor_faces)
+
+
+def test_a_floor_face_crossing_the_corridor_edge_leaves_no_hole_beyond_it():
+    # Codex on #3508: a large floor triangle reaching into the corridor is dropped whole; its cells are filled.
+    from tests.atlas_level_room_fixture import _grid
+    fine, fine_faces = _grid((-0.5, 0.06, -0.5), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 41, 21)
+    big = np.array([[0.2, 0.06, 0.3], [1.5, 0.06, 1.6], [-0.3, 0.06, 1.6]])
+    mesh = trimesh.Trimesh(vertices=np.vstack([fine, big]),
+                           faces=np.vstack([fine_faces, [[len(fine), len(fine) + 2, len(fine) + 1]]]), process=False)
+    footprints = np.column_stack([np.linspace(0.0, 1.5, 7), np.zeros(7)])
+    record = levelling._planarize_walked_floor(mesh, footprints_m=footprints, meters_per_unit=1.0)
+    rebuilt = record.pop("mesh")
+    assert not np.any(np.asarray(rebuilt.faces).max(axis=1) >= len(fine))  # the big triangle is dropped
+    assert record["cells_beyond_corridor"] > 0
+    filled = levelling._fill_walked_floor(rebuilt, footprints_m=footprints, meters_per_unit=1.0,
+                                          extra_cells=record["extra_cells"])
+    tri = np.asarray(filled["mesh"].vertices)[np.asarray(filled["mesh"].faces)]
+    flat = tri[np.all(np.abs(tri[:, :, 1]) < 1e-9, axis=1)]
+    low, high = flat[:, :, [0, 2]].min(axis=1), flat[:, :, [0, 2]].max(axis=1)
+    # A point under the dropped triangle, a metre beyond the corridor, stands on the flat floor.
+    point = np.array([0.4, 1.4])
+    assert np.any(np.all(low <= point, axis=1) & np.all(point <= high, axis=1))
 
 
 def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
