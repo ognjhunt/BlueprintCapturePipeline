@@ -677,9 +677,10 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
     cell_list = np.array(sorted(cells), dtype=np.float64)
     box_low = low + cell_list.min(axis=0) * cell - WALKED_FLOOR_MARGIN_M
     box_high = low + (cell_list.max(axis=0) + 1) * cell + WALKED_FLOOR_MARGIN_M
-    nearby = np.flatnonzero(~floor_layer & (length > 1e-12) & ~level
-                            & np.all((centroid[:, [0, 2]] >= box_low) & (centroid[:, [0, 2]] <= box_high), axis=1)
-                            & (centroid[:, 1] >= -WALKED_FLOOR_SEARCH_M) & (centroid[:, 1] <= 2 * WALKED_FLOOR_SEARCH_M))
+    # Every steep face with a corner inside the box, whatever its height: a wall's tall upper faces share an
+    # edge with its base, so the base is never judged without them.
+    corner_in_box = np.all((tri[:, :, [0, 2]] >= box_low) & (tri[:, :, [0, 2]] <= box_high), axis=2)
+    nearby = np.flatnonzero(~floor_layer & (length > 1e-12) & ~level & corner_in_box.any(axis=1))
     debris = np.zeros(len(faces), dtype=bool)
     if len(nearby):
         piece = tri[nearby]
@@ -708,8 +709,10 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
             points = plan.reshape(-1, 3, 2)[judged].reshape(-1, 2)
             floor_at = np.array([local_floor((int(i), int(j)), point) for (i, j), point in zip(where, points)]).reshape(-1, 3)
             height_at = piece[judged][:, :, 1]
-            within = np.all((height_at >= np.minimum(floor_at, 0.0) - layer)
-                            & (height_at - floor_at <= WALKED_FLOOR_CLEAR_M), axis=1)
+            # A piece with a corner outside the box may go on beyond it: it is never judged low.
+            within = (np.all((height_at >= np.minimum(floor_at, 0.0) - layer)
+                             & (height_at - floor_at <= WALKED_FLOOR_CLEAR_M), axis=1)
+                      & corner_in_box[nearby[judged]].all(axis=1))
             outside_band = np.zeros(count, dtype=bool)
             outside_band[np.unique(label[judged][~within])] = True
             debris[nearby[judged[~outside_band[label[judged]]]]] = True

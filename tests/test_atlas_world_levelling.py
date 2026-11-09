@@ -486,6 +486,22 @@ def test_the_low_pieces_a_floor_sheet_leaves_standing_go_and_a_wall_stays_whole(
     assert pieces and all(0.08 <= row["dropped_low_piece_top_m"] <= 0.10 for row in pieces)
 
 
+def test_a_wall_with_a_fine_base_and_tall_upper_faces_keeps_its_base():
+    # Codex on #3521: the base strip's tall neighbours must count, wherever their centroids lie.
+    from tests.atlas_level_room_fixture import _grid
+    floor, floor_faces = _grid((-1.0, 0.0, -1.0), (0.05, 0.0, 0.0), (0.0, 0.0, 0.05), 81, 41)
+    floor[:, 1] = 0.03
+    base, base_faces = _grid((0.2, 0.03, 0.4), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0), 21, 3)  # 3 to 13 cm
+    upper, upper_faces = _grid((0.2, 0.13, 0.4), (0.05, 0.0, 0.0), (0.0, 2.87, 0.0), 21, 2)  # 13 cm to 3 m
+    mesh = trimesh.Trimesh(vertices=np.vstack([floor, base, upper]), faces=np.vstack([
+        floor_faces, base_faces + len(floor), upper_faces + len(floor) + len(base)]), process=False)
+    footprints = np.column_stack([np.linspace(0.0, 2.0, 9), np.zeros(9)])
+    record = levelling._planarize_walked_floor(mesh, footprints_m=footprints, meters_per_unit=1.0)
+    kept = np.asarray(record["mesh"].faces)
+    assert int((kept.min(axis=1) >= len(floor)).sum()) == len(base_faces) + len(upper_faces)
+    assert record["dropped_low_piece_faces"] == 0
+
+
 def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
     from tests.atlas_level_room_fixture import _grid
     vertices, faces = _grid((-1.0, 0.0, -1.0), (0.1, 0.0, 0.0), (0.0, 0.0, 0.1), 21, 21)
