@@ -440,7 +440,9 @@ moving shot, a pan or tripod, an unreadable pose) buys nothing extra
   window. Before it is bought:
   - its inputs must fit the term's bound and the first pose's own count;
   - its price must be the term's;
-  - the job's remaining allowance must cover it and the final outputs still to buy.
+  - the job's remaining dollars and remaining Atlas requests must both cover it
+    (one request) and the final outputs still to buy, by the same forecast
+    every optional paid step uses (`atlas_pricing.headroom`).
 
   Otherwise it stops by name, nothing extra is bought, and the job goes on as
   before. It goes through the job's paid admission like any pose. It buys no

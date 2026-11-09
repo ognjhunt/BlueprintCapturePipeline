@@ -122,7 +122,7 @@ def _job(tmp_path, *, frames=FRAMES, accepted=False, term=True, remaining=20.0):
 class _Stage:
     """The paid and local stages the re-pose goes through, recorded; the pose is World Labs' answer."""
 
-    def __init__(self, monkeypatch, job, *, frames=FRAMES, accepted=True, count=40, remaining=20.0,
+    def __init__(self, monkeypatch, job, *, frames=FRAMES, accepted=True, count=40,
                  scale="estimated_from_named_assumptions"):
         from blueprint_pipeline import atlas_source_pose_inputs, atlas_video_inputs
         from blueprint_pipeline import website_atlas_pipeline as pipeline
@@ -139,7 +139,6 @@ class _Stage:
             self.retry_source.mkdir(parents=True, exist_ok=True)
             return self.retry_source, {"frames": [{"frame_id": "x"}] * count}
         monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", prepare)
-        monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **__: {"remaining_cost_usd": remaining})
 
         def source_pose(**kw):
             self.posed.append(kw)
@@ -153,12 +152,17 @@ class _Stage:
         monkeypatch.setattr(pipeline, "_source_pose", source_pose)
 
 
+def _allowance(dollars=20.0, requests=10):
+    """The job's allowance as ``atlas_pricing.headroom`` forecasts it: dollars and Atlas requests left."""
+    return {"policy": _policy(), "remaining_cost_usd": dollars, "remaining_requests": requests}
+
+
 def _repose(job, first_root, source, review, **changes):
     from blueprint_pipeline import website_atlas_pipeline as pipeline
     options = dict(output_root=job, first_pose_root=first_root, source_root=source, review=review,
                    source_pose={"status": "completed", "scale_status": "estimated_from_named_assumptions"},
                    policy=_policy(), task_context={"capture_id": "c", "context_digest": "ctx"},
-                   source_digest="sha256:" + "1" * 64, configuration={}, check=lambda *_a, **_k: None,
+                   source_digest="sha256:" + "1" * 64, configuration=_allowance(), check=lambda *_a, **_k: None,
                    experimental=False, max_polls=1)
     return pipeline._windowed_repose(**{**options, **changes})
 
@@ -206,14 +210,35 @@ def test_a_shot_with_no_window_buys_nothing_extra(tmp_path, monkeypatch, shape):
     assert stage.selected == [] and stage.posed == []
 
 
-def test_an_allowance_short_of_the_repose_stops_it_by_name_and_buys_nothing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("short", ["dollars", "requests", "unforecast"])
+def test_an_allowance_short_of_the_repose_stops_it_by_name_and_buys_nothing(tmp_path, monkeypatch, short):
     job, first_root, source, review, _ = _job(tmp_path)
-    # 40 views at $0.01 plus the $5 splat and the $0.50 mesh still to buy: $5.90 needed.
-    stage = _Stage(monkeypatch, job, remaining=5.5)
-    value = _repose(job, first_root, source, review)
+    stage = _Stage(monkeypatch, job)
+    configuration = {
+        # 40 views at $0.01, the $5 splat, the $0.50 mesh and the $1 review margin: $6.90 needed.
+        "dollars": _allowance(dollars=6.5),
+        # Dollars enough, but only the two requests the splat and the mesh still need (Codex, #3504).
+        "requests": _allowance(requests=2),
+        "unforecast": {"policy": _policy()},
+    }[short]
+    value = _repose(job, first_root, source, review, configuration=configuration)
     outcome = json.loads((job / reposes.ROOT / reposes.OUTCOME_FILE).read_text())
-    assert value["adopted"] is False and outcome["status"] == "allowance_insufficient"
-    assert outcome["needed_usd"] == pytest.approx(5.9) and stage.posed == []
+    assert value["adopted"] is False and outcome["status"] == "allowance_insufficient" and stage.posed == []
+    assert outcome["reason"] == {"dollars": "remaining_allowance_below_repose_and_final_outputs",
+                                 "requests": "remaining_requests_below_repose_and_final_outputs",
+                                 "unforecast": "allowance_unforecast"}[short]
+    if short != "unforecast":
+        forecast = outcome["forecast"]
+        assert forecast["minimum_remaining_requests"] == 3
+        assert forecast["minimum_remaining_cost_usd"] == pytest.approx(6.9)
+        assert forecast["unfinished_stages"] == {"windowed_repose": 1, "refined_splat": 1, "mesh_export": 1}
+    # Exactly enough of both: the re-pose is bought.
+    if short == "requests":
+        enough = tmp_path / "enough"
+        job, first_root, source, review, _ = _job(enough)
+        stage = _Stage(monkeypatch, job)
+        assert _repose(job, first_root, source, review, configuration=_allowance(dollars=6.9, requests=3))[
+            "adopted"] is True and len(stage.posed) == 1
 
 
 def test_a_repose_over_the_terms_input_bound_buys_nothing(tmp_path, monkeypatch):

@@ -23,7 +23,8 @@ The money:
   read back, never re-decided.
 - **Before the re-pose.** Its inputs must fit the term's bound and the first
   pose's own count, its price must be the term's, and the job's remaining
-  allowance must cover it and the final outputs still to buy. The pose itself goes
+  dollars and Atlas requests must both cover it and the final outputs still to buy
+  (``atlas_pricing.headroom``, the forecast every optional paid step uses). The pose itself goes
   through the job's paid admission like any pose. It buys no scale review: its
   scale comes from the same measurement as any pose without one, and the re-pose
   is used only when that gives an estimated scale.

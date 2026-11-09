@@ -703,7 +703,7 @@ def _windowed_repose(*, output_root, first_pose_root, source_root, review, sourc
     Every decision is recorded once and read back (``website_atlas_windowed_repose``).
     """
     from . import website_atlas_windowed_repose as reposes
-    from .atlas_pricing import admitted_final_outputs, final_output_cost
+    from .atlas_pricing import headroom
     from .atlas_source_pose_inputs import prepare_source_pose
     from .atlas_splat_rebuild import WINDOW_FILE
     from .atlas_splat_rebuild_window import first_pose_window
@@ -770,13 +770,20 @@ def _windowed_repose(*, output_root, first_pose_root, source_root, review, sourc
     bought = (retry_root / "atlas_posed_rgbd_result.json").is_file() or any(
         (retry_root / "atlas_pose").glob("*.json"))
     if not bought:
-        # Money before the paid stage, as for any: the re-pose and the final outputs still to buy.
-        remaining = _current_configuration(task_context, source_digest, configuration).get("remaining_cost_usd")
-        needed = round(count * price + final_output_cost(policy, admitted_final_outputs(output_root)), 6)
-        if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or remaining < needed:
-            return finish(reposes.record_outcome(output_root, binding, "allowance_insufficient",
-                                                 reason="remaining_allowance_below_repose_and_final_outputs",
-                                                 needed_usd=needed))
+        # Money before the paid stage, as for any optional one (``atlas_pricing.headroom``): the remaining
+        # dollars and the remaining Atlas requests must both cover the re-pose (one request) and the final
+        # outputs still to buy. A job with dollars but only the requests its splat and mesh need keeps them.
+        forecast = headroom(configuration, stages={"windowed_repose": 1}, cost_usd=round(count * price, 6),
+                            final_output_root=output_root, context=task_context, source_digest=source_digest)
+        short = ("allowance_unforecast" if forecast is None
+                 else "remaining_allowance_below_repose_and_final_outputs"
+                 if forecast["remaining_cost_usd"] is not None
+                 and forecast["remaining_cost_usd"] < forecast["minimum_remaining_cost_usd"]
+                 else "remaining_requests_below_repose_and_final_outputs"
+                 if not forecast["sufficient_for_known_calls"] else None)
+        if short:
+            return finish(reposes.record_outcome(output_root, binding, "allowance_insufficient", reason=short,
+                                                 **({"forecast": forecast} if forecast else {})))
     retry_pose = _source_pose(pose_root=root, inputs=retry_inputs, review=window["review"], policy=policy,
         task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
         configuration=configuration, allow_scale_review=False)
