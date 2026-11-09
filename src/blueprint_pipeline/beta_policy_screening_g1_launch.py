@@ -44,7 +44,7 @@ def prepare_candidate(*, plan, candidate, attempt_dir):
         _validate_prepared(plan, candidate, root, prepared)
         return prepared
     native = reopen_candidate(plan, candidate)
-    authority = build_session_authority(plan=plan, candidate=candidate, spec=native)
+    authority = build_session_authority(plan=plan, candidate=candidate, spec=native, attempt_id=root.name)
     authority_path = _stage(root / "runtime_inputs/session_authority.json", authority)
     bundle_record = root / "bundle_receipt.json"
     if bundle_record.exists():

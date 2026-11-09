@@ -92,7 +92,7 @@ def test_missing_image_git_retains_each_cell_reason_without_install_or_model_fet
     from tests.test_native_g1_beta_session import inputs
     from blueprint_pipeline.native_g1_beta_session import build_session_authority
     plan, candidate, spec = inputs(tmp_path, monkeypatch)
-    authority = build_session_authority(plan=plan, candidate=candidate, spec=spec)
+    authority = build_session_authority(plan=plan, candidate=candidate, spec=spec, attempt_id="screen-" + "a" * 32)
     monkeypatch.setattr(runtime, "_inputs", lambda root: (authority, spec, tmp_path / "native"))
     monkeypatch.setattr(runtime.shutil, "which", lambda name: None)
     monkeypatch.setenv(runtime.DEADLINE_ENV, str(time.time() + 1800))
