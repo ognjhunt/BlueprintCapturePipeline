@@ -34,7 +34,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-REVISION = "atlas_world_levelling.v11"
+REVISION = "atlas_world_levelling.v12"
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0
@@ -664,9 +664,60 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
     flat = np.all(np.abs(corners[:, :, 1]) <= 1e-6, axis=1)
     # From the layer below the floor to WALKED_FLOOR_CLEAR_M above it: a scan's floor is a thick, often doubled
     # sheet, and where someone walked nothing that low stood on it.
-    dropped = np.all((off >= -layer) & (off <= WALKED_FLOOR_CLEAR_M), axis=1) & ~flat
+    # The band's foot is the flat floor or the scanned one, whichever is lower: nothing near-level is left between.
+    foot = np.minimum(local, 0.0) - layer
+    dropped = np.all((corners[:, :, 1] >= foot) & (off <= WALKED_FLOOR_CLEAR_M), axis=1) & ~flat
     floor_layer = np.zeros(len(faces), dtype=bool)
     floor_layer[rows[dropped]] = True
+    # What the sheets leave standing (v12): their skirts and fins, steep faces a few centimetres tall. Among the
+    # faces left near the corridor, an edge-connected piece that reaches into the corridor and lies wholly inside
+    # the band goes too. A wall or a shelf side is connected to faces above the band, so all of it stays.
+    cell_list = np.array(sorted(cells), dtype=np.float64)
+    box_low = low + cell_list.min(axis=0) * cell - WALKED_FLOOR_MARGIN_M
+    box_high = low + (cell_list.max(axis=0) + 1) * cell + WALKED_FLOOR_MARGIN_M
+    # A face already flat at y = 0 is the floor itself, never a piece on it.
+    nearby = np.flatnonzero(~floor_layer & (length > 1e-12) & ~np.all(np.abs(tri[:, :, 1]) <= 1e-6, axis=1)
+                            & np.all((centroid[:, [0, 2]] >= box_low) & (centroid[:, [0, 2]] <= box_high), axis=1)
+                            & (centroid[:, 1] >= -WALKED_FLOOR_SEARCH_M) & (centroid[:, 1] <= 2 * WALKED_FLOOR_SEARCH_M))
+    debris = np.zeros(len(faces), dtype=bool)
+    if len(nearby):
+        piece = tri[nearby]
+        # Vertices welded by position, for adjacency only: a mesh stored one triangle at a time has no shared ones.
+        _, welded = np.unique(np.round(piece.reshape(-1, 3), 5), axis=0, return_inverse=True)
+        welded = welded.reshape(-1, 3)
+        edges = np.sort(np.concatenate([welded[:, [0, 1]], welded[:, [1, 2]], welded[:, [2, 0]]]), axis=1)
+        owner_face = np.tile(np.arange(len(nearby)), 3)
+        order = np.lexsort((edges[:, 1], edges[:, 0]))
+        edges, owner_face = edges[order], owner_face[order]
+        same = np.all(edges[1:] == edges[:-1], axis=1)
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+        graph = coo_matrix((np.ones(int(same.sum())), (owner_face[:-1][same], owner_face[1:][same])),
+                           shape=(len(nearby), len(nearby)))
+        count, label = connected_components(graph, directed=False)
+        plan = piece[:, :, [0, 2]].reshape(-1, 2)
+        at = np.floor((plan - low) / cell).astype(np.int64)
+        inside = np.array([(int(i), int(j)) in cells for i, j in at]).reshape(-1, 3)
+        # Only pieces reaching into the corridor are judged, so the floor is looked up for their corners alone.
+        reaching = np.zeros(count, dtype=bool)
+        reaching[np.unique(label[inside.any(axis=1)])] = True
+        judged = np.flatnonzero(reaching[label])
+        if len(judged):
+            where = at.reshape(-1, 3, 2)[judged].reshape(-1, 2)
+            points = plan.reshape(-1, 3, 2)[judged].reshape(-1, 2)
+            floor_at = np.array([local_floor((int(i), int(j)), point) for (i, j), point in zip(where, points)]).reshape(-1, 3)
+            height_at = piece[judged][:, :, 1]
+            within = np.all((height_at >= np.minimum(floor_at, 0.0) - layer)
+                            & (height_at - floor_at <= WALKED_FLOOR_CLEAR_M), axis=1)
+            outside_band = np.zeros(count, dtype=bool)
+            outside_band[np.unique(label[judged][~within])] = True
+            debris[nearby[judged[~outside_band[label[judged]]]]] = True
+    debris_cells: dict[tuple[int, int], list[float]] = {}
+    for face in np.flatnonzero(debris):
+        entry = debris_cells.setdefault((int(owner[face, 0]), int(owner[face, 1])), [0, -1.0])
+        entry[0] += 1
+        entry[1] = max(entry[1], float(tri[face][:, 1].max()))
+    floor_layer |= debris
     # Per corridor cell, heights only: its seed, whether it is floor, and the near-level faces dropped and
     # left in it (with how far the highest one left stands above the levelled plane).
     # A dropped face reaching above the layer (up to the clear height) is counted apart, with its top: a
@@ -689,7 +740,9 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
                   **({"left_top_m": round(per_cell[key][2], 4)} if per_cell.get(key, [0, 0, 0])[1] else {}),
                   **({"dropped_above_layer_faces": int(per_cell[key][3]),
                       "dropped_above_layer_top_m": round(per_cell[key][4], 4)}
-                     if key in per_cell and per_cell[key][3] else {})}
+                     if key in per_cell and per_cell[key][3] else {}),
+                  **({"dropped_low_piece_faces": int(debris_cells[key][0]),
+                      "dropped_low_piece_top_m": round(debris_cells[key][1], 4)} if key in debris_cells else {})}
                  for key in sorted(cells)]
     # Every cell a dropped face covered, beyond the corridor too, gets the flat floor: no hole is left.
     extra: set[tuple[int, int]] = set()
@@ -715,6 +768,8 @@ def _planarize_walked_floor(mesh, *, footprints_m: np.ndarray, meters_per_unit: 
                                  "max": round(float(offsets.max()), 4)},
             "left_near_level_faces": int(sum(row["left_faces"] for row in cell_rows)),
             "dropped_above_layer_faces": int(above.sum()),
+            # Faces of any slope in low pieces wholly inside the band (the sheets' skirts and fins), per cell above.
+            "dropped_low_piece_faces": int(debris.sum()),
             "cells_with_faces_dropped_above_layer": int(sum("dropped_above_layer_faces" in row for row in cell_rows)),
             "layer_m": round(layer, 4), "clear_m": WALKED_FLOOR_CLEAR_M, "step_m": WALKED_FLOOR_STEP_M,
             "search_m": WALKED_FLOOR_SEARCH_M,

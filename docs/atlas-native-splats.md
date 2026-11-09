@@ -439,6 +439,15 @@ a pose, and nothing fed the earlier pose's findings into the next request
   nothing that low stood on the floor. Higher near-level faces and every wall
   or side face stay.
 
+  **v12 (same day).** At v11 both soles stood on the flat floor, and the knees
+  still met steep faces 4–10 cm up: the skirts and fins of the second sheet,
+  left standing once its top faces went. Among the faces left near the corridor,
+  an edge-connected piece that reaches into the corridor and lies wholly inside
+  the band (down to the flat floor, up to 12 cm above the scanned one) goes too,
+  whatever its slope. A wall or a shelf side is connected to faces above the
+  band, so all of it stays. The record counts these per cell with their top
+  (`dropped_low_piece_faces`).
+
   It's disclosed as `walked_floor.planarized` (`development_only_estimate`), with
   the scanned floor's offset range before the change. This is the floor analogue
   of a rigid task's support pad (`rigid_support_pad`). The splat is as captured.
