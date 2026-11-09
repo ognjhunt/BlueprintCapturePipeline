@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import math
 import struct
 import zlib
 from collections import defaultdict
-from collections.abc import MutableMapping
+from collections.abc import Mapping as _Mapping, MutableMapping
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -241,6 +242,8 @@ def posed_frame(*, frame_id: str, rgb: np.ndarray, depth: np.ndarray, confidence
 
 
 _PIXEL_ROLES = {"rgb": "image", "depth": "depth", "confidence": "confidence"}
+#: The keys of a posed frame that hold pixels; the others are its identity and camera.
+PIXEL_KEYS = tuple(_PIXEL_ROLES)
 
 
 def _decode_output(role: str, path: Path) -> np.ndarray | None:
@@ -271,6 +274,8 @@ class PosedFrame(MutableMapping):
             "position": np.asarray(extrinsics["position"], dtype=np.float64)}
         self._sources = {key: outputs[role] for key, role in _PIXEL_ROLES.items()}
         self._order = list(self._ORDER)
+        # dtype, shape and pixel digest of each decoded file, so bindings decode it once.
+        self._records: dict[str, tuple[str, tuple[int, ...], str]] = {}
 
     def read_pixels(self, key: str) -> np.ndarray:
         """The array ``self[key]`` would give, without keeping a decoded one."""
@@ -288,6 +293,22 @@ class PosedFrame(MutableMapping):
             raise ValueError("atlas_depth_splat_grid_mismatch")
         return _pixel_array(key, value)
 
+    def pixel_record(self, key: str) -> tuple[str, tuple[int, ...], str]:
+        """``pixel_record`` of ``self[key]``; a file's pixels are decoded once for it and not kept."""
+        if key in self._values:
+            return _array_record(self._values[key])
+        if key not in self._records:
+            self._records[key] = _array_record(self.read_pixels(key))
+        return self._records[key]
+
+    def pixel_shape(self, key: str) -> tuple[int, ...]:
+        """The shape of ``self[key]``, without decoding it."""
+        if key in self._values:
+            return tuple(np.shape(self._values[key]))
+        if key not in self._sources:
+            raise KeyError(key)
+        return (*self._grid, 3) if key == "rgb" else self._grid
+
     def __getitem__(self, key: str) -> Any:
         if key not in self._values:
             self._values[key] = self.read_pixels(key)
@@ -297,12 +318,14 @@ class PosedFrame(MutableMapping):
         if key not in self:
             self._order.append(key)
         self._values[key] = value
+        self._records.pop(key, None)
 
     def __delitem__(self, key: str) -> None:
         if key not in self:
             raise KeyError(key)
         self._values.pop(key, None)
         self._sources.pop(key, None)
+        self._records.pop(key, None)
         self._order.remove(key)
 
     def __contains__(self, key: object) -> bool:
@@ -326,6 +349,126 @@ def frame_arrays(frame: Mapping[str, Any], *keys: str) -> tuple[np.ndarray, ...]
     """A frame's named pixel arrays; a ``PosedFrame`` decodes them without keeping them."""
     read = getattr(frame, "read_pixels", None)
     return tuple(frame[key] if read is None else read(key) for key in keys)
+
+
+def decoded_frame(frame: Mapping[str, Any], *keys: str) -> Mapping[str, Any]:
+    """The frame with its pixels decoded for one pass over it: a dict nothing else keeps.
+
+    A ``PosedFrame`` or ``LazyFrame`` decodes the named pixel keys (all of
+    them by default) into the dict and leaves the others out; any other frame
+    already holds its pixels and is returned as it is. Pass the dict, not the
+    frame, to helpers that read the same pixels several times.
+    """
+    read = getattr(frame, "read_pixels", None)
+    if read is None:
+        return frame
+    wanted = set(keys or _PIXEL_ROLES)
+    return {key: read(key) if key in _PIXEL_ROLES else frame[key]
+            for key in frame if key in wanted or key not in _PIXEL_ROLES}
+
+
+def _array_record(value: Any) -> tuple[str, tuple[int, ...], str]:
+    pixels = np.ascontiguousarray(value)
+    return pixels.dtype.str, tuple(pixels.shape), hashlib.sha256(pixels.tobytes()).hexdigest()
+
+
+def pixel_record(frame: Mapping[str, Any], key: str) -> tuple[str, tuple[int, ...], str]:
+    """dtype, shape and sha256 hex digest of the frame's contiguous ``key`` pixels.
+
+    A ``PosedFrame`` decodes its file once for this and remembers only the
+    record, so every binding of the same views reads each file once.
+    """
+    record = getattr(frame, "pixel_record", None)
+    return _array_record(frame[key]) if record is None else record(key)
+
+
+def pixel_digest(frame: Mapping[str, Any], key: str) -> str:
+    """``hashlib.sha256(np.ascontiguousarray(frame[key]).tobytes()).hexdigest()``, decoding at most once."""
+    return pixel_record(frame, key)[2]
+
+
+def frame_shape(frame: Mapping[str, Any], key: str = "depth") -> tuple[int, ...]:
+    """The shape of a frame's ``key`` pixels; a ``PosedFrame`` knows it without decoding."""
+    shape = getattr(frame, "pixel_shape", None)
+    return tuple(np.shape(frame[key])) if shape is None else shape(key)
+
+
+class LazyFrame(_Mapping):
+    """A view whose pixels are produced when read and never kept.
+
+    ``fields`` (camera, identity, masks) are held; ``pixels`` maps each pixel
+    key to a function returning it. Reading a key, or ``frame_arrays``, calls
+    that function again, so a pass reads the frame once through
+    ``decoded_frame``. Like ``PosedFrame``, two frames compare by identity.
+    """
+
+    def __init__(self, fields: Mapping[str, Any], pixels: Mapping[str, Callable[[], np.ndarray]],
+                 order: Sequence[str] | None = None):
+        self._fields, self._pixels = dict(fields), dict(pixels)
+        self._order = list(order) if order is not None else [*self._fields, *self._pixels]
+        if set(self._order) != set(self._fields) | set(self._pixels) or len(self._order) != len(set(self._order)):
+            raise ValueError("atlas_depth_splat_lazy_frame_keys_invalid")
+
+    def read_pixels(self, key: str) -> np.ndarray:
+        return self._pixels[key]() if key in self._pixels else self._fields[key]
+
+    def __getitem__(self, key: str) -> Any:
+        return self.read_pixels(key)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._pixels or key in self._fields
+
+    def __iter__(self):
+        return iter(list(self._order))
+
+    def __len__(self) -> int:
+        return len(self._order)
+
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
+
+    def __repr__(self) -> str:
+        return f"LazyFrame(frame_id={self._fields.get('frame_id')!r})"
+
+
+def read_in_turn(frames: Sequence[Mapping[str, Any]]) -> list[LazyFrame]:
+    """The frames as views whose pixels are kept only until another of them is read.
+
+    For a reader that goes through the views in turn and reads each one's
+    pixels several times (the context field-of-view audit): it decodes each
+    view once a pass and holds one view's pixels at a time.
+    """
+    held: dict[str, np.ndarray] = {}
+    holder = [None]
+
+    def pixel(index, frame, key):
+        def read():
+            if holder[0] != index:
+                held.clear()
+                holder[0] = index
+            if key not in held:
+                held[key] = frame_arrays(frame, key)[0]
+            return held[key]
+        return read
+    views = []
+    for index, frame in enumerate(frames):
+        keys = list(frame)
+        views.append(LazyFrame({key: frame[key] for key in keys if key not in _PIXEL_ROLES},
+                               {key: pixel(index, frame, key) for key in keys if key in _PIXEL_ROLES}, keys))
+    return views
+
+
+def derived_frame(frame: Mapping[str, Any], **derive: Callable[[np.ndarray], np.ndarray]) -> LazyFrame:
+    """``frame`` with each named pixel array passed through ``derive[key]`` when read; nothing is kept."""
+    def pixel(key):
+        if key in derive:
+            return lambda: derive[key](frame_arrays(frame, key)[0])
+        return lambda: frame_arrays(frame, key)[0]
+    keys = list(frame)
+    if not set(derive) <= set(keys) & set(_PIXEL_ROLES):
+        raise ValueError("atlas_depth_splat_derived_key_invalid")
+    return LazyFrame({key: frame[key] for key in keys if key not in _PIXEL_ROLES},
+                     {key: pixel(key) for key in keys if key in _PIXEL_ROLES}, keys)
 
 
 def load_posed_rgbd(pose_root: Path) -> tuple[dict[str, Any], list[PosedFrame]]:

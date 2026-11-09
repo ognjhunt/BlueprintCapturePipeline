@@ -1,7 +1,6 @@
 """Recover reviewed Atlas RGBD omitted by an earlier, narrower gap selection."""
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -11,7 +10,7 @@ from PIL import Image
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-from .atlas_depth_splat import restrict_frame
+from .atlas_depth_splat import pixel_digest, restrict_frame
 
 RECOVERY_REVISION = "v1"
 
@@ -76,7 +75,6 @@ def register_generated_completion(*, frames, completion, root, pose, context,
     from .atlas_scene_automation import _fallback_pose
     from .atlas_shared_view_alignment import shared_view_alignment
     from .atlas_recorded_source_recovery import aligned_recorded_frames
-    from .atlas_depth_splat import posed_frame, read_exr_depth
     from .atlas_scene_preservation import _save_image
 
     if pose_runner is None:
@@ -103,10 +101,7 @@ def register_generated_completion(*, frames, completion, root, pose, context,
         if photo['source_frame_id'] in seen:
             continue
         seen.add(photo['source_frame_id'])
-        depth = read_exr_depth(Path(uploads[f'context-{index}-depth']['path']))
-        targets.append(posed_frame(frame_id=photo['frame_id'],
-            rgb=np.asarray(Image.open(photo['image_path']).convert('RGB')), depth=depth,
-            confidence=(np.isfinite(depth) & (depth > 0)).astype(np.float32), camera=photo['camera']))
+        targets.append(_registration_target(photo, Path(uploads[f'context-{index}-depth']['path'])))
     for index, row in enumerate(views):
         path = root / f'generated-{index:04d}.png'
         _save_image(path, row['frame']['rgb'])
@@ -127,7 +122,9 @@ def register_generated_completion(*, frames, completion, root, pose, context,
     if fit is None:
         return None, {'status': 'needs_input', 'reason': 'atlas_generated_view_registration_unresolved',
                       'joint_pose_digest': joint['digest'], 'claim_ceiling': 'development_only'}
-    by_id = {f['frame_id']: f for f in aligned_recorded_frames(posed, fit)}
+    # Only the generated views are kept; the joint pose's source views were registration anchors.
+    wanted = {row['frame']['frame_id'] for row in views}
+    by_id = {f['frame_id']: f for f in aligned_recorded_frames([f for f in posed if f['frame_id'] in wanted], fit)}
     registered = [{**row, 'frame': by_id[row['frame']['frame_id']]} for row in views]
     paths = [root / 'binding.json', pose_root / 'atlas_posed_rgbd_result.json',
              *[Path(row['path']) for row in uploads.values()],
@@ -150,9 +147,32 @@ def register_generated_completion(*, frames, completion, root, pose, context,
 
 def _frame_binding(frame):
     return {"frame_id": frame["frame_id"], "intrinsics": frame["intrinsics"],
-            "extrinsics": frame["extrinsics"], **{key: hashlib.sha256(
-                np.ascontiguousarray(frame[key]).tobytes()).hexdigest()
-                for key in ("rgb", "depth", "confidence")}}
+            "extrinsics": frame["extrinsics"],
+            **{key: pixel_digest(frame, key) for key in ("rgb", "depth", "confidence")}}
+
+
+def _registration_target(photo, depth_path):
+    """A source photograph posed with its projected depth: ``posed_frame``'s record, read when used.
+
+    It is decoded and checked once here, before any pose is bought, and kept
+    as a ``LazyFrame`` that reads the photograph and depth again when used.
+    """
+    from .atlas_depth_splat import LazyFrame, _pixel_array, posed_frame, read_exr_depth
+
+    def depth():
+        return read_exr_depth(depth_path)
+
+    def rgb():
+        return np.asarray(Image.open(photo['image_path']).convert('RGB'))
+
+    def confidence(value):
+        return (np.isfinite(value) & (value > 0)).astype(np.float32)
+    value = depth()
+    checked = posed_frame(frame_id=photo['frame_id'], rgb=rgb(), depth=value, confidence=confidence(value),
+                          camera=photo['camera'])
+    pixels = {'rgb': lambda: _pixel_array('rgb', rgb()), 'depth': lambda: _pixel_array('depth', depth()),
+              'confidence': lambda: _pixel_array('confidence', confidence(depth()))}
+    return LazyFrame({key: value for key, value in checked.items() if key not in pixels}, pixels, list(checked))
 
 
 def recover_reviewed_geometry(*, frames, geometry_frames, reviewed_views, root, checkpoint=None,

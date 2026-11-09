@@ -19,20 +19,28 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
 
-def oriented_photograph(frame):
-    """Rotate portrait pixels and camera together; preserve every captured ray."""
+def oriented_camera(frame):
+    """``oriented_photograph``'s camera and quarter-turn, without reading the photograph."""
     from scipy.spatial.transform import Rotation
 
     camera = deepcopy({'intrinsics': frame['intrinsics'], 'extrinsics': frame['extrinsics']})
-    rgb, k = frame['rgb'], camera['intrinsics']
+    k = camera['intrinsics']
     rotated = k['height'] > k['width']
     if rotated:
         width, height, fx, fy, cx, cy = (k[key] for key in ('width', 'height', 'fx', 'fy', 'cx', 'cy'))
-        rgb = np.rot90(rgb, -1)
         k.update(width=height, height=width, fx=fy, fy=fx, cx=height - cy, cy=cx)
         camera['extrinsics']['quaternion'] = Rotation.from_matrix(
             frame['rotation'] @ Rotation.from_euler('Z', 90, degrees=True).as_matrix()).as_quat().tolist()
-    return rgb, camera, rotated
+    return camera, rotated
+
+
+def oriented_photograph(frame):
+    """Rotate portrait pixels and camera together; preserve every captured ray."""
+    from .atlas_depth_splat import frame_arrays
+
+    camera, rotated = oriented_camera(frame)
+    rgb = frame_arrays(frame, 'rgb')[0]
+    return (np.rot90(rgb, -1) if rotated else rgb), camera, rotated
 
 
 def prepare_source_photographs(*, frames, root):
@@ -118,7 +126,7 @@ def project_source_depths(frames, cameras):
     """
     import cv2
     from .atlas_scene_preservation import _same_center, _valid, _world, _project
-    from .atlas_depth_splat import _rotation_matrix
+    from .atlas_depth_splat import _rotation_matrix, decoded_frame
 
     if len(cameras) > DEPTH_PROJECTION_BATCH_CAMERAS:
         raise ValueError('atlas_depth_projection_batch_too_large')
@@ -133,6 +141,7 @@ def project_source_depths(frames, cameras):
     optical_to_rub = np.diag([1., -1., -1.])
     to_center = np.array([[1, 0, .5], [0, 1, .5], [0, 0, 1.]])
     for frame in frames:
+        frame = decoded_frame(frame, 'depth', 'confidence')
         valid_source = _valid(frame)
         points = source_depth = source_inverse = None
         for camera, target_k, target_inverse, target_rotation, zbuffer in targets:

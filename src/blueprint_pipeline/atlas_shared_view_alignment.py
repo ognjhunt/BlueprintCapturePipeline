@@ -138,16 +138,20 @@ def shared_view_alignment(source_frames: Sequence[Mapping[str, Any]],
     """
     if type(estimated_depth_tolerance) is not bool:
         raise ValueError('atlas_shared_alignment_tolerance_invalid')
+    from .atlas_depth_splat import decoded_frame
+
     targets = {frame["frame_id"]: frame for frame in target_frames}
     shared = [frame for frame in source_frames if frame["frame_id"] in targets]
     rng = np.random.default_rng(607)
     lifted, registered = [], 0
     for frame in shared:
-        matrix = _register(frame["rgb"], targets[frame["frame_id"]]["rgb"])
+        # One shared view's two images and depths at a time.
+        source, target = decoded_frame(frame), decoded_frame(targets[frame["frame_id"]])
+        matrix = _register(source["rgb"], target["rgb"])
         if matrix is None:
             continue
         registered += 1
-        pair = _view_pairs(frame, targets[frame["frame_id"]], matrix, rng)
+        pair = _view_pairs(source, target, matrix, rng)
         if len(pair[0]):
             lifted.append(pair)
     if len(lifted) < MIN_AGREEING_VIEWS:

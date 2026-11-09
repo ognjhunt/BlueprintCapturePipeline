@@ -8,18 +8,29 @@ from copy import deepcopy
 import numpy as np
 
 
+def _free_before(point, frame, valid, depth):
+    """Whether ``frame`` photographed ``point`` as free space: a valid pixel well behind it."""
+    from .atlas_scene_preservation import _project
+
+    z, u, v, inside = _project(point[None], frame)
+    if not inside[0]:
+        return False
+    y, x = int(v[0]), int(u[0])
+    return bool(valid[y, x] and z[0] < .9 * depth[y, x])
+
+
 def observed_free_position(position, frames, bounds):
+    from .atlas_depth_splat import decoded_frame
     from .atlas_scene_preservation import _project, _valid
 
     point = np.asarray(position)
     if not np.all((point >= bounds['minimum']) & (point <= bounds['maximum'])):
         return False
     for frame in frames:
-        z, u, v, inside = _project(point[None], frame)
-        if not inside[0]:
+        if not _project(point[None], frame)[3][0]:
             continue
-        y, x = int(v[0]), int(u[0])
-        if _valid(frame)[y, x] and z[0] < .9 * frame['depth'][y, x]:
+        view = decoded_frame(frame, 'depth', 'confidence')
+        if _free_before(point, view, _valid(view), view['depth']):
             return True
     return False
 
@@ -30,23 +41,30 @@ def disocclusion_candidates(frames, wide):
     Offsets scale with estimated scene depth. The farthest supported offset in
     each horizontal direction exposes surfaces hidden by the source trajectory.
     The planner still chooses which, if any, are useful generation requests.
+    Each frame is read once for its own offsets and once to check every
+    offset against what it photographed (``observed_free_position``).
     """
     from scipy.spatial.transform import Rotation
-    from .atlas_scene_preservation import observed_scene_bounds, _world, _valid
+    from .atlas_depth_splat import decoded_frame
+    from .atlas_scene_preservation import observed_scene_bounds, _project, _world, _valid
 
     if len(frames) < 2:
         return []
     bounds = observed_scene_bounds(frames)
-    result = []
-    for frame, original in zip(frames, wide, strict=True):
-        valid = _valid(frame)
+    # Each frame's focus, sampled heights and proposed offsets, from its own pixels.
+    plans, proposed = [], []
+    for frame in frames:
+        view = decoded_frame(frame, 'depth', 'confidence')
+        valid = _valid(view)
         yy, xx = np.nonzero(valid)
         sampled = np.zeros(valid.shape, bool)
         step = max(1, len(yy) // 1024)
         sampled[yy[::step], xx[::step]] = True
-        points, _, _ = _world(frame, sampled)
+        points, _, _ = _world(view, sampled)
         focus = np.median(points, axis=0)
-        distance = float(np.median(frame['depth'][valid]))
+        distance = float(np.median(view['depth'][valid]))
+        del view, valid, yy, xx, sampled
+        moves = []
         for name, axis in [('right', frame['rotation'][:, 0]), ('forward', -frame['rotation'][:, 2])]:
             direction = axis.copy()
             direction[1] = 0
@@ -55,35 +73,56 @@ def disocclusion_candidates(frames, wide):
                 continue
             direction /= length
             for sign in [-1, 1]:
-                position = None
+                ids = []
                 for fraction in [.15, .3, .6]:
-                    proposed = frame['position'] + sign * fraction * distance * direction
-                    if observed_free_position(proposed, frames, bounds):
-                        position = proposed
-                if position is None:
+                    ids.append(len(proposed))
+                    proposed.append(frame['position'] + sign * fraction * distance * direction)
+                moves.append((name, sign, ids))
+        plans.append((focus, points[:, 1], moves))
+    # ``observed_free_position`` for every offset: any frame that photographed it as free space.
+    free = [bool(np.all((point >= bounds['minimum']) & (point <= bounds['maximum']))) and None
+            for point in proposed]
+    for frame in frames:
+        pending = [index for index, known in enumerate(free) if known is None
+                   and _project(proposed[index][None], frame)[3][0]]
+        if not pending:
+            continue
+        view = decoded_frame(frame, 'depth', 'confidence')
+        valid = _valid(view)
+        for index in pending:
+            if _free_before(proposed[index], view, valid, view['depth']):
+                free[index] = True
+    result = []
+    for (focus, heights, moves), original in zip(plans, wide, strict=True):
+        for name, sign, ids in moves:
+            position = None
+            for index in ids:
+                if free[index]:
+                    position = proposed[index]
+            if position is None:
+                continue
+            surroundings = focus.copy()
+            surroundings[1] = np.quantile(heights, .85)
+            for aim, look_at in [('surface', focus), ('surroundings', surroundings)]:
+                # A downward capture must not restrict every new camera to
+                # another floor close-up; also survey its upper known scene.
+                forward = look_at - position
+                forward /= np.linalg.norm(forward)
+                right = np.cross(forward, [0., 1., 0.])
+                if np.linalg.norm(right) < 1e-6:
                     continue
-                surroundings = focus.copy()
-                surroundings[1] = np.quantile(points[:, 1], .85)
-                for aim, look_at in [('surface', focus), ('surroundings', surroundings)]:
-                    # A downward capture must not restrict every new camera to
-                    # another floor close-up; also survey its upper known scene.
-                    forward = look_at - position
-                    forward /= np.linalg.norm(forward)
-                    right = np.cross(forward, [0., 1., 0.])
-                    if np.linalg.norm(right) < 1e-6:
-                        continue
-                    right /= np.linalg.norm(right)
-                    up = np.cross(right, forward)
-                    target = deepcopy(original)
-                    target.update(camera_id=original['camera_id'] + f'-disocclusion-{name}-{sign:+d}-{aim}',
-                        purpose='disocclusion', gap_domain='projected_scene_outline_hypothesis',
-                        translation_basis='source_depth_scaled_inside_observed_free_space',
-                        camera_location_observed_free=True, collision_qualified=False)
-                    k = target['camera']['intrinsics']
-                    k.update(cx=k['width'] / 2, cy=k['height'] / 2)
-                    target['camera']['extrinsics'].update(position=position.tolist(), quaternion=Rotation.from_matrix(
-                        np.column_stack((right, up, -forward))).as_quat().tolist())
-                    result.append(target)
+                right /= np.linalg.norm(right)
+                up = np.cross(right, forward)
+                target = deepcopy(original)
+                target.update(camera_id=original['camera_id'] + f'-disocclusion-{name}-{sign:+d}-{aim}',
+                    purpose='disocclusion', gap_domain='projected_scene_outline_hypothesis',
+                    translation_basis='source_depth_scaled_inside_observed_free_space',
+                    camera_location_observed_free=True, collision_qualified=False)
+                k = target['camera']['intrinsics']
+                k.update(cx=k['width'] / 2, cy=k['height'] / 2)
+                target['camera']['extrinsics'].update(position=position.tolist(), quaternion=Rotation.from_matrix(
+                    np.column_stack((right, up, -forward))).as_quat().tolist())
+                result.append(target)
     return result
 
 
@@ -111,15 +150,19 @@ def context_samples(frames):
 
     Support is the same cross-view agreement the completion keep mask requires.
     """
-    from .atlas_scene_preservation import _reused_supported_frames, _valid, _world
+    from .atlas_depth_splat import decoded_frame
+    from .atlas_scene_preservation import _reused_support_masks, _unpacked, _valid, _world
 
     points, supported = [], []
-    for frame, kept in zip(frames, _reused_supported_frames(frames), strict=True):
-        grid = np.zeros(frame['depth'].shape, bool)
+    for frame, keep in zip(frames, _reused_support_masks(frames), strict=True):
+        view = decoded_frame(frame, 'depth', 'confidence')
+        valid = _valid(view)
+        grid = np.zeros(valid.shape, bool)
         grid[::CONTEXT_SAMPLE_STRIDE, ::CONTEXT_SAMPLE_STRIDE] = True
-        sample, y, x = _world(frame, grid & _valid(frame))
+        sample, y, x = _world(view, grid & valid)
         points.append(sample)
-        supported.append(_valid(kept)[y, x])
+        # The supported frame's valid pixels are the valid pixels the mask keeps.
+        supported.append(_unpacked(keep)[y, x])
     return (np.concatenate(points) if points else np.empty((0, 3)),
             np.concatenate(supported) if supported else np.empty(0, bool))
 
@@ -181,23 +224,29 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False, e
     keep mask held 41.6% and 32.5% of the frame. A survey saved without it
     keeps that largest-angle choice, so a retained plan's cameras are unchanged.
     No camera is aimed at a gap flagged ``photographed_without_depth``.
+
+    Each frame is read once for the planning cloud and once for whether it
+    sees a known surface in front of each gap's aim point; cameras are then
+    placed gap by gap in survey order, exactly as when every frame stayed read.
     """
     from pathlib import Path
     from PIL import Image
     from scipy.ndimage import distance_transform_edt
     from scipy.spatial.transform import Rotation
     from .atlas_scene_preservation import _project, _valid, _world
-    from .atlas_depth_splat import MAX_MEDIAN_CROSS_VIEW_RESIDUAL
+    from .atlas_depth_splat import MAX_MEDIAN_CROSS_VIEW_RESIDUAL, decoded_frame, frame_shape
     from .decision_evidence_contracts import canonical_digest
     from .local_reconstruction_adapters import _sha256_file
 
     cloud = []
     for frame in frames:
         # A planning sample only. Native context images and depth stay full size.
-        stride = max(1, min(frame['depth'].shape) // 128)
-        sample = np.zeros(frame['depth'].shape, bool)
+        shape = frame_shape(frame, 'depth')
+        stride = max(1, min(shape) // 128)
+        sample = np.zeros(shape, bool)
         sample[::stride, ::stride] = True
-        points, _, _ = _world(frame, sample & _valid(frame))
+        view = decoded_frame(frame, 'depth', 'confidence')
+        points, _, _ = _world(view, sample & _valid(view))
         cloud.append(points)
     cloud = np.concatenate(cloud) if cloud else np.empty((0, 3))
     if not len(cloud):
@@ -207,12 +256,15 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False, e
                if row.get('camera_location_observed_free')]
     origins.extend(np.asarray(frame['position'], float) for frame in frames)
     origins = np.unique(np.asarray(origins), axis=0)
-    source_validity = [(frame, _valid(frame)) for frame in frames]
+    # The recorded views at each origin, in frame order.
+    recorded = [[index for index, frame in enumerate(frames)
+                 if np.allclose(origin, frame['position'], atol=1e-8, rtol=0)] for origin in origins]
     from .atlas_scene_gaps import GAP_CAMERA_ORIGIN_RANKING
     ranked = not source_centred and survey.get('gap_camera_origin_ranking') == GAP_CAMERA_ORIGIN_RANKING
     if ranked:
         samples, supported = context_samples(frames)
-    result, targets = [], []
+    # Each gap's aim point and extent, in survey order; merging and placement follow.
+    aims = []
     for view in survey['views']:
         if not view['gaps']:
             continue
@@ -261,99 +313,125 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False, e
             focus = position + rotation @ (ray * depth)
             # Merge duplicate angular surveys of the same small scene region.
             radius = depth * max(MAX_MEDIAN_CROSS_VIEW_RESIDUAL, max(3., band) / max(k['fx'], k['fy']))
-            if any(np.linalg.norm(focus - known) <= max(radius, prior_radius)
-                   for known, prior_radius in targets):
+            pick = np.linspace(0, len(xx) - 1, min(len(xx), GAP_EXPOSURE_SAMPLES)).astype(int)
+            aims.append({'original': original, 'k': k, 'e': e, 'rotation': rotation, 'position': position,
+                         'gap': gap, 'gap_pixels': len(xx), 'picked': (xx[pick], yy[pick]),
+                         'box': (xx.min(), yy.min(), xx.max(), yy.max()),
+                         'uncertainty_pixels': uncertainty_pixels, 'hypothesis': bool(len(hypothesis)),
+                         'depth': depth, 'focus': focus, 'radius': radius})
+        del labels, z, u, v, inside, indices, rows, cols
+    # Whether each recorded view, at its own centre, sees a known surface in front of each aim point:
+    # 0 it does not see the point, 1 it sees it unobstructed, 2 obstructed.
+    sight = np.zeros((len(aims), len(frames)), np.int8)
+    for index, frame in enumerate(frames):
+        seen = []
+        for aim_index, aim in enumerate(aims):
+            zz, uu, vv, visible = _project(aim['focus'][None], frame)
+            if visible[0]:
+                seen.append((aim_index, zz[0], int(vv[0]), int(uu[0])))
+        if not seen:
+            continue
+        view = decoded_frame(frame, 'depth', 'confidence')
+        valid, depths = _valid(view), view['depth']
+        for aim_index, zz, y, x in seen:
+            sight[aim_index, index] = 2 if bool(valid[y, x] and zz > 1.05 * depths[y, x]) else 1
+        del view, valid, depths
+    result, targets = [], []
+    for aim_index, aim in enumerate(aims):
+        original, k, e, gap = aim['original'], aim['k'], aim['e'], aim['gap']
+        rotation, position, depth, focus, radius = (aim[key] for key in ('rotation', 'position', 'depth',
+                                                                         'focus', 'radius'))
+        if any(np.linalg.norm(focus - known) <= max(radius, prior_radius)
+               for known, prior_radius in targets):
+            continue
+        parent_direction = focus - position
+        parent_direction /= np.linalg.norm(parent_direction)
+        choices = []
+        for origin, at_origin in zip(origins, recorded, strict=True):
+            direction = focus - origin
+            length = np.linalg.norm(direction)
+            if length < radius:
                 continue
-            parent_direction = focus - position
-            parent_direction /= np.linalg.norm(parent_direction)
-            choices = []
-            for origin in origins:
-                direction = focus - origin
-                length = np.linalg.norm(direction)
-                if length < radius:
+            # Do not point through a known obstruction from a recorded view;
+            # the last recorded view there that sees the point decides.
+            obstructed = False
+            for index in at_origin:
+                if sight[aim_index, index]:
+                    obstructed = bool(sight[aim_index, index] == 2)
+            if not obstructed:
+                choices.append((float(1 - np.dot(direction / length, parent_direction)), origin))
+        if not choices:
+            continue
+        # If a translated hypothesis loses its photographed surroundings,
+        # re-aim from the source view instead. Other context/anchor cameras
+        # still supply the translation needed for joint output depth.
+        origin = position if source_centred else max(choices, key=lambda item: item[0])[1]
+        placement = {}
+        if ranked:
+            # The gap's pixels lifted to the depth hypothesis; each sample
+            # stands for an equal share of them (``observed_context`` weights).
+            xs, ys = aim['picked']
+            gap_rays = np.column_stack(((xs + .5 - k['cx']) / k['fx'],
+                                        -(ys + .5 - k['cy']) / k['fy'], -np.ones(len(xs))))
+            gap_points = position + (gap_rays * depth) @ rotation.T
+            weights = np.full(len(xs), aim['gap_pixels'] / len(xs) * depth ** 2)
+            scored = []
+            for angle, candidate in choices:
+                aimed = aimed_rotation(candidate, focus)
+                if aimed is None:
                     continue
-                # Do not point through a known obstruction from a recorded view.
-                obstructed = False
-                for frame, valid in source_validity:
-                    if not np.allclose(origin, frame['position'], atol=1e-8, rtol=0):
-                        continue
-                    zz, uu, vv, visible = _project(focus[None], frame)
-                    if visible[0]:
-                        y, x = int(vv[0]), int(uu[0])
-                        obstructed = bool(valid[y, x] and zz[0] > 1.05 * frame['depth'][y, x])
-                if not obstructed:
-                    choices.append((float(1 - np.dot(direction / length, parent_direction)), origin))
-            if not choices:
-                continue
-            # If a translated hypothesis loses its photographed surroundings,
-            # re-aim from the source view instead. Other context/anchor cameras
-            # still supply the translation needed for joint output depth.
-            origin = position if source_centred else max(choices, key=lambda item: item[0])[1]
-            placement = {}
-            if ranked:
-                # The gap's pixels lifted to the depth hypothesis; each sample
-                # stands for an equal share of them (``observed_context`` weights).
-                pick = np.linspace(0, len(xx) - 1, min(len(xx), GAP_EXPOSURE_SAMPLES)).astype(int)
-                gap_rays = np.column_stack(((xx[pick] + .5 - k['cx']) / k['fx'],
-                                            -(yy[pick] + .5 - k['cy']) / k['fy'], -np.ones(len(pick))))
-                gap_points = position + (gap_rays * depth) @ rotation.T
-                weights = np.full(len(pick), len(xx) / len(pick) * depth ** 2)
-                scored = []
-                for angle, candidate in choices:
-                    aimed = aimed_rotation(candidate, focus)
-                    if aimed is None:
-                        continue
-                    view_camera = {'intrinsics': {**k, 'cx': k['width'] / 2, 'cy': k['height'] / 2},
-                                   'extrinsics': {**e, 'position': candidate.tolist(),
-                                                  'quaternion': Rotation.from_matrix(aimed).as_quat().tolist()}}
-                    fraction, exposed = observed_context(samples, supported, frames, view_camera,
-                                                         gap_points, weights)
-                    if exposed >= uncertainty_pixels:
-                        scored.append(((fraction, angle, tuple(candidate)), candidate, fraction, exposed))
-                if scored:
-                    _, origin, fraction, exposed = max(scored, key=lambda item: item[0])
-                    placement = {'origin_ranking': GAP_CAMERA_ORIGIN_RANKING,
-                                 'observed_context_fraction_estimate': fraction,
-                                 'exposed_gap_pixel_estimate': exposed}
-            aimed = aimed_rotation(origin, focus)
-            if aimed is None:
-                continue
-            target = deepcopy(original)
-            identity_data = {'gap': gap['gap_id'], 'focus': focus.tolist(), 'origin': origin.tolist(),
-                             'framing': 'source_fov_reaimed_at_gap_v2'}
-            if source_centred:
-                identity_data['framing'] = 'source_centred_full_fov_v2'
-            identity = canonical_digest(identity_data)
-            target.update(camera_id='gap-target-' + identity[7:23], purpose='gap_target',
-                          source_gap_ids=[gap['gap_id']], target_world_estimate=focus.tolist(),
-                          target_basis=('gap_centroid_ray_at_reviewed_depth_hypothesis' if len(hypothesis)
-                                        else 'gap_centroid_ray_at_neighbouring_source_depth'),
-                          camera_location_observed_free=True, collision_qualified=False, **placement)
-            target['camera']['extrinsics'].update(position=origin.tolist(),
-                                                  quaternion=Rotation.from_matrix(aimed).as_quat().tolist())
-            target['camera']['intrinsics'].update(cx=k['width'] / 2, cy=k['height'] / 2)
-            # Carry the original gap's extent into the new camera. Re-aiming
-            # must not turn the rest of the new image into a generation target.
-            corners = np.array([[xx.min(), yy.min()], [xx.max() + 1, yy.min()],
-                                [xx.max() + 1, yy.max() + 1], [xx.min(), yy.max() + 1]], float)
-            rays = np.column_stack(((corners[:, 0] - k['cx']) / k['fx'],
-                                    -(corners[:, 1] - k['cy']) / k['fy'], -np.ones(4)))
-            boundary = position + (rays * depth) @ rotation.T
-            zz, uu, vv, _ = _project(boundary, target['camera'])
-            if not np.isfinite(uu).all() or not np.isfinite(vv).all() or np.any(zz <= 0):
-                continue
-            # The named mask already limits what may be added. Zooming the
-            # output to a small patch can remove the connected fixture and
-            # layout needed to interpret that patch. Keep this source camera's
-            # field of view while re-aiming; adapt to its actual intrinsics,
-            # rather than imposing one field of view on every capture.
-            target_k = target['camera']['intrinsics']
-            target.update(gap_target_polygon_pixels=np.column_stack((uu, vv)).tolist(),
-                          gap_domain='projected_scene_outline_hypothesis',
-                          target_extent_basis='source_gap_box_at_neighbouring_depth_estimate',
-                          target_framing='source_fov_reaimed_at_gap',
-                          target_vertical_fov_degrees=float(np.degrees(2 * np.arctan(
-                              target_k['height'] / (2 * target_k['fy'])))))
-            result.append(target)
-            targets.append((focus, radius))
+                view_camera = {'intrinsics': {**k, 'cx': k['width'] / 2, 'cy': k['height'] / 2},
+                               'extrinsics': {**e, 'position': candidate.tolist(),
+                                              'quaternion': Rotation.from_matrix(aimed).as_quat().tolist()}}
+                fraction, exposed = observed_context(samples, supported, frames, view_camera,
+                                                     gap_points, weights)
+                if exposed >= aim['uncertainty_pixels']:
+                    scored.append(((fraction, angle, tuple(candidate)), candidate, fraction, exposed))
+            if scored:
+                _, origin, fraction, exposed = max(scored, key=lambda item: item[0])
+                placement = {'origin_ranking': GAP_CAMERA_ORIGIN_RANKING,
+                             'observed_context_fraction_estimate': fraction,
+                             'exposed_gap_pixel_estimate': exposed}
+        aimed = aimed_rotation(origin, focus)
+        if aimed is None:
+            continue
+        target = deepcopy(original)
+        identity_data = {'gap': gap['gap_id'], 'focus': focus.tolist(), 'origin': origin.tolist(),
+                         'framing': 'source_fov_reaimed_at_gap_v2'}
+        if source_centred:
+            identity_data['framing'] = 'source_centred_full_fov_v2'
+        identity = canonical_digest(identity_data)
+        target.update(camera_id='gap-target-' + identity[7:23], purpose='gap_target',
+                      source_gap_ids=[gap['gap_id']], target_world_estimate=focus.tolist(),
+                      target_basis=('gap_centroid_ray_at_reviewed_depth_hypothesis' if aim['hypothesis']
+                                    else 'gap_centroid_ray_at_neighbouring_source_depth'),
+                      camera_location_observed_free=True, collision_qualified=False, **placement)
+        target['camera']['extrinsics'].update(position=origin.tolist(),
+                                              quaternion=Rotation.from_matrix(aimed).as_quat().tolist())
+        target['camera']['intrinsics'].update(cx=k['width'] / 2, cy=k['height'] / 2)
+        # Carry the original gap's extent into the new camera. Re-aiming
+        # must not turn the rest of the new image into a generation target.
+        x_low, y_low, x_high, y_high = aim['box']
+        corners = np.array([[x_low, y_low], [x_high + 1, y_low],
+                            [x_high + 1, y_high + 1], [x_low, y_high + 1]], float)
+        rays = np.column_stack(((corners[:, 0] - k['cx']) / k['fx'],
+                                -(corners[:, 1] - k['cy']) / k['fy'], -np.ones(4)))
+        boundary = position + (rays * depth) @ rotation.T
+        zz, uu, vv, _ = _project(boundary, target['camera'])
+        if not np.isfinite(uu).all() or not np.isfinite(vv).all() or np.any(zz <= 0):
+            continue
+        # The named mask already limits what may be added. Zooming the
+        # output to a small patch can remove the connected fixture and
+        # layout needed to interpret that patch. Keep this source camera's
+        # field of view while re-aiming; adapt to its actual intrinsics,
+        # rather than imposing one field of view on every capture.
+        target_k = target['camera']['intrinsics']
+        target.update(gap_target_polygon_pixels=np.column_stack((uu, vv)).tolist(),
+                      gap_domain='projected_scene_outline_hypothesis',
+                      target_extent_basis='source_gap_box_at_neighbouring_depth_estimate',
+                      target_framing='source_fov_reaimed_at_gap',
+                      target_vertical_fov_degrees=float(np.degrees(2 * np.arctan(
+                          target_k['height'] / (2 * target_k['fy'])))))
+        result.append(target)
+        targets.append((focus, radius))
     return result

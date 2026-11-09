@@ -7,7 +7,6 @@ generation targets. Every admitted contribution must land in a named gap.
 from __future__ import annotations
 
 import json
-import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +14,7 @@ import numpy as np
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-from .atlas_depth_splat import restrict_frame
+from .atlas_depth_splat import pixel_digest, restrict_frame
 
 
 SURVEY_SCHEMA_VERSION = 'atlas_geometry_gap_survey.v2'
@@ -181,14 +180,12 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
     root.mkdir(parents=True, exist_ok=True)
     binding = {'candidates': candidates, 'geometry_frames': [{
         'frame_id': f['frame_id'], 'intrinsics': f['intrinsics'], 'extrinsics': f['extrinsics'],
-        **{key: hashlib.sha256(np.ascontiguousarray(f[key]).tobytes()).hexdigest()
-           for key in ('rgb', 'depth', 'confidence')}} for f in geometry_frames],
+        **{key: pixel_digest(f, key) for key in ('rgb', 'depth', 'confidence')}} for f in geometry_frames],
         'photograph_frame_ids': [f['frame_id'] for f in frames]}
     if expected_frames:
         binding['expected_frames'] = [{
             'frame_id': f['frame_id'], 'intrinsics': f['intrinsics'], 'extrinsics': f['extrinsics'],
-            **{key: hashlib.sha256(np.ascontiguousarray(f[key]).tobytes()).hexdigest()
-               for key in ('rgb', 'depth', 'confidence')}} for f in expected_frames]
+            **{key: pixel_digest(f, key) for key in ('rgb', 'depth', 'confidence')}} for f in expected_frames]
     splat = None
     if splat_root is not None:
         manifest, splat = load_exported_splat(splat_root)

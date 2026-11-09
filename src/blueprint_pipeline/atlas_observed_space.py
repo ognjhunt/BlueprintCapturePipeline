@@ -51,15 +51,26 @@ def _frames_key(photographs, geometry_frames):
     return hashlib.sha256((_frames_digest(photographs) + _frames_digest(geometry_frames)).encode()).hexdigest()
 
 
+def _chunk_centres(low, size, shape):
+    """Each chunk of voxel indices with its voxel centres, in index order."""
+    count = int(np.prod(shape))
+    for start in range(0, count, _CHUNK_VOXELS):
+        index = np.arange(start, min(start + _CHUNK_VOXELS, count))
+        yield index, low + (np.column_stack(np.unravel_index(index, shape)) + .5) * size
+
+
 def observed_space(*, photographs, geometry_frames):
     """Carve the observed scene bounds into free, ranged, unranged and never-seen voxels.
 
     ``geometry_frames`` carve free space and ranged surfaces from confident
     depth; only ``photographs`` (the real frames) mark space seen without depth.
     A ranged surface wins over another frame's free ray, so a grazing view
-    cannot carve away a surface that a frame ranged.
+    cannot carve away a surface that a frame ranged. Frames are read one at a
+    time, each over every chunk of the grid, and a frame given both as a
+    photograph and as geometry is projected once; the voxel flags they set are
+    unions, so the order does not change them.
     """
-    from .atlas_depth_splat import MAX_MEDIAN_CROSS_VIEW_RESIDUAL
+    from .atlas_depth_splat import MAX_MEDIAN_CROSS_VIEW_RESIDUAL, decoded_frame, frame_shape
     from .atlas_scene_preservation import _project, _valid, observed_scene_bounds
 
     key = _frames_key(photographs, geometry_frames)
@@ -68,34 +79,45 @@ def observed_space(*, photographs, geometry_frames):
     bounds = observed_scene_bounds([*geometry_frames, *photographs])
     low, high = np.asarray(bounds["minimum"], float), np.asarray(bounds["maximum"], float)
     extent = np.maximum(high - low, 1e-6)
-    pixels = sum(frame["depth"].size for frame in [*geometry_frames, *photographs])
+    pixels = sum(int(np.prod(frame_shape(frame, "depth"))) for frame in [*geometry_frames, *photographs])
     size = float(np.cbrt(np.prod(extent) / min(OBSERVED_SPACE_VOXELS, pixels)))
     shape = np.maximum(np.ceil(extent / size).astype(int), 1)
     # A voxel centre may sit half a diagonal from the surface it stands for.
     half_diagonal = size * np.sqrt(3) / 2
-    references = [(frame, _valid(frame)) for frame in geometry_frames]
-    photographed = [(frame, _valid(frame)) for frame in photographs]
-    state = np.full(int(np.prod(shape)), UNSEEN, np.uint8)
-    for start in range(0, state.size, _CHUNK_VOXELS):
-        index = np.arange(start, min(start + _CHUNK_VOXELS, state.size))
-        centres = low + (np.column_stack(np.unravel_index(index, shape)) + .5) * size
-        free = np.zeros(len(index), bool)
-        ranged = np.zeros(len(index), bool)
-        unranged = np.zeros(len(index), bool)
-        for frame, valid in references:
+    count = int(np.prod(shape))
+    free = np.zeros(count, bool)
+    ranged = np.zeros(count, bool)
+    unranged = np.zeros(count, bool)
+    # Each frame once, as geometry, photograph or both: one projection serves both roles.
+    roles = []
+    for frame in geometry_frames:
+        roles.append([frame, True, False])
+    for frame in photographs:
+        same = next((row for row in roles if row[0] is frame), None)
+        if same is not None:
+            same[2] = True
+        else:
+            roles.append([frame, False, True])
+    for frame, geometry, photograph in roles:
+        frame = decoded_frame(frame, "depth", "confidence")
+        valid, depths = _valid(frame), frame["depth"]
+        for index, centres in _chunk_centres(low, size, shape):
             z, u, v, inside = _project(centres, frame)
             seen = np.flatnonzero(inside)
             rows, cols = np.floor(v[seen]).astype(int), np.floor(u[seen]).astype(int)
             known = valid[rows, cols]
-            depth = frame["depth"][rows, cols]
-            tolerance = np.maximum(MAX_MEDIAN_CROSS_VIEW_RESIDUAL * depth, half_diagonal)
-            free[seen[known & (z[seen] < depth - tolerance)]] = True
-            ranged[seen[known & (np.abs(z[seen] - depth) <= tolerance)]] = True
-        for frame, valid in photographed:
-            z, u, v, inside = _project(centres, frame)
-            seen = np.flatnonzero(inside)
-            unranged[seen[~valid[np.floor(v[seen]).astype(int), np.floor(u[seen]).astype(int)]]] = True
-        state[index] = np.where(ranged, RANGED, np.where(free, FREE, np.where(unranged, UNRANGED, UNSEEN)))
+            if geometry:
+                depth = depths[rows, cols]
+                tolerance = np.maximum(MAX_MEDIAN_CROSS_VIEW_RESIDUAL * depth, half_diagonal)
+                free[index[seen[known & (z[seen] < depth - tolerance)]]] = True
+                ranged[index[seen[known & (np.abs(z[seen] - depth) <= tolerance)]]] = True
+            if photograph:
+                unranged[index[seen[~known]]] = True
+    state = np.full(count, UNSEEN, np.uint8)
+    for start in range(0, count, _CHUNK_VOXELS):
+        part = slice(start, min(start + _CHUNK_VOXELS, count))
+        state[part] = np.where(ranged[part], RANGED, np.where(free[part], FREE,
+                                                              np.where(unranged[part], UNRANGED, UNSEEN)))
     state = state.reshape(shape)
     space = {"schema_version": SCHEMA_VERSION, "minimum": low, "maximum": high, "voxel_size": size,
              "state": state}

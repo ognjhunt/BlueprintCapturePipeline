@@ -11,7 +11,10 @@ from pathlib import Path
 
 import numpy as np
 
-from .atlas_depth_splat import _rotation_matrix, restrict_frame, MAX_MEDIAN_CROSS_VIEW_RESIDUAL
+from .atlas_depth_splat import (
+    MAX_MEDIAN_CROSS_VIEW_RESIDUAL, _rotation_matrix, decoded_frame, derived_frame, frame_arrays, frame_shape,
+    pixel_record, restrict_frame,
+)
 from .common import write_json
 from .atlas_pricing import render_cost, novel_view_headroom, require_headroom
 from .decision_evidence_contracts import canonical_digest
@@ -21,7 +24,7 @@ from .local_reconstruction_adapters import _sha256_file
 def _world(frame, valid):
     y, x = np.nonzero(valid)
     k = frame['intrinsics']
-    z = frame['depth'][y, x]
+    z = frame_arrays(frame, 'depth')[0][y, x]
     local = np.column_stack(((x + .5 - k['cx']) / k['fx'] * z,
                              -(y + .5 - k['cy']) / k['fy'] * z, -z))
     return local @ frame['rotation'].T + frame['position'], y, x
@@ -40,8 +43,8 @@ def _project(points, camera):
 
 
 def _valid(frame):
-    return (np.isfinite(frame['depth']) & (frame['depth'] > 0) &
-            np.isfinite(frame['confidence']) & (frame['confidence'] > 0))
+    depth, confidence = frame_arrays(frame, 'depth', 'confidence')
+    return np.isfinite(depth) & (depth > 0) & np.isfinite(confidence) & (confidence > 0)
 
 
 def _same_center(frame, camera):
@@ -55,76 +58,150 @@ def supported_projection_frames(frames, masks=None):
     Drop depth boundaries and require another view to agree in depth and RGB.
     The RGB tolerance is a projection heuristic, not calibrated confidence.
     Actual source viewpoints still preserve every source RGB pixel.
+    Each is a ``LazyFrame``: its confidence times the support mask is formed
+    when read, so no view's pixels are kept.
     """
     masks = _support_masks(frames) if masks is None else masks
-    return [{**source, 'confidence': source['confidence'] * keep}
+    return [derived_frame(source, confidence=lambda confidence, keep=keep: confidence * _unpacked(keep))
             for source, keep in zip(frames, masks, strict=True)]
 
 
 # One completion pass prepares several camera sets from identical approved
 # frames, and the cross-view support check is quadratic in the frame count.
 _SUPPORT_MASKS = {}
+# Retained views a source is compared against are decoded once per block of
+# views whose depth, validity and colour fit in this many bytes (8 bytes a
+# pixel, about 7 MB a 1280x720 view), so every source is lifted once per block.
+SUPPORT_REFERENCE_BYTES = 256 * 2**20
 
 
 def _frames_digest(frames):
-    """Every frame input that support or projection reads, byte for byte."""
+    """Every frame input that support or projection reads: pixels by their digests, cameras byte for byte."""
     digest = hashlib.sha256()
     for frame in frames:
         k, e = frame['intrinsics'], frame['extrinsics']
-        for value in (frame['rgb'], frame['depth'], frame['confidence'], frame['position'],
-                      frame['rotation'], [k[key] for key in ('fx', 'fy', 'cx', 'cy', 'width', 'height')],
+        for key in ('rgb', 'depth', 'confidence'):
+            dtype, shape, pixels = pixel_record(frame, key)
+            digest.update(f'{dtype}{shape}{pixels}'.encode())
+        for value in (frame['position'], frame['rotation'], [k[key] for key in ('fx', 'fy', 'cx', 'cy', 'width', 'height')],
                       e['position'], e['quaternion']):
             value = np.ascontiguousarray(value)
             digest.update(f'{value.dtype.str}{value.shape}'.encode() + value.tobytes())
     return digest.hexdigest()
 
 
-def _reused_supported_frames(frames):
+def _reused_support_masks(frames):
     key = _frames_digest(frames)
     if key not in _SUPPORT_MASKS:
         _SUPPORT_MASKS.clear()
         _SUPPORT_MASKS[key] = _support_masks(frames)
-    return supported_projection_frames(frames, _SUPPORT_MASKS[key])
+    return _SUPPORT_MASKS[key]
+
+
+def _reused_supported_frames(frames):
+    return supported_projection_frames(frames, _reused_support_masks(frames))
+
+
+def _packed(mask):
+    return np.packbits(mask, axis=None), mask.shape
+
+
+def _unpacked(packed):
+    """A support mask; ``_support_masks`` keeps them as bits."""
+    if isinstance(packed, np.ndarray):
+        return packed
+    bits, shape = packed
+    return np.unpackbits(bits, count=int(np.prod(shape))).reshape(shape).astype(bool)
+
+
+def _reference_blocks(frames):
+    """Consecutive views whose decoded references fit in ``SUPPORT_REFERENCE_BYTES`` together.
+
+    A frame that already holds its pixels costs nothing to keep.
+    """
+    block, size = [], 0
+    for index, frame in enumerate(frames):
+        need = (8 * int(np.prod(frame_shape(frame, 'depth')))
+                if getattr(frame, 'read_pixels', None) is not None else 0)
+        if block and size + need > SUPPORT_REFERENCE_BYTES:
+            yield block
+            block, size = [], 0
+        block.append(index)
+        size += need
+    if block:
+        yield block
+
+
+def _support_reference(frame):
+    """What support reads of a view: its camera, depth, colour and valid pixels (8 bytes a pixel)."""
+    view = decoded_frame(frame, 'rgb', 'depth', 'confidence')
+    return {'intrinsics': view['intrinsics'], 'extrinsics': view['extrinsics'], 'rotation': view['rotation'],
+            'position': view['position'], 'depth': view['depth'], 'rgb': view['rgb'], 'valid': _valid(view)}
+
+
+def _support_source(view):
+    """A source view's non-edge valid pixels: world points, rows, columns and colours."""
+    from .atlas_depth_splat import EDGE_RELATIVE_JUMP
+
+    valid, depth = view['valid'], view['depth']
+    center = depth[1:-1, 1:-1]
+    interior = valid[1:-1, 1:-1].copy()
+    for neighbour in (depth[1:-1, 2:], depth[1:-1, :-2], depth[2:, 1:-1], depth[:-2, 1:-1]):
+        interior &= np.isfinite(neighbour) & (np.abs(neighbour - center) <= EDGE_RELATIVE_JUMP * center)
+    valid = np.zeros(valid.shape, bool)
+    valid[1:-1, 1:-1] = interior
+    points, y, x = _world(view, valid)
+    return points, y, x, view['rgb'][y, x].astype(np.int16), valid.shape
 
 
 def _support_masks(frames):
+    """Per source frame, the non-edge pixels another frame sees at the same depth and colour (packed bits).
+
+    Each source meets the other frames in frame order, as before; the frames
+    it meets are decoded one block at a time (``_reference_blocks``) and the
+    source is lifted again for each block, its support so far kept as bits.
+    """
     from .atlas_depth_splat import EDGE_RELATIVE_JUMP
 
-    masks = []
-    validity = [_valid(frame) for frame in frames]
-    for source, source_valid in zip(frames, validity, strict=True):
-        valid = source_valid
-        depth = source['depth']
-        center = depth[1:-1, 1:-1]
-        interior = valid[1:-1, 1:-1].copy()
-        for neighbour in (depth[1:-1, 2:], depth[1:-1, :-2], depth[2:, 1:-1], depth[:-2, 1:-1]):
-            interior &= np.isfinite(neighbour) & (np.abs(neighbour - center) <= EDGE_RELATIVE_JUMP * center)
-        valid = np.zeros(valid.shape, bool)
-        valid[1:-1, 1:-1] = interior
-        points, y, x = _world(source, valid)
-        supported = np.zeros(len(points), bool)
-        colors = source['rgb'][y, x].astype(np.int16)
-        for other, other_valid in zip(frames, validity, strict=True):
-            if other is source:
+    frames = list(frames)
+    support = [None] * len(frames)
+    finished = [False] * len(frames)
+    for block in _reference_blocks(frames):
+        references = {index: _support_reference(frames[index]) for index in block}
+        for index, frame in enumerate(frames):
+            others = [other for other in block if frames[other] is not frame]
+            if finished[index] or not others:
                 continue
-            # Support is an OR across references. Once another view agrees,
-            # reprojecting that pixel cannot change its admission decision.
-            pending = np.flatnonzero(~supported)
-            if not len(pending):
-                break
-            camera = {'intrinsics': other['intrinsics'], 'extrinsics': other['extrinsics']}
-            z, u, v, inside = _project(points[pending], camera)
-            ids = pending[inside]
-            rows, cols = np.floor(v[inside]).astype(int), np.floor(u[inside]).astype(int)
-            observed = other['depth'][rows, cols]
-            agrees = (other_valid[rows, cols]
-                      & (np.abs(z[inside] - observed) <= EDGE_RELATIVE_JUMP * observed)
-                      & (np.max(np.abs(colors[ids] - other['rgb'][rows, cols].astype(np.int16)), axis=-1) <= 32))
-            supported[ids[agrees]] = True
-        keep = np.zeros(valid.shape, bool)
-        keep[y[supported], x[supported]] = True
-        masks.append(keep)
-    return masks
+            source = references[index] if index in references else _support_reference(frame)
+            points, y, x, colors, shape = _support_source(source)
+            del source
+            supported = (np.zeros(len(points), bool) if support[index] is None
+                         else _unpacked(support[index])[y, x])
+            for other_index in others:
+                other = references[other_index]
+                # Support is an OR across references. Once another view agrees,
+                # reprojecting that pixel cannot change its admission decision.
+                pending = np.flatnonzero(~supported)
+                if not len(pending):
+                    finished[index] = True
+                    break
+                camera = {'intrinsics': other['intrinsics'], 'extrinsics': other['extrinsics']}
+                z, u, v, inside = _project(points[pending], camera)
+                ids = pending[inside]
+                rows, cols = np.floor(v[inside]).astype(int), np.floor(u[inside]).astype(int)
+                observed = other['depth'][rows, cols]
+                agrees = (other['valid'][rows, cols]
+                          & (np.abs(z[inside] - observed) <= EDGE_RELATIVE_JUMP * observed)
+                          & (np.max(np.abs(colors[ids] - other['rgb'][rows, cols].astype(np.int16)), axis=-1) <= 32))
+                supported[ids[agrees]] = True
+            keep = np.zeros(shape, bool)
+            keep[y[supported], x[supported]] = True
+            support[index] = _packed(keep)
+        del references
+    for index, frame in enumerate(frames):
+        if support[index] is None:  # No other frame to agree with.
+            support[index] = _packed(np.zeros(frame_shape(frame, 'depth'), bool))
+    return support
 
 
 def _save_image(path, pixels):
@@ -154,7 +231,9 @@ def project_known_contexts(frames, cameras):
 
     Lifting a frame to world points costs more than projecting it. Each new-
     centre camera still z-buffers the frames in the same order, so every
-    result equals its single-camera projection.
+    result equals its single-camera projection. Each frame is decoded once
+    for the new-centre cameras, and a recorded centre's photograph once for
+    each camera at that centre.
     """
     import cv2
 
@@ -170,6 +249,7 @@ def project_known_contexts(frames, cameras):
     # cross-view context to the inpainting model instead of noisy edge splats.
     moving = [(camera, canvas) for camera, canvas in zip(cameras, canvases, strict=True) if not canvas[3]]
     for frame in (frames if moving else []):
+        frame = decoded_frame(frame, 'rgb', 'depth', 'confidence')
         points, y, x = _world(frame, _valid(frame))
         for camera, (rgb, zbuffer, keep, _) in moving:
             k = camera['intrinsics']
@@ -199,6 +279,7 @@ def project_known_contexts(frames, cameras):
         # orientation wins any overlap (an exact source view wins last).
         same = sorted(same, key=lambda f, r=target_rotation: np.linalg.norm(f['rotation'] - r), reverse=True)
         for frame in same:
+            photograph = frame_arrays(frame, 'rgb')[0]
             source = frame['intrinsics']
             source_k = np.array([[source['fx'], 0, source['cx']], [0, source['fy'], source['cy']], [0, 0, 1.]])
             target_k = np.array([[k['fx'], 0, k['cx']], [0, k['fy'], k['cy']], [0, 0, 1.]])
@@ -209,12 +290,12 @@ def project_known_contexts(frames, cameras):
             rotation = (np.eye(3) if np.allclose(target_rotation, frame['rotation'], atol=1e-8, rtol=0) else
                         optical_to_rub @ target_rotation.T @ frame['rotation'] @ optical_to_rub)
             mapping = np.linalg.inv(to_center) @ target_k @ rotation @ np.linalg.inv(source_k) @ to_center
-            known = cv2.warpPerspective(np.ones(frame['rgb'].shape[:2], np.uint8), mapping, (width, height),
+            known = cv2.warpPerspective(np.ones(photograph.shape[:2], np.uint8), mapping, (width, height),
                                         flags=cv2.INTER_NEAREST).astype(bool)
             yy, xx = np.indices((height, width))
             source_z = (rotation.T @ np.linalg.inv(target_k))[2]
             known &= (source_z[0] * (xx + .5) + source_z[1] * (yy + .5) + source_z[2]) > 0
-            sampled = cv2.warpPerspective(frame['rgb'], mapping, (width, height),
+            sampled = cv2.warpPerspective(photograph, mapping, (width, height),
                                           flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
             rgb[known], keep[known] = sampled[known], True
         contexts.append((rgb, keep))
@@ -225,6 +306,7 @@ def observed_scene_bounds(frames):
     """Capture-derived ceiling on expansion, in the retained estimated gauge."""
     low, high = np.full(3, np.inf), np.full(3, -np.inf)
     for frame in frames:
+        frame = decoded_frame(frame, 'depth', 'confidence')
         points, _, _ = _world(frame, _valid(frame))
         if len(points):
             low = np.minimum(low, points.min(axis=0))
@@ -256,6 +338,7 @@ def unobserved_geometry_mask(generated, references, *, extent_bounds=None, repai
                           (points <= np.asarray(extent_bounds['maximum'])), axis=1)
         reason[~allowed] = 2
     for index, reference in enumerate(references):
+        reference = decoded_frame(reference, 'depth', 'confidence')
         camera = {'intrinsics': reference['intrinsics'], 'extrinsics': reference['extrinsics']}
         z, u, v, inside = _project(points, camera)
         indices = np.flatnonzero(inside)

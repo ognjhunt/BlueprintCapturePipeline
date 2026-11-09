@@ -53,15 +53,17 @@ def camera_candidates(frames):
     These are generation hypotheses, not collision-cleared physical cameras.
     """
     from scipy.spatial.transform import Rotation
-    from .atlas_scene_chisel import oriented_photograph
+    from .atlas_depth_splat import frame_arrays
+    from .atlas_scene_chisel import oriented_camera
 
     candidates = []
     for frame in frames:
-        depth = frame["depth"]
-        valid = np.isfinite(depth) & (depth > 0) & (frame["confidence"] > 0)
+        depth, confidence = frame_arrays(frame, "depth", "confidence")
+        valid = np.isfinite(depth) & (depth > 0) & (confidence > 0)
+        del depth, confidence
         if not np.any(valid):
             raise ValueError("atlas_completion_no_context_depth")
-        _, camera, rotated = oriented_photograph(frame)
+        camera, rotated = oriented_camera(frame)
         k = camera["intrinsics"]
         scale = min(1280 / k['width'], 720 / k['height'])
         k.update(fx=k['fx'] * scale, fy=k['fy'] * scale,
@@ -171,7 +173,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
             or {row['frame_id'] for row in pixel_pose['operation_receipt']['input_usage']['frames']}
             != {frame['frame_id'] for frame in frames}):
         raise ValueError('atlas_completion_refreshed_context_identity_changed')
-    fov = verify_pose_context_fov(pose_root=pixel_root, frames=frames, output_root=root)
+    from .atlas_depth_splat import read_in_turn
+    fov = verify_pose_context_fov(pose_root=pixel_root, frames=read_in_turn(frames), output_root=root)
     camera_pool = camera_candidates(frames)
     # The initial pass already surveyed the full topology. A feedback pass
     # checks every source/reviewed view, then aims at its remaining holes;
@@ -191,9 +194,12 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         # use the nearest reviewed RGBD camera as their depth hypothesis instead
         # of taking the minimum of contradictory estimates from all views.
         # All approved photographs/depths still accompany the planner and Atlas.
-        from .atlas_depth_splat import _rotation_matrix
-        scales = [float(np.median(f['depth'][np.isfinite(f['depth']) & (f['depth'] > 0)
-                                            & (f['confidence'] > 0)])) for f in expected_frames]
+        from .atlas_depth_splat import _rotation_matrix, frame_arrays
+
+        def median_depth(frame):
+            depth, confidence = frame_arrays(frame, 'depth', 'confidence')
+            return float(np.median(depth[np.isfinite(depth) & (depth > 0) & (confidence > 0)]))
+        scales = [median_depth(f) for f in expected_frames]
         scale = max(float(np.median(scales)), np.finfo(float).eps)
         for target in camera_pool:
             camera = target['camera']['extrinsics']
