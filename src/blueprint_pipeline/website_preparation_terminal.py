@@ -5,10 +5,16 @@ particular message. Silence records an overdue observation only. The existing
 v1/v2 status vocabulary stays compatible, and a later current claim supersedes
 the observation while its immutable attempt-history entry remains available.
 No observation authorizes retry, provider effects or authority renewal.
+
+One silent case is not a delay: a preparation whose retained grant has expired
+can never run again, because every delivery would end it on the website's
+``consent_expired``. ``end_expired_preparation`` writes that same ending, through
+the listener's own terminal function, so the job ends without a redelivery.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections.abc import Mapping
@@ -16,7 +22,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
+from .common import PipelineError, write_json
+from .decision_evidence_contracts import canonical_digest
 from .handoff_job_state import (
     JOB_LEDGER_FILENAME,
     JOB_LEDGER_SCHEMA_VERSION,
@@ -36,6 +43,10 @@ _RETRYABLE_STATUSES = frozenset({"failed_retryable", "retryable_blocked"})
 SILENCE_SECONDS_ENV = "BLUEPRINT_WEBSITE_PREPARATION_SILENCE_SECONDS"
 DEFAULT_SILENCE_SECONDS = 2 * 60 * 60
 _MINIMUM_SILENCE_SECONDS = 30 * 60
+# The grant the job's latest delivery ran under (website_task_evidence).
+GRANT_FILE = "pipeline/website_scene_sponsorship.json"
+EXPIRY_STAGE = "website_preparation_grant_expiry"
+EXPIRY_OPERATION = "preparation-grant-expiry"
 # Listener ticks run about a minute apart; a longer gap (an outage, or one tick
 # busy processing) means this listener could not have received a redelivery.
 LIVENESS_GAP_SECONDS = 15 * 60
@@ -226,3 +237,82 @@ def record_unretried_preparation(capture_root: Path, *, alive_since: datetime,
                   "retry_exhaustion_proven": False,
                   "recorded_at": _iso(current)}
         return _commit(Path(capture_root), ledger, record)
+
+
+def _expired_grant(capture_root: Path, ledger: Mapping[str, Any], now_epoch: float) -> float | None:
+    """The retained grant's expiry when it is sealed, binds this capture and has passed.
+
+    The WebApp refuses a retained grant with ``consent_expired`` once
+    ``expires_at_epoch <= now``; the same boundary is used here.
+    """
+    path = Path(capture_root) / GRANT_FILE
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        grant = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(grant, dict):
+        return None
+    expiry = grant.get("expires_at_epoch")
+    if (grant.get("schema_version") != "website_scene_sponsorship.v1"
+            or grant.get("authority_digest") != canonical_digest(grant, digest_field="authority_digest")
+            or grant.get("scene_id") != ledger.get("scene_id")
+            or grant.get("capture_id") != ledger.get("capture_id")
+            or isinstance(expiry, bool) or not isinstance(expiry, (int, float))
+            or not math.isfinite(expiry) or expiry > now_epoch):
+        return None
+    return float(expiry)
+
+
+def end_expired_preparation(capture_root: Path, *, alive_since: datetime,
+                            now: datetime | None = None) -> dict[str, Any] | None:
+    """End a silent preparation whose grant has expired, as a delivery would.
+
+    Applies only where ``record_unretried_preparation`` could record an overdue
+    observation (a retryable attempt, or a dead worker's expired lease, silent
+    for a full window of continuous listening) and the retained grant's
+    ``expires_at_epoch`` has passed. A live lease, a completed or ended job, the
+    assessment wait and any grant still valid are left as they are. The ending
+    is the listener's ``_finish_terminal_authority_ending`` on a claim of the
+    revision read here, so it is written once. Nothing is retried, bought,
+    renewed or released here. Returns the committed terminal ledger, or None.
+    """
+    from . import pubsub_handoff_listener as listener
+
+    root = Path(capture_root)
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    with _existing_job_ledger_lock(root) as state:
+        if state != "ledger_present":
+            return None
+        ledger = _read_job_ledger(root)
+        silent = _silent_since(ledger, current)
+        if (silent is None or type(ledger.get("revision")) is not int
+                or any(type(ledger.get(key)) is not str or not ledger[key] for key in
+                       ("scene_id", "capture_id", "producer_delivery_key", "source_payload_sha256"))
+                or max(silent, alive_since) + timedelta(seconds=silence_seconds()) > current):
+            return None
+        expiry = _expired_grant(root, ledger, current.timestamp())
+        if expiry is None:
+            return None
+    claim, claimed = listener._claim_job_lease(
+        root, scene_id=ledger["scene_id"], capture_id=ledger["capture_id"], owner=listener._lease_owner(),
+        lease_seconds=listener.DEFAULT_JOB_LEASE_SECONDS, payload_sha256=ledger["source_payload_sha256"],
+        producer_delivery_key=ledger["producer_delivery_key"], create_capture_root=False,
+        expected_revision=ledger["revision"])
+    if claim != "claimed":
+        return None
+    handoff = listener.HandoffMessage(
+        bucket=root.parents[3].name, scene_id=ledger["scene_id"], capture_id=ledger["capture_id"],
+        raw_prefix_uri=f"gs://{root.parents[3].name}/scenes/{ledger['scene_id']}"
+                       f"/captures/{ledger['capture_id']}/raw/",
+        pipeline_handoff_uri=None)
+    result = listener._finish_terminal_authority_ending(
+        root, handoff=handoff, owner=claimed["lease_owner"], token=claimed["lease_token"],
+        operation=EXPIRY_OPERATION, code="consent_expired",
+        error=PipelineError(f"website_preparation_grant_expired:expires_at_epoch={expiry:.0f}"),
+        stage=EXPIRY_STAGE, attempt_count=claimed["attempt_count"],
+        attempt_started_at=claimed["last_attempt_started_at"],
+        previous_history=listener._attempt_history(claimed),
+        payload_digest=ledger["source_payload_sha256"], producer_delivery_key=ledger["producer_delivery_key"])
+    return result["job_ledger"]
