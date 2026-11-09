@@ -894,10 +894,21 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - About 1,614 s live at $0.599/h, **$0.74 estimated** ($0.27 runtime, $0.47 transfer), **no episode**. Teardown destroyed the instance (HTTP 200).
   - That is π0.5's fourth harness failure; DP (6) is held. Site: $7.89 spent of $30, nothing reserved.
   - **Cause:** the largest selected file is π0.5's 9.35 GB `model.safetensors`, served from a ModelScope CDN in China (`cdn-lfs-cn-1.modelscope.cn`). Which file stalled is not in the diagnostics.
-  - **Fix (this PR):**
+  - **Fix (#3506, merged as `13cb94d`):**
     - A stalled or dropped transfer resumes from the byte it reached, up to 3 times per file, inside the same deadline. It asks only for the bytes still missing (`Range: bytes=N-`) and accepts only a 206 whose `Content-Range` is exactly those bytes. Anything else ends the transfer, and the full-file SHA-256 check before publication is unchanged.
     - Model staging now prints `selected_model_staging` / `selected_models_ready` and growth lines, so a stall shows which stage it is in.
     - No limit changes: the transfer byte bound, hard cap and deadline are unchanged. Both sources return 206 with that exact `Content-Range` (checked 11-09 with 16- and 20-byte ranges).
+- **Re-posed splat, 11-09** (library session). World Labs accepted the windowed pose refinement (85 views). Atlas published `797ab5aa…` at 19:14:51Z, and `--resume-preparation` re-derived the scene at 19:23–19:37Z.
+  - The new G1 packet's navigation start moved 1.93 m down the aisle to (2.965, 0.196), now 2.85 m from the goal (it was 1.78 m).
+  - **Spawn check: `overlap`.** The scanned floor stood 6.5–9.4 cm above the levelled floor under the soles at the start and all four offsets (knees about 1.8 cm in). Campaign `screening-359d33ff…` (19:46:04Z) left π0.5 and DP `unavailable [g1_spawn_overlap]`, **$0**.
+  - **Route floor profile** (#3507, live in 8f32a2a at 20:37:02Z): `native_g1_route_floor_profile` writes the scanned floor's heights along start→goal beside the packet (heights only, never a gate).
+    - v1 read only faces wound upward and under-reported. #3509's v2 reads `|n_z|`, as the spawn check does.
+    - Even as lower bounds, it showed scanned floor 3.5–6.7 cm above the goal disc's plane at the disc's centre and rim, so the non-colliding disc was under the floor.
+  - **Goal view:** `partly_in_view`. The disc centre is above the frame (pixel y −30) from 2.85 m with the head camera 45° down, and 22% of its rim is in frame. The library session kept the start, since the task starts at the near end of the aisle: `g1_goal_marker_not_in_initial_view` stays a flag.
+  - **Levelling v9** (#3508, owner: "flatten the corridor floor, go ahead", 20:01Z): the walk corridor's scanned floor faces within the floor layer of a fitted surface are replaced by the flat walked floor. The re-derive finished at 20:49:07Z.
+- **Disk, 11-09:** `/mnt/blueprint-work` was critical, with 5.16 GB available against a 15.8 GB floor. A G1 run's collection hold is 2 × 4 GiB + bundle, about 8.8 GB, checked before any provider call, so the next G1 admission is refused at **$0** (`g1_beta_collection_capacity_insufficient`, not a harness failure).
+  - **Owner, 20:50:12Z (relayed by the library session): "go with option A for the disk cleanup".** The existing bundle prune also removes the sealed `bundle/` of settled spent attempts sealed more than two days ago, keeping every receipt and output (this PR).
+  - Measured from door listings at about 20:55Z: 38 settled spent attempts in campaigns with nothing live, 27 of them sealed more than two days ago, about **7.68 GB**.
 
 ## Operating notes (2026-11-02)
 

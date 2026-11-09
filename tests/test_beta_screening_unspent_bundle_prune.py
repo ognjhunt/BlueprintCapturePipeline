@@ -141,3 +141,84 @@ def test_the_worker_prunes_before_it_launches_anything(monkeypatch, tmp_path):
 
     assert worker.main(["--queue-root", str(tmp_path / "queue")]) == 0
     assert order.index("prune") < order.index("launch")
+
+
+def _ledger_campaigns(queue: Path, campaigns: dict) -> None:
+    queue.mkdir(parents=True, exist_ok=True)
+    (queue / "attempts").mkdir(exist_ok=True)
+    ledger = {"schema_version": coordinator.LEDGER_SCHEMA, "campaigns": {
+        "screening-" + key * 32: {"site_id": "site-capture-test", "candidates": rows} for key, rows in campaigns.items()}}
+    ledger["ledger_digest"] = canonical_digest(ledger, digest_field="ledger_digest")
+    (queue / coordinator.LEDGER_FILENAME).write_text(json.dumps(ledger))
+
+
+def _sealed_days_ago(attempt: dict, days: float) -> None:
+    receipt = Path(attempt["attempt_dir"]) / "bundle_receipt.json"
+    stamp = receipt.stat().st_mtime - days * 86400
+    os.utime(receipt, (stamp, stamp))
+
+
+def _spent(work: Path, number: int, *, days: float = 3.0, **fields) -> dict:
+    attempt = _attempt(work, number, reservation="committed", allocated=True, result=NO_ALLOCATION)
+    attempt.update(fields)
+    outputs = Path(attempt["attempt_dir"]) / "allocator/attempts/attempt_001/vast_provider_run"
+    outputs.mkdir(parents=True)
+    (outputs / "vast_provider_runtime_output.zip").write_bytes(b"episodes")
+    (outputs / "vast_teardown_manifest.json").write_text("{}")
+    base = Path(attempt["attempt_dir"]) / "bundle" / "base" / "scene"
+    base.mkdir(parents=True)
+    (base / "packet.usda").write_bytes(b"y" * 1024)
+    _sealed_days_ago(attempt, days)
+    return attempt
+
+
+def test_a_settled_spent_attempt_older_than_two_days_loses_only_its_bundle(roots):
+    """Owner decision 2026-11-09 20:50:12Z ("go with option A for the disk cleanup"): the work volume had 5.16 GB
+    available against a G1 run's 8.8 GB collection reservation, so the next G1 admission was refused at $0."""
+    queue, work = roots
+    old = _spent(work, 11)
+    recent = _spent(work, 12, days=1.0)
+    held = _spent(work, 13, settlement_held={"reason": "beta_screening_settlement_teardown_unproven"})
+    held.pop("settled_cost_usd")
+    unsettled = _spent(work, 14)
+    unsettled.pop("settled_cost_usd")
+    live_campaign = _spent(work, 15)
+    running = _attempt(work, 16, reservation="reserved", allocated=True)
+    _ledger_campaigns(queue, {
+        "c": {"dp": {"status": "completed", "attempt": old}, "pi05": {"status": "blocked", "attempt": recent,
+                                                                      "attempt_history": [held, unsettled]}},
+        "d": {"dp": {"status": "blocked", "attempt_history": [live_campaign]},
+              "pi05": {"status": "running", "attempt": running}},
+    })
+
+    outcome = prune.prune_unspent_bundles(queue_root=queue)
+
+    assert outcome["pruned"] == [] and outcome["refused"] == []
+    assert [row["attempt_id"] for row in outcome["spent_pruned"]] == [old["attempt_id"]]
+    assert outcome["removed_bytes"] == outcome["spent_pruned"][0]["removed_bytes"] >= 2048 + 1024
+    directory = Path(old["attempt_dir"])
+    assert not (directory / "bundle").exists()
+    # Every receipt and every output stays.
+    assert all((directory / name).exists() for name in ("bundle_receipt.json", "prepared.json", "allocator_result.json"))
+    assert (directory / "allocator/attempts/attempt_001/vast_provider_run/vast_provider_runtime_output.zip").read_bytes() \
+        == b"episodes"
+    receipt = json.loads((directory / prune.RECEIPT).read_text())
+    assert receipt["proof"] == "settled_spend" and receipt["settled_cost_usd"] == "0.62"
+    assert "option A" in receipt["owner_decision"] and receipt["bundle_receipt_sha256"].startswith("sha256:")
+    assert {row["path"] for row in receipt["removed"]} == {"bundle"} and receipt["removed"][0]["files"] == 3
+    # Sealed one day ago, held at its maximum, unsettled, or in a campaign with a running row: untouched.
+    for attempt in (recent, held, unsettled, live_campaign, running):
+        assert (Path(attempt["attempt_dir"]) / "bundle/native_g1_beta_provider_bundle.zip").is_file()
+        assert not (Path(attempt["attempt_dir"]) / prune.RECEIPT).exists()
+    assert prune.prune_unspent_bundles(queue_root=queue)["spent_pruned"] == []
+
+
+def test_spent_pruning_is_bounded_per_tick(roots):
+    queue, work = roots
+    attempts = [_spent(work, 20 + index) for index in range(3)]
+    _ledger_campaigns(queue, {"e": {"dp": {"status": "completed", "attempt": attempts[0],
+                                           "attempt_history": attempts[1:]}}})
+    first = prune.prune_unspent_bundles(queue_root=queue, spent_per_tick=2)
+    assert len(first["spent_pruned"]) == 2
+    assert len(prune.prune_unspent_bundles(queue_root=queue, spent_per_tick=2)["spent_pruned"]) == 1
+    assert prune.SPENT_MIN_AGE_SECONDS == 2 * 86400 and prune.SPENT_PER_TICK >= 27
