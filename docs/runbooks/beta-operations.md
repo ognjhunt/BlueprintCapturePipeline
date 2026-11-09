@@ -533,148 +533,122 @@ acknowledgement within 10 business days and completion within 30 days
 
 ### What happens by itself
 
-1. The WebApp's withdrawal worker runs every 60 seconds and sends the Pipeline a
+1. The WebApp's withdrawal worker runs every 60 seconds. It sends the Pipeline a
    signed, non-destructive withdrawal command
-   (Blueprint-WebApp `server/utils/websiteCaptureWithdrawal.ts`). It sends the
+   (Blueprint-WebApp `server/utils/websiteCaptureWithdrawal.ts`), and sends the
    same command again every hour while the withdrawal is pending.
-2. The intake writes a tombstone at `<site>/website_withdrawal/tombstone.json` and
-   answers with an acknowledgement (`website_capture_withdrawal.py`,
+2. The intake writes a tombstone at `<site>/website_withdrawal/tombstone.json`
+   and answers with an acknowledgement (`website_capture_withdrawal.py`,
    `acknowledge_withdrawal`). From then on the site's capture reads as revoked
-   (`consent_takedown.read_consent_state`). The paid screening launch refuses it
-   with `team_scene_capture_withdrawn`, through
-   `beta_policy_screening_worker.require_current_source`, which resolves the
-   capture with `team_scene_capture_root.resolve_capture_root`. The Atlas preview
-   queue and the scene preview publisher refuse a withdrawn capture too.
-3. After each acknowledgement, the intake decides whether this site is due a
-   deletion plan (`website_capture_withdrawal_http.py`, then
-   `website_capture_withdrawal_automatic_plan.request`). If it is, the intake
-   starts `python -m blueprint_pipeline.website_capture_withdrawal_automatic_plan
-   --capture-root <capture>` as its own process. That process runs the deletion
-   module's plan-only `--record-automatic-plan` and writes
-   `<site>/website_withdrawal/automatic_deletion_plan.json` once. It lists no B2
-   object, makes no provider call and deletes nothing.
-4. The plan process runs in the intake's own systemd unit, so it is bounded
-   (`website_capture_withdrawal_automatic_plan.py`):
-   - Only one runs on the host at a time. The intake decides under the lock
-     `/var/lib/blueprint/pipeline-control-plane/website-withdrawal-automatic-plan.lock`,
-     and holds the host for one site until its process has started.
-   - As the process's very first step it sets `oom_score_adj` 1000, so the
-     kernel kills it before the intake. It also sets nice 19, the idle IO class,
-     a 1 GiB address-space limit and a 30-minute wall clock. Each limit is best
-     effort, and the plan records which ones held in `child_limits`.
-   - A lock holder that is dead, or still running more than 35 minutes after it
-     started, is stale. A hung holder is killed. A holder that survives the kill
-     stays the holder, and its site is recorded as `stuck`.
-   - The process gets only `PATH`, the locale, `PYTHONPATH`, the lock path and
-     the root variables the plan reads (`PLAN_ROOT_VARIABLES`). It never gets a
-     provider key file, token or webhook URL.
-   - After a failure the next attempt waits 1 hour, then 4 hours, then 24
-     hours. After the 4th failure no automatic attempt starts again. The intake
-     then logs `website_withdrawal_automatic_plan_stopped` at WARNING on every
-     acknowledgement. To find these sites, run
-     `door journal blueprint-pipeline-intake.service --since -1d` and search for
-     that text.
-   - The backoff and the stop apply only to the plan. The tombstone, the
-     acknowledgement and the refusal of new work do not wait for it.
+   (`consent_takedown.read_consent_state`).
+   - The paid screening launch refuses the capture with
+     `team_scene_capture_withdrawn`, through
+     `beta_policy_screening_worker.require_current_source`, which resolves the
+     capture with `team_scene_capture_root.resolve_capture_root`.
+   - The Atlas preview queue and the scene preview publisher also refuse a
+     withdrawn capture.
+3. The WebApp's deletion worker deletes the WebApp's own copies for the site
+   (Blueprint-WebApp `server/utils/websiteCaptureDeletion.ts`). These are the
+   raw and upload prefixes of the site's captures, the job item photos and the
+   published scene preview reference. It waits for the Pipeline's
+   acknowledgement, deletes every object generation, writes a receipt, and stops
+   if the Pipeline reports a legal hold.
 
-Nothing is deleted by itself. Deleting needs the owner's approval every time.
+Nothing in the Pipeline is deleted by itself. A person runs the Pipeline's
+deletion plan and its `--apply`
+(`python -m blueprint_pipeline.website_capture_withdrawal_deletion`):
+
+- Only the owner can run them today, because only the owner has SSH access to
+  the host. Operators reach the host only through the door
+  ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)), and no door request kind runs
+  the deletion.
+- Every `--apply` needs the owner's approval for that site.
+- The plan reads every run's records, so run it on a quiet host.
 
 Known gaps:
 
-- The screening ledger's own reservation (`beta_policy_screening_coordinator._reserve`)
-  and `enqueue_screening_campaign` do not read the tombstone. A campaign that
-  was already planned can still reserve its cap. The launch then refuses before
-  any spend, as step 2 says.
-- The WebApp does not see the plan yet. Its acknowledgement schema is `.strict()`
-  (`websiteWithdrawalReceipt`), so the Pipeline cannot add the plan to the
-  acknowledgement. Before it can, the WebApp would have to accept an optional
-  plan summary field and store it.
-- No door request kind runs the deletion with `--apply`. Only the owner, who
-  has host SSH, can run it.
+- The screening ledger's own reservation
+  (`beta_policy_screening_coordinator._reserve`) and `enqueue_screening_campaign`
+  do not read the tombstone. A campaign that was already planned can still
+  reserve its cap. The launch then refuses before any spend, as step 2 says.
+- The WebApp's acknowledgement schema is `.strict()` (`websiteWithdrawalReceipt`).
+  So the acknowledgement cannot carry anything about a Pipeline deletion until
+  the WebApp accepts a new optional field.
 
-### How to read the plan
+### Make and read a plan
 
-`door cat <site>/website_withdrawal/automatic_deletion_plan.json`. The `<site>`
-directory is `scenes/site-<request id>/` under the intake's capture root.
+On the host, the owner runs:
 
-If the plan is missing, run
-`door cat <site>/website_withdrawal/automatic_deletion_plan_state.json`. Its
-`state` field says why. Every state below is written by the intake or by the
-plan process:
+```bash
+python -m blueprint_pipeline.website_capture_withdrawal_deletion \
+    --capture-root <site>/captures/walkthrough-<request id> --object-store --bucket <source bucket>
+```
 
-| `state` | What it means | What to check |
-|---|---|---|
-| `launching` / `launched` | The intake started the process, or is starting it. | `last_launch` gives the pid, the time and the attempt. If that pid is gone, the next acknowledgement records a failure (`automatic_plan_child_died_before_recording`). |
-| `planning` | The process holds the host lock and is scanning. | The pid is in `planning`. |
-| `owed` | Another site's plan holds the host lock. This is not a failure. | `owed_behind` names that site's journal. The next acknowledgement asks again. |
-| `failed` | The last attempt failed. A failed launch, a timeout, an OOM kill, a death before the lock and a plan error all count. | `last_failure.reason` and `at_iso`. `failed_attempts` counts the failures. No new attempt starts before `next_attempt_not_before_epoch`. |
-| `stopped_needs_operator` | Four attempts failed, so no automatic attempt starts again. | `needs_operator` and `last_failure`. Run the plan by hand, as in step 6 below, without `--apply`. |
-| `stuck` | This site's process survived SIGKILL and still holds the host lock. | `stuck.pid`. Every other site stays `owed` until that process ends. |
-| `recorded` | The plan exists. | `superseded_failure` keeps the last failure, if there was one. |
+The plan only reads and deletes nothing. The `<site>` directory is
+`scenes/site-<request id>/` under the intake's capture root. The printed
+`plan` has these fields:
 
-If there is no state file and no plan, one of two things is true. Either the
-intake has not handled an acknowledgement for this site yet (the tombstone's
-time shows when it received the withdrawal), or it could not write in the site's
-journal at all. In the second case the intake logs
-`website_withdrawal_automatic_plan_not_started` at WARNING.
-
-- `summary`: how many scene files, runs, run files and B2 objects the plan found,
-  and `unresolved` with a count for each reason. If `object_store_listed` is
-  `false`, the B2 objects show as `website_withdrawal_deletion_object_store_unconfigured`.
-  That is expected: the automatic plan does not list B2.
-- `remaining`: what a deletion would leave and why. This covers provider copies,
-  WebApp and delivered copies, the capture source bucket when no bucket is named,
-  each Pipeline root the deletion does not cover yet (with what that root holds),
-  and the retained audit journal.
-- `policy_copy_classes`: one row for each data class in
-  [`../beta_data_retention_policy_2026-07-09.json`](../beta_data_retention_policy_2026-07-09.json).
-  Each row says what the deletion would remove and what stays, with a reason.
+- `unresolved`: each copy the plan could not resolve, with a reason. This
+  includes a run root it cannot list (`website_withdrawal_deletion_root_unreadable`).
+  `--apply` refuses while any row remains.
+- `runs`, `objects`, `scene_files`, `screening`, `native_g1`, `team_scene`:
+  what an apply would delete.
+- `uncovered_pipeline_roots`: Pipeline roots the deletion does not scan. In the
+  receipt, each one is listed under `remaining`, with what the root holds.
 - `legal_hold`: if this is `true`, `--apply` refuses.
-- `plan.digest`: the digest of this plan. An apply needs the digest of a fresh
-  operator plan with `--object-store` (and `--bucket`), not this one.
+- `digest`: an apply needs exactly this digest.
+
+The owner applies with the same command plus `--expected-plan-digest <digest>
+--apply --authorize-complete-deletion`. The sealed receipt is at
+`<site>/website_withdrawal/deletion_receipts/<digest>.json`. Read it with
+`door cat`. It contains:
+
+- `deleted`: what the apply removed.
+- `remaining`: what stays and why. This covers provider copies, WebApp and
+  delivered copies, the capture source bucket when no bucket was named, the
+  roots the deletion does not cover and the retained audit journal.
+- `policy_copy_classes`: one row for each data class in
+  [`../beta_data_retention_policy_2026-07-09.json`](../beta_data_retention_policy_2026-07-09.json),
+  with what was removed and what stays, and why.
 
 ### Drill
 
-The drill runs offline, costs $0 and runs in CI (`tests/test_website_capture_withdrawal_drill.py`):
+The drill runs offline, costs $0 and runs in CI
+(`tests/test_website_capture_withdrawal_drill.py`):
 
 ```bash
 python -m blueprint_pipeline.website_capture_withdrawal_drill
 ```
 
-It builds one synthetic site and one other site in a new temporary directory,
-with an in-memory B2 store and source bucket. It acknowledges the shared WebApp
-vector (`tests/fixtures/website-withdrawal-vector.json`), records the automatic
-plan and checks that a paid launch is refused. Then it plans with the object
-store and the bucket, applies with the plan's digest and the authorization, and
-prints one row for each copy class: count before, count after, and why anything
-remains. It fails if a covered copy remains, if a policy data class has no row,
-if anything of the other site changed, or if it wrote, removed or renamed anything outside its temporary directory.
+It works in a new temporary directory, with one synthetic site, one other site,
+an in-memory B2 store and an in-memory source bucket. It:
 
-A host drill on a fresh synthetic job:
+1. acknowledges the shared WebApp vector
+   (`tests/fixtures/website-withdrawal-vector.json`);
+2. checks that a dry-run plan deletes nothing;
+3. checks that a paid launch for the site is refused;
+4. plans with the object store and the bucket, then applies with the plan's
+   digest and the authorization;
+5. prints one row for each copy class: the count before, the count after, and
+   why anything remains.
+
+It fails if a covered copy remains, if a policy data class has no row, if
+anything of the other site changed, or if it wrote, removed or renamed anything
+outside its temporary directory.
+
+A drill on a fresh synthetic job on the host:
 
 1. Ask the owner first. A new job can start paid preparation, and an apply
    deletes retained data.
-2. Submit a synthetic job from an operator test account, using a synthetic
+2. Submit a synthetic job from an operator test account, with a synthetic
    walkthrough video. Note its request id.
 3. Withdraw that job in the WebApp. Within a few minutes the WebApp record shows
    `pipelineAcknowledged: true`.
-4. Find the site with `door ls <capture root>/scenes --match site-<request id>`.
-   Read `door cat <site>/website_withdrawal/tombstone.json`, then
-   `door cat <site>/website_withdrawal/automatic_deletion_plan.json`. No operator
-   started that plan. Check `started_by: pipeline_after_withdrawal_acknowledgement`
-   and `applied: false`. If the plan is missing, read the state file as
-   described above.
-5. Read the plan as described above. Record `summary`, `remaining` and
-   `policy_copy_classes` in the tracker row G-02.
-6. Deleting is not a step of the drill unless the owner approves it for this
-   site. Today only the owner can delete, because only the owner has SSH access
-   to the host. Operators reach the host only through the door, and no door
-   request kind runs the deletion yet. The owner first gets a fresh plan:
-   `python -m blueprint_pipeline.website_capture_withdrawal_deletion
-   --capture-root <capture> --object-store --bucket <source bucket>`. Then the
-   owner runs the same command with `--expected-plan-digest <digest> --apply
-   --authorize-complete-deletion`. Every apply needs the owner's approval. The
-   sealed receipt is at
-   `<site>/website_withdrawal/deletion_receipts/<digest>.json`. Until a door
-   request kind exists, an operator can only read the plan and the receipt.
-
+4. Find the site with `door ls <capture root>/scenes --match site-<request id>`
+   and read `door cat <site>/website_withdrawal/tombstone.json`.
+5. The owner makes the plan over SSH, as in "Make and read a plan". Record its
+   `unresolved`, `runs`, `objects` and `uncovered_pipeline_roots` in tracker row
+   G-02.
+6. Apply only if the owner approves it for this synthetic site. Then read the
+   receipt with `door cat`, and record its `remaining` and
+   `policy_copy_classes` in G-02.
