@@ -764,6 +764,21 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - The run's own install log shows that, after the index update worked, every package fetch from `archive.ubuntu.com:80` timed out or could not connect. This depends on the machine: attempt 6 installed ffmpeg on another one.
     - This is DP's fifth harness failure of the 7 allowed. π0.5 is held, unspent (`beta_screening_held_after_launch_failure`). Both are planned again after the next deploy.
   - **Fix (this PR):** the entrypoint sets apt retries and fetch timeouts and bounds each apt step (180 s update, 300 s install). After a failed install it rewrites the Ubuntu sources to `https://mirrors.edge.kernel.org/ubuntu` (which carries noble, noble-updates and noble-security, and the same ffmpeg build) and tries once more. The typed refusal stands when neither delivers.
+- **f1d69a9 live, 11-09 03:53:55Z** (#3488, #3489, deployed by the library-aisle session). Re-plan `screening-82f7c4d3…` at 04:00:11Z.
+  - **DP, 6th try** (`screen-1d379227…`, 04:05Z): refused at spend admission with `spend_admission_lock_required_provider_billing_missing:vast`, $0, no provider call. It is not a harness failure, so DP stays at 5 of 7. This is the third such refusal in about 26 hours (11-08 02:27Z, 21:35Z, 11-09 04:05Z); each waited for a deploy.
+  - **π0.5's first walking run** (`screen-a279bdb2…`) launched at 04:19:11Z.
+- **Owner decision, 11-09 about 04:32Z (10:32 PM CST), relayed by the library-aisle session: "yes".** The question put to the owner, verbatim: "Should the system automatically retry a run refused only for this reason [`spend_admission_lock_required_provider_billing_missing:<provider>`, $0 spent, reservation released] once the billing reading is back? All the money limits would still be checked exactly as now."
+  - Scope as relayed:
+    - the only trigger is a refusal whose sole cause is a missing provider billing reading in the spend-admission lock, with nothing spent and no provider call;
+    - the row becomes eligible again once the lock covers that provider on a later tick;
+    - every money check runs again unchanged: per-run cap, $30 site limit, job ceiling, $200 monthly cap, spend admission;
+    - it is not a harness failure;
+    - it is bounded, and each re-admission is recorded with its reason;
+    - no other refusal class changes.
+  - **Built (this PR):** the coordinator re-admits such a row under a fresh identity holding the same reservation.
+    - It launches only once `billing_covered_provider_ids` in the lock includes the provider, and the launch preflight then runs every money check again.
+    - At most 6 re-admissions per row, 2, 4, 8, 16, 30 and 30 minutes apart, and none more than 24 h after the row's first such refusal. Past either bound the refusal stands.
+    - Each closed attempt keeps `terminal_reason` `spend_admission_lock_provider_billing_missing` and the provider, and the row counts `billing_missing_retries`.
 
 ## Operating notes (2026-11-02)
 
