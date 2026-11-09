@@ -13,6 +13,7 @@ from pathlib import Path
 import signal
 import shutil
 import subprocess
+import threading
 import time
 
 from .decision_evidence_contracts import canonical_digest
@@ -199,6 +200,46 @@ def _say(line: str) -> None:
     print(line, flush=True)
 
 
+def _tree_bytes(path: Path) -> int:
+    total = 0
+    for base, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(base, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+class _GrowthReporter:
+    """While a step that prints nothing grows ``path``, a provider-log line every ``PROGRESS_REPORT_SECONDS``.
+
+    The policy runtime build fetches wheels and installs about 8 GB into a venv, bounded only by the session
+    deadline; a slow fetch or disk could pass the controller's 30-minute window. A stalled step prints nothing.
+    """
+
+    def __init__(self, path: Path, stage: str):
+        self.path, self.stage, self.stop = path, stage, threading.Event()
+        self.thread = threading.Thread(target=self._watch, daemon=True)
+
+    def _watch(self) -> None:
+        reported = 0
+        while not self.stop.wait(PROGRESS_REPORT_SECONDS):
+            size = _tree_bytes(self.path) if self.path.is_dir() else 0
+            if size != reported:
+                _say(f"BLUEPRINT_G1_RUNTIME_WORKING:stage={self.stage}:bytes={size}")
+                reported = size
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop.set()
+        self.thread.join(timeout=10)
+        return False
+
+
 def _run_worker(request_path, cell_root, *, deadline, output):
     log_path = cell_root.parent / (cell_root.name + ".worker.log")
     argv = ["/isaac-sim/python.sh", "-m", "blueprint_pipeline.native_g1_development_worker",
@@ -351,7 +392,8 @@ def run_session(root: Path, output: Path, *, failure_only: str | None = None):
             raise ValueError("g1_beta_runtime_import_failure")
         stage = "policy_dependencies"
         _say("BLUEPRINT_G1_STAGE:policy_runtime_build")
-        runtime_python = Path(_build_runtime(root, output, deadline - 120)["python_executable"])
+        with _GrowthReporter(output / "policy-runtime-build", "policy_runtime_build"):
+            runtime_python = Path(_build_runtime(root, output, deadline - 120)["python_executable"])
         _say("BLUEPRINT_G1_STAGE:policy_runtime_ready")
         if needs_pi_tokenizer(authority["candidate_ids"]):
             stage = "pi_tokenizer"

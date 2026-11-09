@@ -206,3 +206,25 @@ def test_a_worker_that_keeps_growing_prints_progress_and_a_stalled_one_goes_quie
     # Each line reports growth; the stalled stretch adds none, so a hung worker still trips the controller.
     assert len(working) >= 2 and working == sorted(set(working))
     assert all("_PROGRESS:" not in line for line in lines)
+
+
+def test_the_policy_runtime_build_prints_while_it_grows_and_nothing_while_it_stalls(tmp_path, monkeypatch, capsys):
+    """The build fetches wheels and installs about 8 GB, bounded only by the session deadline: a slow fetch or disk
+    could pass the controller's 30-minute window with nothing in the provider log."""
+    import re
+    import time
+
+    from blueprint_pipeline import native_g1_beta_runtime as runtime
+
+    monkeypatch.setattr(runtime, "PROGRESS_REPORT_SECONDS", 0.05)
+    build = tmp_path / "policy-runtime-build"
+    with runtime._GrowthReporter(build, "policy_runtime_build"):
+        time.sleep(0.15)  # nothing there yet: no line
+        build.mkdir()
+        for index in range(3):
+            (build / f"wheel-{index}").write_bytes(b"x" * 1000)
+            time.sleep(0.15)
+        time.sleep(0.3)  # stalled: no new lines
+    sizes = [int(re.search(r":bytes=(\d+)$", line).group(1)) for line in capsys.readouterr().out.splitlines()
+             if line.startswith("BLUEPRINT_G1_RUNTIME_WORKING:stage=policy_runtime_build:")]
+    assert len(sizes) >= 2 and sizes == sorted(set(sizes)) and sizes[-1] == 3000

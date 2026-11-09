@@ -830,7 +830,7 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
     - The media install was not the cause (#3494 still helps diagnosis).
   - **Fix (this PR):**
     - While a worker runs, the runtime prints `BLUEPRINT_G1_RUNTIME_WORKING:cell=…:log_bytes=…:output_bytes=…` every 60 s, but only if the worker's log or output grew. A stalled worker prints nothing, so a hung run still ends at the window.
-    - Markers at each cell's start and exit, and around the policy runtime build.
+    - Markers at each cell's start and exit, and around the policy runtime build. While that build (a wheel fetch, then an 8 GB local install, bounded only by the session deadline) grows its directory, a growth-gated line too.
     - No `_PROGRESS:` payload, and no limit changes.
 
 ## Operating notes (2026-11-02)
