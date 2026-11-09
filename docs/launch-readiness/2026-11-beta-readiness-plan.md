@@ -199,23 +199,23 @@ Not packaged, and why:
 
 ## 6. Progress
 
-Updated after every wave. Last update: 2026-11-09 23:10Z, after waves 1 and 2.
+Updated after every wave. Last update: 2026-11-09 23:20Z, after waves 1 and 2, with every executor finished.
 Status: merged, PR (open, with its CI result), or deferred with a reason. "CI"
 counts the checks that ran; checks the workflow skipped are not counted.
 
 | ID | Status | Pull request | CI | Note |
 |---|---|---|---|---|
 | WP-01 | merged | [#3517](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3517) | green, 3 passed | The leak came from one import added by #3488. The import-closure tests now run on every pull request (about 25 s). |
-| WP-02 | PR open, not merged | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | red: its own check and shards 0–10 passed; shard 11 failed on `test_canonical_cpu_env_collects_without_errors`, a 180 s limit on collecting the whole suite (G58) | 5 synthetic records, 2 job kinds, 7 s. Covers the downstream replay only; resolution and clip length are labels the replayed chain does not read. Merge once G58 is fixed. |
+| WP-02 | PR open, not merged | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | red: 14 passed, 3 failed (full-suite shard 11 and its two rollups) | 5 synthetic records, 2 job kinds, 7 s. Covers the downstream replay only. Shard 11 failed on `test_canonical_cpu_env_collects_without_errors`, a 180 s limit on collecting the whole suite (G58); the same shard passed on #3518, so the failure is intermittent. Merge after a green run. |
 | WP-03 | PR open, verifier approved, merge held | [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516) | green, 4 passed | Merge held on purpose: see O-18. The first version was refused by its verifier (it ended extended and renewed jobs); the second asks the WebApp and ends only on its refusal. |
 | WP-04 | merged | [WebApp #1245](https://github.com/ognjhunt/Blueprint-WebApp/pull/1245) | green, 9 passed | The first version was refused by its verifier (3 bypasses). Enforced only once `BLUEPRINT_INVITEE_ALLOWLIST` is set. |
-| WP-05 | PR open, reworked, waits on a second verifier | [#3518](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3518) | 13 passed, 1 still running at 23:10Z, none failed | 30 call sites can spend with no admission, none reachable from an automatic website job. The first verifier found a weakened guard, missed Anthropic and `codex` calls and one wrong row; the rework is pushed and not yet re-verified. |
-| WP-06 | PR open, two verifier passes, last fixes pushed | [WebApp #1246](https://github.com/ognjhunt/Blueprint-WebApp/pull/1246) | 8 passed, `test` still running at 23:10Z, none failed | One held sentence per early-hold reason, one email, a tolerant task kind. Merge when `test` is green. |
+| WP-05 | PR open, reworked, waits on a second verifier | [#3518](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3518) | green, 16 passed | 109 call sites classified: 36 admitted, 24 not paid, 49 can spend with no admission. The first verifier checked that none of the original 30 is reachable from an automatic website job; the 19 added by the rework have not had that check. |
+| WP-06 | PR open, two verifier passes, not merged | [WebApp #1246](https://github.com/ognjhunt/Blueprint-WebApp/pull/1246) | red: 8 passed, `test` failed on one test in a file the change does not touch (`JobWorkspace.test.tsx`, "saves optional planning details without requiring a budget") | Needs a re-run of `test` by someone with access (sessions get 403), or a diagnosis of that test. |
 | WP-07 | merged | [#3520](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3520) | green, 3 passed | Verifier approved. New clips are normalized to at most 1920 px and 30 fps; jobs in flight keep their original. Operator note: O-19. |
-| WP-08 | PR open, reworked, waits on a second verifier | [#3519](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3519) | green on the first head (4 passed); running on the reworked head | Offline drill and automatic plan built. The verifier refused the plan process for having no limits inside the intake service; the rework is pushed and not yet re-verified. |
+| WP-08 | PR open, reworked, waits on a second verifier | [#3519](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3519) | green, 4 passed | The plan process is now one at a time, bounded to 30 minutes and 1 GiB, lowest priority, with no inherited secrets; a failed plan is recorded and retried. |
 | WP-09 | deferred | | | Not started: this session reached its turn limit after wave 2. Nothing blocks it. Add to it: a planned screening campaign can still reserve for a withdrawn site (G52). |
 | WP-10 | deferred | | | Not started (turn limit). Depends on WP-03, which is not merged. |
-| WP-11 | PR open | [WebApp #1247](https://github.com/ognjhunt/Blueprint-WebApp/pull/1247) | 7 passed, `test` and `e2e` still running at 23:10Z, none failed | The three intake suites in CI, full scope for job-page files, a reference-only case. No executor report yet. |
+| WP-11 | PR open, waits on a diff review | [WebApp #1247](https://github.com/ognjhunt/Blueprint-WebApp/pull/1247) | green, 9 passed | Full release scope for 28 job-page and intake files, and a reference-only case. The three intake suites were NOT wired into CI: all three fail on `main` on stale assertions, and the backend suite runs out of the 5-a-day intake cap after five cases (G59, O-20). |
 | WP-12 | deferred | | | Not started (turn limit). Nothing blocks it. |
 | WP-13 | deferred | | | Not started (turn limit). The host drill also needs O-14. |
 | WP-14 | deferred | | | Not started (turn limit). Depends on WP-03 and WP-06. Add to it: the `authority_ended` sentence (G51). |
@@ -227,13 +227,13 @@ counts the checks that ran; checks the workflow skipped are not counted.
 | WP-20 | deferred | | | Not started (turn limit). Nothing blocks it. |
 | WP-21 | deferred | | | Not started (turn limit). Deletion stays off until O-17 either way. |
 | WP-22 | deferred | | | Not started (turn limit). The most urgent of the deferred packages: O-02 waits on it. |
-| WP-23 | new, deferred | | | Put the 30 unadmitted API-priced call sites (WP-05's list) behind the existing account-limit check, or refuse them when no reservation exists. Serves E4 (a). |
+| WP-23 | new, deferred | | | Put the 49 unadmitted API-priced call sites (WP-05's list) behind the existing account-limit check, or refuse them when no reservation exists. Serves E4 (a). |
 
 Gaps found while doing the work, added to the register:
 
 | # | Gap | Crit. | Evidence | Goes to |
 |---|---|---|---|---|
-| G48 | 30 call sites can spend on OpenAI, Gemini or World Labs with no admission; all need an operator flag or an environment opt-in | E4 | `scripts/paid_api_call_sites.json` in #3518; verifier's reachability check | WP-23 |
+| G48 | 49 call sites can spend on OpenAI, Gemini, World Labs, Anthropic or another model host with no admission. Of the first 30, none is reachable from an automatic website job; the other 19 are unchecked | E4 | `scripts/paid_api_call_sites.json` in #3518 | WP-23 |
 | G49 | Anthropic calls, the paid `codex` command and one Agents SDK client were invisible to the verifier | E4 | `capture_enrichment_llm.py:195,314-340`; `task_object_agent_session.py:118` | WP-05 rework |
 | G50 | Three states still have no path to an end at expiry: the assessment wait, a completed job held for inputs, a job with no grant file | E1 | WP-03 executor's report | open, after WP-03 |
 | G51 | The site is told "Processing is on hold while our team checks its authorization" for a job that has ended | E1, E9 | WebApp `taskStatusProjection.ts:599` | WP-14 |
@@ -244,6 +244,7 @@ Gaps found while doing the work, added to the register:
 | G56 | Normalization leftovers: a killed encode leaves a scratch folder, a failing encode runs twice, the one-hour limit may be short for long 4K 60 fps clips | E7 | #3520 verifier | polish |
 | G57 | None of the nine uncovered storage roots has a per-site binding, so a withdrawal cannot find a site's files in them | E5 | #3519 | open |
 | G58 | Collecting the whole test suite takes about 185 s on `main` against a 180 s limit, so one full-suite shard fails on any pull request that runs it, and the nightly lane is at risk | E6 | `tests/test_cpu_env_contract.py::test_canonical_cpu_env_collects_without_errors`; #3515 shard 11 | WP-15 |
+| G59 | The three intake browser suites fail on `main`: 7 cases assert headings the pages no longer show, and 15 backend cases hit the 5-a-day intake cap, which the local launcher cannot raise | E9 | WebApp `playwright.intake*.config.ts`; `scripts/qa/reliability-local-app.mjs` | open; O-20 |
 
 Added to the owner list:
 
@@ -252,6 +253,7 @@ Added to the owner list:
 | O-18 | Merge WP-03 ([#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516))? After it deploys, a job that is silent and whose grant the WebApp says has expired is ended within about two hours, permanently. Today such a job waits, which leaves time for the operator renewal script. | Merge it once the library-aisle job has ended, or its driver confirms the job's grant is current. Renew a grant before it expires, not after. | E1 (a) |
 | O-19 | Operator note, no decision: since #3520 an owner row in `BLUEPRINT_WEBSITE_ATLAS_AUTHORIZATIONS_JSON` for a new job must name the normalized clip's digest (`pipeline/source_video/normalization.json`). A row naming the upload's digest does not match, and the job falls back to the automatic grant. | Read the digest from the job's normalization record. | Owner-row grants for new jobs |
 | O-04 (note) | When you set the invitee list, use exact emails, not domains: the public form trusts a typed email. Tenant users, robot teams and people invited through account invitations need listing too. | | E9 (a) |
+| O-20 | Allow a test-only intake cap in the local emulator launcher (`scripts/qa/reliability-local-app.mjs`). | Yes: no real job or spend is involved there. | Running the intake backend suite in CI (E9 d) |
 
 Criteria after waves 1 and 2: none passes yet. E6 (b) is done on `main`
 (#3517) and the 7-night count for E6 (a) starts with the 2026-11-10 run. E7 (c)
