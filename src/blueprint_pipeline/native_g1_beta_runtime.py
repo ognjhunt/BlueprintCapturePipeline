@@ -251,6 +251,9 @@ COMPILE_CHECK_PROBE = (
     "assert float(probe(torch.ones(8, device='cuda')).sum()) == 24.0\n"
 )
 COMPILE_TOOLCHAIN_REASON = "g1_beta_policy_compile_toolchain_unavailable"
+# Same set as native_g1_policy_server_supervisor.ISOLATED_POLICY_ENV_DROP (a test holds them equal); not
+# imported, so this entrypoint keeps its light imports.
+ISOLATED_POLICY_ENV_DROP = frozenset({"PYTHONPATH", "PYTHONHOME", "PYTHONEXE", "VIRTUAL_ENV"})
 
 
 def policy_compiles(policy_dir: Path) -> bool:
@@ -264,7 +267,10 @@ def check_policy_compile(runtime_python: Path, *, deadline: float) -> None:
     reason, with the probe's last lines in the provider log, if the toolchain cannot."""
     _say("BLUEPRINT_G1_STAGE:policy_compile_check")
     try:
-        run = subprocess.run([str(runtime_python), "-c", COMPILE_CHECK_PROBE], capture_output=True, text=True,
+        # Isolated the way the policy server is started, so Isaac's PYTHONPATH cannot shadow the venv's torch.
+        run = subprocess.run([str(runtime_python), "-I", "-c", COMPILE_CHECK_PROBE], capture_output=True, text=True,
+                             env={key: value for key, value in os.environ.items()
+                                  if key not in ISOLATED_POLICY_ENV_DROP},
                              timeout=max(1.0, min(COMPILE_CHECK_SECONDS, deadline - time.time())))
     except subprocess.TimeoutExpired:
         run = None

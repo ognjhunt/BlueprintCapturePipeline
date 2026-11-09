@@ -246,16 +246,24 @@ def test_a_compiling_policy_checks_its_toolchain_before_the_first_episode(tmp_pa
     (policy / "config.json").write_text(json.dumps({"type": "diffusion", "compile_model": False}))
     assert not runtime.policy_compiles(policy)
 
-    calls = []
+    calls, envs = [], []
 
     def run(argv, **kwargs):
         calls.append(argv)
+        envs.append(kwargs.get("env"))
         return outcome
 
     monkeypatch.setattr(runtime.subprocess, "run", run)
+    monkeypatch.setenv("PYTHONPATH", "/isaac-sim/kit/python/lib")
+    monkeypatch.setenv("PYTHONHOME", "/isaac-sim/kit/python")
     outcome = types.SimpleNamespace(returncode=0, stdout="", stderr="")
     runtime.check_policy_compile(tmp_path / "python", deadline=runtime.time.time() + 3600)
     assert "torch.compile" in calls[0][-1] and "cuda" in calls[0][-1]
+    # Started like the policy server: isolated from Isaac's Python variables, so it tests the venv's own torch.
+    from blueprint_pipeline.native_g1_policy_server_supervisor import ISOLATED_POLICY_ENV_DROP
+    assert runtime.ISOLATED_POLICY_ENV_DROP == ISOLATED_POLICY_ENV_DROP
+    assert calls[0][1:3] == ["-I", "-c"]
+    assert envs[0] is not None and not ISOLATED_POLICY_ENV_DROP & set(envs[0])
     lines = capsys.readouterr().out.splitlines()
     assert lines == ["BLUEPRINT_G1_STAGE:policy_compile_check", "BLUEPRINT_G1_STAGE:policy_compile_ready"]
 
