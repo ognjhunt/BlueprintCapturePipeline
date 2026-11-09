@@ -353,6 +353,33 @@ def test_the_retry_pose_root_admits_only_task_views_inside_its_window(tmp_path, 
     assert windowed["binding"]["pose_window_digest"] == window["digest"]
 
 
+def test_a_task_view_inside_a_capped_stationary_span_is_held_to_the_cap():
+    """A task-source view the survey never held, inside a capped no-parallax run, counts against the cap."""
+    window = {"intervals_seconds": [[0.0, 20.0]], "review": {"excluded_frame_ids": []},
+              "capped_no_parallax_spans": [{"start": 5.0, "end": 8.0, "kept_frame_ids": ["kept"]}]}
+    assert windows.frame_in_window({"frame_id": "kept", "timestamp_seconds": 6.0}, window)
+    assert not windows.frame_in_window({"frame_id": "task-only", "timestamp_seconds": 6.0}, window)
+    assert windows.frame_in_window({"frame_id": "task-only", "timestamp_seconds": 9.0}, window)
+    # A window recorded without spans (one jump, nothing capped) admits by interval and exclusion alone.
+    assert windows.frame_in_window({"frame_id": "task-only", "timestamp_seconds": 6.0},
+                                   {key: value for key, value in window.items() if key != "capped_no_parallax_spans"})
+
+
+def test_the_recorded_window_keeps_its_capped_spans(tmp_path, monkeypatch):
+    frames = _views([("move", 15), ("still", 12), ("move", 15)])
+    record, window = _window(frames, route=["v000", "v041"])
+    monkeypatch.setattr(windows, "_earlier_selection", lambda previous_root, review: (
+        {**record, "pose_result_digest": "sha256:p"}, {row["frame_id"]: row["timestamp_seconds"] for row in frames}))
+    job_dir = tmp_path / "job"
+    (job_dir / "splat-rebuild/first").mkdir(parents=True)
+    request = {"digest": "sha256:r", "previous_root": "splat-rebuild/first"}
+    saved = windows.pose_window(job_dir=job_dir, request=request, review=_review(frames),
+                                survey={"frames": frames}, pose_root=job_dir / "splat-rebuild/retry/pose")
+    assert saved["status"] == "windowed"
+    assert saved["capped_no_parallax_spans"] == window["capped_no_parallax_spans"]
+    assert windows.window_for_pose_root(job_dir / "splat-rebuild/retry/pose") == saved
+
+
 def test_atlas_retry_reopens_the_job_once_more_for_the_windowed_retry_and_never_again(tmp_path):
     from blueprint_pipeline.website_atlas_preview import retry_failed_job
     frames = _views([("still", 20), ("jump", 0), ("move", 30)])

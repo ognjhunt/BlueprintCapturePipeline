@@ -246,9 +246,11 @@ def pose_window(*, job_dir: Path, request: Mapping[str, Any], review: Mapping[st
               "original_review_digest": canonical_digest(dict(review)),
               "flags": sorted(set(flags) | set(window.get("flags") or []))}
     if window["status"] == "windowed":
+        # The capped no-parallax spans stay in the record: a task-source view the survey never held, inside
+        # one of them, is held to the cap too (``frame_in_window``), not only the survey frames excluded here.
         record.update({key: window[key] for key in ("intervals_seconds", "excluded_frame_ids",
-                                                     "left_out_required_frame_ids", "anchor_frame_id",
-                                                     "original_anchor_frame_id", "review")},
+                                                     "capped_no_parallax_spans", "left_out_required_frame_ids",
+                                                     "anchor_frame_id", "original_anchor_frame_id", "review")},
                       review_digest=canonical_digest(window["review"]))
     elif "error" in window:
         record["error"] = window["error"]
@@ -275,6 +277,13 @@ def window_for_pose_root(pose_root: Path) -> dict[str, Any] | None:
 
 
 def frame_in_window(row: Mapping[str, Any], window: Mapping[str, Any]) -> bool:
-    """Whether a source frame (``frame_id``, ``timestamp_seconds``) is one the window lets the pose use."""
-    return (row.get("frame_id") not in set(window["review"]["excluded_frame_ids"])
-            and _inside(row.get("timestamp_seconds"), window["intervals_seconds"]))
+    """Whether a source frame (``frame_id``, ``timestamp_seconds``) is one the window lets the pose use.
+
+    Inside a capped no-parallax span only the views the cap kept qualify, whether or not the survey held
+    the frame: a task-source view of that stationary run would bring its footage back otherwise.
+    """
+    key, time = row.get("frame_id"), row.get("timestamp_seconds")
+    if key in set(window["review"]["excluded_frame_ids"]) or not _inside(time, window["intervals_seconds"]):
+        return False
+    return not any(span["start"] <= time <= span["end"] and key not in set(span["kept_frame_ids"])
+                   for span in window.get("capped_no_parallax_spans") or [])
