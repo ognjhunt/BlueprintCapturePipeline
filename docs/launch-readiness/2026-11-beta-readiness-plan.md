@@ -199,36 +199,63 @@ Not packaged, and why:
 
 ## 6. Progress
 
-Updated after every wave. Status: open, PR (with its link and CI result),
-merged, or deferred with a reason.
+Updated after every wave. Last update: 2026-11-09 23:00Z, after waves 1 and 2.
+Status: merged, PR (open, with its CI result), or deferred with a reason. "CI"
+counts the checks that ran; checks the workflow skipped are not counted.
 
 | ID | Status | Pull request | CI | Note |
 |---|---|---|---|---|
-| WP-01 | open | | | |
-| WP-02 | open | | | |
-| WP-03 | open | | | |
-| WP-04 | open | | | |
-| WP-05 | open | | | |
-| WP-06 | open | | | |
-| WP-07 | open | | | |
-| WP-08 | open | | | |
-| WP-09 | open | | | |
-| WP-10 | open | | | |
-| WP-11 | open | | | |
-| WP-12 | open | | | |
-| WP-13 | open | | | |
-| WP-14 | open | | | |
-| WP-15 | open | | | |
-| WP-16 | open | | | |
-| WP-17 | open | | | |
-| WP-18 | open | | | |
-| WP-19 | open | | | |
-| WP-20 | open | | | |
-| WP-21 | open | | | |
-| WP-22 | open | | | |
+| WP-01 | merged | [#3517](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3517) | green, 3 passed | The leak came from one import added by #3488. The import-closure tests now run on every pull request (about 25 s). |
+| WP-02 | PR open | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | its own check green; one full-suite shard failed after the update from `main`, under diagnosis | 5 synthetic records, 2 job kinds, 7 s. Covers the downstream replay only; resolution and clip length are labels the replayed chain does not read. |
+| WP-03 | PR open, verifier approved, merge held | [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516) | green, 4 passed | Merge held on purpose: see O-18. The first version was refused by its verifier (it ended extended and renewed jobs); the second asks the WebApp and ends only on its refusal. |
+| WP-04 | merged | [WebApp #1245](https://github.com/ognjhunt/Blueprint-WebApp/pull/1245) | green, 9 passed | The first version was refused by its verifier (3 bypasses). Enforced only once `BLUEPRINT_INVITEE_ALLOWLIST` is set. |
+| WP-05 | PR open, rework after verifier | [#3518](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3518) | running on the reworked head | 85 call sites classified; 30 can spend with no admission, none reachable from an automatic website job. The verifier found a weakened guard, missed Anthropic and `codex` calls and one wrong row; all sent back. |
+| WP-06 | PR open, two verifier passes, last fixes pushed | [WebApp #1246](https://github.com/ognjhunt/Blueprint-WebApp/pull/1246) | green on the previous head, 9 passed; running on the last head | One held sentence per early-hold reason, one email, a tolerant task kind. |
+| WP-07 | merged | [#3520](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3520) | green, 3 passed | Verifier approved. New clips are normalized to at most 1920 px and 30 fps; jobs in flight keep their original. Operator note: O-19. |
+| WP-08 | PR open, rework after verifier | [#3519](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3519) | green on the first head, 4 passed | Offline drill and automatic plan built. The verifier refused the plan process for having no limits inside the intake service; sent back. |
+| WP-09 | deferred | | | Not started: this session reached its turn limit after wave 2. Nothing blocks it. Add to it: a planned screening campaign can still reserve for a withdrawn site (G52). |
+| WP-10 | deferred | | | Not started (turn limit). Depends on WP-03, which is not merged. |
+| WP-11 | started | | | Executor running: the three intake suites in CI, full scope for job-page files, a reference-only case. |
+| WP-12 | deferred | | | Not started (turn limit). Nothing blocks it. |
+| WP-13 | deferred | | | Not started (turn limit). The host drill also needs O-14. |
+| WP-14 | deferred | | | Not started (turn limit). Depends on WP-03 and WP-06. Add to it: the `authority_ended` sentence (G51). |
+| WP-15 | deferred | | | Not started (turn limit). The gate decision is taken (section 4); only the documents remain. |
+| WP-16 | deferred | | | Not started (turn limit). Add to it: `/v1/creator/captures` is outside the allowlist (G53). |
+| WP-17 | deferred | | | Not started (turn limit). Depends on WP-15. |
+| WP-18 | deferred | | | Not started (turn limit). Its merge needs the library-aisle session's agreement, because a lower memory cap can kill a stage that survives today. |
+| WP-19 | deferred | | | Not started (turn limit). Nothing blocks it. |
+| WP-20 | deferred | | | Not started (turn limit). Nothing blocks it. |
+| WP-21 | deferred | | | Not started (turn limit). Deletion stays off until O-17 either way. |
+| WP-22 | deferred | | | Not started (turn limit). The most urgent of the deferred packages: O-02 waits on it. |
+| WP-23 | new, deferred | | | Put the 30 unadmitted API-priced call sites (WP-05's list) behind the existing account-limit check, or refuse them when no reservation exists. Serves E4 (a). |
 
-Criteria on 2026-11-09, before wave 1: none passes. E6 (a) cannot pass before
-7 nights after WP-01 merges.
+Gaps found while doing the work, added to the register:
+
+| # | Gap | Crit. | Evidence | Goes to |
+|---|---|---|---|---|
+| G48 | 30 call sites can spend on OpenAI, Gemini or World Labs with no admission; all need an operator flag or an environment opt-in | E4 | `scripts/paid_api_call_sites.json` in #3518; verifier's reachability check | WP-23 |
+| G49 | Anthropic calls, the paid `codex` command and one Agents SDK client were invisible to the verifier | E4 | `capture_enrichment_llm.py:195,314-340`; `task_object_agent_session.py:118` | WP-05 rework |
+| G50 | Three states still have no path to an end at expiry: the assessment wait, a completed job held for inputs, a job with no grant file | E1 | WP-03 executor's report | open, after WP-03 |
+| G51 | The site is told "Processing is on hold while our team checks its authorization" for a job that has ended | E1, E9 | WebApp `taskStatusProjection.ts:599` | WP-14 |
+| G52 | A planned screening campaign can reserve its budget for a withdrawn site; the launch refuses before any spend | E5, E4 | `beta_policy_screening_coordinator.py:305,909` | WP-09 |
+| G53 | `/v1/creator/captures` is outside the invitee allowlist; whether it can cause Pipeline spend is unknown | E9 | WebApp `creator.ts:490` | WP-16 |
+| G54 | The WebApp cannot show the deletion plan (its receipt schema is strict), and no door request runs `--apply` | E5 | WebApp `websiteCaptureWithdrawal.ts`; `scripts/operator_door.py` | open; O-14 |
+| G55 | The replay set covers one of four replay tools, and no real job | E3 | #3515 | after O-03 |
+| G56 | Normalization leftovers: a killed encode leaves a scratch folder, a failing encode runs twice, the one-hour limit may be short for long 4K 60 fps clips | E7 | #3520 verifier | polish |
+| G57 | None of the nine uncovered storage roots has a per-site binding, so a withdrawal cannot find a site's files in them | E5 | #3519 | open |
+
+Added to the owner list:
+
+| ID | Decision or action | Recommendation | Unblocks |
+|---|---|---|---|
+| O-18 | Merge WP-03 ([#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516))? After it deploys, a job that is silent and whose grant the WebApp says has expired is ended within about two hours, permanently. Today such a job waits, which leaves time for the operator renewal script. | Merge it once the library-aisle job has ended, or its driver confirms the job's grant is current. Renew a grant before it expires, not after. | E1 (a) |
+| O-19 | Operator note, no decision: since #3520 an owner row in `BLUEPRINT_WEBSITE_ATLAS_AUTHORIZATIONS_JSON` for a new job must name the normalized clip's digest (`pipeline/source_video/normalization.json`). A row naming the upload's digest does not match, and the job falls back to the automatic grant. | Read the digest from the job's normalization record. | Owner-row grants for new jobs |
+| O-04 (note) | When you set the invitee list, use exact emails, not domains: the public form trusts a typed email. Tenant users, robot teams and people invited through account invitations need listing too. | | E9 (a) |
+
+Criteria after waves 1 and 2: none passes yet. E6 (b) is done on `main`
+(#3517) and the 7-night count for E6 (a) starts with the 2026-11-10 run. E7 (c)
+is done on `main` (#3520) and takes effect at the next deploy. E9 (a) is ready
+on `main` (WebApp #1245) and waits on the list (O-04).
 
 ## 7. How a resumed session continues
 
