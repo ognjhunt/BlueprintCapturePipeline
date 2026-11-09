@@ -25,6 +25,8 @@ import json
 import math
 import struct
 import zlib
+from collections import defaultdict
+from collections.abc import MutableMapping
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -74,6 +76,15 @@ DEPTH_CONSENSUS_MIN_WEIGHT = 0.25
 # 0-5 % of their pixels beside a full view (2026-10-25), and they took most
 # full views' nearest slots. Ranking reads this many samples per candidate.
 DEPTH_CONSENSUS_RANKING_SAMPLES = 2_000
+# The draft fusion's memory follows one view, not the number of views (105 posed
+# 1280x720 views were OOM-killed at a 5.4 GB peak, 2026-11-09): a pass reads one
+# view's pixels at a time and rebuilds its working depth from them. Up to this
+# many bytes of built working depths (3.7 MB per 1280x720 view, so about 140
+# views) stay in memory between passes instead, so those views are decoded and
+# smoothed once; the last pass lets each go before the voxel sums peak.
+FUSION_RESIDENT_DEPTH_BYTES = 512 * 2**20
+# Grid points and votes of the views gathered at once in one consensus pass.
+CONSENSUS_VOTE_BLOCK_BYTES = 64 * 2**20
 DISC_THICKNESS_RATIO = 0.1
 SPLATS2MESH_MAX_RENDER = 1024
 SPLATS2MESH_MIN_RENDER = 64
@@ -202,6 +213,16 @@ def restrict_frame(frame: Mapping[str, Any], mask, **changes: Any) -> dict[str, 
     return {**frame, **changes, "confidence": frame["confidence"] * mask, "keep_mask": keep}
 
 
+def _pixel_array(key: str, value: np.ndarray) -> np.ndarray:
+    """A frame's image as uint8 RGB, depth as float32, or confidence as float32 in [0, 1]."""
+    if key == "rgb":
+        return np.asarray(value, dtype=np.uint8)
+    if key == "depth":
+        return np.asarray(value, dtype=np.float32)
+    scale = float(np.iinfo(value.dtype).max) if value.dtype.kind == "u" else 1.0
+    return value.astype(np.float32) / scale
+
+
 def posed_frame(*, frame_id: str, rgb: np.ndarray, depth: np.ndarray, confidence: np.ndarray,
                 camera: Mapping[str, Any]) -> dict[str, Any]:
     """Bind one returned image/depth/confidence bundle to the camera Atlas returned with it."""
@@ -212,26 +233,115 @@ def posed_frame(*, frame_id: str, rgb: np.ndarray, depth: np.ndarray, confidence
     confidence = np.asarray(confidence)
     if np.shape(depth) != grid or confidence.shape != grid or np.shape(rgb) != (*grid, 3):
         raise ValueError("atlas_depth_splat_grid_mismatch")
-    scale = float(np.iinfo(confidence.dtype).max) if confidence.dtype.kind == "u" else 1.0
-    return {"frame_id": frame_id, "rgb": np.asarray(rgb, dtype=np.uint8),
-            "depth": np.asarray(depth, dtype=np.float32), "confidence": confidence.astype(np.float32) / scale,
+    return {"frame_id": frame_id, "rgb": _pixel_array("rgb", rgb),
+            "depth": _pixel_array("depth", depth), "confidence": _pixel_array("confidence", confidence),
             "intrinsics": dict(intrinsics), "extrinsics": dict(extrinsics),
             "rotation": _rotation_matrix(extrinsics["quaternion"]),
             "position": np.asarray(extrinsics["position"], dtype=np.float64)}
 
 
-def load_posed_rgbd(pose_root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+_PIXEL_ROLES = {"rgb": "image", "depth": "depth", "confidence": "confidence"}
+
+
+def _decode_output(role: str, path: Path) -> np.ndarray | None:
+    import cv2
+
+    if role == "depth":
+        return read_exr_depth(path)
+    return cv2.imread(str(path), cv2.IMREAD_COLOR if role == "image" else cv2.IMREAD_UNCHANGED)
+
+
+class PosedFrame(MutableMapping):
+    """``posed_frame``'s dict for a retained view, with its pixels left in their digest-bound files.
+
+    Camera fields are held. Reading ``rgb``, ``depth`` or ``confidence`` decodes that
+    file (its digest checked again) and keeps the array, as the dict would.
+    ``frame_arrays`` reads pixels without keeping them, so a pass over every view
+    holds one view's pixels at a time, however many views a pose returned.
+    """
+
+    _ORDER = ("frame_id", "rgb", "depth", "confidence", "intrinsics", "extrinsics", "rotation", "position")
+
+    def __init__(self, *, frame_id: str, camera: Mapping[str, Any], outputs: Mapping[str, tuple[Path, str]]):
+        extrinsics, intrinsics = camera["extrinsics"], camera["intrinsics"]
+        self._grid = (int(intrinsics["height"]), int(intrinsics["width"]))
+        self._values: dict[str, Any] = {
+            "frame_id": frame_id, "intrinsics": dict(intrinsics), "extrinsics": dict(extrinsics),
+            "rotation": _rotation_matrix(extrinsics["quaternion"]),
+            "position": np.asarray(extrinsics["position"], dtype=np.float64)}
+        self._sources = {key: outputs[role] for key, role in _PIXEL_ROLES.items()}
+        self._order = list(self._ORDER)
+
+    def read_pixels(self, key: str) -> np.ndarray:
+        """The array ``self[key]`` would give, without keeping a decoded one."""
+        if key in self._values:
+            return self._values[key]
+        path, digest = self._sources[key]
+        if path.is_symlink() or not path.is_file() or _sha256_file(path) != digest:
+            raise ValueError("atlas_depth_splat_output_changed")
+        value = _decode_output(_PIXEL_ROLES[key], path)
+        if value is None or (key != "rgb" and value.ndim != 2):
+            raise ValueError("atlas_depth_splat_output_undecodable")
+        if key == "rgb":
+            value = value[..., ::-1]
+        if np.shape(value) != (self._grid if key != "rgb" else (*self._grid, 3)):
+            raise ValueError("atlas_depth_splat_grid_mismatch")
+        return _pixel_array(key, value)
+
+    def __getitem__(self, key: str) -> Any:
+        if key not in self._values:
+            self._values[key] = self.read_pixels(key)
+        return self._values[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key not in self:
+            self._order.append(key)
+        self._values[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        if key not in self:
+            raise KeyError(key)
+        self._values.pop(key, None)
+        self._sources.pop(key, None)
+        self._order.remove(key)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._values or key in self._sources
+
+    def __iter__(self):
+        return iter(list(self._order))
+
+    def __len__(self) -> int:
+        return len(self._order)
+
+    # A frame is one view, not its value: comparing two must not decode both.
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
+
+    def __repr__(self) -> str:
+        return f"PosedFrame(frame_id={self._values.get('frame_id')!r})"
+
+
+def frame_arrays(frame: Mapping[str, Any], *keys: str) -> tuple[np.ndarray, ...]:
+    """A frame's named pixel arrays; a ``PosedFrame`` decodes them without keeping them."""
+    read = getattr(frame, "read_pixels", None)
+    return tuple(frame[key] if read is None else read(key) for key in keys)
+
+
+def load_posed_rgbd(pose_root: Path) -> tuple[dict[str, Any], list[PosedFrame]]:
     """Read a retained images2PosedRGBD result and its digest-bound downloads."""
     result = json.loads((pose_root / POSE_RESULT).read_text())
     return result, posed_rgbd_frames(result, lambda output: pose_root / output["path"])
 
 
 def posed_rgbd_frames(result: Mapping[str, Any],
-                      locate: Callable[[Mapping[str, Any]], Path | None]) -> list[dict[str, Any]]:
-    """Decode a pose result's frames; ``locate`` names where each digest-bound output was kept.
+                      locate: Callable[[Mapping[str, Any]], Path | None]) -> list[PosedFrame]:
+    """Check a pose result's frames; ``locate`` names where each digest-bound output was kept.
 
     A retained handoff may keep only the result beside its pose and the outputs in
     the download bundle: the receipt's digests, not their paths, bind the bytes.
+    Every frame is decoded and checked here, one at a time, and returned as a
+    ``PosedFrame`` that decodes its pixels again when they are read.
     """
     if result.get("digest") != canonical_digest(result, digest_field="digest"):
         raise ValueError("atlas_depth_splat_pose_result_changed")
@@ -239,25 +349,24 @@ def posed_rgbd_frames(result: Mapping[str, Any],
     usage = result["operation_receipt"]["input_usage"]["frames"]
     if not returned or len(returned) != len(usage):
         raise ValueError("atlas_depth_splat_frame_count_mismatch")
-    import cv2
 
     frames = []
     for frame, row in zip(returned, usage):
-        paths = {}
+        paths, digests = {}, {}
         for output in row["outputs"]:
             path = locate(output)
             if path is None or path.is_symlink() or not path.is_file() or _sha256_file(path) != output["sha256"]:
                 raise ValueError("atlas_depth_splat_output_changed")
-            paths[output["role"]] = path
+            paths[output["role"]], digests[output["role"]] = path, output["sha256"]
         if not {"image", "depth", "confidence"} <= set(paths):
             raise ValueError("atlas_depth_splat_output_missing")
-        image = cv2.imread(str(paths["image"]), cv2.IMREAD_COLOR)
-        depth = read_exr_depth(paths["depth"])
-        confidence = cv2.imread(str(paths["confidence"]), cv2.IMREAD_UNCHANGED)
+        image, depth, confidence = (_decode_output(role, paths[role]) for role in ("image", "depth", "confidence"))
         if image is None or depth is None or confidence is None or depth.ndim != 2 or confidence.ndim != 2:
             raise ValueError("atlas_depth_splat_output_undecodable")
-        frames.append(posed_frame(frame_id=row["frame_id"], rgb=image[..., ::-1], depth=depth,
-                                  confidence=confidence, camera=frame["camera"]))
+        posed_frame(frame_id=row["frame_id"], rgb=image[..., ::-1], depth=depth,
+                    confidence=confidence, camera=frame["camera"])
+        frames.append(PosedFrame(frame_id=row["frame_id"], camera=frame["camera"],
+                                 outputs={role: (paths[role], digests[role]) for role in _PIXEL_ROLES.values()}))
     return frames
 
 
@@ -301,8 +410,19 @@ def smoothed_depth(depth: np.ndarray) -> np.ndarray:
 
 def surface_samples(frame: Mapping[str, Any]) -> dict[str, np.ndarray]:
     """World points, colours, confidences and camera-facing normals of usable pixels."""
+    depth, confidence, rgb = frame_arrays(frame, "depth", "confidence", "rgb")
+    return _surface(frame, depth, confidence, rgb)
+
+
+def _surface(frame: Mapping[str, Any], depth: np.ndarray, confidence: np.ndarray | None = None,
+             rgb: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    """``surface_samples`` of the frame's camera over ``depth``; colours and weights only when given.
+
+    Without ``confidence``, ``depth`` already holds NaN wherever confidence is zero.
+    """
     k = frame["intrinsics"]
-    depth = np.where((frame["confidence"] > 0) & (frame["depth"] > 0), frame["depth"], np.nan).astype(np.float64)
+    usable = depth > 0 if confidence is None else (confidence > 0) & (depth > 0)
+    depth = np.where(usable, depth, np.nan).astype(np.float64)
     center = depth[1:-1, 1:-1]
     with np.errstate(invalid="ignore"):
         keep = np.isfinite(center)
@@ -323,16 +443,77 @@ def surface_samples(frame: Mapping[str, Any]) -> dict[str, np.ndarray]:
     normal[facing < 0] *= -1.0
     footprint = center[keep] / math.sqrt(k["fx"] * k["fy"])
     incidence = np.abs(facing) / np.maximum(np.linalg.norm(rays, axis=1), 1e-12)
-    return {"points": points, "normals": normal,
-            "colors": frame["rgb"][1:-1, 1:-1][keep].astype(np.float64) / 255.0,
-            "weights": frame["confidence"][1:-1, 1:-1][keep].astype(np.float64),
-            "footprint": footprint, "slant": footprint / np.maximum(incidence, MIN_INCIDENCE_COSINE)}
+    sample = {"points": points, "normals": normal}
+    if rgb is not None:
+        sample["colors"] = rgb[1:-1, 1:-1][keep].astype(np.float64) / 255.0
+    if confidence is not None:
+        sample["weights"] = confidence[1:-1, 1:-1][keep].astype(np.float64)
+    return {**sample, "footprint": footprint, "slant": footprint / np.maximum(incidence, MIN_INCIDENCE_COSINE)}
 
 
 def _subsample(sample: Mapping[str, np.ndarray]) -> dict[str, Any]:
     count = len(sample["points"])
     pick = np.linspace(0, count - 1, min(CROSS_VIEW_SAMPLES, count)).astype(np.int64)
     return {"points": sample["points"][pick], "footprint": sample["footprint"][pick], "usable": count}
+
+
+def _agreement_targets(frames: Sequence[Mapping[str, Any]], points: Sequence[np.ndarray]) -> list[list[int]]:
+    """Each source's nearest views, nearest first: the views its points are compared with."""
+    centres = np.array([frame["position"] for frame in frames])
+    targets = []
+    for index, picked in enumerate(points):
+        order = np.argsort(np.linalg.norm(centres - centres[index], axis=1), kind="stable")
+        targets.append([int(i) for i in order[order != index][:CROSS_VIEW_NEIGHBOURS]] if len(picked) else [])
+    return targets
+
+
+def _by_target(targets: Sequence[Sequence[int]]) -> dict[int, list[tuple[int, int]]]:
+    """The (source, neighbour rank) pairs each view is the target of, so each view is read once."""
+    grouped = defaultdict(list)
+    for source, row in enumerate(targets):
+        for rank, target in enumerate(row):
+            grouped[target].append((source, rank))
+    return grouped
+
+
+def _pair_agreement(picked: np.ndarray, target: Mapping[str, Any],
+                    observe: Callable[[tuple[np.ndarray, np.ndarray]], np.ndarray]):
+    """Residuals, overlap and occluded counts of one source's points in one target; None below 1 % overlap.
+
+    ``observe`` reads the target's depth at pixels, NaN where its confidence is zero.
+    """
+    k = target["intrinsics"]
+    local = (picked - target["position"]) @ target["rotation"]
+    planar = -local[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        column = np.floor(local[:, 0] / planar * k["fx"] + k["cx"])
+        row = np.floor(-local[:, 1] / planar * k["fy"] + k["cy"])
+        inside = (planar > 0) & (column >= 0) & (column < k["width"]) & (row >= 0) & (row < k["height"])
+    observed = np.full(len(picked), np.nan)
+    observed[inside] = observe((row[inside].astype(np.int64), column[inside].astype(np.int64)))
+    seen = np.isfinite(observed) & (observed > 0)
+    visible = seen & (observed >= planar * (1.0 - MAX_MEDIAN_CROSS_VIEW_RESIDUAL))
+    if visible.sum() < 0.01 * len(picked):
+        return None
+    relative = np.abs(observed[visible] - planar[visible]) / planar[visible]
+    return relative, int(visible.sum()), int((seen & ~visible).sum())
+
+
+def _agreement_report(frames: Sequence[Mapping[str, Any]], targets: Sequence[Sequence[int]],
+                      results: Mapping[tuple[int, int], Any]) -> dict[str, Any]:
+    """``cross_view_agreement``'s record from each (source, neighbour rank) pair's result."""
+    pairs, residuals = [], []
+    for source, row in enumerate(targets):
+        for rank, target in enumerate(row):
+            if results.get((source, rank)) is None:
+                continue
+            relative, overlap, occluded = results[(source, rank)]
+            residuals.append(relative)
+            pairs.append({"source": frames[source]["frame_id"], "target": frames[target]["frame_id"],
+                          "overlap_samples": overlap, "occluded_samples": occluded,
+                          "median_relative_residual": float(np.median(relative))})
+    pooled = float(np.median(np.concatenate(residuals))) if residuals else None
+    return {"pairs": pairs, "median_relative_residual": pooled, "limit": MAX_MEDIAN_CROSS_VIEW_RESIDUAL}
 
 
 def cross_view_agreement(frames: Sequence[Mapping[str, Any]],
@@ -342,35 +523,15 @@ def cross_view_agreement(frames: Sequence[Mapping[str, Any]],
     A target that sees a nearer surface at the projected pixel is occluding the point,
     which is not a disagreement; a target that sees past the point still counts.
     """
-    centres = np.array([frame["position"] for frame in frames])
-    pairs, residuals = [], []
-    for index, (source, sample) in enumerate(zip(frames, samples)):
-        picked = sample["points"]
-        if not len(picked):
-            continue
-        order = np.argsort(np.linalg.norm(centres - centres[index], axis=1), kind="stable")
-        for target in (frames[i] for i in order[order != index][:CROSS_VIEW_NEIGHBOURS]):
-            k = target["intrinsics"]
-            local = (picked - target["position"]) @ target["rotation"]
-            planar = -local[:, 2]
-            with np.errstate(divide="ignore", invalid="ignore"):
-                column = np.floor(local[:, 0] / planar * k["fx"] + k["cx"])
-                row = np.floor(-local[:, 1] / planar * k["fy"] + k["cy"])
-                inside = (planar > 0) & (column >= 0) & (column < k["width"]) & (row >= 0) & (row < k["height"])
-            observed = np.full(len(picked), np.nan)
-            index_pair = (row[inside].astype(np.int64), column[inside].astype(np.int64))
-            observed[inside] = np.where(target["confidence"][index_pair] > 0, target["depth"][index_pair], np.nan)
-            seen = np.isfinite(observed) & (observed > 0)
-            visible = seen & (observed >= planar * (1.0 - MAX_MEDIAN_CROSS_VIEW_RESIDUAL))
-            if visible.sum() < 0.01 * len(picked):
-                continue
-            relative = np.abs(observed[visible] - planar[visible]) / planar[visible]
-            residuals.append(relative)
-            pairs.append({"source": source["frame_id"], "target": target["frame_id"],
-                          "overlap_samples": int(visible.sum()), "occluded_samples": int((seen & ~visible).sum()),
-                          "median_relative_residual": float(np.median(relative))})
-    pooled = float(np.median(np.concatenate(residuals))) if residuals else None
-    return {"pairs": pairs, "median_relative_residual": pooled, "limit": MAX_MEDIAN_CROSS_VIEW_RESIDUAL}
+    points = [sample["points"] for sample in samples]
+    targets = _agreement_targets(frames, points)
+    by_target, results = _by_target(targets), {}
+    for index, pairs in sorted(by_target.items()):
+        depth, confidence = frame_arrays(frames[index], "depth", "confidence")
+        for source, rank in pairs:
+            results[(source, rank)] = _pair_agreement(points[source], frames[index], lambda pixel: np.where(
+                confidence[pixel] > 0, depth[pixel], np.nan))
+    return _agreement_report(frames, targets, results)
 
 
 def _inverse_depth_at(frame: Mapping[str, Any], column: np.ndarray, row: np.ndarray) -> np.ndarray:
@@ -379,7 +540,7 @@ def _inverse_depth_at(frame: Mapping[str, Any], column: np.ndarray, row: np.ndar
     Inverse depth is linear across a plane in a pinhole image, so a plane samples exactly;
     four pixels spanning a depth discontinuity would blend an occluder into a vote.
     """
-    depth, confidence = frame["depth"], frame["confidence"]
+    depth, confidence = frame["depth"], frame.get("confidence")
     height, width = depth.shape
     with np.errstate(invalid="ignore"):
         x, y = column - 0.5, row - 0.5
@@ -391,7 +552,9 @@ def _inverse_depth_at(frame: Mapping[str, Any], column: np.ndarray, row: np.ndar
     nearest, farthest = np.full(len(x), np.inf), np.zeros(len(x))
     for dy, dx, weight in ((0, 0, (1 - fx) * (1 - fy)), (0, 1, fx * (1 - fy)), (1, 0, (1 - fx) * fy), (1, 1, fx * fy)):
         d = depth[y0 + dy, x0 + dx].astype(np.float64)
-        ok = np.isfinite(d) & (d > 0) & (confidence[y0 + dy, x0 + dx] > 0)
+        ok = np.isfinite(d) & (d > 0)
+        if confidence is not None:  # a working depth holds NaN where confidence is zero
+            ok &= confidence[y0 + dy, x0 + dx] > 0
         usable &= ok
         total += weight / np.where(ok, d, np.inf)
         nearest, farthest = np.minimum(nearest, np.where(ok, d, np.inf)), np.maximum(farthest, np.where(ok, d, 0.0))
@@ -411,17 +574,44 @@ def _seen_ratio(view: Mapping[str, Any], points: np.ndarray) -> np.ndarray:
                                         -local[:, 1] / distance * k["fy"] + k["cy"]) * distance)
 
 
-def _voting_views(frames: Sequence[Mapping[str, Any]], index: int, points: np.ndarray,
-                  centres: np.ndarray) -> list[int]:
-    """The views with the most of these points inside the gate, nearest first among equals."""
-    if not len(points):
-        return []
-    pick = points[np.linspace(0, len(points) - 1, min(DEPTH_CONSENSUS_RANKING_SAMPLES, len(points))).astype(np.int64)]
-    order = np.argsort(np.linalg.norm(centres - centres[index], axis=1), kind="stable")
-    counted = []
+def _view(frame: Mapping[str, Any], depth: np.ndarray) -> dict[str, Any]:
+    """A frame's camera over a working depth (NaN wherever its confidence is zero)."""
+    return {"intrinsics": frame["intrinsics"], "position": frame["position"], "rotation": frame["rotation"],
+            "depth": depth}
+
+
+def _grid_points(frame: Mapping[str, Any], grid: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The consensus grid's usable pixels (rows, columns) and their world points."""
+    k = frame["intrinsics"]
+    start, stride = DEPTH_CONSENSUS_STRIDE // 2, DEPTH_CONSENSUS_STRIDE
+    rows, columns = np.nonzero(np.isfinite(grid))
+    z = grid[rows, columns]
+    u = (columns * stride + start + 0.5 - k["cx"]) / k["fx"]
+    v = (rows * stride + start + 0.5 - k["cy"]) / k["fy"]
+    return rows, columns, np.stack([u * z, -v * z, -z], axis=1) @ frame["rotation"].T + frame["position"]
+
+
+def _ranking_picks(frames: Sequence[Mapping[str, Any]], grids: Sequence[np.ndarray]) -> list[np.ndarray]:
+    """The grid points each view's voters are ranked on."""
+    picks = []
+    for frame, grid in zip(frames, grids):
+        points = _grid_points(frame, grid)[2]
+        count = min(DEPTH_CONSENSUS_RANKING_SAMPLES, len(points))
+        picks.append(points[np.linspace(0, len(points) - 1, count).astype(np.int64)])
+    return picks
+
+
+def _count_agreeing(counts: np.ndarray, picks: Sequence[np.ndarray], view: Mapping[str, Any], index: int) -> None:
+    """``counts[other, index]``: how many of each other view's ranking points this view sees within the gate."""
     with np.errstate(invalid="ignore"):
-        for other in order[order != index]:
-            counted.append((int((np.abs(_seen_ratio(frames[other], pick) - 1.0) <= DEPTH_CONSENSUS_GATE).sum()), int(other)))
+        for other, pick in enumerate(picks):
+            if other != index and len(pick):
+                counts[other, index] = int((np.abs(_seen_ratio(view, pick) - 1.0) <= DEPTH_CONSENSUS_GATE).sum())
+
+
+def _voting_views(counts: np.ndarray, order: np.ndarray, index: int) -> list[int]:
+    """The views with the most of this view's ranking points inside the gate, nearest first among equals."""
+    counted = [(int(counts[other]), int(other)) for other in order[order != index]]
     ranked = sorted(counted, key=lambda row: -row[0])
     return [other for count, other in ranked[:CROSS_VIEW_NEIGHBOURS] if count]
 
@@ -469,6 +659,147 @@ def _upsampled_on_surface(ratio: np.ndarray, grid_depth: np.ndarray, depth: np.n
     return np.where(weight > 0, total / np.where(weight > 0, weight, 1.0), 1.0)
 
 
+def _folded(depth: np.ndarray, confidence: np.ndarray) -> np.ndarray:
+    """Depth where Atlas's confidence admits it and NaN elsewhere; every fusion read gates on both."""
+    return np.where(np.asarray(confidence) > 0, depth, np.array(np.nan, dtype=depth.dtype))
+
+
+def _consensus_grid(depth: np.ndarray, confidence: np.ndarray | None = None) -> np.ndarray:
+    """The consensus grid's depths (float64), NaN where a pixel is unusable."""
+    start, stride = DEPTH_CONSENSUS_STRIDE // 2, DEPTH_CONSENSUS_STRIDE
+    grid = depth[start::stride, start::stride].astype(np.float64)
+    valid = np.isfinite(grid) & (grid > 0)
+    if confidence is not None:
+        valid &= confidence[start::stride, start::stride] > 0
+    return np.where(valid, grid, np.nan)
+
+
+def _rescaled(depth: np.ndarray, ratio: np.ndarray, confidence: np.ndarray | None = None) -> np.ndarray:
+    """One consensus pass's ratio grid applied to a full-resolution depth."""
+    full = _upsampled_on_surface(ratio, _consensus_grid(depth, confidence), depth)
+    return (depth * full).astype(depth.dtype)
+
+
+def _rescaled_grid(grid: np.ndarray, ratio: np.ndarray, dtype: np.dtype) -> np.ndarray:
+    """``_consensus_grid`` of ``_rescaled``, from the grid alone.
+
+    On its own grid pixel the bilinear upsampling weighs only that sample, which is
+    on its own surface, so the rescaled depth there is the depth times the ratio.
+    """
+    scaled = (grid.astype(dtype) * ratio).astype(dtype).astype(np.float64)
+    with np.errstate(invalid="ignore"):
+        return np.where(np.isfinite(scaled) & (scaled > 0), scaled, np.nan)
+
+
+class _WorkingDepths:
+    """Each view's working depth at the current consensus pass, NaN wherever its confidence is zero.
+
+    A working depth is the frame's depth (smoothed, for fusion) rescaled by each
+    pass's ratio grid, so per view only those grids persist and the depth is
+    rebuilt from the frame when read. The first views that fit in
+    ``resident_bytes`` are kept built instead and never rebuilt.
+    """
+
+    def __init__(self, frames: Sequence[Mapping[str, Any]], *, smooth: bool, resident_bytes: int):
+        self.frames, self._smooth, self._room = frames, smooth, resident_bytes
+        self.ratios: list[list[np.ndarray]] = [[] for _ in frames]
+        self.dtypes: list[Any] = [None] * len(frames)
+        self._resident: dict[int, np.ndarray] = {}
+
+    def depth(self, index: int, *, last: bool = False) -> np.ndarray:
+        """The view's working depth; ``last`` (no later read) lets a kept one go after this read."""
+        if index in self._resident:
+            return self._resident.pop(index) if last else self._resident[index]
+        depth, confidence = frame_arrays(self.frames[index], "depth", "confidence")
+        working = _folded(smoothed_depth(depth) if self._smooth else np.asarray(depth), confidence)
+        self.dtypes[index] = working.dtype
+        for ratio in self.ratios[index]:
+            working = _rescaled(working, ratio)
+        if last:
+            self.ratios[index] = []
+        elif working.nbytes <= self._room:
+            self._room -= working.nbytes
+            self._resident[index], self.ratios[index] = working, []
+        return working
+
+    def advance(self, ratios: Sequence[np.ndarray]) -> None:
+        """Move every view to the next pass at once: a pass's votes all read the last pass."""
+        for index, ratio in enumerate(ratios):
+            if index in self._resident:
+                self._resident[index] = _rescaled(self._resident[index], ratio)
+            else:
+                self.ratios[index].append(ratio)
+
+
+def _vote_blocks(grids: Sequence[np.ndarray], chosen: Sequence[Sequence[int]]):
+    """Consecutive views whose grid points and votes fit in ``CONSENSUS_VOTE_BLOCK_BYTES`` together."""
+    block, size = [], 0
+    for index, (grid, voters) in enumerate(zip(grids, chosen)):
+        need = int(np.isfinite(grid).sum()) * 8 * (6 + len(voters))
+        if block and size + need > CONSENSUS_VOTE_BLOCK_BYTES:
+            yield block
+            block, size = [], 0
+        block.append(index)
+        size += need
+    if block:
+        yield block
+
+
+def _consensus_votes(frames: Sequence[Mapping[str, Any]], views: _WorkingDepths, grids: Sequence[np.ndarray],
+                     chosen: Sequence[Sequence[int]]) -> tuple[list[np.ndarray], list[float]]:
+    """Each view's ratio grid and voted share for one pass, reading each voting view once per block."""
+    ratios, voted = [None] * len(frames), [0.0] * len(frames)
+    for block in _vote_blocks(grids, chosen):
+        points = {index: _grid_points(frames[index], grids[index]) for index in block}
+        votes = {index: [np.ones(len(points[index][2])), *[None] * len(chosen[index])] for index in block}
+        for other in sorted({view for index in block for view in chosen[index]}):
+            view = _view(frames[other], views.depth(other))
+            for index in block:
+                if other in chosen[index]:
+                    seen = _seen_ratio(view, points[index][2])
+                    with np.errstate(invalid="ignore"):
+                        votes[index][1 + chosen[index].index(other)] = np.where(
+                            np.abs(seen - 1.0) <= DEPTH_CONSENSUS_GATE, seen, np.nan)
+        for index in block:
+            (rows, columns, _), stack, grid = points.pop(index), np.stack(votes.pop(index)), grids[index]
+            counted = np.isfinite(stack).sum(axis=0) >= 2
+            correction, voted_grid = np.zeros(grid.shape), np.zeros(grid.shape, bool)
+            correction[rows[counted], columns[counted]] = np.nanmedian(stack[:, counted], axis=0) - 1.0
+            voted_grid[rows[counted], columns[counted]] = True
+            ratios[index] = _surface_smoothed(correction, voted_grid, grid)
+            voted[index] = float(counted.sum()) / grid.size
+    return ratios, voted
+
+
+def _consensus(frames: Sequence[Mapping[str, Any]], views: _WorkingDepths, grids: list[np.ndarray],
+               first_counts: np.ndarray | None = None) -> dict[str, Any]:
+    """Run the consensus passes over ``views``; ``grids`` (each view's consensus grid) advance with them.
+
+    ``first_counts`` are the first pass's ranking counts when a caller already read every view for them.
+    """
+    centres = np.array([frame["position"] for frame in frames])
+    orders = [np.argsort(np.linalg.norm(centres - centre, axis=1), kind="stable") for centre in centres]
+    voted_by_pass, voters_by_pass = [], []
+    for step in range(DEPTH_CONSENSUS_PASSES):
+        counts = first_counts
+        if step or counts is None:
+            picks, counts = _ranking_picks(frames, grids), np.zeros((len(frames), len(frames)), np.int64)
+            for index, frame in enumerate(frames):
+                _count_agreeing(counts, picks, _view(frame, views.depth(index)), index)
+        chosen = [_voting_views(counts[index], orders[index], index) for index in range(len(frames))]
+        ratios, voted = _consensus_votes(frames, views, grids, chosen)
+        views.advance(ratios)
+        grids[:] = [_rescaled_grid(grid, ratio, dtype) for grid, ratio, dtype in zip(grids, ratios, views.dtypes)]
+        voted_by_pass.append(round(float(np.median(voted)), 4))
+        voters_by_pass.append(float(np.median([len(row) for row in chosen])))
+    return {"basis": "median_of_most_agreeing_views", "passes": DEPTH_CONSENSUS_PASSES,
+            "neighbours": CROSS_VIEW_NEIGHBOURS, "relative_gate": DEPTH_CONSENSUS_GATE,
+            "stride_pixels": DEPTH_CONSENSUS_STRIDE, "sigma_grid_pixels": DEPTH_CONSENSUS_SIGMA,
+            "ranking_samples": DEPTH_CONSENSUS_RANKING_SAMPLES,
+            "median_voted_grid_share_by_pass": voted_by_pass,
+            "median_voting_views_by_pass": voters_by_pass}
+
+
 def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Rescale each frame's depth towards the median of the depth its overlapping views see along its pixels.
 
@@ -481,47 +812,17 @@ def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str
     never crosses an occlusion edge. Views that already agree vote exactly 1 and stay
     unchanged.
     """
-    frames = [dict(frame) for frame in frames]
-    centres = np.array([frame["position"] for frame in frames])
-    start, stride = DEPTH_CONSENSUS_STRIDE // 2, DEPTH_CONSENSUS_STRIDE
-    voted_by_pass, voters_by_pass = [], []
-    for _ in range(DEPTH_CONSENSUS_PASSES):
-        ratios, voted, voters = [], [], []
-        for index, frame in enumerate(frames):
-            k = frame["intrinsics"]
-            depth = frame["depth"][start::stride, start::stride].astype(np.float64)
-            valid = np.isfinite(depth) & (depth > 0) & (frame["confidence"][start::stride, start::stride] > 0)
-            rows, columns = np.nonzero(valid)
-            z = depth[rows, columns]
-            u = (columns * stride + start + 0.5 - k["cx"]) / k["fx"]
-            v = (rows * stride + start + 0.5 - k["cy"]) / k["fy"]
-            points = np.stack([u * z, -v * z, -z], axis=1) @ frame["rotation"].T + frame["position"]
-            votes = [np.ones(len(z))]
-            chosen = _voting_views(frames, index, points, centres)
-            for other in chosen:
-                seen = _seen_ratio(frames[other], points)
-                with np.errstate(invalid="ignore"):
-                    votes.append(np.where(np.abs(seen - 1.0) <= DEPTH_CONSENSUS_GATE, seen, np.nan))
-            voters.append(len(chosen))
-            stack = np.stack(votes)
-            counted = np.isfinite(stack).sum(axis=0) >= 2
-            correction, voted_grid = np.zeros(depth.shape), np.zeros(depth.shape, bool)
-            correction[rows[counted], columns[counted]] = np.nanmedian(stack[:, counted], axis=0) - 1.0
-            voted_grid[rows[counted], columns[counted]] = True
-            grid_depth = np.where(valid, depth, np.nan)
-            ratios.append((_surface_smoothed(correction, voted_grid, grid_depth), grid_depth))
-            voted.append(float(counted.sum()) / depth.size)
-        for frame, (ratio, grid_depth) in zip(frames, ratios):
-            full = _upsampled_on_surface(ratio, grid_depth, frame["depth"])
-            frame["depth"] = (frame["depth"] * full).astype(frame["depth"].dtype)
-        voted_by_pass.append(round(float(np.median(voted)), 4))
-        voters_by_pass.append(float(np.median(voters)))
-    return frames, {"basis": "median_of_most_agreeing_views", "passes": DEPTH_CONSENSUS_PASSES,
-                    "neighbours": CROSS_VIEW_NEIGHBOURS, "relative_gate": DEPTH_CONSENSUS_GATE,
-                    "stride_pixels": stride, "sigma_grid_pixels": DEPTH_CONSENSUS_SIGMA,
-                    "ranking_samples": DEPTH_CONSENSUS_RANKING_SAMPLES,
-                    "median_voted_grid_share_by_pass": voted_by_pass,
-                    "median_voting_views_by_pass": voters_by_pass}
+    frames = list(frames)
+    views = _WorkingDepths(frames, smooth=False, resident_bytes=0)
+    grids = [_consensus_grid(views.depth(index)) for index in range(len(frames))]
+    report = _consensus(frames, views, grids)
+    rescaled = []
+    for frame, ratios in zip(frames, views.ratios):
+        depth, confidence = frame_arrays(frame, "depth", "confidence")
+        for ratio in ratios:
+            depth = _rescaled(depth, ratio, confidence)
+        rescaled.append({**frame, "depth": depth})
+    return rescaled, report
 
 
 def _voxel_keys(points: np.ndarray, voxel: float) -> np.ndarray:
@@ -678,37 +979,71 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
                       voxel_footprint_multiple: float = 2.0) -> tuple[SplatData, dict[str, Any]]:
     """Gate cross-view agreement, then stream every usable pixel into a draft splat.
 
-    Full-resolution samples exist for one frame at a time; only bounded subsamples and
-    per-voxel sums persist, so memory follows the scene's voxels, not its frame count.
+    Memory follows one view, not the number of views. Each pass reads one view's
+    pixels at a time (a ``PosedFrame`` decodes them for that read only); between
+    passes only bounded subsamples, consensus grids and per-voxel sums persist,
+    with at most ``FUSION_RESIDENT_DEPTH_BYTES`` of working depths kept built.
     """
     if not math.isfinite(voxel_footprint_multiple) or voxel_footprint_multiple <= 0:
         raise ValueError("atlas_depth_splat_voxel_multiple_invalid")
-    frames = [{**frame, "depth": smoothed_depth(frame["depth"])} for frame in frames]
-    samples = [_subsample(surface_samples(frame)) for frame in frames]
-    agreement = cross_view_agreement(frames, samples)
+    frames = list(frames)
+    views = _WorkingDepths(frames, smooth=True, resident_bytes=FUSION_RESIDENT_DEPTH_BYTES)
+    points, grids = [], []
+    for index, frame in enumerate(frames):
+        depth = views.depth(index)
+        points.append(_subsample(_surface(frame, depth))["points"])
+        grids.append(_consensus_grid(depth))
+    # One more read of every smoothed view measures agreement and ranks the first consensus pass.
+    targets = _agreement_targets(frames, points)
+    by_target, results = _by_target(targets), {}
+    picks, counts = _ranking_picks(frames, grids), np.zeros((len(frames), len(frames)), np.int64)
+    for index, frame in enumerate(frames):
+        depth = views.depth(index)
+        view = _view(frame, depth)
+        for source, rank in by_target.get(index, ()):
+            results[(source, rank)] = _pair_agreement(points[source], view, lambda pixel: depth[pixel])
+        _count_agreeing(counts, picks, view, index)
+    agreement = _agreement_report(frames, targets, results)
+    del points, picks, results
     if (agreement["median_relative_residual"] is not None
             and agreement["median_relative_residual"] > MAX_MEDIAN_CROSS_VIEW_RESIDUAL):
         raise ValueError("atlas_depth_splat_cross_view_inconsistent")
-    frames, consensus = consensus_depths(frames)
-    samples = [_subsample(surface_samples(frame)) for frame in frames]
-    consensus["median_relative_residual_after"] = cross_view_agreement(frames, samples)["median_relative_residual"]
+    consensus = _consensus(frames, views, grids, first_counts=counts)
+    del grids, counts
+    samples, sizes = [], []
+    for index, frame in enumerate(frames):
+        depth = views.depth(index)
+        samples.append(_subsample(_surface(frame, depth)))
+        sizes.append(depth.size)
     footprints = np.concatenate([sample["footprint"] for sample in samples])
     if not len(footprints):
         raise ValueError("atlas_depth_splat_no_usable_depth")
     voxel = float(voxel_footprint_multiple * np.median(footprints))
+    # The last read of every view measures agreement after consensus and fills the voxels, in frame order.
+    targets = _agreement_targets(frames, [sample["points"] for sample in samples])
+    by_target, results = _by_target(targets), {}
     sums = VoxelSums(voxel)
-    for frame in frames:
-        sums.add(surface_samples(frame))
+    for index, frame in enumerate(frames):
+        depth = views.depth(index, last=True)  # kept depths make room for the growing voxel sums
+        view = _view(frame, depth)
+        for source, rank in by_target.get(index, ()):
+            results[(source, rank)] = _pair_agreement(samples[source]["points"], view, lambda pixel: depth[pixel])
+        confidence, rgb = frame_arrays(frame, "confidence", "rgb")
+        sums.add(_surface(frame, depth, confidence, rgb))
+    consensus["median_relative_residual_after"] = _agreement_report(frames, targets, results)["median_relative_residual"]
     fused = sums.fused()
-    report = {"frames": [{"frame_id": frame["frame_id"], "usable_pixel_fraction": sample["usable"] / frame["depth"].size}
-                         for frame, sample in zip(frames, samples)],
+    # The observation counts are a view of the voxel table: let both go before the splat is built.
+    observations = float(np.median(fused.pop("observations")))
+    del sums
+    report = {"frames": [{"frame_id": frame["frame_id"], "usable_pixel_fraction": sample["usable"] / size}
+                         for frame, sample, size in zip(frames, samples, sizes)],
               "cross_view_agreement": agreement, "voxel_size": voxel,
               "voxel_footprint_multiple": voxel_footprint_multiple,
               "depth_smoothing": {"basis": "local_plane_fit", "sigma_pixels": DEPTH_SMOOTHING_SIGMA_PIXELS,
                                   "relative_residual": DEPTH_SMOOTHING_RESIDUAL,
                                   "relative_tolerance": DEPTH_SMOOTHING_TOLERANCE},
               "depth_consensus": consensus,
-              "median_observations_per_gaussian": float(np.median(fused["observations"]))}
+              "median_observations_per_gaussian": observations}
     return depth_fused_splat(fused, voxel), report
 
 

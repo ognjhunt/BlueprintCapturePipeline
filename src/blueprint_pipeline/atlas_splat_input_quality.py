@@ -379,10 +379,11 @@ def select_splat_frames(*, frames: Sequence[Mapping[str, Any]], agreement: Mappi
 def scene_depth(frames: Sequence[Mapping[str, Any]]) -> float | None:
     """The median, over views, of each view's median confident depth, in pose units."""
     import numpy as np
+    from .atlas_depth_splat import frame_arrays
 
     values = []
-    for frame in frames:
-        depth, confidence = np.asarray(frame["depth"]), np.asarray(frame["confidence"])
+    for frame in frames:  # one view's depth at a time: a retained pose's views stay in their files
+        depth, confidence = (np.asarray(value) for value in frame_arrays(frame, "depth", "confidence"))
         valid = np.isfinite(depth) & (depth > 0) & (confidence > 0)
         if valid.any():
             values.append(float(np.median(depth[valid])))
@@ -416,10 +417,11 @@ def render_photo_score(splat, frame, width: int = SCORE_WIDTH) -> dict[str, Any]
     """PSNR, coverage and edge-energy ratio of a centre-point render against the view's own photograph."""
     import numpy as np
     from PIL import Image
+    from .atlas_depth_splat import frame_arrays
 
     render = _point_render(splat, frame, width)
     height = render.shape[0]
-    photo = np.asarray(Image.fromarray(np.asarray(frame["rgb"], dtype=np.uint8)).resize(
+    photo = np.asarray(Image.fromarray(np.asarray(frame_arrays(frame, "rgb")[0], dtype=np.uint8)).resize(
         (width, height), Image.Resampling.BOX), dtype=np.float64) / 255.0
     covered = np.isfinite(render).all(axis=2)
     result = {"frame_id": frame["frame_id"], "coverage": round(float(covered.mean()), 6)}

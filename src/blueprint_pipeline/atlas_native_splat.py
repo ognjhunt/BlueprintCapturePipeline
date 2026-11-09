@@ -67,9 +67,11 @@ def merge_duplicate_views(frames):
     admissions unite; depth and confidence start from the whole (or first) view
     and take each partial duplicate's values where its review admitted them.
     """
+    from .atlas_depth_splat import frame_arrays
+
     groups = []
     for index, frame in enumerate(frames):
-        rgb = np.ascontiguousarray(frame["rgb"])
+        rgb = np.ascontiguousarray(frame_arrays(frame, "rgb")[0])
         key = (rgb.shape, hashlib.sha256(rgb.tobytes()).digest())
         group = next((g for g in groups if g[0] == key and _same_camera(frames[g[1][0]], frame)), None)
         if group is None:
@@ -155,34 +157,34 @@ def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None
     landscape generated views) use the ray-preserving photograph tiler.
     """
     from PIL import Image
-    from .atlas_depth_splat import write_exr_depth
+    from .atlas_depth_splat import frame_arrays, write_exr_depth
     from .website_atlas_tasks import validate_task_request
 
     root.mkdir(parents=True, exist_ok=True)
     admitted_whole = admitted_whole or {}
     # Recovered views can repeat a generated view's ID; the position is the identity here.
+    # Views are written one at a time: a retained pose's pixels stay in their files until then.
     posted = {}
     for base, view, rest in (merge_duplicate_views(frames) if views is None else views):
         admitted, keep = _admission(view)
         if admitted and (keep is None or base in admitted_whole):
-            posted[f"{base:04d}"] = ({**view, "frame_id": f"{base:04d}"}, rest,
-                                     None if keep is None else admitted_whole[base])
+            posted[f"{base:04d}"] = (view, rest, None if keep is None else admitted_whole[base])
     views = []
     if len({(f["intrinsics"]["width"], f["intrinsics"]["height"]) for f in frames}) == 1:
         for frame in frames:
             k = frame["intrinsics"]
-            if (frame["rgb"].shape != (k["height"], k["width"], 3)
-                    or frame["depth"].shape != (k["height"], k["width"])):
+            rgb, depth = frame_arrays(frame, "rgb", "depth")
+            if rgb.shape != (k["height"], k["width"], 3) or depth.shape != (k["height"], k["width"]):
                 raise ValueError("atlas_splat_frame_grid_changed")
         for key, (view, _, _) in posted.items():
-            rgb = root / f"{key}.png"
-            Image.fromarray(view["rgb"]).save(rgb)
-            views.append((key, rgb, write_exr_depth(root / f"{key}.exr", view["depth"]),
+            rgb, depth = frame_arrays(view, "rgb", "depth")
+            Image.fromarray(rgb).save(root / f"{key}.png")
+            views.append((key, root / f"{key}.png", write_exr_depth(root / f"{key}.exr", depth),
                           {"intrinsics": view["intrinsics"], "extrinsics": view["extrinsics"]}))
     else:
         from .atlas_scene_chisel import prepare_source_photographs, project_source_depth
 
-        sources = {key: {**view, "confidence": np.ones(view["depth"].shape, np.float32)}
+        sources = {key: {**view, "frame_id": key, "confidence": np.ones(view["depth"].shape, np.float32)}
                    for key, (view, _, _) in posted.items()}
         for photo in prepare_source_photographs(frames=list(sources.values()), root=root / "photographs"):
             key = photo["frame_id"]
