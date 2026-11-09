@@ -526,6 +526,18 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         # out of memory each tick instead of reaching this stop.
         return {"status": "needs_input", "stage": "source_pose",
                 "reason": "atlas_splat_rebuild_pose_refinement_not_accepted"}
+    repose = None
+    if not (rebuild or geometry_only or reconstruction_only) and "refined_splat_cost_usd" in policy:
+        # A new job's one windowed re-pose before its refined splat (``website_atlas_windowed_repose``).
+        repose = _windowed_repose(output_root=output_root, first_pose_root=pose_root, source_root=source_root,
+            review=review, source_pose=source_pose, policy=policy, task_context=task_context,
+            source_digest=source_digest, configuration=configuration, check=check, experimental=experimental,
+            max_polls=max_polls)
+        if repose is not None and repose.get("status") == "processing":
+            return repose
+        if repose is not None and repose.get("adopted"):
+            pose_root, inputs, review = repose["pose_root"], repose["inputs"], repose["review"]
+            source_pose, source_root = repose["source_pose"], repose["source_root"]
     pose, frames = load_posed_rgbd(source_root)
     splat_root = output_root / "splat"
     manifest = splat_root / "atlas_depth_splat_manifest.json"
@@ -615,6 +627,10 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 splat_root=splat_root, output_root=mesh_root / "registered", reference_frames=frames,
                 reference_pose_digest=pose["digest"])
     analysis = [output_root / "atlas_scene_review.json"]
+    if repose is not None:
+        # The re-pose's window (its derived review inside) and its outcome travel with the scene.
+        analysis += [path for path in (output_root / repose["root"] / name for name in repose["records"])
+                     if path.is_file()]
     if reconstruction_only and task_evidence_limitation is not None:
         limitation_path = output_root / 'task_evidence_limitation.json'
         write_json(limitation_path, task_evidence_limitation)
@@ -649,6 +665,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     if appearance is not None:
         result['appearance'] = {key: appearance[key] for key in (
             'basis', 'fallback_reason', 'splat_input', 'heldout_quality') if key in appearance}
+    if repose is not None:
+        result['windowed_repose'] = repose['disclosure']
     if completion is not None:
         result['scene_completion'] = {'status': completion['status'], 'reason': completion.get('reason'),
             'failure_class': completion.get('failure_class'),
@@ -672,6 +690,121 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result
+
+
+def _windowed_repose(*, output_root, first_pose_root, source_root, review, source_pose, policy, task_context,
+                     source_digest, configuration, check, experimental, max_polls):
+    """A new job's one windowed re-pose before its refined splat, under the term it recorded.
+
+    None when the job has no enabled term, its first pose was refined, or nothing was
+    tried. Otherwise ``processing`` while the re-pose runs, or the recorded outcome:
+    ``adopted`` with the re-pose's pose root, inputs, derived review, source pose and
+    source root, or not adopted (the job goes on with its first pose, exactly as before).
+    Every decision is recorded once and read back (``website_atlas_windowed_repose``).
+    """
+    from . import website_atlas_windowed_repose as reposes
+    from .atlas_pricing import headroom
+    from .atlas_source_pose_inputs import prepare_source_pose
+    from .atlas_splat_rebuild import WINDOW_FILE
+    from .atlas_splat_rebuild_window import first_pose_window
+    from .atlas_video_inputs import prepare_video_inputs
+
+    term = reposes.read_term(output_root)
+    first = json.loads((source_root / "atlas_posed_rgbd_result.json").read_text())
+    if (term is None or not term.get("enabled")
+            or ((first.get("operation") or {}).get("response") or {}).get("poseRefinementAccepted") is True):
+        return None
+    binding = {"first_pose_result_digest": first["digest"], "term_digest": term["digest"]}
+    root = output_root / reposes.ROOT
+    selection = json.loads((output_root / "selection_binding.json").read_text())
+    survey_path = output_root / selection["survey_relative_path"]
+    if survey_path.is_symlink() or not survey_path.resolve().is_relative_to(output_root.resolve()):
+        raise ValueError("atlas_runtime_selection_escape")
+    window = first_pose_window(source_root=source_root, binding=binding, review=review,
+                               survey=json.loads(survey_path.read_text()), pose_root=root)
+    # The selection profile the first pose recorded: its splat target, sharpness floor and input bound.
+    profile = _splat_input_options(first_pose_root, review=review, policy=policy, edit_scope="required_and_additional")
+
+    def finish(outcome, ready=None):
+        value = {"root": reposes.ROOT, "records": (WINDOW_FILE, reposes.OUTCOME_FILE),
+                 "disclosure": reposes.disclosure(outcome, window), "adopted": outcome["status"] == "adopted"}
+        if not value["adopted"]:
+            return value
+        if ready is None:
+            # Read back on a later tick: the retained selection and pose, nothing bought again.
+            inputs_ = prepare_video_inputs(survey_path=survey_path, review=window["review"], output_root=root,
+                                           **profile)
+            ready = (inputs_, _source_pose(pose_root=root, inputs=inputs_, review=window["review"], policy=policy,
+                task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
+                configuration=configuration, allow_scale_review=False))
+        retry_inputs, retry_pose = ready
+        if retry_pose.get("status") != "completed" or retry_pose.get("result_digest") != outcome[
+                "retry_pose_result_digest"]:
+            raise ValueError("website_atlas_windowed_repose_changed")
+        retry_root, _ = prepare_source_pose(root)
+        return {**value, "pose_root": root, "inputs": retry_inputs, "review": window["review"],
+                "source_pose": retry_pose, "source_root": retry_root}
+
+    recorded = reposes.read_outcome(output_root, binding)
+    if recorded is not None:
+        return finish(recorded)
+    if window["status"] != "windowed":
+        return finish(reposes.record_outcome(output_root, binding, "no_window", reason=window.get("reason"),
+                                             flags=window["flags"]))
+    price = float(policy["pose_input_cost_usd"])
+    if price != term["per_view_cost_usd"]:
+        return finish(reposes.record_outcome(output_root, binding, "price_changed",
+                                             reason="pose_price_differs_from_term"))
+    try:
+        retry_inputs = prepare_video_inputs(survey_path=survey_path, review=window["review"], output_root=root,
+                                            **profile)
+        retry_root, prepared = prepare_source_pose(root)
+    except ValueError as exc:
+        return finish(reposes.record_outcome(output_root, binding, "selection_refused",
+                                             reason=str(exc).partition(":")[0]))
+    count = len(prepared["frames"])
+    first_count = len(first["operation_receipt"]["input_usage"]["frames"])
+    if count > term["max_input_images"] or count > first_count:
+        return finish(reposes.record_outcome(output_root, binding, "inputs_over_term_bound", input_count=count,
+                                             first_pose_input_count=first_count))
+    bought = (retry_root / "atlas_posed_rgbd_result.json").is_file() or any(
+        (retry_root / "atlas_pose").glob("*.json"))
+    if not bought:
+        # Money before the paid stage, as for any optional one (``atlas_pricing.headroom``): the remaining
+        # dollars and the remaining Atlas requests must both cover the re-pose (one request) and the final
+        # outputs still to buy. A job with dollars but only the requests its splat and mesh need keeps them.
+        forecast = headroom(configuration, stages={"windowed_repose": 1}, cost_usd=round(count * price, 6),
+                            final_output_root=output_root, context=task_context, source_digest=source_digest)
+        short = ("allowance_unforecast" if forecast is None
+                 else "remaining_allowance_below_repose_and_final_outputs"
+                 if forecast["remaining_cost_usd"] is not None
+                 and forecast["remaining_cost_usd"] < forecast["minimum_remaining_cost_usd"]
+                 else "remaining_requests_below_repose_and_final_outputs"
+                 if not forecast["sufficient_for_known_calls"] else None)
+        if short:
+            return finish(reposes.record_outcome(output_root, binding, "allowance_insufficient", reason=short,
+                                                 **({"forecast": forecast} if forecast else {})))
+    retry_pose = _source_pose(pose_root=root, inputs=retry_inputs, review=window["review"], policy=policy,
+        task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
+        configuration=configuration, allow_scale_review=False)
+    if retry_pose["status"] == "processing":
+        return {**retry_pose, "stage": "windowed_source_pose"}
+    posed = retry_root / "atlas_posed_rgbd_result.json"
+    if retry_pose["status"] != "completed" or not posed.is_file():
+        return finish(reposes.record_outcome(output_root, binding, "repose_unavailable",
+                                             reason=retry_pose.get("reason", "atlas_source_pose_unavailable")))
+    result = json.loads(posed.read_text())
+    details = {"retry_pose_result_digest": result["digest"], "input_count": count,
+               "scale_status": retry_pose.get("scale_status"), "first_scale_status": source_pose.get("scale_status")}
+    if ((result.get("operation") or {}).get("response") or {}).get("poseRefinementAccepted") is not True:
+        return finish(reposes.record_outcome(output_root, binding, "not_accepted",
+                                             reason="repose_refinement_not_accepted", **details))
+    unscaled = "unscaled_provider_world_units"
+    if retry_pose.get("scale_status") == unscaled and source_pose.get("scale_status") != unscaled:
+        # No scale review is bought for the re-pose: it is used only where its own measurement scales it.
+        return finish(reposes.record_outcome(output_root, binding, "scale_unresolved",
+                                             reason="repose_measurement_unscaled", **details))
+    return finish(reposes.record_outcome(output_root, binding, "adopted", **details), (retry_inputs, retry_pose))
 
 
 def _run_splat_rebuild(*, job_dir, task_context, policy, held_policy, configuration, source_digest, check,
@@ -865,6 +998,14 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # completed purchases and held unknown calls consume today's allowance.
     budget = (current["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
               - final_output_cost(held, admitted_final_outputs(output_root)))
+    # A new job's term for one windowed re-pose before its refined splat (owner 2026-11-09): decided
+    # once before its first purchase, and its maximum held back from the selection. A job that bought
+    # before this release has none and keeps the quote it was admitted under.
+    from .website_atlas_windowed_repose import decide_term, held_back_usd
+    repose_term = decide_term(output_root, policy=held, purchased=reviews.exists() or selection_path.exists(),
+                              available_usd=budget,
+                              minimum_usd=2 * policy["pose_input_cost_usd"] + render_cost(policy, 2))
+    budget -= held_back_usd(repose_term)
     # Size a new selection only; a retained one already spent its reviews, and
     # holding them back again would stop a resumed job on money it already paid.
     if not selection_path.exists() and budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
