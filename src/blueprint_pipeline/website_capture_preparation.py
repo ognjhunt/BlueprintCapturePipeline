@@ -70,16 +70,26 @@ def run_website_capture_preparation(
                 'native_execution_complete': False}
     # The Atlas lane held the task right after its review (no native profile or no
     # installed runtime): hold here too, before the clean-plate analysis buys anything.
-    from .website_early_task_hold import retain_task_preparation_hold
-    handoff_lease_checkpoint("website_preparation_task_preparation_hold")
-    early_hold = (retain_task_preparation_hold(capture_root=capture_root,
-        task_context=artifact, source_video=source_video)
-        if derived_scene_generation_allowed else None)
-    if early_hold is not None:
+    from .website_early_task_hold import (
+        TaskPreparationHeld,
+        retain_task_preparation_hold,
+        stop_paid_work_when_held,
+    )
+
+    def task_preparation_hold() -> dict[str, Any] | None:
+        handoff_lease_checkpoint("website_preparation_task_preparation_hold")
+        early_hold = (retain_task_preparation_hold(capture_root=capture_root,
+            task_context=artifact, source_video=source_video)
+            if derived_scene_generation_allowed else None)
+        if early_hold is None:
+            return None
         write_json(pipeline_dir / "provider_run_manifest.json", {"schema_version": "v1", "provider_name": None,
             "status": "not_requested", "website_scene_preparation": early_hold})
         return {"status": "completed", "lane": "qualification", "website_scene_preparation": early_hold,
                 "native_execution_complete": False}
+    held = task_preparation_hold()
+    if held is not None:
+        return held
     privacy_processing = {
         "status": "pending_website_review",
         "mode": "task_aware_prepared_images",
@@ -102,6 +112,11 @@ def run_website_capture_preparation(
         ),
     )
     handoff_lease_checkpoint("website_preparation_after_media")
+    if clean_plate.get("status") == "held_for_task_preparation":
+        # The Atlas lane held the job while the clean plate ran; it bought nothing new.
+        held = task_preparation_hold()
+        if held is not None:
+            return held
     gates.append(make_gate(
         "clean_plate_stage", clean_plate.get("status") in {"noop", "objects_removed"},
         f"status={clean_plate.get('status')} mode={clean_plate.get('mode')}",
@@ -138,20 +153,31 @@ def run_website_capture_preparation(
     # Keep producer members immutable; this is the pipeline-owned descriptor.
     write_json(capture_root / "capture_descriptor.json", descriptor_payload)
     context = descriptor.metadata.get("site_task_context") or {}
-    if derived_scene_generation_allowed and context.get("context_digest") and clean_plate.get("task_masks"):
-        # The earliest point holding the confirmed task and its grounded targets:
-        # one retained call orders every compatible candidate for the later
-        # screening. A refusal or failure is recorded there, never a stop.
-        from .website_candidate_ranking import rank_website_candidates
-        handoff_lease_checkpoint("website_preparation_candidate_ranking")
-        rank_website_candidates(task_context=context, task_masks=clean_plate["task_masks"],
-                                pipeline_dir=pipeline_dir, capture_root=capture_root)
-    handoff_lease_checkpoint("website_preparation_before_native_handoff")
-    preparation = prepare_website_scene_handoff(
-        descriptor=descriptor_payload, clean_plate=clean_plate,
-        capture_root=capture_root, now=time.time(),
-        allow_operation_coverage_review=True, allow_static_target_recovery=True,
-    )
+    # A hold the Atlas lane records from here on refuses each new upstream reservation
+    # below (ranking, handoff reviews); a call already reserved finishes.
+    with stop_paid_work_when_held(capture_root=capture_root, task_context=artifact) as stop:
+        try:
+            if derived_scene_generation_allowed and context.get("context_digest") and clean_plate.get("task_masks"):
+                # The earliest point holding the confirmed task and its grounded targets:
+                # one retained call orders every compatible candidate for the later
+                # screening. A refusal or failure is recorded there, never a stop.
+                from .website_candidate_ranking import rank_website_candidates
+                handoff_lease_checkpoint("website_preparation_candidate_ranking")
+                rank_website_candidates(task_context=context, task_masks=clean_plate["task_masks"],
+                                        pipeline_dir=pipeline_dir, capture_root=capture_root)
+            handoff_lease_checkpoint("website_preparation_before_native_handoff")
+            preparation = prepare_website_scene_handoff(
+                descriptor=descriptor_payload, clean_plate=clean_plate,
+                capture_root=capture_root, now=time.time(),
+                allow_operation_coverage_review=True, allow_static_target_recovery=True,
+            )
+        except TaskPreparationHeld:
+            stop.stopped = True
+    if stop.stopped:
+        held = task_preparation_hold()
+        if held is not None:
+            return held
+        raise StageError("website_scene_preparation", "website_task_preparation_held")
     handoff_lease_checkpoint("website_preparation_after_native_handoff")
     write_json(pipeline_dir / "provider_run_manifest.json", {
         "schema_version": "v1", "provider_name": None, "status": "not_requested",

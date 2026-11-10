@@ -27,12 +27,24 @@ Not held here, and why:
   before it.
 - A job that already started buying its scene (``scene_purchase_started``): the
   handoff makes the same decision after it, as before.
+
+The hold record also says what the job cost before it held: the seconds since the
+Atlas job's intake and the dollars the WebApp ledgers settled for this capture
+(``spend_before_hold``). A ledger that cannot be read is recorded as unreadable,
+never as zero. While the hold stands, the capture's clean plate and later preparation
+reserve no new upstream spend (``stop_paid_work_when_held``); a call already
+reserved finishes. The stop is no marker: it reads the hold each time, so a job
+``retry_failed_job`` reopened buys its clean plate again.
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import time
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Mapping
+from collections.abc import Iterator, Mapping
+from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 
@@ -147,11 +159,14 @@ def hold_after_review(*, output_root: Path, task_context: Mapping[str, Any],
         return None
     from .common import write_json
     selection = json.loads((output_root / "selection_binding.json").read_text())
+    spend = spend_before_hold(output_root=output_root, task_context=task_context,
+                              source_video_digest=source_video_digest)
     record = {"schema_version": SCHEMA, "hold_point": HOLD_POINT, "capture_id": task_context.get("capture_id"),
               "scene_id": task_context.get("scene_id"), "task_context_digest": task_context["context_digest"],
               "source_video_digest": source_video_digest,
               "planner_receipt_digest": canonical_digest(selection.get("planner_receipt") or {}),
               "gap": gap, "scene_purchased": False, "provider_mutation_performed": False,
+              "spend_before_hold": spend,
               "resume": "website_atlas_preview.retry_failed_job re-derives this hold from the retained review"}
     record["digest"] = canonical_digest(record, digest_field="digest")
     write_json(output_root / HOLD_FILE, record)
@@ -172,6 +187,33 @@ def retain_task_preparation_hold(*, capture_root: Path, task_context: Mapping[st
     Only while the capture's Atlas job is itself stopped at that hold, and only when
     the current code and the retained review re-derive the same gap. Reads retained
     records and buys nothing; no frame is processed or sent anywhere.
+    """
+    held = _standing_hold(capture_root=capture_root, task_context=task_context, source_video=source_video)
+    if held is None:
+        return None
+    record, derived = held
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input", "blockers": [derived["code"]],
+               "claim_ceiling": "development_only", "simulator_ready": False, "visual_reconstruction_ready": False,
+               "provider_mutation_performed": False, "capture_id": task_context["capture_id"],
+               "scene_id": task_context["scene_id"], "native_task_preparation_gap": derived,
+               "task_preparation_hold": {"hold_point": HOLD_POINT, "atlas_hold_digest": record["digest"],
+                                         "atlas_scene_purchased": False}}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    from .website_task_context_contracts import holds_native_task_preparation
+    if not holds_native_task_preparation(handoff, task_context):
+        return None
+    from .core.handoff_lease import guarded_handoff_write_json
+    guarded_handoff_write_json(Path(capture_root) / "pipeline" / "website_scene_preparation" / "handoff.json",
+                               handoff)
+    return handoff
+
+
+def _standing_hold(*, capture_root: Path, task_context: Mapping[str, Any],
+                   source_video: Path | None = None) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The retained hold record and its re-derived gap while the capture's Atlas job stands at it, or None.
+
+    Reads retained records only. ``retry_failed_job`` moves the job off the hold stage,
+    so a resumed job reads None here.
     """
     from .website_atlas_preview_store import JOB_FILE, read_job
     job_dir = Path(capture_root) / "pipeline" / "atlas"
@@ -200,17 +242,100 @@ def retain_task_preparation_hold(*, capture_root: Path, task_context: Mapping[st
                                          else None)
     if derived is None or derived != gap:
         return None
-    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input", "blockers": [gap["code"]],
-               "claim_ceiling": "development_only", "simulator_ready": False, "visual_reconstruction_ready": False,
-               "provider_mutation_performed": False, "capture_id": task_context["capture_id"],
-               "scene_id": task_context["scene_id"], "native_task_preparation_gap": derived,
-               "task_preparation_hold": {"hold_point": HOLD_POINT, "atlas_hold_digest": record["digest"],
-                                         "atlas_scene_purchased": False}}
-    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
-    from .website_task_context_contracts import holds_native_task_preparation
-    if not holds_native_task_preparation(handoff, task_context):
-        return None
-    from .core.handoff_lease import guarded_handoff_write_json
-    guarded_handoff_write_json(Path(capture_root) / "pipeline" / "website_scene_preparation" / "handoff.json",
-                               handoff)
-    return handoff
+    return record, derived
+
+
+#: The ledgers a website job's purchases before this hold settle on (WebApp ``atlas-configuration`` getter).
+_LEDGERS = (("atlas_review", "allowance_accounting", False), ("upstream", "native_preparation_accounting", True))
+
+
+def spend_before_hold(*, output_root: Path, task_context: Mapping[str, Any],
+                      source_video_digest: str, now: float | None = None) -> dict[str, Any]:
+    """Seconds from the Atlas job's intake to this hold, and the dollars each ledger shows for the capture.
+
+    The amounts are copied from the WebApp's read-only ledger projection (the same getter
+    the Atlas lane reads each pass, ``create=False``): rows bound to this capture's source
+    video or task context. Nothing is reserved, settled or released. A ledger that cannot
+    be read is ``unreadable`` with null amounts, never zero.
+    """
+    held_at = int(time.time() if now is None else now)
+    intake = None
+    try:
+        from .website_atlas_preview_store import JOB_FILE, read_job
+        intake = read_job(Path(output_root) / JOB_FILE).get("enqueued_at_epoch")
+    except (OSError, ValueError):
+        pass
+    known = type(intake) is int and 0 < intake <= held_at
+    value: dict[str, Any] = {"schema_version": "website_task_preparation_hold_spend.v1", "held_at_epoch": held_at,
+                             "intake_at_epoch": intake if known else None,
+                             "seconds_since_intake": held_at - intake if known else None,
+                             "intake_source": "website_atlas_preview_job.enqueued_at_epoch", "ledgers": {}}
+    try:
+        from .website_task_context import load_atlas_configuration
+        configuration: Any = load_atlas_configuration(task_context, source_video_digest, create=False)
+        unread = None
+    except Exception as exc:  # noqa: BLE001 - an unread ledger is recorded as unread, never as zero
+        configuration, unread = None, type(exc).__name__
+    from .selected_atlas_preview_recovery import _accounting
+    for name, key, native in _LEDGERS:
+        try:
+            if configuration is None:
+                raise ValueError(unread)
+            accounting = _accounting(configuration.get(key), native=native)
+        except Exception as exc:  # noqa: BLE001 - see above
+            value["ledgers"][name] = {"status": "unreadable", "reason": unread or str(exc) or type(exc).__name__,
+                                      "settled_cost_usd": None, "held_cost_usd": None, "reservation_count": None}
+            continue
+        rows = [row for row in accounting["reservations"]
+                if row["source_video_digest"] == source_video_digest
+                or row["task_context_digest"] == task_context.get("context_digest")]
+        value["ledgers"][name] = {
+            "status": "read", "source_scope": accounting["source_scope"],
+            "settled_cost_usd": sum(row["settled_cost_usd"] for row in rows if row["status"] == "settled"),
+            "held_cost_usd": sum(row["accounted_cost_usd"] for row in rows if row["status"] == "held"),
+            "reservation_count": len(rows)}
+    return value
+
+
+class TaskPreparationHeld(Exception):
+    """A new upstream reservation refused because the capture's job is held for task preparation.
+
+    Not a failure: the lane ends with a held outcome. Deliberately not a ``ValueError``,
+    so the per-target recoveries that catch those do not turn it into another attempt.
+    """
+
+
+class _Stop:
+    def __init__(self, capture_root: Path, task_context: Mapping[str, Any]) -> None:
+        self.capture_root, self.task_context, self.stopped = Path(capture_root), task_context, False
+
+
+_STOP: ContextVar[_Stop | None] = ContextVar("blueprint_website_task_preparation_hold_stop", default=None)
+
+
+@contextlib.contextmanager
+def stop_paid_work_when_held(*, capture_root: Path, task_context: Mapping[str, Any] | None) -> Iterator[_Stop]:
+    """Within this scope, refuse each new website upstream reservation once the capture's job is held.
+
+    The check reads the hold record at each reservation; it adds no wait and no marker.
+    """
+    stop = _Stop(capture_root, task_context or {})
+    token = _STOP.set(stop if task_context else None)
+    try:
+        yield stop
+    finally:
+        _STOP.reset(token)
+
+
+def refuse_paid_work_when_held() -> None:
+    """Called before a website upstream reservation; raises ``TaskPreparationHeld`` while the job is held."""
+    stop = _STOP.get()
+    if stop is None:
+        return
+    if not stop.stopped:
+        try:
+            stop.stopped = _standing_hold(capture_root=stop.capture_root, task_context=stop.task_context) is not None
+        except (OSError, ValueError, TypeError, KeyError):
+            return  # An unreadable hold holds nothing, as at the capture stage.
+    if stop.stopped:
+        raise TaskPreparationHeld("website_task_preparation_held")

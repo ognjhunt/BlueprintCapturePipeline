@@ -29,6 +29,7 @@ from typing import Any
 from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as write_json, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .website_task_context_lineage import accepts_bound_digest
+from .website_early_task_hold import TaskPreparationHeld
 from .website_gemini_receipts import gemini_quote, retained_gemini_call
 
 SCHEMA_VERSION = "website_candidate_ranking.v1"
@@ -344,7 +345,7 @@ def rank_website_candidates(*, task_context: Mapping[str, Any], task_masks: Mapp
                                              "blockers": list(by_id[row["candidate_id"]]["eligibility"]["blockers"])}
                                             for row in listed if row["basis"] != "not_compatible" and not row["enabled"]],
                      preparation={"status": "not_started", "reason": PREPARATION_HOOK_MISSING})
-    except HandoffLeaseError:
+    except (HandoffLeaseError, TaskPreparationHeld):
         raise
     except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a job; this is flagged
         code = str(exc).split(":", 1)[0]
