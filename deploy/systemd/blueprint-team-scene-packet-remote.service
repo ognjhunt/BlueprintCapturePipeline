@@ -53,6 +53,8 @@ LimitNOFILE=4096
 # host: its dispatch, promotion and teardown are the episode remote unit's code
 # (up to 424M there), and landing a capture-447-scale half (1.07 GB) in 1 MiB
 # blocks peaked at 69M locally.
+# One of the batch units system-blueprintbatch.slice bounds together.
+Slice=system-blueprintbatch.slice
 MemoryHigh=1G
 MemoryMax=2G
 OOMScoreAdjust=-200

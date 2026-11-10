@@ -1,5 +1,7 @@
 [Unit]
 Description=Read live World Labs Atlas operations once; never spends or advances a job
+# A failed or killed run is recorded and reported (blueprint-unit-failure@.service).
+OnFailure=blueprint-unit-failure@%n.service
 After=network-online.target
 Wants=network-online.target
 
@@ -41,6 +43,8 @@ TasksMax=512
 # is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
 # before the always-on services, paid work and the money-safety units.
 # Measured: up to 62M on the host.
+# One of the batch units system-blueprintbatch.slice bounds together.
+Slice=system-blueprintbatch.slice
 MemoryHigh=1G
 MemoryMax=2G
 OOMScoreAdjust=200

@@ -35,6 +35,10 @@ LimitNOFILE=65536
 # Host safety net (money safety): when the host runs out, the kernel's OOM
 # killer counts this unit half the host smaller (-500) and passes it over
 # unless it is the one holding the memory.
+# 8G is above the host's RAM (8.3 GB is 7.76 GiB): this cap never acts. It is
+# kept because the unit's peak is not measured on the host and a guessed cap
+# must not kill a money-safety unit. The batch units' sum is bounded by
+# system-blueprintbatch.slice, which this unit is outside.
 MemoryMax=8G
 OOMScoreAdjust=-500
 CPUQuota=200%

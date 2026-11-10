@@ -40,10 +40,14 @@ ReadWritePaths=/var/lib/blueprint /mnt/blueprint-work/embodiment-preparation /va
 TasksMax=512
 # Host memory (8.3 GB, no swap): it peaked at 4.2 GB on 2026-10-31
 # (docs/research/control-plane-host-profile-2026-10-31.md), and a cap of 1.5x
-# that would not bind below the host, so MemoryMax stays at main's, with no
-# throttle. Batch job, retried: +200, so it goes before the always-on
-# services, paid work and the money-safety units.
-MemoryMax=8G
+# that does not fit below the host.
+# It runs in system-blueprintbatch.slice, which bounds the batch units
+# together, and its own cap is the slice's (8G was above the host and never
+# acted).
+# Batch job, retried: +200, so it goes before the always-on services, paid
+# work and the money-safety units.
+Slice=system-blueprintbatch.slice
+MemoryMax=5.5G
 OOMScoreAdjust=200
 CPUQuota=200%
 

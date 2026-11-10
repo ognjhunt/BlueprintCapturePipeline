@@ -1,5 +1,7 @@
 [Unit]
 Description=Advance Blueprint site policy screening and publish diagnostic results
+# A failed or killed run is recorded and reported (blueprint-unit-failure@.service).
+OnFailure=blueprint-unit-failure@%n.service
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 Wants=network-online.target blueprint-gpu-spend-guard.service
 After=network-online.target blueprint-gpu-spend-guard.service
@@ -51,10 +53,13 @@ SystemCallFilter=@system-service
 # ProtectSystem=strict allows.
 ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/beta-policy-screening /mnt/blueprint-work/beta-policy-screening-work /var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations
 TasksMax=512
-# Host memory (8.3 GB, no swap): its allocator child's bundle reads at a full
-# room are not measured on the host, so MemoryMax stays at main's, with no
-# throttle, until it is. It holds paid work: -200, after batch jobs, before
-# the money-safety units.
-MemoryMax=8G
+# Host memory (8.3 GB, no swap): it runs in system-blueprintbatch.slice, which
+# bounds the batch units together, and its own cap is the slice's (8G was above
+# the host and never acted).
+# Its allocator child's bundle reads at a full room are still not measured on
+# the host. It holds paid work: -200, after batch jobs, before the
+# money-safety units.
+Slice=system-blueprintbatch.slice
+MemoryMax=5.5G
 OOMScoreAdjust=-200
 CPUQuota=200%

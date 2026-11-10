@@ -143,6 +143,12 @@ automatically:
   counts it as orphan scratch, and that pages. The volume then carries each
   build's peak, so check its headroom first.
 
+## A unit failed
+
+A post whose text reads `systemd unit_failed:<unit>:<result>` comes from the
+failure notifier, not from a capacity tick. See
+[`beta-operations.md` section 1a](beta-operations.md#1a-a-unit-failed).
+
 ## Stalled jobs
 
 The same tick runs `control_plane_stall_alarm` and pages on the same webhook

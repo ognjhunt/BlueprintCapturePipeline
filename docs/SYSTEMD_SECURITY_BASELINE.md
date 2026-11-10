@@ -14,6 +14,30 @@ Every production unit must retain these controls:
 - bounded address families, system-call architecture/filter, tasks, file
   descriptors, memory, and CPU.
 
+Three resource rules sit beside those controls. `tests/test_deploy_systemd_contract.py`
+holds each list and `scripts/verify_systemd_ci.py` checks the unit files.
+
+- **Start timeout.** Every `Type=oneshot` unit sets a bounded `TimeoutStartSec`.
+  A oneshot has none by default, and a timer that waits for its unit to go
+  inactive never fires again after one hung run. Units that keep a GPU
+  watchdog child alive use `KillMode=process`, so a timeout stops the worker
+  only.
+- **Batch memory slice.** The batch units name
+  `Slice=system-blueprintbatch.slice`, which bounds them together
+  (`MemoryHigh=5G`, `MemoryMax=5.5G`) below what the 8.33 GB host has free at
+  idle (6.19 GB). No batch unit's own `MemoryMax` is above the slice's. The
+  always-on, money-safety and housekeeping units stay outside the slice. Five
+  money-safety units keep `MemoryMax=8G`, which is above the host and never
+  acts; each file says so.
+- **Failure notifier.** The units whose failure is abnormal and matters name
+  `OnFailure=blueprint-unit-failure@%n.service`. The notifier writes one record
+  for each failed unit and posts on the capacity alert route. A unit whose
+  non-zero exit is an ordinary result does not name it.
+
+The slice and the notifier are installed first, by the deploy tool and by the
+installer. Nothing enables or starts them: systemd reads them at the
+`daemon-reload` that precedes every restart.
+
 On the target Linux image, validate the installed units after every change:
 
 ```bash

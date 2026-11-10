@@ -1227,7 +1227,8 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/deliveries" \
   "${STATE_DIR}/gpu_spend_guard" \
   "${STATE_DIR}/provider-locks" \
-  "${STATE_DIR}/storage-pins"
+  "${STATE_DIR}/storage-pins" \
+  "${STATE_DIR}/unit-failures"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launches/pending" \
   "${STATE_DIR}/task-evaluation-launches/processing" \
@@ -1419,6 +1420,15 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/host/tmpfiles.d/blueprint-var-tmp.conf" \
   /etc/tmpfiles.d/blueprint-var-tmp.conf
+# Before the units that name them: the batch units' memory slice (Slice=) and
+# the failure notifier (OnFailure=). Neither is enabled or started; the
+# daemon-reload below is all a host that never had them needs.
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/system-blueprintbatch.slice" \
+  "${SYSTEMD_DIR}/system-blueprintbatch.slice"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-unit-failure@.service" \
+  "${SYSTEMD_DIR}/blueprint-unit-failure@.service"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.service" \
   "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.service"

@@ -229,6 +229,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/opt/blueprint/control-plane-config-tools/operator-door-source", "release", "root", "operator door deploy source clone"),
     StorageRoot(f"{_CONTROL_PLANE}/release-retention", "evidence_hot", "root", "release retirement plans and receipts"),
     StorageRoot(f"{_CONTROL_PLANE}/capacity", "evidence_hot", "root", "capacity controller reports"),
+    StorageRoot(f"{_CONTROL_PLANE}/unit-failures", "evidence_hot", "blueprint",
+                "one small record per failed systemd unit (unit_failure_notifier), rewritten in place"),
     StorageRoot(f"{_CONTROL_PLANE}/preflight", "evidence_hot", "root", "chain preflight reports"),
     StorageRoot(f"{_CONTROL_PLANE}/cleanup-receipts", "evidence_hot", "root", "sealed break-glass notes for host changes made outside the door"),
     StorageRoot(f"{_CONTROL_PLANE}/launch-materialization", "evidence_hot", "blueprint", "spend reconciliations and materialized launch inputs"),
