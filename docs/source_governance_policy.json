@@ -31,14 +31,8 @@
     "src/blueprint_pipeline/capture_orchestrator.py": [
       "tests/test_capture_orchestrator.py"
     ],
-    "src/blueprint_pipeline/cross_repo_first_gpu_readiness.py": [
-      "tests/test_cross_repo_first_gpu_readiness.py"
-    ],
     "src/blueprint_pipeline/evaluation_prep_stage.py": [
       "tests/test_evaluation_prep_stage_coverage_edges.py"
-    ],
-    "src/blueprint_pipeline/first_gpu_run_packet.py": [
-      "tests/test_first_gpu_run_packet.py"
     ],
     "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": [
       "tests/test_g1_site_3dgs_mujoco_preview.py"
@@ -298,9 +292,7 @@
     "src/blueprint_pipeline/arena_result_ingest.py": 2383,
     "src/blueprint_pipeline/articulated_usd_depth_sweep.py": 2786,
     "src/blueprint_pipeline/capture_orchestrator.py": 2002,
-    "src/blueprint_pipeline/cross_repo_first_gpu_readiness.py": 2687,
     "src/blueprint_pipeline/evaluation_prep_stage.py": 5141,
-    "src/blueprint_pipeline/first_gpu_run_packet.py": 5015,
     "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": 2954,
     "src/blueprint_pipeline/geometry_stage.py": 2244,
     "src/blueprint_pipeline/gpu_render_providers.py": 3553,
@@ -444,7 +436,7 @@
     "tests/test_nurec_volume_codec.py",
     "tests/test_stage_paid_lane_bundle.py"
   ],
-  "max_project_scripts": 163,
+  "max_project_scripts": 157,
   "policy_owner": "@ognjhunt",
   "review_by": "2026-12-10",
   "schema_version": "blueprint.source_governance_policy.v1",
