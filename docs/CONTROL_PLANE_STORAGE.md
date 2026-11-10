@@ -526,7 +526,7 @@ controller warns with `usage_unclassified_root` for each unclassified root over
 20 GiB, and with
 `usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
 over used bytes, capped at 1) is under 0.9. Any of these warnings raises an `ok` report
-to `warning`. It pages with `storage_class_over_budget` when the survey measures a
+to `warning`. It warns with `storage_class_over_budget` when the survey measures a
 storage class above its byte budget: `release` 15, `cache` 20, `work` 25 and
 `unclassified` 30 GiB by default, set as `release=15,cache=20` in
 `BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB` (`off` disables them; an invalid value warns
