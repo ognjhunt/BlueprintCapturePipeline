@@ -41,6 +41,7 @@ from .beta_policy_screening_result import (
 )
 from .beta_policy_screening_settlement import settled_cost
 from .decision_evidence_contracts import canonical_digest
+from .job_retry_policy import REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, refusal_retry_delay
 from .policy_execution_evidence import SCRIPTED
 from .policy_canary_cell_setup_failure import MACHINE_FAULT_BLOCKERS, SETUP_FAILURE_BLOCKERS
 from .website_candidate_feasibility import is_measured_refusal
@@ -364,9 +365,10 @@ HARNESS_FAILURE_BLOCKERS = frozenset({"beta_screening_native_result_missing_or_i
 #: 7 the same day: pi05's sixth and seventh runs both failed on the OpenPI client's ``ping_timeout``
 #: keyword before its fix (#3399) shipped, so it gets one run on the fixed client.
 HARNESS_RETRY_LIMIT = 7
-#: A campaign freezes one commit, so a harness failure in it would fail its other candidates the
-#: same way: they are held, unspent, and planned again after the next deploy. Matches the WebApp's
-#: "launch" category ("Could not start in our simulator. This is ours to fix.").
+#: A campaign freezes one commit, so a harness failure in it would fail its other candidates on the
+#: same backend (each backend has its own harness) the same way: they are held, unspent, and planned
+#: again after the next deploy, never on a timer. Matches the WebApp's "launch" category ("Could not
+#: start in our simulator. This is ours to fix.").
 HARNESS_HOLD_BLOCKER = "beta_screening_held_after_launch_failure"
 #: How many times a site's candidate is planned again after its rented machine failed while starting
 #: the simulator (``MACHINE_FAULT_BLOCKERS``: a fatal signal before Isaac finished launching, so no
@@ -467,8 +469,8 @@ def _scarce_retry_waits(ledger: Mapping[str, Any], state: Mapping[str, Any],
     sibling on the same backend with fewer harness failures on this site (0 for those in plan order).
 
     With ``_unproven_retry_in_flight`` running one candidate at a time and a sibling's harness failure
-    holding the rest until the next deploy (``_reserve``), a release is proven by a candidate with runs to
-    spare before one near its limit spends another. A candidate with runs to spare keeps today's order,
+    holding the rest on its backend until the next deploy (``_reserve``), a release is proven by a candidate
+    with runs to spare before one near its limit spends another. A candidate with runs to spare keeps today's order,
     where the one whose fix is being retried goes first. 2026-11-09, the library site: DP had six harness
     failures (two runs left) and pi0.5 none. No limit changes; only the order.
     """
@@ -531,23 +533,103 @@ def _dropped_results_not_counted(ledger: Mapping[str, Any], state: Mapping[str, 
     return dropped
 
 
+#: Recorded on a campaign a timed re-plan superseded: the candidates whose refusal the timer
+#: re-planned. Counted over every campaign of the site, so no re-plan resets it.
+TIMED_REPLAN_FIELD = "timed_replan_candidate_ids"
+#: Blockers another rule owns: the commit path, a harness hold or failure (a deploy), a machine fault.
+_TIMED_REPLAN_OWNED = frozenset({REPLANNED_BLOCKER, COMMIT_CHANGED_BLOCKER, "g1_beta_implementation_commit_changed",
+                                 HARNESS_HOLD_BLOCKER, *HARNESS_FAILURE_BLOCKERS, *MACHINE_FAULT_BLOCKERS})
+#: Answers about the candidate, not failures to try: the site stopped it, the WebApp refused its
+#: execution, its geometry was measured infeasible, or it is switched off.
+_TIMED_REPLAN_ANSWERS = frozenset({"beta_screening_current_source_stopped", "beta_screening_execution_control_refused",
+                                   INFEASIBLE_BLOCKER, "candidate_disabled"})
+_REFUSAL_PREFIXES = ("beta_screening_prelaunch_refused:", "spend_admission:")
+
+
+def _timed_retry_may_touch(code: str) -> bool:
+    """Whether a timed re-plan may retry a refusal with this code; privacy, rights and money never."""
+    inner = code
+    for prefix in _REFUSAL_PREFIXES:
+        inner = inner.removeprefix(prefix)
+    return not (hard_stop_kind(code) is not None or code in _TIMED_REPLAN_OWNED or inner in _TIMED_REPLAN_OWNED
+                or inner in _TIMED_REPLAN_ANSWERS or is_measured_refusal(inner))
+
+
+def _timed_replans(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> int:
+    """How many timed re-plans this site's candidate had; an unreadable record counts as all of them."""
+    count = 0
+    for state in ledger["campaigns"].values():
+        if state["site_id"] != site_id:
+            continue
+        recorded = state.get(TIMED_REPLAN_FIELD, [])
+        if not isinstance(recorded, list) or not all(isinstance(item, str) for item in recorded):
+            return len(REFUSAL_RETRY_DELAYS_SECONDS)
+        count += candidate_id in recorded
+    return count
+
+
+def _timed_replan_due(ledger: Mapping[str, Any], state: Mapping[str, Any], plan: Mapping[str, Any]) -> list[str]:
+    """Candidates refused before any allocation whose timed retry is due (``job_retry_policy``).
+
+    Only a blocked row that never spent, and only for a refusal no other rule owns. The wait runs
+    from the campaign's last change, never earlier than the refusal. Nothing is due while the
+    campaign holds a sibling for a harness failure, or holds a harness failure beside an unspent
+    row on its backend: that waits for a deploy, and a clock must not release it.
+    """
+    rows = state["candidates"]
+    if any(HARNESS_HOLD_BLOCKER in (row.get("blockers") or []) for row in rows.values()):
+        return []
+    backend = {row["candidate_id"]: (row.get("execution_spec") or {}).get("backend") for row in plan["candidates"]}
+    failed = {backend.get(key) for key, row in rows.items() if _harness_failed(row)}
+    if failed and any(not _spent(row) and (None in failed or backend.get(key) in failed | {None})
+                      for key, row in rows.items()):
+        return []
+    try:
+        changed = datetime.fromisoformat(str(state.get("updated_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return []
+    if changed.tzinfo is None:
+        return []
+    waited = (datetime.now(timezone.utc) - changed).total_seconds()
+    due = []
+    for candidate in plan["candidates"]:
+        key = candidate["candidate_id"]
+        row = rows[key]
+        blockers = row.get("blockers") or []
+        if (row["status"] != "blocked" or _spent(row) or not blockers or _harness_failed(row)
+                or not all(isinstance(code, str) and _timed_retry_may_touch(code) for code in blockers)):
+            continue
+        delay = refusal_retry_delay(_timed_replans(ledger, state["site_id"], key))
+        if delay is not None and waited >= delay:
+            due.append(key)
+    return due
+
+
 def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementation_commit: str,
                   scene_half: str | None = None,
                   plans: Callable[[str, str], Mapping[str, Any]] | None = None) -> list[str] | None:
+    return _replan_decision(ledger, plan, implementation_commit, scene_half, plans)[0]
+
+
+def _replan_decision(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementation_commit: str,
+                     scene_half: str | None = None,
+                     plans: Callable[[str, str], Mapping[str, Any]] | None = None,
+                     ) -> tuple[list[str] | None, list[str]]:
+    """The re-plan scope, and the candidates only the timer admitted (empty when another trigger fired)."""
     state = ledger["campaigns"][plan["campaign_id"]]
     rows = state["candidates"]
     if state.get("superseded_by") or any(row["status"] in ACTIVE_STATUSES for row in rows.values()):
-        return None
+        return None, []
     if _amount(_budget(ledger, state["site_id"], campaign_id=plan["campaign_id"])["reserved_usd"]) > 0:
-        return None
+        return None, []
     stale = machine = False
     for candidate in plan["candidates"]:
         row = rows[candidate["candidate_id"]]
         frozen = (candidate.get("execution_spec") or {}).get("implementation_commit")
         if (row["status"] in QUEUED_STATUSES and frozen not in (None, implementation_commit)
                 or row["status"] == "blocked" and COMMIT_CHANGED_BLOCKER in row.get("blockers", [])
-                # Refused before any allocation at an older commit: a deploy may have fixed the
-                # refusal, so the row is planned again once at the new commit, never spent twice.
+                # Refused before any allocation at an older commit: planned again at the new commit,
+                # never spent twice. At the same commit the timer below plans it again.
                 or row["status"] == "blocked" and frozen not in (None, implementation_commit)
                 and not _spent(row)
                 # Our harness failed after allocation at an older commit: the deploy may have fixed
@@ -582,28 +664,38 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
         # The scene's team half was compiled again since this plan froze it: a half the plan
         # cannot read is not known to differ, so it never re-plans on its own.
         stale = planned_half(plan) not in (None, scene_half)
-    if not stale and not machine:
-        return None
-    # A machine fault alone changed nothing of ours, so a harness failure beside it waits for its fix:
-    # it is planned again only when the commit (or the scene half) changed.
+    # Refused before any allocation, at this commit: planned again on the shared refusal schedule,
+    # bounded per site and candidate, with no deploy (``_timed_replan_due``).
+    timed = [] if stale or machine else _timed_replan_due(ledger, state, plan)
+    if not stale and not machine and not timed:
+        return None, []
+    # A machine fault or a timer alone changed nothing of ours, so a harness failure beside it waits
+    # for its fix: it is planned again only when the commit (or the scene half) changed.
     return [candidate["candidate_id"] for candidate in plan["candidates"]
             if not _spent(rows[candidate["candidate_id"]])
             or stale and _harness_failed(rows[candidate["candidate_id"]])
             and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])
             or stale and _result_not_counted(rows[candidate["candidate_id"]], candidate, plan)
             or _machine_faulted(rows[candidate["candidate_id"]])
-            and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] + dropped or None
+            and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] + dropped or None, timed
 
 
 def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: str | None = None,
                  queue_root: str | Path | None = None) -> list[str] | None:
-    """Candidates to plan again because the deployed code or the scene's half changed, or ``None``.
+    """Candidates to plan again because the deployed code or the scene's half changed, a machine
+    fault, or a refusal's timed retry fell due; else ``None``.
 
     A plan freezes the commit its candidates were prepared against, and
     preparation refuses another. When a deploy lands while some candidate is
     still unprepared (queued, or refused for the changed commit) and the
     campaign holds no reservation, every candidate that never ran or allocated
     is planned again at the new commit. Spent candidates keep their result.
+
+    A candidate refused before any allocation needs no deploy: at the same
+    commit it is planned again on ``job_retry_policy.refusal_retry_delay``'s
+    schedule, at most six times per site and candidate, unless the refusal
+    protects privacy, rights or money or is an answer about the candidate
+    (``_timed_replan_due``).
 
     A plan also freezes the scene half it was built from
     (``beta_policy_screening_scene_half``). ``scene_half`` is the completed
@@ -646,7 +738,8 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
     of the same site and source. The site's budget is shared, so the new plan
     can never spend what the old one committed. A re-plan is admitted for a
     changed commit, or for a scene half the new plan froze that differs from
-    the old plan's (read from both plans' own sealed scene inputs).
+    the old plan's (read from both plans' own sealed scene inputs), a machine
+    fault, or a timed retry now due; the old campaign records a timed one.
     """
     from .beta_policy_screening_plan import validate_screening_plan
     from .beta_policy_screening_scene_half import planned_half
@@ -668,8 +761,8 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
             return {"campaign_id": successor, "status": "already_enqueued", "plan_digest": value["plan_digest"],
                     "superseded_campaign_id": campaign_id}
         previous = _plan(root, campaign_id, old["plan_digest"])
-        scope = _replan_scope(ledger, previous, implementation_commit, planned_half(value),
-                              plans=lambda earlier, digest: _plan(root, earlier, digest))
+        scope, timed = _replan_decision(ledger, previous, implementation_commit, planned_half(value),
+                                        plans=lambda earlier, digest: _plan(root, earlier, digest))
         if (scope is None or successor in ledger["campaigns"] or value["site_id"] != old["site_id"]
                 or value["source"] != previous["source"]
                 or not {row["candidate_id"] for row in value["candidates"]} <= set(scope)):
@@ -684,6 +777,9 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
             if row["status"] in QUEUED_STATUSES:
                 row.update(status="blocked", blockers=[REPLANNED_BLOCKER])
         old["superseded_by"] = successor
+        if timed:
+            # The count of timed re-plans: kept on the superseded campaign, read site-wide.
+            old[TIMED_REPLAN_FIELD] = sorted(timed)
         _changed(old)
         timestamp = _now()
         ledger["campaigns"][successor] = {
@@ -916,8 +1012,13 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
             return None
         if _unproven_retry_in_flight(ledger, state, candidate_id):
             return None
-        if any(_harness_failed(other) for key, other in state["candidates"].items() if key != candidate_id):
-            # Never pay for a run this commit's harness already failed on a sibling.
+        backends = {item["candidate_id"]: (item.get("execution_spec") or {}).get("backend")
+                    for item in plan["candidates"]}
+        mine = backends.get(candidate_id)
+        if any(_harness_failed(other) and (mine is None or backends.get(key) in (None, mine))
+               for key, other in state["candidates"].items() if key != candidate_id):
+            # Never pay for a run this commit's harness already failed on a sibling on the same
+            # backend (an unknown backend counts as the same).
             row.update(status="blocked", blockers=[HARNESS_HOLD_BLOCKER])
             _changed(state)
             _save(root, ledger)

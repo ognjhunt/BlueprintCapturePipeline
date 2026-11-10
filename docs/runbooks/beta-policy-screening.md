@@ -190,6 +190,18 @@ campaign for the same source. One ledger write enqueues it and closes the old
 campaign's queued rows as `beta_screening_replanned_for_new_implementation`.
 The site budget is shared, so the new campaign sees what the old one spent.
 
+A candidate refused before any allocation needs no deploy. Once the campaign
+holds no reservation and no active row, source adoption plans it again at the
+same commit on the shared refusal schedule (`job_retry_policy`: 15 minutes,
+then 1, 3, 6, 12 and 24 hours, counted from the campaign's last change), at
+most six times per site and candidate. The superseded campaign records which
+candidates the timer re-planned (`timed_replan_candidate_ids`); the count is
+read across every campaign of the site. The timer never retries a refusal
+that protects privacy, rights or money, a definite answer about the candidate
+(the site stopped it, the WebApp refused its execution, measured geometry), a
+commit change, or a harness hold or failure. A harness failure holds only the
+campaign's unspent candidates on its own backend, and they wait for a deploy.
+
 A plan also freezes the scene's team half it was built from. A completed half
 can be compiled again later with the same source: a newer stance search finds
 another station, or the site owner approves moving chairs. On each pass,
