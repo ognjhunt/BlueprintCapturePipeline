@@ -305,36 +305,6 @@
       "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::_require_transport_canary_paid_admission",
       "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::require_paid_resource_admission"
     },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai.py::run_canary::openai_client_construction": {
-      "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI evaluator diagnostic (441 or 1323 pairs); env gate only"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai_batch.py::collect_shard::openai_client_construction": {
-      "provider": "openai",
-      "class": "not_paid",
-      "reason": "reads a submitted batch's output file; billing happens at submission"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai_batch.py::submit_shard::openai_client_construction": {
-      "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Batch API submission; env gate only"
-    },
-    "src/blueprint_pipeline/policy_ranking_roboarena_evaluator_openai.py::run_evaluator_inventory::openai_client_construction": {
-      "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI evaluator requests; local cap max_cost_usd <= 25, no admission or ledger"
-    },
-    "src/blueprint_pipeline/policy_ranking_thesis_judge_openai.py::run_inventory::openai_client_construction": {
-      "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI judge requests; env gate only"
-    },
-    "src/blueprint_pipeline/policy_ranking_thesis_judge_openai.py::run_inventory_v2::openai_client_construction": {
-      "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI judge requests; local projected-cost cap, no admission or ledger"
-    },
     "src/blueprint_pipeline/provider_preview.py::<module>::world_labs_api_url": {
       "provider": "world_labs",
       "class": "not_paid",
