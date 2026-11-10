@@ -181,6 +181,37 @@ Ordered by payoff. Items 14 to 16 repeat audit decisions that have not moved.
 | 15 | Docs index (P-DT-05) | `docs/README.md` still lists only ADP files as active | Add the beta's operating docs, `SYSTEM_MAP.md` and `OPERATOR_TOOLS.md` | About 30 lines |
 | 16 | Unchanged audit owner calls | P-A07, P-W07, P-DT-07, P-DT-09, P-DT-10, P-DT-13, P-RT-08, P-B08, R3, P-INFRA-02 | As the audit recommends | As each plan says |
 
+### Second batch (2026-11-10, after the owner approved the decision list)
+
+The owner approved the eight highest-payoff decisions ("approved, do them all"). What each came to:
+
+| # | Decision | Outcome | PR |
+|---|---|---|---|
+| 1 | Disable the legacy control-plane timer on the host; remove the dispatcher units | **Not done; needs root on the host.** The operator door can stop a timer only through `hold`, which lasts at most 24 hours and then re-enables the unit; the deploy tool has no step that retires a unit. The loop's manifest path is also still named by live code (`pubsub_handoff_listener.py:1993`, `live_pipeline_intake_runtime_controls.py:24`) and by the door's notifier-binding view (`deploy/operator-door/operator_door/hostinfo.py:363`, `notifier_repair.py:19`), so a quiet-period trial should come first. Commands for the owner are below | none |
+| 2 | Retire the lanes behind single-use console scripts | **Partly done.** Finding 1 was corrected (see above). The five scripts nothing named were removed. The others are started by name from other modules or listed in the command-safety matrix and spend-verifier inputs, and need lane-by-lane PRs | the PR that added this section |
+| 3 | RunPod: close the account, then remove its code | **Waiting on the account.** Closing the account and deleting the key file is the owner's step and cannot be seen from a session. No RunPod code was removed | none |
+| 4 | The other 14 policy-ranking modules | **Partly done.** The four OpenAI judge modules and the evidence store went, with five `unadmitted` spend call sites. The spend governor pair and the six modules described in contract docs wait for a decision on those docs | #3540 |
+| 5 | Arm Decision Proof leftovers | **Not done.** The decision was "ask the ADP owner"; no module ADP cites was touched | none |
+| 6 | WebApp `ops/paperclip/reports/` | **Done.** 949 tracked files removed; `README.md` records the commit that has them | WebApp #1252 |
+| 7 | WebApp legacy endpoints | **Done for seven of eight**, after a check of the iOS app repo found no caller. `/api/storage/uploads` is kept: the iOS repo's credential validator uses it as its example of a correct upload path. Render request logs were not read | WebApp #1253 |
+| 8 | `AGENTS.md` per-site limit | **Done.** The spend table says $30 | #3538 |
+
+Host commands for decision 1, for whoever has root, in a deploy window and after a 24-hour door hold has shown that intake is unaffected:
+
+```bash
+python3 scripts/operator_door.py hold blueprint-pipeline-control-plane.timer --owner <name> --reason "P-RT-06 trial before retirement" --for 24h --wait
+```
+
+```bash
+sudo systemctl disable --now blueprint-pipeline-control-plane.timer blueprint-pipeline-control-plane.service
+```
+
+```bash
+sudo rm /etc/systemd/system/blueprint-pipeline-control-plane.{service,timer} /etc/systemd/system/blueprint-capture-reconstruction-dispatcher.{service,timer,path} && sudo systemctl daemon-reload
+```
+
+The unit file paths are the standard ones; confirm them with `systemctl cat <unit>` first. On 2026-11-10 13:25 UTC the control-plane timer was still firing, and the dispatcher timer and path units were `enabled`, so they start again at the next boot although their module is gone. After that, `live_pipeline_control_plane.py`, `live_pipeline_proof_audit.py`, `deploy/systemd/blueprint-control-plane-postchecks.sh` and the door's notifier-binding view and repair can be removed in one PR.
+
 ## Executive summary (for the owner)
 
 Blueprint's running system is much smaller than its codebase.
