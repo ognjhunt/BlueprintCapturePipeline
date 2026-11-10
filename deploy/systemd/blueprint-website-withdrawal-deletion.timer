@@ -1,4 +1,7 @@
 [Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-website-withdrawal-deletion.timer.json
 Description=Plan (and, under the owner's standing approval, apply) one withdrawn site's deletion every hour
 
 [Timer]
