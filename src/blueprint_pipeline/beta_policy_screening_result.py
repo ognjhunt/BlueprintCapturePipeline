@@ -18,8 +18,15 @@ harness-failure handling.
 A run whose pre-policy observation gate found structurally usable frames but
 did not pass observation integrity ran its episodes anyway (only privacy,
 rights and money stop a run). The summary keeps that gate's typed
-``observation_quality_flags`` with the estimate. The v2 publication has no
-field for them, so they stay in the ledger and are not published.
+``observation_quality_flags`` with the estimate, and publication v3 carries
+them with the candidate, beside a G1 row's spawn and floor flags and the free
+CPU scene check's verdict (``beta_policy_screening_publication_flags``): typed
+codes only, which inform and never gate. The site then reads a result with
+what Blueprint already knew about the scene it ran in.
+
+Publication v2 is still written, as the same result without those fields, for
+a revision the website already holds as v2 and for one whose v3 form it did not
+accept (``goes_out_as_v2``). A ledger written before v3 publishes as it did.
 
 A run's retained episode review videos (``beta_screening_review_videos``) are
 referenced from its summary as ``review_videos``: the manifest's path and digest
@@ -41,7 +48,7 @@ from .policy_execution_evidence import (
     candidate_execution_kinds, evidence_kind, SCRIPTED, SCRIPTED_ACTION_SOURCE, scripted_episode_outcome,
 )
 
-PUBLICATION_SCHEMA = "beta_policy_screening_publication.v2"
+PUBLICATION_SCHEMA = "beta_policy_screening_publication.v3"
 # The job-facing ceiling. The native session keeps its own runtime ceiling,
 # which is what keeps beta runs out of ADP qualified evidence.
 CLAIM_CEILING = "simulation_estimate"
@@ -235,7 +242,13 @@ def _publication_execution_evidence(configured: Mapping[str, Any], summary: Mapp
 def screening_publication(
     *, plan: Mapping[str, Any], state: Mapping[str, Any], budget: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Customer-safe progress: no endpoint, local path, credential or prompt bytes."""
+    """Customer-safe progress: no endpoint, local path, credential or prompt bytes.
+
+    Publication v3, or its v2 form for a revision the website holds or was sent as v2
+    (``beta_policy_screening_publication_flags.goes_out_as_v2``). Which one is read from
+    ``state`` alone, so every caller computes the same bytes for a revision.
+    """
+    from .beta_policy_screening_publication_flags import as_v2, goes_out_as_v2, row_flags, scene_feasibility
     from .beta_screening_review_videos import publication_entry
 
     candidates, review_videos = [], []
@@ -255,6 +268,7 @@ def screening_publication(
             "success_rate": summary.get("success_rate"),
             "session_result_digest": summary.get("session_result_digest"),
             **_publication_execution_evidence(configured, summary),
+            **row_flags(configured, summary),
         })
         entry = publication_entry(candidates[-1], summary) if row["status"] == "completed" else None
         if entry is not None:
@@ -269,8 +283,10 @@ def screening_publication(
         "purpose": "job_evaluation", "execution_operator": {"kind": "blueprint"},
         "claim_ceiling": CLAIM_CEILING,
         "candidates": candidates, **({"review_videos": review_videos} if review_videos else {}),
+        "scene_feasibility": scene_feasibility(plan["candidates"]),
         "budget": dict(budget),
         "generated_at": state["updated_at"], "publication_digest": "",
     }
     value["publication_digest"] = cross_runtime_canonical_digest(value, digest_field="publication_digest")
-    return value
+    legacy = as_v2(value)
+    return legacy if goes_out_as_v2(state, legacy["publication_digest"]) else value

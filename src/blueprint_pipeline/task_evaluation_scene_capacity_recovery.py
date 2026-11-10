@@ -16,6 +16,7 @@ import shutil
 from . import task_evaluation_scene_intent_contracts as intake
 from .task_evaluation_scene_intent_storage import write_exclusive
 from . import task_evaluation_authoring_auth_recovery as auth
+from . import task_evaluation_scene_launch_recovery as launch_recovery
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_attempt_evidence import record
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
@@ -28,6 +29,7 @@ BLOCKER = "scene_configuration_provider_output_disk_capacity_insufficient"
 MEASURED_BLOCKER = "scene_configuration_provider_output_disk_budget_exceeded"
 PREALLOCATION_BLOCKERS = ([BLOCKER], [MEASURED_BLOCKER])
 CREDIT_KIND = "preallocation_credit"
+DEAD_MACHINE_KIND = "provider_dead_machine"
 #: A scene-configuration launch whose provider machine was created and then produced
 #: nothing. The disk-capacity path above is strictly a $0 no-instance refusal, so this
 #: is a different class and gets its own evidence: the instance really did exist.
@@ -180,8 +182,12 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
             and (result.get("blockers") in PREALLOCATION_BLOCKERS if kind == KIND
                  else credit_launch_failure(result) if kind == CREDIT_KIND
                  else auth.initial_authentication_failure(result) is not None if kind == auth.KIND
-                 else kind == "provider_dead_machine" and dead_machine_launch_failure(result))
-            and type(result.get("provider_mutations_performed")) is int and result["provider_mutations_performed"] == 0
+                 else launch_recovery.transient_launch_failure(result) if kind == launch_recovery.TRANSIENT_KIND
+                 else kind == DEAD_MACHINE_KIND and dead_machine_launch_failure(result))
+            # A dead machine was rented: one, torn down (the zero receipt above).
+            # Every other class rented nothing.
+            and type(result.get("provider_mutations_performed")) is int
+            and result["provider_mutations_performed"] in ((0, 1) if kind == DEAD_MACHINE_KIND else (0,))
             and type(result.get("retry_cap")) is int and result["retry_cap"] == 0
             and result.get("continuing_spend_from_this_run") is False
             and (kind != "preallocation_capacity" or (
@@ -199,6 +205,9 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
                     if kind == CREDIT_KIND else {"not_required_provider_adapter_never_invoked"})
                 and teardown.get("vast_instance_ids") == []
                 and teardown.get("continuing_spend_from_this_run") is False, "credit_teardown_invalid")
+        return values
+    if kind == launch_recovery.TRANSIENT_KIND:
+        launch_recovery.validate_transient_teardown(launch, result)
         return values
     if kind != "preallocation_capacity":
         # A dead machine never reached the disk phase, so there is no shortfall
@@ -227,8 +236,21 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
     return values
 
 
-def observe_failure(*, attempt, link_path, preparation_path, factory_path, config):
+def _launch_refs(directory, profile, link_path, preparation_path, factory_path, link):
+    inputs = {row["name"]: row for row in profile["immutable_inputs"]}
+    refs = {name: record(directory / filename) for name, filename in (
+        ("profile", "launch_profile.json"), ("request", "launch_request.json"), ("launch", "launch_receipt.json"))}
+    refs.update(bundle=record(Path(inputs["source_bundle_manifest"]["path"])),
+                authority=record(Path(inputs["scene_configuration_attempt_authority"]["path"])),
+                link=record(link_path), preparation=record(preparation_path), factory=record(factory_path),
+                configuration_attempt=link["scene_configuration_attempt"])
+    return refs
+
+
+def observe_failure(*, attempt, link_path, preparation_path, factory_path, config, now=None):
     """Find only this preparation's configuration launch, never another intent's failure."""
+    import time
+    now = time.time() if now is None else now
     link, preparation = read(link_path, digest_field="link_digest"), read(preparation_path)
     main = intake._read(checked_file(link["scene_configuration_attempt"]["path"], link["scene_configuration_attempt"]), "attempt_digest")
     root = safe_path(config["launch_execution_root"])
@@ -244,6 +266,17 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
             continue
         result_path = directory / RESULT_RELATIVE
         if not result_path.is_file():
+            # A launch with no allocator result is read from its own receipt:
+            # recovered when that proves no provider was reached, else named.
+            observation = launch_recovery.observe_without_result(
+                directory=directory, profile=profile, attempt=attempt, now=now)
+            if observation is None:
+                continue
+            if not observation["recoverable"]:
+                return observation
+            refs = _launch_refs(directory, profile, link_path, preparation_path, factory_path, link)
+            observation.update(records=refs, values=launch_recovery.receipt_values(observation, refs))
+            matches.append(observation)
             continue
         result = read(result_path, digest_field="result_digest")
         if result.get("status") != "blocked":
@@ -257,7 +290,11 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
         elif auth.initial_authentication_failure(result) is not None:
             kind = auth.KIND
         elif dead_machine_launch_failure(result):
-            kind = "provider_dead_machine"
+            kind = DEAD_MACHINE_KIND
+        elif (launch_recovery.transient_launch_failure(result)
+              and attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"):
+            # Recovered only for a $0 preparation attempt; a paid source attempt keeps its blocker.
+            kind = launch_recovery.TRANSIENT_KIND
         if kind is None:
             blockers = result.get("blockers") or ["configuration_launch_failed"]
             observation = {"recoverable": False, "blockers": blockers, "result": record(result_path)}
@@ -269,15 +306,9 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
                 observation.update(recovery_withheld=withheld, blockers=[
                     *blockers, f"preallocation_capacity_recovery_withheld:{withheld}"])
             return observation
-        inputs = {row["name"]: row for row in profile["immutable_inputs"]}
-        refs = {name: record(directory / filename) for name, filename in (
-            ("profile", "launch_profile.json"), ("request", "launch_request.json"),
-            ("launch", "launch_receipt.json"), ("zero", "post_teardown_provider_zero_receipt.json"),
-            ("result", RESULT_RELATIVE))}
-        refs.update(bundle=record(Path(inputs["source_bundle_manifest"]["path"])),
-                    authority=record(Path(inputs["scene_configuration_attempt_authority"]["path"])),
-                    link=record(link_path), preparation=record(preparation_path), factory=record(factory_path),
-                    configuration_attempt=link["scene_configuration_attempt"])
+        refs = _launch_refs(directory, profile, link_path, preparation_path, factory_path, link)
+        refs.update({name: record(directory / filename) for name, filename in (
+            ("zero", "post_teardown_provider_zero_receipt.json"), ("result", RESULT_RELATIVE))})
         values = validate_source(refs, prior_attempt=attempt, kind=kind)
         matches.append({"recoverable": True, "kind": kind,
                         "blockers": [str(b) for b in (result.get("blockers") or [])],
@@ -372,7 +403,7 @@ def retain_failure(*, observation, attempt, output_root, admission):
              "attempt_digest": attempt["attempt_digest"], "failure_kind": KIND, "observed_at_epoch": occurred,
              "producer_result": observation["result"], "construction_records": observation["records"],
              "capacity_admission": admission}
-    if observation.get("kind") in {CREDIT_KIND, auth.KIND}:
+    if observation.get("kind") not in {None, KIND}:
         value["configuration_failure_kind"] = observation["kind"]
     value["failure_digest"] = canonical_digest(value, digest_field="failure_digest")
     path = output / (value["failure_digest"][7:] + ".json")

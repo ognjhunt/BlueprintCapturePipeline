@@ -21,6 +21,9 @@ RECOVERABLE_FAILURE_KINDS = frozenset({"create_refused", "create_null", "create_
 #: failure that did create an instance still consumes an ordinary retry.
 MAX_MARKET_MISS_RECOVERIES = 6
 MAX_PREALLOCATION_CAPACITY_RECOVERIES = 6
+#: How a preparation-only intent's progression records a successor after a rented
+#: machine died: it spends the signed ``max_retries``, not the $0 allowance above.
+PAID_RETRY_KIND = "paid_retry"
 
 
 def recovery_budget(failure_kind: str, producer) -> str:

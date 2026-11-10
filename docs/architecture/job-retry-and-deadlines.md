@@ -43,6 +43,7 @@ never to skip a check.
 | Beta screening (`beta_policy_screening_coordinator.py`) | A candidate refused before any allocation was planned again only after a deploy. One candidate's harness failure held every other candidate until a deploy. | #3550 on `main` added the self re-plans: a transient failure on the rented machine retries at the same commit, a policy-load failure holds only its candidate and other harness failures hold same-backend siblings, and a row out of GPU offers or with an expired quote is planned again by itself, three times each. This work adds the default beside them: any other refusal before allocation that no rule owns is planned again on the six timed retries, per site and candidate, only for its own reason. Privacy, rights and money refusals, and answers about the candidate, are never retried by the clock. |
 | Team scene packet (`team_scene_packet_worker.py`) | A refusal not on the transient list went back to pending once per deployed release. | It also goes back on the six timed retries. The count is on the status and nothing resets it. |
 | Rigid probe (`rigid_robot_free_probe_runner.py`) | A staging refusal was set aside once per deployed release. | It is also set aside on the six timed retries, through the same supersession markers, which are the count. |
+| Scene configuration (`task_evaluation_scene_launch_recovery.py`, from `_recover_configuration_capacity`) | A launch refused before renting anything (no GPU offer, an object-storage or bundle staging error, a watchdog that would not arm, a Vast inventory query error) or one that ended with no allocator result waited at `scene_configuration_failed` for a deploy. A machine lost mid-run ended the job (`max_retries: 0`). | When the launch's own records prove no machine and no paid API call, a $0 successor follows on the six timed retries, then the job ends by itself (`capacity_recovery_cap_exhausted`). The same failure without that proof keeps its named blocker. The wait's blocker names the hours left, so it changes hourly and the stall alarm does not page it. A lost machine spends the intent's signed `max_retries` (1 for a Website grant issued since 2026-11-10), inside the same dollar cap and `max_paid_attempts`. Credit, disk and authentication refusals keep their measured gates. |
 | WebApp scene intake (`taskEvaluationSceneIntake.ts`) | Forwarding gave up for good after 20 one-minute tries. | It backs off from 1 to 15 minutes and retries until the job's window ends (WebApp #1257). |
 
 What stays as it was, on purpose:
@@ -107,12 +108,22 @@ extension. The WebApp half landed as WebApp #1257.
    is missing: a pass per draining release for each worker, and new-release
    workers that skip a foreign document instead of blocking it. This needs the
    host to validate and was not built.
-2. **Preparation after Pub/Sub's five deliveries.** Only
-   `--resume-preparation` moves a `failed_retryable` preparation. The handoff
-   bytes are retained only for the two explicit waits, and "an unknown provider
-   outcome never becomes fresh retry capacity" (`website_reconstruction_resume`)
-   is a money rule. An automatic re-drive needs the owner's rule for an
-   unanswered paid call, as SAM got on 2026-11-07.
+2. **Preparation after Pub/Sub's five deliveries: now built**
+   (`website_preparation_retry.py`). Every claimed website attempt keeps its
+   message bytes beside its ledger, and the listener's tick re-runs a
+   `failed_retryable` preparation on this policy: an outage or a money refusal
+   until the grant's expiry, anything unclassified on the six timed retries,
+   then left for the grant-expiry ending and the WebApp's window sweep. A
+   privacy or rights refusal is never re-run. A dead process's attempt is
+   recorded `failed_retryable` once its lease has expired and its process is
+   gone, and runs again within 10 minutes. A delivery refused before its claim
+   keeps its bytes until a run claims it. A re-run creates no capacity for an
+   unanswered paid call: an intent with no receipt stops it before any dispatch
+   (Gemini never resends; SAM resends once, the owner's 2026-11-07 rule), which
+   `tests/test_website_preparation_retry.py` checks for both. Still not
+   covered: a Gemini error or timeout inside the clean-plate analysis is stored
+   as a completed "blocked" plan, and a Gemini call with no answer has no
+   owner rule, so it stays `website_gemini_requires_reconciliation`.
 3. **Three preparation states with no ending on the Pipeline at expiry**
    (readiness plan G50). The WebApp now ends the job for the site; the
    Pipeline ledger stays as it was.

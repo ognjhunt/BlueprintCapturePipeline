@@ -302,6 +302,13 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
         launch = _read(Path(launch_ref["path"]))
         if launch.get("status") != "blocked" or launch.get("source_commit") != receipt["source_commit"]:
             return hold
+        from .task_evaluation_scene_launch_recovery import adapter_result, receipt_proof_still_holds, unallocated_teardown
+        if receipt_proof_still_holds(Path(launch_ref["path"])):
+            # No allocator result, and the sealed receipt proves the paid
+            # allocator never reached a provider (never invoked, stopped before
+            # its paid admission, or refused there): nothing was spent.
+            return {"basis": "launch_refused_before_provider", "retained_spend_usd": 0.0,
+                    "counts_as_attempt": hold["counts_as_attempt"]}
 
         def terminal_artifact(ref):
             if ref.get("exists") is not True or _file(Path(ref["path"]))["digest"] != ref["digest"]:
@@ -344,10 +351,9 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 or type(result.get("provider_mutations_performed")) is not int
                 or result["provider_mutations_performed"] != 0
                 or result.get("continuing_spend_from_this_run") is not False
-                or teardown.get("schema_version") != "vast_teardown_manifest.v1"
-                or teardown.get("status") not in UNALLOCATED_TEARDOWN_STATUSES
-                or teardown.get("vast_instance_ids") != []
-                or teardown.get("continuing_spend_from_this_run") is not False):
+                # A no-allocation seal, or an adapter that found no offer and never
+                # reached a create call (2026-11-10): no instance ever existed.
+                or not unallocated_teardown(teardown, adapter_result(result))):
             return hold
         if result.get("provider_runtime_output_zip_path") is not None:
             if prestage_before_first_stage(result, request):

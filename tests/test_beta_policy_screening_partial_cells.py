@@ -9,7 +9,9 @@ returned no cell keeps its blocked, harness-failure handling.
 
 ``BLUEPRINT_WRITE_SCREENING_PUBLICATION_FIXTURES=1`` rewrites the publication
 fixtures the WebApp's producer-contract test reads; otherwise this checks the
-retained fixtures still have the shape the real chain produces.
+retained fixtures still have the shape the real chain produces. The v2 fixtures
+are the v2 form of what the chain publishes (``as_v2``), which is what a website
+that does not accept v3 yet is sent.
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ from blueprint_pipeline import beta_policy_screening_launch as launch
 from blueprint_pipeline import gpu_render_providers
 from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
 from blueprint_pipeline import team_evaluation_worker_retention as retention
+from blueprint_pipeline.beta_policy_screening_publication_flags import as_v2
 from blueprint_pipeline.beta_policy_screening_result import candidate_result_summary
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
@@ -39,7 +42,8 @@ from tests.test_beta_policy_screening_coordinator import native_result, plan as 
 from tests.test_native_task_arena_policy_canary_session import _authority, _record
 
 ROOT = Path(__file__).parents[1]
-SCHEMA = ROOT / "docs/schemas/beta_policy_screening_publication.v2.schema.json"
+SCHEMAS = {version: ROOT / f"docs/schemas/beta_policy_screening_publication.{version}.schema.json"
+           for version in ("v2", "v3")}
 FIXTURES = {"full": ROOT / "tests/fixtures/beta_policy_screening_reconciled_publication.v2.json",
             "partial": ROOT / "tests/fixtures/beta_policy_screening_partial_publication.v2.json"}
 TIMEOUT = "policy_canary_isolated_cell_process_timeout"
@@ -270,7 +274,7 @@ def run_campaign(root: Path, value, runs):
 
 def _webapp_contract(publication):
     """The WebApp's count and budget rules (``betaPolicyScreeningContract.ts``), restated."""
-    Draft202012Validator(json.loads(SCHEMA.read_text())).validate(publication)
+    Draft202012Validator(json.loads(SCHEMAS[publication["schema_version"][-2:]].read_text())).validate(publication)
     assert publication["publication_digest"] == cross_runtime_canonical_digest(publication, digest_field="publication_digest")
     for row in publication["candidates"]:
         assert row["episodes_succeeded"] + row["episodes_failed"] == row["episodes_scored"]
@@ -292,6 +296,7 @@ def _shape(value):
 def _retained_fixture(name, publication):
     """Rewrite the WebApp producer fixture on request; otherwise it must still match the real chain."""
     path = FIXTURES[name]
+    publication = as_v2(publication)
     if os.environ.get("BLUEPRINT_WRITE_SCREENING_PUBLICATION_FIXTURES") == "1":
         path.write_text(json.dumps(publication, indent=2, sort_keys=True) + "\n")
     retained = json.loads(path.read_text())
@@ -361,7 +366,7 @@ def test_run_stopped_part_way_counts_its_measured_cells_and_voids_the_rest(tmp_p
 
 
 @pytest.mark.parametrize("stop, at", [("none", 10), ("timeout", 6)])
-def test_flagged_observation_gate_reaches_the_ledger_summary_and_stays_out_of_the_publication(tmp_path, stop, at):
+def test_flagged_observation_gate_reaches_the_ledger_summary_and_the_v3_publication(tmp_path, stop, at):
     from tests.test_beta_screening_worker_control import REAL_GATE_BLOCKERS
     value = make_plan(count=1)
     candidate = value["candidates"][0]
@@ -376,14 +381,20 @@ def test_flagged_observation_gate_reaches_the_ledger_summary_and_stays_out_of_th
     summary = row["summary"]
     assert summary["observation_quality_flags"] == flags
     assert (summary["episodes_scored"], summary["episodes_succeeded"]) == (at, 4)  # The estimate is unchanged.
-    # The v2 publication has no field for the flags: it carries the estimate as before, schema-valid.
+    # Publication v3 carries the run's flags with its candidate; its v2 form carries the estimate without them.
     for publication in delivered:
         _webapp_contract(publication)
-        assert "observation_quality_flags" not in json.dumps(publication)
+        _webapp_contract(as_v2(publication))
+        assert "observation_quality_flags" not in json.dumps(as_v2(publication))
+    assert delivered[-1]["schema_version"] == "beta_policy_screening_publication.v3"
+    assert delivered[-1]["candidates"][0]["observation_quality_flags"] == flags
+    assert all("observation_quality_flags" not in row for publication in delivered[:-1]
+               for row in publication["candidates"])  # Only a finished run has them.
     plain, plain_rows, _ = run_campaign(tmp_path / "plain", value, {
         candidate["candidate_id"]: {"successes": 4, "stop": stop, "at": at}})
     unflagged = plain[-1]
     assert "observation_quality_flags" not in plain_rows[candidate["candidate_id"]]["summary"]
+    assert "observation_quality_flags" not in json.dumps(unflagged)  # No flag recorded, none published.
     facts = ("status", "episodes_scored", "episodes_succeeded", "episodes_failed", "episodes_void", "success_rate")
     assert [{key: item[key] for key in facts} for item in delivered[-1]["candidates"]] == [
         {key: item[key] for key in facts} for item in unflagged["candidates"]]

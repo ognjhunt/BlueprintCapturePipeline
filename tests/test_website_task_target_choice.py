@@ -458,17 +458,6 @@ def test_a_completed_job_reopens_only_for_its_correction(guessed, monkeypatch):
     assert commit["status"] == "superseded_target_choice_correction"
 
 
-def test_only_explicit_waits_since_the_correction_arm_a_replay():
-    unknown = {"status": "failed_retryable", "error": "unknown_provider_charge"}
-    assert reconstruction.safe_to_arm(2, [unknown], False) is False
-    assert reconstruction.safe_to_arm(2, [unknown], False, correction=True) is True
-    assert reconstruction.safe_to_arm(2, [unknown], True, correction=True) is False
-    wait = {"error": "w", reconstruction.FIELD: {"schema_version": reconstruction.SCHEMA, "error": "w"},
-            choice.CORRECTION_MARK: "sha256:" + "1" * 64}
-    assert reconstruction.safe_to_arm(3, [unknown, wait], False) is True
-    assert reconstruction.safe_to_arm(3, [unknown, {**wait, reconstruction.FIELD: None}], False) is False
-
-
 def test_clean_plate_continues_on_the_guess_and_hands_answers_to_the_masks(tmp_path, monkeypatch):
     from blueprint_pipeline.clean_plate_removal_analysis_gemini import build_removal_plan
     from blueprint_pipeline.clean_plate_stage import run_clean_plate_stage

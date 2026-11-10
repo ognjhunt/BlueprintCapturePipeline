@@ -438,7 +438,7 @@ def test_actual_family_capture_to_native_screening_publication(
     assert publication["source"] == plan["source"] and "recommendation_eligible" not in publication
     assert publication["claim_ceiling"] == "simulation_estimate" and publication["purpose"] == "job_evaluation"
     from jsonschema import Draft202012Validator
-    schema_path = Path(__file__).resolve().parents[1] / "docs/schemas/beta_policy_screening_publication.v2.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "docs/schemas/beta_policy_screening_publication.v3.schema.json"
     Draft202012Validator(json.loads(schema_path.read_text())).validate(publication)
     assert publication["publication_digest"] == cross_runtime_canonical_digest(publication, digest_field="publication_digest")
     wire = json.dumps(publication)

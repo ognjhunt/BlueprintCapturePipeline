@@ -43,6 +43,11 @@ searched and did not reach (no proof that it cannot) is funded after every
 unflagged one. A job's intake ranking otherwise stands as it is; on the
 default-priority path learned policies go before scripted baselines and a solve
 that reached the task before an unmeasured one. Ranking removes nothing.
+
+The verdict also travels with the result (``scene_check``): the publication says
+for each planned row whether this free check cleared it, flagged it or never
+measured it, in a closed vocabulary of typed codes, so a flagged scene is read
+beside the estimate it may explain. It still stops and reorders nothing.
 """
 from __future__ import annotations
 
@@ -382,6 +387,50 @@ def reach_ranks(feasibility: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             for key, row in feasibility["candidates"].items() if row["status"] != "infeasible"}
 
 
+#: The packet arm's scripted carry found no path (``robot_arm_path_clearance.SCRIPTED_CARRY_FLAG``).
+SCENE_CHECK_SCRIPTED_CARRY = "scripted_carry_path_not_found"
+#: A registered body's own-arm solve searched and did not reach every phase (``team_arm_reach`` ``flagged``).
+SCENE_CHECK_ARM_SOLVE = "arm_reach_solve_flagged"
+#: A planned row was measured out of reach from its station; the code carries no distance.
+SCENE_CHECK_OUT_OF_REACH = "robot_reach_insufficient"
+#: A rigid carry's phases (``robot_arm_path_clearance.rigid_pick_place_clearance``).
+_RIGID_PHASES = ("approach", "lift", "carry", "lower", "retreat")
+#: Every code ``scene_check`` may publish. A recorded reason is kept only when it is one of these, whole or
+#: by its leading code, so no link name, object name or measured distance leaves the plan.
+SCENE_CHECK_FLAGS = frozenset({
+    SCENE_CHECK_SCRIPTED_CARRY, SCENE_CHECK_ARM_SOLVE, SCENE_CHECK_OUT_OF_REACH,
+    "robot_rigid_pick_place_unreachable", *(f"robot_rigid_pick_place_unreachable:{phase}" for phase in _RIGID_PHASES),
+    "robot_rigid_pick_place_scene_strike", "robot_arm_task_unreached", "robot_arm_task_beyond_reach",
+})
+
+
+def scene_check(plan_row: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """One planned row's free CPU reach verdict as the result publishes it: its status and typed flags.
+
+    ``flagged``: the row's solve searched and did not reach (``reach_rank`` tier 3), or the row was refused
+    by a measured reach shortfall. ``clear``: its solve reached the task. ``unknown``: nothing measured it
+    either way, which includes every plan written before rows recorded a ``reach_rank``. Read from the
+    retained plan alone, so a campaign's verdict never changes between its revisions.
+    """
+    if plan_row.get("status") == "infeasible":
+        measured = any(is_measured_refusal(code) for code in plan_row.get("blockers") or [])
+        return ("flagged", [SCENE_CHECK_OUT_OF_REACH]) if measured else ("unknown", [])
+    rank = plan_row.get("reach_rank")
+    basis = rank.get("basis") if isinstance(rank, Mapping) else None
+    if basis == "own_arm_solve_passed":
+        return "clear", []
+    if basis != "own_arm_solve_flagged":
+        return "unknown", []
+    flags = {SCENE_CHECK_SCRIPTED_CARRY if rank.get("solve_source") == "packet_station_search"
+             else SCENE_CHECK_ARM_SOLVE}
+    for reason in rank.get("reasons") or []:
+        if isinstance(reason, str):
+            flags.update({reason, reason.split(":", 1)[0]} & SCENE_CHECK_FLAGS)
+    # A phase-qualified code says all its bare form does.
+    return "flagged", sorted(code for code in flags if not any(other.startswith(code + ":") for other in flags))
+
+
 __all__ = ["FILENAME", "MEASURED_REFUSALS", "REACH_INSUFFICIENT_PREFIX", "REACH_RANK_FIELDS", "REACH_TIERS",
-           "SCHEMA_VERSION", "bound_station", "candidate_feasibility", "infeasible_blockers", "is_measured_refusal",
-           "own_stance", "own_station", "reach_rank", "reach_ranks", "station_scene_plan"]
+           "SCENE_CHECK_FLAGS", "SCHEMA_VERSION", "bound_station", "candidate_feasibility", "infeasible_blockers",
+           "is_measured_refusal", "own_stance", "own_station", "reach_rank", "reach_ranks", "scene_check",
+           "station_scene_plan"]

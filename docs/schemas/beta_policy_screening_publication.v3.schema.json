@@ -1,0 +1,613 @@
+{
+  "$id": "beta_policy_screening_publication.v3",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The beta job's evaluation result: a bounded simulation estimate for the recorded task and conditions, never certified physical performance or safety and never Arm Decision Proof evidence. v3 is v2 plus the set-up flags Blueprint's own checks recorded: per candidate the run's observation-quality flags, a humanoid row's spawn and floor flags and the free CPU scene check's flags for that row; per campaign the scene check's verdict. Typed codes only, which inform and never gate. Structural wire contract. The signed consumer additionally validates source, canonical digest, monotonic progress and episode arithmetic. The same result without the v3 fields is a valid v2 publication, which a consumer that does not accept v3 yet is sent instead.",
+  "properties": {
+    "budget": {
+      "additionalProperties": false,
+      "properties": {
+        "committed_upper_bound_usd": {
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,6})?$",
+          "type": "string"
+        },
+        "currency": {
+          "const": "USD"
+        },
+        "limit_usd": {
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,6})?$",
+          "type": "string"
+        },
+        "reserved_usd": {
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,6})?$",
+          "type": "string"
+        },
+        "spent_upper_bound_usd": {
+          "maxLength": 32,
+          "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,6})?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "currency",
+        "limit_usd",
+        "committed_upper_bound_usd",
+        "spent_upper_bound_usd",
+        "reserved_usd"
+      ],
+      "type": "object"
+    },
+    "campaign_id": {
+      "maxLength": 192,
+      "minLength": 1,
+      "type": "string"
+    },
+    "candidates": {
+      "items": {
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "execution_evidence_kind": {
+                  "const": "scripted_simulator_state_baseline"
+                }
+              },
+              "required": [
+                "execution_evidence_kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action_source": {
+                  "const": "scripted_simulator_state"
+                },
+                "candidate_policy_queried": {
+                  "const": false
+                },
+                "learned_policy_rollout_count": {
+                  "const": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "execution_evidence_kind": {
+                  "const": "learned_policy"
+                }
+              },
+              "required": [
+                "execution_evidence_kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action_source": {
+                  "const": "learned_policy"
+                },
+                "scripted_controller_invoked": {
+                  "const": false
+                },
+                "scripted_rollout_count": {
+                  "const": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "scripted_controller_invoked": {
+                  "const": true
+                }
+              },
+              "required": [
+                "scripted_controller_invoked"
+              ]
+            },
+            "then": {
+              "properties": {
+                "scripted_rollout_count": {
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "candidate_policy_queried": {
+                  "const": true
+                }
+              },
+              "required": [
+                "candidate_policy_queried"
+              ]
+            },
+            "then": {
+              "properties": {
+                "learned_policy_rollout_count": {
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        ],
+        "dependentRequired": {
+          "action_source": [
+            "execution_evidence_kind",
+            "scripted_rollout_count",
+            "learned_policy_rollout_count",
+            "scripted_controller_invoked",
+            "candidate_policy_queried"
+          ],
+          "candidate_policy_queried": [
+            "execution_evidence_kind",
+            "action_source",
+            "scripted_rollout_count",
+            "learned_policy_rollout_count",
+            "scripted_controller_invoked"
+          ],
+          "execution_evidence_kind": [
+            "action_source",
+            "scripted_rollout_count",
+            "learned_policy_rollout_count",
+            "scripted_controller_invoked",
+            "candidate_policy_queried"
+          ],
+          "learned_policy_rollout_count": [
+            "execution_evidence_kind",
+            "action_source",
+            "scripted_rollout_count",
+            "scripted_controller_invoked",
+            "candidate_policy_queried"
+          ],
+          "scripted_controller_invoked": [
+            "execution_evidence_kind",
+            "action_source",
+            "scripted_rollout_count",
+            "learned_policy_rollout_count",
+            "candidate_policy_queried"
+          ],
+          "scripted_rollout_count": [
+            "execution_evidence_kind",
+            "action_source",
+            "learned_policy_rollout_count",
+            "scripted_controller_invoked",
+            "candidate_policy_queried"
+          ]
+        },
+        "properties": {
+          "action_source": {
+            "enum": [
+              "learned_policy",
+              "scripted_simulator_state"
+            ]
+          },
+          "blockers": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_:.=-]{0,199}$",
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "candidate_id": {
+            "maxLength": 192,
+            "minLength": 1,
+            "type": "string"
+          },
+          "candidate_policy_queried": {
+            "type": "boolean"
+          },
+          "configuration_digest": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "display_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "episodes_failed": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "episodes_planned": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "episodes_scored": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "episodes_succeeded": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "episodes_void": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "execution_evidence_kind": {
+            "enum": [
+              "learned_policy",
+              "scripted_simulator_state_baseline"
+            ]
+          },
+          "learned_policy_rollout_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observation_quality_flags": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,127}(?::[a-z0-9_]{1,96}){0,3}$",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "scene_check_flags": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,127}(?::[a-z0-9_]{1,96}){0,3}$",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "scripted_controller_invoked": {
+            "type": "boolean"
+          },
+          "scripted_rollout_count": {
+            "description": "Retained scripted episode records, including pre-invocation failures; not an invocation count.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_result_digest": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "setup_quality_flags": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,127}(?::[a-z0-9_]{1,96}){0,3}$",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "waitlisted",
+              "preparing",
+              "launching",
+              "running",
+              "reconciliation_required",
+              "completed",
+              "blocked",
+              "unavailable",
+              "deferred"
+            ]
+          },
+          "success_rate": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "candidate_id",
+          "configuration_digest",
+          "display_name",
+          "status",
+          "blockers",
+          "episodes_planned",
+          "episodes_scored",
+          "episodes_succeeded",
+          "episodes_failed",
+          "episodes_void",
+          "success_rate",
+          "session_result_digest"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "catalog_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "claim_ceiling": {
+      "const": "simulation_estimate"
+    },
+    "execution_operator": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "blueprint"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "publication_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "purpose": {
+      "const": "job_evaluation"
+    },
+    "review_videos": {
+      "description": "Optional. Each completed candidate's practice runs (episodes in plan order) with their outcome and retained review videos, for the job owner to watch. Videos are served view-only through the signed Pipeline read by capture and digest; no path, URL or reason code is published. Absent when no candidate has retained videos.",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "maxLength": 192,
+            "minLength": 1,
+            "type": "string"
+          },
+          "manifest_digest": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "practice_runs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "cell_id": {
+                  "maxLength": 192,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "outcome": {
+                  "enum": [
+                    "success",
+                    "failure",
+                    "void"
+                  ]
+                },
+                "videos": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "camera": {
+                        "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                        "type": "string"
+                      },
+                      "duration_seconds": {
+                        "maximum": 86400,
+                        "minimum": 0,
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "phase": {
+                        "enum": [
+                          "run",
+                          "setup_check"
+                        ]
+                      },
+                      "sha256": {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      "size_bytes": {
+                        "maximum": 67108864,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "sha256",
+                      "camera",
+                      "phase",
+                      "size_bytes",
+                      "duration_seconds"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 80,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "cell_id",
+                "outcome",
+                "videos"
+              ],
+              "type": "object"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "manifest_digest",
+          "practice_runs"
+        ],
+        "type": "object"
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "type": "array"
+    },
+    "revision": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "scenario_plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "scene_feasibility": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "flags": {
+                "maxItems": 0
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "status": {
+                "const": "flagged"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "flags": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "flags": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]{0,127}(?::[a-z0-9_]{1,96}){0,3}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "status": {
+          "enum": [
+            "clear",
+            "flagged",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "flags"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "beta_policy_screening_publication.v3"
+    },
+    "site_id": {
+      "maxLength": 192,
+      "minLength": 1,
+      "type": "string"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "capture_id": {
+          "maxLength": 192,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scene_intent_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "scene_intent_id": {
+          "maxLength": 192,
+          "minLength": 1,
+          "type": "string"
+        },
+        "scene_revision_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "task_context_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 192,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene_intent_id",
+        "scene_intent_digest",
+        "capture_id",
+        "task_id",
+        "task_context_digest",
+        "scene_revision_digest"
+      ],
+      "type": "object"
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "completed",
+        "blocked",
+        "reconciliation_required"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "site_id",
+    "plan_digest",
+    "catalog_digest",
+    "scenario_plan_digest",
+    "source",
+    "revision",
+    "status",
+    "purpose",
+    "execution_operator",
+    "claim_ceiling",
+    "candidates",
+    "budget",
+    "generated_at",
+    "publication_digest",
+    "scene_feasibility"
+  ],
+  "title": "Beta policy screening publication with set-up flags",
+  "type": "object"
+}

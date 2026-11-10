@@ -92,6 +92,7 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         except ValueError as exc:
             dispatch_blockers.append(str(exc))
         authority = dict(spend or {})
+        from .website_preparation_contracts import scene_configuration_max_retries
         if not authority.get("owner") or not authority.get("consent"):
             dispatch_blockers.append("website_scene_execution_authority_required")
         anthropic_terms = authority.get("anthropic_provider_terms_reference")
@@ -108,7 +109,8 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
                     "task_family_runtime_selection": selection,
                     **({"policy_selection": policy_selection} if policy_selection is not None else {})},
                 "execution": {"purpose": "scene_preparation", "max_total_spend_usd": authority.get("max_total_spend_usd"),
-                    "max_paid_attempts": authority.get("max_paid_attempts"), "max_retries": 0,
+                    "max_paid_attempts": authority.get("max_paid_attempts"),
+                    "max_retries": scene_configuration_max_retries(authority),
                     "expires_at_epoch": authority.get("expires_at_epoch"),
                     "allowed_providers": authority.get("allowed_providers", ["vast", "openai"] +
                         (["anthropic"] if authority.get("authoring_provider") == "anthropic" else [])),

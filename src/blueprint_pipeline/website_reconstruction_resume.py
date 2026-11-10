@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
-from .website_assessment_resume import MAX_BYTES, PENDING_CODE, SCHEMA as ASSESSMENT_SCHEMA, _payload_bytes, _require
+from .website_assessment_resume import MAX_BYTES, _payload_bytes, _require
 
 #: What the capture orchestrator raises while the capture's Atlas job is still processing.
 WAIT_ERROR = "website_scene_preparation: website_atlas_job_processing"
@@ -45,44 +45,20 @@ def atlas_wait(exc: BaseException) -> bool:
     return False
 
 
-def _explicit_wait(row) -> bool:
-    if type(row) is not dict:
-        return False
-    if row.get("stage") == "website_assessment_preparation" and row.get("error") == PENDING_CODE:
-        record = row.get("assessment_resume")
-        return type(record) is dict and record.get("schema_version") == ASSESSMENT_SCHEMA
-    record = row.get(FIELD)
-    return type(record) is dict and record.get("schema_version") == SCHEMA and row.get("error") == record.get("error")
-
-
-def safe_to_arm(attempt_count, previous_history, recovered_expired_lease, *, correction: bool = False) -> bool:
-    """Only explicit waits came before: an unknown provider outcome never becomes fresh retry capacity.
-
-    The site's correction of the object the robot moves starts a new run of the
-    same job (``correction``, marked in its history row): the rows before it are
-    settled by that run's own claim, and only the explicit waits since count.
-    """
-    if recovered_expired_lease or len(previous_history) != attempt_count - 1:
-        return False
-    if correction:
-        return True
-    from .website_task_target_choice import CORRECTION_MARK
-    marks = [index for index, row in enumerate(previous_history) if type(row) is dict and row.get(CORRECTION_MARK)]
-    since = previous_history[marks[-1]:] if marks else previous_history
-    return all(_explicit_wait(row) for row in since)
-
-
-def resume_record(listener, *, exc, payload, payload_digest, producer_delivery_key, capture_root: Path,
-                  attempt_count, previous_history, recovered_expired_lease, correction: bool = False) -> dict | None:
+def resume_record(listener, *, exc, payload, payload_digest, producer_delivery_key, capture_root: Path) -> dict | None:
     """The record that lets the drain replay this exact handoff once the Atlas job is final, or None.
+
+    Armed on the wait itself, whatever came before it: an earlier failure or a
+    dead attempt's unknown outcome is settled by each paid call's own intent and
+    receipt (``meta_sam31``, ``website_gemini_receipts``), which a replay reads
+    before it could buy anything, exactly as a Pub/Sub redelivery does.
 
     Runs inside the listener's failure path, so it never raises: the original
     failure is recorded either way.
     """
     from .website_atlas_preview_store import JOB_FILE, read_job
     try:
-        if producer_delivery_key is None or not atlas_wait(exc) or not safe_to_arm(
-                attempt_count, previous_history, recovered_expired_lease, correction=correction):
+        if producer_delivery_key is None or not atlas_wait(exc):
             return None
         # The orchestrator's word is checked against the job it waited on.
         if read_job(Path(capture_root) / "pipeline" / "atlas" / JOB_FILE).get("state") != "processing":
@@ -137,7 +113,7 @@ def expired_lease_review(ledger, expected, *, payload_sha256, producer_delivery_
     of the dead attempt already refuses. The dead attempt is never erased: it
     keeps its attempt number, gains one history row with its lease owner and
     times, and its unknown outcome stays on record, so it never becomes fresh
-    wait capacity (``safe_to_arm``). An attempt that itself took over an expired
+    wait capacity. An attempt that itself took over an expired
     lease without recording it (``recovered_expired_lease``) stays refused, as
     its failure does in ``claim_matches``.
     """
@@ -197,6 +173,7 @@ def reconcile_waiting_reconstructions(listener, *, storage_root: Path, process_a
     """Replay each waiting capture's own handoff once its Atlas job is final; at most ``limit`` per tick."""
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     from .website_atlas_preview_store import JOB_FILE, read_job
+    from .website_preparation_recovery import note_recovery
     from .website_preparation_status import _read, _root, read_preparation_status
     counts = {"resumed": 0, "pending": 0}
     # Include same-job source revisions; admission below still rechecks each birth.
@@ -206,6 +183,7 @@ def reconcile_waiting_reconstructions(listener, *, storage_root: Path, process_a
         if counts["resumed"] >= max(0, min(limit, 50)):
             break
         root = job_path.parents[2]
+        key = str(root.relative_to(Path(storage_root)))
         try:
             _root(root)
             _require(not (root / listener.JOB_LEDGER_FILENAME).is_symlink())
@@ -247,6 +225,9 @@ def reconcile_waiting_reconstructions(listener, *, storage_root: Path, process_a
                    if birth.get("capture_observation_purpose") == "scene_preparation" else {}), **process_args)
             if result.get("status") in {"processed", "retryable_blocked"}:
                 counts["resumed"] += 1
-        except Exception:  # noqa: BLE001 - one unreadable capture never stops the others
-            listener.logger.debug("pubsub_handoff.reconstruction_resume_pending")
+            # A replay that failed again is the host's ordinary retry from here (website_preparation_retry).
+            note_recovery(listener, storage_root, key=key, recovery="reconstruction_resume")
+        except Exception as error:  # noqa: BLE001 - one unreadable capture never stops the others
+            note_recovery(listener, storage_root, key=key, recovery="reconstruction_resume", error=error,
+                          capture_id=root.name)
     return counts
