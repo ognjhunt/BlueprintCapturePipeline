@@ -41,9 +41,9 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from pathlib import Path
-from collections.abc import Iterator, Mapping
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
