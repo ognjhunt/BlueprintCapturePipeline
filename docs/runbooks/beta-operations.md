@@ -29,6 +29,7 @@ Before you act:
 | [5. Roll back a bad deploy](#5-roll-back-a-bad-deploy) | A deploy broke production. |
 | [6. Deploy policy (D-08)](#6-deploy-policy-d-08) | You are about to deploy the Pipeline. |
 | [7. Triggers that are off on purpose (D-06)](#7-triggers-that-are-off-on-purpose-d-06) | `door units` shows an enabled timer or path watcher as `inactive`. |
+| [8. Consent withdrawal](#8-consent-withdrawal) | A site owner withdraws consent, or you run the withdrawal drill (G-02). |
 
 ## 1. A job stops moving
 
@@ -529,3 +530,131 @@ unit is in `DEFAULT_ALWAYS_ARM_TIMER_UNITS`
 
 Not done: `reset-failed` on the transient failed units (O-24). It needs a door
 unit action, and another operator uses the host, so do it in a deploy window.
+
+## 8. Consent withdrawal
+
+A site owner withdraws in the WebApp. The WebApp's Privacy page promises an
+acknowledgement within 10 business days and completion within 30 days
+(Blueprint-WebApp `client/src/pages/Privacy.tsx`).
+
+### What happens by itself
+
+1. The WebApp's withdrawal worker runs every 60 seconds. It sends the Pipeline a
+   signed, non-destructive withdrawal command
+   (Blueprint-WebApp `server/utils/websiteCaptureWithdrawal.ts`), and sends the
+   same command again every hour while the withdrawal is pending.
+2. The intake writes a tombstone at `<site>/website_withdrawal/tombstone.json`
+   and answers with an acknowledgement (`website_capture_withdrawal.py`,
+   `acknowledge_withdrawal`). From then on the site's capture reads as revoked
+   (`consent_takedown.read_consent_state`).
+   - The paid screening launch refuses the capture with
+     `team_scene_capture_withdrawn`, through
+     `beta_policy_screening_worker.require_current_source`, which resolves the
+     capture with `team_scene_capture_root.resolve_capture_root`.
+   - The Atlas preview queue and the scene preview publisher also refuse a
+     withdrawn capture.
+3. The WebApp's deletion worker deletes the WebApp's own copies for the site
+   (Blueprint-WebApp `server/utils/websiteCaptureDeletion.ts`). These are the
+   raw and upload prefixes of the site's captures, the job item photos and the
+   published scene preview reference. It waits for the Pipeline's
+   acknowledgement, deletes every object generation, writes a receipt, and stops
+   if the Pipeline reports a legal hold.
+
+Nothing in the Pipeline is deleted by itself. A person runs the Pipeline's
+deletion plan and its `--apply`
+(`python -m blueprint_pipeline.website_capture_withdrawal_deletion`):
+
+- Only the owner can run them today, because only the owner has SSH access to
+  the host. Operators reach the host only through the door
+  ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)), and no door request kind runs
+  the deletion.
+- Every `--apply` needs the owner's approval for that site.
+- The plan reads every run's records, so run it on a quiet host.
+
+Known gaps:
+
+- The screening ledger's own reservation
+  (`beta_policy_screening_coordinator._reserve`) and `enqueue_screening_campaign`
+  do not read the tombstone. A campaign that was already planned can still
+  reserve its cap. The launch then refuses before any spend, as step 2 says.
+- The WebApp's acknowledgement schema is `.strict()` (`websiteWithdrawalReceipt`).
+  So the acknowledgement cannot carry anything about a Pipeline deletion until
+  the WebApp accepts a new optional field.
+
+### Make and read a plan
+
+On the host, the owner runs:
+
+```bash
+python -m blueprint_pipeline.website_capture_withdrawal_deletion \
+    --capture-root <site>/captures/walkthrough-<request id> --object-store --bucket <source bucket>
+```
+
+The plan only reads and deletes nothing. The `<site>` directory is
+`scenes/site-<request id>/` under the intake's capture root. The printed
+`plan` has these fields:
+
+- `unresolved`: each copy the plan could not resolve, with a reason. This
+  includes a run root it cannot list (`website_withdrawal_deletion_root_unreadable`).
+  `--apply` refuses while any row remains.
+- `runs`, `objects`, `scene_files`, `screening`, `native_g1`, `team_scene`:
+  what an apply would delete.
+- `uncovered_pipeline_roots`: Pipeline roots the deletion does not scan. In the
+  receipt, each one is listed under `remaining`, with what the root holds.
+- `legal_hold`: if this is `true`, `--apply` refuses.
+- `digest`: an apply needs exactly this digest.
+
+The owner applies with the same command plus `--expected-plan-digest <digest>
+--apply --authorize-complete-deletion`. The sealed receipt is at
+`<site>/website_withdrawal/deletion_receipts/<digest>.json`. Read it with
+`door cat`. It contains:
+
+- `deleted`: what the apply removed.
+- `remaining`: what stays and why. This covers provider copies, WebApp and
+  delivered copies, the capture source bucket when no bucket was named, the
+  roots the deletion does not cover and the retained audit journal.
+- `policy_copy_classes`: one row for each data class in
+  [`../beta_data_retention_policy_2026-07-09.json`](../beta_data_retention_policy_2026-07-09.json),
+  with what was removed and what stays, and why.
+
+### Drill
+
+The drill runs offline, costs $0 and runs in CI
+(`tests/test_website_capture_withdrawal_drill.py`):
+
+```bash
+python -m blueprint_pipeline.website_capture_withdrawal_drill
+```
+
+It works in a new temporary directory, with one synthetic site, one other site,
+an in-memory B2 store and an in-memory source bucket. It:
+
+1. acknowledges the shared WebApp vector
+   (`tests/fixtures/website-withdrawal-vector.json`);
+2. checks that a dry-run plan deletes nothing;
+3. checks that a paid launch for the site is refused;
+4. plans with the object store and the bucket, then applies with the plan's
+   digest and the authorization;
+5. prints one row for each copy class: the count before, the count after, and
+   why anything remains.
+
+It fails if a covered copy remains, if a policy data class has no row, if
+anything of the other site changed, or if it wrote, removed or renamed anything
+outside its temporary directory.
+
+A drill on a fresh synthetic job on the host:
+
+1. Ask the owner first. A new job can start paid preparation, and an apply
+   deletes retained data.
+2. Submit a synthetic job from an operator test account, with a synthetic
+   walkthrough video. Note its request id.
+3. Withdraw that job in the WebApp. Within a few minutes the WebApp record shows
+   `pipelineAcknowledged: true`.
+4. Find the site with `door ls <capture root>/scenes --match site-<request id>`
+   and read `door cat <site>/website_withdrawal/tombstone.json`.
+5. The owner makes the plan over SSH, as in "Make and read a plan". Record its
+   `unresolved`, `runs`, `objects` and `uncovered_pipeline_roots` in tracker row
+   G-02.
+6. Apply only if the owner approves it for this synthetic site. Then read the
+   receipt with `door cat`, and record its `remaining` and
+   `policy_copy_classes` in G-02.
