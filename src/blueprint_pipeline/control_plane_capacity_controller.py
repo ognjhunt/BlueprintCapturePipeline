@@ -699,77 +699,95 @@ def usage_projection(
     return projection
 
 
-ORPHAN_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v1"
+ORPHAN_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v2"
 ORPHAN_CENSUS_MAX_AGE_SECONDS = 2 * GC_SUMMARY_INTERVAL_SECONDS
 ORPHAN_CENSUS_ROWS = 25
+ORPHAN_CENSUS_STATEMENT = (
+    "No reference found means none was found among the kinds checked, at the census time: "
+    "it is evidence for an owner's decision, not a statement that deletion is safe, and a "
+    "reference can appear after the census.")
 
 
 def orphan_scratch_census_projection(
     census: Mapping[str, Any] | None, survey: Mapping[str, Any] | None, *, now: float
 ) -> dict[str, Any]:
-    """Per orphan scratch folder: bytes something refers to, and bytes nothing does.
+    """Per orphan scratch folder: its size, what the census found referring to it, and its age.
 
     Bytes come from the usage survey, references from the storage GC's hourly
-    reference census. A folder counts as unreferenced only when a fresh, complete
-    census lists it with no reference; everything else, including a folder the
-    census did not list or a name the survey redacted, counts as referenced.
-    This is a report: it grants no retirement and nothing reads it to delete.
+    reference census. A folder is ``no_reference_found`` only when a fresh census
+    that checked every reference kind lists it with none; any other folder is
+    ``referenced`` or ``not_proven``, and an incomplete census publishes no total.
+    This is evidence for an owner's decision. It grants no retirement.
     """
 
     observed = census.get("observed_at_epoch") if isinstance(census, Mapping) else None
     timed = type(observed) in (int, float) and _finite_number(observed)
     age = round(now - observed, 1) if timed else None
+    kinds = census.get("kinds") if isinstance(census, Mapping) else None
     if not isinstance(census, Mapping) or census.get("schema_version") != ORPHAN_CENSUS_SCHEMA_VERSION:
         status = "missing"
     elif not timed or age is None or not 0 <= age <= ORPHAN_CENSUS_MAX_AGE_SECONDS:
         status = "stale"
-    elif (census.get("status") != "complete" or census.get("scan_errors") != []
-          or not isinstance(census.get("rows"), list)):
+    elif (census.get("status") != "complete" or not isinstance(kinds, Mapping) or not kinds
+          or any(not isinstance(row, Mapping) or row.get("status") != "checked" for row in kinds.values())
+          or census.get("candidate_listing_errors") != [] or not isinstance(census.get("rows"), list)):
         status = "incomplete"
     else:
         status = "complete"
-    unreferenced: set[str] = set()
-    kinds: dict[str, list[str]] = {}
+    listed: dict[str, Mapping[str, Any]] = {}
     if isinstance(census, Mapping) and isinstance(census.get("rows"), list):
         for row in census["rows"]:
-            if not isinstance(row, Mapping) or not isinstance(row.get("path"), str):
-                continue
-            references = row.get("references")
-            if isinstance(references, list) and all(isinstance(kind, str) for kind in references):
-                kinds[row["path"]] = sorted(references)
-                if not references and status == "complete":
-                    unreferenced.add(row["path"])
+            if (isinstance(row, Mapping) and isinstance(row.get("path"), str)
+                    and isinstance(row.get("references"), list)):
+                listed[row["path"]] = row
     raw_rows = survey.get("orphan_scratch_root_bytes") if isinstance(survey, Mapping) else None
     sized = [(row[0], row[1]) for row in raw_rows or []
              if isinstance(row, list) and len(row) == 2 and isinstance(row[0], str)
              and type(row[1]) is int and row[1] >= 0]
-    roots = []
+    folders = []
     for root, allocated in sized:
-        free = root in unreferenced
-        roots.append({"root": root, "allocated_bytes": allocated,
-                      "disposition": "unreferenced" if free else "referenced_or_unproven",
-                      "references": kinds.get(root, ["not_in_census"] if status == "complete" else ["census_" + status])})
-    roots.sort(key=lambda row: (row["disposition"] != "unreferenced", -row["allocated_bytes"], row["root"]))
-    unreferenced_bytes = sum(row["allocated_bytes"] for row in roots if row["disposition"] == "unreferenced")
-    total = sum(allocated for _root, allocated in sized)
+        row = listed.get(root)
+        references = [kind for kind in (row or {}).get("references") or [] if isinstance(kind, str)]
+        if references:
+            disposition = "referenced"
+        elif row is not None and status == "complete":
+            disposition = "no_reference_found"
+        else:
+            disposition = "not_proven"
+        mtime = (row or {}).get("top_level_mtime_epoch")
+        folders.append({
+            "root": root, "allocated_bytes": allocated, "disposition": disposition, "references": references,
+            "lane_family": (row or {}).get("lane_family"), "use_guess": (row or {}).get("use_guess", "unknown"),
+            "run_time_only": (row or {}).get("run_time_only") is True,
+            "top_level_unchanged_days": (round(max(0.0, now - mtime) / 86400, 1)
+                                         if type(mtime) in (int, float) and _finite_number(mtime) else None),
+        })
+    order = {"no_reference_found": 0, "not_proven": 1, "referenced": 2}
+    folders.sort(key=lambda row: (order[row["disposition"]], -row["allocated_bytes"], row["root"]))
+    found_none = [row for row in folders if row["disposition"] == "no_reference_found"]
     survey_observed = survey.get("observed_at_epoch") if isinstance(survey, Mapping) else None
     projection = {
+        "statement": ORPHAN_CENSUS_STATEMENT,
         "status": status,
         "observed_at_epoch": observed if timed else None,
         "age_seconds": age,
-        "scan_errors": list(census.get("scan_errors") or [])[:20] if isinstance(census, Mapping) else [],
+        "kinds": ({kind: {key: row[key] for key in ("status", "reason", "errors") if key in row}
+                   for kind, row in kinds.items() if isinstance(row, Mapping)}
+                  if isinstance(kinds, Mapping) else {}),
+        "not_checked_sources": list(census.get("not_checked_sources") or [])[:10]
+        if isinstance(census, Mapping) else [],
         "bytes_available": raw_rows is not None,
         "bytes_complete": bool(isinstance(survey, Mapping) and survey.get("orphan_scratch_root_bytes_complete") is True
                                and survey.get("status") == "complete"),
         "bytes_observed_at_epoch": survey_observed if type(survey_observed) in (int, float) else None,
-        "folders": len(roots),
-        "unreferenced_folders": sum(row["disposition"] == "unreferenced" for row in roots),
-        "referenced_bytes": total - unreferenced_bytes,
-        "unreferenced_bytes": unreferenced_bytes,
-        # Retiring every unreferenced folder would free about this much; nothing here retires one.
-        "retirement_would_free_bytes": unreferenced_bytes,
+        "folders": len(folders),
+        # Totals only from a census that checked every kind; otherwise unknown, never zero.
+        "no_reference_found_folders": len(found_none) if status == "complete" else None,
+        "no_reference_found_bytes": sum(row["allocated_bytes"] for row in found_none) if status == "complete" else None,
+        "no_reference_found_run_time_only_bytes": (sum(row["allocated_bytes"] for row in found_none
+                                                       if row["run_time_only"]) if status == "complete" else None),
         "retirement_authorized": False,
-        "roots": roots[:ORPHAN_CENSUS_ROWS],
+        "roots": folders[:ORPHAN_CENSUS_ROWS],
     }
     return sanitize_public_survey(projection)
 

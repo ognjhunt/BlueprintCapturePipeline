@@ -580,72 +580,146 @@ def build_census(
     return sanitize_public_survey(report)
 
 
-# --- reference-only census of orphan scratch -----------------------------------------------------
+# --- reference census of orphan scratch -----------------------------------------------------------
 #
 # ``build_census`` sizes every candidate tree, which on the host (1.6M unclassified files)
-# always stops at MAX_ENTRIES, so it can never be complete there. The reference census
-# below asks only "does anything refer to this folder?"; the capacity survey, which
-# already walks these roots in bounded partitions, supplies the bytes. It reads, it never
-# writes, and its record has its own schema, so no retirement path accepts it as proof.
+# always stops at MAX_ENTRIES. The reference census below only looks for references,
+# kind by kind, and says for each kind whether it was checked. The capacity survey,
+# which already walks these roots in bounded partitions, supplies the bytes. It reads,
+# never writes, and its record has its own schema, so no retirement path accepts it.
 
-REFERENCE_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v1"
-REFERENCE_CENSUS_MAX_SECONDS = 120.0
-DEFAULT_UNIT_DIRECTORIES = (Path("/etc/systemd/system"), Path("/run/systemd/system"),
-                            Path("/run/systemd/transient"))
-_UNIT_NAME_CHARS = "A-Za-z0-9_.-"
-_MAX_UNIT_FILES = 20_000
+REFERENCE_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v2"
+REFERENCE_CENSUS_MAX_SECONDS = 180.0
+REFERENCE_CENSUS_FILENAME = "orphan-scratch-census.json"
+#: Said in every record and every projection of one.
+EVIDENCE_STATEMENT = (
+    "No reference found means none was found among the kinds checked, at the census time: "
+    "it is evidence for an owner's decision, not a statement that deletion is safe, and a "
+    "reference can appear after the census.")
+DEFAULT_UNIT_DIRECTORIES = tuple(Path(path) for path in (
+    "/etc/systemd/system", "/run/systemd/system", "/run/systemd/transient", "/run/systemd/generator",
+    "/run/systemd/generator.late", "/usr/lib/systemd/system", "/lib/systemd/system",
+    "/usr/local/lib/systemd/system"))
+DEFAULT_ENV_DIRECTORIES = (Path("/etc/blueprint"), Path("/etc/blueprint-operator-door"),
+                           Path("/etc/cron.d"), Path("/etc/crontab"), Path("/var/spool/cron"))
+#: Holds credentials, never paths; it is not read, and the record says so.
+ENV_EXCLUDED = (Path("/etc/blueprint/provider-secrets"),)
+DEFAULT_CAPTURE_ROOTS = (Path("/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue"),
+                         Path("/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs"))
+DEFAULT_HANDOFF_ROOTS = (Path("/var/lib/blueprint/pubsub-handoffs"),)
+DEFAULT_DOOR_REQUEST_ROOTS = (Path("/var/lib/blueprint-operator-door/requests"),)
+DEFAULT_DOCKER_CONTAINERS = Path("/var/lib/docker/containers")
+DEFAULT_SOURCE_ROOTS = (Path("/usr/lib/blueprint"),)
+_SOURCE_SUFFIXES = frozenset({".py", ".sh", ".service", ".timer", ".json", ".toml", ".yaml", ".yml",
+                              ".env", ".conf", ".cfg", ".txt"})
+_SKIPPED_SOURCE_DIRECTORIES = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__",
+                                         "site-packages"})
+#: Every kind, in order. The census is complete only when every one is ``checked``.
+REFERENCE_KINDS = (
+    "queue", "active_run", "capture_reconstruction", "pubsub_handoff", "door_request",
+    "process", "container_mount", "docker_container", "unit_file", "env_file", "release_source",
+    "sibling_link", "pin", "live_release",
+)
+NOT_CHECKED_SOURCES = (
+    # Documented gaps; none of them makes a kind "checked".
+    "podman_or_bare_containerd_containers: no cheap stable record format; docker's are read",
+    "processes_in_uninterruptible_sleep: a /proc read that blocks is not interrupted by the deadline",
+)
+_RECORD_BYTES = 128 * 1024 * 1024
+_RECORD_FILES = 50_000
+_RECORD_ENTRIES = 400_000
 _MAX_MOUNTINFO_BYTES = 1024 * 1024
+_TOKEN = re.compile(rb"[A-Za-z0-9_.-]+")
+_RUN_TIME_ONLY = ("sdk-inputs", "checkpoint", "cache", "wheelhouse", "toolchain", "runtime-source",
+                  "prerequisites", "wheels")
+_RELEASE_INPUT = ("deploy-source", "release", "build", "source-")
+_JOB_DATA = ("capture", "scene", "run", "episode", "canary", "integration", "development", "controls",
+             "rebuild", "cutout", "excision", "joint", "policy", "task")
 
 
-def _named(text: str, needle: str) -> bool:
-    return needle in text and re.search(
-        f"(?<![{_UNIT_NAME_CHARS}]){re.escape(needle)}(?![{_UNIT_NAME_CHARS}])", text) is not None
+def use_guess(name: str) -> tuple[str, bool]:
+    """``(use, run_time_only)`` from the folder name alone: a guess, labelled as one.
+
+    A run-time-only folder (an SDK input, a checkpoint or wheel cache) has no
+    reference between runs, and deleting it means a rebuild or a paid re-download.
+    """
+    lowered = name.lower()
+    if any(part in lowered for part in _RUN_TIME_ONLY):
+        return "rebuildable_run_input_cache", True
+    if any(part in lowered for part in _RELEASE_INPUT):
+        return "release_or_build_input", False
+    if any(part in lowered for part in _JOB_DATA):
+        return "job_data", False
+    return "unknown", False
 
 
-def _unit_references(paths: Sequence[Path], directories: Sequence[Path], errors: list[str],
-                     deadline: float) -> set[Path]:
-    """Candidates a systemd unit or drop-in names, by full path or folder name."""
+def _record_references(names: dict[bytes, set[Path]], roots: Sequence[Path], errors: list[str],
+                       deadline: float, *, suffixes: frozenset[str] | None = None,
+                       file_names: frozenset[str] | None = None, follow_files: bool = False,
+                       skip_directories: frozenset[str] = frozenset(),
+                       excluded: Sequence[Path] = ()) -> set[Path]:
+    """Candidates whose name appears as a token in any matching file below ``roots``.
+
+    A folder named in a record by full path also matches by name, so this is
+    the wider test. Every cap reached or file unread is an error for the kind.
+    """
     found: set[Path] = set()
-    files = 0
-    remaining = MAX_REFERENCE_BYTES
-    for directory in directories:
+    remaining, files, entries = _RECORD_BYTES, 0, 0
+    for root in roots:
         if _expired(deadline, errors):
             break
-        if not directory.exists() and not directory.is_symlink():
-            continue
-        if directory.is_symlink() or not directory.is_dir():
-            errors.append("unit_inventory_unreadable")
+        if not root.exists() and not root.is_symlink():
+            continue  # nothing recorded there
+        if root.is_symlink():
+            errors.append("record_root_unsafe")
             continue
 
         def failed(_error: OSError) -> None:
-            errors.append("unit_inventory_unreadable")
+            errors.append("record_unreadable")
 
-        for root, _names, leaves in os.walk(directory, followlinks=False, onerror=failed):
+        iterator = (iter([(str(root.parent), [], [root.name])]) if root.is_file()
+                    else os.walk(root, followlinks=False, onerror=failed))
+        for directory, subdirectories, leaves in iterator:
+            here = Path(directory)
+            subdirectories[:] = [name for name in subdirectories if name not in skip_directories
+                                 and not any(_intersects(here / name, path) for path in excluded)]
+            if any((here / name).is_symlink() for name in subdirectories):
+                errors.append("record_directory_link_unread")  # its target is not read here
+            entries += len(subdirectories) + len(leaves)
+            if entries > _RECORD_ENTRIES:
+                errors.append("record_inventory_truncated")
+                return found
             for leaf in leaves:
                 if _expired(deadline, errors):
                     return found
+                path = here / leaf
+                if (suffixes is not None and path.suffix not in suffixes) or (
+                        file_names is not None and leaf not in file_names):
+                    continue
                 files += 1
-                if files > _MAX_UNIT_FILES:
-                    errors.append("unit_inventory_truncated")
+                if files > _RECORD_FILES:
+                    errors.append("record_inventory_truncated")
                     return found
-                path = Path(root) / leaf
                 try:
-                    info = path.lstat()
+                    info = path.stat() if follow_files else path.lstat()
                     if not stat.S_ISREG(info.st_mode):
-                        continue  # a link to a unit elsewhere is read where it lives
-                    if info.st_size > 1024 * 1024 or info.st_size > remaining:
-                        errors.append("unit_inventory_truncated")
+                        if not stat.S_ISLNK(info.st_mode):
+                            continue  # a socket or fifo holds no text
+                        errors.append("record_link_unread")
                         continue
-                    text = path.read_bytes()[:info.st_size].decode("utf-8", "replace")
+                    if info.st_size > 4 * 1024 * 1024 or info.st_size > remaining:
+                        errors.append("record_inventory_truncated")
+                        continue
+                    with path.open("rb") as stream:
+                        content = stream.read(info.st_size + 1)
                 except FileNotFoundError:
                     continue
                 except OSError:
-                    errors.append("unit_inventory_unreadable")
+                    errors.append("record_unreadable")
                     continue
-                remaining -= len(text)
-                for candidate in paths:
-                    if _named(text, str(candidate)) or _named(text, candidate.name):
-                        found.add(candidate)
+                remaining -= len(content)
+                for token in names.keys() & set(_TOKEN.findall(content)):
+                    found.update(names[token])
     return found
 
 
@@ -659,14 +733,11 @@ def _sibling_link_references(paths: Sequence[Path], errors: list[str], deadline:
         try:
             with os.scandir(parent) as iterator:
                 for entry in iterator:
-                    if _expired(deadline, errors):
-                        break
-                    if not entry.is_symlink():
-                        continue
-                    try:
-                        targets.append(Path(os.path.normpath(parent / os.readlink(entry.path))))
-                    except OSError:
-                        targets.append(parent)
+                    if entry.is_symlink():
+                        try:
+                            targets.append(Path(os.path.normpath(parent / os.readlink(entry.path))))
+                        except OSError:
+                            targets.append(parent)
         except OSError:
             errors.append("sibling_link_inventory_unreadable")
             continue
@@ -715,14 +786,12 @@ def _filesystem_location(path: Path, own_mounts: Sequence[tuple[str, str, str]])
 
 def _namespace_mount_references(paths: Sequence[Path], process_root: Path, errors: list[str],
                                 deadline: float) -> set[Path]:
-    """Candidates a process in another mount namespace (a container, a sandboxed unit) uses.
+    """Candidates a process in another mount namespace (a container, a sandboxed unit) can use.
 
-    Its cwd and descriptors name paths inside its own namespace, so the plain
-    process scan cannot match them. Each mount of a candidate's filesystem in
-    that namespace is read: a mount of the candidate itself or of a folder inside
-    it holds the candidate outright; a mount of a folder containing it says where
-    the candidate appears there, and that process's cwd and descriptors are
-    matched against that path.
+    A mount of the candidate, of a folder inside it or of a folder containing it
+    holds it. Only a mount of the whole filesystem at the same mount point as
+    here (a sandboxed unit's view of the host) does not; that process's cwd and
+    descriptors are matched instead, as the process scan does for this namespace.
     """
     found: set[Path] = set()
     try:
@@ -735,6 +804,7 @@ def _namespace_mount_references(paths: Sequence[Path], process_root: Path, error
     if any(location is None for location in locations.values()):
         errors.append("mount_namespace_inventory_unreadable")
         return found
+    own_points = {(device, point) for device, root, point in own_mounts if root == "/"}
     try:
         processes = sorted(entry for entry in process_root.iterdir() if entry.name.isdigit())
     except OSError:
@@ -755,12 +825,14 @@ def _namespace_mount_references(paths: Sequence[Path], process_root: Path, error
                 for device, root, point in _mountinfo(_read_small(process / "mountinfo", _MAX_MOUNTINFO_BYTES)):
                     mounted = PurePosixPath(root)
                     for path, location in locations.items():
-                        if location is None or location[0] != device:
+                        if location is None or location[0] != device or not (
+                                mounted == location[1] or location[1] in mounted.parents
+                                or mounted in location[1].parents):
                             continue
-                        if mounted == location[1] or location[1] in mounted.parents:
-                            found.add(path)  # the candidate, or a folder inside it, is mounted there
-                        elif mounted in location[1].parents:
+                        if root == "/" and (device, point) in own_points:
                             view[PurePosixPath(point) / location[1].relative_to(mounted)] = path
+                        else:
+                            found.add(path)
                 views[namespace] = view
             links = [process / "cwd", *(process / "fd").iterdir()]
         except FileNotFoundError:
@@ -783,18 +855,37 @@ def _namespace_mount_references(paths: Sequence[Path], process_root: Path, error
     return found
 
 
+def _top_level_mtime(path: Path) -> tuple[float | None, bool]:
+    """Newest mtime of the folder and its direct children; never walks deeper."""
+    try:
+        newest = path.lstat().st_mtime
+        with os.scandir(path) as iterator:
+            for count, entry in enumerate(iterator):
+                if count >= MAX_CANDIDATES:
+                    return newest, False
+                newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+    except OSError:
+        return None, False
+    return newest, True
+
+
 def build_reference_census(
     *, work_root: Path = DEFAULT_WORK_ROOT, inputs_root: Path = DEFAULT_INPUTS_ROOT,
     process_root: Path = Path("/proc"), pins_root: Path = DEFAULT_PINS_ROOT,
     queue_roots: Sequence[Path] | None = None, release_link: Path = DEFAULT_RELEASE_LINK,
     active_run_roots: Sequence[Path] | None = None,
     unit_directories: Sequence[Path] = DEFAULT_UNIT_DIRECTORIES,
+    env_directories: Sequence[Path] = DEFAULT_ENV_DIRECTORIES, env_excluded: Sequence[Path] = ENV_EXCLUDED,
+    capture_roots: Sequence[Path] = DEFAULT_CAPTURE_ROOTS, handoff_roots: Sequence[Path] = DEFAULT_HANDOFF_ROOTS,
+    door_request_roots: Sequence[Path] = DEFAULT_DOOR_REQUEST_ROOTS,
+    docker_containers: Path = DEFAULT_DOCKER_CONTAINERS, source_roots: Sequence[Path] = DEFAULT_SOURCE_ROOTS,
     now: float | None = None, max_seconds: float = REFERENCE_CENSUS_MAX_SECONDS,
 ) -> dict[str, Any]:
-    """Which orphan scratch folders anything refers to; reads only, sizes nothing.
+    """Per orphan scratch folder, which kinds of reference were found; reads only.
 
-    ``status`` is ``complete`` only when every reference inventory was read in full
-    within the deadline. Otherwise a reader must count every folder as referenced.
+    Every kind in ``REFERENCE_KINDS`` gets a status: ``checked``, ``failed`` (with
+    errors) or ``not_checked`` (with why). The census is ``complete`` only when the
+    candidate listing and every kind are ``checked``.
     """
 
     observed = time.time() if now is None else now
@@ -802,46 +893,73 @@ def build_reference_census(
         raise ValueError("max_seconds must be between 0 and 240")
     started = time.monotonic()
     deadline = started + max_seconds
-    errors: list[str] = []
-    paths = _candidates(work_root, inputs_root, errors, deadline)
-    if queue_roots is None:
-        errors.append("queue_inventory_unavailable")
-    if active_run_roots is None:
-        errors.append("active_run_inventory_unavailable")
-    kinds: dict[str, set[Path]] = {
-        "queue": _queue_references(paths, queue_roots or (), errors, deadline),
-        "process": _process_references(paths, process_root, errors, deadline),
-        "container_mount": _namespace_mount_references(paths, process_root, errors, deadline),
-        "unit_file": _unit_references(paths, unit_directories, errors, deadline),
-        "sibling_link": _sibling_link_references(paths, errors, deadline),
-    }
-    pin_paths = _pin_references(pins_root, observed, errors, deadline)
+    listing_errors: list[str] = []
+    paths = _candidates(work_root, inputs_root, listing_errors, deadline)
+    names: dict[bytes, set[Path]] = {}
+    for path in paths:
+        names.setdefault(os.fsencode(path.name), set()).add(path)
     try:
         release_path: Path | None = release_link.resolve(strict=True)
     except OSError:
-        errors.append("live_release_unavailable")
         release_path = None
-    active_paths = tuple(active_run_roots or ())
+    statuses: dict[str, dict[str, Any]] = {}
+    found: dict[str, set[Path]] = {}
+
+    def run(kind: str, check: Any, not_checked: str | None = None) -> None:
+        if not_checked is not None:
+            statuses[kind] = {"status": "not_checked", "reason": not_checked}
+            found[kind] = set()
+            return
+        errors: list[str] = []
+        found[kind] = check(errors)
+        statuses[kind] = ({"status": "checked"} if not errors
+                          else {"status": "failed", "errors": sorted(set(errors))[:10]})
+
+    def records(roots: Sequence[Path], **options: Any) -> Any:
+        return lambda errors: _record_references(names, roots, errors, deadline, **options)
+
+    run("queue", lambda errors: _queue_references(paths, queue_roots or (), errors, deadline),
+        None if queue_roots else "queue_roots_not_configured")
+    run("active_run", records(tuple(active_run_roots or ()), suffixes=frozenset({".json"})),
+        None if active_run_roots else "active_run_roots_not_configured")
+    run("capture_reconstruction", records(capture_roots, suffixes=frozenset({".json"})))
+    run("pubsub_handoff", records(handoff_roots, suffixes=frozenset({".json"})))
+    run("door_request", records(door_request_roots, suffixes=frozenset({".json"})))
+    run("process", lambda errors: _process_references(paths, process_root, errors, deadline))
+    run("container_mount", lambda errors: _namespace_mount_references(paths, process_root, errors, deadline))
+    run("docker_container", records((docker_containers,),
+                                    file_names=frozenset({"config.v2.json", "hostconfig.json"})))
+    run("unit_file", records(unit_directories, follow_files=True))
+    run("env_file", records(env_directories, follow_files=True, excluded=env_excluded))
+    run("release_source", records(tuple(([release_path] if release_path else []) + list(source_roots)),
+                                  suffixes=_SOURCE_SUFFIXES, skip_directories=_SKIPPED_SOURCE_DIRECTORIES),
+        None if release_path is not None else "live_release_unavailable")
+    run("sibling_link", lambda errors: _sibling_link_references(paths, errors, deadline))
+    pin_errors: list[str] = []
+    pin_paths = _pin_references(pins_root, observed, pin_errors, deadline)
+    found["pin"] = {path for path in paths if _referenced(path, pin_paths, deadline, pin_errors)}
+    statuses["pin"] = {"status": "checked"} if not pin_errors else {"status": "failed",
+                                                                    "errors": sorted(set(pin_errors))[:10]}
+    run("live_release", lambda errors: {path for path in paths if _intersects(path, release_path)},
+        None if release_path is not None else "live_release_unavailable")
+    _expired(deadline, listing_errors)
     rows = []
     for path in paths:
-        references = sorted(kind for kind, found in kinds.items() if path in found)
-        if _referenced(path, pin_paths, deadline, errors):
-            references.append("pin")
-        if release_path is not None and _intersects(path, release_path):
-            references.append("live_release")
-        if _referenced(path, active_paths, deadline, errors):
-            references.append("active_run")
+        mtime, mtime_complete = _top_level_mtime(path)
+        use, run_time_only = use_guess(path.name)
         family, _guess, _basis = _family(path.name)
-        rows.append({"path": str(path), "family": family, "references": references})
-    _expired(deadline, errors)
-    return {"schema_version": REFERENCE_CENSUS_SCHEMA_VERSION,
-            "status": "incomplete" if errors else "complete", "observed_at_epoch": observed,
+        rows.append({"path": str(path), "lane_family": family, "use_guess": use, "use_basis": "name_pattern",
+                     "run_time_only": run_time_only,
+                     "references": [kind for kind in REFERENCE_KINDS if path in found.get(kind, ())],
+                     "top_level_mtime_epoch": mtime, "top_level_mtime_complete": mtime_complete})
+    complete = not listing_errors and all(statuses.get(kind, {}).get("status") == "checked"
+                                          for kind in REFERENCE_KINDS)
+    return {"schema_version": REFERENCE_CENSUS_SCHEMA_VERSION, "statement": EVIDENCE_STATEMENT,
+            "status": "complete" if complete else "incomplete", "observed_at_epoch": observed,
             "duration_seconds": round(time.monotonic() - started, 3),
-            "candidate_count": len(paths), "rows": rows,
-            "scan_errors": sorted(set(errors)), "mutations": 0}
-
-
-REFERENCE_CENSUS_FILENAME = "orphan-scratch-census.json"
+            "candidate_count": len(paths), "candidate_listing_errors": sorted(set(listing_errors)),
+            "kinds": {kind: statuses[kind] for kind in REFERENCE_KINDS},
+            "not_checked_sources": list(NOT_CHECKED_SOURCES), "rows": rows, "mutations": 0}
 
 
 def publish_reference_census(directory: Path, *, pins_root: Path, queue_roots: Sequence[str | Path],
@@ -874,4 +992,4 @@ def publish_reference_census(directory: Path, *, pins_root: Path, queue_roots: S
 
 
 __all__ = ["DEFAULT_INPUTS_ROOT", "DEFAULT_WORK_ROOT", "REFERENCE_CENSUS_SCHEMA_VERSION",
-           "build_census", "build_reference_census", "publish_reference_census"]
+           "build_census", "build_reference_census", "publish_reference_census", "use_guess"]
