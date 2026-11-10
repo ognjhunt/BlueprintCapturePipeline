@@ -129,10 +129,11 @@ FLOOR_WITHIN_HOURS_CLEAR = 12.0
 PAGE_ALERT_CODES = frozenset({
     "floor_within_three_days", "floor_within_hours", "admission_refused", "critical_admission_refused",
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
+    # The one disk page for a critical mount that the GC cannot relieve; it names
+    # the mount, its free and floor bytes and what the GC kept. The usage findings
+    # it rests on (storage_class_over_budget, orphan_scratch_large,
+    # usage_unclassified_root) warn: on a healthy disk none needs action today.
     "reclaim_ineffective",
-    "orphan_scratch_large",
-    # A storage class past its byte budget: something grows with no cap.
-    "storage_class_over_budget",
     # Vast stops every instance once its balance runs out.
     "provider_credit_insufficient",
     # A live website preparation status callback undelivered for over an hour (D-05);
@@ -142,6 +143,11 @@ PAGE_ALERT_CODES = frozenset({
     *provider_spend.PAGE_CODES,
     # A live job that stopped moving (control_plane_stall_alarm); the disk level is unchanged.
     *stall_alarm.PAGE_CODES,
+})
+
+
+_RECLAIM_CITED_WARNINGS = frozenset({
+    "storage_class_over_budget", "orphan_scratch_large", "usage_unclassified_root",
 })
 
 
@@ -724,7 +730,7 @@ def class_budgets(environ: Mapping[str, str] | None = None) -> tuple[dict[str, i
 
 
 def usage_alerts(survey: Mapping[str, Any], *, budgets: Mapping[str, int] | None = None) -> list[dict[str, Any]]:
-    """Warnings, one owner page for large unregistered scratch, and a page per class over budget."""
+    """Usage warnings: large unregistered scratch, each class over budget, each large root."""
 
     def number(value: Any) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -957,11 +963,22 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
         summary = (f"website preparation status: a callback undelivered for "
                    f"{float(first.get('age_seconds') or 0) / 3600:.1f}h "
                    f"({first.get('count')} live, {first.get('parked_count') or 0} parked)")
+    elif first.get("code") == "reclaim_ineffective" and first.get("mount"):
+        summary = (f"{first.get('mount')}: reclaim frees nothing; "
+                   f"{float(first.get('free_bytes') or 0) / GIB:.1f} GiB free, floor "
+                   f"{float(first.get('floor_bytes') or 0) / GIB:.1f} GiB, "
+                   f"{float(first.get('available_bytes') or 0) / GIB:.1f} GiB above it")
     ineffective = next(
         (row for row in page_alerts if row.get("code") == "reclaim_ineffective"), None
     )
     if ineffective and ineffective.get("top_retained_reasons"):
         summary += "; retained: " + ", ".join(ineffective["top_retained_reasons"])
+    if ineffective:
+        # The usage warnings the page rests on; their rows are in ``alerts``.
+        cited = sorted({str(a.get("code")) for a in report.get("alerts") or []
+                        if a.get("code") in _RECLAIM_CITED_WARNINGS})
+        if cited:
+            summary += "; see " + ", ".join(cited)
     if stalls or spends:
         # A stalled job or a provider's spend leads: the disk pages may have been repeating for days.
         summary = "; ".join([*stalls, *spends, *([summary] if page_alerts else [])])
@@ -1311,10 +1328,16 @@ def run_controller(
     report["reclaim_outlook"] = outlook
     # Critical disks that GC cannot relieve; another alert's critical level is not a disk.
     if disk_level == "critical" and reclaim_ineffective:
-        report["alerts"].append({
+        critical = [row for row in report.get("mounts") or []
+                    if isinstance(row, Mapping) and row.get("level") == "critical"
+                    and row.get("status") == "measured"]
+        report["alerts"].extend({
             "code": "reclaim_ineffective",
+            **({"mount": row.get("mount"), "free_bytes": row.get("free_bytes"),
+                "floor_bytes": row.get("floor_bytes"), "available_bytes": row.get("available_bytes"),
+                "used_fraction": row.get("used_fraction")} if row else {}),
             "top_retained_reasons": retained_reasons,
-        })
+        } for row in critical or [None])
     _annotate_alerts(report["alerts"])
     report["alert_posted"] = False
     if webhook_url and alert_due(previous, report, now=observed):
