@@ -41,6 +41,8 @@ MANIFEST_FILENAME = "manifest.json"
 # materialize_root), so it is fixed rather than a fresh temporary directory. It
 # holds committed test fixtures only.
 DEFAULT_MATERIALIZE_ROOT = "/tmp/blueprint-replay-set-v1"  # nosec B108 - fixed root of committed synthetic fixtures
+#: Manifest field: the wall-clock instant every record is replayed at (``_replay_clock``).
+CLOCK_FIELD = "replay_clock_epoch"
 GZIP_SUFFIX = ".gz"
 STOP_FIELDS = ("kind", "stage", "code")
 
@@ -99,6 +101,28 @@ def _actual(report: Mapping[str, Any]) -> dict[str, Any]:
     return {field: stop.get(field) for field in STOP_FIELDS}
 
 
+@contextlib.contextmanager
+def _replay_clock(epoch: float | None) -> Iterator[None]:
+    """Run the replayed chain at the instant the records were taken.
+
+    A record carries real times (a grant's consent and its expiry), and the
+    replayed chain compares them with ``time.time()``. At today's clock every
+    record fails once its grant window has passed: the first committed set
+    stopped passing a day after it was built. So the wall clock the chain reads
+    starts at the manifest's ``replay_clock_epoch`` and advances with elapsed
+    time. A manifest without one (an older set) is replayed at the real clock.
+    """
+    if epoch is None:
+        yield
+        return
+    real, origin = time.time, time.monotonic()
+    time.time = lambda: epoch + (time.monotonic() - origin)
+    try:
+        yield
+    finally:
+        time.time = real
+
+
 def _boundary_breaches(report: Mapping[str, Any]) -> list[str]:
     breaches = []
     if report.get("network_attempts"):
@@ -129,6 +153,9 @@ def run_set(set_dir: str | Path, *, replay_root: str | Path | None = None, recor
     if unknown:
         raise ValueError(f"no such record in the set: {', '.join(unknown)}")
     root = Path(materialize_root or manifest.get("materialize_root") or DEFAULT_MATERIALIZE_ROOT)
+    clock = manifest.get(CLOCK_FIELD)
+    if clock is not None and (isinstance(clock, bool) or not isinstance(clock, (int, float)) or clock <= 0):
+        raise ValueError(f"{CLOCK_FIELD} is not a time: {set_dir / MANIFEST_FILENAME}")
     started, rows = time.monotonic(), []
     with contextlib.ExitStack() as stack:
         scratch = Path(replay_root) if replay_root else Path(stack.enter_context(
@@ -146,8 +173,9 @@ def run_set(set_dir: str | Path, *, replay_root: str | Path | None = None, recor
                         actual, breaches, error = {}, [], f"unknown_tool:{tool['tool']}"
                     else:
                         tool_started = time.monotonic()
-                        report = runner(tool["inputs"], host=host, until=tool["until"],
-                                        replay_root=scratch / record_id)
+                        with _replay_clock(clock):
+                            report = runner(tool["inputs"], host=host, until=tool["until"],
+                                            replay_root=scratch / record_id)
                         actual, breaches, error = _actual(report), _boundary_breaches(report), None
                     passed = error is None and not breaches and actual == expected
                     row = {"record_id": record_id, "job_kind": entry["job_kind"], "tool": tool["tool"],
@@ -185,8 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if result["passed"] else 1
 
 
-__all__ = ["DEFAULT_MATERIALIZE_ROOT", "MANIFEST_FILENAME", "MANIFEST_SCHEMA", "TOOLS", "main", "materialize",
-           "run_set"]
+__all__ = ["CLOCK_FIELD", "DEFAULT_MATERIALIZE_ROOT", "MANIFEST_FILENAME", "MANIFEST_SCHEMA", "TOOLS", "main",
+           "materialize", "run_set"]
 
 if __name__ == "__main__":
     raise SystemExit(main())

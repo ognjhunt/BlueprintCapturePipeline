@@ -238,7 +238,12 @@ def dispatch_session(args, *, control_identity, control_blockers, control_rechec
         if entered and args.execute and result.get("provider_mutations_performed") == 0:
             result.pop("provider_mutations_performed", None)
             result.update(provider_mutation_status="unproven_reconcile_exact_attempt", provider_teardown_verified=False)
-        result.update(status="blocked", blockers=[*result.get("blockers", []), "g1_beta_paid_dispatch_failed:" + type(exc).__name__])
+        # A paid admission names why it refused (typed codes, never text): a stale account report waits and is
+        # read again, a reached limit is a money stop. Without them the screening queue could not tell the two.
+        refused = [code for code in getattr(exc, "blockers", []) if isinstance(code, str)] if isinstance(
+            exc, PaidResourceAdmissionBlocked) else []
+        result.update(status="blocked", blockers=[*result.get("blockers", []), "g1_beta_paid_dispatch_failed:" + type(exc).__name__,
+                                                  *refused])
     finally:
         if gate is not None:
             gate.release()

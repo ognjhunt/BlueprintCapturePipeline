@@ -35,6 +35,10 @@ that path is covered by the receipt's digest. Each record was therefore built at
 `/tmp/blueprint-replay-set-v1/<record_id>/host` (`materialize_root` in the manifest), and the runner
 puts it back at exactly that path, holding a lock while it does, and removes it afterwards.
 
+Every record is replayed at the wall-clock instant in the manifest's `replay_clock_epoch`, not at
+today's clock: the records carry real grant times (consent and expiry), and the replayed chain
+compares them with the clock. Rebuilding the set writes a new instant.
+
 | record | kind | expected first stop |
 | --- | --- | --- |
 | `rigid-pick-place-1080p-short` | rigid pick-and-place | `completed` at `screening_plan` (plan frozen within the job ceiling) |

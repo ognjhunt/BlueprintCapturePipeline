@@ -618,3 +618,270 @@ def test_the_meter_cli_includes_the_retained_atlas_attempts(host, capsys):
     assert jobs["req-1"]["by_source"]["atlas"]["settled_usd"] == 5.5
     assert jobs["req-3"]["by_source"]["atlas"]["held_usd"] == 1.7
     assert "paid_spend_meter_atlas_attempts_unobserved" not in view["gaps"]
+
+
+# ----------------------------- the cap cannot silently not exist in production (audit 2026-11-10) -----------------------------
+
+PRODUCTION = "BLUEPRINT_LAUNCH_PROOF_MODE"
+
+
+@pytest.fixture
+def no_limit_file(tmp_path, monkeypatch):
+    """No limit file, and neither sign of the production control plane until a test adds one."""
+
+    monkeypatch.setenv(account.CONFIG_ENV, str(tmp_path / "absent.json"))
+    monkeypatch.delenv(PRODUCTION, raising=False)
+    state = tmp_path / "var-lib-blueprint" / "pipeline-control-plane"
+    monkeypatch.setattr(account, "DEFAULT_ROOT", state / "account-monthly-spend")
+    host_environment = tmp_path / "etc-blueprint" / "pipeline-control-plane.env"
+    monkeypatch.setattr(account, "HOST_ENVIRONMENT_FILE", host_environment)
+    return host_environment
+
+
+@pytest.mark.parametrize("sign", ["launch_mode", "host_environment_file"])
+def test_on_the_production_control_plane_a_missing_limit_file_refuses_new_spend(no_limit_file, monkeypatch, sign):
+    assert account.limit_required() is False and account.admission_blockers(now=NOW) == []
+    admitted_before = _admit()
+    if sign == "launch_mode":
+        monkeypatch.setenv(PRODUCTION, "production")  # what the units' environment file sets
+    else:
+        no_limit_file.parent.mkdir(parents=True)  # the units' EnvironmentFile: only the host install writes it
+        no_limit_file.write_text("", encoding="utf-8")
+    assert account.limit_required() is True
+    assert account.admission_blockers(now=NOW) == ["account_monthly_spend_limit_not_configured"]
+    with pytest.raises(PaidResourceAdmissionBlocked) as refused:
+        _admit()
+    assert refused.value.blockers == [account.LIMIT_NOT_CONFIGURED]
+    with pytest.raises(PaidResourceAdmissionBlocked) as budget:
+        require_paid_resource_budget(resource_class="openai_api_candidate")
+    assert budget.value.blockers == [account.LIMIT_NOT_CONFIGURED]
+    # A stop is never blocked, and work admitted earlier keeps its grant.
+    stop = require_paid_resource_admission(_stop_admission(spend_effect="stop"), resource_class="gpu_render",
+                                           expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                                           spend_effect="stop")
+    assert stop.resource_class == "gpu_render"
+    require_paid_resource_admission_grant(admitted_before, resource_class="vast_provider_adapter")
+
+
+def test_a_state_directory_alone_does_not_make_a_machine_production(no_limit_file, monkeypatch):
+    """Running code creates the state directory on any machine; that must not switch the refusal on."""
+    account.DEFAULT_ROOT.parent.mkdir(parents=True)
+    assert account.limit_required() is False
+    assert account.admission_blockers(now=NOW) == []
+
+
+@pytest.mark.parametrize("mode", [None, "", "local", "staging", "not-production"])
+def test_outside_production_a_missing_limit_file_still_means_no_limit(no_limit_file, monkeypatch, mode):
+    if mode is not None:
+        monkeypatch.setenv(PRODUCTION, mode)
+    assert account.limit_required() is False
+    assert account.configured_policy()[:2] == (None, None)
+    assert account.admission_blockers(now=NOW) == []
+    assert _admit().resource_class == "vast_provider_adapter"
+    require_paid_resource_budget(resource_class="vast_provider_adapter")
+    report = report_module.build_report(now=NOW, policy=None, policy_error=None, config=Path("/absent"), readings={},
+                                        meter=meter.meter_view([], now=NOW),
+                                        limit_is_required=account.limit_required())
+    assert report["cap_status"] == "not_set" and report["blockers"] == [] and report["admission_allowed"] is True
+
+
+def test_the_launch_mode_is_read_as_the_units_set_it(no_limit_file):
+    assert account.limit_required({PRODUCTION: " Production "}) is True
+    assert account.limit_required({}) is False
+
+
+def test_with_the_limit_installed_production_behaves_exactly_as_before(host, monkeypatch):
+    before = report_module.refresh_report(now=NOW)
+    monkeypatch.setenv(PRODUCTION, "production")
+    after = report_module.refresh_report(now=NOW)
+    assert after == before and after["cap_status"] == "set" and after["blockers"] == []
+    assert account.admission_blockers() == []
+    assert _admit().resource_class == "vast_provider_adapter"
+    assert [row["code"] for row in account.account_alerts(account.observe_account_spend(now=NOW + 60))] == [
+        "account_spend_month_50pct", "account_spend_unverifiable"]
+
+
+@pytest.mark.parametrize("content", ["not json", "{}"])
+def test_an_invalid_limit_file_is_still_named_as_invalid_in_production(tmp_path, monkeypatch, content):
+    path = tmp_path / "limit.json"
+    path.write_text(content)
+    monkeypatch.setenv(account.CONFIG_ENV, str(path))
+    monkeypatch.setenv(PRODUCTION, "production")
+    assert account.admission_blockers(now=NOW) == [account.CONFIG_INVALID]
+    assert account.account_alerts(account.observe_account_spend(now=NOW))[0]["code"] == (
+        "account_spend_limit_config_invalid")
+
+
+def test_in_production_the_report_says_the_cap_is_missing_and_the_capacity_check_pages(host, monkeypatch):
+    from blueprint_pipeline import control_plane_capacity_controller as capacity
+
+    absent = str(host["tmp"] / "absent.json")
+    monkeypatch.setenv(account.CONFIG_ENV, absent)
+    monkeypatch.setenv(PRODUCTION, "production")
+    report = report_module.refresh_report(now=NOW)
+    assert report["cap_status"] == "missing" and report["limit_usd"] is None and report["limit_reached"] is False
+    assert report["blockers"] == [account.LIMIT_NOT_CONFIGURED] and report["admission_allowed"] is False
+    assert report["counted_usd"] == 127.2  # the month is still counted and shown
+    assert json.loads(Path(report["report_path"]).read_text())["cap_status"] == "missing"
+
+    row = account.observe_account_spend(now=NOW + 60)
+    assert row["cap_status"] == "missing" and row["admission_allowed"] is False
+    alerts = account.account_alerts(row)
+    assert alerts == [{"code": "account_spend_limit_missing", "provider": "account", "window": "utc_month:2026-11"}]
+    assert "account_spend_limit_missing" in spend.PAGE_CODES - spend.WARN_CODES
+    assert capacity._severity("account_spend_limit_missing") == "page"
+    assert spend.describe(alerts[0]) == (
+        "Account monthly limit config missing on the control plane: every new paid admission is refused")
+
+    # The existing route: the capacity tick's provider spend check and its door-readable summary.
+    observation = spend.observe_provider_spend(NOW + 60, environ={
+        **host["env"], account.CONFIG_ENV: absent, PRODUCTION: "production", "OPENAI_ADMIN_API_KEY_FILE": ""})
+    assert "account_spend_limit_missing" in [row["code"] for row in observation["alerts"]]
+    summary = spend.summary_projection(observation)["providers"]["account"]
+    assert summary["cap_status"] == "missing" and summary["admission_allowed"] is False
+
+    # It pages whatever state the report is in: unreadable, or stale.
+    Path(report["report_path"]).unlink()
+    assert [row["code"] for row in account.account_alerts(account.observe_account_spend(now=NOW + 60))] == [
+        "account_spend_limit_missing"]
+    # The same file state off the host only warns, as before.
+    monkeypatch.delenv(PRODUCTION)
+    report_module.refresh_report(now=NOW)
+    assert [row["code"] for row in account.account_alerts(account.observe_account_spend(now=NOW + 60))][0] == (
+        "account_spend_limit_not_set")
+
+
+def test_in_production_the_spend_guard_report_carries_the_missing_cap(host, monkeypatch, capsys):
+    from scripts import gpu_spend_guard as fleet
+
+    monkeypatch.setenv(account.CONFIG_ENV, str(host["tmp"] / "absent.json"))
+    monkeypatch.setenv(PRODUCTION, "production")
+    summary = fleet._refresh_account_monthly_spend(host["env"][account.BILLING_EXPORT_ENV], now=NOW + 60)
+    assert summary["cap_status"] == "missing" and summary["admission_allowed"] is False
+    assert summary["blockers"] == [account.LIMIT_NOT_CONFIGURED] and summary["counted_usd"] == 127.2
+    assert "limit file missing, new paid admissions refused" in capsys.readouterr().err
+
+
+def test_the_cli_names_the_missing_cap(host, monkeypatch, capsys):
+    monkeypatch.setenv(account.CONFIG_ENV, str(host["tmp"] / "absent.json"))
+    monkeypatch.setenv(PRODUCTION, "production")
+    assert account.main([]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["cap_status"] == "missing" and shown["admission_blockers"] == [account.LIMIT_NOT_CONFIGURED]
+
+
+# ----------------------------- old unsettled holds do not shrink the month (audit 2026-11-10) -----------------------------
+
+
+def test_one_unsettled_hold_from_october_and_one_from_this_month_count_only_this_months(host):
+    from tests.test_paid_spend_meter import _held_for_good, _ledger
+
+    _ledger(host["tmp"] / "queue", {
+        "october": _held_for_good("screen-oct", launched="2026-10-14T09:00:00+00:00",
+                                  held_at="2026-10-14T11:30:00+00:00"),
+        "november": _held_for_good("screen-nov", launched="2026-11-05T09:00:00+00:00",
+                                   held_at="2026-11-05T10:00:00+00:00"),
+    })
+    report = report_module.refresh_report(now=NOW)
+    # Providers 117.20 as before; held: this month's 4.00 and the journal's 2.00. October's 4.00 is not counted.
+    assert report["spend_usd"] == 117.2 and report["held_usd"] == 6.0 and report["counted_usd"] == 123.2
+    assert report["held_by_source_usd"] == {"beta_policy_screening": 4.0, "paid_resource_admission": 2.0}
+    assert report["old_unsettled_held_usd"] == 4.0
+    assert report["meter"]["old_unsettled_holds"] == [{
+        "job_id": "req-1", "source": "beta_policy_screening", "meter_key": "screen-oct", "provider": "vast",
+        "held_usd": 4.0, "billable_until": "2026-10-14T11:30:00+00:00", "reason": "beta_screening_settlement_unproven"}]
+    # An old hold is not a missing reading: it adds no gap of its own.
+    assert not [gap for gap in report["gaps"] if "hold" in gap]
+    shown = account.summary(report)
+    assert shown["old_unsettled_held_usd"] == 4.0 and shown["old_unsettled_holds"][0]["meter_key"] == "screen-oct"
+    # In December neither attempt can be billed any more; both are listed, neither counted.
+    december = datetime(2026, 12, 2, 12, 0, tzinfo=timezone.utc).timestamp()
+    later = report_module.refresh_report(now=december)
+    assert later["held_by_source_usd"]["beta_policy_screening"] == 0.0 and later["old_unsettled_held_usd"] == 8.0
+
+
+def test_old_holds_alone_never_reach_the_limit(host):
+    policy, _error, config = account.configured_policy()
+    rows = [{"source": "beta_policy_screening", "job_id": "req-1", "meter_key": f"a{index}", "status": "held",
+             "held_usd": Decimal("50"), "provider": "vast",
+             "billable_until_epoch": datetime(2026, 10, 31, 23, 59, 59, tzinfo=timezone.utc).timestamp()}
+            for index in range(4)]
+    report = report_module.build_report(now=NOW, policy=policy, policy_error=None, config=config, readings={},
+                                        meter=meter.meter_view(rows, now=NOW))
+    assert report["held_usd"] == 0.0 and report["counted_usd"] == 0.0 and report["limit_reached"] is False
+    assert report["old_unsettled_held_usd"] == 200.0
+
+
+def test_an_unreadable_screening_ledger_still_keeps_this_months_holds_not_the_old_ones(host):
+    from tests.test_paid_spend_meter import _held_for_good, _ledger
+
+    _ledger(host["tmp"] / "queue", {
+        "october": _held_for_good("screen-oct", launched="2026-10-14T09:00:00+00:00",
+                                  held_at="2026-10-14T11:30:00+00:00"),
+        "november": _held_for_good("screen-nov", launched="2026-11-05T09:00:00+00:00",
+                                   held_at="2026-11-05T10:00:00+00:00"),
+    })
+    first = report_module.refresh_report(now=NOW)
+    (host["tmp"] / "queue" / "screening_ledger.v1.json").write_text("{not json")
+    second = report_module.refresh_report(now=NOW + 60)
+    assert second["held_by_source_usd"]["beta_policy_screening"] == 4.0 == first["held_by_source_usd"]["beta_policy_screening"]
+    assert second["counted_usd"] == first["counted_usd"]
+
+
+# ----------------------------- a carried billing reading is counted and never reported as observed -----------------------------
+
+
+def _carried_export(host, *, observed: float, generated: float = NOW - 600) -> None:
+    Path(host["env"][account.BILLING_EXPORT_ENV]).write_text(json.dumps({
+        "schema_version": account.BILLING_EXPORT_SCHEMA, "generated_at": _iso(generated), "currency": "USD",
+        "scope": account.BILLING_EXPORT_SCOPE, "provider_totals_usd": {"digitalocean": 300.0},
+        "carried_forward": {"vast": {"total_usd": 1000.0, "observed_at": _iso(observed),
+                                     "age_seconds": generated - observed,
+                                     "failure": "provider_billing_request_failed", "failed_at": _iso(generated)}}}))
+
+
+def test_a_carried_billing_reading_keeps_the_providers_month_and_says_the_call_failed(host):
+    first = report_module.refresh_report(now=NOW)
+    assert first["providers"]["vast"]["status"] == "observed" and first["providers"]["vast"]["counted_usd"] == 50.0
+    _carried_export(host, observed=NOW - 3 * 3600)
+    report = report_module.refresh_report(now=NOW + 60)
+    vast = report["providers"]["vast"]
+    assert vast["counted_usd"] == 50.0 and vast["reconciled_month_usd"] == 50.0
+    assert vast["status"] == "carried_forward" and vast["reason"] == "billing_reading_carried_forward"
+    assert vast["observed_at"] == _iso(NOW - 3 * 3600)  # the time it was really read
+    assert vast["carried_forward"] == {"observed_at": _iso(NOW - 3 * 3600),
+                                       "failure": "provider_billing_request_failed", "failed_at": _iso(NOW - 600)}
+    assert "held_from_previous_report" not in vast
+    assert "account_monthly_spend_provider_carried_forward:vast" in report["gaps"] and report["complete"] is False
+    assert report["providers"]["digitalocean"]["status"] == "observed"
+    assert report["counted_usd"] == first["counted_usd"]
+    # Door status (the guard's summary) and the capacity warn both show it.
+    shown = account.summary(report)["providers"]["vast"]
+    assert shown["status"] == "carried_forward" and shown["carried_forward"]["failure"] == (
+        "provider_billing_request_failed")
+    assert "carried_forward" not in account.summary(report)["providers"]["digitalocean"]
+    alerts = account.account_alerts(account.observe_account_spend(now=NOW + 120))
+    assert "account_monthly_spend_provider_carried_forward:vast" in alerts[-1]["reason"]
+
+
+def test_a_carried_reading_from_before_the_month_or_too_old_is_not_this_months_spend(host, tmp_path):
+    month_start = datetime(2026, 11, 1, tzinfo=timezone.utc).timestamp()
+    export = Path(host["env"][account.BILLING_EXPORT_ENV])
+    audit = Path(host["env"][account.BILLING_AUDIT_ROOT_ENV])
+    # Read at 23:50 on the 31st, carried into the first hours of November: not November's spend.
+    _carried_export(host, observed=month_start - 600, generated=month_start + 3600)
+    early = report_module.billing_month_readings(export, audit, now=month_start + 3700)
+    assert early["vast"]["status"] == "other_month" and early["vast"]["month_usd"] is None
+    assert early["vast"]["carried_forward"]["failure"] == "provider_billing_request_failed"
+    assert early["digitalocean"]["status"] == "observed"  # a fresh reading is judged by its own time
+    # Older than the 24 hours billing evidence is accepted for, or dated ahead: ignored.
+    for observed in (NOW - account.BILLING_MAX_AGE_SECONDS - 1, NOW + 3600):
+        _carried_export(host, observed=observed)
+        assert "vast" not in report_module.billing_month_readings(export, audit, now=NOW)
+    # A fresh total always wins over a carried row for the same provider.
+    payload = json.loads(export.read_text())
+    payload["provider_totals_usd"]["vast"] = 1010.0
+    payload["carried_forward"]["vast"]["observed_at"] = _iso(NOW - 3600)
+    export.write_text(json.dumps(payload))
+    fresh = report_module.billing_month_readings(export, audit, now=NOW)["vast"]
+    assert fresh["status"] == "observed" and fresh["month_usd"] == Decimal("60.0") and "carried_forward" not in fresh

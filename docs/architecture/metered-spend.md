@@ -59,7 +59,18 @@ admission and settlement per job, so the meter reads them.
 How the view counts:
 
 - A settled row counts in the UTC month it settled.
-- A held row counts while it is held, whatever month it was admitted in.
+- A held row counts in every month its attempt could still be billed in
+  (`hold_counts_in_month`). The attempt's own record decides. A screening
+  attempt that is committed and keeps its whole cap for good
+  (`settlement_held`) ended no later than its `held_at`; a journal admission
+  may record `billable_until_epoch`. A hold whose attempt ended before the
+  month began is not counted: the provider billed it, if at all, in an earlier
+  month. An attempt live across 00:00 UTC on the 1st counts in both months.
+- A hold with no recorded end is open and counts every month: a reservation,
+  a committed attempt not decided yet, or a record whose times do not agree.
+- A hold that no longer counts is listed under `old_unsettled_holds`, with the
+  sum in `old_unsettled_held_usd`, so someone settles it. `door status` shows
+  both under `spend_guard.account_monthly_spend`.
 - The totals are the sums of the job rows (tested).
 
 The meter root is `BLUEPRINT_PAID_SPEND_METER_ROOT`. On the host the default is
@@ -97,7 +108,9 @@ counted = Σ_provider max(reconciled month-to-date, meter settled this month)
 **Holds.** The meter's open holds from every source except Atlas: screening
 caps, and journal holds once lanes price them. Holds are counted on top of
 billing. An in-flight attempt is therefore counted twice: once in its partial
-bill, once in its whole hold. That only makes the limit trip earlier.
+bill, once in its whole hold. That only makes the limit trip earlier. A hold
+whose attempt ended in an earlier month is not counted (see "How the view
+counts"); before 2026-11-10 it reduced every later month for good.
 
 **Missing readings.** A monitoring failure never lowers the count within a
 month. Each run reads the previous report:
@@ -109,7 +122,13 @@ month. Each run reads the previous report:
 - A source of holds that cannot be read (the screening ledger, the journal)
   keeps the holds it last had.
 
-A held figure, or a reading with nothing earlier to keep, sets
+**A failed billing call.** The billing reconciler keeps the last good Vast or
+DigitalOcean total for 24 hours after a call fails
+([`PAID_SPEND_ADMISSION_LOCK.md`](../PAID_SPEND_ADMISSION_LOCK.md)). The report
+counts that total from the time it was really read and marks the provider
+`carried_forward`, with the failure, never `observed`.
+
+A held or carried figure, or a reading with nothing earlier to keep, sets
 `complete: false`, names the provider under `gaps`, and raises the
 `account_spend_unverifiable` warning. It does not stop work by itself:
 everything except money keeps going, and the provider guards still bound each
@@ -146,9 +165,18 @@ reviewed:
   validated. `monthly_limit_usd` must be a string of dollars, with at most two
   decimals and greater than 0. Unknown keys are refused, and `report_path` must
   be absolute. Its sha256 is bound into every report.
-- **No file means report only.** With no file at the path (any machine that is
-  not the host, or the file removed), nothing is refused. The report and the
-  alerts still run, and say `cap_status: not_set`.
+- **No file on the control plane refuses.** The limit must exist in
+  production (`limit_required`). Production is either of two signs:
+  `BLUEPRINT_LAUNCH_PROOF_MODE=production` in the process environment, or the
+  host's installed environment file `/etc/blueprint/pipeline-control-plane.env`
+  (only the host install writes it). The state directory is not a sign,
+  because any process that runs with the default roots creates it. There,
+  with no file at the path, every new paid admission is refused with
+  `account_monthly_spend_limit_not_configured`, the report says
+  `cap_status: missing`, and the capacity tick pages. Stops are still admitted.
+- **No file anywhere else means report only.** On a machine with neither sign
+  (tests, development, a replay off the host), nothing is refused. The report
+  and the alerts still run, and say `cap_status: not_set`.
 - **A file that does not validate refuses** every new paid admission with
   `account_monthly_spend_limit_config_invalid` and pages. Money fails closed.
 
@@ -168,6 +196,7 @@ when:
 | `account_monthly_spend_report_stale` | The report is older than 15 min (`REPORT_MAX_AGE_SECONDS`) or is for another month. |
 | `account_monthly_spend_report_missing_or_invalid` | The report is unreadable, not bound to this config's sha256 and limit, or not `cap_status: set`. |
 | `account_monthly_spend_limit_config_invalid` | The config exists but does not validate. |
+| `account_monthly_spend_limit_not_configured` | No config file, on the production control plane. |
 | `account_monthly_spend_limit_unavailable` | The check itself raised. |
 
 **Stops are never blocked.** `require_paid_resource_admission` takes
@@ -226,7 +255,8 @@ and under `capacity.provider_spend.providers.account`.
 | `account_spend_month_50pct` | warn (delivered once) | counted ≥ $100 |
 | `account_spend_month_80pct` | page (hourly) | counted ≥ $160 |
 | `account_spend_month_limit_reached` | page (hourly) | counted ≥ $200: new paid admissions are refused |
-| `account_spend_limit_not_set` | warn | No config file. The row carries the month's spend. |
+| `account_spend_limit_not_set` | warn | No config file, off the control plane. The row carries the month's spend. |
+| `account_spend_limit_missing` | page (hourly) | No config file on the production control plane: new paid admissions are refused. |
 | `account_spend_limit_config_invalid` | page | The config exists but does not validate. |
 | `account_spend_report_stale` | page | A limit is set and the report is stale or unreadable: admission is refused. |
 | `account_spend_unverifiable` | warn | A reading is missing, or (with no limit) the report is unreadable (`reason`). |

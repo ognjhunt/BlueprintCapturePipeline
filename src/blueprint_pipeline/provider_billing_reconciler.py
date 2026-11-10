@@ -8,6 +8,13 @@ creates, changes, or deletes provider resources. GCP can use a fresh retained
 official project CSV with explicit account and inventory scope. AWS billing
 remains uncovered: automatic paid Cost Explorer queries have been removed.
 RunPod billing is no longer collected: RunPod is retired (2026-11-05).
+
+A provider whose call fails is left out of ``provider_totals_usd``, as before.
+The scheduled run also keeps that provider's last good reading in a separate
+``carried_forward`` block, with the time it was really read and why the new
+call failed, for as long as the admission lock accepts billing evidence (24 h
+from the reading). The spend guard and the account report apply it; nothing
+else reads it. A provider that was never read has nothing to carry.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from blueprint_pipeline.provider_billing_audit_retention import (
     audit_root_lock,
     retain_billing_response,
 )
+from blueprint_pipeline.spend_admission_lock import MAX_BILLING_AGE_SECONDS
 from .vast_official_billing_serialization import (
     BILLING_SOURCE_SCHEMA_VERSION as BILLING_SOURCE_SCHEMA_VERSION,
     VAST_CHARGES_URL as VAST_CHARGES_URL,
@@ -65,6 +73,12 @@ MAX_GUARD_REPORT_BYTES = 16 * 1024 * 1024
 # 24 hours and the next daily refresh.  Keep the fail-closed bound, but allow
 # one complete daily refresh interval of scheduling tolerance.
 DIGITALOCEAN_BALANCE_MAX_AGE = timedelta(hours=48)
+#: The providers read from a live billing API on every run. Only these can have a
+#: "last good reading" to carry past a failed call: the Google Cloud total comes
+#: from a retained report with its own freshness rule, and AWS and RunPod are
+#: never read.
+CARRY_FORWARD_PROVIDERS = ("vast", "digitalocean")
+CARRIED_FORWARD_FIELD = "carried_forward"
 
 
 class ProviderBillingReconciliationError(RuntimeError):
@@ -332,7 +346,16 @@ def reconcile_provider_billing(
     gcp_report_receipt: str | Path | None = None,
     gcp_billing_account_id: str = "",
     gcp_project_ids: Sequence[str] = (),
+    carry_forward_max_age_seconds: float | None = None,
 ) -> dict[str, Any]:
+    """Read each provider's cumulative charges and write the export and its receipt.
+
+    ``carry_forward_max_age_seconds`` is set only by the scheduled run
+    (``main``). With it, a provider whose call failed keeps its last good
+    reading in the export's ``carried_forward`` block
+    (``_carried_forward_readings``). The default writes none: a caller that
+    reads this export as fresh official billing gets only what this run read.
+    """
     # Preserve legacy call signatures without reading credentials or making AWS requests.
     del aws_account_id, aws_credentials_file, aws_profile, aws_credentials
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -496,7 +519,7 @@ def reconcile_provider_billing(
                 raise
     except ProviderBillingAuditRetentionError as exc:
         raise ProviderBillingReconciliationError(str(exc)) from exc
-    billing_export = {
+    billing_export: dict[str, Any] = {
         "schema_version": BILLING_EXPORT_SCHEMA_VERSION,
         # Re-reading a downloaded report must never renew its freshness lease.
         "generated_at": min(source_times).isoformat(),
@@ -505,6 +528,17 @@ def reconcile_provider_billing(
         "provider_totals_usd": totals,
     }
     export_path = Path(billing_export_path).expanduser().resolve()
+    # Read the export this one replaces as late as possible, so the reading carried
+    # is the newest one on disk.
+    carried_forward = _carried_forward_readings(
+        export_path,
+        failures=optional_provider_failures,
+        totals=totals,
+        now=current,
+        max_age_seconds=carry_forward_max_age_seconds,
+    )
+    if carried_forward:
+        billing_export[CARRIED_FORWARD_FIELD] = carried_forward
     _atomic_write(export_path, (_canonical_json(billing_export) + "\n").encode("utf-8"))
     # Reporting is an offline observer, never an admission or reservation input.
     try:
@@ -523,6 +557,7 @@ def reconcile_provider_billing(
         "covered_provider_ids": covered_provider_ids,
         "uncovered_provider_ids": uncovered_provider_ids,
         "optional_provider_failures": optional_provider_failures,
+        **({CARRIED_FORWARD_FIELD: carried_forward} if carried_forward else {}),
         "billing_export_path": str(export_path),
         "billing_export_digest": _digest_bytes(export_path.read_bytes()),
         "source_receipt_path": str(source_path),
@@ -557,6 +592,99 @@ def _own_file_bytes(path: Path, limit: int) -> bytes | None:
     except OSError:
         return None
     return raw if len(raw) <= limit else None
+
+
+def _load_own_export(path: Path) -> tuple[dict[str, Any], bytes] | None:
+    """This account's well-formed export and its exact bytes, or ``None``."""
+
+    raw = _own_file_bytes(path, MAX_EXPORT_BYTES)
+    if raw is None:
+        return None
+    try:
+        export = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if (
+        not isinstance(export, dict)
+        or export.get("schema_version") != BILLING_EXPORT_SCHEMA_VERSION
+        or export.get("scope") != BILLING_SCOPE
+        or export.get("currency") != "USD"
+    ):
+        return None
+    totals = export.get("provider_totals_usd")
+    if not isinstance(totals, dict) or not totals or not set(totals).issubset(PROVIDERS):
+        return None
+    for value in totals.values():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+    return export, raw
+
+
+def _carried_forward_readings(
+    export_path: Path,
+    *,
+    failures: Mapping[str, str],
+    totals: Mapping[str, float],
+    now: datetime,
+    max_age_seconds: float | None,
+) -> dict[str, dict[str, Any]]:
+    """The last good reading of each provider whose call just failed, while it is young enough.
+
+    One failed Vast call used to drop Vast from the export, so every Vast launch
+    was refused (``spend_admission_lock_required_provider_billing_missing``)
+    until the billing API answered again. The reading the export being replaced
+    holds is kept instead, beside the totals and never among them:
+
+    - only for a provider this run called and failed to read
+      (``CARRY_FORWARD_PROVIDERS``); a total read in this run always replaces it;
+    - only from this account's own well-formed export: its fresh total, dated by
+      that export's ``generated_at`` (never later than the read), or the reading
+      that export was itself carrying, with the time it was first read. The age
+      therefore never restarts, however many calls fail in a row;
+    - only while that age is within ``max_age_seconds``. Past it the provider is
+      simply absent and the existing refusal applies;
+    - a provider the previous export does not hold was never read, or has
+      expired: nothing is carried.
+
+    Each row names the failure, so the export never looks as if the call worked.
+    """
+
+    if max_age_seconds is None or not math.isfinite(max_age_seconds) or max_age_seconds <= 0:
+        return {}
+    wanted = [name for name in CARRY_FORWARD_PROVIDERS if name in failures and name not in totals]
+    loaded = _load_own_export(export_path) if wanted else None
+    if loaded is None:
+        return {}
+    previous = loaded[0]
+    previous_carried = previous.get(CARRIED_FORWARD_FIELD)
+    carried: dict[str, dict[str, Any]] = {}
+    for provider in wanted:
+        row = previous_carried.get(provider) if isinstance(previous_carried, dict) else None
+        if provider in previous["provider_totals_usd"]:
+            total, observed_text = previous["provider_totals_usd"][provider], previous.get("generated_at")
+        elif isinstance(row, dict):
+            total, observed_text = row.get("total_usd"), row.get("observed_at")
+        else:
+            continue
+        if isinstance(total, bool) or not isinstance(total, (int, float)) or not math.isfinite(total) or total < 0:
+            continue
+        try:
+            observed = _parse_time(observed_text, field="carried_forward_observed_at")
+        except ProviderBillingReconciliationError:
+            continue
+        age = (now - observed).total_seconds()
+        if not 0 <= age <= max_age_seconds:
+            continue
+        carried[provider] = {
+            "total_usd": round(float(total), 6),
+            "observed_at": observed.isoformat(),
+            "age_seconds": round(age, 3),
+            "failure": str(failures[provider]),
+            "failed_at": now.isoformat(),
+        }
+    return carried
 
 
 def _guard_live_providers(
@@ -638,28 +766,11 @@ def retained_fresh_export(
     if not math.isfinite(interval) or interval <= 0 or not spend_guard_report:
         return None
     path = Path(billing_export_path).expanduser()
-    raw = _own_file_bytes(path, MAX_EXPORT_BYTES)
-    if raw is None:
+    loaded = _load_own_export(path)
+    if loaded is None:
         return None
-    try:
-        export = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None
-    if (
-        not isinstance(export, dict)
-        or export.get("schema_version") != BILLING_EXPORT_SCHEMA_VERSION
-        or export.get("scope") != BILLING_SCOPE
-        or export.get("currency") != "USD"
-    ):
-        return None
-    totals = export.get("provider_totals_usd")
-    if not isinstance(totals, dict) or not totals or not set(totals).issubset(PROVIDERS):
-        return None
-    for value in totals.values():
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        if not math.isfinite(value) or value < 0:
-            return None
+    export, raw = loaded
+    totals = export["provider_totals_usd"]
     if not {str(provider).strip() for provider in required_providers}.issubset(totals):
         return None
     try:
@@ -669,8 +780,12 @@ def retained_fresh_export(
     age = (now.astimezone(timezone.utc) - generated_at).total_seconds()
     if not 0 <= age < interval:
         return None
+    # A live provider whose call failed is covered by its carried reading for as long
+    # as the guard accepts it; a guard report that refused this export refreshes below.
+    carried = export.get(CARRIED_FORWARD_FIELD)
     live = _guard_live_providers(
-        spend_guard_report, export_digest=_digest_bytes(raw), export_providers=set(totals),
+        spend_guard_report, export_digest=_digest_bytes(raw),
+        export_providers=set(totals) | (set(carried) if isinstance(carried, dict) else set()),
         now=now, max_age_seconds=interval,
     )
     if live is None:
@@ -766,6 +881,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             gcp_report_receipt=args.gcp_report_receipt,
             gcp_billing_account_id=args.gcp_billing_account_id,
             gcp_project_ids=GCPRenderProvider().inventory_projects(),
+            carry_forward_max_age_seconds=MAX_BILLING_AGE_SECONDS,
         )
     except (OSError, ProviderBillingReconciliationError, MeteredCallEvidenceError) as exc:
         print(

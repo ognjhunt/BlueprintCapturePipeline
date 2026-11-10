@@ -15,10 +15,15 @@ Configuration
     may name another file. It is read the way the GCP budget guard reads its
     policy (``gcp_monthly_budget_admission.load_policy``): a regular file,
     never a symlink, small, validated, its sha256 bound into every report.
-    No file at that path means no limit: the view and the alerts still run and
-    say that no cap is set, and nothing is refused. A file that exists but does
-    not validate refuses every new paid admission
+    A file that exists but does not validate refuses every new paid admission
     (``account_monthly_spend_limit_config_invalid``): money fails closed.
+    No file at that path depends on where the process runs (``limit_required``).
+    On the production control plane the limit must exist: every new paid
+    admission is refused (``account_monthly_spend_limit_not_configured``), the
+    report says ``cap_status: missing`` and the capacity tick pages. Anywhere
+    else (tests, development, replays off the host) no file means no limit:
+    the view and the alerts still run and say that no cap is set, and nothing
+    is refused.
 
 What counts
     For each provider, the larger of its reconciled month-to-date reading and
@@ -40,6 +45,9 @@ What counts
     counted (``account_monthly_spend_report.build_report``). It never stops
     work by itself. Held reservations double count spend that an in-flight
     attempt has already billed, which can only make the limit trip earlier.
+    A hold counts only in the months its attempt could still be billed in
+    (``paid_spend_meter.hold_counts_in_month``); an older one is reported as
+    an old unsettled hold and not counted.
     A clear stop (``paid_resource_admission.SPEND_EFFECTS``) is never refused.
 
 Report and freshness
@@ -65,7 +73,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .paid_spend_meter import money, month_of, usd
+from .launch_proof_policy import production_launch_mode
+from .paid_spend_meter import money, month_of, month_start, usd
 
 POLICY_SCHEMA = "blueprint.account_monthly_spend_limit.v1"
 REPORT_SCHEMA = "blueprint.account_monthly_spend_report.v1"
@@ -77,6 +86,8 @@ CONFIG_FILENAME = "account_monthly_spend_limit.v1.json"
 INSTALLED_CONFIG_PATH = Path("/opt/blueprint/task-evaluation-control-plane/config") / CONFIG_FILENAME
 SHIPPED_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / CONFIG_FILENAME
 DEFAULT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/account-monthly-spend")
+#: The units' ``EnvironmentFile``. Only the host install writes it; running code never creates it.
+HOST_ENVIRONMENT_FILE = Path("/etc/blueprint/pipeline-control-plane.env")
 REPORT_FILENAME = "report.json"
 OBSERVATION_FILENAME = "provider_observation.json"
 #: The spend guard rewrites the report every minute; slow runs under load took 5.5 min.
@@ -88,6 +99,8 @@ BILLING_MAX_AGE_SECONDS = 24 * 60 * 60
 ALERT_PERCENTS = (50, 80, 100)
 ACCOUNT_PROVIDERS = ("digitalocean", "gcp", "openai", "vast", "world_labs")
 LIMIT_REACHED = "account_monthly_spend_limit_reached"
+#: No limit file on the production control plane: new spend is refused until one is installed.
+LIMIT_NOT_CONFIGURED = "account_monthly_spend_limit_not_configured"
 CONFIG_INVALID = "account_monthly_spend_limit_config_invalid"
 REPORT_INVALID = "account_monthly_spend_report_missing_or_invalid"
 REPORT_STALE = "account_monthly_spend_report_stale"
@@ -115,9 +128,7 @@ def _utc(epoch: float) -> datetime:
     return datetime.fromtimestamp(epoch, timezone.utc)
 
 
-def _month_start(now: float) -> float:
-    current = _utc(now)
-    return datetime(current.year, current.month, 1, tzinfo=timezone.utc).timestamp()
+_month_start = month_start
 
 
 def _epoch(value: Any) -> float | None:
@@ -208,6 +219,39 @@ def configured_policy(environ: Mapping[str, str] | None = None) -> tuple[dict[st
         return None, CONFIG_INVALID, path
 
 
+def limit_required(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether this process is the production control plane, where the limit must exist.
+
+    Two signs, either one enough: the environment the production units run
+    with (``BLUEPRINT_LAUNCH_PROOF_MODE=production``, read by
+    ``launch_proof_policy``), and the host's installed environment file
+    (``HOST_ENVIRONMENT_FILE``), which covers a host process started without
+    that environment. The state directory is deliberately not a sign: any
+    process that runs with the default roots creates it, so a test run as
+    root on a development machine would turn that machine into "production".
+    Tests, development machines and replays off the host have neither sign,
+    so a missing limit file still means "no limit" there.
+    """
+
+    env = os.environ if environ is None else environ
+    if production_launch_mode(env):
+        return True
+    try:
+        return HOST_ENVIRONMENT_FILE.is_file()
+    except OSError:
+        return False
+
+
+def cap_status(policy: Mapping[str, Any] | None, error: str | None, *, required: bool) -> str:
+    """``set``, ``config_invalid``, ``missing`` (required here, no file) or ``not_set`` (no file, not required)."""
+
+    if error:
+        return "config_invalid"
+    if policy is not None:
+        return "set"
+    return "missing" if required else "not_set"
+
+
 def account_root(environ: Mapping[str, str] | None = None) -> Path | None:
     env = os.environ if environ is None else environ
     configured = str(env.get(ROOT_ENV) or "").strip()
@@ -296,13 +340,15 @@ def summary(report: Mapping[str, Any], *, max_jobs: int = 10) -> dict[str, Any]:
 
     keys = ("schema_version", "generated_at", "period", "cap_status", "limit_usd", "alert_lines_usd", "spend_usd",
             "held_usd", "counted_usd", "fraction", "alert_threshold_percent", "limit_reached", "admission_allowed",
-            "blockers", "complete", "gaps", "report_path", "policy_sha256")
+            "blockers", "complete", "gaps", "report_path", "policy_sha256", "old_unsettled_held_usd")
     meter = report.get("meter") if isinstance(report.get("meter"), Mapping) else {}
     return {**{key: report.get(key) for key in keys},
-            "providers": {name: {key: row.get(key) for key in ("status", "counted_usd", "reconciled_month_usd",
-                                                                "metered_settled_usd", "reason")}
+            "providers": {name: {**{key: row.get(key) for key in ("status", "counted_usd", "reconciled_month_usd",
+                                                                   "metered_settled_usd", "reason", "observed_at")},
+                                 **({"carried_forward": row["carried_forward"]} if row.get("carried_forward") else {})}
                           for name, row in (report.get("providers") or {}).items() if isinstance(row, Mapping)},
             "meter_totals": meter.get("totals"),
+            "old_unsettled_holds": list(meter.get("old_unsettled_holds") or [])[:max_jobs],
             "jobs": list(meter.get("jobs") or [])[:max_jobs]}
 
 
@@ -314,12 +360,18 @@ def read_report(path: Path) -> dict[str, Any]:
 
 
 def admission_blockers(*, now: float | None = None, environ: Mapping[str, str] | None = None) -> list[str]:
-    """``[]`` when no limit is configured or the month is under it; otherwise the named refusal."""
+    """``[]`` when the month is under its limit, or no limit is configured where none is required.
+
+    Otherwise the named refusal. With no limit file, the production control
+    plane refuses (``limit_required``); any other process has no limit.
+    """
 
     env = os.environ if environ is None else environ
     policy, error, _config = configured_policy(env)
     if policy is None:
-        return [error] if error else []
+        if error:
+            return [error]
+        return [LIMIT_NOT_CONFIGURED] if limit_required(env) else []
     moment = _clock() if now is None else float(now)
     period = month_of(moment)
     try:
@@ -347,7 +399,7 @@ def observe_account_spend(*, now: float, environ: Mapping[str, str] | None = Non
     env = os.environ if environ is None else environ
     policy, error, _config = configured_policy(env)
     row: dict[str, Any] = {"status": "unknown", "blockers": [], "period": month_of(now),
-                           "cap_status": "config_invalid" if error else ("set" if policy is not None else "not_set")}
+                           "cap_status": cap_status(policy, error, required=limit_required(env))}
     path = report_path(policy, env)
     if path is None:
         return {**row, "blockers": ["account_spend_report_unconfigured"]}
@@ -376,6 +428,9 @@ def account_alerts(row: Mapping[str, Any]) -> list[dict[str, Any]]:
     base = {"provider": "account", "window": window}
     if row.get("cap_status") == "config_invalid":
         return [{"code": "account_spend_limit_config_invalid", **base}]
+    if row.get("cap_status") == "missing":
+        # The production control plane has no limit file: whatever the report says, this pages.
+        return [{"code": "account_spend_limit_missing", **base}]
     if row.get("blockers"):
         code = "account_spend_report_stale" if row.get("cap_status") == "set" else "account_spend_unverifiable"
         return [{"code": code, **base, "reason": ",".join(str(item) for item in row["blockers"])}]
@@ -399,7 +454,8 @@ def account_alerts(row: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 ACCOUNT_PAGE_CODES = frozenset({"account_spend_month_80pct", "account_spend_month_limit_reached",
-                                "account_spend_limit_config_invalid", "account_spend_report_stale"})
+                                "account_spend_limit_config_invalid", "account_spend_limit_missing",
+                                "account_spend_report_stale"})
 ACCOUNT_WARN_CODES = frozenset({"account_spend_month_50pct", "account_spend_limit_not_set", "account_spend_unverifiable"})
 
 
@@ -409,6 +465,8 @@ def describe(alert: Mapping[str, Any]) -> str | None:
     spent = alert.get("spend_usd")
     if code == "account_spend_limit_config_invalid":
         return "Account monthly limit config invalid: every new paid admission is refused"
+    if code == "account_spend_limit_missing":
+        return "Account monthly limit config missing on the control plane: every new paid admission is refused"
     if code == "account_spend_report_stale":
         return "Account monthly spend report stale or unreadable: new paid admissions refused until the spend guard rewrites it"
     if code in {"account_spend_month_80pct", "account_spend_month_limit_reached"}:
@@ -431,8 +489,8 @@ def main(argv: list[str] | None = None) -> int:
         report: Any = read_report(path) if path is not None else None
     except (OSError, ValueError, UnicodeDecodeError):
         report = None
-    print(json.dumps({"config_path": str(config), "cap_status": "config_invalid" if error else (
-        "set" if policy is not None else "not_set"), "report_path": str(path) if path else None,
+    print(json.dumps({"config_path": str(config), "cap_status": cap_status(policy, error, required=limit_required()),
+                      "report_path": str(path) if path else None,
         "admission_blockers": admission_blockers(),
         "report": report if args.full or not isinstance(report, Mapping) else summary(report)}, indent=2, sort_keys=True))
     return 0
@@ -440,10 +498,10 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "ACCOUNT_PAGE_CODES", "ACCOUNT_WARN_CODES", "CONFIG_ENV", "CONFIG_INVALID", "INSTALLED_CONFIG_PATH",
-    "LIMIT_REACHED", "POLICY_SCHEMA", "REPORT_INVALID", "REPORT_SCHEMA", "REPORT_STALE", "ROOT_ENV",
-    "SHIPPED_CONFIG_PATH", "UNAVAILABLE", "account_alerts", "admission_blockers", "configured_policy",
-    "describe", "effective_limit", "load_policy", "observe_account_spend", "persist_provider_observation",
-    "read_provider_observation", "read_report", "summary",
+    "LIMIT_NOT_CONFIGURED", "LIMIT_REACHED", "POLICY_SCHEMA", "REPORT_INVALID", "REPORT_SCHEMA", "REPORT_STALE",
+    "ROOT_ENV", "SHIPPED_CONFIG_PATH", "UNAVAILABLE", "account_alerts", "admission_blockers", "cap_status",
+    "configured_policy", "describe", "effective_limit", "limit_required", "load_policy", "observe_account_spend",
+    "persist_provider_observation", "read_provider_observation", "read_report", "summary",
 ]
 
 

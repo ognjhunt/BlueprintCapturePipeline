@@ -20,11 +20,13 @@ import argparse
 import gzip
 import json
 import shutil
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from blueprint_pipeline.replay_set import (
+    CLOCK_FIELD,
     DEFAULT_MATERIALIZE_ROOT,
     GZIP_SUFFIX,
     MANIFEST_FILENAME,
@@ -157,8 +159,9 @@ def build(out: Path, *, materialize_root: Path = Path(DEFAULT_MATERIALIZE_ROOT))
             "empty_dirs": empty_dirs, "file_count": len(files),
             "tools": [{"tool": DOWNSTREAM, "until": spec["until"], "inputs": built,
                        "expected_stop": spec["expected_stop"]}]})
+    # The builders stamp consent and expiry from the wall clock, so the set is replayed at this instant.
     manifest = {"schema_version": MANIFEST_SCHEMA, "set_id": out.name, "synthetic": True,
-                "materialize_root": str(materialize_root),
+                "materialize_root": str(materialize_root), CLOCK_FIELD: int(time.time()),
                 "built_by": "PYTHONPATH=src python -m tests.replay_set_v1_build --out " + out.as_posix(),
                 "records": entries}
     (out / MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")

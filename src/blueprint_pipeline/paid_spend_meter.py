@@ -66,6 +66,8 @@ SOURCE_SCREENING = "beta_policy_screening"
 SOURCE_ATLAS = "atlas"
 MAX_JOURNAL_FILE_BYTES = 16 * 1024 * 1024
 MAX_LEDGER_BYTES = 32 * 1024 * 1024
+#: Optional on a held row: the last moment its attempt could be billed, from the attempt's own record.
+BILLABLE_UNTIL_FIELD = "billable_until_epoch"
 _JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,191}")
 _MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
 _CENT = Decimal("0.000001")
@@ -97,6 +99,13 @@ def month_of(epoch: float) -> str:
     """The UTC calendar month ``YYYY-MM`` of an epoch."""
 
     return _utc(epoch).strftime("%Y-%m")
+
+
+def month_start(epoch: float) -> float:
+    """The epoch at which the UTC calendar month of ``epoch`` began."""
+
+    moment = _utc(epoch)
+    return datetime(moment.year, moment.month, 1, tzinfo=timezone.utc).timestamp()
 
 
 def money(value: Any) -> Decimal | None:
@@ -281,7 +290,8 @@ def journal_rows(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                "resource_class": admission.get("resource_class"),
                "provider": (settlement or {}).get("provider") or admission.get("provider"),
                "admitted_at_epoch": admission.get("at_epoch"), "held_usd": None, "settled_usd": None,
-               "settled_at_epoch": None, "status": "unpriced"}
+               "settled_at_epoch": None, "status": "unpriced",
+               BILLABLE_UNTIL_FIELD: _finite(admission.get(BILLABLE_UNTIL_FIELD))}
         if settlement is not None:
             row.update(status="settled", settled_usd=money(settlement.get("settled_usd")),
                        settled_at_epoch=settlement.get("at_epoch"))
@@ -291,8 +301,14 @@ def journal_rows(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def _epoch(value: Any) -> float | None:
+def _finite(value: Any) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
+    return None
+
+
+def _epoch(value: Any) -> float | None:
+    if _finite(value) is not None:
         return float(value)
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -324,17 +340,35 @@ def _zero() -> dict[str, Decimal]:
     return {"settled_usd": Decimal(0), "held_usd": Decimal(0)}
 
 
+def hold_counts_in_month(row: Mapping[str, Any], *, now: float) -> bool:
+    """Whether a held row's attempt could still be billed in the UTC month of ``now``.
+
+    A hold stands in for a bill that has not been read yet. Once the attempt's
+    own record says when it ended (``billable_until_epoch``: its recorded close),
+    the hold counts only in months the attempt was still live in: an attempt
+    that ended before this month began was billed, if at all, in an earlier
+    month's provider reading. One live across 00:00 UTC on the 1st counts in
+    both months. A hold with no recorded end is open and counts every month.
+    """
+
+    until = _finite(row.get(BILLABLE_UNTIL_FIELD))
+    return until is None or until >= month_start(now)
+
+
 def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[str] = ()) -> dict[str, Any]:
     """Per-job metered spend for the UTC month of ``now``, and the totals of those rows.
 
-    A settled row counts in the month it settled. A held row counts while it
-    is held, whatever month it was admitted in: held money is held now. An
+    A settled row counts in the month it settled. A held row counts in every
+    month its attempt could still be billed in (``hold_counts_in_month``); one
+    whose attempt ended in an earlier month is listed under
+    ``old_unsettled_holds`` for someone to settle and counts in no total. An
     unpriced admission counts as a call in the month it was admitted. The
     totals are the sums of the job rows, by construction.
     """
 
     month = month_of(now)
     jobs: dict[str, dict[str, Any]] = {}
+    old_holds: list[dict[str, Any]] = []
     for row in rows:
         job = jobs.setdefault(str(row.get("job_id") or UNATTRIBUTED), {
             **_zero(), "admissions": 0, "unpriced_admissions": 0, "by_source": {}, "by_provider_settled_usd": {}})
@@ -347,6 +381,12 @@ def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[
             source["settled_usd"] += amount
             provider = str(row.get("provider") or "other")
             job["by_provider_settled_usd"][provider] = job["by_provider_settled_usd"].get(provider, Decimal(0)) + amount
+        elif status == "held" and not hold_counts_in_month(row, now=now):
+            old_holds.append({"job_id": str(row.get("job_id") or UNATTRIBUTED), "source": str(row.get("source")),
+                              "meter_key": str(row.get("meter_key") or ""), "provider": row.get("provider"),
+                              "held_usd": row.get("held_usd") or Decimal(0),
+                              "billable_until": _utc(float(row[BILLABLE_UNTIL_FIELD])).isoformat(),
+                              **({"reason": str(row["hold_reason"])} if row.get("hold_reason") else {})})
         elif status == "held":
             amount = row.get("held_usd") or Decimal(0)
             job["held_usd"] += amount
@@ -376,9 +416,14 @@ def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[
     job_rows = sorted((row for row in ({"job_id": job_id, **project(value)} for job_id, value in jobs.items())
                        if row["metered_usd"] or row["admissions"]),
                       key=lambda row: (-row["metered_usd"], row["job_id"]))
+    old_total = sum((hold["held_usd"] for hold in old_holds), Decimal(0))
+    old_holds.sort(key=lambda hold: (-hold["held_usd"], hold["job_id"], hold["source"], hold["meter_key"]))
     return {"schema_version": VIEW_SCHEMA, "period": month, "generated_at": _utc(now).isoformat(),
             "jobs": job_rows, "totals": project(totals),
+            "old_unsettled_held_usd": usd(old_total),
+            "old_unsettled_holds": [{**hold, "held_usd": usd(hold["held_usd"])} for hold in old_holds],
             "_exact": {"settled_usd": totals["settled_usd"], "held_usd": totals["held_usd"],
+                       "old_unsettled_held_usd": old_total,
                        "by_source": {name: dict(amounts) for name, amounts in totals["by_source"].items()},
                        "held_outside_provider_readings_usd": sum(
                            (amounts["held_usd"] for name, amounts in totals["by_source"].items() if name != SOURCE_ATLAS),
@@ -391,17 +436,19 @@ def public_view(view: Mapping[str, Any], *, max_jobs: int | None = None) -> dict
     """The view without its exact working figures, optionally keeping the largest jobs only."""
 
     result = {key: value for key, value in view.items() if not key.startswith("_")}
-    jobs = list(view.get("jobs") or [])
-    if max_jobs is not None and len(jobs) > max_jobs:
-        result["jobs"] = jobs[:max_jobs]
-        result["jobs_omitted"] = len(jobs) - max_jobs
+    for name in ("jobs", "old_unsettled_holds"):
+        listed = list(view.get(name) or [])
+        if max_jobs is not None and len(listed) > max_jobs:
+            result[name] = listed[:max_jobs]
+            result[f"{name}_omitted"] = len(listed) - max_jobs
     return result
 
 
 __all__ = [
     "DEFAULT_METER_ROOT", "EVENT_SCHEMA", "JOB_ID_ENV", "METER_ROOT_ENV", "RESOURCE_CLASS_PROVIDERS",
-    "UNATTRIBUTED", "VIEW_SCHEMA", "atlas_rows", "job_key", "journal_rows",
-    "meter_chokepoint_admission", "meter_root", "meter_view", "month_of", "public_view", "read_journal",
+    "BILLABLE_UNTIL_FIELD", "UNATTRIBUTED", "VIEW_SCHEMA", "atlas_rows", "hold_counts_in_month", "job_key",
+    "journal_rows", "meter_chokepoint_admission", "meter_root", "meter_view", "month_of", "month_start",
+    "public_view", "read_journal",
     "record_admission", "record_event", "record_settlement",
 ]
 

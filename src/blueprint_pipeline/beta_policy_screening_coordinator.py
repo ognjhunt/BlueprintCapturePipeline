@@ -20,6 +20,18 @@ publication whose ``spent_upper_bound_usd`` is below the campaign's previous
 one, so each campaign publishes its own spent bound as a floor
 (``_publication_budget``); its committed total is never below the real one. A
 campaign the WebApp already holds in full is not sent again for a settlement.
+
+A campaign moves and ends by itself; a deploy is never the retry mechanism.
+What a failed run predicts is decided from its typed codes
+(``beta_policy_screening_failure_scope``): transient infrastructure runs again
+at the same commit under the machine-fault bound, a candidate's own policy
+failure holds only that candidate, and a failure in a stage the backend shares
+holds the pending candidates on that backend until the next deploy. A row that
+ran out of GPU-offer retries or whose quote expired is planned again by itself,
+bounded (``_self_replan_due``). Money evidence too old to read waits and is read
+again; a reached account limit is a money hold. A campaign that cannot move
+says so through the hold protocol (``campaign_hold_detail``) without touching
+its reservation.
 """
 from __future__ import annotations
 
@@ -38,6 +50,11 @@ from typing import Any
 
 from .beta_policy_screening_result import (
     ACTIVE_STATUSES, QUEUED_STATUSES, candidate_result_summary, campaign_status, money, screening_publication,
+)
+from .account_monthly_spend import LIMIT_REACHED as ACCOUNT_LIMIT_REACHED_BLOCKER
+from .account_monthly_spend import REPORT_INVALID, REPORT_STALE
+from .beta_policy_screening_failure_scope import (
+    POLICY_PROVISIONING_BLOCKER, candidate_specific_failure, transient_provisioning_failed, transient_void_run,
 )
 from .beta_policy_screening_settlement import settled_cost
 from .decision_evidence_contracts import canonical_digest
@@ -70,6 +87,18 @@ OFFER_SHORTAGE_EXHAUSTED_BLOCKER = "beta_screening_gpu_capacity_unavailable"
 OFFER_SHORTAGE_RETRY_CAP = 12
 OFFER_SHORTAGE_FIRST_RETRY_SECONDS = 120
 OFFER_SHORTAGE_MAX_RETRY_SECONDS = 1800
+# A row blocked for the shortage spent nothing. After this cool-off it is planned again by itself at
+# the same commit (a new round of the searches above), at most OFFER_SHORTAGE_REPLAN_LIMIT times per
+# site and candidate. Before, it waited for a deploy.
+OFFER_SHORTAGE_REPLAN_COOLOFF_SECONDS = 2 * 3600
+OFFER_SHORTAGE_REPLAN_LIMIT = 3
+# A plan's quotes last a day (``beta_policy_screening_capabilities``). A row deferred because its quote
+# expired before it could launch spent nothing: it is planned again by itself with a fresh quote, at
+# most this many times per site and candidate.
+QUOTE_EXPIRED_BLOCKER = "beta_screening_cost_quote_expired"
+QUOTE_EXPIRED_REPLAN_LIMIT = 3
+#: Set on a campaign once its job's window closed: it is no longer planned again by itself.
+SELF_REPLAN_CLOSED_FIELD = "self_replan_closed_at"
 # The spend admission lock (live billing evidence) was older than its window when the launch
 # preflight read it, as it is for a few minutes after a deploy restarts its refresh: the money
 # check refused before anything was created. The check stays: the attempt waits and the next one
@@ -82,6 +111,15 @@ SPEND_LOCK_RETRY_CAP = 6
 SPEND_LOCK_STALE_CODES = frozenset({SPEND_LOCK_STALE_BLOCKER, "spend_admission_lock_stale"})
 _SPEND_LOCK_REFUSAL = frozenset({*SPEND_LOCK_STALE_CODES, "paid_resource_admission_has_blockers",
                                  "paid_resource_admission_not_admitted"})
+# The account-wide monthly limit (``account_monthly_spend``) is checked at the same paid admission.
+# Its report is rewritten every minute by the same guard that refreshes the lock: a report that is
+# stale, missing or unreadable is evidence too old to read, not a reached limit, so it joins the
+# stale-lock wait above (the same retries, cap and counter). ``account_monthly_spend_limit_reached``
+# never waits: it is a money stop, the row closes, and the campaign says so (``campaign_hold_detail``).
+ACCOUNT_REPORT_WAIT_CODES = frozenset({REPORT_STALE, REPORT_INVALID})
+#: How the G1 lane's allocator wraps a refusal raised at the paid admission itself.
+G1_ADMISSION_WRAPPER = "g1_beta_paid_dispatch_failed:PaidResourceAdmissionBlocked"
+_MONEY_EVIDENCE_REFUSAL = frozenset({*_SPEND_LOCK_REFUSAL, *ACCOUNT_REPORT_WAIT_CODES, G1_ADMISSION_WRAPPER})
 # A run refused only because the spend admission lock held no billing reading for its provider
 # (``spend_admission_lock_required_provider_billing_missing:<provider>``), with nothing spent and no
 # provider call, is admitted again once the lock covers that provider. Owner decision 2026-11-09
@@ -354,6 +392,7 @@ def _spent(row: Mapping[str, Any]) -> bool:
 HARNESS_FAILURE_BLOCKERS = frozenset({"beta_screening_native_result_missing_or_invalid",
                                       "beta_screening_native_result_invalid",
                                       "g1_beta_native_result_missing_or_invalid",
+                                      POLICY_PROVISIONING_BLOCKER,
                                       *SETUP_FAILURE_BLOCKERS})
 #: How many times a site's candidate is planned again after a harness failure. It spent money,
 #: so it is bounded: only after a deploy, inside the site's existing allowance, one candidate
@@ -364,22 +403,37 @@ HARNESS_FAILURE_BLOCKERS = frozenset({"beta_screening_native_result_missing_or_i
 #: 7 the same day: pi05's sixth and seventh runs both failed on the OpenPI client's ``ping_timeout``
 #: keyword before its fix (#3399) shipped, so it gets one run on the fixed client.
 HARNESS_RETRY_LIMIT = 7
-#: A campaign freezes one commit, so a harness failure in it would fail its other candidates the
-#: same way: they are held, unspent, and planned again after the next deploy. Matches the WebApp's
-#: "launch" category ("Could not start in our simulator. This is ours to fix.").
+#: A campaign freezes one commit, so a harness failure in a stage its backend shares would fail the
+#: other candidates on that backend the same way: they are held, unspent, and planned again after the
+#: next deploy (``_holds_siblings``). Matches the WebApp's "launch" category ("Could not start in our
+#: simulator. This is ours to fix.").
 HARNESS_HOLD_BLOCKER = "beta_screening_held_after_launch_failure"
+#: Unspent rows that wait for a deploy: a re-plan at the same commit leaves them where they are, and
+#: the next deploy's re-plan takes them up from the chain (``_dropped_harness_retries``). A row held
+#: behind a sibling's failure would fail the same way at this commit; a reached account limit is a
+#: money stop and never spins.
+_HELD_FOR_DEPLOY = frozenset({HARNESS_HOLD_BLOCKER, ACCOUNT_LIMIT_REACHED_BLOCKER})
 #: How many times a site's candidate is planned again after its rented machine failed while starting
 #: the simulator (``MACHINE_FAULT_BLOCKERS``: a fatal signal before Isaac finished launching, so no
 #: policy ran). That is the machine, not our harness or the policy, so it never spends a harness
 #: retry (owner decision, 2026-11-05) and needs no deploy: the candidate is planned again at the
 #: same commit, on whatever machine the next offer search finds. It still spent money, so it is
-#: bounded, inside the site's existing allowance.
+#: bounded, inside the site's existing allowance. A run that failed on transient infrastructure
+#: before our harness could say anything (the machine, its network, its package mirror, a silent
+#: provider log; ``beta_policy_screening_failure_scope``) counts under the same bound, on one counter.
 MACHINE_FAULT_RETRY_LIMIT = 3
 
 
 def _machine_faulted(row: Mapping[str, Any]) -> bool:
+    """A spent row the rented machine or its network failed: retried at the same commit, bounded."""
     blockers = set(row.get("blockers") or [])
-    return row.get("status") == "blocked" and bool(blockers) and blockers <= MACHINE_FAULT_BLOCKERS
+    return (row.get("status") == "blocked" and bool(blockers) and blockers <= MACHINE_FAULT_BLOCKERS
+            or transient_provisioning_failed(row))
+
+
+def _held_for_deploy(row: Mapping[str, Any]) -> bool:
+    return (row.get("status") == "blocked" and not _spent(row)
+            and bool(set(row.get("blockers") or []) & _HELD_FOR_DEPLOY))
 
 
 def _machine_fault_retry_allowed(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> bool:
@@ -401,10 +455,19 @@ def _measured_nothing(row: Mapping[str, Any]) -> bool:
 
 def _harness_failed(row: Mapping[str, Any]) -> bool:
     """A spent row our harness failed: blocked only by a harness code, or completed with every
-    episode void; either way with no episode scored."""
+    episode void; either way with no episode scored. A run void only for a transient provisioning
+    reason (the machine's package mirror) is the machine's, not ours (``_machine_faulted``)."""
     blockers = set(row.get("blockers") or [])
     return (row.get("status") == "blocked" and bool(blockers) and blockers <= HARNESS_FAILURE_BLOCKERS
-            and not (row.get("summary") or {}).get("episodes_scored")) or _measured_nothing(row)
+            and not (row.get("summary") or {}).get("episodes_scored")) or (
+                _measured_nothing(row) and not transient_void_run(row))
+
+
+def _holds_siblings(row: Mapping[str, Any]) -> bool:
+    """A harness failure in a stage every candidate on the backend shares (the simulator start, the
+    scene load, a common import, or a run that named no stage). A failure of the candidate's own
+    policy provisioning or load predicts nothing about a sibling and holds none."""
+    return _harness_failed(row) and not candidate_specific_failure(row)
 
 
 def _harness_failures(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> int:
@@ -426,6 +489,10 @@ def _dropped_harness_retries(ledger: Mapping[str, Any], state: Mapping[str, Any]
     raised (2026-11-05, on the owner's approval) such a candidate may be retried again.
     It counts here only if the last row the chain holds for it is a harness failure
     (never a result) and the site's retry bound now allows it.
+
+    A re-plan at the same commit also leaves behind the unspent rows that wait for a
+    deploy (``_held_for_deploy``) and a row out of GPU offers or with an expired quote
+    that was not due again by itself; the last such row the chain holds rejoins here too.
     """
     listed = {candidate["candidate_id"] for candidate in plan["candidates"]}
     latest: dict[str, Mapping[str, Any]] = {}
@@ -438,8 +505,9 @@ def _dropped_harness_retries(ledger: Mapping[str, Any], state: Mapping[str, Any]
             latest.setdefault(candidate_id, row)
         previous = earlier.get("supersedes")
     return sorted(candidate_id for candidate_id, row in latest.items()
-                  if candidate_id not in listed and _harness_failed(row)
-                  and _harness_retry_allowed(ledger, state["site_id"], candidate_id))
+                  if candidate_id not in listed and (
+                      _held_for_deploy(row) or _offer_exhausted(row) or _quote_expired(row)
+                      or _harness_failed(row) and _harness_retry_allowed(ledger, state["site_id"], candidate_id)))
 
 
 def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any], candidate_id: str) -> bool:
@@ -450,7 +518,7 @@ def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any
     one waits (still pending, nothing reserved) for the active one's result.
     """
     rows = state["candidates"]
-    if any(row["status"] == "completed" and not _harness_failed(row) for row in rows.values()):
+    if any(row["status"] == "completed" and not _measured_nothing(row) for row in rows.values()):
         return False
     if not any(_harness_failures(ledger, state["site_id"], key) for key in rows):
         return False
@@ -531,9 +599,60 @@ def _dropped_results_not_counted(ledger: Mapping[str, Any], state: Mapping[str, 
     return dropped
 
 
+def _offer_exhausted(row: Mapping[str, Any]) -> bool:
+    return (row.get("status") == "blocked" and row.get("blockers") == [OFFER_SHORTAGE_EXHAUSTED_BLOCKER]
+            and not _spent(row))
+
+
+def _quote_expired(row: Mapping[str, Any]) -> bool:
+    return row.get("status") == "deferred" and row.get("blockers") == [QUOTE_EXPIRED_BLOCKER] and not _spent(row)
+
+
+def _site_rows(ledger: Mapping[str, Any], site_id: str, candidate_id: str,
+               matches: Callable[[Mapping[str, Any]], bool]) -> int:
+    """How many of the site's campaigns hold this candidate in the given end state."""
+    return sum(1 for state in ledger["campaigns"].values()
+               if state["site_id"] == site_id and matches(state["candidates"].get(candidate_id) or {}))
+
+
+def _seconds_since(value: Any) -> float | None:
+    try:
+        instant = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc) - instant).total_seconds() if instant.tzinfo is not None else None
+
+
+def _offer_shortage_cooled_off(state: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
+    """Whether the row's last search ended at least the cool-off ago (unreadable reads as not yet)."""
+    attempts = [*row.get("attempt_history", []), *([row["attempt"]] if row.get("attempt") else [])]
+    # A row closed before the close time was recorded falls back to its campaign's last change.
+    closed = next((attempt["closed_at"] for attempt in reversed(attempts) if attempt.get("closed_at")),
+                  state.get("updated_at"))
+    elapsed = _seconds_since(closed)
+    return elapsed is not None and elapsed >= OFFER_SHORTAGE_REPLAN_COOLOFF_SECONDS
+
+
+def _self_replan_due(ledger: Mapping[str, Any], state: Mapping[str, Any], candidate_id: str) -> bool:
+    """An unspent row that is planned again by itself, at the same commit, with no deploy.
+
+    Two ends spent nothing and say nothing about the candidate: the GPU market had no
+    qualifying offer through every search (planned again after a cool-off), and the plan's
+    quote expired before the row could launch (planned again with a fresh quote). Each is
+    bounded per site and candidate by counting the campaigns that ended the same way.
+    """
+    row = state["candidates"].get(candidate_id) or {}
+    if _offer_exhausted(row):
+        return (_site_rows(ledger, state["site_id"], candidate_id, _offer_exhausted) <= OFFER_SHORTAGE_REPLAN_LIMIT
+                and _offer_shortage_cooled_off(state, row))
+    return (_quote_expired(row)
+            and _site_rows(ledger, state["site_id"], candidate_id, _quote_expired) <= QUOTE_EXPIRED_REPLAN_LIMIT)
+
+
 def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementation_commit: str,
                   scene_half: str | None = None,
-                  plans: Callable[[str, str], Mapping[str, Any]] | None = None) -> list[str] | None:
+                  plans: Callable[[str, str], Mapping[str, Any]] | None = None, *,
+                  self_replan: bool = True) -> list[str] | None:
     state = ledger["campaigns"][plan["campaign_id"]]
     rows = state["candidates"]
     if state.get("superseded_by") or any(row["status"] in ACTIVE_STATUSES for row in rows.values()):
@@ -582,22 +701,40 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
         # The scene's team half was compiled again since this plan froze it: a half the plan
         # cannot read is not known to differ, so it never re-plans on its own.
         stale = planned_half(plan) not in (None, scene_half)
-    if not stale and not machine:
+    # No deploy and no machine fault: a row that ran out of GPU offers or whose quote expired.
+    self_open = self_replan and not state.get(SELF_REPLAN_CLOSED_FIELD)
+    again = (self_open and not stale
+             and any(_self_replan_due(ledger, state, candidate["candidate_id"]) for candidate in plan["candidates"]))
+    if not stale and not machine and not again:
         return None
-    # A machine fault alone changed nothing of ours, so a harness failure beside it waits for its fix:
-    # it is planned again only when the commit (or the scene half) changed.
-    return [candidate["candidate_id"] for candidate in plan["candidates"]
-            if not _spent(rows[candidate["candidate_id"]])
-            or stale and _harness_failed(rows[candidate["candidate_id"]])
-            and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])
-            or stale and _result_not_counted(rows[candidate["candidate_id"]], candidate, plan)
-            or _machine_faulted(rows[candidate["candidate_id"]])
-            and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] + dropped or None
+
+    def planned_again(candidate: Mapping[str, Any]) -> bool:
+        row = rows[candidate["candidate_id"]]
+        if not _spent(row):
+            if stale:
+                return True
+            if _offer_exhausted(row) or _quote_expired(row):
+                # At the same commit, only for its own reason: its own bound and cool-off decide,
+                # never a sibling that is due. Left behind, the next deploy's re-plan takes it up.
+                return self_open and _self_replan_due(ledger, state, candidate["candidate_id"])
+            # A row held behind a sibling's failure would fail the same way, and a reached account
+            # limit is a money stop: both stay for the next deploy's re-plan.
+            return not _held_for_deploy(row)
+        # A machine fault alone changed nothing of ours, so a harness failure beside it waits for its
+        # fix: it is planned again only when the commit (or the scene half) changed.
+        return (stale and _harness_failed(row)
+                and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])
+                or stale and _result_not_counted(row, candidate, plan)
+                or _machine_faulted(row)
+                and _machine_fault_retry_allowed(ledger, state["site_id"], candidate["candidate_id"]))
+
+    return [candidate["candidate_id"] for candidate in plan["candidates"] if planned_again(candidate)] + dropped or None
 
 
 def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: str | None = None,
-                 queue_root: str | Path | None = None) -> list[str] | None:
-    """Candidates to plan again because the deployed code or the scene's half changed, or ``None``.
+                 queue_root: str | Path | None = None, self_replan: bool = True) -> list[str] | None:
+    """Candidates to plan again, or ``None``: the deployed code or the scene's half changed, a rented
+    machine failed, or (``self_replan``) a row that spent nothing is due again by itself.
 
     A plan freezes the commit its candidates were prepared against, and
     preparation refuses another. When a deploy lands while some candidate is
@@ -610,6 +747,13 @@ def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: st
     half the source's profile names now; when it differs from the frozen one
     and the campaign holds no reservation and no active row, every candidate
     that never ran or allocated is planned again, finished campaign or not.
+
+    With no deploy at all, a row blocked because the GPU market had no offer
+    through every search is planned again after a cool-off, and a row deferred
+    because its quote expired is planned again with a fresh quote; each a bounded
+    number of times, and never once the campaign's job window closed
+    (``close_self_replan``). ``self_replan=False`` leaves those two out, so a
+    caller can tell whether anything else asks for the re-plan.
     """
     if not re.fullmatch(r"[0-9a-f]{40}", implementation_commit):
         raise ScreeningCoordinatorError("beta_screening_implementation_commit_invalid")
@@ -620,7 +764,26 @@ def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: st
         if state is None:
             return None
         return _replan_scope(ledger, _plan(root, campaign_id, state["plan_digest"]), implementation_commit,
-                             scene_half, plans=lambda earlier, digest: _plan(root, earlier, digest))
+                             scene_half, plans=lambda earlier, digest: _plan(root, earlier, digest),
+                             self_replan=self_replan)
+
+
+def close_self_replan(campaign_id: str, *, queue_root: str | Path | None = None) -> bool:
+    """Stop planning this campaign again by itself: its job's window closed.
+
+    Only the self re-plans end (no GPU offer, an expired quote). A deploy's
+    re-plan is unchanged, and no row, reservation or publication changes.
+    Returns whether the campaign was open until now.
+    """
+    root = _root(queue_root)
+    with _lock(root):
+        ledger = _ledger(root)
+        state = ledger["campaigns"].get(campaign_id)
+        if state is None or state.get(SELF_REPLAN_CLOSED_FIELD):
+            return False
+        state[SELF_REPLAN_CLOSED_FIELD] = _now()
+        _save(root, ledger)
+        return True
 
 
 def latest_campaign(campaign_id: str, *, queue_root: str | Path | None = None) -> str:
@@ -800,6 +963,21 @@ def _spend_lock_stale(observation: Mapping[str, Any]) -> bool:
     return bool(blockers & SPEND_LOCK_STALE_CODES) and blockers <= _SPEND_LOCK_REFUSAL
 
 
+def _money_evidence_stale(observation: Mapping[str, Any]) -> str | None:
+    """Why a refusal before any create is only money evidence too old to read, else ``None``.
+
+    The stale spend lock, the account's monthly report (stale, missing or unreadable), or both.
+    Any other code beside them, a reached limit among them, is not this wait.
+    """
+    blockers = set(observation.get("blockers") or [])
+    if _spend_lock_stale(observation):
+        return "spend_admission_lock_stale"
+    if blockers & ACCOUNT_REPORT_WAIT_CODES and blockers <= _MONEY_EVIDENCE_REFUSAL:
+        return ("spend_admission_lock_stale" if blockers & SPEND_LOCK_STALE_CODES
+                else "account_monthly_spend_report_unreadable")
+    return None
+
+
 def _spend_lock_retries(row: Mapping[str, Any]) -> int:
     value = row.get("spend_lock_retries", 0)
     # An unreadable count is treated as spent, so the cap always holds.
@@ -916,8 +1094,12 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
             return None
         if _unproven_retry_in_flight(ledger, state, candidate_id):
             return None
-        if any(_harness_failed(other) for key, other in state["candidates"].items() if key != candidate_id):
-            # Never pay for a run this commit's harness already failed on a sibling.
+        backend = {item["candidate_id"]: (item.get("execution_spec") or {}).get("backend")
+                   for item in plan["candidates"]}
+        if any(_holds_siblings(other) and backend.get(key) == backend.get(candidate_id)
+               for key, other in state["candidates"].items() if key != candidate_id):
+            # Never pay for a run this commit's harness already failed on a sibling, in a stage
+            # this candidate's backend shares with it.
             row.update(status="blocked", blockers=[HARNESS_HOLD_BLOCKER])
             _changed(state)
             _save(root, ledger)
@@ -927,7 +1109,7 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         campaign = _budget(ledger, plan["site_id"], campaign_id=campaign_id)
         blocker = None
         if not _quote_current(candidate):
-            blocker = "beta_screening_cost_quote_expired"
+            blocker = QUOTE_EXPIRED_BLOCKER
         elif cap <= 0:
             blocker = "beta_screening_cost_bound_invalid"
         elif (_amount(site["committed_upper_bound_usd"]) + cap > SITE_LIMIT
@@ -1003,7 +1185,7 @@ def _refill_waitlist(root: Path) -> int:
                         continue
                     cap = _amount(candidate["max_cost_usd"])
                     if not _quote_current(candidate):
-                        row.update(status="deferred", blockers=["beta_screening_cost_quote_expired"])
+                        row.update(status="deferred", blockers=[QUOTE_EXPIRED_BLOCKER])
                     elif site_used + cap <= SITE_LIMIT and campaign_used + cap <= _amount(plan["budget_usd"]):
                         row.update(status="pending", blockers=[])
                         site_used += cap
@@ -1198,16 +1380,19 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                     # capacity-wait code; the second code names which capacity.
                     row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER, OFFER_WAIT_BLOCKER])
                     return
-                attempt["reservation_status"] = "released"
+                # When the last search ended: the row is planned again by itself after a cool-off.
+                attempt.update(reservation_status="released", closed_at=_now())
                 row.update(status="blocked", blockers=[OFFER_SHORTAGE_EXHAUSTED_BLOCKER])
                 return
-            if _spend_lock_stale(observation) and _spend_lock_retries(row) < SPEND_LOCK_RETRY_CAP:
-                # Proven zero allocation: the money check could not read fresh billing evidence.
-                # Search again later under a fresh identity holding the same reservation; the next
-                # preflight reads the lock again. Past the cap it keeps the refusal below.
+            stale_evidence = _money_evidence_stale(observation)
+            if stale_evidence is not None and _spend_lock_retries(row) < SPEND_LOCK_RETRY_CAP:
+                # Proven zero allocation: the money check could not read fresh evidence (the spend
+                # lock's billing reading, or the account's monthly report). Search again later under
+                # a fresh identity holding the same reservation; the next admission reads it again.
+                # Past the cap it keeps the refusal below.
                 retries = _spend_lock_retries(row)
                 attempt.update(reservation_status="released", closed_at=_now(),
-                               terminal_reason="spend_admission_lock_stale", no_policy_api_calls_proven=True)
+                               terminal_reason=stale_evidence, no_policy_api_calls_proven=True)
                 row["spend_lock_retries"] = retries + 1
                 row.setdefault("attempt_history", []).append(json.loads(json.dumps(attempt)))
                 row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
@@ -1274,7 +1459,52 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                 seconds=min(600, 60 * 2 ** (checks - 1)))).isoformat()
         row.update(status="reconciliation_required", blockers=_safe_blockers(observation.get("blockers"),
                                                                             "beta_screening_allocation_uncertain"))
-    _update(root, plan["campaign_id"], candidate["candidate_id"], apply)
+
+    def tracked(row):
+        apply(row)
+        # Since when the row has been unresolved, so a campaign that stays so can say it is held.
+        if row["status"] == "reconciliation_required":
+            row.setdefault(RECONCILIATION_SINCE_FIELD, _now())
+        else:
+            row.pop(RECONCILIATION_SINCE_FIELD, None)
+    _update(root, plan["campaign_id"], candidate["candidate_id"], tracked)
+
+
+RECONCILIATION_SINCE_FIELD = "reconciliation_since"
+#: A campaign with a row unresolved for this long tells its site it is held. Longer than a run's
+#: longest lifetime (four hours), so a teardown still in progress is never called a stall.
+RECONCILIATION_HOLD_AFTER_SECONDS = 6 * 3600
+RECONCILIATION_STALLED_DETAIL = "beta_screening_reconciliation_stalled"
+
+
+def campaign_hold_detail(campaign_id: str, *, queue_root: str | Path | None = None) -> str | None:
+    """Why a planned campaign owes its site a hold now, as a typed detail code, else ``None``.
+
+    Two ends never finish by themselves and used to say nothing: a row whose
+    provider outcome stays unproven (``reconciliation_required``) past
+    ``RECONCILIATION_HOLD_AFTER_SECONDS``, and a campaign that ended with nothing
+    scored on a reached account limit (a money stop, never retried here). The
+    caller publishes the hold (``beta_policy_screening_holds``). This only reads:
+    no row, reservation, settlement or publication changes, so an unproven
+    reservation stays open exactly as before and reconciliation continues.
+    """
+    root = _root(queue_root)
+    with _lock(root):
+        state = _ledger(root)["campaigns"].get(campaign_id)
+    if state is None:
+        return None
+    rows = list(state["candidates"].values())
+    status = campaign_status(state["candidates"])
+    if (status in {"completed", "blocked"} and not any((row.get("summary") or {}).get("episodes_scored") for row in rows)
+            and any(row["status"] == "blocked" and ACCOUNT_LIMIT_REACHED_BLOCKER in (row.get("blockers") or [])
+                    for row in rows)):
+        return ACCOUNT_LIMIT_REACHED_BLOCKER
+    for row in rows:
+        elapsed = _seconds_since(row.get(RECONCILIATION_SINCE_FIELD))
+        if (row["status"] == "reconciliation_required" and elapsed is not None
+                and elapsed >= RECONCILIATION_HOLD_AFTER_SECONDS):
+            return RECONCILIATION_STALLED_DETAIL
+    return None
 
 
 SETTLEMENT_HELD_FIELD = "settlement_held"
@@ -1415,7 +1645,7 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
     if not _quote_current(candidate):
         def expired(item):
             item["attempt"]["reservation_status"] = "released"
-            item.update(status="deferred", blockers=["beta_screening_cost_quote_expired"])
+            item.update(status="deferred", blockers=[QUOTE_EXPIRED_BLOCKER])
         _update(root, plan["campaign_id"], candidate["candidate_id"], expired)
         return False
 
@@ -1594,4 +1824,4 @@ def acknowledge_publication(
 
 __all__ = ["enqueue_screening_campaign", "process_screening_queue", "pending_publications",
            "acknowledge_publication", "latest_campaign", "replan_scope", "supersede_campaign",
-           "ScreeningCoordinatorError"]
+           "close_self_replan", "campaign_hold_detail", "ScreeningCoordinatorError"]
