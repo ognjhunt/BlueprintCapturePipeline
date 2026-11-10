@@ -684,9 +684,12 @@ def test_a_refusal_recorded_without_a_release_requeues_once_under_a_known_releas
     ({"status": "skipped", "reason": "team_candidate_operator_row_present", "blockers": [],
       "release_commit": RELEASE_1}, RELEASE_2, None),
     ({}, RELEASE_2, None),
-    # An owner-contract refusal waits for the owner's confirmation, whatever release is running.
+    # An owner-contract refusal is one too: nothing waits for the owner's confirmation any more, so a request
+    # an earlier release left waiting for it is compiled by the next one (on assumed thresholds).
     ({"status": "blocked", "blockers": [worker.OWNER_CONTRACT_BLOCKER_PREFIX + "authority_missing"],
-      "release_commit": RELEASE_1}, RELEASE_2, None),
+      "release_commit": RELEASE_1}, RELEASE_2, "new_release"),
+    ({"status": "blocked", "blockers": [worker.OWNER_CONTRACT_BLOCKER_PREFIX + "authority_missing"],
+      "release_commit": RELEASE_2}, RELEASE_2, None),
     # A new release gets one try at a transient block at once: inside its backoff, after its retries are
     # spent, or due (capture-447ae4f4, 2026-11-03: killed three times for host memory, then two hours from
     # its last retry when the memory fix shipped).
