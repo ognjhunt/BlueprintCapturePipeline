@@ -329,8 +329,12 @@ of room on the disk its attempt directory is on.
 
 The capacity controller pages for disk with these codes: `floor_within_three_days`,
 `floor_within_hours`, `admission_refused`, `critical_admission_refused`,
-`reclaim_ineffective`, `volume_growth_blocked` and `orphan_scratch_large`. See
-[`control-plane-capacity.md`](control-plane-capacity.md).
+`reclaim_ineffective` and `volume_growth_blocked`. `reclaim_ineffective` is the
+one page for a critical mount the GC cannot relieve: it names the mount, its
+free, floor and available bytes and the top retained reasons, and its webhook
+`cites` the usage warnings behind it. `storage_class_over_budget`,
+`orphan_scratch_large` and `usage_unclassified_root` warn (WP-19, 2026-11-10).
+See [`control-plane-capacity.md`](control-plane-capacity.md).
 
 Automatic recovery (PR #3251):
 

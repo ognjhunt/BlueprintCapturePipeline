@@ -789,7 +789,8 @@ _SUMMARY_ALERT_KEYS = (
     "parked_count",
     # Provider spend pages: amounts, the line and the window; never keys or paths.
     "spend_usd", "threshold_usd", "limit_usd", "window", "http_status",
-    "top_retained_reasons",
+    # reclaim_ineffective: the critical mount's own figures beside what the GC kept.
+    "top_retained_reasons", "free_bytes", "floor_bytes", "available_bytes",
     "hours_until_floor", "decline_bytes_per_hour", "window_seconds",
     "storage_class", "budget_bytes", "byte_accounting",
     # Stall pages: identifiers and codes only, never paths or owner fields.

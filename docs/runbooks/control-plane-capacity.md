@@ -27,7 +27,7 @@ window, and a decline at least 2 GiB beyond the largest live reservation that
 window saw, since admitted writers were budgeted against the floor. It projects
 that unreserved rate against the admission headroom. Once paging, it clears only
 when the projection reaches twelve hours or the decline stops. `warn` alerts include
-utilization, poor usage attribution, a container runtime store over 20 GiB,
+utilization, poor usage attribution, classes over budget, large unowned scratch, a container runtime store over 20 GiB,
 release-retirement attention, and unreported break-glass notes. A new page fingerprint posts immediately; a persisting page repeats
 hourly. The webhook must reach a person, not merely accept a request.
 
@@ -65,12 +65,16 @@ work volume. `assigned_roles` and `refused_roles` in the capacity summary
 identify which stages the measured filesystem can actually block. These
 projections do not replace each worker's atomic disk reservation.
 
-`storage_class_over_budget` (page) names a storage class the usage survey
+`storage_class_over_budget` (warn) names a storage class the usage survey
 measured above its byte budget (`release` 15, `cache` 20, `work` 25,
 `unclassified` 30 GiB; `BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB` overrides them).
 Something in that class grows with no cap. Read `usage.top_roots` and
 `usage.top_owners` for the class, then decide its retention; the alert itself
-changes nothing.
+changes nothing. It and `orphan_scratch_large` warn: on a healthy disk neither
+needs action today. On a critical mount the GC cannot relieve, the single page is
+`reclaim_ineffective`, which carries the mount, `free_bytes`, `floor_bytes`,
+`available_bytes` and `top_retained_reasons`; the webhook's `cites` lists these
+usage warnings so the reader knows where the bytes are.
 
 For a configured DigitalOcean volume, check `volume_resize.status` and
 `reason`. `volume_at_maximum` needs a provider limit increase before raising

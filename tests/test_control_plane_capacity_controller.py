@@ -1682,6 +1682,8 @@ def test_snapshot_critical_mount_that_reclaim_cannot_fix_pages_once(tmp_path, mo
     assert summary.startswith(f"{tmp_path}: reclaim frees nothing; 22.0 GiB free, floor ")
     assert "retained: result_registry, hot, protected_settlement" in summary
     assert len(summary) <= 200
+    door = next(row for row in cap.capacity_summary(report)["alerts"] if row["code"] == "reclaim_ineffective")
+    assert door["floor_bytes"] == mount["floor_bytes"] and door["available_bytes"] == mount["available_bytes"]
     assert posted[0]["cites"] == ["orphan_scratch_large", "storage_class_over_budget",
                                   "usage_unclassified_root"]
 
