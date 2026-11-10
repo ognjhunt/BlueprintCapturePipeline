@@ -24,14 +24,21 @@ Both were read from `door status` on 2026-11-09 (21:26Z and 21:32Z).
    $2.68 a day, so about $56 of the $63.57 left is already spoken for by
    2026-11-30. At the limit every new paid admission is refused, so an invited
    job would hold at once. This is owner decision O-01.
-2. **The work volume is below its floor and reclaim frees nothing.**
-   `/mnt/blueprint-work` had 3.55 GB available against a 15.8 GB floor, with
-   `reclaimable_bytes=0`. Launches refuse at $0 until space returns. 406 orphan
-   scratch directories hold 96.8 GB but cannot be retired without a reference
+2. **The work volume is nearly full and reclaim frees nothing.**
+   Correction (2026-11-10): earlier versions of this plan said the volume was
+   "below its floor" and that every launch refuses. That misread the door's
+   figure. `available_bytes` is what is usable ABOVE the floor. On 11-09 the
+   volume had about 19.4 GB free, 3.55 GB above its 15.8 GB floor; at 13:11Z on
+   11-10 it had 23.7 GB free, 7.9 GB above the floor, 92.5% used, with
+   `reclaimable_bytes=0` and nothing refused at that moment. A launch is refused
+   only when its declared footprint exceeds the headroom: a 6.4 GB CPU prestage
+   fits today, a 25.8 GB embodiment preparation does not. 406 orphan scratch
+   directories held 96.8 GB on 11-09 but cannot be retired without a reference
    census, and deleting them needs the owner (O-02).
 
-Until both are settled, no invited job can finish, whatever else this plan
-fixes.
+Until the first is settled no invited job can be admitted once the limit is
+reached, and until the second is settled a job's larger stages can be refused
+for disk.
 
 ## 2. Exit criteria with thresholds
 
@@ -46,7 +53,7 @@ money value or an owner fact; the plan recommends it and does not apply it.
 | E4 | Money is correct | (a) The paid-call verifier covers API-priced providers (OpenAI, Gemini, World Labs, SAM) as well as compute, in both repos, with 0 unclassified call sites; it runs in CI. (b) A month-scoped reconciliation per provider reports settled meter spend against the provider's billing delta. Tolerance *(owner)*: the larger of $5 or 10%. (c) A $0 drill on the real admission code shows a warning at $100, pages at $160 and $200, and refusal with `account_monthly_spend_limit_reached` at $200. (d) With 3 launch slots, the sum of admitted Vast caps never passes the balance less the $1 reserve; a test runs the 3 launches together. (e) A test proves `max_paid_attempts` refuses a scene-configuration reservation past the cap. | The verifier sees compute and storage only. WebApp admin routes buy World Labs worlds with no admission. Ledger $181.76 against $824.15 of billing, on different scopes, compared nowhere. Unit tests only for the limit. Credit is checked per launch. |
 | E5 | Privacy and rights hold under a drill | (a) An offline drill across both repos passes in CI: after a withdrawal, 0 emails are pending, no new paid admission is granted for that site, and the receipt lists every copy the policy names as removed or as remaining with a reason. (b) One host drill on a synthetic job *(owner approves the deletion step)*. (c) A withdrawal produces its deletion plan with no operator within 1 hour of acknowledgement; completion inside the policy's 30 days, target 24 h. (d) The 14-day temporary class is enforced by a daily timer, with at least one receipt. (e) 100% of jobs carry a rights record: the site's attestation, or the source and license of an operator clip. (f) The four exposed keys are revoked, with provider and time recorded *(owner)*. | Deletion is a manual operator command. No drill has run. Provider copies (World Labs) are never deleted. No retention timer. Stock clips have no rights record. Keys not rotated. |
 | E6 | Changes are safe | (a) 7 consecutive green scheduled Full Test Lane runs. (b) Import-closure tests run on pull requests. (c) The ffmpeg asset and the Playwright browser are cached in CI. (d) One deploy gate, the same in `CI_REQUIRED_CHECKS.md`, `OPERATOR_DOOR.md` and the door. (e) The door refuses a deploy while a website or Atlas stage is paid, except the D-08 exceptions. (f) One rollback rehearsal recorded in the tracker. | 2 of 7 green (11-03, 11-07); the streak is 0. Import-isolation tests fail only at night. No cache. Two documented gates. The hold covers Vast launches and scene activation only. No rehearsal. |
-| E7 | Capacity fits the cohort | (a) Cohort: 3 to 5 sites, at most 5 new jobs a day, 2 jobs in preparation at once. (b) 0 host-wide out-of-memory kills in 7 days; the memory caps of the heavy units sum to at most 6.5 GB on the 8.3 GB host. (c) Every clip is normalized before the first preparation stage to a long edge of at most 1920 px and at most 30 frames a second, with the original kept; a synthetic 4K clip proves it. (d) The work volume stays above its 15.8 GB floor with 0 disk refusals in 7 days. | 6 host-wide kills in 24 h; two units each capped at 8 GB. No normalization; fixes so far are per stage. 3.55 GB free against the floor. |
+| E7 | Capacity fits the cohort | (a) Cohort: 3 to 5 sites, at most 5 new jobs a day, 2 jobs in preparation at once. (b) 0 host-wide out-of-memory kills in 7 days; the memory caps of the heavy units sum to at most 6.5 GB on the 8.3 GB host. (c) Every clip is normalized before the first preparation stage to a long edge of at most 1920 px and at most 30 frames a second, with the original kept; a synthetic 4K clip proves it. (d) The work volume stays above its 15.8 GB floor with 0 disk refusals in 7 days. | 6 host-wide kills in 24 h; two units each capped at 8 GB. No normalization; fixes so far are per stage. 3.55 GB usable above the floor on 11-09 (7.9 GB on 11-10). |
 | E8 | Someone notices and acts | (a) A preparation whose lease expired and whose process is dead becomes `failed_retryable` and releases its reservation within 30 minutes, with no operator. (b) 0 paging alerts while the system is healthy. (c) A primary and a backup are named and a test page reaches both *(owner)*. (d) An uptime probe runs at least every 15 minutes *(owner deploys the Render cron)*. (e) One game day: a stall, a full disk and a Firestore restore into a scratch database. | Stalls page and end nothing. 22 alerts raised, 6 paging, mostly noise. Names are "TBD". The GitHub probe ran 3 times on 11-09. No game day or restore drill. |
 | E9 | The site's journey works | (a) An invitee allowlist is enforced on every route that starts a job once the list is set *(owner supplies it)*. (b) The per-address daily cap is below the global cap *(owner; recommended 2 against 5)*, and the cap covers every route that starts a job. (c) App Check enforces *(owner sets the site key)*. (d) CI runs the three intake suites, an e2e case for each outcome (estimate, reference-only, held, infeasible, no match) and withdrawal; a change to a job-page or intake file gets the full release scope. (e) 0 sentences known to be false. | No allowlist. Per-address 20 against global 5. App Check off. Three suites never run in CI. No reference-only case. Three sentences promise something nothing delivers. |
 
@@ -92,7 +99,7 @@ item in section 4.
 | G31 | A deploy retires every in-flight attempt | E6 | `beta-operations.md:457-470` | V | B | L | WP-17 (hold); succession stays open |
 | G32 | No rollback rehearsal | E6 | `beta-operations.md` section 5 | V | B | S | O-11 |
 | G33 | CI downloads fresh each run | E6 | `full-test-lane.yml:149-164`; `ci.yml:186-201` | V | D | S | WP-15 |
-| G34 | Work volume below its floor; reclaim frees 0 | E7 | door status 21:32Z | V | B | M | O-02, WP-22 |
+| G34 | Work volume nearly full (7.9 GB above its floor on 11-10); reclaim frees 0 | E7 | door status 21:32Z | V | B | M | O-02, WP-22 |
 | G35 | No normalization at intake | E7 | WebApp `capture-uploads.ts:82`; `website_assembly_coverage.py:288` | V | B | M | WP-07 |
 | G36 | Unit memory caps at or above the host's memory | E7 | unit files; 6 host-wide kills in 24 h | V | D | S | WP-18 |
 | G37 | A stall pages and ends nothing; a dead process is not covered | E8 | `beta-operations.md` section 1; tracker lines 127-130 | V | D | M | WP-10 |
@@ -126,7 +133,7 @@ Ordered by what each unblocks. None of these is applied by this plan.
 | ID | Decision or action | Recommendation | Unblocks |
 |---|---|---|---|
 | O-01 | The November account limit: $136.43 of $200 was spent by 11-09. | Decide before inviting anyone. Either invite from 2026-12-01, or set the limit for the invited period at fixed costs (about $110 a month: host rent and Google Cloud) plus $60 for each invited job (the cost model's figure with screening). For 5 jobs that is about $410. Also decide whether the library-aisle job keeps spending from this month's limit (O-15). | E1, E4: any invited job finishing in November |
-| O-02 | The work volume: 3.55 GB against a 15.8 GB floor. | Approve retiring orphan scratch (406 directories, 96.8 GB) once WP-22's census shows nothing refers to them. If that takes longer than two days, grow the volume by 200 GiB (about $20 a month; declined on 11-02). | E7; every launch |
+| O-02 | The work volume: 7.9 GB usable above its 15.8 GB floor on 11-10 (3.55 GB on 11-09), 92.5% used, reclaim frees nothing. | Approve retiring orphan scratch (406 directories, 96.8 GB) once WP-22's census shows nothing refers to them. If that takes longer than two days, grow the volume by 200 GiB (about $20 a month; declined on 11-02). | E7; a job's larger stages |
 | O-03 | Where data derived from real clips may live for the replay set. | Synthetic stand-ins in the public repo now (WP-02). Redacted JSON records of retained jobs in a private bucket read by the nightly lane. Never video, frames or meshes. | E3 (a) with real jobs; G13 |
 | O-04 | The invitee list (D-13). | Send the emails or domains; set them in Render as the allowlist that WP-04 reads. | E9 (a) |
 | O-05 | On-call primary and backup (D-24), and one test page to both. | Name two people before the first invitation. | E8 (c) |
