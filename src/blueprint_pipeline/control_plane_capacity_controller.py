@@ -699,6 +699,81 @@ def usage_projection(
     return projection
 
 
+ORPHAN_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v1"
+ORPHAN_CENSUS_MAX_AGE_SECONDS = 2 * GC_SUMMARY_INTERVAL_SECONDS
+ORPHAN_CENSUS_ROWS = 25
+
+
+def orphan_scratch_census_projection(
+    census: Mapping[str, Any] | None, survey: Mapping[str, Any] | None, *, now: float
+) -> dict[str, Any]:
+    """Per orphan scratch folder: bytes something refers to, and bytes nothing does.
+
+    Bytes come from the usage survey, references from the storage GC's hourly
+    reference census. A folder counts as unreferenced only when a fresh, complete
+    census lists it with no reference; everything else, including a folder the
+    census did not list or a name the survey redacted, counts as referenced.
+    This is a report: it grants no retirement and nothing reads it to delete.
+    """
+
+    observed = census.get("observed_at_epoch") if isinstance(census, Mapping) else None
+    timed = type(observed) in (int, float) and _finite_number(observed)
+    age = round(now - observed, 1) if timed else None
+    if not isinstance(census, Mapping) or census.get("schema_version") != ORPHAN_CENSUS_SCHEMA_VERSION:
+        status = "missing"
+    elif not timed or age is None or not 0 <= age <= ORPHAN_CENSUS_MAX_AGE_SECONDS:
+        status = "stale"
+    elif (census.get("status") != "complete" or census.get("scan_errors") != []
+          or not isinstance(census.get("rows"), list)):
+        status = "incomplete"
+    else:
+        status = "complete"
+    unreferenced: set[str] = set()
+    kinds: dict[str, list[str]] = {}
+    if isinstance(census, Mapping) and isinstance(census.get("rows"), list):
+        for row in census["rows"]:
+            if not isinstance(row, Mapping) or not isinstance(row.get("path"), str):
+                continue
+            references = row.get("references")
+            if isinstance(references, list) and all(isinstance(kind, str) for kind in references):
+                kinds[row["path"]] = sorted(references)
+                if not references and status == "complete":
+                    unreferenced.add(row["path"])
+    raw_rows = survey.get("orphan_scratch_root_bytes") if isinstance(survey, Mapping) else None
+    sized = [(row[0], row[1]) for row in raw_rows or []
+             if isinstance(row, list) and len(row) == 2 and isinstance(row[0], str)
+             and type(row[1]) is int and row[1] >= 0]
+    roots = []
+    for root, allocated in sized:
+        free = root in unreferenced
+        roots.append({"root": root, "allocated_bytes": allocated,
+                      "disposition": "unreferenced" if free else "referenced_or_unproven",
+                      "references": kinds.get(root, ["not_in_census"] if status == "complete" else ["census_" + status])})
+    roots.sort(key=lambda row: (row["disposition"] != "unreferenced", -row["allocated_bytes"], row["root"]))
+    unreferenced_bytes = sum(row["allocated_bytes"] for row in roots if row["disposition"] == "unreferenced")
+    total = sum(allocated for _root, allocated in sized)
+    survey_observed = survey.get("observed_at_epoch") if isinstance(survey, Mapping) else None
+    projection = {
+        "status": status,
+        "observed_at_epoch": observed if timed else None,
+        "age_seconds": age,
+        "scan_errors": list(census.get("scan_errors") or [])[:20] if isinstance(census, Mapping) else [],
+        "bytes_available": raw_rows is not None,
+        "bytes_complete": bool(isinstance(survey, Mapping) and survey.get("orphan_scratch_root_bytes_complete") is True
+                               and survey.get("status") == "complete"),
+        "bytes_observed_at_epoch": survey_observed if type(survey_observed) in (int, float) else None,
+        "folders": len(roots),
+        "unreferenced_folders": sum(row["disposition"] == "unreferenced" for row in roots),
+        "referenced_bytes": total - unreferenced_bytes,
+        "unreferenced_bytes": unreferenced_bytes,
+        # Retiring every unreferenced folder would free about this much; nothing here retires one.
+        "retirement_would_free_bytes": unreferenced_bytes,
+        "retirement_authorized": False,
+        "roots": roots[:ORPHAN_CENSUS_ROWS],
+    }
+    return sanitize_public_survey(projection)
+
+
 def class_budgets(environ: Mapping[str, str] | None = None) -> tuple[dict[str, int], bool]:
     """Budgets in bytes per storage class, and whether the setting was invalid."""
 
@@ -1136,6 +1211,7 @@ def run_controller(
     release_retirement_summary_path: Path = DEFAULT_RELEASE_RETIREMENT_SUMMARY,
     break_glass_notes_root: Path = DEFAULT_BREAK_GLASS_NOTES_ROOT,
     storage_gc_summary_path: Path = DEFAULT_STORAGE_GC_SUMMARY,
+    orphan_scratch_census_path: Path | None = None,
     stall_check: Callable[[float, Mapping[str, Any] | None], Mapping[str, Any]] | None = None,
     spend_check: Callable[[float], Mapping[str, Any]] | None = None,
     delivery_check: Callable[[float], Mapping[str, Any]] | None = None,
@@ -1223,6 +1299,8 @@ def run_controller(
         report["alerts"].extend(rows)
         _raise_level(report, [str(row.get("code") or "") for row in rows])
         report["preparation_delivery"] = delivery
+    if orphan_scratch_census_path is None:
+        orphan_scratch_census_path = storage_gc_summary_path.with_name("orphan-scratch-census.json")
     if survey is _DEFAULT_SURVEY:
         survey = survey_usage
     usage, usage_error = _refresh_usage(
@@ -1231,6 +1309,11 @@ def run_controller(
     )
     if usage is not None or usage_error is not None:
         report["usage"] = usage_projection(usage, now=observed, error=usage_error)
+    if usage is not None:
+        # Nested in usage: the operator door passes ``usage`` through whole.
+        report["usage"]["orphan_scratch_census"] = orphan_scratch_census_projection(
+            _read_attention_summary(orphan_scratch_census_path, max_bytes=4 * 1024 * 1024),
+            usage, now=observed)
     if usage is not None and (warnings := usage_alerts(usage)):
         report["alerts"].extend(warnings)
         if report["level"] == "ok":

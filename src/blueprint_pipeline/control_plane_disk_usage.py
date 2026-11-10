@@ -76,6 +76,7 @@ SURVEY_MAX_SHARED_INODES = 20_000
 MOUNTINFO_PATH = "/proc/self/mountinfo"
 SURVEY_TOP_ROWS = 10
 SURVEY_ORPHAN_ROOT_ROWS = 50
+SURVEY_ORPHAN_ROOT_BYTES_ROWS = 5_000
 _SCRATCH_PARENTS = frozenset({
     "/mnt/blueprint-work", "/var/lib/blueprint/task-evaluation-inputs",
 })
@@ -890,6 +891,9 @@ def survey_usage(
         "unclassified_bytes": sum(allocated for _root, allocated in unclassified),
         "orphan_scratch_bytes": sum(allocated for _root, allocated in orphan_scratch),
         "orphan_scratch_count": len(orphan_scratch),
+        # Every orphan root's bytes, for the capacity controller's reference-census join.
+        "orphan_scratch_root_bytes": [[root, allocated] for root, allocated in orphan_scratch[:SURVEY_ORPHAN_ROOT_BYTES_ROWS]],
+        "orphan_scratch_root_bytes_complete": len(orphan_scratch) <= SURVEY_ORPHAN_ROOT_BYTES_ROWS,
         "orphan_scratch_largest_bytes": max((allocated for _root, allocated in orphan_scratch), default=0),
         "orphan_scratch_roots": [
             {"root": root, "allocated_bytes": allocated,
@@ -1102,6 +1106,9 @@ def _partitioned_survey(
         "unclassified_bytes": sum(allocated for _root, allocated in unclassified),
         "orphan_scratch_bytes": sum(allocated for _root, allocated in orphan_scratch),
         "orphan_scratch_count": len(orphan_scratch),
+        # Every orphan root's bytes, for the capacity controller's reference-census join.
+        "orphan_scratch_root_bytes": [[root, allocated] for root, allocated in orphan_scratch[:SURVEY_ORPHAN_ROOT_BYTES_ROWS]],
+        "orphan_scratch_root_bytes_complete": len(orphan_scratch) <= SURVEY_ORPHAN_ROOT_BYTES_ROWS,
         "orphan_scratch_largest_bytes": max((allocated for _root, allocated in orphan_scratch), default=0),
         "orphan_scratch_roots": [
             {"root": root, "allocated_bytes": allocated, "newest_mtime_epoch": mtimes.get(root),

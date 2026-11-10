@@ -1766,6 +1766,37 @@ def _write_summary(report_path: Path, report: Mapping[str, Any]) -> bool:
     return True
 
 
+ORPHAN_SCRATCH_CENSUS_FILENAME = "orphan-scratch-census.json"
+#: "1" in the unit: after each tick, publish the read-only orphan scratch reference census.
+ORPHAN_SCRATCH_CENSUS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_ORPHAN_SCRATCH_CENSUS"
+
+
+def _write_orphan_scratch_census(directory: Path, *, pins_root: Path, queue_roots: Sequence[str | Path],
+                                 active_run_roots: Sequence[str | Path], now: Callable[[], float] = time.time,
+                                 build: Callable[..., Mapping[str, Any]] | None = None) -> bool:
+    """Publish the hourly reference census of orphan scratch beside the GC summary.
+
+    Report-only and after every phase: it never changes the report, its digest or
+    the exit code, and no retirement path reads it. A failure withdraws the
+    previous record, so the capacity summary shows the census as missing, never stale.
+    """
+
+    if build is None:
+        from .control_plane_lane_scratch_census import build_reference_census as build
+    try:
+        census = build(pins_root=pins_root, queue_roots=[Path(root) for root in queue_roots] or None,
+                       active_run_roots=[Path(root) for root in active_run_roots] or None, now=float(now()))
+        _write_report(directory / ORPHAN_SCRATCH_CENSUS_FILENAME, census)
+    except Exception:  # noqa: BLE001 - the GC tick's own outcome stands
+        traceback.print_exc(file=sys.stderr)
+        try:
+            os.unlink(directory / ORPHAN_SCRATCH_CENSUS_FILENAME)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def _withdraw_summary(directory: Path) -> None:
     """Best effort: unlink ``summary.json`` by name through the report directory's descriptor."""
 
@@ -1931,6 +1962,12 @@ def _run_main(argv: list[str]) -> int:
     if args.report_out:
         _write_report(Path(args.report_out).expanduser(), report)
         summary_written = _write_summary(Path(args.report_out).expanduser(), report)
+        if str(os.getenv(ORPHAN_SCRATCH_CENSUS_ENV) or "").strip() == "1":
+            _write_orphan_scratch_census(
+                Path(args.report_out).expanduser().parent, pins_root=Path(pins_root),
+                queue_roots=args.queue_root or _split_env(QUEUE_ROOTS_ENV),
+                active_run_roots=[*(args.evidence_root or _split_env(EVIDENCE_ROOTS_ENV)),
+                                  *(args.settlement_root or _split_env(SETTLEMENT_ROOTS_ENV))])
     print(json.dumps(report, indent=2, sort_keys=True))
     # The whole report is written first; a failed phase still fails the unit so it is seen.
     return 1 if report.get("phase_errors") or not summary_written else 0

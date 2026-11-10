@@ -713,11 +713,14 @@ def _filesystem_location(path: Path, own_mounts: Sequence[tuple[str, str, str]])
 
 def _namespace_mount_references(paths: Sequence[Path], process_root: Path, errors: list[str],
                                 deadline: float) -> set[Path]:
-    """Candidates a process in another mount namespace (a container) has mounted.
+    """Candidates a process in another mount namespace (a container, a sandboxed unit) uses.
 
-    Its cwd and descriptors name paths inside that namespace, so the process scan
-    cannot match them. A mount of the same filesystem whose root lies in, or
-    contains, a candidate holds that candidate.
+    Its cwd and descriptors name paths inside its own namespace, so the plain
+    process scan cannot match them. Each mount of a candidate's filesystem in
+    that namespace is read: a mount of the candidate itself or of a folder inside
+    it holds the candidate outright; a mount of a folder containing it says where
+    the candidate appears there, and that process's cwd and descriptors are
+    matched against that path.
     """
     found: set[Path] = set()
     try:
@@ -730,35 +733,51 @@ def _namespace_mount_references(paths: Sequence[Path], process_root: Path, error
     if any(location is None for location in locations.values()):
         errors.append("mount_namespace_inventory_unreadable")
         return found
-    seen: set[str] = {own_namespace}
     try:
-        processes = [entry for entry in process_root.iterdir() if entry.name.isdigit()]
+        processes = sorted(entry for entry in process_root.iterdir() if entry.name.isdigit())
     except OSError:
         errors.append("mount_namespace_inventory_unreadable")
         return found
+    if len(processes) > MAX_CANDIDATES:
+        errors.append("mount_namespace_inventory_truncated")
+    views: dict[str, dict[PurePosixPath, Path]] = {}
     for process in processes[:MAX_CANDIDATES]:
         if _expired(deadline, errors):
             break
         try:
             namespace = os.readlink(process / "ns" / "mnt")
-            if namespace in seen:
+            if namespace == own_namespace:
                 continue
-            mounts = _mountinfo(_read_small(process / "mountinfo", _MAX_MOUNTINFO_BYTES))
+            if namespace not in views:
+                view: dict[PurePosixPath, Path] = {}
+                for device, root, point in _mountinfo(_read_small(process / "mountinfo", _MAX_MOUNTINFO_BYTES)):
+                    mounted = PurePosixPath(root)
+                    for path, location in locations.items():
+                        if location is None or location[0] != device:
+                            continue
+                        if mounted == location[1] or location[1] in mounted.parents:
+                            found.add(path)  # the candidate, or a folder inside it, is mounted there
+                        elif mounted in location[1].parents:
+                            view[PurePosixPath(point) / location[1].relative_to(mounted)] = path
+                views[namespace] = view
+            links = [process / "cwd", *(process / "fd").iterdir()]
         except FileNotFoundError:
             continue  # exited during the scan
         except (OSError, ValueError):
             errors.append("mount_namespace_inventory_unreadable")
             continue
-        seen.add(namespace)
-        for device, root, _point in mounts:
-            mounted = PurePosixPath(root)
-            for path, location in locations.items():
-                if location is not None and location[0] == device and (
-                        mounted == location[1] or mounted in location[1].parents
-                        or location[1] in mounted.parents):
+        view = views[namespace]
+        for link in links:
+            try:
+                target = PurePosixPath(os.readlink(link).removesuffix(" (deleted)"))
+            except FileNotFoundError:
+                continue
+            except OSError:
+                errors.append("mount_namespace_inventory_unreadable")
+                continue
+            for seen_as, path in view.items():
+                if target == seen_as or seen_as in target.parents:
                     found.add(path)
-    if len(processes) > MAX_CANDIDATES:
-        errors.append("mount_namespace_inventory_truncated")
     return found
 
 
@@ -820,5 +839,5 @@ def build_reference_census(
             "scan_errors": sorted(set(errors)), "mutations": 0}
 
 
-__all__ = ["build_census", "build_reference_census", "DEFAULT_WORK_ROOT", "DEFAULT_INPUTS_ROOT",
-           "REFERENCE_CENSUS_SCHEMA_VERSION"]
+__all__ = ["DEFAULT_INPUTS_ROOT", "DEFAULT_WORK_ROOT", "REFERENCE_CENSUS_SCHEMA_VERSION",
+           "build_census", "build_reference_census"]
