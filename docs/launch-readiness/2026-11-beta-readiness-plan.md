@@ -206,7 +206,7 @@ Not packaged, and why:
 
 ## 6. Progress
 
-Updated after every wave. Last update: 2026-11-10 06:50Z. Nine packages merged: WP-01, 02, 04, 05, 06, 07, 08, 11, 15. One held for an owner decision (WP-03). Fourteen deferred.
+Updated after every wave. Last update: 2026-11-10 15:10Z. Thirteen packages merged: WP-01, 02, 04, 05, 06, 07, 08, 11, 12, 14, 15, 19, 22. One held for an owner decision (WP-03). Ten deferred.
 Status: merged, PR (open, with its CI result), or deferred with a reason. "CI"
 counts the checks that ran; checks the workflow skipped are not counted.
 
@@ -223,17 +223,17 @@ counts the checks that ran; checks the workflow skipped are not counted.
 | WP-09 | deferred | | | Not started: this session reached its turn limit after wave 2. Nothing blocks it. Add to it: a planned screening campaign can still reserve for a withdrawn site (G52). |
 | WP-10 | deferred | | | Not started (turn limit). Depends on WP-03, which is not merged. |
 | WP-11 | merged, in part | [WebApp #1247](https://github.com/ognjhunt/Blueprint-WebApp/pull/1247) | green, 9 passed | Full release scope for 28 job-page and intake files, and a reference-only case. The three intake suites are NOT in CI: all three fail on `main` (G59, O-20). |
-| WP-12 | deferred | | | Not started (turn limit). Nothing blocks it. |
+| WP-12 | merged | [#3543](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3543) | green, 5 passed | Verifier approved. A hold's record carries seconds and dollars spent before it; eight kinds of paid upstream call cannot start once a job is held; a resumed job runs its clean plate again. Left: the WebApp does not show the figures (needs an additive status version); a resume in the instant between the stop and its re-check ends that run as a failure. |
 | WP-13 | deferred | | | Not started (turn limit). The host drill also needs O-14. |
-| WP-14 | deferred | | | Not started (turn limit). Depends on WP-03 and WP-06. Add to it: the `authority_ended` sentence (G51). |
+| WP-14 | merged | [WebApp #1254](https://github.com/ognjhunt/Blueprint-WebApp/pull/1254) | green, 9 passed | An ended job is told it ended; waits show "We can keep working on this job until <date>" when the date is known; three promises nothing delivers are removed. `Privacy.tsx` "booking records" still waits on O-07. |
 | WP-15 | merged | [#3523](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3523) | green, 28 check runs, none failed | Verifier approved. Suite collection from about 185 s to about 45 s; one deploy gate per deploy kind in the documents; a `/proc` race fixed; ffmpeg and browser caches. Left: the `registered_feature` nightly failure needs a production budget change (G60). |
 | WP-16 | deferred | | | Not started (turn limit). Add to it: `/v1/creator/captures` is outside the allowlist (G53). |
 | WP-17 | deferred | | | Not started (turn limit). Depends on WP-15. |
 | WP-18 | deferred | | | Not started (turn limit). Its merge needs the library-aisle session's agreement, because a lower memory cap can kill a stage that survives today. |
-| WP-19 | deferred | | | Not started (turn limit). Nothing blocks it. |
+| WP-19 | merged | [#3539](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3539) | green, 3 passed | Today's five pages for one disk condition become one, carrying the mount, free and floor figures. A critical mount whose cleanup report is missing, stale or errored pages once. No money, credit, spend or stall alert changed. Proposed, not done: a re-page backoff and a "cleared" post. |
 | WP-20 | deferred | | | Not started (turn limit). Nothing blocks it. |
 | WP-21 | deferred | | | Not started (turn limit). Deletion stays off until O-17 either way. |
-| WP-22 | deferred | | | Not started (turn limit). The most urgent of the deferred packages: O-02 waits on it. |
+| WP-22 | merged | [#3542](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3542) | green, 9 passed | Three verifier passes. The hourly GC unit now produces a reference census in `door status`: per folder `referenced`, `not_proven` or `no_specific_reference_found`, with family, run-time-only flag and age. It deletes nothing. Root reachability is reported once (release code names the volume root). Deleting stays an owner-approved manifest (O-02). |
 | WP-23 | new, deferred | | | Put the 49 unadmitted API-priced call sites (WP-05's list) behind the existing account-limit check, or refuse them when no reservation exists. Serves E4 (a). |
 | WP-24 | new, deferred | | | Produce the Pipeline's deletion plan after a withdrawal with no operator, run OUTSIDE the intake service. Work so far and three reviews' findings are on branch `claude/inspiring-turing-xbkcyh-wp-24`. Serves E5 (c). |
 
@@ -254,6 +254,8 @@ Gaps found while doing the work, added to the register:
 | G58 | Collecting the whole test suite takes about 185 s on `main` against a 180 s limit, so one full-suite shard fails on any pull request that runs it, and the nightly lane is at risk | E6 | `tests/test_cpu_env_contract.py::test_canonical_cpu_env_collects_without_errors`; #3515 shard 11 | WP-15 |
 | G59 | The three intake browser suites fail on `main`: 7 cases assert headings the pages no longer show, and 15 backend cases hit the 5-a-day intake cap, which the local launcher cannot raise | E9 | WebApp `playwright.intake*.config.ts`; `scripts/qa/reliability-local-app.mjs` | open; O-20 |
 | G60 | The nightly `registered_feature` test fails when the runner is busy: one 20,000-entry budget covers every process's file-descriptor listing | E6 | #3523 report; `reference_entries_limit` | open: needs a production budget change |
+| G61 | The owner-approved deletion tool cannot reach `/mnt/blueprint-work`, where the largest orphan folder (30.7 GB of SDK inputs) sits | E7 | #3542 report; `owner_approved_deletion.py` | open; O-02 |
+| G62 | Only two declared footprints do not fit today's 7.9 GB of headroom: embodiment preparation (25.8 GB) and the humanoid checkpoint cache (34.4 GB). Every other website-job step fits | E7 | `door status` 2026-11-10 13:11Z, `deployed.disk_headroom.footprints` | O-02 |
 
 Added to the owner list:
 
