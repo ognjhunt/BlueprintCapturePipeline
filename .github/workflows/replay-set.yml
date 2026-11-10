@@ -1,0 +1,84 @@
+name: Replay Set
+
+# Replays the committed job records (tests/fixtures/replay_set_v1) through the $0 replay tools and
+# fails if any record's first stop moved. Offline: the replays refuse network, paid calls and WebApp
+# writes themselves. Nightly, and on pull requests that touch preparation, levelling, screening, the
+# post-completion chain or the replay modules.
+
+on:
+  schedule:
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/replay-set.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "src/blueprint_pipeline/*replay*"
+      - "src/blueprint_pipeline/*preparation*"
+      - "src/blueprint_pipeline/*level*"
+      - "src/blueprint_pipeline/*screening*"
+      - "src/blueprint_pipeline/task_evaluation_scene_*"
+      - "src/blueprint_pipeline/team_scene_packet*"
+      - "src/blueprint_pipeline/team_candidate_*"
+      - "src/blueprint_pipeline/rigid_robot_free_probe*"
+      - "src/blueprint_pipeline/robot_free_readiness*"
+      - "src/blueprint_pipeline/website_navigation_*"
+      - "tests/fixtures/replay_set_v1/**"
+      - "tests/replay_set_v1_build.py"
+      - "tests/test_replay_set_v1.py"
+
+concurrency:
+  group: replay-set-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  replay-set:
+    name: Replay set v1
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
+      # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
+      CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+      CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Checkout BlueprintContracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init BlueprintContracts
+          cd BlueprintContracts
+          git remote add origin "https://x-access-token:${CONTRACTS_TOKEN}@github.com/${CONTRACTS_REPOSITORY}.git"
+          if ! git fetch --depth=1 origin "${CONTRACTS_REF}"; then
+            echo "::error::Pinned BlueprintContracts ref '${CONTRACTS_REF}' was not available."
+            exit 1
+          fi
+          git checkout --detach FETCH_HEAD
+
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install frozen dependencies
+        run: |
+          uv lock --check
+          uv sync --frozen --python 3.12 --extra dev
+          uv pip install -e BlueprintContracts
+
+      - name: Replay every record of the set
+        timeout-minutes: 15
+        run: uv run python -m blueprint_pipeline.replay_set --set tests/fixtures/replay_set_v1
+
+      - name: Replay set tests
+        timeout-minutes: 15
+        run: uv run python -m pytest -q -p no:cacheprovider tests/test_replay_set_v1.py

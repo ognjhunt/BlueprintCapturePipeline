@@ -27,7 +27,7 @@ window, and a decline at least 2 GiB beyond the largest live reservation that
 window saw, since admitted writers were budgeted against the floor. It projects
 that unreserved rate against the admission headroom. Once paging, it clears only
 when the projection reaches twelve hours or the decline stops. `warn` alerts include
-utilization, poor usage attribution, a container runtime store over 20 GiB,
+utilization, poor usage attribution, classes over budget, large unowned scratch, a container runtime store over 20 GiB,
 release-retirement attention, and unreported break-glass notes. A new page fingerprint posts immediately; a persisting page repeats
 hourly. The webhook must reach a person, not merely accept a request.
 
@@ -65,12 +65,21 @@ work volume. `assigned_roles` and `refused_roles` in the capacity summary
 identify which stages the measured filesystem can actually block. These
 projections do not replace each worker's atomic disk reservation.
 
-`storage_class_over_budget` (page) names a storage class the usage survey
+`storage_class_over_budget` (warn) names a storage class the usage survey
 measured above its byte budget (`release` 15, `cache` 20, `work` 25,
 `unclassified` 30 GiB; `BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB` overrides them).
 Something in that class grows with no cap. Read `usage.top_roots` and
 `usage.top_owners` for the class, then decide its retention; the alert itself
-changes nothing.
+changes nothing. It and `orphan_scratch_large` warn: on a healthy disk neither
+needs action today. On a critical mount the GC cannot relieve, the single page is
+`reclaim_ineffective`, which carries the mount, `free_bytes`, `floor_bytes`,
+`available_bytes` and `top_retained_reasons`; the webhook's `cites` lists these
+usage warnings so the reader knows where the bytes are. When the GC summary
+cannot be trusted (missing, more than twice its hourly interval old, not
+`applied`, or carrying phase errors or skipped roots) the same mount pages once
+as `reclaim_state_unknown` instead, with `reason`, `gc_summary_age_seconds` and
+any error counts; check the storage GC unit first. It clears by itself once a
+fresh, clean summary is read.
 
 For a configured DigitalOcean volume, check `volume_resize.status` and
 `reason`. `volume_at_maximum` needs a provider limit increase before raising
@@ -202,6 +211,41 @@ The same tick reads the listener's
   unreadable, incomplete or more than an hour old (`reason`). The ages of a
   silent listener's last metrics grow with the silence, so a live callback
   still pages.
+
+## Orphan scratch reference census
+
+Each storage-GC tick ends by writing `storage-gc/orphan-scratch-census.json`
+(`control_plane_lane_scratch_census.build_reference_census`). The capacity summary
+reports it under `usage.orphan_scratch_census`, which `door status` shows.
+
+**No reference found means none was found among the kinds checked, at the census
+time. It is evidence for an owner's decision, not a statement that deletion is
+safe, and a reference can appear after the census.** Read `age_seconds` first.
+
+- `kinds` lists every reference kind with `checked`, `failed` (with errors) or
+  `not_checked` (with why): queue, active_run, capture_reconstruction,
+  pubsub_handoff, door_request, process, container_mount, docker_container,
+  unit_file, env_file, release_source, sibling_link, pin, live_release.
+  `release_source` reads the live release's runtime code, not its tests or docs.
+  `not_checked_sources` names what no kind covers (podman or bare containerd
+  containers; a /proc read that blocks is not interrupted by the deadline).
+- `status` is `complete` only when every kind is `checked`. Otherwise every
+  folder is `not_proven` and `no_specific_reference_found_bytes` is null, never zero.
+- A reference to a scan root itself (`/mnt/blueprint-work`,
+  `/var/lib/blueprint/task-evaluation-inputs`, or a directory above one) is how the
+  system finds its workspace, not evidence about any one folder. It changes no row
+  and is listed once in `root_reachable_by`: anything that uses a scratch root can
+  reach every folder under it, and this census cannot rule that out. Folder family
+  and age are the other evidence. A named intermediate directory (a lane folder)
+  makes the folders under it `not_proven` (`ancestor_references`).
+- Each folder row gives its bytes, `references`, `lane_family`, `use_guess` (a
+  name-pattern guess), `top_level_unchanged_days` (the folder and its direct
+  children only), and `run_time_only`. A run-time-only folder (SDK inputs, a
+  checkpoint or wheel cache) has no reference between runs; deleting it means a
+  rebuild or a paid re-download.
+- The census retires and deletes nothing, and nothing reads it to delete. An
+  owner who decides to retire folders lists them in an owner-approved deletion
+  manifest (`deploy/owner-approved-deletions/`), which re-checks every path.
 
 ## Owner's Phase 0 checklist
 

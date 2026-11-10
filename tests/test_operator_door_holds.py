@@ -172,6 +172,25 @@ def test_explicit_dispatch_stop_survives_deadline_and_boot_until_release(tmp_pat
     assert not path.exists()
 
 
+def test_explicit_release_record_is_valid_for_a_retired_unit_and_no_other(tmp_path) -> None:
+    """A retired unit's until-released hold survives its deadline; the same record on another unit is refused."""
+
+    root = tmp_path / "holds"
+    root.mkdir()
+    retired = "blueprint-pipeline-control-plane.timer"
+    path = _record(root, retired, expires_at_epoch=1100, enabled_before=True)
+    path.write_text(json.dumps({**json.loads(path.read_text()), "require_explicit_release": True}))
+    assert holds.read(root, retired)["require_explicit_release"] is True
+    assert holds.expire(root, retired, "20260927T000000Z-hold-0000abcd", now=1200) == 0
+    assert path.exists(), "the deadline must not restore a retired unit"
+
+    other = "blueprint-pubsub-handoff-listener.timer"
+    path = _record(root, other, expires_at_epoch=1100, enabled_before=True)
+    path.write_text(json.dumps({**json.loads(path.read_text()), "require_explicit_release": True}))
+    with pytest.raises(holds.HoldError, match="hold_record_invalid"):
+        holds.read(root, other)
+
+
 @pytest.mark.parametrize("policy", ["true", 1, None])
 def test_invalid_retained_explicit_release_policy_fails_closed(tmp_path, policy) -> None:
     root = tmp_path / "holds"

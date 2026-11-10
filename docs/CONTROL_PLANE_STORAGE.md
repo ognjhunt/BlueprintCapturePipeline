@@ -286,7 +286,7 @@ new capture download is refused. Deploys use the separate critical floor on
 their target device. At zero physical free bytes, no local state write can be
 guaranteed. See
 [Admission gate](#admission-gate-blueprint_pipelinecontrol_plane_disk_budget)
-(design: [phase 2](CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md#phase-2-volume-split-a-week)).
+(design: [phase 2](archive/CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md#phase-2-volume-split-a-week)).
 The capacity unit measures `/`, `/var/lib/blueprint` and `/mnt/blueprint-work`.
 A configured mount that is not present is reported as absent; an existing
 unreadable mount remains critical. The intake, scene progression and capacity
@@ -526,7 +526,7 @@ controller warns with `usage_unclassified_root` for each unclassified root over
 20 GiB, and with
 `usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
 over used bytes, capped at 1) is under 0.9. Any of these warnings raises an `ok` report
-to `warning`. It pages with `storage_class_over_budget` when the survey measures a
+to `warning`. It warns with `storage_class_over_budget` when the survey measures a
 storage class above its byte budget: `release` 15, `cache` 20, `work` 25 and
 `unclassified` 30 GiB by default, set as `release=15,cache=20` in
 `BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB` (`off` disables them; an invalid value warns

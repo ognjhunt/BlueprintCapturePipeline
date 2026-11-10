@@ -8,8 +8,14 @@
 > status:
 > [`launch-readiness/2026-11-beta-launch-tracker.md`](launch-readiness/2026-11-beta-launch-tracker.md).
 > This file stays at its path because
-> `src/blueprint_pipeline/cross_repo_first_gpu_readiness.py`,
 > `scripts/verify_paid_resource_allocator.py` and tests read it.
+>
+> **2026-11-10:** the lane's code is gone. `first_gpu_run_packet.py`,
+> `cross_repo_first_gpu_readiness.py`, `first_gpu_e2e_readiness.py`,
+> `first_gpu_sample_video_stage.py`, `first_gpu_sample_video_preflight.py`,
+> `first_gpu_candidate_audit.py` and their six `blueprint-*first-gpu*` console
+> commands were removed, so the commands below no longer exist. The last
+> commit that has them is `bfbfdc4bf`.
 
 Use this runbook for the first sample-video pass that intentionally crosses from
 local capture/package automation into owner GPU simulator execution.

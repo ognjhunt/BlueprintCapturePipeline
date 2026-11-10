@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "operato
 
 from operator_door.config import DoorConfig  # noqa: E402
 from operator_door.requests import (  # noqa: E402
+    EXPLICIT_RELEASE_UNITS,
+    RETIRED_HOLD_UNITS,
     RequestRefused,
     enqueue,
     list_requests,
@@ -28,6 +30,32 @@ from operator_door.requests import (  # noqa: E402
 )
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
+    """A unit the repository retired can be kept off until an operator removes it from the host."""
+
+    assert EXPLICIT_RELEASE_UNITS == ("blueprint-agent-run-dispatcher.timer", *RETIRED_HOLD_UNITS)
+    assert RETIRED_HOLD_UNITS == (
+        "blueprint-pipeline-control-plane.timer",
+        "blueprint-capture-reconstruction-dispatcher.timer",
+        "blueprint-capture-reconstruction-dispatcher.path",
+    )
+    for unit in RETIRED_HOLD_UNITS:
+        plain = {"kind": "hold", "unit": unit, "owner": "retire-legacy-loop",
+                 "reason": "Retired unit still installed", "expires_in_seconds": 86400}
+        assert validate_request(plain) == plain
+        explicit = {**plain, "require_explicit_release": True}
+        assert validate_request(explicit) == explicit
+    # The services behind those triggers, and every other trigger, keep the old answers.
+    for unit, code in [("blueprint-pipeline-control-plane.service", "hold_unit_invalid"),
+                       ("blueprint-pubsub-handoff-listener.timer", "hold_explicit_release_unit_refused"),
+                       ("blueprint-gpu-spend-guard.timer", "unit_safety_critical")]:
+        with pytest.raises(RequestRefused) as error:
+            validate_request({"kind": "hold", "unit": unit, "owner": "retire-legacy-loop",
+                              "reason": "Retired unit still installed", "expires_in_seconds": 86400,
+                              "require_explicit_release": True})
+        assert error.value.code == code
 
 
 def test_explicit_release_policy_is_dispatcher_only_and_typed() -> None:

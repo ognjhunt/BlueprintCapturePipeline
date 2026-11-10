@@ -53,7 +53,19 @@ data, money, or public-claim exposure.
 
 ## Rollback
 
-The WebApp rollback path is authoritative for buyer, entitlement, checkout,
+Pick the rollback by what regressed.
+
+**The control-plane host** runs every website job (intake, preparation, scene
+configuration, screening). Roll it back through the operator door, as
+[`beta-operations.md` section 5](beta-operations.md#5-roll-back-a-bad-deploy)
+describes. Read that section first: a rollback also retires and rebuilds each
+in-flight website attempt.
+
+```bash
+python3 scripts/operator_door.py deploy <previous sha on main> --wait
+```
+
+**The WebApp** rollback path is authoritative for buyer, entitlement, checkout,
 and public surface regressions:
 
 ```bash
@@ -61,7 +73,9 @@ cd ../Blueprint-WebApp
 npm run deploy:rollback -- --target <last-known-good-sha> --health-url https://tryblueprint.io --verify-command "npm run check"
 ```
 
-For Pipeline Cloud Run job regressions, restore the last known good image tag:
+**The legacy `blueprint-pipeline` Cloud Run job** serves only the non-website
+capture lane. It does not run website jobs, so this command does not roll back
+the host. For a regression in that job, restore the last known good image tag:
 
 ```bash
 deploy/scripts/deploy.sh --rollback --rollback-image-tag <last-known-good-image-tag>
@@ -80,7 +94,8 @@ ROLLBACK_VERIFY_COMMAND="python -m pytest tests/test_deploy_systemd_contract.py 
 Rollback evidence required before closeout:
 
 - incident id and commander;
-- rollback target SHA or image tag;
+- rollback target SHA or image tag (for the host, the door deploy receipt
+  `deploy-receipts/iteration_<sha12>_door.json`);
 - verification command and output;
 - deployed health/image check result or explicit blocker;
 - affected user/order/capture/package list;

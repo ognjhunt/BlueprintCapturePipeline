@@ -129,10 +129,13 @@ FLOOR_WITHIN_HOURS_CLEAR = 12.0
 PAGE_ALERT_CODES = frozenset({
     "floor_within_three_days", "floor_within_hours", "admission_refused", "critical_admission_refused",
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
+    # The one disk page for a critical mount that the GC cannot relieve; it names
+    # the mount, its free and floor bytes and what the GC kept. The usage findings
+    # it rests on (storage_class_over_budget, orphan_scratch_large,
+    # usage_unclassified_root) warn: on a healthy disk none needs action today.
     "reclaim_ineffective",
-    "orphan_scratch_large",
-    # A storage class past its byte budget: something grows with no cap.
-    "storage_class_over_budget",
+    # The same mount when the GC summary cannot say whether reclaim works.
+    "reclaim_state_unknown",
     # Vast stops every instance once its balance runs out.
     "provider_credit_insufficient",
     # A live website preparation status callback undelivered for over an hour (D-05);
@@ -142,6 +145,11 @@ PAGE_ALERT_CODES = frozenset({
     *provider_spend.PAGE_CODES,
     # A live job that stopped moving (control_plane_stall_alarm); the disk level is unchanged.
     *stall_alarm.PAGE_CODES,
+})
+
+
+_RECLAIM_CITED_WARNINGS = frozenset({
+    "storage_class_over_budget", "orphan_scratch_large", "usage_unclassified_root",
 })
 
 
@@ -217,6 +225,32 @@ def _finite_number(value: int | float) -> bool:
         return math.isfinite(value)
     except OverflowError:
         return False
+
+
+def _reclaim_state_unknown(summary: Mapping[str, Any] | None, *, now: float) -> dict[str, Any] | None:
+    """Why the GC summary cannot be trusted, or None when it is fresh, applied and error-free.
+
+    Fresh means at most twice ``GC_SUMMARY_INTERVAL_SECONDS`` old, the margin
+    ``_reclaim_outlook`` already uses.
+    """
+
+    if not isinstance(summary, Mapping) or summary.get("schema_version") != "control_plane_storage_gc_summary.v1":
+        return {"reason": "gc_summary_missing"}
+    observed = summary.get("observed_at_epoch")
+    if type(observed) not in (int, float) or not _finite_number(observed):
+        return {"reason": "gc_summary_unreadable"}
+    age = now - observed
+    if not 0 <= age <= 2 * GC_SUMMARY_INTERVAL_SECONDS:
+        return {"reason": "gc_summary_stale", "gc_summary_age_seconds": round(age)}
+    if summary.get("status") != "applied":
+        return {"reason": "gc_summary_not_applied", "status": str(summary.get("status"))[:40],
+                "gc_summary_age_seconds": round(age)}
+    errors, skipped = summary.get("phase_errors"), summary.get("skipped_roots")
+    if not isinstance(errors, list) or not isinstance(skipped, list) or errors or skipped:
+        return {"reason": "gc_summary_errors", "gc_summary_age_seconds": round(age),
+                "phase_error_count": len(errors) if isinstance(errors, list) else None,
+                "skipped_root_count": len(skipped) if isinstance(skipped, list) else None}
+    return None
 
 
 def _reclaim_outlook(
@@ -699,6 +733,110 @@ def usage_projection(
     return projection
 
 
+ORPHAN_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v4"
+ORPHAN_CENSUS_MAX_AGE_SECONDS = 2 * GC_SUMMARY_INTERVAL_SECONDS
+ORPHAN_CENSUS_ROWS = 25
+ORPHAN_CENSUS_STATEMENT = (
+    "No reference found means none was found among the kinds checked, at the census time. "
+    "It is evidence for an owner's decision, not a statement that deletion is safe, and a "
+    "reference can appear after the census.")
+
+
+def orphan_scratch_census_projection(
+    census: Mapping[str, Any] | None, survey: Mapping[str, Any] | None, *, now: float
+) -> dict[str, Any]:
+    """Per orphan scratch folder: its size, what the census found referring to it, and its age.
+
+    Bytes come from the usage survey, references from the storage GC's hourly
+    reference census. A folder is ``no_specific_reference_found`` only when a fresh census
+    that checked every reference kind lists it with none; any other folder is
+    ``referenced`` or ``not_proven``, and an incomplete census publishes no total.
+    This is evidence for an owner's decision. It grants no retirement.
+    """
+
+    observed = census.get("observed_at_epoch") if isinstance(census, Mapping) else None
+    timed = type(observed) in (int, float) and _finite_number(observed)
+    age = round(now - observed, 1) if timed else None
+    kinds = census.get("kinds") if isinstance(census, Mapping) else None
+    if not isinstance(census, Mapping) or census.get("schema_version") != ORPHAN_CENSUS_SCHEMA_VERSION:
+        status = "missing"
+    elif not timed or age is None or not 0 <= age <= ORPHAN_CENSUS_MAX_AGE_SECONDS:
+        status = "stale"
+    elif (census.get("status") != "complete" or not isinstance(kinds, Mapping) or not kinds
+          or any(not isinstance(row, Mapping) or row.get("status") != "checked" for row in kinds.values())
+          or census.get("candidate_listing_errors") != [] or not isinstance(census.get("rows"), list)):
+        status = "incomplete"
+    else:
+        status = "complete"
+    listed: dict[str, Mapping[str, Any]] = {}
+    if isinstance(census, Mapping) and isinstance(census.get("rows"), list):
+        for row in census["rows"]:
+            if (isinstance(row, Mapping) and isinstance(row.get("path"), str)
+                    and isinstance(row.get("references"), list)):
+                listed[row["path"]] = row
+    raw_rows = survey.get("orphan_scratch_root_bytes") if isinstance(survey, Mapping) else None
+    sized = [(row[0], row[1]) for row in raw_rows or []
+             if isinstance(row, list) and len(row) == 2 and isinstance(row[0], str)
+             and type(row[1]) is int and row[1] >= 0]
+    folders = []
+    for root, allocated in sized:
+        row = listed.get(root)
+        references = [kind for kind in (row or {}).get("references") or [] if isinstance(kind, str)]
+        reasons = (row or {}).get("not_proven")
+        if references:
+            disposition = "referenced"
+        elif row is not None and status == "complete" and reasons == []:
+            disposition = "no_specific_reference_found"
+        else:
+            disposition = "not_proven"
+        mtime = (row or {}).get("top_level_mtime_epoch")
+        folders.append({
+            "root": root, "allocated_bytes": allocated, "disposition": disposition, "references": references,
+            "not_proven": [{key: reason[key] for key in ("reason", "kind", "ancestor") if key in reason}
+                           for reason in reasons or [] if isinstance(reason, Mapping)][:5],
+            "lane_family": (row or {}).get("lane_family"), "use_guess": (row or {}).get("use_guess", "unknown"),
+            "run_time_only": (row or {}).get("run_time_only") is True,
+            "top_level_unchanged_days": (round(max(0.0, now - mtime) / 86400, 1)
+                                         if type(mtime) in (int, float) and _finite_number(mtime) else None),
+        })
+    order = {"no_specific_reference_found": 0, "not_proven": 1, "referenced": 2}
+    folders.sort(key=lambda row: (order[row["disposition"]], -row["allocated_bytes"], row["root"]))
+    found_none = [row for row in folders if row["disposition"] == "no_specific_reference_found"]
+    survey_observed = survey.get("observed_at_epoch") if isinstance(survey, Mapping) else None
+    projection = {
+        "statement": ORPHAN_CENSUS_STATEMENT,
+        "status": status,
+        "observed_at_epoch": observed if timed else None,
+        "age_seconds": age,
+        "kinds": ({kind: {key: row[key] for key in ("status", "reason", "errors") if key in row}
+                   for kind, row in kinds.items() if isinstance(row, Mapping)}
+                  if isinstance(kinds, Mapping) else {}),
+        "not_checked_sources": list(census.get("not_checked_sources") or [])[:10]
+        if isinstance(census, Mapping) else [],
+        # Said once: a scan root named or mounted reaches every folder; it changes no row.
+        "root_reachable_by": [row for row in (census.get("root_reachable_by") or [])
+                              if isinstance(row, Mapping)][:20] if isinstance(census, Mapping) else [],
+        "root_reachability_statement": (census.get("root_reachability_statement")
+                                        if isinstance(census, Mapping) else None),
+        # An intermediate ancestor named in a record reaches the folders under it: those are not_proven.
+        "ancestor_references": [row for row in (census.get("ancestor_references") or [])
+                                if isinstance(row, Mapping)][:20] if isinstance(census, Mapping) else [],
+        "bytes_available": raw_rows is not None,
+        "bytes_complete": bool(isinstance(survey, Mapping) and survey.get("orphan_scratch_root_bytes_complete") is True
+                               and survey.get("status") == "complete"),
+        "bytes_observed_at_epoch": survey_observed if type(survey_observed) in (int, float) else None,
+        "folders": len(folders),
+        # Totals only from a census that checked every kind; otherwise unknown, never zero.
+        "no_specific_reference_found_folders": len(found_none) if status == "complete" else None,
+        "no_specific_reference_found_bytes": sum(row["allocated_bytes"] for row in found_none) if status == "complete" else None,
+        "no_specific_reference_found_run_time_only_bytes": (sum(row["allocated_bytes"] for row in found_none
+                                                       if row["run_time_only"]) if status == "complete" else None),
+        "retirement_authorized": False,
+        "roots": folders[:ORPHAN_CENSUS_ROWS],
+    }
+    return sanitize_public_survey(projection)
+
+
 def class_budgets(environ: Mapping[str, str] | None = None) -> tuple[dict[str, int], bool]:
     """Budgets in bytes per storage class, and whether the setting was invalid."""
 
@@ -724,7 +862,7 @@ def class_budgets(environ: Mapping[str, str] | None = None) -> tuple[dict[str, i
 
 
 def usage_alerts(survey: Mapping[str, Any], *, budgets: Mapping[str, int] | None = None) -> list[dict[str, Any]]:
-    """Warnings, one owner page for large unregistered scratch, and a page per class over budget."""
+    """Usage warnings: large unregistered scratch, each class over budget, each large root."""
 
     def number(value: Any) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -783,7 +921,10 @@ _SUMMARY_ALERT_KEYS = (
     "parked_count",
     # Provider spend pages: amounts, the line and the window; never keys or paths.
     "spend_usd", "threshold_usd", "limit_usd", "window", "http_status",
-    "top_retained_reasons",
+    # reclaim_ineffective: the critical mount's own figures beside what the GC kept.
+    "top_retained_reasons", "free_bytes", "floor_bytes", "available_bytes",
+    # reclaim_state_unknown: why the GC summary cannot be trusted.
+    "gc_summary_age_seconds", "phase_error_count", "skipped_root_count",
     "hours_until_floor", "decline_bytes_per_hour", "window_seconds",
     "storage_class", "budget_bytes", "byte_accounting",
     # Stall pages: identifiers and codes only, never paths or owner fields.
@@ -957,11 +1098,29 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
         summary = (f"website preparation status: a callback undelivered for "
                    f"{float(first.get('age_seconds') or 0) / 3600:.1f}h "
                    f"({first.get('count')} live, {first.get('parked_count') or 0} parked)")
+    elif first.get("code") == "reclaim_ineffective" and first.get("mount"):
+        summary = (f"{first.get('mount')}: reclaim frees nothing; "
+                   f"{float(first.get('free_bytes') or 0) / GIB:.1f} GiB free, floor "
+                   f"{float(first.get('floor_bytes') or 0) / GIB:.1f} GiB, "
+                   f"{float(first.get('available_bytes') or 0) / GIB:.1f} GiB above it")
+    elif first.get("code") == "reclaim_state_unknown":
+        state = str(first.get("reason") or "gc_summary_unknown")
+        if isinstance(first.get("gc_summary_age_seconds"), (int, float)):
+            state += f", {float(first['gc_summary_age_seconds']) / 3600:.1f}h old"
+        if first.get("phase_error_count") or first.get("skipped_root_count"):
+            state += (f", {first.get('phase_error_count') or 0} phase errors,"
+                      f" {first.get('skipped_root_count') or 0} skipped roots")
+        summary = (f"{first.get('mount') or 'control plane'}: critical, reclaim state unknown ({state}); "
+                   f"{float(first.get('free_bytes') or 0) / GIB:.1f} GiB free, floor "
+                   f"{float(first.get('floor_bytes') or 0) / GIB:.1f} GiB")
     ineffective = next(
         (row for row in page_alerts if row.get("code") == "reclaim_ineffective"), None
     )
     if ineffective and ineffective.get("top_retained_reasons"):
         summary += "; retained: " + ", ".join(ineffective["top_retained_reasons"])
+    # The usage warnings a reclaim page rests on; their rows are in ``alerts``.
+    cited = sorted({str(a.get("code")) for a in report.get("alerts") or []
+                    if a.get("code") in _RECLAIM_CITED_WARNINGS}) if ineffective else []
     if stalls or spends:
         # A stalled job or a provider's spend leads: the disk pages may have been repeating for days.
         summary = "; ".join([*stalls, *spends, *([summary] if page_alerts else [])])
@@ -995,6 +1154,8 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
                     for a in report.get("alerts") or []
                     if a.get("code") not in described),
     }
+    if cited:
+        payload["cites"] = cited
     if stalls:
         payload["stall_runbook"] = "docs/runbooks/control-plane-capacity.md#stalled-jobs"
     if spends:
@@ -1136,6 +1297,7 @@ def run_controller(
     release_retirement_summary_path: Path = DEFAULT_RELEASE_RETIREMENT_SUMMARY,
     break_glass_notes_root: Path = DEFAULT_BREAK_GLASS_NOTES_ROOT,
     storage_gc_summary_path: Path = DEFAULT_STORAGE_GC_SUMMARY,
+    orphan_scratch_census_path: Path | None = None,
     stall_check: Callable[[float, Mapping[str, Any] | None], Mapping[str, Any]] | None = None,
     spend_check: Callable[[float], Mapping[str, Any]] | None = None,
     delivery_check: Callable[[float], Mapping[str, Any]] | None = None,
@@ -1223,6 +1385,8 @@ def run_controller(
         report["alerts"].extend(rows)
         _raise_level(report, [str(row.get("code") or "") for row in rows])
         report["preparation_delivery"] = delivery
+    if orphan_scratch_census_path is None:
+        orphan_scratch_census_path = storage_gc_summary_path.with_name("orphan-scratch-census.json")
     if survey is _DEFAULT_SURVEY:
         survey = survey_usage
     usage, usage_error = _refresh_usage(
@@ -1231,6 +1395,11 @@ def run_controller(
     )
     if usage is not None or usage_error is not None:
         report["usage"] = usage_projection(usage, now=observed, error=usage_error)
+    if usage is not None:
+        # Nested in usage: the operator door passes ``usage`` through whole.
+        report["usage"]["orphan_scratch_census"] = orphan_scratch_census_projection(
+            _read_attention_summary(orphan_scratch_census_path, max_bytes=4 * 1024 * 1024),
+            usage, now=observed)
     if usage is not None and (warnings := usage_alerts(usage)):
         report["alerts"].extend(warnings)
         if report["level"] == "ok":
@@ -1309,12 +1478,20 @@ def run_controller(
         gc_summary, now=observed, volume_growth=growth,
     )
     report["reclaim_outlook"] = outlook
-    # Critical disks that GC cannot relieve; another alert's critical level is not a disk.
-    if disk_level == "critical" and reclaim_ineffective:
-        report["alerts"].append({
-            "code": "reclaim_ineffective",
-            "top_retained_reasons": retained_reasons,
-        })
+    # Critical disks that GC cannot relieve, or whose GC cannot be read: one page
+    # per mount. Another alert's critical level is not a disk.
+    unknown = None if reclaim_ineffective else _reclaim_state_unknown(gc_summary, now=observed)
+    if disk_level == "critical" and (reclaim_ineffective or unknown):
+        critical = [row for row in report.get("mounts") or []
+                    if isinstance(row, Mapping) and row.get("level") == "critical"
+                    and row.get("status") == "measured"]
+        report["alerts"].extend({
+            "code": "reclaim_ineffective" if reclaim_ineffective else "reclaim_state_unknown",
+            **({"mount": row.get("mount"), "free_bytes": row.get("free_bytes"),
+                "floor_bytes": row.get("floor_bytes"), "available_bytes": row.get("available_bytes"),
+                "used_fraction": row.get("used_fraction")} if row else {}),
+            **({"top_retained_reasons": retained_reasons} if reclaim_ineffective else unknown),
+        } for row in critical or [None])
     _annotate_alerts(report["alerts"])
     report["alert_posted"] = False
     if webhook_url and alert_due(previous, report, now=observed):

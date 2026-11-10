@@ -79,6 +79,27 @@ def _equal_cost(left, right):
     return abs(left - right) < 0.000001
 
 
+def _normalized_source(job, row, capture_root, storage_root):
+    """The normalized copy's digest, when this upload's normalization record names the job's file."""
+    from .website_source_video import read_record
+    try:
+        record = read_record(capture_root)
+    except (OSError, ValueError):
+        record = None
+    copy = (record or {}).get("normalized") or {}
+    _require(record is not None and record.get("normalization_ran") is True
+             and record["original"].get("path") == row["relative_path"]
+             and record["original"].get("sha256") == row["sha256"]
+             and job.get("source_video") == record.get("preparation_video") == copy.get("path"), "source_binding_invalid")
+    path = _safe_path(capture_root / copy["path"], storage_root)
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    _require("sha256:" + digest.hexdigest() == copy.get("sha256"), "source_changed")
+    return copy["sha256"]
+
+
 def _source(selection, observation, membership, job, capture_root, storage_root):
     _require(type(membership) is tuple and len(membership) == 3, "membership_required")
     record = membership[1]
@@ -86,7 +107,9 @@ def _source(selection, observation, membership, job, capture_root, storage_root)
     rows = [row for row in record["raw"] if row["object_name"] == original["object_name"]]
     _require(len(rows) == 1, "source_binding_invalid")
     row = rows[0]
-    _require(job.get("source_video") == row["relative_path"], "source_binding_invalid")
+    # A job started after website_source_video reads the normalized copy of this upload.
+    normalized = None if job.get("source_video") == row["relative_path"] else _normalized_source(
+        job, row, capture_root, storage_root)
     path = _safe_path(capture_root / row["relative_path"], storage_root)
     digest = hashlib.sha256()
     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
@@ -98,7 +121,8 @@ def _source(selection, observation, membership, job, capture_root, storage_root)
         _require(all(getattr(before, key) == getattr(after, key)
                      for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")), "source_changed")
     _require("sha256:" + digest.hexdigest() == row["sha256"], "source_changed")
-    return {"video_sha256": row["sha256"], "video_generation": row["generation"],
+    # The Atlas lane, its configuration and its grant are bound to the file the job read.
+    return {"video_sha256": normalized or row["sha256"], "video_generation": row["generation"],
             "video_size_bytes": row["size_bytes"], "marker_generation": selection["marker_generation"]}
 
 

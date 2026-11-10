@@ -403,7 +403,8 @@ set `owner_gpu_simulator_execution_proven`, `isaac_sim_execution_proven`,
 robot/contact/safety readiness booleans.
 
 For the historical/explicit G1 humanoid Isaac packets,
-`blueprint-build-first-gpu-run-packet` emits
+`blueprint-build-first-gpu-run-packet` (removed 2026-11-10 with the first-GPU
+lane) emitted
 `isaac_unitree_g1_smoke.py` and `run_isaac_unitree_g1_smoke.sh`. The launcher is
 the configured `OWNER_SIMULATOR_COMMAND` for those packets. It must still run
 inside an Isaac Sim Python environment on an owner GPU VM before any Isaac proof

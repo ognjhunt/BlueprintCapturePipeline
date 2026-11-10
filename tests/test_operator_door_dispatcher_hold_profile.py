@@ -167,6 +167,10 @@ for unit, code in (("blueprint-pubsub-handoff-listener.timer", "hold_unit_profil
     try: r.validate_request({**body,"unit":unit})
     except r.RequestRefused as e: assert e.code == code
     else: raise AssertionError("other hold target admitted")
+# Retired units still installed on a host are the one addition to the fenced holds.
+for unit in r.RETIRED_HOLD_UNITS:
+    for extra in ({}, {"require_explicit_release": True}):
+        assert r.validate_request({**body,"unit":unit,**extra}) == {**body,"unit":unit,**extra}
 try: r.validate_request({"kind":"unit","unit":body["unit"],"action":"stop"})
 except r.RequestRefused as e: assert e.code == "unit_stop_requires_hold"
 else: raise AssertionError("bare stop admitted")

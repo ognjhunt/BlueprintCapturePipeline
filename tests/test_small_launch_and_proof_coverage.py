@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import first_gpu_candidate_audit as candidate_audit
 from blueprint_pipeline import launch_bundle, proof_contracts
 from blueprint_pipeline.core import logging_utils
 
@@ -65,37 +64,6 @@ def test_launch_bundle_edge_branches_use_descriptor_and_task_fallbacks() -> None
     )
     assert bundle["rights_and_compliance_summary"]["consent_status"] == "policy_only"
     assert bundle["qualification_summary"]["task_statement"] == "Inspect pallet slots"
-
-
-def test_first_gpu_candidate_audit_empty_discovery_and_ready_main(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert candidate_audit._string(None) == ""
-    assert candidate_audit._capture_root_from_completion_marker(tmp_path / "wrong.json") is None
-    assert candidate_audit._discover_capture_roots([tmp_path / "missing"]) == []
-    assert candidate_audit._raw_videos(tmp_path / "capture") == []
-
-    blocked = candidate_audit.build_first_gpu_candidate_audit(
-        output_path=tmp_path / "blocked.json"
-    )
-    assert blocked["status"] == "blocked"
-    assert blocked["blockers"] == ["no_capture_roots_found"]
-
-    monkeypatch.setattr(
-        candidate_audit,
-        "build_first_gpu_candidate_audit",
-        lambda **_kwargs: {
-            "status": "ready_candidate_found",
-            "candidate_count": 1,
-            "ready_candidate_count": 1,
-            "blockers": [],
-            "output_path": str(tmp_path / "ready.json"),
-        },
-    )
-    assert candidate_audit.main(["--output", str(tmp_path / "ready.json")]) == 0
-    assert "ready_candidates=1" in capsys.readouterr().out
 
 
 def test_logging_utils_sanitizes_sensitive_and_structured_fields(

@@ -910,9 +910,15 @@ def main():
     output = Path(args.report_root)
     output.mkdir(parents=True, exist_ok=True)
     key = plan["plan_digest"][7:]
-    (output / (key + "-plan.json")).write_text(json.dumps(plan, indent=2) + "\n")
+    # A plan with no candidate row can remove nothing, so it leaves no receipt: the
+    # five-minute timer would otherwise add two files per tick that record no change.
+    # The summary printed below stays in the journal.
+    record = bool(plan.get("rows"))
+    if record:
+        (output / (key + "-plan.json")).write_text(json.dumps(plan, indent=2) + "\n")
     result = apply_replay_cache_retention(plan, ack=args.ack, **options) if args.apply else plan
-    (output / (key + "-result.json")).write_text(json.dumps(result, indent=2) + "\n")
+    if record:
+        (output / (key + "-result.json")).write_text(json.dumps(result, indent=2) + "\n")
     print(
         json.dumps(
             {

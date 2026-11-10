@@ -541,6 +541,9 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             facts = scene_facts(base_scene=base, camera_path_levelled_m=atlas.get("camera_path_levelled_m") or [])
             spec = compile_locomotion_spec(task_context=context, facts=facts, requirements=need)
             write_json(root / SPEC_FILE, spec)
+            # How much room each filmed point has, beside the spec: evidence for where the anchors fell.
+            from .website_locomotion_task import ROUTE_FILE, route_record
+            write_json(root / ROUTE_FILE, route_record(facts))
             if need["locomote"]:
                 # The G1 checkpoints' goal and scene task, made from the compiled spec
                 # (website_navigation_packet); the hold below names what is still unbuilt.

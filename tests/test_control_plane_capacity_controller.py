@@ -890,7 +890,9 @@ def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_whil
     critical = cap.run_controller(**common, disk_usage=_usage(9.0), now=2_000.0)
     assert critical["level"] == "critical" and critical["alert_posted"] is True
     assert posted == [("https://alerts.example/hook", "critical")]
-    assert {a["code"] for a in critical["alerts"]} == {"admission_refused", "utilization_critical"}
+    # No GC summary on this test host, so the critical mount's reclaim state is unknown.
+    assert {a["code"] for a in critical["alerts"]} == {
+        "admission_refused", "utilization_critical", "reclaim_state_unknown"}
 
     again = cap.run_controller(**common, disk_usage=_usage(9.0), now=2_600.0)
     assert again["alert_posted"] is False and len(posted) == 1
@@ -1196,8 +1198,9 @@ def test_large_container_runtime_store_warns_by_name() -> None:
     assert projection["container_runtime_complete"] is False  # a lower bound, not a measurement
 
 
-def test_a_storage_class_over_its_byte_budget_pages(monkeypatch):
-    """2026-11-02: work and unclassified grew with no cap; a budget makes that a page."""
+def test_a_storage_class_over_its_byte_budget_warns(monkeypatch):
+    """2026-11-02: work and unclassified grew with no cap; a budget names it. It warns:
+    on a healthy disk it needs no action today, and reclaim_ineffective cites it (WP-19)."""
     monkeypatch.delenv(cap.CLASS_BUDGETS_ENV, raising=False)
     # Today's backlog sits below the defaults (16.4 and 24.4 GiB); new growth past them pages.
     by_class = [{"storage_class": "work", "allocated_bytes": 27_595_211_776},
@@ -1210,7 +1213,7 @@ def test_a_storage_class_over_its_byte_budget_pages(monkeypatch):
                        "allocated_bytes": 27_595_211_776, "budget_bytes": 25 * GIB,
                        "byte_accounting": "current_snapshot_lower_bound"}]
     cap._annotate_alerts(alerts)
-    assert alerts[0]["severity"] == "page"
+    assert alerts[0]["severity"] == "warn"
     summary = cap.capacity_summary({"alerts": alerts, "level": "warning"})
     assert summary["alerts"][0]["storage_class"] == "work"
     assert summary["alerts"][0]["budget_bytes"] == 25 * GIB
@@ -1239,7 +1242,7 @@ def test_an_invalid_budget_setting_warns_and_keeps_the_defaults(monkeypatch):
 @pytest.mark.parametrize(("total", "largest"), [
     (5 * GIB + 1, GIB), (3 * GIB, 2 * GIB + 1),
 ])
-def test_orphan_scratch_pages_once_without_folder_names(total, largest):
+def test_orphan_scratch_warns_once_without_folder_names(total, largest):
     survey = _survey_result(orphan_scratch_bytes=total, orphan_scratch_count=4,
                             orphan_scratch_largest_bytes=largest,
                             unclassified_roots=[{"root": "/mnt/blueprint-work/private-name",
@@ -1248,25 +1251,26 @@ def test_orphan_scratch_pages_once_without_folder_names(total, largest):
     assert alerts == [{"code": "orphan_scratch_large", "allocated_bytes": total,
                        "count": 4, "largest_bytes": largest}]
     cap._annotate_alerts(alerts)
-    assert alerts[0]["severity"] == "page"
+    assert alerts[0]["severity"] == "warn"
     assert "private-name" not in json.dumps(alerts)
 
 
-def test_orphan_scratch_page_reaches_the_controller_poster(tmp_path, monkeypatch):
+def test_orphan_scratch_warning_reaches_the_controller_poster(tmp_path, monkeypatch):
     _no_project_spend(monkeypatch)
-    posted = []
+    posted = _capture_payloads(monkeypatch)
     report = cap.run_controller(
         mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
         webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
         disk_usage=_usage(free_gib=100.0), now=1_000.0,
         survey=lambda **_kwargs: _survey_result(orphan_scratch_bytes=6 * GIB, orphan_scratch_count=3,
                                                   orphan_scratch_largest_bytes=3 * GIB),
-        poster=lambda _url, payload: posted.append(payload),
+        poster=cap.post_alert,
     )
     assert len(posted) == 1
     assert report["alert_posted"] is True
-    assert any(row["code"] == "orphan_scratch_large" and row["severity"] == "page"
+    assert any(row["code"] == "orphan_scratch_large" and row["severity"] == "warn"
                for row in posted[0]["alerts"])
+    assert posted[0]["page"] is False
 
 
 def _no_project_spend(monkeypatch, value=None):
@@ -1602,3 +1606,190 @@ def test_capacity_history_rows_leave_the_footprints_to_the_latest_report(tmp_pat
     # The history is never pruned; it keeps the measurement, not a per-role map per tick.
     assert "footprints" in latest["mounts"][0] and "footprints" not in row
     assert row["free_bytes"] == latest["mounts"][0]["free_bytes"]
+
+
+def _capture_payloads(monkeypatch) -> list[dict]:
+    """Run the real post_alert and keep each webhook body it would send."""
+    payloads: list[dict] = []
+
+    class Response:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def urlopen(request, *, timeout):
+        payloads.append(json.loads(request.data))
+        return Response()
+
+    monkeypatch.setattr(cap.urllib.request, "urlopen", urlopen)
+    return payloads
+
+
+def _ineffective_gc_summary(path: Path) -> Path:
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    path.write_text(json.dumps(build_storage_gc_summary({
+        "observed_at_epoch": 900.0, "status": "applied",
+        "opt_in": {"evidence_offload": True, "scene_workspace_retirement": False},
+        "derived_directories": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+                                "retained_by_reason": {"hot": {"count": 1, "bytes": 4 * GIB}}},
+        "content_store": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+                          "retained_by_reason": {"result_registry": {"count": 1, "bytes": 9 * GIB}}},
+        "evidence_offload": {"status": "applied", "candidate_bytes": 0, "offloaded_bytes": 0,
+                             "retained_by_reason": {"protected_settlement": {"count": 1, "bytes": GIB}}},
+    })), encoding="utf-8")
+    return path
+
+
+def _snapshot_survey(**_kwargs):
+    """The usage findings in the 2026-11-10 13:11Z door status snapshot."""
+    return _survey_result(
+        byte_accounting="rolling_partition_composite_lower_bound",
+        by_class=[{"storage_class": "unclassified", "allocated_bytes": 203_551_283_560},
+                  {"storage_class": "work", "allocated_bytes": 33_141_932_032},
+                  {"storage_class": "release", "allocated_bytes": 26_567_518_168}],
+        orphan_scratch_bytes=97_051_342_373, orphan_scratch_count=406,
+        orphan_scratch_largest_bytes=30_673_354_752,
+        unclassified_roots=[{"root": "/opt/blueprint/artisan", "allocated_bytes": 12_645_043_649}])
+
+
+def test_snapshot_critical_mount_that_reclaim_cannot_fix_pages_once(tmp_path, monkeypatch):
+    """WP-19: on 2026-11-10 one critical work volume with reclaim at zero paged five ways."""
+    _no_project_spend(monkeypatch)
+    posted = _capture_payloads(monkeypatch)
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "notes",
+        storage_gc_summary_path=_ineffective_gc_summary(tmp_path / "gc.json"),
+        disk_usage=_usage(free_gib=22.0, total_gib=294.7), now=1_000.0, survey=_snapshot_survey,
+        poster=cap.post_alert,
+    )
+    pages = [row for row in report["alerts"] if row["severity"] == "page"]
+    assert [row["code"] for row in pages] == ["reclaim_ineffective"]
+    page = pages[0]
+    mount = report["mounts"][0]
+    assert page["mount"] == str(tmp_path) and mount["level"] == "critical"
+    assert (page["free_bytes"], page["floor_bytes"]) == (mount["free_bytes"], mount["floor_bytes"])
+    assert page["top_retained_reasons"] == ["result_registry", "hot", "protected_settlement"]
+    warned = {row["code"] for row in report["alerts"] if row["severity"] == "warn"}
+    assert {"storage_class_over_budget", "orphan_scratch_large", "usage_unclassified_root"} <= warned
+    assert len(posted) == 1 and posted[0]["page"] is True
+    summary = posted[0]["summary"]
+    assert summary.startswith(f"{tmp_path}: reclaim frees nothing; 22.0 GiB free, floor ")
+    assert "retained: result_registry, hot, protected_settlement" in summary
+    assert len(summary) <= 200
+    door = next(row for row in cap.capacity_summary(report)["alerts"] if row["code"] == "reclaim_ineffective")
+    assert door["floor_bytes"] == mount["floor_bytes"] and door["available_bytes"] == mount["available_bytes"]
+    assert posted[0]["cites"] == ["orphan_scratch_large", "storage_class_over_budget",
+                                  "usage_unclassified_root"]
+
+
+def test_healthy_mount_with_a_class_over_budget_does_not_page(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    posted = _capture_payloads(monkeypatch)
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "notes",
+        storage_gc_summary_path=_ineffective_gc_summary(tmp_path / "gc.json"),
+        disk_usage=_usage(free_gib=120.0), now=1_000.0, survey=_snapshot_survey,
+        poster=cap.post_alert,
+    )
+    assert report["mounts"][0]["level"] == "ok"
+    assert not [row for row in report["alerts"] if row["severity"] == "page"]
+    assert any(row["code"] == "storage_class_over_budget" for row in report["alerts"])
+    assert all(payload["page"] is False for payload in posted)
+
+
+def test_money_credit_spend_and_stall_pages_are_unchanged():
+    """WP-19 moved only disk usage findings; every money and stall code keeps its severity."""
+    from blueprint_pipeline import control_plane_stall_alarm as stall_alarm
+    from blueprint_pipeline import provider_spend_alerts as provider_spend
+    from blueprint_pipeline import website_preparation_delivery_index as preparation_delivery
+
+    assert provider_spend.PAGE_CODES == {
+        "account_spend_limit_config_invalid", "account_spend_month_80pct",
+        "account_spend_month_limit_reached", "account_spend_report_stale", "gcp_spend_month_high",
+        "openai_spend_24h_high", "openai_spend_month_high",
+        "world_labs_spend_24h_high", "world_labs_spend_month_high"}
+    assert stall_alarm.PAGE_CODES == {
+        "launch_activation_stuck", "launch_lease_stuck", "scene_progression_stalled",
+        "trigger_inactive_unheld"}
+    assert preparation_delivery.PAGE_CODES == {"preparation_delivery_stalled"}
+    for code in {"provider_credit_insufficient", *provider_spend.PAGE_CODES, *stall_alarm.PAGE_CODES,
+                 *preparation_delivery.PAGE_CODES}:
+        assert cap._severity(code) == "page", code
+    for code in provider_spend.WARN_CODES:
+        assert cap._severity(code) == "warn", code
+    assert cap.PAGE_ALERT_CODES == {
+        "floor_within_three_days", "floor_within_hours", "admission_refused",
+        "critical_admission_refused", "mount_unreadable", "volume_growth_blocked",
+        "operator_alert_route_unconfigured", "reclaim_ineffective", "reclaim_state_unknown",
+        "provider_credit_insufficient",
+        *provider_spend.PAGE_CODES, *stall_alarm.PAGE_CODES, *preparation_delivery.PAGE_CODES}
+
+
+def _gc_run(tmp_path, monkeypatch, *, free_gib: float, now: float, edit=None):
+    """One controller tick against the ineffective GC summary, optionally edited."""
+    _no_project_spend(monkeypatch)
+    gc = _ineffective_gc_summary(tmp_path / "gc.json")
+    if edit is not None:
+        gc.write_text(json.dumps(edit(json.loads(gc.read_text()))), encoding="utf-8")
+    posted = _capture_payloads(monkeypatch)
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "notes", storage_gc_summary_path=gc,
+        disk_usage=_usage(free_gib=free_gib, total_gib=294.7), now=now, survey=_snapshot_survey,
+        poster=cap.post_alert,
+    )
+    return [row for row in report["alerts"] if row["severity"] == "page"], posted
+
+
+def _with_errors(summary):
+    summary["phase_errors"] = [{"phase": "content_store", "error": "OSError"}]
+    return summary
+
+
+def test_critical_mount_with_stale_gc_summary_pages_once(tmp_path, monkeypatch):
+    pages, posted = _gc_run(tmp_path, monkeypatch, free_gib=22.0, now=900.0 + 3 * 3600)
+    assert [row["code"] for row in pages] == ["reclaim_state_unknown"]
+    assert pages[0]["mount"] == str(tmp_path)
+    assert (pages[0]["reason"], pages[0]["gc_summary_age_seconds"]) == ("gc_summary_stale", 3 * 3600)
+    assert posted[0]["page"] is True
+    assert "critical, reclaim state unknown (gc_summary_stale, 3.0h old)" in posted[0]["summary"]
+
+
+def test_critical_mount_with_errored_gc_summary_pages_once(tmp_path, monkeypatch):
+    pages, posted = _gc_run(tmp_path, monkeypatch, free_gib=22.0, now=1_000.0, edit=_with_errors)
+    assert [row["code"] for row in pages] == ["reclaim_state_unknown"]
+    assert pages[0]["reason"] == "gc_summary_errors" and pages[0]["phase_error_count"] == 1
+    assert "1 phase errors" in posted[0]["summary"]
+
+
+def test_critical_mount_with_fresh_gc_reclaiming_nothing_pages_once_not_twice(tmp_path, monkeypatch):
+    pages, _posted = _gc_run(tmp_path, monkeypatch, free_gib=22.0, now=1_000.0)
+    assert [row["code"] for row in pages] == ["reclaim_ineffective"]
+
+
+def test_healthy_mount_with_stale_gc_summary_does_not_page(tmp_path, monkeypatch):
+    pages, posted = _gc_run(tmp_path, monkeypatch, free_gib=120.0, now=900.0 + 3 * 3600)
+    assert pages == []
+    assert all(payload["page"] is False for payload in posted)
+
+
+def test_reclaim_state_unknown_clears_when_the_summary_is_fresh_again():
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    summary = build_storage_gc_summary({"observed_at_epoch": 900.0, "status": "applied", "opt_in": {}})
+    assert cap._reclaim_state_unknown(None, now=1_000.0) == {"reason": "gc_summary_missing"}
+    assert cap._reclaim_state_unknown(summary, now=900.0 + 2 * 3600 + 1)["reason"] == "gc_summary_stale"
+    assert cap._reclaim_state_unknown(summary, now=1_000.0) is None

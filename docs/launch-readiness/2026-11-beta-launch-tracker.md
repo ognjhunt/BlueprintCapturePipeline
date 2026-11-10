@@ -9,6 +9,10 @@ batched Pipeline deploy) · **not started**.
 
 Last updated: 2026-11-06 22:40Z (library-aisle run and the 11-06 deploys). Pipeline live: `8dc96bee0` (22:32Z). Earlier header as of 2026-11-03 14:49Z: Pipeline live: `333b1f74a` (11-03 14:29Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
 
+Readiness plan (2026-11-09): [`2026-11-beta-readiness-plan.md`](2026-11-beta-readiness-plan.md) holds exit criteria E1–E9 with thresholds, the gap register from a recon of both repos, the owner list and the work packages. Its two pressing facts, from `door status` on 11-09: November spend is $136.43 of the $200 account limit, and `/mnt/blueprint-work` had 3.55 GB usable above its 15.8 GB floor (7.9 GB at 13:11Z on 11-10; it is not below the floor, as an earlier version of the plan wrongly said).
+
+From the readiness plan's waves 1 and 2 (2026-11-09, merged to `main`, shipping with the next deploy): [#3517](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3517) runs the import-closure tests on every pull request; [#3520](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3520) normalizes each NEW website clip to at most 1920 px and 30 fps before preparation (jobs in flight keep their original clip; an owner row in `BLUEPRINT_WEBSITE_ATLAS_AUTHORIZATIONS_JSON` for a new job must name the normalized digest from `pipeline/source_video/normalization.json`). WebApp [#1245](https://github.com/ognjhunt/Blueprint-WebApp/pull/1245) adds an invitee allowlist that does nothing until `BLUEPRINT_INVITEE_ALLOWLIST` is set. Held open on purpose: [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516) ends a silent preparation once the WebApp says its grant has expired; it is approved but not merged, because it would end such a job permanently before an operator could renew the grant. Library-aisle and G1 sessions: say on that pull request whether your job's grant is current.
+
 ## Library-aisle navigation run (2026-11-06)
 
 The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.
@@ -378,6 +382,25 @@ Two cloud sessions share the `cloud-scene-runs` door token: the G1 session and t
     - it's disclosed as `walked_floor.planarized`.
 
     The revision change re-derives the scene with `--resume-preparation`. The spawn check and the goal-marker view then confirm the new packet before any rent.
+  - **The corridor floor took four revisions (11-09, each on a quiet door with the G1 session told):**
+    - **v9** (#3508, `8f32a2a` live 20:37:02Z, re-derive 20:49:07Z): one fitted surface. The floor under the start lay outside its layer, so the spawn check still read `overlap`.
+    - **v10** (#3511, `7723c8d` live 21:31:04Z): the floor is found cell by cell from each cell's lowest layer. A second sheet 6–9 cm up remained.
+    - **v11** (#3514, `f05431e` live 22:13:31Z): everything up to 12 cm above the local floor is cleared inside the corridor. Both soles stood on the flat floor; the knees touched steep fins.
+    - **v12** (#3521, `53c97c1` live 23:13:39Z, re-derive done by 23:25Z): steep low pieces joined to the floor are removed. **Spawn check: `clear`** at the start and all four offsets (read by the G1 session).
+  - **Disk, option A done** (#3510, live in `7723c8d`): `/mnt/blueprint-work` available went from 5.16 GB to 11.03 GB, above the 8.8 GB a G1 run holds.
+  - **Money stop, 11-09 about 23:30Z, the owner's to decide.** Campaign `screening-ac715863…` deferred π0.5 and DP with `website_job_ceiling_insufficient`:
+    - the job's `maximum_cost_usd` is 25 (`source: atlas_authorization`);
+    - preparation 15.48 + screening 7.89 = 23.37, so 1.63 remains against a $4 reservation;
+    - the library session asked the owner whether to raise this job's cap (suggested $45). No answer yet, and nothing is widened without one.
+  - **The v12 re-derive shortened the task.** The start moved to (0.216, 0.185), 0.51 m from the goal at (−0.295, 0.175): the first filmed point with 0.35 m of room lay 2.7 m down the walk, and the old rule let an anchor move any distance.
+  - **Route anchors** (#3524, `19e409c` live 11-10 03:31:17Z, levelling v13 with no levelling change, re-derive 03:34–03:46Z):
+    - an anchor moves to clear an obstacle only within a quarter of the filmed path's length from its end;
+    - beyond that it is the best-cleared filmed point in that quarter, flagged `start_clearance_below_robot_radius` (or the goal's), and the spawn check decides;
+    - `route_clearance.json` beside the compiled spec records each filmed point's room and its nearest obstacle's height range (heights only).
+  - **Result on the library scene:** start (2.890, 0.201), goal (0.115, 0.183) with radius 0.5, 2.77 m apart, start flagged.
+    - The record shows why no filmed point read clear: the nearest "obstacles" are faces 1–2 cm thick, 3–8 cm above the single floor height. They are walked floor that sits just above the 5 cm obstacle band, not shelving.
+    - Open, $0: obstacle selection should not count walkable floor faces on a floor that isn't one height. Until then the flag over-reports on such floors; it gates nothing.
+  - **Next:** the G1 session re-reads the spawn check and goal view on the new packet. No run can reserve until the owner answers on the job cap. Spend: about $24.40 of the $115 ceiling (G1 $7.89 of $30, Atlas about $14.78 of $25, clean plate $0.69, intake $1.06).
 
 ## Deploys on 2026-11-05 (capture-447 screening)
 

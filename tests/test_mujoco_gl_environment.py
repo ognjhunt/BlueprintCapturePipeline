@@ -54,7 +54,6 @@ def test_mujoco_import_failure_restores_absent_default(
 
 def test_all_mujoco_gl_defaults_use_scoped_import_seam() -> None:
     paths = (
-        "src/blueprint_pipeline/manipulation_physics_simulator_command.py",
         "src/blueprint_pipeline/official_g1_policy_handoff.py",
         "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py",
         "src/blueprint_pipeline/mujoco_g1_simulator_command.py",
