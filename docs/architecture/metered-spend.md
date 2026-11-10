@@ -166,10 +166,11 @@ reviewed:
   decimals and greater than 0. Unknown keys are refused, and `report_path` must
   be absolute. Its sha256 is bound into every report.
 - **No file on the control plane refuses.** The limit must exist in
-  production (`limit_required`). Production is either sign the code already
-  had: `BLUEPRINT_LAUNCH_PROOF_MODE=production` in the process environment (the
-  units' environment file), or the control-plane state directory
-  `/var/lib/blueprint/pipeline-control-plane` (only the host has it). There,
+  production (`limit_required`). Production is either of two signs:
+  `BLUEPRINT_LAUNCH_PROOF_MODE=production` in the process environment, or the
+  host's installed environment file `/etc/blueprint/pipeline-control-plane.env`
+  (only the host install writes it). The state directory is not a sign,
+  because any process that runs with the default roots creates it. There,
   with no file at the path, every new paid admission is refused with
   `account_monthly_spend_limit_not_configured`, the report says
   `cap_status: missing`, and the capacity tick pages. Stops are still admitted.

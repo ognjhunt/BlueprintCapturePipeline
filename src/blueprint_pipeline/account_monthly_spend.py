@@ -86,6 +86,8 @@ CONFIG_FILENAME = "account_monthly_spend_limit.v1.json"
 INSTALLED_CONFIG_PATH = Path("/opt/blueprint/task-evaluation-control-plane/config") / CONFIG_FILENAME
 SHIPPED_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / CONFIG_FILENAME
 DEFAULT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/account-monthly-spend")
+#: The units' ``EnvironmentFile``. Only the host install writes it; running code never creates it.
+HOST_ENVIRONMENT_FILE = Path("/etc/blueprint/pipeline-control-plane.env")
 REPORT_FILENAME = "report.json"
 OBSERVATION_FILENAME = "provider_observation.json"
 #: The spend guard rewrites the report every minute; slow runs under load took 5.5 min.
@@ -220,20 +222,22 @@ def configured_policy(environ: Mapping[str, str] | None = None) -> tuple[dict[st
 def limit_required(environ: Mapping[str, str] | None = None) -> bool:
     """Whether this process is the production control plane, where the limit must exist.
 
-    Two existing signs, either one enough: the environment the production
-    units run with (``BLUEPRINT_LAUNCH_PROOF_MODE=production``, read by
-    ``launch_proof_policy``), and the control-plane state directory, which only
-    the host has (the same test ``account_root`` and the meter root use). A
-    host process started without the units' environment file is covered by
-    the second. Tests, development machines and replays off the host have
-    neither, so a missing limit file still means "no limit" there.
+    Two signs, either one enough: the environment the production units run
+    with (``BLUEPRINT_LAUNCH_PROOF_MODE=production``, read by
+    ``launch_proof_policy``), and the host's installed environment file
+    (``HOST_ENVIRONMENT_FILE``), which covers a host process started without
+    that environment. The state directory is deliberately not a sign: any
+    process that runs with the default roots creates it, so a test run as
+    root on a development machine would turn that machine into "production".
+    Tests, development machines and replays off the host have neither sign,
+    so a missing limit file still means "no limit" there.
     """
 
     env = os.environ if environ is None else environ
     if production_launch_mode(env):
         return True
     try:
-        return DEFAULT_ROOT.parent.is_dir()
+        return HOST_ENVIRONMENT_FILE.is_file()
     except OSError:
         return False
 

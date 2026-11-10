@@ -633,17 +633,20 @@ def no_limit_file(tmp_path, monkeypatch):
     monkeypatch.delenv(PRODUCTION, raising=False)
     state = tmp_path / "var-lib-blueprint" / "pipeline-control-plane"
     monkeypatch.setattr(account, "DEFAULT_ROOT", state / "account-monthly-spend")
-    return state
+    host_environment = tmp_path / "etc-blueprint" / "pipeline-control-plane.env"
+    monkeypatch.setattr(account, "HOST_ENVIRONMENT_FILE", host_environment)
+    return host_environment
 
 
-@pytest.mark.parametrize("sign", ["launch_mode", "state_directory"])
+@pytest.mark.parametrize("sign", ["launch_mode", "host_environment_file"])
 def test_on_the_production_control_plane_a_missing_limit_file_refuses_new_spend(no_limit_file, monkeypatch, sign):
     assert account.limit_required() is False and account.admission_blockers(now=NOW) == []
     admitted_before = _admit()
     if sign == "launch_mode":
         monkeypatch.setenv(PRODUCTION, "production")  # what the units' environment file sets
     else:
-        no_limit_file.mkdir(parents=True)  # the control-plane state directory: only the host has it
+        no_limit_file.parent.mkdir(parents=True)  # the units' EnvironmentFile: only the host install writes it
+        no_limit_file.write_text("", encoding="utf-8")
     assert account.limit_required() is True
     assert account.admission_blockers(now=NOW) == ["account_monthly_spend_limit_not_configured"]
     with pytest.raises(PaidResourceAdmissionBlocked) as refused:
@@ -658,6 +661,13 @@ def test_on_the_production_control_plane_a_missing_limit_file_refuses_new_spend(
                                            spend_effect="stop")
     assert stop.resource_class == "gpu_render"
     require_paid_resource_admission_grant(admitted_before, resource_class="vast_provider_adapter")
+
+
+def test_a_state_directory_alone_does_not_make_a_machine_production(no_limit_file, monkeypatch):
+    """Running code creates the state directory on any machine; that must not switch the refusal on."""
+    account.DEFAULT_ROOT.parent.mkdir(parents=True)
+    assert account.limit_required() is False
+    assert account.admission_blockers(now=NOW) == []
 
 
 @pytest.mark.parametrize("mode", [None, "", "local", "staging", "not-production"])
