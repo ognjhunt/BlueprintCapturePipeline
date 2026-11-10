@@ -28,11 +28,9 @@ script, GPU bundle list or other module imported it. It was removed from
 - Every file under `docs/experiments/`. The evidence, protocols and verdicts
   are unchanged. `docs/experiments/policy_ranking_thesis_20260726/*.json` is
   read by every beta screening plan.
-- The policy-ranking modules that production or a paid-call check still
-  reaches, among them `policy_ranking_thesis`, `policy_ranking_evidence`,
-  `policy_ranking_roboarena_calibration`, the `policy_ranking_successor_*`
-  modules, and the four OpenAI judge and evaluator modules that
-  `scripts/paid_api_call_sites.json` classifies.
+- The policy-ranking modules that production still reaches, among them
+  `policy_ranking_thesis`, `policy_ranking_roboarena_calibration` and the
+  `policy_ranking_successor_*` modules.
 - `judge_spend_governor` (a spend guard) and `roboworld_progress_judge`.
 
 ## Removed modules (22)
@@ -82,3 +80,23 @@ script, GPU bundle list or other module imported it. It was removed from
 - `test_policy_ranking_roboarena_crop_audit.py`
 - `test_policy_ranking_task_instruction_extraction.py`
 - `test_policy_ranking_wam_validity.py`
+
+## Second removal (2026-11-10, later the same day)
+
+The owner approved removing the four OpenAI judge and evaluator modules and
+the evidence store only they used. Each could spend OpenAI money behind an
+environment switch alone, outside the paid-resource admission;
+`scripts/paid_api_call_sites.json` listed five of their call sites as
+`unadmitted`. Those entries left the record and the verifier's list of known
+exceptions with the code.
+
+- **Last commit that has these files:**
+  `4835a6df1` (main, 2026-11-10).
+- Modules: `policy_ranking_evaluator_diagnostic_openai.py`,
+  `policy_ranking_evaluator_diagnostic_openai_batch.py`,
+  `policy_ranking_roboarena_evaluator_openai.py`,
+  `policy_ranking_thesis_judge_openai.py`, `policy_ranking_evidence.py`.
+- Tests: the `tests/test_<module>.py` file of each.
+- Three of them (`policy_ranking_thesis_judge_openai.py`,
+  `policy_ranking_evidence.py` and their tests) are bound by the Experiment 2
+  manifest; use `ba8fe1fb0` to reproduce that experiment, as above.
