@@ -101,6 +101,8 @@ pipeline/
 !tests/fixtures/sim_only_beta_local_capture/**/pipeline/**
 !tests/fixtures/warehouse_task_min/pipeline/
 !tests/fixtures/warehouse_task_min/pipeline/**
+!tests/fixtures/replay_set_v1/**/pipeline/
+!tests/fixtures/replay_set_v1/**/pipeline/**
 robot_eval_jobs/
 policy_endpoint_setups/
 frame_*.png
