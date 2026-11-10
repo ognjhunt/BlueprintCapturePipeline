@@ -1,7 +1,9 @@
-"""A stale spend admission lock waits and reads the money check again, bounded; it never spends."""
+"""A stale spend admission lock waits and reads the money check again until it clears; it never spends."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
 from tests.test_beta_policy_screening_coordinator import Backend, plan, publication
@@ -36,18 +38,55 @@ def test_a_stale_spend_lock_waits_and_reads_it_again_holding_the_reservation(tmp
     assert backend.launches == 1
 
 
-def test_the_wait_is_bounded_and_then_keeps_the_refusal(tmp_path, monkeypatch):
-    monkeypatch.setattr(coordinator, "SPEND_LOCK_RETRY_CAP", 2)
+@pytest.mark.parametrize("readings", [7, 20])
+def test_past_the_sixth_wait_the_row_keeps_waiting_at_the_last_interval(tmp_path, monkeypatch, readings):
+    """A guard outage proves nothing was allocated: it never closes the row (before, the 7th closed it)."""
+    intervals = []
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    real = coordinator._retry_after_offer_shortage
+
+    def due_now(retries):
+        intervals.append((datetime.fromisoformat(real(retries)) - datetime.now(timezone.utc)).total_seconds())
+        return past
+    monkeypatch.setattr(coordinator, "_retry_after_offer_shortage", due_now)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend(STALE)
+    for _ in range(readings):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    assert backend.launches == readings
+    row = publication(tmp_path)["candidates"][0]
+    assert (row["status"], row["blockers"]) == (
+        "preparing", [coordinator.CAPACITY_WAIT_BLOCKER, coordinator.CONTROL_WAIT_BLOCKER])
+    budget = publication(tmp_path)["budget"]
+    assert budget["spent_upper_bound_usd"] == "0" and budget["reserved_usd"] == "4"
+    state = coordinator._ledger(coordinator._root(tmp_path))["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    assert state["spend_lock_retries"] == coordinator.SPEND_LOCK_RETRY_CAP  # saturated, not closing
+    assert 1790 < intervals[-1] <= 1800  # the last interval, 30 minutes
+
+
+def test_a_definite_refusal_after_the_waits_ends_them(tmp_path, monkeypatch):
+    """Each wait reads the source and its control again: a closed job window refuses and closes the row."""
     _due_now(monkeypatch)
     coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
     backend = Backend(STALE)
-    for _ in range(4):
+    for _ in range(8):
         coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
-    assert backend.launches == 3
+    backend.observation = {**STALE, "blockers": ["beta_screening_current_source_revoked_before_spawn"]}
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = publication(tmp_path)["candidates"][0]
+    assert row["status"] == "blocked" and publication(tmp_path)["budget"]["committed_upper_bound_usd"] == "0"
+
+
+def test_a_campaign_closed_for_its_window_waits_no_more(tmp_path, monkeypatch):
+    _due_now(monkeypatch)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend(STALE)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    assert coordinator.close_self_replan("campaign-1", queue_root=tmp_path)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
     row = publication(tmp_path)["candidates"][0]
     assert row["status"] == "blocked" and "spend_admission:spend_admission_lock_stale" in row["blockers"]
-    budget = publication(tmp_path)["budget"]
-    assert budget["spent_upper_bound_usd"] == "0" and budget["reserved_usd"] == "0"
+    assert publication(tmp_path)["budget"]["committed_upper_bound_usd"] == "0"
 
 
 def test_any_other_spend_blocker_or_an_allocated_run_never_waits(tmp_path):

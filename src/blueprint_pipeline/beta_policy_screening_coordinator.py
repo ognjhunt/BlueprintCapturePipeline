@@ -62,6 +62,7 @@ from .beta_policy_screening_settlement import settled_cost
 from .decision_evidence_contracts import canonical_digest
 from .job_retry_policy import hard_stop_kind, refusal_retry_delay
 from .policy_execution_evidence import SCRIPTED
+from .screening_site_withdrawal import release_withdrawn_site, site_withdrawal_state
 from .policy_canary_cell_setup_failure import MACHINE_FAULT_BLOCKERS, SETUP_FAILURE_BLOCKERS
 from .website_candidate_feasibility import is_measured_refusal
 
@@ -105,7 +106,11 @@ SELF_REPLAN_CLOSED_FIELD = "self_replan_closed_at"
 # The spend admission lock (live billing evidence) was older than its window when the launch
 # preflight read it, as it is for a few minutes after a deploy restarts its refresh: the money
 # check refused before anything was created. The check stays: the attempt waits and the next one
-# reads a fresh lock, 2, 4, 8, 16, then 30 minutes apart, at most SPEND_LOCK_RETRY_CAP times. A
+# reads a fresh lock, 2, 4, 8, 16, then 30 minutes apart. Past SPEND_LOCK_RETRY_CAP waits the counter
+# saturates and the row keeps waiting every 30 minutes under the same reservation, until fresh evidence
+# arrives or the job's window ends it (each wait runs the launch preflight's source and control reads
+# again, and a campaign closed for its window, ``SELF_REPLAN_CLOSED_FIELD``, waits no more): a guard
+# outage proves nothing was allocated and is never a closed row. Nothing paid is retried. A
 # stale lock beside any other spend blocker is not this wait and keeps its refusal.
 SPEND_LOCK_STALE_BLOCKER = "spend_admission:spend_admission_lock_stale"
 SPEND_LOCK_RETRY_CAP = 6
@@ -117,7 +122,7 @@ _SPEND_LOCK_REFUSAL = frozenset({*SPEND_LOCK_STALE_CODES, "paid_resource_admissi
 # The account-wide monthly limit (``account_monthly_spend``) is checked at the same paid admission.
 # Its report is rewritten every minute by the same guard that refreshes the lock: a report that is
 # stale, missing or unreadable is evidence too old to read, not a reached limit, so it joins the
-# stale-lock wait above (the same retries, cap and counter). ``account_monthly_spend_limit_reached``
+# stale-lock wait above (the same intervals and counter, never closing the row). ``account_monthly_spend_limit_reached``
 # never waits: it is a money stop, the row closes, and the campaign says so (``campaign_hold_detail``).
 ACCOUNT_REPORT_WAIT_CODES = frozenset({REPORT_STALE, REPORT_INVALID})
 #: How the G1 lane's allocator wraps a refusal raised at the paid admission itself.
@@ -1150,6 +1155,13 @@ def _capacity_refusal_proof(root: Path, attempt: Mapping[str, Any], observation:
         return False
 
 
+def _release_withdrawn(root: Path, ledger: dict[str, Any], site_id: str) -> None:
+    """Under the ledger lock: close the withdrawn site's queued rows and release its unlaunched holds."""
+    for changed in release_withdrawn_site(ledger, site_id, closed_at=_now()):
+        _changed(changed)
+    _save(root, ledger)
+
+
 def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any] | None:
     campaign_id, candidate_id = plan["campaign_id"], candidate["candidate_id"]
     with _lock(root):
@@ -1159,6 +1171,13 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         if row["status"] != "pending":
             return None
         if _unproven_retry_in_flight(ledger, state, candidate_id):
+            return None
+        # G52: never reserve for a site whose consent is withdrawn (a privacy stop); release its open holds.
+        # A withdrawal that cannot be read reserves nothing now and is asked again on the next pass.
+        withdrawal = site_withdrawal_state(plan["site_id"])
+        if withdrawal == "withdrawn":
+            _release_withdrawn(root, ledger, plan["site_id"])
+        if withdrawal in {"withdrawn", "unknown"}:
             return None
         backend = {item["candidate_id"]: (item.get("execution_spec") or {}).get("backend")
                    for item in plan["candidates"]}
@@ -1359,6 +1378,8 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
     if not isinstance(observation, Mapping) or (observation.get("handle") is not None
                                                and not isinstance(observation["handle"], Mapping)):
         observation = {"status": "reconciliation_required", "blockers": ["beta_screening_backend_response_invalid"]}
+    # A campaign closed for its job's window waits on no stale money evidence (it keeps the refusal).
+    window_closed = bool((_ledger(root)["campaigns"].get(plan["campaign_id"]) or {}).get(SELF_REPLAN_CLOSED_FIELD))
 
     def apply(row):
         attempt = row["attempt"]
@@ -1451,15 +1472,15 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                 row.update(status="blocked", blockers=[OFFER_SHORTAGE_EXHAUSTED_BLOCKER])
                 return
             stale_evidence = _money_evidence_stale(observation)
-            if stale_evidence is not None and _spend_lock_retries(row) < SPEND_LOCK_RETRY_CAP:
+            if stale_evidence is not None and not window_closed:
                 # Proven zero allocation: the money check could not read fresh evidence (the spend
                 # lock's billing reading, or the account's monthly report). Search again later under
                 # a fresh identity holding the same reservation; the next admission reads it again.
-                # Past the cap it keeps the refusal below.
+                # Past the cap the counter saturates and the wait stays at its last interval.
                 retries = _spend_lock_retries(row)
                 attempt.update(reservation_status="released", closed_at=_now(),
                                terminal_reason=stale_evidence, no_policy_api_calls_proven=True)
-                row["spend_lock_retries"] = retries + 1
+                row["spend_lock_retries"] = min(retries + 1, SPEND_LOCK_RETRY_CAP)
                 row.setdefault("attempt_history", []).append(json.loads(json.dumps(attempt)))
                 row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
                                   "retry_not_before": _retry_after_offer_shortage(retries)}
@@ -1665,6 +1686,10 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
         if attempt is None:
             return False
         row = {"status": "preparing", "attempt": attempt}
+    elif row["status"] == "preparing" and site_withdrawal_state(plan["site_id"]) == "withdrawn":
+        with _lock(root):
+            _release_withdrawn(root, _ledger(root), plan["site_id"])
+        return False
     if row["status"] not in ACTIVE_STATUSES:
         return False
     attempt = row["attempt"]

@@ -216,6 +216,25 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert "ReadWritePaths=/var/lib/blueprint\n" not in text and "ReadWritePaths=/var/lib/blueprint " not in text
             assert "TasksMax=32" in text and "MemoryMax=256M" in text and "CPUQuota=100%" in text
             continue
+        if unit.name == WITHDRAWAL_DELETION_UNIT:
+            # The withdrawal deletion pass: the service account (it writes beside files the intake and the workers
+            # own), the full sandbox, writes only where a withdrawal deletion removes or records, low priority.
+            text = unit.read_text(encoding="utf-8")
+            for control in required_controls:
+                if not control.startswith(("ReadWritePaths=", "CPUQuota=")):
+                    assert control in text, (unit.name, control)
+            writable = [path.removeprefix("-") for path in next(
+                line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()]
+            assert "/var/lib/blueprint" not in writable and "/etc/blueprint" not in " ".join(writable)
+            assert writable[:2] == ["/var/lib/blueprint/pipeline-control-plane/website-withdrawal-deletion",
+                                    "/var/lib/blueprint/pubsub-handoffs"]
+            assert not any(part in path for path in writable for part in (
+                "spend", "ledger", "standing-authorizations", "scene-intents", "website-source-bindings"))
+            for control in ("TasksMax=32", "MemoryMax=1G", "CPUQuota=50%", "Nice=19", "IOSchedulingPriority=7",
+                            "TimeoutStartSec=45min", "OnFailure=" + NOTIFIER_ON_FAILURE):
+                assert control in text, (unit.name, control)
+            assert "-m blueprint_pipeline.website_capture_withdrawal_automatic'" in text
+            continue
         if unit.name == "blueprint-operator-door.service":
             # Cloud agents' HTTPS window onto this host (deploy/operator-door). It
             # reads as the service account, with journal access, in a read-only,
@@ -422,6 +441,8 @@ HOST_MEMORY_KEPT = {
     "blueprint-control-plane-release-lifecycle.service": ("200", "512M"),
     "blueprint-owner-approved-deletion-plan.service": ("200", "1G"),
     "blueprint-owner-approved-deletion.service": ("200", "1G"),
+    # Not measured on the host yet: one site's plan, the owner-approved deletion units' cap.
+    "blueprint-website-withdrawal-deletion.service": ("200", "1G"),
     "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "5.5G"),
     "blueprint-website-atlas-preview.service": ("-200", "5.5G"),
     "blueprint-team-evaluation-runner.service": ("-200", "5.5G"),
@@ -500,6 +521,7 @@ def test_every_control_plane_unit_is_capped_below_the_host() -> None:
 BATCH_SLICE = "system-blueprintbatch.slice"
 NOTIFIER_UNIT = "blueprint-unit-failure@.service"
 NOTIFIER_ON_FAILURE = "blueprint-unit-failure@%n.service"
+WITHDRAWAL_DELETION_UNIT = "blueprint-website-withdrawal-deletion.service"
 #: The live reading the slice is sized from (2026-11-10 15:10Z, nothing heavy running), in the decimal GB that
 #: /proc/meminfo's kB make, and the readiness plan's ceiling for the heavy units' caps together.
 HOST_MEMTOTAL_GB = 8.33
@@ -559,6 +581,7 @@ OUTSIDE_BATCH_SLICE = {
     "blueprint-control-plane-preflight.service": "a diagnostic, capped at 1G",
     "blueprint-owner-approved-deletion-plan.service": "started by hand, capped at 1G",
     "blueprint-owner-approved-deletion.service": "started by hand, capped at 1G",
+    "blueprint-website-withdrawal-deletion.service": "privacy housekeeping at low priority, capped at 1G",
 }
 #: Units whose failure is abnormal and matters: the money guard, the intake, the pager and the units that
 #: move a website job. Each starts the notifier when it fails.
@@ -576,6 +599,8 @@ UNIT_FAILURE_NOTIFIED_UNITS = (
     "blueprint-team-scene-packet.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-beta-policy-screening.service",
+    # A privacy promise: a withdrawn site's deletion must not stop silently.
+    "blueprint-website-withdrawal-deletion.service",
 )
 #: Units on the website job's path that are left without the notifier on purpose: there a non-zero exit is an
 #: ordinary result, so the notifier would report routine work every hour.

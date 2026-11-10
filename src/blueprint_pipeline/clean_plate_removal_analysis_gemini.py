@@ -677,6 +677,23 @@ def _provider_error_blocker(exc: Exception) -> str:
     return "gemini_clean_plate_provider_error"
 
 
+class GeminiProviderError(RuntimeError):
+    """A Gemini call that failed: an error, never an answer, so no plan is retained for it.
+
+    Raised only on the website path (``analyze_removal_targets`` with a capture), where the
+    retained call counts its dispatch as spent and the host retry runs it again. The message
+    keeps the blocker code, the error's type and any HTTP status, so ``job_retry_policy``
+    classifies it (an outage backs off; an unclassified refusal takes the timed retries).
+    """
+
+
+def _provider_failure(exc: Exception) -> GeminiProviderError:
+    status = next((value for value in (getattr(exc, "code", None), getattr(exc, "status_code", None))
+                   if isinstance(value, int) and not isinstance(value, bool)), None)
+    return GeminiProviderError(f"website_gemini_provider_error:{_provider_error_blocker(exc)}:{type(exc).__name__}"
+                               + (f":http_{status}" if status is not None else ""))
+
+
 def _video_processing(video_path: Path, requested: str) -> tuple[str, Optional[float]]:
     if requested not in {"auto", "static", "agentic"}:
         raise ValueError("gemini_clean_plate_processing_invalid")
@@ -831,11 +848,14 @@ def _analyze_removal_targets(
     model: Optional[str] = None,
     processing: Optional[str] = None,
     task_context: Optional[Mapping[str, Any]] = None,
+    raise_provider_errors: bool = False,
 ) -> dict[str, Any]:
     """Analyze the walkthrough and return a ``clean_plate_removal_plan.v1``.
 
     Fail-closed: without the gate env, an API key, and a readable input video,
     NO provider call is made and a ``status="blocked"`` empty plan is returned.
+    A provider error is a blocked plan for diagnostics, or ``GeminiProviderError``
+    with ``raise_provider_errors`` (website preparation: an error is not an answer).
     """
 
     model_name = model or _string_env(MODEL_ENV, DEFAULT_MODEL)
@@ -897,6 +917,8 @@ def _analyze_removal_targets(
     except HandoffLeaseError:
         raise
     except Exception as exc:  # pragma: no cover - live provider behavior
+        if raise_provider_errors:
+            raise _provider_failure(exc) from exc
         return empty_removal_plan(
             status="blocked",
             model=model_name,
@@ -929,6 +951,8 @@ def _analyze_removal_targets(
         except HandoffLeaseError:
             raise
         except Exception as provider_exc:  # pragma: no cover - live provider behavior
+            if raise_provider_errors:
+                raise _provider_failure(provider_exc) from provider_exc
             return empty_removal_plan(status="blocked", model=model_name, processing=processing_mode,
                                       blockers=[str(exc), _provider_error_blocker(provider_exc)],
                                       video_path=resolved_video, video_digest=video_digest)
@@ -1006,7 +1030,7 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
         from google import genai  # noqa: F401
 
     def invoke():
-        result = _analyze_removal_targets(**args)
+        result = _analyze_removal_targets(**args, raise_provider_errors=True)
         if result.get("input_video_sha256") != binding["source_digest"]:
             raise ValueError("website_gemini_source_changed")
         return result

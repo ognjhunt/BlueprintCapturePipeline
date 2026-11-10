@@ -1,0 +1,12 @@
+[Unit]
+Description=Plan (and, under the owner's standing approval, apply) one withdrawn site's deletion every hour
+
+[Timer]
+OnBootSec=30min
+OnUnitInactiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=blueprint-website-withdrawal-deletion.service
+
+[Install]
+WantedBy=timers.target

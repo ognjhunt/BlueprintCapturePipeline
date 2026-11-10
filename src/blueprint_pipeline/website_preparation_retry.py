@@ -62,7 +62,7 @@ RECLAIM_DELAY_SECONDS = 600
 # names the call, not the reason; only what follows it classifies the failure.
 _OPERATION = re.compile(r"website_control_[a-z0-9-]+_http_")
 # An outage: a provider or WebApp 429/5xx, a timeout, a dropped connection, a full disk.
-_OUTAGE = re.compile(r"http_(?:429|5[0-9][0-9])(?![0-9])|timeout|timed out|connection|temporar|unavailable"
+_OUTAGE = re.compile(r"http_(?:429|5[0-9][0-9])(?![0-9])|timeout|timed out|connection|temporar|unavailable|quota"
                      r"|no space left|disk_budget|capacity_insufficient", re.IGNORECASE)
 _CHAIN_LIMIT = 16
 OUTAGE, REFUSAL = "outage", "refusal"
@@ -78,14 +78,25 @@ def classify(*texts: str) -> str:
     return OUTAGE if any(_OUTAGE.search(text) for text in stripped) else REFUSAL
 
 
-def retry_delay(kind: str, failures: int) -> int | None:
-    """Seconds before the next run after ``failures`` failed attempts in a row; None: not retried."""
+def retry_delay(kind: str, failures: int, *, deadline: bool = True) -> int | None:
+    """Seconds before the next run after ``failures`` failed attempts in a row; None: not retried.
+
+    An outage or a money wait runs until the job's deadline, the grant's expiry. A job with no
+    grant has no deadline, so every failure of it takes the six timed retries instead, and is
+    then left: nothing else on the host ends it (``end_expired_preparation`` needs a grant).
+    """
     from .job_retry_policy import MONEY, outage_retry_delay, refusal_retry_delay
-    if kind in (OUTAGE, MONEY):
+    if kind in (OUTAGE, MONEY) and deadline:
         return outage_retry_delay(failures)  # The job's deadline, not a count, ends these.
-    if kind == REFUSAL:
+    if kind in (OUTAGE, MONEY, REFUSAL):
         return refusal_retry_delay(max(0, failures - 1))
     return None
+
+
+def has_deadline(capture_root: Path) -> bool:
+    """Whether the job holds a grant, whose expiry is its deadline (``website_task_evidence``)."""
+    from .website_preparation_terminal import GRANT_FILE
+    return (Path(capture_root) / GRANT_FILE).is_file()
 
 
 def _now(now: datetime | None) -> datetime:
@@ -192,7 +203,7 @@ def failure_retry(*, exc: BaseException, capture_root: Path, payload_digest: str
     try:
         failures = max(1, consecutive_failures(history))
         kind = classify(*_texts(exc))
-        delay = retry_delay(kind, failures)
+        delay = retry_delay(kind, failures, deadline=has_deadline(capture_root))
         if producer_delivery_key is None or owned_elsewhere or delay is None:
             return None
         path = Path(capture_root) / PAYLOAD_FILE
@@ -373,7 +384,7 @@ def _adopt(listener: Any, root: Path, ledger: Mapping[str, Any], now: datetime) 
     failures = max(1, consecutive_failures(ledger.get("attempt_history") or []))
     kind = classify(str(ledger.get("last_error") or ""))
     if (ledger.get("status") != "failed_retryable" or ledger.get(FIELD) is not None or _owned_elsewhere(ledger)
-            or type(ledger.get("producer_delivery_key")) is not str or retry_delay(kind, failures) is None):
+            or type(ledger.get("producer_delivery_key")) is not str or retry_delay(kind, failures, deadline=has_deadline(root)) is None):
         return None
     retained_payload(listener, root, ledger)
     return {**ledger, FIELD: _record(ledger, failures=failures, error=str(ledger.get("last_error")), due=now,
@@ -421,7 +432,8 @@ def _redrive(listener: Any, root: Path, *, storage_root: Path, process_args: Map
     # Push the next attempt out first: a run refused before its claim backs off as well.
     retries = record["retry_count"] + 1
     # A run refused before its claim waits as its failure kind would; past the schedule, a day.
-    delay = retry_delay(str(record.get("kind") or REFUSAL), retries) or REFUSAL_RETRY_DELAYS_SECONDS[-1]
+    delay = (retry_delay(str(record.get("kind") or REFUSAL), retries, deadline=has_deadline(root))
+             or REFUSAL_RETRY_DELAYS_SECONDS[-1])
     bumped = {**before, FIELD: {**record, "retry_count": retries, "last_redrive_at": _iso(now),
                                 "next_attempt_at": _iso(now + timedelta(seconds=delay))}}
     committed = _transition(listener, root, before, bumped)

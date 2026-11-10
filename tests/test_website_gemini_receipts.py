@@ -1,6 +1,7 @@
 """One paid attempt per source/task; no live model calls."""
 import fcntl
 import json
+import time
 
 import pytest
 
@@ -28,7 +29,8 @@ def setup_call(tmp_path, monkeypatch):
         calls.append(("reserve", kwargs))
         admission = {"schema_version": PAID_LANE_ADMISSION_SCHEMA_VERSION,
                      "resource_class": kwargs["resource_class"], "status": "admitted",
-                     "allocation_binding_digest": kwargs["binding_digest"], "blockers": []}
+                     "allocation_binding_digest": kwargs["binding_digest"], "blockers": [],
+                     "provider": kwargs["provider"], "expires_at_epoch": time.time() + 600}
         return admission, require_paid_resource_admission(admission,
             resource_class=kwargs["resource_class"], expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
     monkeypatch.setattr(module, "reserve_website_preparation_spend", reserve)
@@ -48,17 +50,53 @@ def test_completed_replay_needs_no_new_key_admission_or_call(tmp_path, monkeypat
     assert calls[0][1]["provider"] == "google"
 
 
-def test_timeout_retains_uncertain_call_without_second_reservation(tmp_path, monkeypatch):
+def test_a_killed_call_is_counted_spent_and_sent_again_once_per_new_reservation(tmp_path, monkeypatch):
+    """No proof of $0: the first hold stays (counted at its maximum) and one new reservation pays the resend."""
     args, calls = setup_call(tmp_path, monkeypatch)
+    answer = args["invoke"]
     def timeout():
+        calls.append(("invoke", None))
         raise TimeoutError("provider may have charged")
     args["invoke"] = timeout
     with pytest.raises(TimeoutError):
         module.retained_gemini_call(**args)
-    with pytest.raises(ValueError, match="requires_reconciliation"):
+    first = json.loads(next(tmp_path.glob("*.json")).read_text())
+    assert first["status"] == "submitting"
+    # The resend is killed too: it spent only its own new reservation.
+    with pytest.raises(TimeoutError):
         module.retained_gemini_call(**args)
-    assert len(calls) == 1
-    assert json.loads(next(tmp_path.glob("*.json")).read_text())["status"] == "submitting"
+    assert [row[0] for row in calls] == ["reserve", "invoke", "reserve", "invoke"]
+    digests = [row[1]["binding_digest"] for row in calls if row[0] == "reserve"]
+    assert digests[0] == first["request_digest"] and len(set(digests)) == 2
+    counted = json.loads(next(tmp_path.glob("*.unanswered-1.json")).read_text())
+    assert counted["status"] == "counted_as_spent" and counted["dispatch_digest"] == digests[0]
+    assert counted["reservation"] == "held_at_maximum_never_released_or_settled_as_zero"
+    # A third send needs a third admission; when the ceiling refuses it, nothing is dispatched.
+    def refused(**kwargs):
+        calls.append(("reserve", kwargs))
+        raise ValueError("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
+    monkeypatch.setattr(module, "reserve_website_preparation_spend", refused)
+    with pytest.raises(ValueError, match="budget_exhausted"):
+        module.retained_gemini_call(**args)
+    assert [row[0] for row in calls].count("invoke") == 2
+    # Once admitted again, the answer is bought once and then reused.
+    setup_call(tmp_path, monkeypatch)
+    args["invoke"] = answer
+    result = module.retained_gemini_call(**args)
+    assert module.retained_gemini_call(**args) == result
+    resend = json.loads(next(tmp_path.glob("*.resend-2.json")).read_text())
+    assert resend["status"] == "completed" and resend["resend_index"] == 2
+
+
+def test_an_unanswered_call_with_no_reservation_on_record_is_a_money_wait(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_preparation_retry import classify
+    args, calls = setup_call(tmp_path, monkeypatch)
+    digest = module._request(binding=args["binding"], task_context=args["task_context"],
+                             maximum_cost_usd=args["maximum_cost_usd"], source_video_digest=None)[1]
+    (tmp_path / f"{digest[7:]}.json").write_text(json.dumps({"status": "submitting", "request_digest": digest}))
+    with pytest.raises(ValueError, match=module.UNRESERVED) as refused:
+        module.retained_gemini_call(**args)
+    assert calls == [] and classify(str(refused.value)) == "money"
 
 
 def test_lease_lost_after_reservation_cannot_start_provider_call(tmp_path, monkeypatch):
@@ -80,10 +118,11 @@ def test_lease_lost_after_reservation_cannot_start_provider_call(tmp_path, monke
     with bind_handoff_lease(check), pytest.raises(HandoffLeaseError):
         module.retained_gemini_call(**args)
     assert [row[0] for row in calls] == ["reserve"]
-    # Keep the existing uncertain-intent reconciliation rule; never reserve twice.
-    with pytest.raises(ValueError, match="requires_reconciliation"):
-        module.retained_gemini_call(**args)
-    assert [row[0] for row in calls] == ["reserve"]
+    # Stopped before the dispatch: proof of $0, so the same reservation pays the next one.
+    assert json.loads(next(tmp_path.glob("*.json")).read_text())["status"] == "not_dispatched"
+    module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve", "invoke"]
+    assert not list(tmp_path.glob("*.unanswered-*.json")) and not list(tmp_path.glob("*.resend-*.json"))
 
 
 @pytest.mark.parametrize("bad_grant", ["missing", "different_binding"])
@@ -225,16 +264,19 @@ def test_an_analysis_bought_before_the_region_prompt_is_never_bought_again(tmp_p
     root.mkdir()
     (root / f"{RETAINED_BEFORE_REGION}.json").write_text(json.dumps(
         {"status": status, "request_digest": "sha256:" + RETAINED_BEFORE_REGION,
-         **({"result": result, "result_digest": canonical_digest(result)} if status == "completed" else {})}))
+         **({"result": result, "result_digest": canonical_digest(result)} if status == "completed" else
+            {"admission": {"status": "admitted", "allocation_binding_digest": "sha256:" + RETAINED_BEFORE_REGION}})}))
     kwargs = dict(video_path=video, task_context=context(), output_root=root)
     if status == "completed":
         # Reused as it stands, with no gate, key, SDK, reservation or call; it names no region.
         assert analysis.analyze_removal_targets(**kwargs) == result
+        assert calls == [] and [path.name for path in root.glob("*.json")] == [f"{RETAINED_BEFORE_REGION}.json"]
     else:
-        # A call that may have been charged never authorizes a new one under the new prompt.
-        with pytest.raises(ValueError, match="requires_reconciliation"):
+        # A call that may have been charged is counted as spent; the current prompt is then bought
+        # under its own new reservation, which first needs the runtime (not configured here).
+        with pytest.raises(ValueError, match="runtime_not_configured"):
             analysis.analyze_removal_targets(**kwargs)
-    assert calls == [] and [path.name for path in root.glob("*.json")] == [f"{RETAINED_BEFORE_REGION}.json"]
+        assert calls == [] and (root / f"{RETAINED_BEFORE_REGION}.unanswered-1.json").is_file()
 
 
 def test_quote_uses_requested_combined_output_ceiling():
@@ -273,3 +315,158 @@ def test_atlas_review_keeps_source_binding_on_shared_reservation_and_cache(tmp_p
     assert calls[0][1]['source_video_digest']==args['source_video_digest']
     assert calls[0][1]['atlas_auxiliary'] is True
     assert module.retained_gemini_call(**args)==first and len(calls)==2
+
+
+def _stub_genai(monkeypatch, analysis):
+    import sys
+    from types import SimpleNamespace
+
+    import google
+    monkeypatch.setenv(analysis.GATE_ENV, "true")
+    monkeypatch.setattr(analysis, "_api_key", lambda: ("fixture", "fixture"))
+    monkeypatch.setattr(google, "genai", SimpleNamespace(types=SimpleNamespace()), raising=False)
+    monkeypatch.setitem(sys.modules, "google.genai", google.genai)
+
+
+def test_a_gemini_error_is_raised_never_retained_as_a_completed_blocked_plan(tmp_path, monkeypatch):
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+    from blueprint_pipeline.website_preparation_retry import classify
+    _args, calls = setup_call(tmp_path / "receipts", monkeypatch)
+    video = tmp_path / "video.mov"
+    video.write_bytes(b"original video")
+    monkeypatch.setattr(analysis, "_video_processing", lambda *a: ("static", 13.525))
+    _stub_genai(monkeypatch, analysis)
+
+    class Unavailable(Exception):
+        code = 503
+
+    def failing(**_):
+        raise Unavailable("upstream connect error")
+    monkeypatch.setattr(analysis, "_invoke_agentic_video", failing)
+    kwargs = dict(video_path=video, task_context=context(), output_root=tmp_path / "receipts")
+    with pytest.raises(analysis.GeminiProviderError) as error:
+        analysis.analyze_removal_targets(**kwargs)
+    assert str(error.value) == "website_gemini_provider_error:gemini_clean_plate_provider_error:Unavailable:http_503"
+    assert classify(str(error.value)) == "outage"
+    # A 503 answer did no work: the intent is refused, never a completed plan.
+    receipt, = (tmp_path / "receipts").glob("*.json")
+    assert (json.loads(receipt.read_text())["status"], json.loads(receipt.read_text())["http_status"]) == ("refused", 503)
+    # Diagnostics without a capture keep the blocked plan, as before.
+    plan = analysis.analyze_removal_targets(video_path=video, task_context=None)
+    assert plan["status"] == "blocked"
+
+
+def test_a_blocked_plan_an_older_release_retained_is_still_read_and_not_bought_again(tmp_path, monkeypatch):
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+    _args, calls = setup_call(tmp_path / "receipts", monkeypatch)
+    video = tmp_path / "video.mov"
+    video.write_bytes(b"original video")
+    monkeypatch.setattr(analysis, "_video_processing", lambda *a: ("static", 13.525))
+    _stub_genai(monkeypatch, analysis)
+    blocked = analysis.empty_removal_plan(status="blocked", model="gemini-3.8-flash", processing="static",
+                                          blockers=["gemini_clean_plate_provider_error"], video_path=video,
+                                          video_digest=analysis.sha256_file(video))
+    monkeypatch.setattr(analysis, "_analyze_removal_targets", lambda **_: blocked)
+    kwargs = dict(video_path=video, task_context=context(), output_root=tmp_path / "receipts")
+    assert analysis.analyze_removal_targets(**kwargs) == blocked  # what an older release stored
+    monkeypatch.setattr(analysis, "_analyze_removal_targets", lambda **_: pytest.fail("bought again"))
+    assert analysis.analyze_removal_targets(**kwargs) == blocked
+    assert [row[0] for row in calls] == ["reserve"]
+
+
+def test_the_resend_chain_ends_after_three_unanswered_dispatches(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_preparation_retry import classify
+    args, calls = setup_call(tmp_path, monkeypatch)
+    def timeout():
+        calls.append(("invoke", None))
+        raise TimeoutError("no answer")
+    args["invoke"] = timeout
+    for _ in range(3):
+        with pytest.raises(TimeoutError):
+            module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve", "invoke"] * 3
+    # The 4th run sends nothing and reserves nothing; the refusal is not an outage, so the timed schedule ends it.
+    with pytest.raises(ValueError, match=module.EXHAUSTED) as exhausted:
+        module.retained_gemini_call(**args)
+    assert len(calls) == 6 and classify(str(exhausted.value)) == "refusal"
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_a_refusal_that_proves_no_work_reuses_the_same_reservation(tmp_path, monkeypatch, status):
+    from blueprint_pipeline.website_preparation_retry import classify
+    args, calls = setup_call(tmp_path, monkeypatch)
+    answer = args["invoke"]
+
+    class Refused(Exception):
+        code = status
+    def refuses():
+        calls.append(("invoke", None))
+        raise Refused("resource exhausted")
+    args["invoke"] = refuses
+    for _ in range(5):  # more than the unanswered bound: a quota outage never ends the request
+        with pytest.raises(Refused) as refused:
+            module.retained_gemini_call(**args)
+    assert classify(f"{type(refused.value).__name__}: http_{status}") == "outage"
+    args["invoke"] = answer
+    module.retained_gemini_call(**args)
+    # One hold, one dispatch digest, never counted as spent.
+    assert [row[0] for row in calls] == ["reserve"] + ["invoke"] * 6
+    assert not list(tmp_path.glob("*.unanswered-*.json")) and not list(tmp_path.glob("*.resend-*.json"))
+
+
+def test_a_500_answer_is_still_counted_as_spent(tmp_path, monkeypatch):
+    args, calls = setup_call(tmp_path, monkeypatch)
+
+    class ServerError(Exception):
+        code = 500
+    def fails():
+        raise ServerError("internal")
+    args["invoke"] = fails
+    with pytest.raises(ServerError):
+        module.retained_gemini_call(**args)
+    with pytest.raises(ServerError):
+        module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve", "reserve"] and list(tmp_path.glob("*.unanswered-1.json"))
+
+
+def _refused_once(tmp_path, monkeypatch):
+    args, calls = setup_call(tmp_path, monkeypatch)
+    answer = args["invoke"]
+
+    class Refused(Exception):
+        code = 429
+    def refuses():
+        raise Refused("quota")
+    args["invoke"] = refuses
+    with pytest.raises(Refused):
+        module.retained_gemini_call(**args)
+    args["invoke"] = answer
+    intent, = tmp_path.glob("*.json")
+    return args, calls, intent
+
+
+def test_an_expired_retained_reservation_is_replaced_by_one_new_one(tmp_path, monkeypatch):
+    args, calls, intent = _refused_once(tmp_path, monkeypatch)
+    stored = json.loads(intent.read_text())
+    stored["admission"]["expires_at_epoch"] = time.time() - 1  # a quota outage outlasted the grant's window
+    intent.write_text(json.dumps(stored))
+    result = module.retained_gemini_call(**args)
+    assert module.retained_gemini_call(**args) == result
+    reserved = [row[1]["binding_digest"] for row in calls if row[0] == "reserve"]
+    assert len(reserved) == len(set(reserved)) == 2 and [row[0] for row in calls].count("invoke") == 1
+    # The old hold is kept as superseded, never released; nothing is counted as unanswered.
+    assert json.loads(intent.read_text())["status"] == "superseded"
+    assert not list(tmp_path.glob("*.unanswered-*.json"))
+    replacement, = tmp_path.glob("*.replacement-*.json")
+    assert json.loads(replacement.read_text())["status"] == "completed"
+
+
+def test_a_budget_refusal_of_a_retained_reservation_is_a_money_wait(tmp_path, monkeypatch):
+    from blueprint_pipeline import paid_resource_admission as admission
+    args, calls, intent = _refused_once(tmp_path, monkeypatch)
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: ["account_monthly_spend_limit_reached"])
+    with pytest.raises(PaidResourceAdmissionBlocked, match="account_monthly_spend_limit_reached"):
+        module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve"]
+    assert json.loads(intent.read_text())["status"] == "refused"
+    assert not list(tmp_path.glob("*.unanswered-*.json")) and not list(tmp_path.glob("*.replacement-*.json"))

@@ -380,6 +380,8 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
     reached = [percent for percent in ALERT_PERCENTS if limit is not None and counted_total * 100 >= limit * percent]
     limit_reached = limit is not None and counted_total >= limit
     cap = cap_status(policy, policy_error, required=limit_is_required)
+    from .account_spend_forecast import forecast
+    from .account_spend_reconciliation import reconcile
     blockers = {"config_invalid": [CONFIG_INVALID], "missing": [LIMIT_NOT_CONFIGURED]}.get(
         cap, [LIMIT_REACHED] if limit_reached else [])
     return {
@@ -400,6 +402,11 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
         "providers": providers,
         "meter": public_view(meter, max_jobs=REPORT_MAX_JOBS),
         "complete": not gaps, "gaps": sorted(set(gaps)),
+        # Visibility only (the alerts gate nothing): when this month's rate reaches the limit, and the
+        # ledger against each provider's bill.
+        "forecast": forecast(now=now, spend_usd=spend, counted_usd=counted_total, limit_usd=limit,
+                             complete=not gaps, previous=prior.get("forecast")),
+        "reconciliation": reconcile(providers, period=period),
         "claim_boundary": ("Provider readings lag their bills and held reservations are upper bounds; the limit "
                            "stops new paid admissions, not provider charges already running."),
     }

@@ -231,6 +231,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/capacity", "evidence_hot", "root", "capacity controller reports"),
     StorageRoot(f"{_CONTROL_PLANE}/unit-failures", "evidence_hot", "blueprint",
                 "one small record per failed systemd unit (unit_failure_notifier), rewritten in place"),
+    StorageRoot(f"{_CONTROL_PLANE}/website-withdrawal-deletion", "evidence_hot", "blueprint",
+                "the withdrawal deletion pass's summary, alert record and lock (website_capture_withdrawal_automatic)"),
     StorageRoot(f"{_CONTROL_PLANE}/preflight", "evidence_hot", "root", "chain preflight reports"),
     StorageRoot(f"{_CONTROL_PLANE}/cleanup-receipts", "evidence_hot", "root", "sealed break-glass notes for host changes made outside the door"),
     StorageRoot(f"{_CONTROL_PLANE}/launch-materialization", "evidence_hot", "blueprint", "spend reconciliations and materialized launch inputs"),

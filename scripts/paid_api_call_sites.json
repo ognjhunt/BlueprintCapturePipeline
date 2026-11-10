@@ -536,6 +536,26 @@
       "via": "src/blueprint_pipeline/website_candidate_ranking.py::retained_gemini_call",
       "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend"
     },
+    "src/blueprint_pipeline/website_capture_withdrawal_provider_copies.py::production_deleters.gemini::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "not_paid",
+      "reason": "deletes an uploaded file with files.delete only; deletion is not billed"
+    },
+    "src/blueprint_pipeline/website_capture_withdrawal_provider_copies.py::production_deleters.meta::meta_sam_api_url": {
+      "provider": "meta_sam",
+      "class": "not_paid",
+      "reason": "DELETE /v1/files/<id> only; deleting an uploaded file is not billed"
+    },
+    "src/blueprint_pipeline/website_capture_withdrawal_provider_copies.py::production_deleters.meta::meta_sam_credentials": {
+      "provider": "meta_sam",
+      "class": "not_paid",
+      "reason": "the key authorizes DELETE /v1/files/<id> only; not billed"
+    },
+    "src/blueprint_pipeline/website_capture_withdrawal_provider_copies.py::production_deleters.world_labs::world_labs_atlas_credentials": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "DELETE /assets/<id> only; deletes provider assets, not billed"
+    },
     "src/blueprint_pipeline/website_image_completion.py::_verify_completed_background::gemini_client_construction": {
       "provider": "gemini",
       "class": "unadmitted",

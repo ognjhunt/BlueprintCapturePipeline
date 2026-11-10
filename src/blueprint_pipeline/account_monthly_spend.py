@@ -340,7 +340,8 @@ def summary(report: Mapping[str, Any], *, max_jobs: int = 10) -> dict[str, Any]:
 
     keys = ("schema_version", "generated_at", "period", "cap_status", "limit_usd", "alert_lines_usd", "spend_usd",
             "held_usd", "counted_usd", "fraction", "alert_threshold_percent", "limit_reached", "admission_allowed",
-            "blockers", "complete", "gaps", "report_path", "policy_sha256", "old_unsettled_held_usd")
+            "blockers", "complete", "gaps", "report_path", "policy_sha256", "old_unsettled_held_usd",
+            "forecast", "reconciliation")
     meter = report.get("meter") if isinstance(report.get("meter"), Mapping) else {}
     return {**{key: report.get(key) for key in keys},
             "providers": {name: {**{key: row.get(key) for key in ("status", "counted_usd", "reconciled_month_usd",
@@ -416,7 +417,8 @@ def observe_account_spend(*, now: float, environ: Mapping[str, str] | None = Non
     if policy is not None and report.get("policy_sha256") != policy["policy_sha256"]:
         blockers.append("account_spend_report_policy_mismatch")
     keys = ("limit_usd", "alert_lines_usd", "spend_usd", "held_usd", "counted_usd", "fraction",
-            "alert_threshold_percent", "limit_reached", "admission_allowed", "complete", "gaps", "generated_at")
+            "alert_threshold_percent", "limit_reached", "admission_allowed", "complete", "gaps", "generated_at",
+            "forecast", "reconciliation")
     return {**row, **{key: report.get(key) for key in keys}, "blockers": blockers,
             "status": "observed" if not blockers else "unknown"}
 
@@ -446,6 +448,15 @@ def account_alerts(row: Mapping[str, Any]) -> list[dict[str, Any]]:
                     100: "account_spend_month_limit_reached"}[percent]
             alerts.append({"code": code, **base, "spend_usd": usd(counted), "threshold_usd": usd(limit * percent / 100),
                            "limit_usd": usd(limit), "percent": percent})
+    forecast = row.get("forecast") if isinstance(row.get("forecast"), Mapping) else {}
+    if forecast.get("alert") is True and row.get("cap_status") == "set":
+        alerts.append({"code": FORECAST_CODE, **base, "reaches_limit_on": forecast.get("reaches_limit_on"),
+                       "daily_rate_usd": forecast.get("daily_rate_usd"), "spend_usd": usd(counted),
+                       "limit_usd": row.get("limit_usd")})
+    reconciliation = row.get("reconciliation") if isinstance(row.get("reconciliation"), Mapping) else {}
+    if reconciliation.get("outside_tolerance"):
+        alerts.append({"code": RECONCILIATION_CODE, **base,
+                       "reason": ",".join(str(name) for name in reconciliation["outside_tolerance"])})
     if row.get("complete") is not True:
         gaps = [str(item) for item in row.get("gaps") or []]
         alerts.append({"code": "account_spend_unverifiable", **base,
@@ -453,10 +464,15 @@ def account_alerts(row: Mapping[str, Any]) -> list[dict[str, Any]]:
     return alerts
 
 
+#: Warn: at this month's measured rate the limit is reached inside the month (``account_spend_forecast``).
+FORECAST_CODE = "account_spend_forecast_reaches_limit_this_month"
+#: Warn: a provider's settled ledger and its billing delta differ past tolerance (``account_spend_reconciliation``).
+RECONCILIATION_CODE = "account_spend_reconciliation_outside_tolerance"
 ACCOUNT_PAGE_CODES = frozenset({"account_spend_month_80pct", "account_spend_month_limit_reached",
                                 "account_spend_limit_config_invalid", "account_spend_limit_missing",
                                 "account_spend_report_stale"})
-ACCOUNT_WARN_CODES = frozenset({"account_spend_month_50pct", "account_spend_limit_not_set", "account_spend_unverifiable"})
+ACCOUNT_WARN_CODES = frozenset({"account_spend_month_50pct", "account_spend_limit_not_set", "account_spend_unverifiable",
+                                FORECAST_CODE, RECONCILIATION_CODE})
 
 
 def describe(alert: Mapping[str, Any]) -> str | None:

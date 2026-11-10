@@ -698,7 +698,8 @@ def test_with_the_limit_installed_production_behaves_exactly_as_before(host, mon
     assert account.admission_blockers() == []
     assert _admit().resource_class == "vast_provider_adapter"
     assert [row["code"] for row in account.account_alerts(account.observe_account_spend(now=NOW + 60))] == [
-        "account_spend_month_50pct", "account_spend_unverifiable"]
+        # The fixture's ledger settles far less than the providers billed: a warning, never a refusal.
+        "account_spend_month_50pct", account.RECONCILIATION_CODE, "account_spend_unverifiable"]
 
 
 @pytest.mark.parametrize("content", ["not json", "{}"])

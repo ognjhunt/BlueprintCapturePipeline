@@ -36,6 +36,46 @@ tick so those stops page on the same route:
     in ``processing/`` for two days, held 14 GB of staging as queue-referenced,
     and nothing paged.
 
+Four more stores were found unwatched on 2026-11-10: a job stuck in any of them
+was invisible. Each has its own check, with the same route and repeat:
+
+``atlas_preview_stalled``
+    A website Atlas preview job (``pipeline/atlas/preview_job.json``) has made
+    no progress for ``atlas`` minutes (default 90) and is not in a scheduled
+    wait whose next attempt is still in the future: a wait the worker scheduled
+    (an outage's backoff, the refusal schedule, a killed step's retry, a
+    ``needs_input`` recheck) pages only once its attempt is overdue by as long,
+    and a step in flight that long pages. ``ready``, ``failed`` and
+    ``withdrawn`` jobs, ``needs_input`` jobs that wait for a person, and any
+    wait on privacy, rights, consent or money never page.
+``team_scene_packet_stalled``
+    A team scene packet request has waited in ``pending/`` or ``processing/``,
+    or stayed ``blocked``, for ``team_scene`` minutes (default 8 h, past the
+    worker's own retries of 5 min, 30 min and 2 h). A block whose next timed
+    retry (``automatic_retry`` or ``refusal_retry``) is still in the future is
+    quiet; one overdue by the threshold pages. A block that waits for the site
+    owner's confirmation, or names a withdrawn capture, never pages.
+``rigid_probe_stalled``
+    A rigid robot-free probe entry is still in ``pending/`` ``rigid_probe``
+    minutes (default 8 h: two funded attempts of at most 1 h each) after it was
+    queued or its latest attempt last wrote a record, or a retired staging
+    refusal's next timed retry is overdue by as long. An entry whose last
+    attempt the WebApp refused the grant for (a money stop the owner lifts)
+    never pages.
+``screening_campaign_stalled`` and ``screening_publication_stalled``
+    A screening campaign has rows still to run and its ledger entry has not
+    changed for ``screening`` minutes (default 8 h, twice a run's longest hard
+    TTL), or its latest revision has stayed unpublished for ``publication``
+    minutes (default 90). Waitlisted rows (the site allowance or job ceiling)
+    never page. A ``blocked`` row is not a row still to run, so one waiting for
+    the coordinator's timed re-plan is quiet; an overdue re-plan is not seen
+    (the ledger records no due time for it).
+
+A store whose own trigger the operator door holds is paused on purpose and is
+not read. A request, probe or campaign pages only while its capture still has a
+scene intent with an open execution window (``open_window_captures``); after
+that it cannot run again and is history.
+
 Every check only reads: it lists the named directories with limits, reads
 bounded JSON, takes the dispatcher lock exactly as the reconciler does to learn
 ownership, reads ``/proc/locks`` (never locking an activation row itself), and
@@ -60,11 +100,13 @@ from pathlib import Path
 from typing import Any
 
 from .control_plane_disk_budget import ROLE_TTL_SECONDS
+from .job_retry_policy import MONEY, PRIVACY_RIGHTS, hard_stop_kind, refusal_retry_delay
 from .task_evaluation_launch_dispatcher_ownership import DISPATCHER_LOCK_NAME, unowned_processing_names
 
 SCHEMA_VERSION = "control_plane_stall_check.v1"
 PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trigger_inactive_unheld",
-                        "launch_activation_stuck"})
+                        "launch_activation_stuck", "atlas_preview_stalled", "team_scene_packet_stalled",
+                        "rigid_probe_stalled", "screening_campaign_stalled", "screening_publication_stalled"})
 INCOMPLETE_CODE = "stall_check_incomplete"
 
 DISABLE_ENV = "BLUEPRINT_STALL_ALARM"
@@ -78,11 +120,33 @@ LAUNCH_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT"
 LAUNCH_STATE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT"
 # The activation worker unit's own name for its queue.
 ACTIVATION_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT"
+# Each job store by the name its own worker unit gives it.
+ATLAS_STORAGE_ROOT_ENV = "BLUEPRINT_WEBSITE_ATLAS_PREVIEW_STORAGE_ROOT"
+TEAM_SCENE_QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
+RIGID_PROBE_QUEUE_ROOT_ENV = "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE"
+SCREENING_QUEUE_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT"
+ATLAS_MINUTES_ENV = "BLUEPRINT_STALL_ATLAS_MINUTES"
+TEAM_SCENE_MINUTES_ENV = "BLUEPRINT_STALL_TEAM_SCENE_MINUTES"
+RIGID_PROBE_MINUTES_ENV = "BLUEPRINT_STALL_RIGID_PROBE_MINUTES"
+SCREENING_MINUTES_ENV = "BLUEPRINT_STALL_SCREENING_MINUTES"
+PUBLICATION_MINUTES_ENV = "BLUEPRINT_STALL_PUBLICATION_MINUTES"
 
 DEFAULT_PROGRESSION_MINUTES = 90
 DEFAULT_HANDOFF_MINUTES = 8 * 60
 DEFAULT_LAUNCH_GRACE_MINUTES = 30
 DEFAULT_TRIGGER_MINUTES = 60
+# The job stores take one of the two existing waits. A job that waits on the pipeline itself
+# gets the progression wait (90 min): an Atlas job is stepped every minute and a deploy pauses
+# its timer for 30-40 minutes, and a publication is offered again on every screening pass. A
+# request handed to a worker that may hold it for whole runs gets the handoff wait (8 h): a
+# team scene request waits out its worker's own retries (5 min, 30 min, 2 h) behind compiles of
+# up to an hour, a rigid probe runs two funded attempts of at most an hour each, and a
+# screening run holds its row for up to its hard TTL of at most four hours.
+DEFAULT_ATLAS_MINUTES = DEFAULT_PROGRESSION_MINUTES
+DEFAULT_TEAM_SCENE_MINUTES = DEFAULT_HANDOFF_MINUTES
+DEFAULT_RIGID_PROBE_MINUTES = DEFAULT_HANDOFF_MINUTES
+DEFAULT_SCREENING_MINUTES = DEFAULT_HANDOFF_MINUTES
+DEFAULT_PUBLICATION_MINUTES = DEFAULT_PROGRESSION_MINUTES
 
 # The launch reconciler's own bounds (``task_evaluation_launch_reconciler``):
 # a lease whose allocator never started is stale after PRE_RUN_STALE_SECONDS,
@@ -117,6 +181,48 @@ _HOLD_CODES = {
     "scene_intake_spend_cap_exhausted": "money_approval",
     "scene_intake_attempt_cap_exhausted": "money_approval",
 }
+
+# The four job stores below name a withdrawn capture in their own codes
+# (``team_scene_capture_withdrawn``); only their checks read these. ``_HOLD_WORDS`` is unchanged.
+_STORE_HOLD_WORDS = {"withdrawn": "privacy", "withdrawal": "privacy"}
+
+# What each store's owner writes, mirrored (not imported) so the capacity tick loads none of
+# the workers, their provider adapters or the paid launch path; a test keeps each equal.
+ATLAS_JOB_GLOB = "*/scenes/site-*/captures/*/pipeline/atlas/preview_job.json"
+ATLAS_JOB_SCHEMA = "website_atlas_preview_job.v1"
+ATLAS_TRIGGER = "blueprint-website-atlas-preview.timer"
+# ``processing`` and ``needs_input`` jobs are stepped again; ready, failed and withdrawn are final.
+ATLAS_WAITING_STATES = frozenset({"processing", "needs_input"})
+ATLAS_STEP_IN_FLIGHT = "step_in_flight"
+TEAM_SCENE_WAITING_STATES = ("pending", "processing")
+TEAM_SCENE_OWNER_CONTRACT_PREFIX = "team_scene_owner_contract_invalid:"
+TEAM_SCENE_TRIGGER = "blueprint-team-scene-packet.path"
+# A blocked status's timed retries: the transient backoff and the shared refusal schedule. Each names
+# ``not_before`` until the worker returns the request to pending, or ``exhausted`` once spent.
+TEAM_SCENE_RETRY_FIELDS = ("automatic_retry", "refusal_retry")
+RIGID_PROBE_INGEST_FILENAME = "rigid_robot_free_probe_ingest.json"
+RIGID_PROBE_GRANT_REFUSED_STATE = "website_grant_refused"
+RIGID_PROBE_TRIGGER = "blueprint-rigid-robot-free-probe-runner.timer"
+# A retired entry whose staging refusal the runner sets aside again on the shared refusal schedule.
+RIGID_PROBE_TERMINAL_FILENAME = "rigid_robot_free_probe_terminal.json"
+RIGID_PROBE_TIMED_STATES = frozenset({"staging_refused"})
+RIGID_PROBE_SUPERSEDED_DIRNAME = "superseded_terminals"
+RIGID_PROBE_REFUSAL_RETRY_TRIGGER = "refusal_retry"
+MAX_SUPERSESSIONS = 64
+SCREENING_LEDGER_FILENAME = "screening_ledger.v1.json"
+SCREENING_LEDGER_SCHEMA = "blueprint.beta_policy_screening_ledger.v1"
+# Rows the screening queue still has to run or settle; ``waitlisted`` waits for money instead.
+SCREENING_LIVE_STATUSES = frozenset({"pending", "preparing", "launching", "running", "reconciliation_required"})
+_SCREENING_STATUS_ORDER = ("reconciliation_required", "running", "launching", "preparing", "pending")
+SCREENING_WAITLISTED_STATUS = "waitlisted"
+SCREENING_TRIGGER = "blueprint-beta-policy-screening.timer"
+MAX_ATLAS_JOBS = 512
+MAX_QUEUE_ENTRIES = 512
+# A status is kept for every request ever finished; the newest are read.
+MAX_STATUS_ENTRIES = 2048
+MAX_CAMPAIGNS = 512
+MAX_LEDGER_BYTES = 4 * 1024 * 1024
+_HEX = re.compile(r"[0-9a-f]{16}\Z")
 
 MAX_INTENT_DIRECTORY_ENTRIES = 10_000
 MAX_INTENTS = 256
@@ -167,6 +273,15 @@ class StallConfig:
     trigger_seconds: float = DEFAULT_TRIGGER_MINUTES * 60.0
     config_errors: tuple[str, ...] = ()
     activation_queue_root: Path | None = None
+    atlas_storage_root: Path | None = None
+    team_scene_queue_root: Path | None = None
+    rigid_probe_queue_root: Path | None = None
+    screening_queue_root: Path | None = None
+    atlas_seconds: float = DEFAULT_ATLAS_MINUTES * 60.0
+    team_scene_seconds: float = DEFAULT_TEAM_SCENE_MINUTES * 60.0
+    rigid_probe_seconds: float = DEFAULT_RIGID_PROBE_MINUTES * 60.0
+    screening_seconds: float = DEFAULT_SCREENING_MINUTES * 60.0
+    publication_seconds: float = DEFAULT_PUBLICATION_MINUTES * 60.0
 
 
 def default_deploy_tool() -> Path:
@@ -208,8 +323,18 @@ def config_from_environment(environ: Mapping[str, str] | None = None) -> StallCo
         handoff_seconds=minutes(HANDOFF_MINUTES_ENV, DEFAULT_HANDOFF_MINUTES),
         launch_grace_seconds=minutes(LAUNCH_GRACE_MINUTES_ENV, DEFAULT_LAUNCH_GRACE_MINUTES),
         trigger_seconds=minutes(TRIGGER_MINUTES_ENV, DEFAULT_TRIGGER_MINUTES),
-        config_errors=tuple(errors),
         activation_queue_root=root(ACTIVATION_QUEUE_ROOT_ENV),
+        atlas_storage_root=root(ATLAS_STORAGE_ROOT_ENV),
+        team_scene_queue_root=root(TEAM_SCENE_QUEUE_ROOT_ENV),
+        rigid_probe_queue_root=root(RIGID_PROBE_QUEUE_ROOT_ENV),
+        screening_queue_root=root(SCREENING_QUEUE_ROOT_ENV),
+        atlas_seconds=minutes(ATLAS_MINUTES_ENV, DEFAULT_ATLAS_MINUTES),
+        team_scene_seconds=minutes(TEAM_SCENE_MINUTES_ENV, DEFAULT_TEAM_SCENE_MINUTES),
+        rigid_probe_seconds=minutes(RIGID_PROBE_MINUTES_ENV, DEFAULT_RIGID_PROBE_MINUTES),
+        screening_seconds=minutes(SCREENING_MINUTES_ENV, DEFAULT_SCREENING_MINUTES),
+        publication_seconds=minutes(PUBLICATION_MINUTES_ENV, DEFAULT_PUBLICATION_MINUTES),
+        # Last: every threshold above may add to it.
+        config_errors=tuple(errors),
     )
 
 
@@ -366,6 +491,29 @@ def _remembered_since(prior: Any, signature: list[Any], since: float, exact: boo
     return remembered, prior.get("exact") is True
 
 
+def _scene_intent_entries(root: Path) -> tuple[list[tuple[float, str]], bool]:
+    """Every ``scene-*`` intent directory as (mtime, name), newest first, and whether the listing was cut.
+
+    Newest first: a row that is still changing or newly stalled is never the
+    one a truncated walk drops; months-old revoked rows are. Raises ``OSError``.
+    """
+
+    entries: list[tuple[float, str]] = []
+    truncated = False
+    with os.scandir(root) as iterator:
+        for index, entry in enumerate(iterator):
+            if index >= MAX_INTENT_DIRECTORY_ENTRIES:
+                truncated = True
+                break
+            if entry.name.startswith("scene-") and entry.is_dir(follow_symlinks=False):
+                try:
+                    entries.append((entry.stat(follow_symlinks=False).st_mtime, entry.name))
+                except OSError:
+                    continue
+    entries.sort(key=lambda item: (-item[0], item[1]))
+    return entries, truncated
+
+
 def check_scene_progressions(
     config: StallConfig, *, now: float, budget: _Budget,
     remembered: Mapping[str, Any] | None = None, memory_out: dict[str, Any] | None = None,
@@ -378,26 +526,12 @@ def check_scene_progressions(
     if root is None:
         return section, [_incomplete("scene_intent_root_unconfigured")]
     alerts: list[dict[str, Any]] = []
-    entries: list[tuple[float, str]] = []
-    truncated = False
     try:
-        with os.scandir(root) as iterator:
-            for index, entry in enumerate(iterator):
-                if index >= MAX_INTENT_DIRECTORY_ENTRIES:
-                    truncated = True
-                    break
-                if entry.name.startswith("scene-") and entry.is_dir(follow_symlinks=False):
-                    try:
-                        entries.append((entry.stat(follow_symlinks=False).st_mtime, entry.name))
-                    except OSError:
-                        continue
+        entries, truncated = _scene_intent_entries(root)
     except FileNotFoundError:
         return {"status": "absent"}, []
     except OSError:
         return {"status": "unreadable"}, [_incomplete("scene_intent_root_unreadable")]
-    # Newest first: a row that is still changing or newly stalled is never the
-    # one a truncated walk drops; months-old revoked rows are.
-    entries.sort(key=lambda item: (-item[0], item[1]))
     if len(entries) > MAX_INTENTS:
         truncated = True
     counts: dict[str, int] = {}
@@ -712,16 +846,33 @@ def read_unit_states(units: Sequence[str], *, runner: Callable[..., Any] = subpr
     return states
 
 
+def trigger_held(holds: Path | None, unit: str) -> bool:
+    """Whether the operator door holds ``unit``; a hold that cannot be ruled out is not paged as a stall."""
+
+    if holds is None:
+        return False
+    try:
+        os.lstat(holds / f"{unit}.json")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        pass
+    return True
+
+
 def check_triggers(
     config: StallConfig,
     *,
     unit_reader: Callable[[Sequence[str]], Mapping[str, Mapping[str, str]]] = read_unit_states,
     monotonic: Callable[[], float] = time.monotonic,
+    contract: tuple[tuple[str, ...], Path] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """``contract`` is ``read_deploy_trigger_contract`` already read this tick; read here when absent."""
+
     if config.deploy_tool is None:
         return {"status": "not_configured"}, [_incomplete("deploy_tool_unconfigured")]
     try:
-        units, holds = read_deploy_trigger_contract(config.deploy_tool)
+        units, holds = contract if contract is not None else read_deploy_trigger_contract(config.deploy_tool)
         states = unit_reader(units)
     except (StallCheckError, OSError, subprocess.SubprocessError) as exc:
         reason = str(exc) if isinstance(exc, StallCheckError) else "systemctl_show_failed"
@@ -736,14 +887,7 @@ def check_triggers(
         loaded += 1
         if row.get("ActiveState") in {"active", "activating", "reloading"}:
             continue
-        try:
-            os.lstat(holds / f"{unit}.json")
-            held.append(unit)
-            continue
-        except FileNotFoundError:
-            pass
-        except OSError:
-            # A hold that cannot be ruled out is not paged as a stall.
+        if trigger_held(holds, unit):
             held.append(unit)
             continue
         try:
@@ -757,6 +901,673 @@ def check_triggers(
     section = {"status": "observed", "watched": len(units), "loaded": loaded,
                "held": sorted(held), "inactive_unheld": len(inactive)}
     return section, ([_page("trigger_inactive_unheld", inactive)] if inactive else [])
+
+
+# --------------------------------------------------------------------------- #
+# 5-8. Job stores nothing else watches: Atlas previews, team scene packets,
+#      rigid robot-free probes, screening campaigns and their publications
+# --------------------------------------------------------------------------- #
+
+
+def store_hold(codes: Iterable[Any]) -> str | None:
+    """Why a store row naming ``codes`` is an intended stop: ``hold_reason``'s words, or a withdrawn capture."""
+
+    texts = [str(code) for code in codes]
+    reason = hold_reason("", "", texts)
+    if reason is not None:
+        return reason
+    for text in texts:
+        for word in re.split(r"[_:]", text.lower()):
+            if word in _STORE_HOLD_WORDS:
+                return _STORE_HOLD_WORDS[word]
+    return None
+
+
+def _store(root: Path | None, trigger: str, holds: Path | None, reason: str
+           ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """The answer for a store that is not read (unset, absent, unreadable or held), else ``None``."""
+
+    if root is None:
+        return {"status": "not_configured"}, []
+    try:
+        with os.scandir(root) as iterator:
+            next(iterator, None)
+    except FileNotFoundError:
+        return {"status": "absent"}, []
+    except OSError:
+        return {"status": "unreadable"}, [_incomplete(reason)]
+    if trigger_held(holds, trigger):
+        # The operator paused this store's worker through the door: an intended stop.
+        return {"status": "held", "trigger": trigger}, []
+    return None
+
+
+def _json_names(directory: Path) -> list[str] | None:
+    """The ``*.json`` names in one queue directory, newest first (none when it is absent).
+
+    ``None`` when it cannot be listed. Newest first, so a truncated walk drops months-old
+    finished records, never a request that just arrived or just changed.
+    """
+
+    rows: list[tuple[float, str]] = []
+    try:
+        with os.scandir(directory) as iterator:
+            for entry in iterator:
+                if not entry.name.endswith(".json"):
+                    continue
+                try:
+                    rows.append((entry.stat(follow_symlinks=False).st_mtime, entry.name))
+                except OSError:
+                    rows.append((0.0, entry.name))
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return None
+    return [name for _mtime, name in sorted(rows, key=lambda row: (-row[0], row[1]))]
+
+
+def _label(value: Any) -> str | None:
+    return value[:120] if isinstance(value, str) and _IDENTIFIER.match(value) and ".." not in value else None
+
+
+def _codes(value: Any, limit: int = 4) -> list[str]:
+    return [str(code)[:200] for code in value if isinstance(code, str)][:limit] if isinstance(value, list) else []
+
+
+def open_window_captures(config: StallConfig, *, now: float, budget: _Budget) -> set[str] | None:
+    """The captures with a scene intent whose execution window is still open, or ``None`` when that is unknown.
+
+    A team scene request, a rigid probe or a screening campaign of a capture whose every intent is
+    revoked or past its window (extensions included) cannot be funded or run again: its row is
+    history, not a stall, by the rule ``check_scene_progressions`` applies to an intent's own row.
+    Without it a refusal from months ago would page every hour for good. Every listed intent is
+    read, not only the newest ``MAX_INTENTS``: a capture left out would count as closed. A listing
+    that was cut, or a scan the deadline ended, is unknown (``None``), and unknown never hides a
+    row. An intent whose window cannot be read counts as open.
+    """
+
+    from .website_preparation_revision_identity import capture_id
+
+    root = config.scene_intent_root
+    if root is None:
+        return None
+    try:
+        entries, truncated = _scene_intent_entries(root)
+    except OSError:
+        return None
+    if truncated:
+        return None
+    captures: set[str] = set()
+    for _mtime, name in entries:
+        if budget.expired():
+            return None
+        directory = root / name
+        try:
+            if (directory / "revoked.json").exists():
+                continue
+            intent = _read_json(directory / "intent.json")
+            if _execution_expired(directory, intent, now=now) is True:
+                continue
+            request = intent["request"]
+            try:
+                captures.add(str(capture_id(request)))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                # A request whose revision marker does not verify still names its submission.
+                captures.add(str(request["submission_id"]))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue  # an intent that does not read names no capture
+    return captures
+
+
+def _window_closed(windows: Callable[[], set[str] | None] | None, capture: str | None) -> bool:
+    """Whether ``capture`` is known to have no open execution window; unknown is never closed."""
+
+    if windows is None or capture is None:
+        return False
+    captures = windows()
+    return captures is not None and capture not in captures
+
+
+def _atlas_hold(code: Any) -> str | None:
+    """Why a recorded Atlas refusal is an intended stop: ``store_hold``'s words, or the worker's own reading.
+
+    The worker sends a refusal ``job_retry_policy.hard_stop_kind`` reads as money to ``needs_input`` and
+    one it reads as privacy or rights to ``failed``; the alarm reads the same code the same way.
+    """
+
+    if not isinstance(code, str) or not code:
+        return None
+    hold = store_hold([code])
+    if hold is not None:
+        return hold
+    kind = hard_stop_kind(code)
+    return "money_approval" if kind == MONEY else "privacy_rights" if kind == PRIVACY_RIGHTS else None
+
+
+def check_atlas_previews(config: StallConfig, *, now: float, budget: _Budget, holds: Path | None = None
+                         ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A job with no progress for too long that is not in a scheduled wait still in the future.
+
+    What the worker (``website_atlas_preview``) writes, read here:
+
+    - ``updated_at_epoch``: every step that returns (``processing`` at a new or the same stage, or a
+      new state). This is progress. ``enqueued_at_epoch`` stands in before the first step.
+    - ``next_attempt_at_epoch`` and ``retry_at_epoch``: the job's next attempt is the later of the
+      two. An outage sets the first by capped backoff (``transient_failures``,
+      ``last_transient_reason``), an unclassified refusal or a killed step by the six timed retries
+      (``refusal_retries``, ``last_refusal_reason``); a ``needs_input`` recheck sets the second.
+    - ``step_in_flight.since_epoch``: a step that started and has not returned. The next tick after
+      a kill turns it into a timed retry, so an old one means no tick came.
+
+    A ``processing`` job pages when its step has been in flight for the threshold, or when the
+    threshold has passed since the later of its last progress and its next attempt time (a wait
+    still in the future is quiet; an attempt overdue by the threshold means the worker is not
+    taking it). A ``needs_input`` job is quiet, except a recheck the worker scheduled for a refusal
+    that is no hold and that is overdue by the threshold. A refusal that names privacy, rights,
+    consent or money never pages. ``ready``, ``failed`` and ``withdrawn`` are final.
+    """
+
+    root = config.atlas_storage_root
+    skipped = _store(root, ATLAS_TRIGGER, holds, "atlas_preview_root_unreadable")
+    if skipped is not None:
+        return skipped
+    found: list[tuple[float, Path]] = []
+    try:
+        for path in root.glob(ATLAS_JOB_GLOB):
+            try:
+                found.append((path.lstat().st_mtime, path))
+            except OSError:
+                found.append((0.0, path))
+    except OSError:
+        return {"status": "unreadable"}, [_incomplete("atlas_preview_root_unreadable")]
+    # Newest first: a live job's file was written within its 7-day window; retained finished ones age out.
+    paths = [path for _mtime, path in sorted(found, key=lambda row: (-row[0], str(row[1])))]
+    counts: dict[str, int] = {}
+    stalled: list[dict[str, Any]] = []
+    unreadable = examined = 0
+    truncated = len(paths) > MAX_ATLAS_JOBS
+    threshold = config.atlas_seconds
+    for path in paths[:MAX_ATLAS_JOBS]:
+        if budget.expired():
+            truncated = True
+            break
+        try:
+            job = _read_json(path)
+        except FileNotFoundError:
+            continue  # retired since the listing
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        examined += 1
+        state = job.get("state")
+        if job.get("schema_version") != ATLAS_JOB_SCHEMA or not isinstance(state, str):
+            unreadable += 1
+            continue
+        if state not in ATLAS_WAITING_STATES:
+            counts[state[:40]] = counts.get(state[:40], 0) + 1  # ready, failed, withdrawn: final
+            continue
+        progress = _number(job.get("updated_at_epoch"))
+        progress = progress if progress is not None else _number(job.get("enqueued_at_epoch"))
+        if progress is None:
+            unreadable += 1
+            continue
+        due = max(_number(job.get("next_attempt_at_epoch")) or 0.0, _number(job.get("retry_at_epoch")) or 0.0)
+        outages, refusals = job.get("transient_failures"), job.get("refusal_retries")
+        outages = outages if type(outages) is int and outages > 0 else None
+        refusals = refusals if type(refusals) is int and refusals > 0 else None
+        # The refusal behind the current wait: an outage streak, the refusal schedule, or the state's reason.
+        cause = (job.get("last_transient_reason") if outages else job.get("last_refusal_reason") if refusals
+                 else job.get("reason"))
+        hold = _atlas_hold(cause)
+        if state == "needs_input":
+            if hold is not None:
+                counts[hold] = counts.get(hold, 0) + 1
+            elif _number(job.get("retry_at_epoch")) is None:
+                counts["needs_input"] = counts.get("needs_input", 0) + 1  # waits for a person, not the clock
+            elif now - due < threshold:
+                counts["scheduled_wait"] = counts.get("scheduled_wait", 0) + 1
+            else:
+                stalled.append(_atlas_row(job, path, threshold, "recheck_overdue", now - due, cause))
+            continue
+        flight = job.get(ATLAS_STEP_IN_FLIGHT)
+        started = _number(flight.get("since_epoch")) if isinstance(flight, Mapping) else None
+        if started is not None:
+            if now - started < threshold:
+                counts["step_running"] = counts.get("step_running", 0) + 1
+            else:
+                stalled.append(_atlas_row(job, path, threshold, "step_unreturned", now - started, None))
+            continue
+        if due > now:
+            counts["scheduled_wait"] = counts.get("scheduled_wait", 0) + 1
+            continue
+        age = now - max(progress, due)
+        if age < threshold:
+            counts["watched"] = counts.get("watched", 0) + 1
+        elif hold is not None and (outages or refusals):
+            counts[hold] = counts.get(hold, 0) + 1
+        else:
+            stalled.append({**_atlas_row(job, path, threshold, "retry_overdue" if due > progress else "silent", age,
+                                         cause if (outages or refusals) else None),
+                            "transient_failures": outages, "refusal_retries": refusals})
+    section = {"status": "observed", "examined": examined, "inventory": len(paths), "truncated": truncated,
+               "unreadable": unreadable, "stalled": len(stalled), "dispositions": dict(sorted(counts.items()))}
+    alerts = [_page("atlas_preview_stalled", stalled)] if stalled else []
+    if truncated:
+        alerts.append(_incomplete("atlas_preview_inventory_truncated", count=len(paths)))
+    if unreadable:
+        alerts.append(_incomplete("atlas_preview_job_unreadable", count=unreadable))
+    return section, alerts
+
+
+def _atlas_row(job: Mapping[str, Any], path: Path, threshold: float, status: str, age: float,
+               cause: Any) -> dict[str, Any]:
+    # ``phase`` is the job's stage: the door's summary keeps that key of a stall page.
+    return {"target": _label(job.get("capture_id")) or path.parents[2].name[:120],
+            "phase": job["stage"][:60] if isinstance(job.get("stage"), str) else None,
+            "status": status, "age_seconds": round(age), "threshold_seconds": round(threshold),
+            "blockers": _codes([cause]) or None}
+
+
+def check_team_scene_packets(
+    config: StallConfig, *, now: float, budget: _Budget, holds: Path | None = None,
+    windows: Callable[[], set[str] | None] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A request waiting in ``pending/`` or ``processing/``, or left ``blocked``, for too long.
+
+    A request's age in a queue directory is its ctime there (every move into one is a rename or a
+    link); a blocked status's is the status file's last write. A blocked request back in a queue
+    directory is counted there, not as blocked. ``windows`` answers ``open_window_captures``.
+    """
+
+    root = config.team_scene_queue_root
+    skipped = _store(root, TEAM_SCENE_TRIGGER, holds, "team_scene_queue_unreadable")
+    if skipped is not None:
+        return skipped
+    listed = {state: _json_names(root / state) for state in (*TEAM_SCENE_WAITING_STATES, "status")}
+    if any(names is None for names in listed.values()):
+        return {"status": "unreadable"}, [_incomplete("team_scene_queue_unreadable")]
+    counts: dict[str, int] = {}
+    stalled: list[dict[str, Any]] = []
+    unreadable = 0
+    truncated = (any(len(listed[state]) > MAX_QUEUE_ENTRIES for state in TEAM_SCENE_WAITING_STATES)
+                 or len(listed["status"]) > MAX_STATUS_ENTRIES)
+    waiting: set[str] = set()
+    for state in TEAM_SCENE_WAITING_STATES:
+        waiting.update(listed[state])
+        for name in listed[state][:MAX_QUEUE_ENTRIES]:
+            if budget.expired():
+                truncated = True
+                break
+            try:
+                age = now - (root / state / name).lstat().st_ctime
+            except FileNotFoundError:
+                continue  # claimed or finished since the listing
+            except OSError:
+                unreadable += 1
+                continue
+            if age < config.team_scene_seconds:
+                counts[state] = counts.get(state, 0) + 1
+                continue
+            try:
+                label = _label(_read_json(root / state / name).get("capture_id"))
+            except (OSError, ValueError):
+                label = None
+            if _window_closed(windows, label):
+                counts["execution_window"] = counts.get("execution_window", 0) + 1
+                continue
+            counts[state] = counts.get(state, 0) + 1
+            stalled.append({"target": name[:-5][:120], "label": label, "status": state, "age_seconds": round(age),
+                            "threshold_seconds": round(config.team_scene_seconds)})
+    for name in [name for name in listed["status"][:MAX_STATUS_ENTRIES] if name not in waiting]:
+        if budget.expired():
+            truncated = True
+            break
+        path = root / "status" / name
+        try:
+            status = _read_json(path)
+            age = now - path.lstat().st_mtime
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        if status.get("status") != "blocked":
+            continue  # completed or skipped: finished
+        blockers = _codes(status.get("blockers"), limit=16)
+        hold = ("owner_confirmation" if any(code.startswith(TEAM_SCENE_OWNER_CONTRACT_PREFIX) for code in blockers)
+                else store_hold(blockers))
+        if hold is not None:
+            counts[hold] = counts.get(hold, 0) + 1
+            continue
+        due = _team_scene_retry_due(status)
+        if due is not None and due > now:
+            counts["scheduled_wait"] = counts.get("scheduled_wait", 0) + 1
+            continue
+        if due is not None:
+            # Since its timed retry fell due, if that is later: the worker has not returned it to pending.
+            age = min(age, now - due)
+        label = _label(status.get("capture_id"))
+        if label is None and age >= config.team_scene_seconds:
+            try:  # a status written before the request was read: the retained request names the capture
+                label = _label(_read_json(root / "processed" / name).get("capture_id"))
+            except (OSError, ValueError):
+                label = None
+        if age >= config.team_scene_seconds and _window_closed(windows, label):
+            counts["execution_window"] = counts.get("execution_window", 0) + 1
+            continue
+        counts["blocked"] = counts.get("blocked", 0) + 1
+        if age >= config.team_scene_seconds:
+            stalled.append({"target": name[:-5][:120], "label": label,
+                            "status": "blocked" if due is None else "retry_overdue",
+                            "blockers": blockers[:4], "age_seconds": round(age),
+                            "threshold_seconds": round(config.team_scene_seconds)})
+    section = {"status": "observed", "truncated": truncated, "unreadable": unreadable, "stalled": len(stalled),
+               "dispositions": dict(sorted(counts.items()))}
+    alerts = [_page("team_scene_packet_stalled", stalled)] if stalled else []
+    if truncated:
+        alerts.append(_incomplete("team_scene_queue_truncated"))
+    if unreadable:
+        alerts.append(_incomplete("team_scene_request_unreadable", count=unreadable))
+    return section, alerts
+
+
+def _team_scene_retry_due(status: Mapping[str, Any]) -> float | None:
+    """When a blocked status's next timed retry falls due (``not_before``), or ``None`` without one.
+
+    The worker writes ``not_before`` on ``automatic_retry`` (its transient backoff) or on
+    ``refusal_retry`` (the shared refusal schedule) and removes it when it returns the request to
+    pending; a spent schedule says ``exhausted`` instead. A record whose time does not read names no wait.
+    """
+
+    times = []
+    for field in TEAM_SCENE_RETRY_FIELDS:
+        record = status.get(field)
+        if isinstance(record, Mapping) and record.get("exhausted") is not True:
+            times.append(_epoch(record.get("not_before")))
+    known = [value for value in times if value is not None]
+    return max(known) if known else None
+
+
+def _rigid_probe_last_attempt(root: Path, name: str, entry: Mapping[str, Any]) -> tuple[dict[str, Any], float]:
+    """The runner's own record of the entry's latest attempt (its ``state`` and blockers), and when the
+    attempt's directory last changed (0 without one): the runner writes each of its records there."""
+
+    digest = str(entry.get("probe_request_digest") or "").removeprefix("sha256:")[:16]
+    if not _HEX.match(digest):
+        return {}, 0.0
+    attempts = root / "jobs" / f"{name[:-5]}-{digest}" / "attempts"
+    try:
+        with os.scandir(attempts) as iterator:
+            numbers = sorted(item.name for item in iterator if re.fullmatch(r"[0-9][0-9]", item.name))
+        if not numbers:
+            return {}, 0.0
+        changed = (attempts / numbers[-1]).lstat().st_mtime
+    except OSError:
+        return {}, 0.0  # no attempt staged
+    try:
+        return _read_json(attempts / numbers[-1] / RIGID_PROBE_INGEST_FILENAME), changed
+    except (OSError, ValueError):
+        return {}, changed  # an attempt still running, or one whose fate is unknown: nothing recorded yet
+
+
+def _rigid_probe_timed_retry(root: Path, name: str, entry: Mapping[str, Any]) -> tuple[float, str] | None:
+    """When the runner sets a retired entry's staging refusal aside again, and that refusal; else ``None``.
+
+    The runner's own rule (``_refusal_retry_due``): a ``staging_refused`` terminal whose recorded
+    reason ``hard_stop_kind`` reads as no hard stop, with a step of the shared schedule left, is due
+    ``refusal_retry_delay(n)`` after it was sealed, where ``n`` counts the job's earlier
+    ``refusal_retry`` set-asides (its supersession markers). A marker that does not read counts as
+    spent there, so here it ends the wait too. Raises ``OSError`` or ``ValueError`` when the terminal
+    exists but does not read.
+    """
+
+    digest = str(entry.get("probe_request_digest") or "").removeprefix("sha256:")[:16]
+    if not _HEX.match(digest):
+        return None
+    job = root / "jobs" / f"{name[:-5]}-{digest}"
+    try:
+        terminal = _read_json(job / RIGID_PROBE_TERMINAL_FILENAME)
+    except FileNotFoundError:
+        return None
+    detail = terminal.get("detail")
+    reason = detail.get("reason") if isinstance(detail, Mapping) else None
+    sealed = _epoch(terminal.get("sealed_at_iso"))
+    if (terminal.get("status") not in RIGID_PROBE_TIMED_STATES or not isinstance(reason, str) or not reason
+            or hard_stop_kind(reason) is not None or sealed is None):
+        return None
+    done = 0
+    try:
+        with os.scandir(job / RIGID_PROBE_SUPERSEDED_DIRNAME) as iterator:
+            markers = sorted(item.name for item in iterator if item.name.endswith(".supersession.json"))
+    except FileNotFoundError:
+        markers = []
+    if len(markers) > MAX_SUPERSESSIONS:
+        return None
+    for marker in markers:
+        try:
+            done += _read_json(job / RIGID_PROBE_SUPERSEDED_DIRNAME / marker).get("trigger") == (
+                RIGID_PROBE_REFUSAL_RETRY_TRIGGER)
+        except (OSError, ValueError):
+            return None
+    delay = refusal_retry_delay(done)
+    return None if delay is None else (sealed + delay, reason[:200])
+
+
+def check_rigid_probes(
+    config: StallConfig, *, now: float, budget: _Budget, holds: Path | None = None,
+    windows: Callable[[], set[str] | None] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """An entry in ``pending/`` whose latest attempt has recorded nothing new for too long, or one in
+    ``done/`` whose timed staging retry is overdue by as long.
+
+    Every pass retires a decided or unprobeable entry to ``done/``. An entry whose capture's grant
+    ran out stays pending with nothing recorded (the runner's precheck defers it before any
+    attempt), which is why ``windows`` (``open_window_captures``) is asked. A retired staging
+    refusal waiting for its next timed retry (``_rigid_probe_timed_retry``) is quiet until it is due.
+    """
+
+    root = config.rigid_probe_queue_root
+    skipped = _store(root, RIGID_PROBE_TRIGGER, holds, "rigid_probe_queue_unreadable")
+    if skipped is not None:
+        return skipped
+    names = _json_names(root / "pending")
+    if names is None:
+        return {"status": "unreadable"}, [_incomplete("rigid_probe_queue_unreadable")]
+    counts: dict[str, int] = {}
+    stalled: list[dict[str, Any]] = []
+    unreadable = 0
+    truncated = len(names) > MAX_QUEUE_ENTRIES
+    for name in names[:MAX_QUEUE_ENTRIES]:
+        if budget.expired():
+            truncated = True
+            break
+        path = root / "pending" / name
+        try:
+            # A requeue renames the entry back from done/, which sets its ctime.
+            queued = path.lstat().st_ctime
+            entry = _read_json(path)
+        except FileNotFoundError:
+            continue  # retired since the listing
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        last, changed = _rigid_probe_last_attempt(root, name, entry)
+        # Since the entry was queued or its latest attempt last wrote a record, whichever is later:
+        # a run started after a long money stop is not a stall.
+        age = now - max(queued, changed)
+        state = last.get("state") if isinstance(last.get("state"), str) else None
+        blockers = _codes(last.get("allocator_blockers"), limit=16)
+        # The WebApp refused the capture's grant (cap, ceiling, terms, expiry): the owner lifts it.
+        hold = "money_approval" if state == RIGID_PROBE_GRANT_REFUSED_STATE else store_hold(blockers)
+        if hold is not None:
+            counts[hold] = counts.get(hold, 0) + 1
+            continue
+        capture = Path(str(entry.get("capture_root") or "")).name
+        if age >= config.rigid_probe_seconds and _window_closed(windows, _label(capture)):
+            counts["execution_window"] = counts.get("execution_window", 0) + 1
+            continue
+        counts["watched"] = counts.get("watched", 0) + 1
+        if age >= config.rigid_probe_seconds:
+            stalled.append({"target": name[:-5][:120], "label": _label(capture),
+                            # No record: its allocator is still running, or its fate is unknown.
+                            "status": (state or ("attempt_unsettled" if changed else "no_attempt_recorded"))[:60],
+                            "blockers": blockers[:4], "age_seconds": round(age),
+                            "threshold_seconds": round(config.rigid_probe_seconds)})
+    # A retired entry whose staging refusal waits for its next timed retry: quiet until it falls due,
+    # a page once it is overdue by the threshold and the runner has not returned it to pending.
+    retired = _json_names(root / "done")
+    if retired is None:
+        unreadable += 1
+        retired = []
+    truncated = truncated or len(retired) > MAX_STATUS_ENTRIES
+    pending = set(names)
+    for name in [name for name in retired[:MAX_STATUS_ENTRIES] if name not in pending]:
+        if budget.expired():
+            truncated = True
+            break
+        try:
+            entry = _read_json(root / "done" / name)
+            timed = _rigid_probe_timed_retry(root, name, entry)
+        except FileNotFoundError:
+            continue  # returned to pending since the listing
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        if timed is None:
+            continue  # decided, or final: nothing retries it by the clock
+        due, reason = timed
+        hold = store_hold([reason])
+        capture = _label(Path(str(entry.get("capture_root") or "")).name)
+        if hold is not None:
+            counts[hold] = counts.get(hold, 0) + 1
+        elif due > now:
+            counts["scheduled_wait"] = counts.get("scheduled_wait", 0) + 1
+        elif now - due < config.rigid_probe_seconds:
+            counts["watched"] = counts.get("watched", 0) + 1
+        elif _window_closed(windows, capture):
+            counts["execution_window"] = counts.get("execution_window", 0) + 1
+        else:
+            counts["watched"] = counts.get("watched", 0) + 1
+            stalled.append({"target": name[:-5][:120], "label": capture, "status": "retry_overdue",
+                            "blockers": [reason], "age_seconds": round(now - due),
+                            "threshold_seconds": round(config.rigid_probe_seconds)})
+    section = {"status": "observed", "pending": len(names), "truncated": truncated, "unreadable": unreadable,
+               "stalled": len(stalled), "dispositions": dict(sorted(counts.items()))}
+    alerts = [_page("rigid_probe_stalled", stalled)] if stalled else []
+    if truncated:
+        alerts.append(_incomplete("rigid_probe_queue_truncated", count=len(names)))
+    if unreadable:
+        alerts.append(_incomplete("rigid_probe_entry_unreadable", count=unreadable))
+    return section, alerts
+
+
+def check_screening(
+    config: StallConfig, *, now: float, budget: _Budget, holds: Path | None = None,
+    remembered: Mapping[str, Any] | None = None, memory_out: dict[str, Any] | None = None,
+    windows: Callable[[], set[str] | None] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A campaign with rows still to run and no ledger change, or a revision left unpublished, for too long.
+
+    ``updated_at`` moves with every change to a campaign's ledger entry. The ledger does not say
+    since when a revision has been unpublished (a restart resets ``published_revision`` on
+    purpose), so ``memory_out`` carries, per campaign, when this alarm first saw it unpublished;
+    ``remembered`` is the previous tick's, and one tick that sees it published forgets it.
+    ``windows`` answers ``open_window_captures``; a campaign's capture is named by its retained plan.
+    """
+
+    remembered = remembered if isinstance(remembered, Mapping) else {}
+    root = config.screening_queue_root
+    skipped = _store(root, SCREENING_TRIGGER, holds, "screening_queue_unreadable")
+    if skipped is not None:
+        return skipped
+    try:
+        ledger = _read_json(root / SCREENING_LEDGER_FILENAME, MAX_LEDGER_BYTES)
+    except FileNotFoundError:
+        return {"status": "absent"}, []
+    except (OSError, ValueError):
+        return {"status": "unreadable"}, [_incomplete("screening_ledger_unreadable")]
+    campaigns = ledger.get("campaigns")
+    if ledger.get("schema_version") != SCREENING_LEDGER_SCHEMA or not isinstance(campaigns, dict):
+        return {"status": "unreadable"}, [_incomplete("screening_ledger_unreadable")]
+    counts: dict[str, int] = {}
+    stalled: list[dict[str, Any]] = []
+    unpublished: list[dict[str, Any]] = []
+    unreadable = pending_publications = 0
+    truncated = len(campaigns) > MAX_CAMPAIGNS
+
+    plan_captures: dict[str, str | None] = {}
+
+    def window_closed(campaign_id: str) -> bool:
+        if campaign_id not in plan_captures:
+            try:
+                plan = _read_json(root / "plans" / f"{campaign_id}.json", MAX_LEDGER_BYTES)
+                plan_captures[campaign_id] = _label(plan.get("capture_id"))
+            except (OSError, ValueError):
+                plan_captures[campaign_id] = None  # unknown: the campaign stays watched
+        return _window_closed(windows, plan_captures[campaign_id])
+
+    for campaign_id, campaign in sorted(campaigns.items())[:MAX_CAMPAIGNS]:
+        if budget.expired():
+            truncated = True
+            break
+        rows = campaign.get("candidates") if isinstance(campaign, dict) else None
+        if _label(campaign_id) is None or not isinstance(rows, dict) or not all(
+                isinstance(row, dict) and isinstance(row.get("status"), str) for row in rows.values()):
+            unreadable += 1
+            continue
+        live = [row for row in rows.values() if row["status"] in SCREENING_LIVE_STATUSES]
+        row_holds = [store_hold(_codes(row.get("blockers"), limit=16)) for row in live]
+        every_hold = [store_hold(_codes(row.get("blockers"), limit=16)) for row in rows.values()]
+        updated = _epoch(campaign.get("updated_at"))
+        if live and all(hold is not None for hold in row_holds):
+            disposition = row_holds[0]
+        elif live and updated is None:
+            unreadable += 1
+            disposition = None
+        elif live and now - updated >= config.screening_seconds and window_closed(campaign_id):
+            disposition = "execution_window"
+        elif live:
+            disposition = "watched"
+            if now - updated >= config.screening_seconds:
+                waits = [row for row, hold in zip(live, row_holds) if hold is None]
+                stalled.append({
+                    # The row that most needs a person names the campaign's state.
+                    "target": campaign_id[:120], "status": next(
+                        status for status in _SCREENING_STATUS_ORDER if any(row["status"] == status for row in waits)),
+                    "unfinished_rows": len(waits),
+                    "blockers": sorted({code for row in waits for code in _codes(row.get("blockers"))})[:4],
+                    "age_seconds": round(now - updated), "threshold_seconds": round(config.screening_seconds)})
+        elif any(row["status"] == SCREENING_WAITLISTED_STATUS for row in rows.values()):
+            # Only the site's allowance or the job's ceiling keeps these rows from running.
+            disposition = "money_approval"
+        else:
+            disposition = "finished"
+        if disposition is not None:
+            counts[disposition] = counts.get(disposition, 0) + 1
+        if campaign.get("revision") == campaign.get("published_revision"):
+            continue
+        pending_publications += 1
+        if any(hold in {"privacy", "rights"} for hold in every_hold):
+            continue  # the website ended a withdrawn or revoked job itself; nothing is owed to it
+        since = _number(remembered.get(campaign_id))
+        since = now if since is None or since > now else since
+        if memory_out is not None:
+            memory_out[campaign_id] = since
+        if now - since >= config.publication_seconds and not window_closed(campaign_id):
+            unpublished.append({"target": campaign_id[:120], "age_seconds": round(now - since),
+                                "age_is_lower_bound": True,
+                                "threshold_seconds": round(config.publication_seconds)})
+    section = {"status": "observed", "campaigns": len(campaigns), "truncated": truncated, "unreadable": unreadable,
+               "stalled": len(stalled), "publications_pending": pending_publications,
+               "publications_stalled": len(unpublished), "dispositions": dict(sorted(counts.items()))}
+    alerts = [_page("screening_campaign_stalled", stalled)] if stalled else []
+    if unpublished:
+        alerts.append(_page("screening_publication_stalled", unpublished))
+    if truncated:
+        alerts.append(_incomplete("screening_ledger_truncated", count=len(campaigns)))
+    if unreadable:
+        alerts.append(_incomplete("screening_campaign_unreadable", count=unreadable))
+    return section, alerts
 
 
 # --------------------------------------------------------------------------- #
@@ -780,17 +1591,43 @@ def observe_stalls(
 
     observed = time.time() if now is None else float(now)
     prior_memory = (previous or {}).get("memory") if isinstance(previous, Mapping) else None
-    remembered = prior_memory.get("scene_progression") if isinstance(prior_memory, Mapping) else None
+    prior_memory = prior_memory if isinstance(prior_memory, Mapping) else {}
+    remembered = prior_memory.get("scene_progression")
     progression_memory: dict[str, Any] = {}
+    publication_memory: dict[str, Any] = {}
     budget = _Budget(deadline=monotonic() + DEADLINE_SECONDS, events=MAX_EVENT_READS, clock=monotonic)
     alerts: list[dict[str, Any]] = [_incomplete(error) for error in config.config_errors]
+    # The deploy tool's lists and the door's holds directory, read once for every check that asks
+    # whether a trigger is held. Unreadable: the trigger check reports it, and no store counts as held.
+    try:
+        contract = None if config.deploy_tool is None else read_deploy_trigger_contract(config.deploy_tool)
+    except StallCheckError:
+        contract = None
+    holds = None if contract is None else contract[1]
+    open_windows: list[set[str] | None] = []
+
+    def windows() -> set[str] | None:
+        # Asked only once a store row is past its threshold, and read once for the tick.
+        if not open_windows:
+            open_windows.append(open_window_captures(config, now=observed, budget=budget))
+        return open_windows[0]
+
     checks: dict[str, Any] = {}
     for name, run in (
         ("scene_progression", lambda: check_scene_progressions(
             config, now=observed, budget=budget, remembered=remembered, memory_out=progression_memory)),
         ("launch_leases", lambda: check_launch_leases(config, now=observed, budget=budget)),
         ("launch_activations", lambda: check_launch_activations(config, now=observed, budget=budget)),
-        ("triggers", lambda: check_triggers(config, unit_reader=unit_reader, monotonic=monotonic)),
+        ("triggers", lambda: check_triggers(config, unit_reader=unit_reader, monotonic=monotonic,
+                                            contract=contract)),
+        ("atlas_preview", lambda: check_atlas_previews(config, now=observed, budget=budget, holds=holds)),
+        ("team_scene_packets", lambda: check_team_scene_packets(
+            config, now=observed, budget=budget, holds=holds, windows=windows)),
+        ("rigid_probes", lambda: check_rigid_probes(
+            config, now=observed, budget=budget, holds=holds, windows=windows)),
+        ("screening", lambda: check_screening(
+            config, now=observed, budget=budget, holds=holds, windows=windows,
+            remembered=prior_memory.get("screening_publication"), memory_out=publication_memory)),
     ):
         try:
             section, rows = run()
@@ -799,6 +1636,9 @@ def observe_stalls(
                 _incomplete(f"{name}_check_failed")]
         checks[name] = section
         alerts.extend(rows)
+    if open_windows and open_windows[0] is None and config.scene_intent_root is not None:
+        # A store row asked and the intent store could not answer in full: the row stays watched.
+        alerts.append(_incomplete("execution_window_scan_incomplete"))
     return {
         "schema_version": SCHEMA_VERSION,
         "observed_at_epoch": observed,
@@ -807,9 +1647,14 @@ def observe_stalls(
             "handoff": config.handoff_seconds,
             "launch_grace": config.launch_grace_seconds,
             "trigger": config.trigger_seconds,
+            "atlas": config.atlas_seconds,
+            "team_scene": config.team_scene_seconds,
+            "rigid_probe": config.rigid_probe_seconds,
+            "screening": config.screening_seconds,
+            "publication": config.publication_seconds,
         },
         "checks": checks,
-        "memory": {"scene_progression": progression_memory},
+        "memory": {"scene_progression": progression_memory, "screening_publication": publication_memory},
         "alerts": alerts,
     }
 
@@ -838,6 +1683,28 @@ def describe(alert: Mapping[str, Any]) -> str | None:
         return f"launch lease in processing/ {age} with no dispatcher: {target}{tail}"
     if code == "launch_activation_stuck":
         return f"launch activation in processing/ {age} with no live worker: {target}{tail}"
+    blockers = alert.get("blockers") or []
+    why = f" [{blockers[0]}]" if blockers else ""
+    name = str(alert.get("label") or target[:40])
+    if code == "atlas_preview_stalled":
+        status = alert.get("status")
+        what = (f"step started {age} ago never returned" if status == "step_unreturned"
+                else f"scheduled retry overdue {age}{why}" if status == "retry_overdue"
+                else f"input recheck overdue {age}{why}" if status == "recheck_overdue"
+                else f"processing with no finished step {age}")
+        return f"Atlas preview job {what} at stage {alert.get('phase') or 'unknown'}: {name}{tail}"
+    if code == "team_scene_packet_stalled":
+        status = "blocked, timed retry overdue" if alert.get("status") == "retry_overdue" else alert.get("status")
+        return f"team scene packet request {status} {age}{why}: {name}{tail}"
+    if code == "rigid_probe_stalled":
+        if alert.get("status") == "retry_overdue":
+            return f"rigid robot-free probe timed staging retry overdue {age}{why}: {name}{tail}"
+        return f"rigid robot-free probe pending {age} ({alert.get('status')}){why}: {name}{tail}"
+    if code == "screening_campaign_stalled":
+        return (f"screening campaign without ledger progress {age}, {alert.get('unfinished_rows')} unfinished "
+                f"({alert.get('status')}){why}: {name}{tail}")
+    if code == "screening_publication_stalled":
+        return f"screening publication undelivered {age}: {name}{tail}"
     return f"{target} {alert.get('status') or 'inactive'} {age} with no owner hold{tail}"
 
 
@@ -847,16 +1714,23 @@ __all__ = [
     "SCHEMA_VERSION",
     "StallCheckError",
     "StallConfig",
+    "check_atlas_previews",
     "check_launch_activations",
     "check_launch_leases",
+    "check_rigid_probes",
     "check_scene_progressions",
+    "check_screening",
+    "check_team_scene_packets",
     "check_triggers",
     "config_from_environment",
     "default_deploy_tool",
     "describe",
     "hold_reason",
     "observe_stalls",
+    "open_window_captures",
     "read_deploy_trigger_contract",
     "read_lock_holders",
     "read_unit_states",
+    "store_hold",
+    "trigger_held",
 ]

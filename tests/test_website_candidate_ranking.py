@@ -139,16 +139,18 @@ def test_ranking_call_is_admitted_once_and_a_restart_never_buys_it_again(tmp_pat
         == first["priority_order"]
 
 
-def test_uncertain_call_is_flagged_and_never_bought_again(tmp_path, monkeypatch):
+def test_an_uncertain_call_is_flagged_then_sent_again_once_under_a_new_reservation(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(receipts, "reserve_website_preparation_spend", admitted(calls))
     value = rank(tmp_path, calls, answer=TimeoutError("provider may have charged"))
     assert value["status"] == "not_ranked" and value["priority_order"] == []
     again = rank(tmp_path, calls, answer=partial_answer)
-    assert again["status"] == "not_ranked" and again["reason"] == "website_gemini_requires_reconciliation"
-    assert [kind for kind, _ in calls].count("reserve") == 1
-    assert [kind for kind, _ in calls].count("invoke") == 1
-    assert ranking.retained_priority(tmp_path / "pipeline", task_context_digest=context()["context_digest"]) == []
+    assert again["status"] == "ranked"
+    reserved = [kwargs["binding_digest"] for kind, kwargs in calls if kind == "reserve"]
+    assert len(reserved) == len(set(reserved)) == 2
+    assert [kind for kind, _ in calls].count("invoke") == 2
+    assert ranking.retained_priority(tmp_path / "pipeline", task_context_digest=context()["context_digest"]) \
+        == again["priority_order"]
 
 
 def test_refused_admission_is_recorded_and_the_job_keeps_its_default_order(tmp_path, monkeypatch):

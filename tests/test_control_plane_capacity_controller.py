@@ -1721,7 +1721,10 @@ def test_money_credit_spend_and_stall_pages_are_unchanged():
         "world_labs_spend_24h_high", "world_labs_spend_month_high"}
     assert stall_alarm.PAGE_CODES == {
         "launch_activation_stuck", "launch_lease_stuck", "scene_progression_stalled",
-        "trigger_inactive_unheld"}
+        "trigger_inactive_unheld",
+        # 2026-11-10: the four job stores nothing watched page on the same route.
+        "atlas_preview_stalled", "team_scene_packet_stalled", "rigid_probe_stalled",
+        "screening_campaign_stalled", "screening_publication_stalled"}
     assert preparation_delivery.PAGE_CODES == {"preparation_delivery_stalled"}
     for code in {"provider_credit_insufficient", *provider_spend.PAGE_CODES, *stall_alarm.PAGE_CODES,
                  *preparation_delivery.PAGE_CODES}:

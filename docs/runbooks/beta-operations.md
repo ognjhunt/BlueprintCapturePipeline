@@ -37,8 +37,8 @@ Before you act:
 
 The capacity controller runs every 10 minutes
 (`deploy/systemd/blueprint-control-plane-capacity.timer`). Each tick also runs
-three read-only stall checks (PR #3226,
-`src/blueprint_pipeline/control_plane_stall_alarm.py`). A stall pages on the
+the read-only stall checks
+(`src/blueprint_pipeline/control_plane_stall_alarm.py`). A stall pages on the
 capacity alert route, `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`. A new stall posts
 at once. A stall that continues posts again each hour.
 
@@ -47,16 +47,44 @@ at once. A stall that continues posts again each hour.
 | `scene_progression_stalled` | The `status`, `phase` and `blockers` of a scene intent did not change. | 90 min while the row names blockers. 8 h while it is handed off (`awaiting_execution` or `running`, no blockers). | Read the progression and the journal (commands below). |
 | `launch_lease_stuck` | A request in `task-evaluation-launches/processing/` has no live dispatcher. | 30 min after the launch reconciler's own limit: 15 min before the allocator starts, otherwise the run's `hard_ttl_seconds`. | Make sure that `blueprint-task-evaluation-launch-reconciler.timer` is active. Read its journal. |
 | `trigger_inactive_unheld` | A `.timer` or `.path` that the deploy tool always arms is inactive, with no door hold. | 60 min | Start it: `door unit start <unit>`. If it is off on purpose, put an owned hold on it with `door hold`. |
+| `launch_activation_stuck` | A row in `task-evaluation-launch-activations/processing/` has no live worker. | The activation role's 6 h TTL. | Read the activation journal. Nothing moves the row automatically. |
+| `atlas_preview_stalled` | An Atlas preview job made no progress and is not in a scheduled wait that is still ahead: no step returned and none is scheduled (`status: silent`), a scheduled retry is overdue (`status: retry_overdue`), a step started and never returned (`status: step_unreturned`), or a `needs_input` recheck is overdue (`status: recheck_overdue`). | 90 min | Read `blueprint-website-atlas-preview.service`'s journal and `door status` for a kill or a stopped timer, and `last_error` in the job. The job retries by itself on its schedule. |
+| `team_scene_packet_stalled` | A team scene packet request waited in `pending/` or `processing/`, or stayed `blocked` (`status: retry_overdue` when its timed retry fell due and it is still blocked). | 8 h | Read the request's `team-scene-packets/status/<key>.json` and `blueprint-team-scene-packet.service`'s journal. |
+| `rigid_probe_stalled` | A rigid robot-free probe entry stayed in `pending/` and its latest attempt recorded nothing new, or a retired staging refusal's timed retry is overdue (`status: retry_overdue`). | 8 h | Read the latest `rigid-robot-free-probes/jobs/<key>-*/attempts/<NN>/rigid_robot_free_probe_ingest.json` (`status` in the page is its `state`) and the runner's journal. |
+| `screening_campaign_stalled` | A screening campaign has rows still to run and its ledger entry did not change. | 8 h | Read `beta-policy-screening/worker_status.json` and `blueprint-beta-policy-screening.service`'s journal. `reconciliation_required` needs a person. |
+| `screening_publication_stalled` | A campaign's latest revision stayed unpublished to the WebApp. | 90 min from when the alarm first saw it | Read `last_publication_failure` in `worker_status.json`. |
 | `stall_check_incomplete` (warn) | A check could not read what it needs. | none | Read the `stall` section: `door cat /var/lib/blueprint/pipeline-control-plane/capacity/summary.json`. |
 
 These never page: completed rows, `needs_input` rows, revoked or expired
 execution windows, and intended holds. Intended holds are pauses, privacy,
 consent, rights and money approvals, for example
 `scene_intake_spend_cap_exhausted` and `scene_intake_attempt_cap_exhausted`.
+In the four job stores, these never page either:
+
+- an Atlas job that is `ready`, `failed` or `withdrawn`, or `needs_input`
+  waiting for a person, a grant, consent or money;
+- a wait the system scheduled itself (an outage's backoff, the six timed
+  refusal retries, a `needs_input` recheck, a team scene request's or a rigid
+  probe's next timed retry) while its next attempt is still ahead. It pages
+  only once that attempt is overdue by the threshold;
+- a team scene request blocked on the site owner's confirmation
+  (`team_scene_owner_contract_invalid:*`) or on a withdrawn capture;
+- a rigid probe whose grant the WebApp refused (`website_grant_refused`, a
+  money stop that the owner lifts);
+- a screening campaign whose remaining rows are `waitlisted` (the site
+  allowance or the job ceiling);
+- a team scene request, a rigid probe or a screening campaign whose capture
+  has no scene intent with an open execution window any more (expired or
+  revoked): it cannot run again;
+- a store whose own trigger has a door hold. If you switch a lane off on
+  purpose, hold its timer with `door hold`.
 
 The limits are minutes in the environment file:
 `BLUEPRINT_STALL_PROGRESSION_MINUTES`, `BLUEPRINT_STALL_HANDOFF_MINUTES`,
-`BLUEPRINT_STALL_LAUNCH_GRACE_MINUTES` and `BLUEPRINT_STALL_TRIGGER_MINUTES`.
+`BLUEPRINT_STALL_LAUNCH_GRACE_MINUTES`, `BLUEPRINT_STALL_TRIGGER_MINUTES`,
+`BLUEPRINT_STALL_ATLAS_MINUTES`, `BLUEPRINT_STALL_TEAM_SCENE_MINUTES`,
+`BLUEPRINT_STALL_RIGID_PROBE_MINUTES`, `BLUEPRINT_STALL_SCREENING_MINUTES` and
+`BLUEPRINT_STALL_PUBLICATION_MINUTES`.
 `BLUEPRINT_STALL_ALARM=0` turns the alarm off. More detail is in
 [`control-plane-capacity.md`](control-plane-capacity.md#stalled-jobs).
 
@@ -131,11 +159,12 @@ kept no message bytes (the tick counts it as `website_preparation_retry_payload_
 
 ## 1a. A unit failed
 
-Thirteen units start `blueprint-unit-failure@<unit>.service` when they fail
-(`OnFailure=`): the spend guard, the intake, the capacity controller and the
+Fourteen units start `blueprint-unit-failure@<unit>.service` when they fail
+(`OnFailure=`): the spend guard, the intake, the capacity controller, the
 units that move a website job (the handoff listener, Atlas preview and provider
 poll, scene progression, launch preparation, activation and dispatcher, team
-scene packet, the rigid probe runner, screening). The list is
+scene packet, the rigid probe runner, screening) and the withdrawal deletion
+pass (section 8). The list is
 `UNIT_FAILURE_NOTIFIED_UNITS` in `tests/test_deploy_systemd_contract.py`.
 
 The notifier (`src/blueprint_pipeline/unit_failure_notifier.py`) does two things:
@@ -764,17 +793,114 @@ acknowledgement within 10 business days and completion within 30 days
    published scene preview reference. It waits for the Pipeline's
    acknowledgement, deletes every object generation, writes a receipt, and stops
    if the Pipeline reports a legal hold.
+4. Every hour `blueprint-website-withdrawal-deletion.timer` starts one pass of
+   `python -m blueprint_pipeline.website_capture_withdrawal_automatic` in its
+   own unit (its own 1G memory cap, low CPU and IO priority, a 45-minute start
+   timeout, the failure notifier on `OnFailure=`). The intake starts nothing.
+   No operator is involved. Each pass:
+   - finds every tombstone under `/var/lib/blueprint/pubsub-handoffs` that has
+     no sealed deletion receipt with `covered_copies_deleted: true`;
+   - does nothing while a paid stage is live, by the definition in section 6
+     and `AGENTS.md`: a held lock in `provider-locks/` (read from
+     `/proc/locks`, without locking it), or screening candidates `launching`
+     or `running`. If it cannot tell, it counts the host as busy;
+   - plans at most one site, the one whose last attempt is oldest, and records
+     the outcome beside the tombstone (below);
+   - deletes only under the owner's standing approval (below), through the
+     deletion tool's own `--apply` path with the plan's exact digest.
 
-Nothing in the Pipeline is deleted by itself. A person runs the Pipeline's
-deletion plan and its `--apply`
-(`python -m blueprint_pipeline.website_capture_withdrawal_deletion`):
+Without the approval file the pass only plans. That is the state right after
+the first deploy: it deletes nothing until the owner installs the file.
 
-- Only the owner can run them today, because only the owner has SSH access to
-  the host. Operators reach the host only through the door
-  ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)), and no door request kind runs
-  the deletion.
-- Every `--apply` needs the owner's approval for that site.
-- The plan reads every run's records, so run it on a quiet host.
+### The standing approval
+
+AGENTS.md: deleting retained data needs the owner's approval. The owner gives
+it once, as a file the owner installs by hand as root, mode 0644:
+`/etc/blueprint/website-withdrawal-deletion-approval.json`. The example is
+`deploy/website-withdrawal-deletion/standing-approval.example.json`. No deploy
+step installs it, and as shipped it does not validate.
+
+| Field | Rule |
+|---|---|
+| `schema_version` | `website_withdrawal_deletion_standing_approval.v1` |
+| `approved_by` | Who approved, 1 to 200 printable characters |
+| `approved_at` | ISO time with a zone, not in the future |
+| `expires_at` | Optional. ISO time with a zone, after `approved_at`, or `null` |
+| `policy_class` | Exactly `website_withdrawal_deletion.acknowledged_unheld_resolved_settled_cooled.v1` |
+| `cool_off_hours` | A whole number from 0 to 720 |
+| `note` | Optional, at most 1,000 characters |
+
+Any other field, a link, a file not owned by root, or a file that group or
+others can write makes the approval invalid.
+
+The approval covers a plan only in its policy class:
+
+- the withdrawal is acknowledged (a valid tombstone);
+- there is no legal hold;
+- nothing in the plan is `unresolved`;
+- the site's money is settled: no screening attempt deferred or unsettled, and
+  no rigid probe job waiting on its money;
+- `cool_off_hours` have passed since the acknowledgement (the tombstone's write
+  time).
+
+The apply re-plans and keeps every refusal of the tool. Money records, ledgers,
+the audit journal and other sites' data are never deleted. The sealed receipt
+records `authorization`: `kind: standing_owner_approval`, the approval's
+`approval_digest` (sha256 of the file's bytes), who approved, the policy class
+and the checks.
+
+To withdraw the approval, delete the file. Passes then only plan again.
+
+### What a pass records
+
+Each site has `<site>/website_withdrawal/automatic_deletion_state.json`. The
+latest plan is next to it, in `automatic_deletion_plan.json`.
+
+| `status` | Meaning | Do this |
+|---|---|---|
+| `planning`, `applying` | A pass is in this step. If the next pass finds this, the run was killed and it is recorded as `failed`, `interrupted_while_<step>`. | Nothing |
+| `planned` | Nothing unresolved. `waiting_on` says what for: `standing_approval_absent`, `_invalid` or `_expired`, `cool_off`, `money_unsettled`, `host_busy`. | Owner: install or fix the approval. For money, wait. |
+| `unresolved` | The plan has `unresolved` copies. `unresolved_reasons` counts them by reason. | Read the plan; see "Make and read a plan". |
+| `legal_hold` | `legal_hold.json` holds the site. Nothing is deleted. | Nothing, until the hold is lifted |
+| `failed` | `last_error`, `failure_count`, `next_attempt_at_epoch`. It retries after 1 h, 4 h, then every 24 h. It never stops trying. | Read `last_error` and the journal |
+| `applied` | `receipt_digest`; the receipt is in `deletion_receipts/`. | Nothing |
+
+A waiting plan is planned again every 6 hours. A clean plan that waits only for
+the approval or the cool-off is applied on the first pass after both allow it.
+`uncovered_pipeline_roots` lists the Pipeline roots that the deletion does not
+scan. Each receipt names them under `remaining`, with what they hold.
+
+The pass also writes
+`/var/lib/blueprint/pipeline-control-plane/website-withdrawal-deletion/summary.json`.
+The capacity controller copies its counts into the capacity summary as
+`website_withdrawal_deletion`, which `door status` shows: `approval_status`,
+`host_quiet`, and `withdrawals` with `waiting`, `awaiting_owner_approval`,
+`cool_off`, `unresolved`, `money_unsettled`, `legal_hold`, `failing` and
+`overdue`.
+
+### Alerts
+
+The pass posts on the capacity alert route,
+`BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`, with the capacity controller's own
+posting code. A new alert posts at once. The same alerts post again after
+24 hours.
+
+| Code | When | Do this |
+|---|---|---|
+| `website_withdrawal_approval_invalid` | The approval file exists but does not validate, or has expired (`reason`). | Owner: fix or replace the file |
+| `website_withdrawal_deletion_unresolved` | A site was `unresolved` or waited on money for 72 h. | Read the plan's `unresolved` rows |
+| `website_withdrawal_deletion_failing` | A site failed 3 times in a row. | Read `last_error` and the journal |
+| `website_withdrawal_deletion_overdue` | A withdrawal is 21 days old without a receipt and has no legal hold, whatever it waits on (the approval too). The promise is 30 days. | Find what it waits on in `door status` |
+| `website_withdrawal_scan_incomplete` | A site root could not be listed. | Read the journal |
+
+An absent approval file is not an alert by itself.
+
+### By hand
+
+The owner can still run the deletion tool over SSH, for example for a site the
+pass cannot finish. Operators reach the host only through the door
+([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)), and no door request kind runs
+the deletion. The plan reads every run's records, so run it on a quiet host.
 
 Known gaps:
 
@@ -784,11 +910,89 @@ Known gaps:
   reserve its cap. The launch then refuses before any spend, as step 2 says.
 - The WebApp's acknowledgement schema is `.strict()` (`websiteWithdrawalReceipt`).
   So the acknowledgement cannot carry anything about a Pipeline deletion until
-  the WebApp accepts a new optional field.
+  the WebApp accepts a new optional field. The field it would need is
+  `pipeline_deletion_receipt_digest` (a `sha256:` digest of the sealed receipt,
+  or `null`).
+- The preparation retry's copies hold identifiers, not footage. A capture's
+  `.pipeline_preparation_retry_payload.json` lies inside the site and goes with
+  its scene files. An entry in `<handoff root>/.website_preparation_unclaimed/`
+  is deleted when its JSON names only this site's scene or capture. An entry
+  that also names another site is `unresolved`. An entry that cannot be read,
+  or names no scene or capture, is left in place and listed in the receipt's
+  `remaining` (`unclaimed_preparation_handoffs_unreadable`).
+- The nine roots with no per-site binding are read through an ownership index
+  (below). Entries whose owner cannot be determined are never deleted.
+- Some provider copies have no delete endpoint (below).
+- Without `BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET` in the environment file,
+  the pass does not delete the capture source bucket prefix `scenes/site-<id>/`.
+  The receipt names it under `remaining`.
+
+### Complete or incomplete
+
+Each receipt says `deletion_status`, one of three values:
+
+- `complete`: nothing known remains, here or at any provider.
+- `complete_provider_retention_remains`: everything this system can delete is
+  deleted. The copies in `provider_retention_remains` stay at their providers
+  under the providers' own retention, each with its reason. This is not
+  "nothing remains"; report it by its name.
+- `incomplete`: something this system could still delete or has not read yet,
+  listed in `incomplete_reasons` (one row per holder and reason).
+
+The hourly passes end on the first two. `door status` counts each value
+separately (`website_withdrawal_deletion.withdrawals`). An `incomplete` site is planned
+again (after 1 h when a provider delete failed, else 6 h), and the
+existing alerts cover it: blocked 72 h, failing 3 times, overdue at 21 days.
+A receipt from before this field existed reads as incomplete.
+
+The nine roots with no per-site binding (`UNCOVERED_ROOTS` in
+`website_capture_withdrawal_deletion.py`) are read by a $0, read-only index
+(`website_withdrawal_site_index.py`), in the hourly pass, at most 500 entries,
+512 MiB and 10 minutes a pass, resumed from a cursor, swept again daily. It
+keeps, for each top-level entry, the site ids its JSON records name (`site-`,
+`walkthrough-`, scene intent ids). It is under
+`/var/lib/blueprint/pipeline-control-plane/website-withdrawal-deletion/site-index/`.
+For a withdrawn site:
+
+| Holder in `incomplete_reasons` | Meaning |
+|---|---|
+| `pipeline_root_not_indexed` | The root's sweep never finished, or it holds an entry not read yet. Unknown, never "nothing found". |
+| `pipeline_root_owner_unknown` | Entries whose records name no site, such as the shared content-addressed stores. Never deleted; the owner decides. |
+| `pipeline_root_shared_entries` | Entries naming this site and another. Never deleted. |
+| `provider_copies_not_deleted` | A provider delete failed or is pending; retried next pass. |
+| `provider_copy_id_not_recorded` | The provider offers a delete, but no id was recorded for an upload, so it cannot be deleted. |
+
+Entries naming only this site are deleted, checked unchanged first.
+
+### Provider copies
+
+The pass reads the ids each job recorded when it created a copy and keeps them
+in `<site>/website_withdrawal/provider_copies.json`, so a failed delete is
+retried after the site's own files are gone. Under the standing approval, it
+deletes through each provider's existing client and records the answer:
+`deleted_at_provider`, `absent_at_provider` (404), or `delete_failed`.
+
+| Provider | Copy | Delete |
+|---|---|---|
+| Gemini Files API | review images (`review-media-*.json`) | `files.delete` |
+| Meta (hosted SAM) | walkthrough video (`uploaded-video.json`) | `DELETE /v1/files/<id>` |
+| World Labs | Atlas assets (the preview job's records) | `DELETE /assets/<id>` |
+| World Labs | operation records | none; kept 30 days |
+| OpenAI | requests (`store=False`), image edits | none |
+| Gemini | `generate_content` requests | none |
+| Vast | instances, ended at teardown | none |
+
+Copies with no delete are listed in `provider_retention_remains` (and under
+`remaining` as `not_deleted_at_provider`). With nothing else left, the status is
+`complete_provider_retention_remains`, never plain `complete`. The keys come
+from the environment file and provider secrets; a missing key is a failed
+delete, retried and alerted.
 
 ### Make and read a plan
 
-On the host, the owner runs:
+The automatic pass writes the same plan to
+`<site>/website_withdrawal/automatic_deletion_plan.json`; read it with
+`door cat`. By hand, on the host, the owner runs:
 
 ```bash
 python -m blueprint_pipeline.website_capture_withdrawal_deletion \
@@ -847,6 +1051,11 @@ It fails if a covered copy remains, if a policy data class has no row, if
 anything of the other site changed, or if it wrote, removed or renamed anything
 outside its temporary directory.
 
+`--automatic` runs the hourly pass on the same synthetic site instead. With no
+approval, the pass plans and deletes nothing. With a synthetic approval written
+inside the temporary directory, the next pass applies and seals a receipt that
+names the approval. A third pass does nothing.
+
 A drill on a fresh synthetic job on the host:
 
 1. Ask the owner first. A new job can start paid preparation, and an apply
@@ -857,9 +1066,10 @@ A drill on a fresh synthetic job on the host:
    `pipelineAcknowledged: true`.
 4. Find the site with `door ls <capture root>/scenes --match site-<request id>`
    and read `door cat <site>/website_withdrawal/tombstone.json`.
-5. The owner makes the plan over SSH, as in "Make and read a plan". Record its
-   `unresolved`, `runs`, `objects` and `uncovered_pipeline_roots` in tracker row
-   G-02.
-6. Apply only if the owner approves it for this synthetic site. Then read the
-   receipt with `door cat`, and record its `remaining` and
-   `policy_copy_classes` in G-02.
+5. Within an hour of a quiet host the pass plans it. Read
+   `door cat <site>/website_withdrawal/automatic_deletion_state.json` and
+   `automatic_deletion_plan.json` beside it. Record its `unresolved`, `runs`,
+   `objects` and `uncovered_pipeline_roots` in tracker row G-02.
+6. Only with the owner's standing approval installed does a pass apply it.
+   Then read the receipt with `door cat`, and record its `authorization`,
+   `remaining` and `policy_copy_classes` in G-02.

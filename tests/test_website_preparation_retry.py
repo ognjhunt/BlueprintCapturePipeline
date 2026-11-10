@@ -21,7 +21,7 @@ from blueprint_pipeline import pubsub_handoff_listener as listener
 from blueprint_pipeline import website_preparation_retry as retry
 from blueprint_pipeline import website_reconstruction_resume as resume
 from blueprint_pipeline.common import PipelineError, write_json
-from blueprint_pipeline.website_preparation_terminal import _parse_utc
+from blueprint_pipeline.website_preparation_terminal import GRANT_FILE, _parse_utc
 from tests.test_website_preparation_status import prepared_source  # noqa: F401
 from tests.test_website_reconstruction_resume import _job, waiting  # noqa: F401
 
@@ -39,6 +39,8 @@ def failed(waiting):  # noqa: F811 - imported pytest fixture
     """A website preparation whose (only) delivery failed for a retryable reason after its Atlas job ended."""
     root, owner, context, raw, _ = waiting
     _job(root, "ready")
+    # The grant its delivery ran under: its expiry is the job's deadline (the content is not read here).
+    write_json(root / GRANT_FILE, {"schema_version": "website_scene_sponsorship.v1"})
     with pytest.raises(PipelineError):
         listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai", run_e2e=_fail())
     ledger = listener._read_job_ledger(root)
@@ -469,8 +471,9 @@ def test_a_failing_atlas_replay_is_logged_at_warning_and_counted(waiting, monkey
 # --- no fresh retry capacity for a call whose outcome is unknown ---------------------------------
 
 @pytest.mark.parametrize("call", ["gemini", "sam"])
-def test_a_retry_after_an_unanswered_paid_call_stops_again_without_dispatching(failed, monkeypatch, tmp_path, call):
-    """An intent with no receipt: Gemini never resends; SAM resends once (owner rule 2026-11-07), then stops."""
+def test_an_unanswered_paid_call_is_sent_again_only_under_a_new_reservation(failed, monkeypatch, tmp_path, call):
+    """An intent with no receipt is counted spent. Gemini: one resend per new reservation, until the ceiling
+    refuses one (a money wait, nothing sent). SAM: one resend (owner rule 2026-11-07), then it stops."""
     from blueprint_pipeline import meta_sam31 as sam
     from blueprint_pipeline import website_gemini_receipts as receipts
     from tests.test_meta_sam31 import inputs
@@ -506,6 +509,14 @@ def test_a_retry_after_an_unanswered_paid_call_stops_again_without_dispatching(f
         sam.run_meta_sam31(**sam_args, opener=unanswered_sam)
         return {"status": "completed"}
 
+    admit = receipts.reserve_website_preparation_spend
+
+    def ceiling(**kwargs):
+        if len(reserved) >= 2:
+            reserved.append("refused")
+            raise ValueError("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
+        return admit(**kwargs)
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", ceiling)
     run_e2e = gemini_run if call == "gemini" else sam_run
     with pytest.raises(TimeoutError):
         listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai", run_e2e=run_e2e)
@@ -513,8 +524,24 @@ def test_a_retry_after_an_unanswered_paid_call_stops_again_without_dispatching(f
     for _ in range(4):
         _tick(root, run_e2e, _due(root))
         errors.append(listener._read_job_ledger(root)["last_error"])
-    # Gemini: the one unanswered dispatch, never again. SAM: the dispatch and its single resend
-    # (owner rule 2026-11-07), each under its own reservation; then every re-run stops before dispatching.
-    assert dispatched[call] == (1 if call == "gemini" else 2)
-    assert len(reserved) == (1 if call == "gemini" else 2)
-    assert all("requires_reconciliation" in error for error in errors[-3:])
+    # Exactly one dispatch per admitted reservation, never a dispatch without one.
+    assert dispatched[call] == 2 and len([row for row in reserved if row != "refused"]) == 2
+    if call == "gemini":
+        assert "budget_exhausted" in errors[-1]
+        assert retry.armed(listener._read_job_ledger(root))["kind"] == "money"  # waits and asks again
+    else:
+        assert all("requires_reconciliation" in error for error in errors[-3:])
+
+
+def test_a_job_with_no_grant_has_no_deadline_so_an_outage_takes_the_six_timed_retries(failed):
+    root, raw, _ = failed
+    (root / GRANT_FILE).unlink()
+    with pytest.raises(PipelineError):
+        listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai", run_e2e=_fail())
+    ledger = listener._read_job_ledger(root)
+    record = retry.armed(ledger)
+    # Two outages in a row: 4 minutes with a deadline; the timed schedule's second gap without one.
+    assert record["kind"] == retry.OUTAGE and record["retry_count"] == 2
+    assert (_due(root) - _parse_utc(ledger["last_failed_at"])).total_seconds() == 3600
+    assert retry.retry_delay(retry.OUTAGE, 7, deadline=False) is None
+    assert retry.retry_delay(retry.OUTAGE, 7) == 3600

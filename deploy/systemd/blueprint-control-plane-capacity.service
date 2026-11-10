@@ -62,6 +62,12 @@ Environment=BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT=/var/lib/blueprint/pipel
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations
+# The job stores the stall alarm also reads, each under its own worker unit's name for it: team
+# scene packet requests, rigid robot-free probe entries and the screening ledger. Atlas preview
+# jobs are under BLUEPRINT_WEBSITE_ATLAS_PREVIEW_STORAGE_ROOT, set below.
+Environment=BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/team-scene-packets
+Environment=BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE=/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes
+Environment=BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/beta-policy-screening
 Environment=DIGITALOCEAN_API_TOKEN_FILE=/etc/blueprint/provider-secrets/digitalocean_api_token
 Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
 Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true

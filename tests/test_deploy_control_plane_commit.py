@@ -722,6 +722,11 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Timer]\nOnUnitInactiveSec=6h\n",
         encoding="utf-8",
     )
+    withdrawal_deletion_units = []
+    for suffix in ("service", "timer"):
+        source = unit_dir / f"blueprint-website-withdrawal-deletion.{suffix}"
+        source.write_text("[Unit]\nDescription=Exact withdrawal deletion fixture\n", encoding="utf-8")
+        withdrawal_deletion_units.append(source)
     release_lifecycle_units = []
     for suffix in ("service", "timer"):
         source = unit_dir / f"blueprint-control-plane-release-lifecycle.{suffix}"
@@ -843,6 +848,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         *additional_sources[10:],
         storage_gc_service,
         storage_gc_timer,
+        *withdrawal_deletion_units,
         *release_lifecycle_units,
         *owner_deletion_units,
         capacity_service,
@@ -950,6 +956,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-project-spend-refresh.service",
         "blueprint-control-plane-storage-gc.service",
         "blueprint-control-plane-storage-gc.timer",
+        "blueprint-website-withdrawal-deletion.service",
+        "blueprint-website-withdrawal-deletion.timer",
         "blueprint-control-plane-release-lifecycle.service",
         "blueprint-control-plane-release-lifecycle.timer",
         "blueprint-owner-approved-deletion-plan.service",
@@ -996,6 +1004,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.timer",
         "blueprint-completed-replay-cache-gc.timer",
+        "blueprint-website-withdrawal-deletion.timer",
         "blueprint-control-plane-release-lifecycle.timer",
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.timer",
