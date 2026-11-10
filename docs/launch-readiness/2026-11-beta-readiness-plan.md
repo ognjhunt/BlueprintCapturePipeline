@@ -199,15 +199,15 @@ Not packaged, and why:
 
 ## 6. Progress
 
-Updated after every wave. Last update: 2026-11-10 04:00Z. Eight packages merged: WP-01, 04, 05, 06, 07, 08, 11, 15.
+Updated after every wave. Last update: 2026-11-10 06:50Z. Nine packages merged: WP-01, 02, 04, 05, 06, 07, 08, 11, 15. One held for an owner decision (WP-03). Fourteen deferred.
 Status: merged, PR (open, with its CI result), or deferred with a reason. "CI"
 counts the checks that ran; checks the workflow skipped are not counted.
 
 | ID | Status | Pull request | CI | Note |
 |---|---|---|---|---|
 | WP-01 | merged | [#3517](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3517) | green, 3 passed | The leak came from one import added by #3488. The import-closure tests now run on every pull request (about 25 s). |
-| WP-02 | PR open, CI re-running | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | was red on one full-suite shard (the 180 s collection limit, G58); updated from `main` after #3523 fixed that limit, CI re-running | 5 synthetic records, 2 job kinds, 7 s. Covers the downstream replay only. Merge when the re-run is green. |
-| WP-03 | PR open, verifier approved, merge held | [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516) | green, 4 passed | Merge held on purpose: see O-18. The first version was refused by its verifier (it ended extended and renewed jobs); the second asks the WebApp and ends only on its refusal. |
+| WP-02 | merged | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | green, 18 passed | 5 synthetic records, 2 job kinds, about 7 s; fails a record on any network attempt or new paid call. Covers the downstream replay only; resolution and clip length are labels the replayed chain does not read (G55). Its two red runs were other tests: the collection limit (fixed by #3523) and a webhook test with a one-second margin (fixed by [#3536](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3536)). |
+| WP-03 | deferred: waits on owner decision O-18 | [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516) | green, 4 passed | Built, verifier approved, not merged: after it deploys, a silent job whose grant the WebApp says has expired is ended permanently, and the library-aisle job's grant state is not visible to this session. |
 | WP-04 | merged | [WebApp #1245](https://github.com/ognjhunt/Blueprint-WebApp/pull/1245) | green, 9 passed | The first version was refused by its verifier (3 bypasses). Enforced only once `BLUEPRINT_INVITEE_ALLOWLIST` is set. |
 | WP-05 | merged | [#3518](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3518) | green, 16 passed | Second verifier approved. 109 call sites: 36 admitted, 24 not paid, 49 can spend with no admission. None of the 49 is reachable from an automatic website job without an operator flag or environment opt-in; DreamLabs is reachable from screening only if an enabled Dream candidate and its credential are configured (WP-23). |
 | WP-06 | merged | [WebApp #1246](https://github.com/ognjhunt/Blueprint-WebApp/pull/1246) | green, 9 passed | Two verifier passes. The one red `test` was a real race in the job workspace form (a late reset could erase the first keystroke); fixed in the same pull request. |
@@ -257,7 +257,7 @@ Added to the owner list:
 | O-04 (note) | When you set the invitee list, use exact emails, not domains: the public form trusts a typed email. Tenant users, robot teams and people invited through account invitations need listing too. | | E9 (a) |
 | O-20 | Allow a test-only intake cap in the local emulator launcher (`scripts/qa/reliability-local-app.mjs`). | Yes: no real job or spend is involved there. | Running the intake backend suite in CI (E9 d) |
 
-Criteria on 2026-11-10: none passes yet. E2 (b) is done on `main` (WebApp #1246). E5 (a) is done on `main` (#3519). E6 (c) and (d) are done on `main` (#3523). E4 (a) is done except that 49 call sites remain unadmitted (WP-23). E6 (b) is done on `main`
+Criteria on 2026-11-10: none passes yet. E3 has a first replay set on `main` (#3515), synthetic records only. E2 (b) is done on `main` (WebApp #1246). E5 (a) is done on `main` (#3519). E6 (c) and (d) are done on `main` (#3523). E4 (a) is done except that 49 call sites remain unadmitted (WP-23). E6 (b) is done on `main`
 (#3517) and the 7-night count for E6 (a) starts with the 2026-11-10 run. E7 (c)
 is done on `main` (#3520) and takes effect at the next deploy. E9 (a) is ready
 on `main` (WebApp #1245) and waits on the list (O-04).
