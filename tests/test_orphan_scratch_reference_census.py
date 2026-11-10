@@ -211,6 +211,44 @@ def test_a_full_path_match_respects_the_name_boundary(tmp_path):
     assert "door_request" not in rows[str(tmp_path / "work" / "run")]["references"]
 
 
+def _spellings(path: Path) -> list[str]:
+    text = str(path)
+    return [json.dumps({"p": text}).replace("/", "\\/"),  # JSON \/ escaping
+            str(path.parent / "x" / ".." / path.name),  # a .. segment
+            text.replace("/", "%2F").replace(" ", "%20").replace("+", "%2B").replace(":", "%3A")
+            .replace("@", "%40")]  # percent-encoding
+
+
+@pytest.mark.parametrize("spelling", [0, 1, 2])
+def test_a_plain_name_is_found_in_any_spelling_of_its_path(tmp_path, spelling):
+    world = _world(tmp_path)
+    folder = tmp_path / "work" / "plain-folder_1.2"
+    folder.mkdir()
+    (tmp_path / "door-requests" / "probe.json").write_text(_spellings(folder)[spelling])
+
+    row = _rows(build_reference_census(**world["kwargs"]))[str(folder)]
+
+    assert "door_request" in row["references"] and row["not_proven"] == []
+
+
+@pytest.mark.parametrize("spelling", [0, 1, 2])
+@pytest.mark.parametrize("name", ["a+b", "c:d", "e@f", "g h", "tilde~x"])
+def test_a_special_name_is_not_proven_whatever_the_spelling(tmp_path, name, spelling):
+    world = _world(tmp_path)
+    folder = tmp_path / "work" / name
+    folder.mkdir()
+    (tmp_path / "door-requests" / "probe.json").write_text(_spellings(folder)[spelling])
+
+    census = build_reference_census(**world["kwargs"])
+
+    row = _rows(census)[str(folder)]
+    assert {"reason": "name_not_reliably_matchable"} in row["not_proven"]
+    projection = cap.orphan_scratch_census_projection(
+        census, {"orphan_scratch_root_bytes": [[str(folder), 1]]}, now=NOW + 60)
+    assert projection["roots"][0]["disposition"] in {"referenced", "not_proven"}
+    assert projection["roots"][0]["disposition"] != "no_specific_reference_found"
+
+
 def test_a_name_a_record_could_escape_is_never_no_specific_reference_found(tmp_path):
     world = _world(tmp_path)
     (tmp_path / "work" / 'quo"te').mkdir()

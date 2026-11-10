@@ -10,6 +10,7 @@ import stat
 import sys
 import time
 import traceback
+import urllib.parse
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -631,7 +632,7 @@ NOT_CHECKED_SOURCES = (
     "processes_in_uninterruptible_sleep: a /proc read that blocks is not interrupted by the deadline",
     "symlink_aliases: a record naming a symlink to a folder under another leaf name is not matched;"
     " a live process using it is",
-    "escaped_names: a name a record could escape (quote, backslash, non-ASCII) is not_proven",
+    "special_names: a name with any character outside A-Z a-z 0-9 _ . - is not_proven",
 )
 _QUEUE_STATES = ("pending", "processing", "waiting_external", "awaiting_source_preparation",
                  "awaiting_capacity", "prepared", "blocked")
@@ -672,8 +673,13 @@ def _continues_name(byte: bytes) -> bool:
 
 
 def _reliably_matchable(name: str) -> bool:
-    """A name a JSON or text record spells byte for byte (no escaping, plain ASCII)."""
-    return all(32 <= ord(character) < 127 and character not in '"\\' for character in name)
+    """Only a name made of token characters is found in any spelling of its path.
+
+    The bare-token match finds such a name through JSON ``\\/`` escaping, ``..``
+    segments and percent-encoded separators. Any other name can be missed, so its
+    folder is never ``no_specific_reference_found``.
+    """
+    return _TOKEN.fullmatch(os.fsencode(name)) is not None
 
 
 class _PathMatcher:
@@ -715,7 +721,10 @@ class _PathMatcher:
 
     def scan(self, content: bytes) -> tuple[set[Path], dict[str, set[Path]]]:
         found: set[Path] = set()
-        for token in self.tokens.keys() & set(_TOKEN.findall(content)):
+        tokens = set(_TOKEN.findall(content))
+        if b"%" in content:  # percent-encoded separators hide a name inside a longer token
+            tokens.update(_TOKEN.findall(urllib.parse.unquote_to_bytes(content)))
+        for token in self.tokens.keys() & tokens:
             found.update(self.tokens[token])
         for form, children in self.children.items():
             start = content.find(form)
