@@ -12,26 +12,28 @@ Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 #
 # The units that decode video, fuse or load scenes, or stage GPU bundles name
 # this slice (Slice=), so the two lines below bound their SUM. systemd sizes are
-# binary: 5G is 5.37 GB.
-# - MemoryMax=5G: below what the host has free at idle, by 0.76 GiB (0.82 GB),
-#   and below the readiness plan's 6.5 GB ceiling. It is also the most the
-#   contract already lets one unit take (scene progression, team scene packet).
-#   Above it the kernel kills inside this slice, by each unit's own
-#   OOMScoreAdjust; the always-on and money-safety units are outside it and
-#   are not candidates.
-# - MemoryHigh=4.5G: above the largest peak recorded on the host (4.2G: launch
-#   activation and embodiment preparation, 2026-10-31). Above it the kernel
-#   reclaims this slice's page cache and slows its allocations.
+# binary: 5.5G is 5.91 GB.
+# - MemoryMax=5.5G: below what the host has free at idle, by 0.26 GiB
+#   (0.28 GB), so the batch units alone cannot exhaust the host, and below the
+#   readiness plan's 6.5 GB ceiling. It is above the largest overlap on record
+#   that survives today: scene progression (3.2G) with team scene packet
+#   (1.9G), 5.1G. Above it the kernel kills inside this slice, by each unit's
+#   own OOMScoreAdjust; the always-on and money-safety units are outside it
+#   and are not candidates.
+# - MemoryHigh=5G: above the largest single peak recorded on the host (4.2G:
+#   launch activation and embodiment preparation, 2026-10-31). Above it the
+#   kernel reclaims this slice's page cache and slows its allocations; the
+#   5.1G overlap is slowed there, not killed.
 #
-# The trade-off: a batch stage, or two overlapping ones, that need more than 5G
-# of memory the kernel cannot reclaim are now killed here, not host-wide. No
-# stage on record that survives today is that large; the two that were (Atlas
-# draft fusion at 5.4 GB, a 4K mask decode) were being OOM-killed already and
-# have been cut down (#3488, #3438).
+# The trade-off: a batch stage, or two overlapping ones, that need more than
+# 5.5G of memory the kernel cannot reclaim are now killed here, not host-wide.
+# Nothing on record that survives today is that large; the two stages that
+# were (Atlas draft fusion at 5.4 GB, a 4K mask decode) were being OOM-killed
+# already and have been cut down (#3488, #3438).
 #
 # Named system-*.slice on purpose: it stays a child of system.slice, where the
 # operator door's memory view (status.memory.system_units) already lists it,
 # with the batch units' total and peak. A unit moves in the next time it starts
 # with an empty cgroup; a run already in flight keeps the cgroup it has.
-MemoryHigh=4.5G
-MemoryMax=5G
+MemoryHigh=5G
+MemoryMax=5.5G

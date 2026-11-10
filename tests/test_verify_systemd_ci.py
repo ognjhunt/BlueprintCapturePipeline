@@ -65,10 +65,10 @@ def test_the_batch_slice_is_staged_and_a_mistyped_reference_or_limit_fails(stage
     assert slice_unit not in units, "a slice runs nothing, so it has no security score"
     original = slice_unit.read_text()
 
-    slice_unit.write_text(original.replace("MemoryMax=5G", "MemoryMax=plenty"))
+    slice_unit.write_text(original.replace("MemoryMax=5.5G", "MemoryMax=plenty"))
     with pytest.raises(ValueError, match="slice_unit_invalid:system-blueprintbatch.slice"):
         verify_root(root, units)
-    slice_unit.write_text(original.replace("MemoryMax=5G\n", ""))
+    slice_unit.write_text(original.replace("MemoryMax=5.5G\n", ""))
     with pytest.raises(ValueError, match="slice_unit_unbounded:system-blueprintbatch.slice"):
         verify_root(root, units)
     slice_unit.write_text(original)

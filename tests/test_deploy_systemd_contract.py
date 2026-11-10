@@ -411,28 +411,28 @@ HOST_MEMORY = {
 #: passed 4.8 GB locally; a full Atlas run; an allocator child's bundle reads), or a recorded peak times 1.5 does
 #: not fit below the host (activation and embodiment preparation, 4.2 GB). Each of those was capped at 8G,
 #: above the host, so the cap never acted; now BATCH_SLICE bounds them together and their own cap is the
-#: slice's 5G. The rest have a cap that is already small. -500 for the door's own units, as the door.
+#: slice's 5.5G. The rest have a cap that is already small. -500 for the door's own units, as the door.
 HOST_MEMORY_KEPT = {
-    "blueprint-pubsub-handoff-listener.service": ("200", "5G"),
-    "blueprint-task-evaluation-launch-activation.service": ("200", "5G"),
-    "blueprint-embodiment-preparation.service": ("200", "5G"),
-    "blueprint-scene-object-discovery.service": ("200", "5G"),
+    "blueprint-pubsub-handoff-listener.service": ("200", "5.5G"),
+    "blueprint-task-evaluation-launch-activation.service": ("200", "5.5G"),
+    "blueprint-embodiment-preparation.service": ("200", "5.5G"),
+    "blueprint-scene-object-discovery.service": ("200", "5.5G"),
     "blueprint-control-plane-preflight.service": ("200", "1G"),
     "blueprint-control-plane-capacity.service": ("200", "512M"),
     "blueprint-completed-replay-cache-gc.service": ("200", "512M"),
     "blueprint-control-plane-release-lifecycle.service": ("200", "512M"),
     "blueprint-owner-approved-deletion-plan.service": ("200", "1G"),
     "blueprint-owner-approved-deletion.service": ("200", "1G"),
-    "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "5G"),
-    "blueprint-website-atlas-preview.service": ("-200", "5G"),
-    "blueprint-team-evaluation-runner.service": ("-200", "5G"),
-    "blueprint-beta-policy-screening.service": ("-200", "5G"),
-    "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5G"),
-    "blueprint-task-evaluation-policy-canary-dispatcher.service": ("-200", "5G"),
-    "blueprint-native-g1-team-campaign-dispatcher.service": ("-200", "5G"),
-    "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "5G"),
-    "blueprint-existing-policy-canary-continuation.service": ("-200", "5G"),
-    "blueprint-agent-run-dispatcher.service": ("-200", "5G"),
+    "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "5.5G"),
+    "blueprint-website-atlas-preview.service": ("-200", "5.5G"),
+    "blueprint-team-evaluation-runner.service": ("-200", "5.5G"),
+    "blueprint-beta-policy-screening.service": ("-200", "5.5G"),
+    "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5.5G"),
+    "blueprint-task-evaluation-policy-canary-dispatcher.service": ("-200", "5.5G"),
+    "blueprint-native-g1-team-campaign-dispatcher.service": ("-200", "5.5G"),
+    "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "5.5G"),
+    "blueprint-existing-policy-canary-continuation.service": ("-200", "5.5G"),
+    "blueprint-agent-run-dispatcher.service": ("-200", "5.5G"),
     "blueprint-scene-project-spend-refresh.service": ("-200", "512M"),
     # The failure notifier carries a page; a run peaked at 27 MB locally.
     "blueprint-unit-failure@.service": ("-200", "256M"),
@@ -687,6 +687,11 @@ def test_the_batch_slice_bounds_the_batch_units_below_the_host() -> None:
     recorded = [_gigabytes(LARGEST_RECORDED_BATCH_PEAK),
                 *(_gigabytes(row[3]) for unit, row in HOST_MEMORY.items() if unit in BATCH_SLICE_UNITS)]
     assert max(recorded) < high < maximum
+    # The largest overlap on record that survives today stays under the kill line: scene progression
+    # with team scene packet. A limit that killed it would be a regression.
+    overlap = sum(_gigabytes(HOST_MEMORY[unit][3]) for unit in (
+        "blueprint-task-evaluation-scene-progression.service", "blueprint-team-scene-packet.service"))
+    assert overlap < maximum
     assert not {"ManagedOOMMemoryPressure", "ManagedOOMSwap", "MemoryLow", "MemoryMin"} & set(values)
 
 

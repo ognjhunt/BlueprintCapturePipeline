@@ -55,7 +55,7 @@ LimitNOFILE=65536
 # acted).
 # It holds paid work: -200, after batch jobs, before the money-safety units.
 Slice=system-blueprintbatch.slice
-MemoryMax=5G
+MemoryMax=5.5G
 OOMScoreAdjust=-200
 CPUQuota=200%
 # The allocator child may run for the profile's hard TTL plus 300 s (7 h 35 min

@@ -47,7 +47,7 @@ LimitNOFILE=4096
 # the host. It holds paid work: -200, after batch jobs, before the
 # money-safety units.
 Slice=system-blueprintbatch.slice
-MemoryMax=5G
+MemoryMax=5.5G
 OOMScoreAdjust=-200
 CPUQuota=200%
 TimeoutStartSec=75m

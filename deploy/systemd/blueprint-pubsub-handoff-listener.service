@@ -45,7 +45,7 @@ LimitNOFILE=65536
 # Batch job, retried: +200, so it goes before the always-on services, paid
 # work and the money-safety units.
 Slice=system-blueprintbatch.slice
-MemoryMax=5G
+MemoryMax=5.5G
 OOMScoreAdjust=200
 CPUQuota=200%
 Type=oneshot

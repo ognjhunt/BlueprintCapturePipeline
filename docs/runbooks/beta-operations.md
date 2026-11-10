@@ -22,7 +22,7 @@ Before you act:
 |---|---|
 | [1. A job stops moving](#1-a-job-stops-moving) | A stall page arrives, or a job shows the same state for hours. |
 | [1a. A unit failed](#1a-a-unit-failed) | A `unit_failed:<unit>:…` post arrives, or `failed_units` names a unit. |
-| [1b. The batch memory slice](#1b-the-batch-memory-slice) | A batch unit was killed for memory, or runs slowly near 4.5G. |
+| [1b. The batch memory slice](#1b-the-batch-memory-slice) | A batch unit was killed for memory, or runs slowly near 5G. |
 | [2. Vast credit runs out](#2-vast-credit-runs-out) | `provider_credit_insufficient` pages, or a launch is refused for credit. |
 | [2a. Provider funding](#2a-provider-funding) | An OpenAI, World Labs or Google Cloud spend page arrives (`*_spend_*_high`). |
 | [2b. Account monthly limit](#2b-account-monthly-limit) | An `account_spend_*` alert arrives, or a paid admission is refused with `account_monthly_spend_*`. |
@@ -125,11 +125,11 @@ The 23 units that decode video, fuse or load scenes, compile episodes or stage
 GPU bundles run in `system-blueprintbatch.slice`
 (`deploy/systemd/system-blueprintbatch.slice`; the list is `BATCH_SLICE_UNITS`
 in `tests/test_deploy_systemd_contract.py`). The slice bounds them together:
-`MemoryHigh=4.5G`, `MemoryMax=5G` (binary units; 5G is 5.37 GB). The host has
+`MemoryHigh=5G`, `MemoryMax=5.5G` (binary units; 5.5G is 5.91 GB). The host has
 8.33 GB and 6.19 GB of it free with nothing heavy running (2026-11-10).
 
-- Above 4.5G the kernel reclaims the slice's page cache and slows its
-  allocations. Above 5G it kills inside the slice, by each unit's
+- Above 5G the kernel reclaims the slice's page cache and slows its
+  allocations. Above 5.5G it kills inside the slice, by each unit's
   `OOMScoreAdjust`. The killed unit fails with `oom-kill` and its timer or path
   unit starts it again.
 - The intake, the operator door, the spend guard, the billing reconciler, the
@@ -142,9 +142,9 @@ in `tests/test_deploy_systemd_contract.py`). The slice bounds them together:
   flight at the deploy, and a unit whose GPU watchdog is still alive, keep the
   cgroup they have until they end.
 
-A stage that needs more than 5G by itself now fails here every time. That is a
-capacity decision for the owner (a larger host), not a setting to raise: 5G
-plus the always-on units is what this host has.
+A stage that needs more than 5.5G by itself now fails here every time. That is
+a capacity decision for the owner (a larger host), not a setting to raise:
+5.5G plus the always-on units is what this host has.
 
 ## 2. Vast credit runs out
 

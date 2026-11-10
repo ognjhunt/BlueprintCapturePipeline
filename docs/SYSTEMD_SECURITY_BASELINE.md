@@ -24,7 +24,7 @@ holds each list and `scripts/verify_systemd_ci.py` checks the unit files.
   only.
 - **Batch memory slice.** The batch units name
   `Slice=system-blueprintbatch.slice`, which bounds them together
-  (`MemoryHigh=4.5G`, `MemoryMax=5G`) below what the 8.33 GB host has free at
+  (`MemoryHigh=5G`, `MemoryMax=5.5G`) below what the 8.33 GB host has free at
   idle (6.19 GB). No batch unit's own `MemoryMax` is above the slice's. The
   always-on, money-safety and housekeeping units stay outside the slice. Five
   money-safety units keep `MemoryMax=8G`, which is above the host and never
