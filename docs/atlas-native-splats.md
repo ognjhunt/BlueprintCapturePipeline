@@ -449,6 +449,18 @@ a pose, and nothing fed the earlier pose's findings into the next request
   fin joined to a wall only through the floor beside the corridor still goes. The record counts these per cell with their top
   (`dropped_low_piece_faces`).
 
+  **v13 (2026-11-10) changes no levelling.** It exists to re-derive scenes whose
+  route was chosen under the old anchor rule. On the v12 floor the first filmed
+  point with the robot's 0.35 m of room lay 2.7 m down a 3.3 m walk, so the
+  start moved there and the task shrank to half a metre. The rule now
+  (`website_locomotion_task.route_anchors`): clearing an anchor of obstacles
+  may move it at most a quarter of the filmed path's length from its end.
+  Beyond that the anchor is the best-cleared filmed point inside that quarter,
+  the spec carries `start_clearance_below_robot_radius` (or the goal's), and the
+  robot's own spawn check decides whether it can stand there.
+  `route_clearance.json`, beside the compiled spec, records each filmed point's
+  room and the height range of its nearest obstacle (heights only).
+
   It's disclosed as `walked_floor.planarized` (`development_only_estimate`), with
   the scanned floor's offset range before the change. This is the floor analogue
   of a rigid task's support pad (`rigid_support_pad`). The splat is as captured.
