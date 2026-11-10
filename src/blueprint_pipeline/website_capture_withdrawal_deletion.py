@@ -819,7 +819,10 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     # After the G1 namespaces inside them: each half is then checked whole before it goes.
     team_deleted = team_scene.apply_team_scene(plan["team_scene"])
     deleted["unclaimed_handoffs"] = unclaimed.apply_unclaimed(plan["unclaimed_handoffs"])
-    deleted["indexed_root_entries"] = _apply_indexed(plan.get("indexed_roots") or [])
+    deleted["indexed_root_entries"], indexed_refused = _apply_indexed(
+        plan.get("indexed_roots") or [],
+        seeds={plan["scene_id"], plan["capture_id"], *plan["lineage"]["intents"]},
+        site_tokens={plan["scene_id"], plan["capture_id"]})
     # Recorded ids are already in the journal's ledger: a failed provider delete is retried by the next run.
     provider_results = (provider_copy.apply_providers(plan["provider_copies"], resolution.get("provider_deleters"))
                         if plan.get("provider_copies") is not None else None)
@@ -845,6 +848,10 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     if plan.get("provider_copies") is not None:
         remaining.extend(provider_copy.blocking(plan["provider_copies"], provider_results))
     incomplete = completion_blockers(plan, cloud_deleted=cloud_storage is not None, provider_results=provider_results)
+    if indexed_refused:
+        incomplete.append({"holder": "pipeline_root_entry_not_confirmed", "entries": indexed_refused,
+                           "reason": "a fresh read of these entries did not show them to be only this site's; "
+                                     "they were kept and the index reads them again"})
     retention = (provider_copy.retention_remains(plan["provider_copies"])
                  if plan.get("provider_copies") is not None else [])
     receipt: dict[str, Any] = {
@@ -888,25 +895,41 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     return receipt
 
 
-def _apply_indexed(rows: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Delete each indexed entry the plan found to be only this site's, checked unchanged first."""
+def _apply_indexed(rows: Sequence[Mapping[str, Any]], *, seeds: set[str], site_tokens: set[str]
+                   ) -> tuple[list[str], list[dict[str, Any]]]:
+    """Delete each indexed entry only after a fresh read of its records shows it is only this site's.
 
-    deleted = []
+    The index is a cache: a nested record can change without the entry's own mtime changing. An entry
+    whose fresh read differs, is shared, names nothing, cannot be read or exceeds the read budget, or whose
+    files changed since the plan, is kept, queued for the index to read again, and reported.
+    """
+
+    deleted, refused = [], []
     for row in rows:
         for entry in row["owned"]:
             path = Path(entry["path"])
             if not os.path.lexists(path):
                 continue
-            _require(entry.get("inventory_digest") is not None, "indexed_entry_unreadable")
+            reason = None if entry.get("inventory_digest") is not None else "entry_unreadable_at_plan"
+            if reason is None:
+                reason = site_index.confirm_owned(path, seeds=seeds, site_tokens=site_tokens)
+            if reason is None:
+                try:
+                    current = (canonical_digest({"rows": _inventory(path)}) if path.is_dir() and not path.is_symlink()
+                               else canonical_digest({"rows": [[entry["name"], _regular(path).st_size]]}))
+                except (WithdrawalDeletionError, OSError):
+                    current = None
+                reason = None if current == entry["inventory_digest"] else "entry_changed_since_plan"
+            if reason is not None:
+                site_index.mark_unscanned(Path(row["index_root"]), Path(row["root"]), entry["name"])
+                refused.append({"path": str(path), "reason": reason})
+                continue
             if path.is_dir() and not path.is_symlink():
-                _require(canonical_digest({"rows": _inventory(path)}) == entry["inventory_digest"], "indexed_entry_changed")
                 shutil.rmtree(path)
             else:
-                _require(canonical_digest({"rows": [[entry["name"], _regular(path).st_size]]})
-                         == entry["inventory_digest"], "indexed_entry_changed")
                 path.unlink()
             deleted.append(str(path))
-    return deleted
+    return deleted, refused
 
 
 COMPLETE = "complete"

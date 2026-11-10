@@ -41,6 +41,10 @@ from .core.common import write_json
 LEDGER_SCHEMA = "website_withdrawal_provider_copies.v1"
 LEDGER_FILENAME = "provider_copies.json"
 DONE = frozenset({"deleted_by_job", "deleted_at_provider", "absent_at_provider"})
+ID_NOT_RECORDED = "id_not_recorded"
+# Not a deletion: the owner recorded the provider's own answer about a copy whose id was never recorded.
+OWNER_RESOLVED = "owner_resolved"
+SETTLED = DONE | {OWNER_RESOLVED}
 # Providers whose API offers a delete for the copies a website job leaves there.
 DELETABLE_PROVIDERS = frozenset({"gemini", "meta", "world_labs"})
 NOT_DELETED_AT_PROVIDER = (
@@ -127,6 +131,12 @@ def plan_providers(site: Path) -> dict[str, Any]:
     ledger_path = site / "website_withdrawal" / LEDGER_FILENAME
     ledger = _read(ledger_path) or {"schema_version": LEDGER_SCHEMA, "copies": {}}
     discovered, unknown = _discover(site)
+    # A copy with no recorded id is kept in the journal too, before any local file goes, so a later run
+    # still reports it after the record that showed it is deleted. Only an owner resolution clears it.
+    for row in unknown:
+        relative = str(Path(row["source"]).relative_to(site)) if Path(row["source"]).is_relative_to(site) \
+            else row["source"]
+        discovered[f"unknown:{row['provider']}:{relative}"] = {**row, "id": None, "status": ID_NOT_RECORDED}
     changed = False
     for key, copy in discovered.items():
         known = ledger["copies"].get(key)
@@ -136,9 +146,30 @@ def plan_providers(site: Path) -> dict[str, Any]:
             known["status"], changed = "deleted_by_job", True
     if changed:
         write_json(ledger_path, ledger)
-    return {"ledger": str(ledger_path),
-            "copies": [dict(ledger["copies"][key], key=key) for key in sorted(ledger["copies"])],
-            "unknown": unknown, "not_deleted_at_provider": [dict(row) for row in NOT_DELETED_AT_PROVIDER]}
+    rows = [dict(ledger["copies"][key], key=key) for key in sorted(ledger["copies"])]
+    return {"ledger": str(ledger_path), "copies": [row for row in rows if row["status"] != ID_NOT_RECORDED],
+            "unknown": [row for row in rows if row["status"] == ID_NOT_RECORDED],
+            "not_deleted_at_provider": [dict(row) for row in NOT_DELETED_AT_PROVIDER]}
+
+
+def resolve_unknown_copy(site: Path, key: str, *, answer: str, by: str) -> dict[str, Any]:
+    """The owner's step for a copy whose id was never recorded: record what the provider said about it.
+
+    The owner asks the provider (for Meta, the account's file list) and records the answer here. The copy
+    then reads ``owner_resolved`` with that answer and who gave it, never ``deleted``.
+    """
+
+    ledger_path = Path(site) / "website_withdrawal" / LEDGER_FILENAME
+    ledger = _read(ledger_path)
+    copy = (ledger or {}).get("copies", {}).get(key)
+    if copy is None or copy["status"] != ID_NOT_RECORDED:
+        raise ValueError("website_withdrawal_provider_copy_not_unresolved")
+    if not answer.strip() or not by.strip():
+        raise ValueError("website_withdrawal_provider_copy_resolution_incomplete")
+    copy.update(status=OWNER_RESOLVED, owner_answer=answer.strip()[:1000], resolved_by=by.strip()[:200],
+                resolved_at=datetime.now(timezone.utc).isoformat())
+    write_json(ledger_path, ledger)
+    return dict(copy, key=key)
 
 
 def production_deleters() -> dict[str, Callable[[str], Any]]:
@@ -193,7 +224,7 @@ def apply_providers(section: Mapping[str, Any], deleters: Mapping[str, Callable[
     ledger = _read(ledger_path) or {"schema_version": LEDGER_SCHEMA, "copies": {}}
     results = []
     for key, copy in sorted(ledger["copies"].items()):
-        if copy["status"] in DONE:
+        if copy["status"] in SETTLED or copy["status"] == ID_NOT_RECORDED:
             continue
         stamp = datetime.now(timezone.utc).isoformat()
         deleter = (deleters or {}).get(copy["provider"])
@@ -223,7 +254,7 @@ def blocking(section: Mapping[str, Any], applied: list[dict] | None = None) -> l
     latest = {row["key"]: row for row in applied or []}
     rows = []
     pending = [latest.get(copy["key"], copy) for copy in section.get("copies") or []]
-    failed = [copy for copy in pending if copy["status"] not in DONE]
+    failed = [copy for copy in pending if copy["status"] not in SETTLED]
     if failed:
         rows.append({"holder": "provider_copies_not_deleted", "copies": [
             {key: copy.get(key) for key in ("provider", "kind", "id", "status", "last_error", "attempts")}
@@ -245,5 +276,24 @@ def retention_remains(section: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-__all__ = ["DELETABLE_PROVIDERS", "DONE", "retention_remains", "LEDGER_FILENAME", "NOT_DELETED_AT_PROVIDER", "ProviderAnswer", "apply_providers", "blocking",
+__all__ = ["DELETABLE_PROVIDERS", "DONE", "ID_NOT_RECORDED", "OWNER_RESOLVED", "resolve_unknown_copy", "retention_remains", "LEDGER_FILENAME", "NOT_DELETED_AT_PROVIDER", "ProviderAnswer", "apply_providers", "blocking",
            "plan_providers", "production_deleters"]
+
+
+def main(argv: Any = None) -> int:
+    """``resolve``: the owner records the provider's answer for a copy whose id was never recorded."""
+
+    import argparse
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("operation", choices=("resolve",))
+    parser.add_argument("--site", type=Path, required=True, help="the site directory, scenes/site-<id>")
+    parser.add_argument("--key", required=True, help="the copy's key in website_withdrawal/provider_copies.json")
+    parser.add_argument("--answer", required=True, help="what the provider said about the copy")
+    parser.add_argument("--by", required=True, help="who asked the provider")
+    args = parser.parse_args(argv)
+    print(json.dumps(resolve_unknown_copy(args.site, args.key, answer=args.answer, by=args.by), indent=2))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - an owner step on the host
+    raise SystemExit(main())

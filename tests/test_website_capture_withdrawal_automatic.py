@@ -667,3 +667,85 @@ def test_door_status_shows_the_middle_value_as_it_is(harness, tmp_path, monkeypa
     section = json.loads((tmp_path / "capacity/summary.json").read_text())["website_withdrawal_deletion"]
     assert section["withdrawals"]["complete_provider_retention_remains"] == 1
     assert section["withdrawals"]["complete"] == 0
+
+
+def test_an_owned_entry_whose_nested_record_now_names_another_site_is_kept_and_reported(harness):
+    nested = harness.uncovered / "site-entry/deep/more"
+    nested.mkdir(parents=True)
+    record = nested / "record.json"
+    changed = json.dumps({"scene_id": "site-req1", "also": "site-drill-other"})
+    record.write_text(json.dumps({"scene_id": "site-req1", "also": ""}).ljust(len(changed)))
+    from blueprint_pipeline import website_withdrawal_site_index as site_index
+    site_index.advance(harness.index_root, [harness.uncovered], now=harness.now)
+    plan = deletion.plan_withdrawal_deletion(capture_root=harness.captures["req1"], **harness.resolution)
+    assert [row["name"] for row in plan["indexed_roots"][0]["owned"]] == ["site-entry"]
+    # After the plan, a nested record gains another site with its size and every mtime put back, so even
+    # the index's fingerprint cannot see it: only the fresh read before deletion can.
+    top = harness.uncovered / "site-entry"
+    stamps = {path: os.stat(path) for path in (top, nested, record)}
+    record.write_text(changed)  # in place, same size and inode: a test-owned writable file
+    for path, before in stamps.items():
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert site_index.fingerprint(top) == site_index.read_index(harness.index_root, harness.uncovered)[
+        "entries"]["site-entry"]["fingerprint"]
+    receipt = deletion.apply_withdrawal_deletion(capture_root=harness.captures["req1"],
+                                                 expected_plan_digest=plan["digest"],
+                                                 authorize_complete_deletion=True, **harness.resolution)
+    assert record.is_file() and receipt["deletion_status"] == "incomplete"
+    refused = next(row for row in receipt["incomplete_reasons"] if row["holder"] == "pipeline_root_entry_not_confirmed")
+    assert refused["entries"] == [{"path": str(top), "reason": "fresh_read_names_another_owner"}]
+    # The index reads it again: unknown until then, then shared and never deleted.
+    rows = site_index.lookup(harness.index_root, [harness.uncovered], seeds={"site-req1"}, site_tokens={"site-req1"})
+    assert "site-entry" in rows[0]["unscanned"]
+    site_index.advance(harness.index_root, [harness.uncovered], now=harness.now)
+    rows = site_index.lookup(harness.index_root, [harness.uncovered], seeds={"site-req1"}, site_tokens={"site-req1"})
+    assert rows[0]["shared"] == ["site-entry"] and rows[0]["owned"] == []
+
+
+def test_the_index_notices_a_nested_record_changed_behind_an_unchanged_entry_mtime(harness):
+    from blueprint_pipeline import website_withdrawal_site_index as site_index
+    site_index.advance(harness.index_root, [harness.uncovered], now=harness.now)
+    top = harness.uncovered / "site-entry"
+    before = os.stat(top)
+    (top / "added.json").write_text(json.dumps({"scene_id": "site-drill-other"}))
+    os.utime(top, ns=(before.st_atime_ns, before.st_mtime_ns))
+    rows = site_index.lookup(harness.index_root, [harness.uncovered], seeds={"site-req1"}, site_tokens={"site-req1"})
+    assert rows[0]["unscanned"] == ["site-entry"] and rows[0]["owned"] == [] and rows[0]["status"] == "unknown"
+
+
+def test_an_unchanged_owned_entry_is_deleted_after_its_fresh_read(harness):
+    harness.approve()
+    harness.run()
+    assert not (harness.uncovered / "site-entry").exists()
+    assert _receipt(harness)["deleted"]["indexed_root_entries"] == [str(harness.uncovered / "site-entry")]
+
+
+def test_an_unrecorded_provider_copy_is_still_reported_after_the_local_files_are_gone(harness):
+    from blueprint_pipeline import website_capture_withdrawal_provider_copies as provider_copy
+
+    sam = harness.captures["req1"] / "pipeline/sam"
+    sam.mkdir(parents=True)
+    (sam / "video-upload-intent.json").write_text(json.dumps({"clip_digest": "x"}))
+    harness.approve()
+    harness.run()
+    assert harness.state()["status"] == "incomplete" and not (sam / "video-upload-intent.json").exists()
+    second = harness.run(offset=7 * HOUR)
+    receipt = _receipt(harness)
+    assert second["action"]["deletion_status"] == "incomplete"
+    unknown = next(row for row in receipt["incomplete_reasons"] if row["holder"] == "provider_copy_id_not_recorded")
+    key = unknown["copies"][0]["key"]
+    assert key == "unknown:meta:captures/walkthrough-req1/pipeline/sam/video-upload-intent.json"
+    assert harness.provider_calls == []
+    # The 21-day alert covers it.
+    harness.run(offset=automatic.OVERDUE_ALERT_SECONDS + 60)
+    assert "website_withdrawal_deletion_overdue" in harness.posted_codes()
+    # Only the owner's recorded provider answer settles it; it never reads as deleted.
+    resolved = provider_copy.resolve_unknown_copy(harness.site(), key, answer="Meta's file list holds no such file",
+                                                  by="owner")
+    assert resolved["status"] == "owner_resolved"
+    harness.run(offset=automatic.OVERDUE_ALERT_SECONDS + 7 * HOUR)
+    receipt = _receipt(harness)
+    assert receipt["deletion_status"] == "complete_provider_retention_remains"
+    ledger = json.loads((harness.site() / "website_withdrawal/provider_copies.json").read_text())
+    assert ledger["copies"][key]["status"] == "owner_resolved"
+    assert ledger["copies"][key]["owner_answer"] == "Meta's file list holds no such file"

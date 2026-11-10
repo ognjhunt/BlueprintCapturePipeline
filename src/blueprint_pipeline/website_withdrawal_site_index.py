@@ -33,6 +33,7 @@ sweep starts again after ``RESWEEP_SECONDS`` so changed and new entries are read
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -69,24 +70,52 @@ def _strip_site_suffix(token: str) -> str:
     return token
 
 
+class _Special(OSError):
+    pass
+
+
+def _record_files(entry: Path) -> list[Path]:
+    """The entry's JSON and JSONL records, in a fixed order; raises ``OSError`` when it cannot be listed."""
+
+    info = os.lstat(entry)
+    if stat.S_ISREG(info.st_mode):
+        return [entry] if entry.name.endswith(_SUFFIXES) else []
+    if not stat.S_ISDIR(info.st_mode):
+        raise _Special("special_entry")
+    files: list[Path] = []
+
+    def unlistable(error: OSError) -> None:
+        raise error
+
+    for root, directories, names in os.walk(entry, onerror=unlistable):
+        directories.sort()
+        files.extend(Path(root) / name for name in sorted(names) if name.endswith(_SUFFIXES))
+    return files
+
+
+def fingerprint(entry: Path) -> str:
+    """Every record's path, size and mtime under the entry: a nested record edited or added changes it.
+
+    A directory's own mtime does not change when a file deep inside it does, so the index compares
+    this, not the entry's mtime. Raises ``OSError`` when the entry cannot be listed.
+    """
+
+    rows = []
+    for path in _record_files(entry):
+        info = os.lstat(path)
+        rows.append([str(path.relative_to(entry.parent)), info.st_size, info.st_mtime_ns])
+    return "sha256:" + hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+
+
 def _scan_entry(entry: Path, budget: _Budget) -> dict[str, Any]:
     """The identifiers an entry's records name, or why they could not be read."""
 
     tokens: set[str] = set()
     try:
-        info = os.lstat(entry)
-        if stat.S_ISREG(info.st_mode):
-            files = [entry] if entry.name.endswith(_SUFFIXES) else []
-        elif stat.S_ISDIR(info.st_mode):
-            files = []
-
-            def unlistable(error: OSError) -> None:
-                raise error
-
-            for root, directories, names in os.walk(entry, onerror=unlistable):
-                directories.sort()
-                files.extend(Path(root) / name for name in sorted(names) if name.endswith(_SUFFIXES))
-        else:
+        try:
+            files = _record_files(entry)
+            stamp = fingerprint(entry)
+        except _Special:
             return {"status": "unreadable", "reason": "special_entry", "tokens": []}
         for path in files:
             mode = os.lstat(path)
@@ -95,6 +124,8 @@ def _scan_entry(entry: Path, budget: _Budget) -> dict[str, Any]:
             if mode.st_size > MAX_FILE_BYTES:
                 return {"status": "unreadable", "reason": "record_too_large", "tokens": []}
             budget.bytes -= mode.st_size
+            if budget.bytes < 0 or time.monotonic() >= budget.deadline:
+                return {"status": "unreadable", "reason": "scan_budget_spent", "tokens": []}
             tail = b""
             with path.open("rb") as stream:
                 while chunk := stream.read(_CHUNK):
@@ -106,8 +137,43 @@ def _scan_entry(entry: Path, budget: _Budget) -> dict[str, Any]:
     except OSError as error:
         return {"status": "unreadable", "reason": "unreadable:" + type(error).__name__, "tokens": []}
     if not tokens:
-        return {"status": "owner_unknown", "reason": "no_site_named", "tokens": []}
-    return {"status": "named", "reason": None, "tokens": sorted(tokens)}
+        return {"status": "owner_unknown", "reason": "no_site_named", "tokens": [], "fingerprint": stamp}
+    return {"status": "named", "reason": None, "tokens": sorted(tokens), "fingerprint": stamp}
+
+
+def confirm_owned(entry: Path, *, seeds: Iterable[str], site_tokens: Iterable[str],
+                  max_bytes: int = 512 * 1024 * 1024, max_seconds: float = 300.0) -> str | None:
+    """Read the entry's records again from disk; None only if they name this site's ids and nothing else.
+
+    The index is a cache for planning; this fresh read is the authority to delete. Otherwise the reason.
+    """
+
+    fresh = _scan_entry(entry, _Budget(1, max_bytes, time.monotonic() + max_seconds))
+    tokens = set(fresh.get("tokens") or ())
+    if fresh["status"] != "named":
+        return "fresh_read_" + str(fresh.get("reason") or fresh["status"])
+    if not tokens & set(seeds):
+        return "fresh_read_names_no_identifier_of_this_site"
+    if tokens - set(seeds) - set(site_tokens):
+        return "fresh_read_names_another_owner"
+    return None
+
+
+def mark_unscanned(index_root: Path, root: Path, name: str) -> None:
+    """Drop one entry from the index and queue it, so lookups read it as unknown until it is read again."""
+
+    lock_path = Path(index_root) / (Path(root).name + ".lock")
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        index = read_index(index_root, root)
+        if index is None:
+            return
+        index["entries"].pop(name, None)
+        index["pending"] = sorted({*index.get("pending", []), name})
+        write_json(_index_path(index_root, root), index)
+    finally:
+        os.close(descriptor)
 
 
 def _index_path(index_root: Path, root: Path) -> Path:
@@ -164,10 +230,14 @@ def _advance_root(index_root: Path, root: Path, *, now: float, budget: _Budget) 
         "schema_version": INDEX_SCHEMA, "root": str(root), "entries": {},
         "sweep": {"cursor": None, "started_at_epoch": now, "completed_at_epoch": None, "ever_completed": False}}
     sweep = index["sweep"]
+    rest = False
     if sweep.get("cursor") is None and sweep.get("completed_at_epoch") is not None:
         if now - float(sweep["completed_at_epoch"]) < RESWEEP_SECONDS:
-            return "swept"
-        sweep.update(started_at_epoch=now, completed_at_epoch=None)
+            if not index.get("pending"):
+                return "swept"
+            rest = True  # read only the queued entries; the next full sweep is not due yet
+        else:
+            sweep.update(started_at_epoch=now, completed_at_epoch=None)
     if not root.exists():
         index["entries"], index["root_absent"] = {}, True
         sweep.update(cursor=None, completed_at_epoch=now, ever_completed=True)
@@ -179,6 +249,23 @@ def _advance_root(index_root: Path, root: Path, *, now: float, budget: _Budget) 
     except OSError:
         return "unlistable"
     present = {entry.name for entry in listing}
+    # Entries a deletion found changed are read first, whatever the sweep's cursor.
+    for name in list(index.get("pending") or []):
+        if budget.spent():
+            write_json(_index_path(index_root, root), index)
+            return "in_progress"
+        path = root / name
+        if name in present:
+            budget.entries -= 1
+            try:
+                mtime = os.lstat(path).st_mtime_ns
+            except OSError:
+                mtime = None
+            index["entries"][name] = {**_scan_entry(path, budget), "mtime_ns": mtime, "scanned_at_epoch": now}
+        index["pending"] = [item for item in index["pending"] if item != name]
+        write_json(_index_path(index_root, root), index)
+    if rest:
+        return "swept"
     cursor = sweep.get("cursor")
     for entry in listing:
         if cursor is not None and entry.name <= cursor:
@@ -215,8 +302,8 @@ def lookup(index_root: Path, roots: Iterable[Path], *, seeds: Iterable[str], sit
     seeds, mine = set(seeds), set(site_tokens)
     rows = []
     for root in map(Path, roots):
-        row: dict[str, Any] = {"root": str(root), "status": "unknown", "owned": [], "shared": [],
-                               "owner_unknown": [], "unscanned": []}
+        row: dict[str, Any] = {"root": str(root), "index_root": str(index_root), "status": "unknown", "owned": [],
+                               "shared": [], "owner_unknown": [], "unscanned": []}
         rows.append(row)
         if not root.exists():
             row["status"] = "absent"
@@ -234,9 +321,13 @@ def lookup(index_root: Path, roots: Iterable[Path], *, seeds: Iterable[str], sit
             record = index["entries"].get(entry.name)
             try:
                 mtime = os.lstat(entry.path).st_mtime_ns
+                stamp = fingerprint(Path(entry.path))
             except OSError:
+                row["unscanned"].append(entry.name)
                 continue
-            if record is None or record.get("mtime_ns") != mtime:
+            # A record nested anywhere below that changed since the read changes the fingerprint; an index
+            # written before fingerprints existed is read again.
+            if record is None or record.get("fingerprint") != stamp or entry.name in (index.get("pending") or ()):
                 row["unscanned"].append(entry.name)
                 continue
             tokens = set(record.get("tokens") or ())
@@ -274,4 +365,5 @@ def blocking(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return found
 
 
-__all__ = ["INDEX_SCHEMA", "RESWEEP_SECONDS", "advance", "blocking", "lookup", "read_index"]
+__all__ = ["INDEX_SCHEMA", "RESWEEP_SECONDS", "advance", "blocking", "confirm_owned", "fingerprint", "lookup",
+           "mark_unscanned", "read_index"]
