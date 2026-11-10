@@ -34,6 +34,7 @@ from .external_scene_frame_registration import _axis_rotations, _sample, _trimme
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_context_contracts import GEOMETRY_ONLY_BLOCKER
+from .website_preparation_contracts import scene_configuration_max_retries
 from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
 from .website_track_mask_codec import canonical_track_digest, load_track_json
 from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start, on_surface_radius,
@@ -1710,7 +1711,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     {"destination": destination or {"needs_input": "task_destination_pose_required"},
                      "success": dict(SUCCESS)})},
         "execution": {"purpose": "scene_preparation", "max_total_spend_usd": spend["max_total_spend_usd"],
-                      "max_paid_attempts": spend["max_paid_attempts"], "max_retries": 0,
+                      "max_paid_attempts": spend["max_paid_attempts"],
+                      "max_retries": scene_configuration_max_retries(spend),
                       "expires_at_epoch": spend["expires_at_epoch"],
                       "allowed_providers": (["vast", "openai", "anthropic"]
                                             if authoring_provider == "anthropic" else ["vast", "openai"]),

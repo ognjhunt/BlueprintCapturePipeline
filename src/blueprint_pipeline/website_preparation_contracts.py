@@ -16,6 +16,23 @@ from .website_task_context_contracts import validate_website_task_context
 from .task_evaluation_scene_execution_scope import scene_preparation_only
 
 
+#: ``execution.max_retries`` a Website scene intent may carry: 0 (every intent
+#: issued before 2026-11-10, still accepted) or 1, one more attempt after a
+#: rented machine is lost mid-run, inside the same dollar and paid-attempt caps.
+WEBSITE_SCENE_MAX_RETRIES = (0, 1)
+
+
+def scene_configuration_max_retries(authority):
+    """The ``max_retries`` a new Website scene intent carries: what its signed grant names.
+
+    A grant the WebApp issued before it named one (every grant in flight on
+    2026-11-10) yields 0, so a request rebuilt for it is byte-identical to the
+    one already staged, whichever repository deploys first.
+    """
+    value = authority.get("scene_configuration_max_retries") if isinstance(authority, Mapping) else None
+    return value if type(value) is int and value in WEBSITE_SCENE_MAX_RETRIES else 0
+
+
 def _require(condition):
     if not condition:
         raise ValueError("website_assessment_resume_binding_invalid")
@@ -177,7 +194,10 @@ def validate_preparation_request(*, request, task_context, authority, now, valid
             execution.get(k) != authority[k]
             for k in ("max_total_spend_usd", "max_paid_attempts", "expires_at_epoch")
         )
-        or execution.get("max_retries") != 0
+        or type(execution.get("max_retries")) is not int
+        or execution["max_retries"] not in WEBSITE_SCENE_MAX_RETRIES
+        # Never more than THIS grant allows: a grant that names no retry allows none.
+        or execution["max_retries"] > scene_configuration_max_retries(authority)
         or execution.get("claim_scope") != "development_only"
         or execution.get("allowed_providers") != expected_providers
     ):

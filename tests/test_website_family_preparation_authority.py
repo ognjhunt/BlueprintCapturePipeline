@@ -53,7 +53,8 @@ def test_family_preparation_preserves_authority_scope_and_exact_task_shape(fault
     elif fault == 'budget':
         request['execution']['max_total_spend_usd'] += 1
     elif fault == 'retry':
-        request['execution']['max_retries'] = 1
+        # 0 (every intent in flight on 2026-11-10) and 1 are signed values; more is not.
+        request['execution']['max_retries'] = 2
     elif fault == 'purpose':
         request['execution'].pop('purpose')
     elif fault == 'policy':
@@ -66,3 +67,20 @@ def test_family_preparation_preserves_authority_scope_and_exact_task_shape(fault
         request['task']['strategy'] = 'mining' if fault == 'unknown_strategy' else 'buttons'
     with pytest.raises(ValueError, match='website_preparation_request_authority_invalid'):
         validate_preparation_request(**args)
+
+
+@pytest.mark.parametrize('granted,retries,accepted', [
+    (1, 0, True), (1, 1, True), (1, 2, False), (1, True, False), (1, None, False),
+    # A grant issued before the allowance names none: only 0 passes against it.
+    (None, 0, True), (None, 1, False), (0, 1, False)])
+def test_family_preparation_accepts_one_scene_configuration_retry(granted, retries, accepted):
+    args = family_authority_vector()
+    if granted is not None:
+        args['authority']['scene_configuration_max_retries'] = granted
+        args['authority']['authority_digest'] = canonical_digest(args['authority'], digest_field='authority_digest')
+    args['request']['execution']['max_retries'] = retries
+    if accepted:
+        assert validate_preparation_request(**args) == args['authority']
+    else:
+        with pytest.raises(ValueError, match='website_preparation_request_authority_invalid'):
+            validate_preparation_request(**args)

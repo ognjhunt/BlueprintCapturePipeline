@@ -70,6 +70,36 @@ def _dependent_row_id(attempt_id: str) -> bool:
 
 
 
+#: Set on a scene-configuration row that is its intent's own paid attempt: an
+#: intent with no paid source row (a Website scene's source is a $0 preparation
+#: attempt). Only rows reserved since 2026-11-10 carry it, so an intent already
+#: in flight counts its paid attempts from then on and is never refused for
+#: rows it reserved before the count existed.
+PAID_ATTEMPT_FIELD = "counts_as_paid_attempt"
+
+
+def _source_row(row: Mapping[str, Any]) -> bool:
+    return not _dependent_row_id(str(row.get("attempt_id") or "")) and not row.get("visual_review_correction")
+
+
+def _counted_scene_configuration_attempts(directory: Path, rows: list[dict[str, Any]]) -> int:
+    """Marked scene-configuration rows that hold, or may have spent, money.
+
+    A settled row whose evidence proves it spent nothing (its retained hold is
+    $0) is no paid attempt; a live row, or one keeping any hold, is one.
+    """
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
+    count = 0
+    for row in rows:
+        if row.get(PAID_ATTEMPT_FIELD) is not True:
+            continue
+        cancellation = validated_cancellation(directory, row)
+        hold = _settled_hold(cancellation)
+        if cancellation is None or hold is not None and Decimal(str(hold["retained_spend_usd"])) > 0:
+            count += 1
+    return count
+
+
 def _root(root: Path) -> Path:
     _require(not root.is_symlink(), "root_unsafe")
     _scene_publisher_checkpoint()
@@ -311,6 +341,14 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         if visual_review_authority is not None:
             _require(not any((row.get('visual_review_correction') or {}).get('authority_digest')
                 == visual_review_authority['authority_digest'] for row in rows), 'visual_review_correction_already_reserved')
+        # An intent without a paid source row pays through its scene-configuration
+        # rows; each is one of its max_paid_attempts (finding 5, 2026-11-10).
+        own_paid_attempt = (visual_review_authority is None and attempt_id.startswith("scene-configuration-")
+                            and not any(_source_row(row) for row in rows))
+        if own_paid_attempt:
+            _require(_counted_scene_configuration_attempts(directory, rows) + 1 <= budget["max_paid_attempts"],
+                     "attempt_cap_exhausted")
+            body[PAID_ATTEMPT_FIELD] = True
         rows, settled_exposure, settled_attempts = _committed_holds(root, directory, intent, rows)
         # The owner-approved single visual correction is an explicit additional
         # review, never an extra GPU attempt. All ordinary attempts keep their

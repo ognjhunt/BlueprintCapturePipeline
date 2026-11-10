@@ -6,6 +6,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 import pytest
 
+from blueprint_pipeline.beta_policy_screening_publication_flags import as_v2
 from blueprint_pipeline.beta_policy_screening_result import screening_publication
 from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
 
@@ -31,7 +32,12 @@ def publication_inputs():
 
 
 def test_real_publication_matches_cross_repo_scripted_fixture():
-    value = screening_publication(**publication_inputs())
+    published = screening_publication(**publication_inputs())
+    # v3 adds the scene verdict (unknown: this plan recorded none); its v2 form is the retained fixture, byte for byte.
+    assert published["schema_version"] == "beta_policy_screening_publication.v3"
+    assert published["scene_feasibility"] == {"status": "unknown", "flags": []}
+    Draft202012Validator(json.loads((ROOT / "docs/schemas/beta_policy_screening_publication.v3.schema.json").read_text())).validate(published)
+    value = as_v2(published)
     expected = json.loads((ROOT / "tests/fixtures/beta_policy_screening_scripted_publication.v2.json").read_text())
     assert value == expected
     assert value["publication_digest"] == cross_runtime_canonical_digest(value, digest_field="publication_digest")
@@ -93,9 +99,9 @@ def test_old_publications_keep_absent_execution_provenance_absent():
                 "scripted_controller_invoked", "candidate_policy_queried"):
         del summary[key]
     original = json.loads((ROOT / "tests/fixtures/beta_policy_screening_publication.v2.json").read_text())
-    assert screening_publication(**deepcopy(inputs)) == original
+    assert as_v2(screening_publication(**deepcopy(inputs))) == original
     summary["execution_evidence_kind"] = "learned_policy"
-    assert screening_publication(**inputs) == original
+    assert as_v2(screening_publication(**inputs)) == original
     summary["execution_evidence_kind"] = KIND
     with pytest.raises(ValueError, match="beta_screening_result_evidence_kind_invalid"):
         screening_publication(**inputs)

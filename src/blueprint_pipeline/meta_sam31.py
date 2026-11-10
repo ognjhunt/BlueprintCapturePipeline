@@ -61,7 +61,8 @@ def parser_timeout_seconds(text: str) -> int:
 
 #: HTTP statuses the provider answers when it refused a request without processing it.
 #: A refusal it answered is a definite outcome, unlike a timeout or a dropped connection.
-REFUSAL_STATUSES = frozenset({400, 401, 403, 404, 409, 413, 415, 422})
+#: 429 (rate limited) and 503 (unavailable) refuse before any work; the job retries them later.
+REFUSAL_STATUSES = frozenset({400, 401, 403, 404, 409, 413, 415, 422, 429, 503})
 
 
 def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
@@ -72,7 +73,7 @@ def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
     admission digest so the website reserves it afresh and no one-dispatch grant is replayed.
     A 404 also retires the uploaded video it named (the provider no longer holds that file), so
     the next dispatch uploads it again. A prompt whose dispatch got no answer at all is counted as
-    spent and sent once more (``count_unanswered_dispatches``). Any other answer, such as a 5xx,
+    spent and sent once more (``count_unanswered_dispatches``). Any other answer, such as a 500,
     may have been processed and still requires reconciliation.
     """
     archive = Path(root) / "refused"

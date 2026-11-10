@@ -282,9 +282,8 @@ def test_a_reviewed_dead_attempt_is_recorded_failed_then_claimed_under_one_lock(
     assert claimed["attempt_history"] == ended["attempt_history"]
     assert claimed["lease_owner"] == "operator" and claimed["lease_token"] != dead["lease_token"]
     assert claimed["recovered_expired_lease"] is False and claimed["previous_lease_owner"] is None
-    # The unknown outcome is never fresh wait capacity for the new attempt.
-    assert not continuation.safe_to_arm(claimed["attempt_count"], claimed["attempt_history"],
-                                        claimed["recovered_expired_lease"])
+    # The unknown outcome stays on record; each paid call's own intent settles it before any purchase.
+    assert claimed["attempt_history"][-1]["outcome"] == "unknown"
 
 
 def test_a_lease_that_has_not_expired_is_refused_as_active(site):

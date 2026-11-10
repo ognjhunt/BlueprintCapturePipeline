@@ -417,7 +417,8 @@ def test_decoded_mask_cache_is_bound_to_retained_provider_bytes(tmp_path, monkey
         sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("must not purchase a retry"))
 
 
-def test_a_refusal_the_provider_answered_is_dispatched_again_under_a_fresh_reservation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("refusal", [404, 429, 503])
+def test_a_refusal_the_provider_answered_is_dispatched_again_under_a_fresh_reservation(tmp_path, monkeypatch, refusal):
     # capture-5b067498 (2026-11-06): the second target's request named a video upload from an
     # earlier pass that the provider no longer held, and it answered 404. That is an outcome,
     # not an uncertainty: the next pass uploads again and reserves the prompt afresh.
@@ -446,10 +447,11 @@ def test_a_refusal_the_provider_answered_is_dispatched_again_under_a_fresh_reser
         text = json.loads(request.data)["input"][0]["content"][0]["text"]
         calls.append(text)
         if text == "object 1" and calls.count("object 1") == 1:
-            raise HTTPError(sam.ENDPOINT, 404, "Not Found", {}, None)
+            raise HTTPError(sam.ENDPOINT, refusal, "Refused", {}, None)
         return BytesIO(json.dumps(response()).encode())
 
-    with pytest.raises(ValueError, match="meta_sam_http_404"):
+    # 429 (rate limited) and 503 (unavailable) are refusals too: retried, never a reconciliation hold.
+    with pytest.raises(ValueError, match=f"meta_sam_http_{refusal}"):
         sam.run_meta_sam31(**args, opener=refuses_second)
     result = sam.run_meta_sam31(**args, opener=refuses_second)
     assert result["status"] == "completed"
@@ -460,7 +462,7 @@ def test_a_refusal_the_provider_answered_is_dispatched_again_under_a_fresh_reser
     digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
         frame_artifacts=args["frame_artifacts"], prompts=prompts))
     archived = args["output_root"] / digest[7:] / "refused" / "attempt-1"
-    assert json.loads((archived / "failure-1.json").read_text())["http_status"] == 404
+    assert json.loads((archived / "failure-1.json").read_text())["http_status"] == refusal
     assert (archived / "intent-1.json").is_file()
     # An answered refusal is no unknown outcome: nothing is counted as spent or marked a resend.
     assert not (archived.parents[1] / sam.UNANSWERED_ARCHIVE).exists()
@@ -475,7 +477,7 @@ def test_a_server_error_answer_still_requires_reconciliation(tmp_path, monkeypat
     root = args["output_root"] / digest[7:]
     root.mkdir(parents=True)
     sam.write_json(root / "intent-0.json", {"binding_digest": digest})
-    sam.write_json(root / "failure-0.json", {"http_status": 503, "binding_digest": digest})
+    sam.write_json(root / "failure-0.json", {"http_status": 500, "binding_digest": digest})
     with pytest.raises(ValueError, match="requires_reconciliation"):
         sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("a 5xx may have been processed"))
     assert sam.retire_refused_dispatches(root, [0]) == 0

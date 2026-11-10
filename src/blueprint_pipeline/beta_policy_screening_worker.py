@@ -369,6 +369,93 @@ def _scene_preparation_holds(root: Path, packet_root: Path, *, max_sources: int,
     return outcomes
 
 
+class PublicationRefused(ValueError):
+    """The website refused a publication: its HTTP status and the response's typed ``code``, never its text."""
+
+    def __init__(self, status: int, code: str | None = None):
+        super().__init__(f"beta_screening_publication_http_{status}")
+        self.status, self.code = status, code
+
+
+#: The website's answer to a payload that passed its signature and digest but not its schema; it keeps the
+#: payload in quarantine and alerts once (WebApp ``pipelinePayloadQuarantine``).
+SCHEMA_NOT_ACCEPTED = "schema_not_accepted"
+#: The website already holds this revision with other bytes (WebApp ``screeningPublicationTransition``).
+REVISION_CONFLICT = "screening_revision_conflict"
+
+
+def _refusal_code(exc: HTTPError) -> str | None:
+    """An error response's typed ``code``, read bounded; ``None`` when it has none."""
+    try:
+        value = json.loads(exc.read(4096))
+    except (OSError, ValueError, AttributeError):  # No body, a cut-off body, or one that is not JSON.
+        return None
+    code = value.get("code") if isinstance(value, dict) else None
+    return code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", code) else None
+
+
+def v3_not_accepted(publication: Mapping[str, Any], exc: BaseException) -> str | None:
+    """Why the website did not take a v3 publication's bytes, when its v2 form may still be taken; else ``None``.
+
+    - ``schema_not_accepted`` (422): the website that knows the typed refusal did not accept the schema.
+    - HTTP 400: a website from before v3 answers a payload it cannot parse with a bare 400 and keeps nothing.
+    - ``screening_revision_conflict`` (409): it holds this revision with other bytes, which are the v2 form
+      when an earlier release of this worker sent the revision and its acknowledgment was not kept.
+
+    Every other refusal (authorization, the job's source, an outage) says nothing about the schema, and the
+    v2 form would meet it too.
+    """
+    from .beta_policy_screening_publication_flags import PUBLICATION_SCHEMA_V3
+
+    if publication.get("schema_version") != PUBLICATION_SCHEMA_V3:
+        return None
+    http = re.fullmatch(r"beta_screening_publication_http_([0-9]{3})", str(exc))
+    status = int(http.group(1)) if http and isinstance(exc, ValueError) else 0
+    code = getattr(exc, "code", None)
+    if status == 422 and code == SCHEMA_NOT_ACCEPTED:
+        return SCHEMA_NOT_ACCEPTED
+    if status == 400:
+        return "http_400"
+    return REVISION_CONFLICT if status == 409 and code == REVISION_CONFLICT else None
+
+
+def downgrade_publication(publication: Mapping[str, Any], *, reason: str,
+                          queue_root: str | Path) -> dict[str, Any] | None:
+    """Record that this revision goes out as v2, and return its v2 form; ``None`` when the campaign moved on.
+
+    The record is written before the v2 bytes are sent, so this revision is v2 from here on whatever the
+    website learns to accept later: it refuses one revision with two digests. The next revision is offered
+    as v3 again. Nothing about the result changes: the v2 form carries the same counts and budget.
+    """
+    from datetime import datetime, timezone
+
+    from .beta_policy_screening_coordinator import _ledger, _lock, _plan, _published_budget, _root, _save, _write
+    from .beta_policy_screening_publication_flags import (
+        DOWNGRADE_FIELD, PUBLICATION_SCHEMA_V2, PUBLICATION_SCHEMA_V3,
+    )
+    from .beta_policy_screening_result import screening_publication
+
+    root = _root(queue_root)
+    campaign_id = publication["campaign_id"]
+    with _lock(root):
+        ledger = _ledger(root)
+        state = ledger["campaigns"].get(campaign_id)
+        if state is None or state["revision"] != publication["revision"]:
+            return None
+        state[DOWNGRADE_FIELD] = {
+            "revision": state["revision"], "from_schema_version": PUBLICATION_SCHEMA_V3,
+            "to_schema_version": PUBLICATION_SCHEMA_V2, "reason": reason,
+            "refused_publication_digest": publication["publication_digest"],
+            "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+        _save(root, ledger)
+        legacy = screening_publication(plan=_plan(root, campaign_id, state["plan_digest"]), state=state,
+                                       budget=_published_budget(ledger, state))
+        if legacy["schema_version"] != PUBLICATION_SCHEMA_V2 or legacy["revision"] != publication["revision"]:
+            return None  # The save moved the campaign to a new revision: the next pass offers that one.
+        _write(root / "publications" / f"{campaign_id}.json", legacy)
+    return legacy
+
+
 def publish_screening(publication: Mapping[str, Any]) -> dict[str, Any]:
     """Send the immutable publication using the existing signed Pipeline transport."""
     from .safe_outbound_http import pinned_api_policy, request
@@ -386,9 +473,9 @@ def publish_screening(publication: Mapping[str, Any]) -> dict[str, Any]:
             data=body, headers=_pipeline_sync_headers(load_pipeline_sync_token(), body), timeout_seconds=15,
             policy=pinned_api_policy(origin, max_response_bytes=100_000), max_response_bytes=100_000)
     except HTTPError as exc:
-        code = exc.code
+        status, code = exc.code, _refusal_code(exc)
         exc.close()
-        raise ValueError(f"beta_screening_publication_http_{code}") from None
+        raise PublicationRefused(status, code) from None
     value = json.loads(response.body)
     if (not isinstance(value, dict) or value.get("status") not in {"created", "updated", "replayed"}
             or value.get("run_id") != publication["campaign_id"]
@@ -400,12 +487,28 @@ def publish_screening(publication: Mapping[str, Any]) -> dict[str, Any]:
 
 def deliver_publications(*, queue_root: str | Path, transport=None,
                          refresh_startable: bool = False) -> dict[str, Any]:
+    """Deliver each campaign's latest publication and keep its exact acknowledgment.
+
+    A v3 publication the website does not accept as v3 (``v3_not_accepted``) is delivered in the same pass
+    as v2, so no result waits on the website's release; the ledger records the downgrade and the summary
+    counts it (``downgraded_to_v2``). The two repositories deploy in either order.
+    """
     from .beta_policy_screening_coordinator import acknowledge_publication, pending_publications
-    sent = failed = 0
+    sent = failed = downgraded = 0
     failure: dict[str, Any] = {}
+    send = transport or publish_screening
     for publication in pending_publications(queue_root=queue_root, refresh_startable=refresh_startable):
         try:
-            (transport or publish_screening)(publication)
+            try:
+                send(publication)
+            except ValueError as exc:
+                reason = v3_not_accepted(publication, exc)
+                legacy = downgrade_publication(publication, reason=reason, queue_root=queue_root) if reason else None
+                if legacy is None:
+                    raise
+                publication = legacy
+                downgraded += 1
+                send(publication)
             acknowledged = acknowledge_publication(publication["campaign_id"], publication["publication_digest"],
                 queue_root=queue_root)
             sent += int(acknowledged)
@@ -422,7 +525,8 @@ def deliver_publications(*, queue_root: str | Path, transport=None,
                 else "ack" if str(exc) == "beta_screening_publication_ack_invalid"
                 else "unavailable" if rate_limited(exc) or status >= 500 or isinstance(exc, OSError)
                 else "unknown"), "last_error": error_description(exc)}
-    return {"acknowledged": sent, "pending": failed, **failure}
+    return {"acknowledged": sent, "pending": failed, **({"downgraded_to_v2": downgraded} if downgraded else {}),
+            **failure}
 
 
 def retained_run_dirs(root: Path):

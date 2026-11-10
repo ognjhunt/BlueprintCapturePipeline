@@ -288,7 +288,7 @@ def test_the_manifest_is_referenced_from_the_summary_and_the_runs_are_published(
     assert [len(run["videos"]) for run in entry["practice_runs"]] == [6, 6, 6] + [0] * 7
     text = json.dumps(published)
     assert str(world.capture) not in text and "manifest_path" not in text and "relative_path" not in text
-    schema = json.loads((ROOT / "docs/schemas/beta_policy_screening_publication.v2.schema.json").read_text())
+    schema = json.loads((ROOT / "docs/schemas/beta_policy_screening_publication.v3.schema.json").read_text())
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(published)
     assert published["publication_digest"] == cross_runtime_canonical_digest(published, digest_field="publication_digest")
 
