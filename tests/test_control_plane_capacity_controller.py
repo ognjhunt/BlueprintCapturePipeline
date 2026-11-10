@@ -890,7 +890,9 @@ def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_whil
     critical = cap.run_controller(**common, disk_usage=_usage(9.0), now=2_000.0)
     assert critical["level"] == "critical" and critical["alert_posted"] is True
     assert posted == [("https://alerts.example/hook", "critical")]
-    assert {a["code"] for a in critical["alerts"]} == {"admission_refused", "utilization_critical"}
+    # No GC summary on this test host, so the critical mount's reclaim state is unknown.
+    assert {a["code"] for a in critical["alerts"]} == {
+        "admission_refused", "utilization_critical", "reclaim_state_unknown"}
 
     again = cap.run_controller(**common, disk_usage=_usage(9.0), now=2_600.0)
     assert again["alert_posted"] is False and len(posted) == 1
@@ -1729,5 +1731,65 @@ def test_money_credit_spend_and_stall_pages_are_unchanged():
     assert cap.PAGE_ALERT_CODES == {
         "floor_within_three_days", "floor_within_hours", "admission_refused",
         "critical_admission_refused", "mount_unreadable", "volume_growth_blocked",
-        "operator_alert_route_unconfigured", "reclaim_ineffective", "provider_credit_insufficient",
+        "operator_alert_route_unconfigured", "reclaim_ineffective", "reclaim_state_unknown",
+        "provider_credit_insufficient",
         *provider_spend.PAGE_CODES, *stall_alarm.PAGE_CODES, *preparation_delivery.PAGE_CODES}
+
+
+def _gc_run(tmp_path, monkeypatch, *, free_gib: float, now: float, edit=None):
+    """One controller tick against the ineffective GC summary, optionally edited."""
+    _no_project_spend(monkeypatch)
+    gc = _ineffective_gc_summary(tmp_path / "gc.json")
+    if edit is not None:
+        gc.write_text(json.dumps(edit(json.loads(gc.read_text()))), encoding="utf-8")
+    posted = _capture_payloads(monkeypatch)
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "notes", storage_gc_summary_path=gc,
+        disk_usage=_usage(free_gib=free_gib, total_gib=294.7), now=now, survey=_snapshot_survey,
+        poster=cap.post_alert,
+    )
+    return [row for row in report["alerts"] if row["severity"] == "page"], posted
+
+
+def _with_errors(summary):
+    summary["phase_errors"] = [{"phase": "content_store", "error": "OSError"}]
+    return summary
+
+
+def test_critical_mount_with_stale_gc_summary_pages_once(tmp_path, monkeypatch):
+    pages, posted = _gc_run(tmp_path, monkeypatch, free_gib=22.0, now=900.0 + 3 * 3600)
+    assert [row["code"] for row in pages] == ["reclaim_state_unknown"]
+    assert pages[0]["mount"] == str(tmp_path)
+    assert (pages[0]["reason"], pages[0]["gc_summary_age_seconds"]) == ("gc_summary_stale", 3 * 3600)
+    assert posted[0]["page"] is True
+    assert "critical, reclaim state unknown (gc_summary_stale, 3.0h old)" in posted[0]["summary"]
+
+
+def test_critical_mount_with_errored_gc_summary_pages_once(tmp_path, monkeypatch):
+    pages, posted = _gc_run(tmp_path, monkeypatch, free_gib=22.0, now=1_000.0, edit=_with_errors)
+    assert [row["code"] for row in pages] == ["reclaim_state_unknown"]
+    assert pages[0]["reason"] == "gc_summary_errors" and pages[0]["phase_error_count"] == 1
+    assert "1 phase errors" in posted[0]["summary"]
+
+
+def test_critical_mount_with_fresh_gc_reclaiming_nothing_pages_once_not_twice(tmp_path, monkeypatch):
+    pages, _posted = _gc_run(tmp_path, monkeypatch, free_gib=22.0, now=1_000.0)
+    assert [row["code"] for row in pages] == ["reclaim_ineffective"]
+
+
+def test_healthy_mount_with_stale_gc_summary_does_not_page(tmp_path, monkeypatch):
+    pages, posted = _gc_run(tmp_path, monkeypatch, free_gib=120.0, now=900.0 + 3 * 3600)
+    assert pages == []
+    assert all(payload["page"] is False for payload in posted)
+
+
+def test_reclaim_state_unknown_clears_when_the_summary_is_fresh_again():
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    summary = build_storage_gc_summary({"observed_at_epoch": 900.0, "status": "applied", "opt_in": {}})
+    assert cap._reclaim_state_unknown(None, now=1_000.0) == {"reason": "gc_summary_missing"}
+    assert cap._reclaim_state_unknown(summary, now=900.0 + 2 * 3600 + 1)["reason"] == "gc_summary_stale"
+    assert cap._reclaim_state_unknown(summary, now=1_000.0) is None

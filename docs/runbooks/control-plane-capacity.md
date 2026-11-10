@@ -74,7 +74,12 @@ changes nothing. It and `orphan_scratch_large` warn: on a healthy disk neither
 needs action today. On a critical mount the GC cannot relieve, the single page is
 `reclaim_ineffective`, which carries the mount, `free_bytes`, `floor_bytes`,
 `available_bytes` and `top_retained_reasons`; the webhook's `cites` lists these
-usage warnings so the reader knows where the bytes are.
+usage warnings so the reader knows where the bytes are. When the GC summary
+cannot be trusted (missing, more than twice its hourly interval old, not
+`applied`, or carrying phase errors or skipped roots) the same mount pages once
+as `reclaim_state_unknown` instead, with `reason`, `gc_summary_age_seconds` and
+any error counts; check the storage GC unit first. It clears by itself once a
+fresh, clean summary is read.
 
 For a configured DigitalOcean volume, check `volume_resize.status` and
 `reason`. `volume_at_maximum` needs a provider limit increase before raising

@@ -134,6 +134,8 @@ PAGE_ALERT_CODES = frozenset({
     # it rests on (storage_class_over_budget, orphan_scratch_large,
     # usage_unclassified_root) warn: on a healthy disk none needs action today.
     "reclaim_ineffective",
+    # The same mount when the GC summary cannot say whether reclaim works.
+    "reclaim_state_unknown",
     # Vast stops every instance once its balance runs out.
     "provider_credit_insufficient",
     # A live website preparation status callback undelivered for over an hour (D-05);
@@ -223,6 +225,32 @@ def _finite_number(value: int | float) -> bool:
         return math.isfinite(value)
     except OverflowError:
         return False
+
+
+def _reclaim_state_unknown(summary: Mapping[str, Any] | None, *, now: float) -> dict[str, Any] | None:
+    """Why the GC summary cannot be trusted, or None when it is fresh, applied and error-free.
+
+    Fresh means at most twice ``GC_SUMMARY_INTERVAL_SECONDS`` old, the margin
+    ``_reclaim_outlook`` already uses.
+    """
+
+    if not isinstance(summary, Mapping) or summary.get("schema_version") != "control_plane_storage_gc_summary.v1":
+        return {"reason": "gc_summary_missing"}
+    observed = summary.get("observed_at_epoch")
+    if type(observed) not in (int, float) or not _finite_number(observed):
+        return {"reason": "gc_summary_unreadable"}
+    age = now - observed
+    if not 0 <= age <= 2 * GC_SUMMARY_INTERVAL_SECONDS:
+        return {"reason": "gc_summary_stale", "gc_summary_age_seconds": round(age)}
+    if summary.get("status") != "applied":
+        return {"reason": "gc_summary_not_applied", "status": str(summary.get("status"))[:40],
+                "gc_summary_age_seconds": round(age)}
+    errors, skipped = summary.get("phase_errors"), summary.get("skipped_roots")
+    if not isinstance(errors, list) or not isinstance(skipped, list) or errors or skipped:
+        return {"reason": "gc_summary_errors", "gc_summary_age_seconds": round(age),
+                "phase_error_count": len(errors) if isinstance(errors, list) else None,
+                "skipped_root_count": len(skipped) if isinstance(skipped, list) else None}
+    return None
 
 
 def _reclaim_outlook(
@@ -791,6 +819,8 @@ _SUMMARY_ALERT_KEYS = (
     "spend_usd", "threshold_usd", "limit_usd", "window", "http_status",
     # reclaim_ineffective: the critical mount's own figures beside what the GC kept.
     "top_retained_reasons", "free_bytes", "floor_bytes", "available_bytes",
+    # reclaim_state_unknown: why the GC summary cannot be trusted.
+    "gc_summary_age_seconds", "phase_error_count", "skipped_root_count",
     "hours_until_floor", "decline_bytes_per_hour", "window_seconds",
     "storage_class", "budget_bytes", "byte_accounting",
     # Stall pages: identifiers and codes only, never paths or owner fields.
@@ -969,6 +999,16 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
                    f"{float(first.get('free_bytes') or 0) / GIB:.1f} GiB free, floor "
                    f"{float(first.get('floor_bytes') or 0) / GIB:.1f} GiB, "
                    f"{float(first.get('available_bytes') or 0) / GIB:.1f} GiB above it")
+    elif first.get("code") == "reclaim_state_unknown":
+        state = str(first.get("reason") or "gc_summary_unknown")
+        if isinstance(first.get("gc_summary_age_seconds"), (int, float)):
+            state += f", {float(first['gc_summary_age_seconds']) / 3600:.1f}h old"
+        if first.get("phase_error_count") or first.get("skipped_root_count"):
+            state += (f", {first.get('phase_error_count') or 0} phase errors,"
+                      f" {first.get('skipped_root_count') or 0} skipped roots")
+        summary = (f"{first.get('mount') or 'control plane'}: critical, reclaim state unknown ({state}); "
+                   f"{float(first.get('free_bytes') or 0) / GIB:.1f} GiB free, floor "
+                   f"{float(first.get('floor_bytes') or 0) / GIB:.1f} GiB")
     ineffective = next(
         (row for row in page_alerts if row.get("code") == "reclaim_ineffective"), None
     )
@@ -1326,17 +1366,19 @@ def run_controller(
         gc_summary, now=observed, volume_growth=growth,
     )
     report["reclaim_outlook"] = outlook
-    # Critical disks that GC cannot relieve; another alert's critical level is not a disk.
-    if disk_level == "critical" and reclaim_ineffective:
+    # Critical disks that GC cannot relieve, or whose GC cannot be read: one page
+    # per mount. Another alert's critical level is not a disk.
+    unknown = None if reclaim_ineffective else _reclaim_state_unknown(gc_summary, now=observed)
+    if disk_level == "critical" and (reclaim_ineffective or unknown):
         critical = [row for row in report.get("mounts") or []
                     if isinstance(row, Mapping) and row.get("level") == "critical"
                     and row.get("status") == "measured"]
         report["alerts"].extend({
-            "code": "reclaim_ineffective",
+            "code": "reclaim_ineffective" if reclaim_ineffective else "reclaim_state_unknown",
             **({"mount": row.get("mount"), "free_bytes": row.get("free_bytes"),
                 "floor_bytes": row.get("floor_bytes"), "available_bytes": row.get("available_bytes"),
                 "used_fraction": row.get("used_fraction")} if row else {}),
-            "top_retained_reasons": retained_reasons,
+            **({"top_retained_reasons": retained_reasons} if reclaim_ineffective else unknown),
         } for row in critical or [None])
     _annotate_alerts(report["alerts"])
     report["alert_posted"] = False
