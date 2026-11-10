@@ -62,14 +62,15 @@ def _headers(private, body, *, delivery="del_01jexample", stamp=None):
 @pytest.fixture
 def hook(tmp_path):
     key = Ed25519PrivateKey.generate()
-    keys, clock, project = Keys(key), [1000.0], [PROJECT]
+    keys, clock, project, wall = Keys(key), [1000.0], [PROJECT], [None]
     request = tmp_path / "atlas-provider-poll" / "requested"
     receiver = webhook.AtlasWebhookReceiver(poll_request=request, fetch_jwks=keys, monotonic=lambda: clock[0],
+                                            clock=lambda: time.time() if wall[0] is None else wall[0],
                                             expected_project=lambda: project[0])
     app = FastAPI()
     webhook.register_atlas_webhook_route(app, receiver)
     return SimpleNamespace(key=key, keys=keys, clock=clock, receiver=receiver, request=request,
-                           client=TestClient(app), project=project)
+                           client=TestClient(app), project=project, wall=wall)
 
 
 def _post(hook, body, headers):
@@ -104,7 +105,10 @@ def test_a_duplicate_delivery_is_acknowledged_without_a_second_poll(hook):
 def test_an_unverified_or_stale_delivery_is_refused_and_requests_nothing(hook, case, status):
     body = _event()
     signer = Ed25519PrivateKey.generate() if case == "other_key" else hook.key
-    stamp = {"stale": int(time.time()) - 301, "future": int(time.time()) + 301}.get(case)
+    # Freeze the receiver's wall clock: stamps taken from time.time() lose up to 1 s to int() and more to a slow
+    # runner, so a "+301 s" delivery could reach the handler within its 300 s tolerance and be accepted.
+    now = hook.wall[0] = 1_800_000_000.5
+    stamp = {"stale": int(now) - 301, "future": int(now) + 301}.get(case, int(now))
     headers = _headers(signer, body, stamp=stamp)
     if case == "altered_body":
         body = _event("op_someone_else")
