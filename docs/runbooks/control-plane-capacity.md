@@ -212,6 +212,41 @@ The same tick reads the listener's
   silent listener's last metrics grow with the silence, so a live callback
   still pages.
 
+## Orphan scratch reference census
+
+Each storage-GC tick ends by writing `storage-gc/orphan-scratch-census.json`
+(`control_plane_lane_scratch_census.build_reference_census`). The capacity summary
+reports it under `usage.orphan_scratch_census`, which `door status` shows.
+
+**No reference found means none was found among the kinds checked, at the census
+time. It is evidence for an owner's decision, not a statement that deletion is
+safe, and a reference can appear after the census.** Read `age_seconds` first.
+
+- `kinds` lists every reference kind with `checked`, `failed` (with errors) or
+  `not_checked` (with why): queue, active_run, capture_reconstruction,
+  pubsub_handoff, door_request, process, container_mount, docker_container,
+  unit_file, env_file, release_source, sibling_link, pin, live_release.
+  `release_source` reads the live release's runtime code, not its tests or docs.
+  `not_checked_sources` names what no kind covers (podman or bare containerd
+  containers; a /proc read that blocks is not interrupted by the deadline).
+- `status` is `complete` only when every kind is `checked`. Otherwise every
+  folder is `not_proven` and `no_specific_reference_found_bytes` is null, never zero.
+- A reference to a scan root itself (`/mnt/blueprint-work`,
+  `/var/lib/blueprint/task-evaluation-inputs`, or a directory above one) is how the
+  system finds its workspace, not evidence about any one folder. It changes no row
+  and is listed once in `root_reachable_by`: anything that uses a scratch root can
+  reach every folder under it, and this census cannot rule that out. Folder family
+  and age are the other evidence. A named intermediate directory (a lane folder)
+  makes the folders under it `not_proven` (`ancestor_references`).
+- Each folder row gives its bytes, `references`, `lane_family`, `use_guess` (a
+  name-pattern guess), `top_level_unchanged_days` (the folder and its direct
+  children only), and `run_time_only`. A run-time-only folder (SDK inputs, a
+  checkpoint or wheel cache) has no reference between runs; deleting it means a
+  rebuild or a paid re-download.
+- The census retires and deletes nothing, and nothing reads it to delete. An
+  owner who decides to retire folders lists them in an owner-approved deletion
+  manifest (`deploy/owner-approved-deletions/`), which re-checks every path.
+
 ## Owner's Phase 0 checklist
 
 1. Review the current `status` and `usage` evidence; approve a root-disk resize

@@ -1931,6 +1931,12 @@ def _run_main(argv: list[str]) -> int:
     if args.report_out:
         _write_report(Path(args.report_out).expanduser(), report)
         summary_written = _write_summary(Path(args.report_out).expanduser(), report)
+        if str(os.getenv("BLUEPRINT_CONTROL_PLANE_GC_ORPHAN_SCRATCH_CENSUS") or "").strip() == "1":
+            from .control_plane_lane_scratch_census import publish_reference_census
+            publish_reference_census(Path(args.report_out).expanduser().parent, pins_root=Path(pins_root),
+                queue_roots=args.queue_root or _split_env(QUEUE_ROOTS_ENV), active_run_roots=[
+                    *(args.evidence_root or _split_env(EVIDENCE_ROOTS_ENV)),
+                    *(args.settlement_root or _split_env(SETTLEMENT_ROOTS_ENV))])
     print(json.dumps(report, indent=2, sort_keys=True))
     # The whole report is written first; a failed phase still fails the unit so it is seen.
     return 1 if report.get("phase_errors") or not summary_written else 0
