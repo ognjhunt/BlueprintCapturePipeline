@@ -80,7 +80,8 @@ def test_a_confirmed_proposal_compiles_the_owner_contract_as_the_owners(tmp_path
     _require_strict_owner_success_contract(task_spec=plan["task_spec"], contract=contract)
 
 
-def test_without_a_confirmation_it_refuses_as_before(tmp_path, monkeypatch) -> None:
+def test_without_a_confirmation_an_operators_compile_refuses_as_before(tmp_path, monkeypatch) -> None:
+    # Only the website worker's compile assumes unconfirmed thresholds (tests/test_website_owner_success_assumption.py).
     job, inputs = _job(tmp_path, monkeypatch)
     for name, scope in (("unscoped", False), ("scoped", True)):
         with pytest.raises(TeamScenePacketError, match=f"\\A{REFUSED}\\Z"):
@@ -167,8 +168,12 @@ def test_an_owner_contract_refusal_returns_to_pending_once_per_new_confirmation(
     # Refused again with the same confirmation: it is never retried for that confirmation again.
     (queue / "pending" / f"{key}.json").rename(queue / "processed" / f"{key}.json")
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
-    # A newly deployed release never returns an owner-contract refusal: only a new confirmation does.
+    # A newly deployed release returns an owner-contract refusal once, like any other deterministic refusal:
+    # nothing waits for the owner's confirmation any more (``website_owner_success_assumption``).
     monkeypatch.setattr(worker, "current_release_commit", lambda: "a" * 40)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [{
+        "request_key": key, "reason": "new_release", "release_commit": "a" * 40, "blocked_release_commit": None}]
+    (queue / "pending" / f"{key}.json").rename(queue / "processed" / f"{key}.json")
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
     # Without a known release, any other deterministic refusal never moves.
     monkeypatch.setattr(worker, "current_release_commit", lambda: None)

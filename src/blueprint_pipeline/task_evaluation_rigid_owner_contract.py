@@ -19,27 +19,24 @@ from .adp_task_scoring import (
 )
 
 
-def _derive_configured_owner_success_contract(
-    task_spec: Mapping[str, Any], *, site_id: str, task_id: str, team_namespace: str | None = None
-) -> dict[str, Any] | None:
+_REQUIRED = ("drop_minimum_fall_m", "maximum_task_contact_force_n",
+             "forbidden_contact_classes", "maximum_retries", "maximum_regrasps",
+             "retreat_clearance_m", "robot_workspace_position_bounds_world_m",
+             "collision_failure_minimum_force_n")
+
+
+def configured_owner_success_criteria(task_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """The criteria a rigid owner contract seals, from the task's own configured thresholds.
+
+    Who stands behind them is the caller's to say: the owner's confirmed authority
+    (``_derive_configured_owner_success_contract``), or Blueprint's stated assumption
+    for a website job its site has not confirmed (``website_owner_success_assumption``).
+    The criteria are the same either way.
+    """
+
     configured = task_spec.get("configured_success_criteria") or {}
-    if configured.get("owner_success_contract_required") is not True:
-        return None
-    authority = task_spec.get("configured_owner_authority") or {}
-    agent_proposal = authority.get("author_source") == "agent_proposal"
-    if (authority.get("author_source", "task_owner") not in {"task_owner", "agent_proposal"}
-            or authority.get("confirmation_status") != "confirmed"
-            or not isinstance(authority.get("accepted_by"), str)
-            or not authority["accepted_by"].strip()
-            or not isinstance(authority.get("authority_reference"), str)
-            or not authority["authority_reference"].strip()):
-        raise TaskNeutralScoringError(["configured_owner_success_contract_authority_missing"])
-    required = ("drop_minimum_fall_m", "maximum_task_contact_force_n",
-                "forbidden_contact_classes", "maximum_retries", "maximum_regrasps",
-                "retreat_clearance_m", "robot_workspace_position_bounds_world_m",
-                "collision_failure_minimum_force_n")
     missing = [f"configured_owner_success_contract_explicit_field_missing:{field}"
-               for field in required if field not in configured]
+               for field in _REQUIRED if field not in configured]
     if missing:
         raise TaskNeutralScoringError(missing)
     for field in ("retreat_clearance_m", "robot_workspace_position_bounds_world_m",
@@ -70,6 +67,25 @@ def _derive_configured_owner_success_contract(
     if configured.get("per_cell_controls_required") is True:
         criteria["controls"] = {"mode": "required_per_cell", "control_ids": [
             "zero_action_negative", "deterministic_scripted_positive"]}
+    return criteria
+
+
+def _derive_configured_owner_success_contract(
+    task_spec: Mapping[str, Any], *, site_id: str, task_id: str, team_namespace: str | None = None
+) -> dict[str, Any] | None:
+    configured = task_spec.get("configured_success_criteria") or {}
+    if configured.get("owner_success_contract_required") is not True:
+        return None
+    authority = task_spec.get("configured_owner_authority") or {}
+    agent_proposal = authority.get("author_source") == "agent_proposal"
+    if (authority.get("author_source", "task_owner") not in {"task_owner", "agent_proposal"}
+            or authority.get("confirmation_status") != "confirmed"
+            or not isinstance(authority.get("accepted_by"), str)
+            or not authority["accepted_by"].strip()
+            or not isinstance(authority.get("authority_reference"), str)
+            or not authority["authority_reference"].strip()):
+        raise TaskNeutralScoringError(["configured_owner_success_contract_authority_missing"])
+    criteria = configured_owner_success_criteria(task_spec)
 
     if agent_proposal:
         proposal = authority.get("agent_proposal")
@@ -85,7 +101,7 @@ def _derive_configured_owner_success_contract(
                 or team_namespace is None or confirmed_team != team_namespace
                 or not isinstance(proposal.get("success"), Mapping)
                 or any(proposal["success"].get(field) != configured[field]
-                       for field in (*required, "minimum_lift_m"))):
+                       for field in (*_REQUIRED, "minimum_lift_m"))):
             raise TaskNeutralScoringError(["configured_owner_success_contract_agent_authority_invalid"])
         proposed = seal_rigid_task_success_contract(
             task_spec=task_spec, site_id=site_id, task_id=task_id,

@@ -35,7 +35,10 @@ compiled here straight into the scene half a team run reads:
   (``droid_exterior_cameras``); the packet is then compiled once more with it,
   and without it the record says why;
 - the sealed success contract: the scene owner's when the task requires one,
-  else the strategy's compatibility default (as every canary setup seals it);
+  else the strategy's compatibility default (as every canary setup seals it).
+  A website job whose site has not confirmed Blueprint's standard thresholds
+  is compiled on them all the same, marked as assumed
+  (``website_owner_success_assumption``; the website worker's compile only);
 - ``team_scene_inputs.v1.json``, which the team registry reads
   (``team_candidate_quick10_registry``) in place of a frozen internal pair.
 
@@ -673,7 +676,8 @@ def _owner_confirmed(task_spec: Mapping[str, Any], *, revision: Mapping[str, Any
 
     Only the owner's sealed record for this exact intent, revision, success document, thresholds and
     proposal confirms it (``task_evaluation_owner_success_confirmation``); without one the task is
-    unchanged and the owner contract refuses as before. No threshold changes either way.
+    unchanged: the owner contract refuses, or the website worker's compile assumes the thresholds
+    (``materialize_team_scene``). No threshold changes either way.
     """
 
     if scope is None:
@@ -865,6 +869,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            embodiment_manifests: Sequence[Mapping[str, Any]] = (),
                            embodiment_models: Mapping[str, str | Path] | None = None,
                            owner_success_confirmation_scope: Mapping[str, Any] | None = None,
+                           assume_unconfirmed_standard_thresholds: bool = False,
                            movable_furniture: Mapping[str, Any] | None = None,
                            robot_access_scope: Mapping[str, Any] | None = None,
                            robot_access_offer: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -875,7 +880,10 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     robot model is in ``embodiment_models`` (by embodiment digest) has that station chosen with its own
     arm (``_own_arm_stations``). ``owner_success_confirmation_scope`` (``intent`` and its ``directory``,
     bound to this scene by the caller) is where a ``proposal_only`` owner authority may find the owner's
-    sealed confirmation of these exact thresholds (``_owner_confirmed``).
+    sealed confirmation of these exact thresholds (``_owner_confirmed``). Without one such a task is refused,
+    unless ``assume_unconfirmed_standard_thresholds`` is set (the website worker's alone, never an
+    operator's or Arm Decision Proof's): it then compiles on those same thresholds as Blueprint's stated
+    assumption, and the record says so (``website_owner_success_assumption``).
     ``movable_furniture`` is what the scene knows of its own movable furniture: its measurement's
     sidecar, or that none was made (``robot_access_measurement.furniture_for_scope``). When none was made
     and furniture plausibly blocks the carry, the record says the measurement is due (``measurement_due``),
@@ -893,6 +901,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         seal_task_success_contract,
         validate_task_success_contract,
     )
+    from . import website_owner_success_assumption as assumption
     from .adp_task_scoring import TaskNeutralScoringError
     from .native_task_arena_packet import materialize_native_task_arena_packet
     from .task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
@@ -933,6 +942,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     collision = binary_copy(assets["collision"], root / ".collider-read-cache")
     physics_collision = assets["collision"]
     owner, motion, destination_asset, seating, support = None, None, None, None, None
+    assumed: dict[str, Any] | None = None
     if articulated:
         try:
             task = _articulated_task(revision=revision, references=references, replacement=assets["replacement"],
@@ -969,8 +979,15 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         task_spec, confirmation = _owner_confirmed(task_spec, revision=revision,
                                                    scope=owner_success_confirmation_scope)
         try:
-            owner = _derive_configured_owner_success_contract(task_spec, site_id=scene_id, task_id=task_id,
-                                                             team_namespace=revision.get("team_namespace"))
+            if assume_unconfirmed_standard_thresholds and confirmation is None and assumption.assumable(task_spec):
+                # The site has not confirmed Blueprint's standard thresholds: scored on them, and said so.
+                owner = assumption.assumed_contract(task_spec, task_kind="rigid_pick_place", site_id=scene_id,
+                                                    task_id=task_id)
+                assumed = assumption.assumption_record(task_spec=task_spec, revision=revision,
+                                                       scope=owner_success_confirmation_scope, contract=owner)
+            else:
+                owner = _derive_configured_owner_success_contract(task_spec, site_id=scene_id, task_id=task_id,
+                                                                 team_namespace=revision.get("team_namespace"))
         except TaskNeutralScoringError as exc:
             raise TeamScenePacketError("team_scene_owner_contract_invalid:" + ",".join(exc.errors)) from exc
         if owner is not None:
@@ -1140,8 +1157,15 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         from .task_evaluation_scene_control_omission import confirmed_articulated_contract
 
         try:
-            owner = confirmed_articulated_contract(task_spec=plan["task_spec"], site_id=str(plan["scene_id"]),
-                                                   task_id=str(plan["task_id"]))
+            if (assume_unconfirmed_standard_thresholds and confirmation is None
+                    and assumption.assumable(plan["task_spec"])):
+                owner = assumption.assumed_contract(plan["task_spec"], task_kind=task_kind,
+                                                    site_id=str(plan["scene_id"]), task_id=str(plan["task_id"]))
+                assumed = assumption.assumption_record(task_spec=plan["task_spec"], revision=revision,
+                                                       scope=owner_success_confirmation_scope, contract=owner)
+            else:
+                owner = confirmed_articulated_contract(task_spec=plan["task_spec"], site_id=str(plan["scene_id"]),
+                                                       task_id=str(plan["task_id"]))
         except ValueError as exc:
             raise TeamScenePacketError("team_scene_owner_contract_invalid:" + str(exc)) from exc
     try:
@@ -1169,6 +1193,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         **({"task_support_pad": support} if support is not None else {}),
         **({"embodiment_stations": stations} if stations else {}),
         **({"robot_access_removal": access} if access is not None else {}),
+        **({assumption.FIELD: assumed} if assumed is not None else {}),
         "inputs_digest": ""}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
     path = root / RECORD_FILENAME
@@ -1177,6 +1202,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     return {"path": str(path), "inputs_digest": value["inputs_digest"], "scene_id": scene_id, "task_id": task_id,
             "robot_station": station,
             **({"owner_success_confirmation": confirmation} if confirmation is not None else {}),
+            **({assumption.FIELD: assumed} if assumed is not None else {}),
             **({"robot_access_removal": {key: access[key] for key in ("status", "reason", "confirmation_digest",
                                                                       "binding_digest") if key in access}}
                if access is not None else {})}

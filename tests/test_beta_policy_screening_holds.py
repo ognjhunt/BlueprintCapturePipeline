@@ -72,12 +72,16 @@ def test_a_task_with_no_probe_is_held_as_a_capability_limit_without_reading_the_
     ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"], "release_commit": RELEASE,
       "automatic_retry": {"attempts": len(packets.AUTOMATIC_RETRY_BACKOFF_SECONDS)}},
      ("team_scene_packet_blocked", "team_scene_packet_interrupted")),
-    # Still due an automatic retry, a new release's try, or the owner's confirmation; or not blocked.
+    # An owner contract that cannot be sealed is a refusal like any other: nothing waits for the owner's
+    # confirmation any more, so the job hears that it is held.
+    ({"status": "blocked", "blockers": [packets.OWNER_CONTRACT_BLOCKER_PREFIX + "proposal_only"],
+      "release_commit": RELEASE}, ("team_scene_packet_blocked", "team_scene_owner_contract_invalid:proposal_only")),
+    # Still due an automatic retry or a new release's try; or not blocked.
     ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"], "release_commit": RELEASE,
       "automatic_retry": {"attempts": 1}}, None),
     ({"status": "blocked", "blockers": ["team_scene_packet_bundle_invalid"], "release_commit": NEXT_RELEASE}, None),
     ({"status": "blocked", "blockers": [packets.OWNER_CONTRACT_BLOCKER_PREFIX + "proposal_only"],
-      "release_commit": RELEASE}, None),
+      "release_commit": NEXT_RELEASE}, None),
     ({"status": "processing"}, None),
     # A withdrawn capture ends on the website itself, never as a hold.
     ({"status": "blocked", "blockers": ["team_scene_capture_withdrawn"], "release_commit": RELEASE}, None),

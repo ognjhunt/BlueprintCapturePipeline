@@ -1,16 +1,18 @@
 """The site owner's decision on a website job's success thresholds, made on the job page.
 
 A website job's thresholds are Blueprint's fixed development controls, marked
-``proposal_only``, and every owner-scored step (the team packet, screening)
-refuses them until the owner confirms them
-(``task_evaluation_owner_success_confirmation``). The operator door records
-that confirmation by hand. This records the same confirmation from the
-website, with no operator.
+``proposal_only``. The team packet compiles and screening scores the job on
+them at once, marked as assumed and not confirmed by the site
+(``website_owner_success_assumption``); nothing waits for the owner. The owner
+can still confirm them (``task_evaluation_owner_success_confirmation``). The
+operator door records that confirmation by hand. This records the same
+confirmation from the website, with no operator.
 
 On the team packet queue's timer pass (``team_scene_packet_worker.
-requeue_transient_blocked``, run by the screening timer), each request blocked
-only on that refusal sends its intent's published thresholds to the WebApp
-over the existing signed Pipeline sync transport
+requeue_transient_blocked``, run by the screening timer), each completed
+request whose half was compiled on assumed thresholds (and each request an
+older release left blocked on the owner contract) sends its intent's published
+thresholds to the WebApp over the existing signed Pipeline sync transport
 (``POST /api/internal/pipeline/task-evaluation-scene-intents/<intent>/owner-success-proposal``).
 The WebApp keeps the proposal, shows it to the job's owner (the owner link
 only) in plain words with Confirm and "this is wrong", and answers with the
@@ -20,11 +22,14 @@ owner's decision on exactly this proposal, if there is one:
   binding. The record is written by ``confirm_owner_success_contract``, the
   door's own writer, under the same validators, with ``issuer_channel``
   ``website``. The same pass then returns the request to pending, as it does
-  for a door confirmation, and the team packet compiles the owner contract as
-  the owner's.
+  for a door confirmation, and the team packet compiles the half once more,
+  with the owner contract as the owner's. Results already scored stay bound to
+  the assumed contract they were scored under.
 - ``held``: the owner said the thresholds are wrong, with a typed reason.
-  Nothing is written under the intent, no number changes, and the request
-  stays blocked; its status keeps the hold and the reason.
+  Nothing is written under the intent and no number changes. The request's
+  status keeps the answer and the reason, and the WebApp alerts Blueprint's
+  team; the half and its screening go on as they were, still marked as
+  assumed. (A request an older release left blocked stays blocked.)
 - ``pending``: no decision yet.
 
 Each request keeps its next check time in its status (``STATUS_FIELD``) and is
@@ -243,6 +248,15 @@ def _owner_contract_blocked(status: Mapping[str, Any]) -> bool:
             and str(blockers[0]).startswith(OWNER_CONTRACT_BLOCKER_PREFIX))
 
 
+def _unconfirmed(status: Mapping[str, Any]) -> bool:
+    """A request whose owner may still decide on its thresholds: its completed half assumed them, or an
+    older release's refusal waits on the owner contract."""
+
+    from .website_owner_success_assumption import status_assumed
+
+    return status_assumed(status) or _owner_contract_blocked(status)
+
+
 def _error_code(exc: BaseException) -> str:
     text = str(exc).split(":", 2)
     code = ":".join(text[:2]) if text[0].startswith("website_owner_success_http_") else text[0]
@@ -290,9 +304,9 @@ def _scheduled(outcome: dict[str, Any], previous: Mapping[str, Any] | None, prog
 
 def exchange_owner_decision(packet_root: Path, request_key: str, *, transport: Transport | None = None,
                             now: float | None = None) -> dict[str, Any] | None:
-    """Ask the WebApp about one owner-contract-blocked request, and record a confirmation.
+    """Ask the WebApp about one request whose thresholds its owner has not confirmed, and record a confirmation.
 
-    None when the request is not blocked on the owner contract, or is not due:
+    None when the request's thresholds are not open to its owner (``_unconfirmed``), or it is not due:
     its kept check time has not come and its intent's progression is unchanged.
     The outcome is what the request's status keeps under ``STATUS_FIELD``. Any
     error is this request's ``failed`` outcome; it never leaves this function.
@@ -307,7 +321,7 @@ def exchange_owner_decision(packet_root: Path, request_key: str, *, transport: T
         status = _read_json(packet_root / "status" / f"{request_key}.json") or {}
     except Exception:  # noqa: BLE001 - an unreadable status is not this exchange's to decide
         return None
-    if not _owner_contract_blocked(status) or (packet_root / "pending" / f"{request_key}.json").exists():
+    if not _unconfirmed(status) or (packet_root / "pending" / f"{request_key}.json").exists():
         return None
     previous = status.get(STATUS_FIELD) if isinstance(status.get(STATUS_FIELD), dict) else None
     # Cheap reads only, before anything is due: the request, its intent and its progression's digest.
@@ -371,7 +385,7 @@ def exchange_owner_decision(packet_root: Path, request_key: str, *, transport: T
 def exchange_owner_decisions(packet_root: str | Path, *, transport: Transport | None = None,
                              limit: int = MAX_EXCHANGES_PER_PASS, now: float | None = None
                              ) -> dict[str, dict[str, Any]]:
-    """This pass's exchange for up to ``limit`` due owner-contract-blocked requests, by request key.
+    """This pass's exchange for up to ``limit`` due requests with unconfirmed thresholds, by request key.
 
     A request that is not due is skipped and does not count. The starting
     request rotates every minute, so a job whose owner never answers cannot
@@ -387,7 +401,7 @@ def exchange_owner_decisions(packet_root: str | Path, *, transport: Transport | 
     blocked = []
     for path in sorted((root / "processed").glob("*.json")):
         try:
-            if (_owner_contract_blocked(_read_json(root / "status" / path.name) or {})
+            if (_unconfirmed(_read_json(root / "status" / path.name) or {})
                     and not (root / "pending" / path.name).exists()):
                 blocked.append(path.stem)
         except Exception:  # noqa: BLE001 - one unreadable status never stops the pass

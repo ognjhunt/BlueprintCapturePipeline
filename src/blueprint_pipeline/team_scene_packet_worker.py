@@ -34,11 +34,17 @@ no-spend worker, woken by its path unit, does the rest on the CPU:
 - a website job's ``proposal_only`` success thresholds compile as the owner's
   only through the owner's sealed confirmation under the request's own intent
   (``owner_success_confirmation_scope``: the intent must be the request's, and
-  its progression must have queued this request); otherwise the owner contract
-  refuses as before. The owner confirms either through the operator door or on
-  the website job page: the timer's pass sends each such blocked job's
-  thresholds to the WebApp and records the owner's website confirmation with
-  the door's own writer (``website_owner_success_confirmation``).
+  its progression must have queued this request). Without one the half is
+  compiled all the same, at once, on those same thresholds as Blueprint's
+  stated assumption, and its record, its contract and the request's status say
+  so (``website_owner_success_assumption``); nothing waits for the site. The
+  owner can still confirm, through the operator door or on the website job
+  page: the timer's pass sends each such half's thresholds to the WebApp and
+  records the owner's website confirmation with the door's own writer
+  (``website_owner_success_confirmation``), and a sealed confirmation of
+  exactly them returns the completed request to pending once and compiles the
+  half again as the owner's. "This is wrong" changes no number and stops
+  nothing: the status keeps the answer and its reason.
 - a compiled rigid half no ranked stance carries from, whose nearer stances
   movable furniture plausibly blocks (chairs, stools the scene's review names),
   records the furniture's measurement as due (``robot_access_measurement``). It
@@ -74,8 +80,10 @@ worker's own pass and the screening timer's pass both do it
 (``requeue_transient_blocked``). An owner-contract refusal goes back once per
 new sealed owner confirmation of its intent, on the same passes. Every status
 records the release that wrote it (``release_commit``, the commit of the
-release checkout this module runs from), so any other deterministic refusal
-goes back once per newly deployed release, on the same passes: a deploy that
+release checkout this module runs from), so every deterministic refusal, an
+owner-contract one included (a request an earlier release left waiting for
+the owner's confirmation is compiled by the first release that assumes), goes
+back once per newly deployed release, on the same passes: a deploy that
 fixes its cause re-drives it, and the status keeps the releases already tried
 (``release_requeued``), so a refusal never loops. Without a known running
 release nothing is requeued on that basis; ``--requeue-unfinished`` retries the
@@ -155,11 +163,17 @@ TRANSIENT_BLOCKERS = frozenset({"team_scene_packet_interrupted", "team_scene_off
                                 "configured_controls_deferred_fetch_failed", "team_scene_remote_compile_deferred"})
 # The wait before each automatic retry, in order; once all are used the request stays blocked.
 AUTOMATIC_RETRY_BACKOFF_SECONDS = (300, 1800, 7200)
-# An owner-contract refusal a later run can clear only once the owner confirms the job's thresholds
-# (``task_evaluation_owner_success_confirmation``): each new sealed confirmation returns it to pending once,
-# and the status keeps the confirmations already tried, so a refusal never loops.
+# The owner contract could not be sealed. A website job whose site has not confirmed Blueprint's standard
+# thresholds no longer ends here (it is compiled on them, marked as assumed: ``WEBSITE_COMPILE``), so this is a
+# deterministic refusal like any other: a new release returns it once and, still refused, it is final. Each new
+# sealed owner confirmation (``task_evaluation_owner_success_confirmation``) also returns it to pending once, as
+# it does a completed half compiled on assumed thresholds; the status keeps the confirmations already tried.
 OWNER_CONTRACT_BLOCKER_PREFIX = "team_scene_owner_contract_invalid:"
 OWNER_CONFIRMATION_REQUEUE_FIELD = "owner_success_confirmation_requeued"
+# Every request this worker compiles is a website job's (``validated_request``). Its compile, and no operator's
+# or Arm Decision Proof's, scores a job whose site has not confirmed Blueprint's standard success thresholds on
+# those thresholds at once, and says so (``website_owner_success_assumption``).
+WEBSITE_COMPILE = {"assume_unconfirmed_standard_thresholds": True}
 # Any other deterministic refusal a new release may have fixed: each status names the release that wrote it,
 # each newly deployed release returns the refusal to pending once, and the status keeps the releases tried.
 RELEASE_COMMIT_FIELD = "release_commit"
@@ -313,16 +327,26 @@ def _due(retry: Mapping[str, Any], now: datetime) -> bool:
 
 
 def _owner_confirmations_untried(path: Path, status: Mapping[str, Any]) -> list[str]:
-    """The owner's sealed confirmations of an owner-contract refusal's own intent not yet tried, else none.
+    """The owner's sealed confirmations a request has not yet been compiled with, else none.
 
-    Any valid confirmation of the intent's owner counts here; whether it binds this exact task is decided
-    only by the compile (``team_scene_packet._owner_confirmed``).
+    For a completed half compiled on assumed thresholds: the owner's confirmation of exactly those
+    (``website_owner_success_assumption``). For an owner-contract refusal: any valid confirmation of its
+    intent's owner; whether it binds this exact task is decided only by the compile
+    (``team_scene_packet._owner_confirmed``).
     """
 
+    tried = status.get(OWNER_CONFIRMATION_REQUEUE_FIELD)
+    tried = tried if isinstance(tried, list) else []
     blockers = status.get("blockers")
     if (status.get("status") != "blocked" or not isinstance(blockers, list) or len(blockers) != 1
             or not str(blockers[0]).startswith(OWNER_CONTRACT_BLOCKER_PREFIX)):
-        return []
+        from .website_owner_success_assumption import status_assumed, untried_confirmations
+
+        try:
+            return (untried_confirmations(status, validated_request(_read_json(path)), tried=tried)
+                    if status_assumed(status) else [])
+        except (OSError, ValueError, KeyError, TypeError):
+            return []
     from .task_evaluation_owner_success_confirmation import confirmations
 
     try:
@@ -331,8 +355,6 @@ def _owner_confirmations_untried(path: Path, status: Mapping[str, Any]) -> list[
         rows = [] if scope is None else confirmations(scope["directory"], scope["intent"])
     except (OSError, ValueError, KeyError, TypeError):
         return []
-    tried = status.get(OWNER_CONFIRMATION_REQUEUE_FIELD)
-    tried = tried if isinstance(tried, list) else []
     return [row["confirmation_digest"] for row in rows if row["confirmation_digest"] not in tried]
 
 
@@ -361,18 +383,19 @@ def _release(release: Any) -> str | None:
 
 
 def _new_release_untried(status: Mapping[str, Any], release: str | None) -> bool:
-    """A blocked request (any cause but an owner-contract refusal) written by another release, or by none
-    recorded, that this known release has not yet returned to pending.
+    """A blocked request (any cause) written by another release, or by none recorded, that this known
+    release has not yet returned to pending.
 
     A new release may fix any cause, so it gets one try at once, without waiting out a transient block's
     backoff or after its automatic retries are spent: capture-447ae4f4's compile, killed three times for
     host memory on 2026-11-03, otherwise waited two hours for its last retry after the memory fix shipped.
-    The transient backoff still governs retries under the same release.
+    The transient backoff still governs retries under the same release. An owner-contract refusal is one
+    too: a request an earlier release left waiting for the owner's confirmation is compiled, on assumed
+    thresholds, by the first release that assumes them.
     """
 
     blockers = status.get("blockers")
     if (release is None or status.get("status") != "blocked" or not isinstance(blockers, list) or not blockers
-            or any(str(blocker).startswith(OWNER_CONTRACT_BLOCKER_PREFIX) for blocker in blockers)
             or status.get(RELEASE_COMMIT_FIELD) == release):
         return False
     tried = status.get(RELEASE_REQUEUE_FIELD)
@@ -382,15 +405,15 @@ def _new_release_untried(status: Mapping[str, Any], release: str | None) -> bool
 def final_block(status: Mapping[str, Any], *, release: str | None) -> bool:
     """A blocked status that no pass under ``release`` returns to pending, so the scene's team half stays uncompiled.
 
-    Not final: a transient block with automatic retries left, an owner-contract refusal (the owner's sealed
-    confirmation returns it), one a newly deployed release has not yet tried, or any block when the running
-    release cannot be told. The screening pass names a final one to the website job
+    Not final: a transient block with automatic retries left, one a newly deployed release has not yet
+    tried, or any block when the running release cannot be told. An owner contract that cannot be sealed
+    is final like any other refusal: nothing waits for the owner's confirmation any more, so the job
+    hears that it is held. The screening pass names a final one to the website job
     (``beta_policy_screening_holds``).
     """
 
     blockers = status.get("blockers")
     if (status.get("status") != "blocked" or not isinstance(blockers, list) or not blockers
-            or any(str(blocker).startswith(OWNER_CONTRACT_BLOCKER_PREFIX) for blocker in blockers)
             or _release(release) is None or _new_release_untried(status, release)):
         return False
     retry = status.get("automatic_retry")
@@ -807,8 +830,9 @@ def owner_success_confirmation_scope(request: Mapping[str, Any], *,
     intent is read from the scene intake root and must be that exact intent, and
     the intent's progression must have queued this exact request; only then can
     a ``proposal_only`` owner authority look for the owner's confirmation there
-    (``task_evaluation_owner_success_confirmation``). An unbound request compiles
-    as before, so the owner contract still refuses without a confirmation.
+    (``task_evaluation_owner_success_confirmation``). An unbound request can look
+    none up: its unconfirmed thresholds are assumed like any other's, and its
+    record names no binding (``website_owner_success_assumption``).
     """
 
     from . import task_evaluation_scene_intake as intake
@@ -904,12 +928,16 @@ def _intent_scopes(owner_scope: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def _compiled_status(attempt: Path, prepared: Mapping[str, Any], written: Mapping[str, Any]) -> dict[str, Any]:
+    from .website_owner_success_assumption import FIELD as ASSUMPTION_FIELD
+
     return {"outcome": "compiled", "attempt_root": str(attempt), "task_id": prepared["task_id"],
             "team_scene_inputs_path": prepared["path"], "team_scene_inputs_digest": prepared["inputs_digest"],
             "derived_profile": {key: written[key] for key in ("path", "profile_digest")},
             **({"owner_success_confirmation": {"status": "applied",
                                                "confirmation_digest": prepared["owner_success_confirmation"]}}
                if prepared.get("owner_success_confirmation") else {}),
+            # Scored on Blueprint's standard thresholds, which the site has not confirmed.
+            **({ASSUMPTION_FIELD: dict(prepared[ASSUMPTION_FIELD])} if prepared.get(ASSUMPTION_FIELD) else {}),
             **({"robot_access_removal": dict(prepared["robot_access_removal"])}
                if prepared.get("robot_access_removal") else {})}
 
@@ -939,7 +967,7 @@ def _compile_routed(request: Mapping[str, Any], *, status: Mapping[str, Any], ru
         **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
         **({"embodiment_models": dict(models)} if embodiments and models else {}),
         # What the intent knows of its movable furniture is read here, on the host, as ``prepare_team_scene`` does.
-        **with_movable_furniture(_intent_scopes(owner_scope), revision=revision)}
+        **with_movable_furniture(_intent_scopes(owner_scope), revision=revision), **WEBSITE_COMPILE}
     try:
         plan: Any = lane.plan_remote_team_scene(
             request={"request_id": status["request_key"], "request_digest": request["request_digest"],
@@ -1018,7 +1046,7 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
                 runtime_source_receipt_path=inputs["runtime_source_receipt_path"],
                 **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
                 **({"embodiment_models": dict(models)} if embodiments and models else {}),
-                **_intent_scopes(owner_scope))
+                **_intent_scopes(owner_scope), **WEBSITE_COMPILE)
         else:
             prepared, route = _compile_routed(
                 request, status=status, run=run, capture=capture, attempt=attempt, bundle=bundle, inputs=inputs,
@@ -1222,6 +1250,14 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
                 # The site owner approved moving the furniture this half proposes: it is compiled again.
                 existing = None
         if existing is not None:
+            from . import website_owner_success_assumption as assumption
+
+            if assumption.site_confirmation(existing, request) is not None:
+                # The site confirmed the thresholds this half assumed: it is compiled again, as the site's.
+                existing = None
+            elif (assumed := assumption.half_assumption(existing)) is not None:
+                status[assumption.FIELD] = assumed
+        if existing is not None:
             status.update(outcome="already_compiled", team_scene_inputs_path=existing)
         else:
             embodiments, unreadable = registered_embodiments(registry)
@@ -1229,7 +1265,7 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
                 status["embodiment_manifests_unreadable"] = unreadable
             owner_scope, unbound = owner_success_confirmation_scope(request)
             if unbound is not None:
-                # Recorded, never a blocker: an unbound request compiles exactly as before.
+                # Recorded, never a blocker: an unbound request compiles without its intent's records.
                 status["owner_success_confirmation"] = {"status": "intent_unbound", "reason": unbound}
             if collected is not None:
                 # The remote compile already ran with these bodies and this scope; only its landing is recorded.
@@ -1456,19 +1492,20 @@ def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, f
 
 
 def _record_website_owner_decisions(root: Path, outcomes: Mapping[str, Mapping[str, Any]]) -> None:
-    """Keep each owner-contract-blocked request's latest website exchange in its status (the lock is held).
+    """Keep each request's latest website exchange on its thresholds in its status (the lock is held).
 
-    Written only when it changed, and only while the request is still blocked
-    on the owner contract, so a request requeued or recompiled meanwhile keeps
-    its own status.
+    Written only when it changed, and only while the request's thresholds are
+    still unconfirmed (its half assumed them, or an older refusal waits on the
+    owner contract), so a request requeued or recompiled meanwhile keeps its
+    own status.
     """
 
-    from .website_owner_success_confirmation import STATUS_FIELD, _owner_contract_blocked
+    from .website_owner_success_confirmation import STATUS_FIELD, _unconfirmed
 
     for key, outcome in outcomes.items():
         path = root / "status" / f"{key}.json"
         status = _read_json(path)
-        if (status is None or not _owner_contract_blocked(status) or not (root / "processed" / f"{key}.json").exists()
+        if (status is None or not _unconfirmed(status) or not (root / "processed" / f"{key}.json").exists()
                 or status.get(STATUS_FIELD) == dict(outcome)):
             continue
         _write_replace(path, {**status, STATUS_FIELD: dict(outcome)})
@@ -1506,8 +1543,9 @@ def requeue_transient_blocked(*, queue_root: str | Path,
     nothing: that run recovers and requeues the same way. A request the remote
     CPU lane holds is never recovered here; the worker settles it.
 
-    First, before taking the queue lock, each request blocked only on an
-    unconfirmed owner contract asks the WebApp for the owner's decision on its
+    First, before taking the queue lock, each completed request whose half was
+    compiled on assumed thresholds (and each one an older release left blocked
+    on an unconfirmed owner contract) asks the WebApp for the owner's decision on its
     thresholds (``website_owner_success_confirmation``); a website confirmation
     is written under the intent, so the requeue below returns that request to
     pending in this same pass. Each request is asked again only when its kept
