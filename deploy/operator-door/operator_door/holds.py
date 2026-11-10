@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-from .requests import RequestRefused, validate_request, validate_request_id
+from .requests import EXPLICIT_RELEASE_UNITS, RequestRefused, validate_request, validate_request_id
 
 SCHEMA = "blueprint_operator_door_hold.v1"
 MAX_RECORD_BYTES = 16 * 1024
@@ -82,7 +82,7 @@ def read(root: Path, unit: str) -> dict[str, Any] | None:
         or not isinstance(record.get("owner"), str)
         or type(record.get("expires_at_epoch")) is not int
         or ("require_explicit_release" in record and type(record["require_explicit_release"]) is not bool)
-        or (record.get("require_explicit_release") is True and unit != "blueprint-agent-run-dispatcher.timer")
+        or (record.get("require_explicit_release") is True and unit not in EXPLICIT_RELEASE_UNITS)
         or ("enabled_before" in record and type(record["enabled_before"]) is not bool)
         or ("restart_on_release" in record and type(record["restart_on_release"]) is not bool)
         or (record.get("status") == "releasing" and record.get("release_status")

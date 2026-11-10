@@ -855,7 +855,7 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     hold.add_argument("--reason", required=True)
     hold.add_argument("--for", dest="expires_in_seconds", type=_hold_duration, required=True)
     hold.add_argument("--until-released", action="store_true",
-                      help="dispatcher only: --for is a review deadline; remain stopped until explicit release")
+                      help="dispatcher and retired units only: --for is a review deadline; remain stopped until explicit release")
     _add_wait(hold, 120)
     release = commands.add_parser("release-hold", help="release an owned timer or path hold early")
     release.add_argument("unit")
