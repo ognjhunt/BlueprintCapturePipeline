@@ -58,6 +58,45 @@ provider is recorded as uncovered and stays fail-closed at the shared pre-spend
 chokepoint, while covered providers retain their own billing evidence. No paid
 replacement billing service is provisioned by this change.
 
+### A failed call keeps the last good reading for 24 hours
+
+One failed Vast (or DigitalOcean) billing call used to drop that provider from
+the export, and every launch on it was refused until the provider's billing API
+answered again. The scheduled reconciler now keeps the provider's last good
+total beside the totals, in an optional block:
+
+```json
+"carried_forward": {
+  "vast": {
+    "total_usd": 412.37,
+    "observed_at": "2026-11-10T09:00:00+00:00",
+    "age_seconds": 3600.0,
+    "failure": "provider_billing_request_failed",
+    "failed_at": "2026-11-10T10:00:00+00:00"
+  }
+}
+```
+
+- `provider_totals_usd` holds only what the run itself read. A carried total
+  is never written there, into a receipt, or into the daily snapshot.
+- `observed_at` is when the total was really read. It does not move while
+  calls keep failing, so the reading ages from its own time.
+- The spend guard applies a carried total to the lock only while that reading
+  is at most 24 hours old (`MAX_BILLING_AGE_SECONDS`, the age the lock already
+  accepts). It reports it under `billing_reconciliation.carried_forward`, which
+  `door status` shows, with the failure. A row it does not accept is listed
+  under `carried_forward_refused` and changes nothing.
+- A total read in the same run always replaces a carried one. A provider that
+  was never read has nothing to carry. After 24 hours without a good reading
+  the provider is absent and the refusal above applies.
+- Only Vast and DigitalOcean are carried (`CARRY_FORWARD_PROVIDERS`). The
+  Google Cloud total comes from a retained report with its own freshness rule.
+- Only the scheduled run does this. A direct `reconcile_provider_billing` call
+  (a settlement or a canary refresh) writes no carried block.
+
+The lock's own figure is unchanged: `effective_spend_usd` is the larger of the
+billing total (carried totals included) and the guard's allocation ledger.
+
 The resulting artifact records the billing input digest and basename, not an
 absolute runner path. Supplying this file is external billing evidence; the
 repository does not manufacture it.

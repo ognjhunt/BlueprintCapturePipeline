@@ -762,6 +762,54 @@ def _inventory_query(
     }
 
 
+#: The providers whose billing the reconciler reads from a live API and may carry
+#: forward after a failed call (``provider_billing_reconciler.CARRY_FORWARD_PROVIDERS``).
+CARRIED_BILLING_PROVIDERS = ("vast", "digitalocean")
+
+
+def carried_billing_readings(
+    payload: Mapping[str, Any],
+    totals: Mapping[str, Any],
+    *,
+    now: float,
+    max_age_seconds: int,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """The export's carried readings this run accepts, and the ones it refuses.
+
+    The reconciler leaves a provider whose call failed out of
+    ``provider_totals_usd`` and keeps its last good total in ``carried_forward``
+    with the time it was really read. That total stands in here only while the
+    reading itself is within the age accepted for billing evidence, and never
+    for a provider this export read afresh. A refused row changes nothing: the
+    provider stays absent and is judged as it always was.
+    """
+
+    raw = payload.get("carried_forward")
+    rows: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    accepted: dict[str, dict[str, Any]] = {}
+    refused: list[str] = []
+    for provider in CARRIED_BILLING_PROVIDERS:
+        row = rows.get(provider)
+        if provider in totals or not isinstance(row, Mapping):
+            continue
+        amount = _coerce_float(row.get("total_usd"))
+        observed = _iso_to_epoch(row.get("observed_at"))
+        if amount is None or not 0 <= amount < float("inf"):
+            refused.append(f"{provider}:total_invalid")
+        elif observed is None or observed > now + 300:
+            refused.append(f"{provider}:observed_at_invalid")
+        elif now - observed > max_age_seconds:
+            refused.append(f"{provider}:older_than_accepted_billing_age")
+        else:
+            accepted[provider] = {
+                "total_usd": amount,
+                "observed_at": row.get("observed_at"),
+                "age_seconds": round(max(0.0, now - observed), 3),
+                "failure": str(row.get("failure") or "")[:200],
+            }
+    return accepted, refused
+
+
 def reconcile_billing_export(
     *,
     billing_export_path: Path | None,
@@ -835,6 +883,12 @@ def reconcile_billing_export(
     if not isinstance(totals, Mapping):
         blockers.append("provider_billing_export_totals_missing")
         totals = {}
+    # A provider whose latest billing call failed keeps its last good total for as
+    # long as billing evidence is accepted; the failure stays named beside it.
+    carried, carried_refused = carried_billing_readings(
+        payload, totals, now=now, max_age_seconds=max_age_seconds
+    )
+    totals = {**totals, **{provider: row["total_usd"] for provider, row in carried.items()}}
     # A current export may intentionally omit a provider whose official API is
     # unavailable. Every provider with live inventory remains mandatory here;
     # the paid-lane chokepoint separately requires coverage for the provider a
@@ -868,6 +922,8 @@ def reconcile_billing_export(
         "billing_export_schema_version": payload.get("schema_version"),
         "generated_at": payload.get("generated_at"),
         "provider_totals_usd": dict(totals),
+        **({"carried_forward": carried} if carried else {}),
+        **({"carried_forward_refused": carried_refused} if carried_refused else {}),
         "live_providers": sorted(live_providers),
         "blockers": blockers,
         "claim_boundary": "Billing export reconciliation is spend evidence, not task success.",
@@ -2121,7 +2177,8 @@ def _refresh_account_monthly_spend(billing_export: str | None, *, now: float) ->
         limit = report.get("limit_usd")
         print(f"Account monthly spend: ${report['counted_usd']:.2f}"
               + (f" of ${float(limit):.2f}" if limit else " (no cap set)")
-              + (" - limit reached, new paid admissions refused" if report.get("limit_reached") else ""),
+              + (" - limit reached, new paid admissions refused" if report.get("limit_reached") else "")
+              + (" - limit file missing, new paid admissions refused" if report.get("cap_status") == "missing" else ""),
               file=sys.stderr)
         return summary(report)
     except Exception as exc:
