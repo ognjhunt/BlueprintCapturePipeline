@@ -217,6 +217,7 @@ safe, and a reference can appear after the census.** Read `age_seconds` first.
   `not_checked` (with why): queue, active_run, capture_reconstruction,
   pubsub_handoff, door_request, process, container_mount, docker_container,
   unit_file, env_file, release_source, sibling_link, pin, live_release.
+  `release_source` reads the live release's runtime code, not its tests or docs.
   `not_checked_sources` names what no kind covers (podman or bare containerd
   containers; a /proc read that blocks is not interrupted by the deadline).
 - `status` is `complete` only when every kind is `checked`. Otherwise every

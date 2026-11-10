@@ -612,8 +612,10 @@ DEFAULT_DOCKER_CONTAINERS = Path("/var/lib/docker/containers")
 DEFAULT_SOURCE_ROOTS = (Path("/usr/lib/blueprint"),)
 _SOURCE_SUFFIXES = frozenset({".py", ".sh", ".service", ".timer", ".json", ".toml", ".yaml", ".yml",
                               ".env", ".conf", ".cfg", ".txt"})
+#: The release's runtime code is read; its tests, docs and third-party packages do not
+#: run on the host, so they are not references.
 _SKIPPED_SOURCE_DIRECTORIES = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__",
-                                         "site-packages"})
+                                         "site-packages", "tests", "docs"})
 #: Every kind, in order. The census is complete only when every one is ``checked``.
 REFERENCE_KINDS = (
     "queue", "active_run", "capture_reconstruction", "pubsub_handoff", "door_request",
@@ -625,7 +627,7 @@ NOT_CHECKED_SOURCES = (
     "podman_or_bare_containerd_containers: no cheap stable record format; docker's are read",
     "processes_in_uninterruptible_sleep: a /proc read that blocks is not interrupted by the deadline",
 )
-_RECORD_BYTES = 128 * 1024 * 1024
+_RECORD_BYTES = 256 * 1024 * 1024  # streamed one file at a time, per kind
 _RECORD_FILES = 50_000
 _RECORD_ENTRIES = 400_000
 _MAX_MOUNTINFO_BYTES = 1024 * 1024
