@@ -40,16 +40,18 @@ never to skip a check.
 | Controller | Before | Now |
 |---|---|---|
 | Atlas reconstruction (`website_atlas_preview.py`; owned captures share it) | Any refusal off a short list was a permanent `failed`; an operator retry was the only way back. Eight transient failures (about three hours) ended the job. A step killed for memory re-ran every minute. | The explicit lists are unchanged. An outage retries until the job's 7-day deadline. A money refusal is `needs_input` with its code and is asked again every 30 minutes, like the other refusals an owner can lift. Any other refusal, a defect, or a step that never returned gets the six timed retries (twelve in a job's life), then `failed` with its own code. A privacy or rights refusal still fails at once. `retry_failed_job` reopens a job that has ended. |
-| Beta screening (`beta_policy_screening_coordinator.py`) | A candidate refused before any allocation was planned again only after a deploy. One candidate's harness failure held every other candidate until a deploy. | An unspent refusal is planned again at the same commit on the six timed retries, per site and candidate, counted on the ledger. Privacy, rights and money refusals, and answers about the candidate, are never retried by the clock. A harness failure holds only candidates on the same backend. |
+| Beta screening (`beta_policy_screening_coordinator.py`) | A candidate refused before any allocation was planned again only after a deploy. One candidate's harness failure held every other candidate until a deploy. | #3550 on `main` added the self re-plans: a transient failure on the rented machine retries at the same commit, a policy-load failure holds only its candidate and other harness failures hold same-backend siblings, and a row out of GPU offers or with an expired quote is planned again by itself, three times each. This work adds the default beside them: any other refusal before allocation that no rule owns is planned again on the six timed retries, per site and candidate, only for its own reason. Privacy, rights and money refusals, and answers about the candidate, are never retried by the clock. |
 | Team scene packet (`team_scene_packet_worker.py`) | A refusal not on the transient list went back to pending once per deployed release. | It also goes back on the six timed retries. The count is on the status and nothing resets it. |
 | Rigid probe (`rigid_robot_free_probe_runner.py`) | A staging refusal was set aside once per deployed release. | It is also set aside on the six timed retries, through the same supersession markers, which are the count. |
 | WebApp scene intake (`taskEvaluationSceneIntake.ts`) | Forwarding gave up for good after 20 one-minute tries. | It retries until the intent's expiry: five tries a minute apart, then doubling to 30 minutes. |
 
 What stays as it was, on purpose:
 
-- A harness failure that spent money is planned again only after a deploy
+- A harness defect that spent money is planned again only after a deploy
   (`HARNESS_RETRY_LIMIT`). A second paid run at the same commit would usually
-  fail the same way and use one of the candidate's seven retries.
+  fail the same way and use one of the candidate's seven retries. A transient
+  failure on the rented machine is different and retries at the same commit
+  (#3550).
 - A funded rigid-probe attempt that failed in our runtime keeps its
   once-per-release rule and `MAX_RUNTIME_REDRIVES`.
 - Every cap, limit, grant and reservation. A timed retry changes when money
@@ -112,15 +114,12 @@ a grant (WebApp `websiteJobDeadline`).
    outcome never becomes fresh retry capacity" (`website_reconstruction_resume`)
    is a money rule. An automatic re-drive needs the owner's rule for an
    unanswered paid call, as SAM got on 2026-11-07.
-3. **A screening run that failed on a download.** It is still a harness
-   failure and waits for a deploy. The launcher gives no typed code that tells
-   a failed download from a harness defect.
-4. **Three preparation states with no ending on the Pipeline at expiry**
+3. **Three preparation states with no ending on the Pipeline at expiry**
    (readiness plan G50). The WebApp now ends the job for the site; the
    Pipeline ledger stays as it was.
-5. **Refusals cached by a revision constant** (Atlas levelling). A timed retry
+4. **Refusals cached by a revision constant** (Atlas levelling). A timed retry
    of the same inputs and code gives the same answer.
-6. **WebApp:** result schemas still reject unknown fields, and a sponsorship
+5. **WebApp:** result schemas still reject unknown fields, and a sponsorship
    policy edit still revokes accepted intakes. (An email with an unknown send
    outcome is no longer a dead end: WebApp #1255 re-sends it safely with a
    provider idempotency key.)

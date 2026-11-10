@@ -284,7 +284,7 @@ Pull requests: [#3549](https://github.com/ognjhunt/BlueprintCapturePipeline/pull
 | What | Serves | Effect on this plan |
 |---|---|---|
 | One retry policy (`job_retry_policy`), used by Atlas, screening, the team scene packet worker and the rigid probe runner | E1 | G02, the Atlas half: a job that has not ended retries by itself (an outage until its deadline, anything unclassified six times over about 46 hours). Preparation resume stays door-only (new G63). |
-| Screening re-plans an unspent refusal at the same commit on a timer; a harness failure holds only its own backend | E1 | A refusal before allocation no longer waits for a deploy. A harness failure that spent money still does (new G64). |
+| Screening: beside #3550's self re-plans (GPU offers, expired quotes, transient machine failures), any other refusal before allocation that no rule owns is planned again on the six timed retries | E1 | No unspent refusal waits for a deploy, except one that protects privacy, rights or money or is an answer about the candidate. |
 | The door holds a deploy while a launch, a paid-launch slot or a screening candidate is live, as it did for an activation | E6 e | WP-17, built. It needs the owner's door upgrade (O-21). G31 stays open for a deploy that changes runtime code: succession is not built. |
 | The door client does not send a deploy that differs only under `docs/launch-readiness/` | E6 | A tracker-only deploy no longer retires attempts. |
 | WebApp: every website job ends at its deadline by itself, with one email; the page shows it without waiting | E1 a, b, d | G50 for the site: the three states now end on the job page and by email. The Pipeline ledger for them is unchanged. |
@@ -293,8 +293,7 @@ Pull requests: [#3549](https://github.com/ognjhunt/BlueprintCapturePipeline/pull
 | # | Gap | Crit. | Evidence | Goes to |
 |---|---|---|---|---|
 | G63 | After Pub/Sub's five deliveries only `--resume-preparation` moves a preparation. The handoff bytes are kept only for the two explicit waits, and an unknown provider outcome must not become new retry capacity | E1 | `website_reconstruction_resume.py` (`safe_to_arm`); `pubsub_handoff_scene_operations.py` | open; O-22 |
-| G64 | A screening run that failed on a download is a harness failure and waits for a deploy: the launcher gives no code that tells the two apart | E1 | `policy_canary_cell_setup_failure.py` | open |
-| G65 | An in-flight attempt is still bound to a commit. The old release does not drain its own attempts | E6 | `task_evaluation_scene_progression.py` (`attempt_commit`); the architecture note, section 5 | open; needs the host |
+| G64 | An in-flight attempt is still bound to a commit. The old release does not drain its own attempts | E6 | `task_evaluation_scene_progression.py` (`attempt_commit`); the architecture note, section 5 | open; needs the host |
 
 | ID | Decision or action | Recommendation | Unblocks |
 |---|---|---|---|
