@@ -206,7 +206,7 @@ Not packaged, and why:
 
 ## 6. Progress
 
-Updated after every wave. Last update: 2026-11-10 15:10Z. Thirteen packages merged: WP-01, 02, 04, 05, 06, 07, 08, 11, 12, 14, 15, 19, 22. One held for an owner decision (WP-03). Ten deferred.
+Updated after every wave. Last update: 2026-11-10 16:35Z. Fourteen packages merged: WP-01, 02, 03, 04, 05, 06, 07, 08, 11, 12, 14, 15, 19, 22. Ten deferred.
 Status: merged, PR (open, with its CI result), or deferred with a reason. "CI"
 counts the checks that ran; checks the workflow skipped are not counted.
 
@@ -214,14 +214,14 @@ counts the checks that ran; checks the workflow skipped are not counted.
 |---|---|---|---|---|
 | WP-01 | merged | [#3517](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3517) | green, 3 passed | The leak came from one import added by #3488. The import-closure tests now run on every pull request (about 25 s). |
 | WP-02 | merged | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | green, 18 passed | 5 synthetic records, 2 job kinds, about 7 s; fails a record on any network attempt or new paid call. Covers the downstream replay only; resolution and clip length are labels the replayed chain does not read (G55). Its two red runs were other tests: the collection limit (fixed by #3523) and a webhook test with a one-second margin (fixed by [#3536](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3536)). |
-| WP-03 | deferred: waits on owner decision O-18 | [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516) | green, 4 passed | Built, verifier approved, not merged: after it deploys, a silent job whose grant the WebApp says has expired is ended permanently, and the library-aisle job's grant state is not visible to this session. |
+| WP-03 | merged | [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516) | green, 6 passed after an update from `main` | Merged on 2026-11-10 on the owner's "merge it" (O-18). After the next deploy, a silent preparation whose grant the WebApp refuses as expired is ended permanently. Renew a grant before it expires. |
 | WP-04 | merged | [WebApp #1245](https://github.com/ognjhunt/Blueprint-WebApp/pull/1245) | green, 9 passed | The first version was refused by its verifier (3 bypasses). Enforced only once `BLUEPRINT_INVITEE_ALLOWLIST` is set. |
 | WP-05 | merged | [#3518](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3518) | green, 16 passed | Second verifier approved. 109 call sites: 36 admitted, 24 not paid, 49 can spend with no admission. None of the 49 is reachable from an automatic website job without an operator flag or environment opt-in; DreamLabs is reachable from screening only if an enabled Dream candidate and its credential are configured (WP-23). |
 | WP-06 | merged | [WebApp #1246](https://github.com/ognjhunt/Blueprint-WebApp/pull/1246) | green, 9 passed | Two verifier passes. The one red `test` was a real race in the job workspace form (a late reset could erase the first keystroke); fixed in the same pull request. |
 | WP-07 | merged | [#3520](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3520) | green, 3 passed | Verifier approved. New clips are normalized to at most 1920 px and 30 fps; jobs in flight keep their original. Operator note: O-19. |
 | WP-08 | merged, split | [#3519](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3519) | green, 3 passed | Fourth verifier pass approved the split version: the offline drill, the receipt's policy copy classes, unresolved roots, the runbook section. The automatic deletion plan failed three reviews and was removed; it continues as WP-24. |
 | WP-09 | deferred | | | Not started: this session reached its turn limit after wave 2. Nothing blocks it. Add to it: a planned screening campaign can still reserve for a withdrawn site (G52). |
-| WP-10 | deferred | | | Not started (turn limit). Depends on WP-03, which is not merged. |
+| WP-10 | deferred | | | Not started. Its dependency WP-03 is now merged; nothing blocks it. |
 | WP-11 | merged, in part | [WebApp #1247](https://github.com/ognjhunt/Blueprint-WebApp/pull/1247) | green, 9 passed | Full release scope for 28 job-page and intake files, and a reference-only case. The three intake suites are NOT in CI: all three fail on `main` (G59, O-20). |
 | WP-12 | merged | [#3543](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3543) | green, 5 passed | Verifier approved. A hold's record carries seconds and dollars spent before it; eight kinds of paid upstream call cannot start once a job is held; a resumed job runs its clean plate again. Left: the WebApp does not show the figures (needs an additive status version); a resume in the instant between the stop and its re-check ends that run as a failure. |
 | WP-13 | deferred | | | Not started (turn limit). The host drill also needs O-14. |
