@@ -15,8 +15,8 @@ Blueprint can evaluate (capture-447's rigid same-table move) is unchanged. Synth
 """
 from __future__ import annotations
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +28,10 @@ from blueprint_pipeline import website_early_task_hold as early
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
+from blueprint_pipeline.website_paid_work_stop import (
+    TaskPreparationHeld,
+    refuse_paid_work_when_held,
+)
 from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
 from tests.test_website_preparation_status import prepared_source  # noqa: F401  (fixture, by name)
 
@@ -67,7 +71,8 @@ def _semantics(family, steps, *, covers=True, unresolved=()):
 @pytest.fixture
 def job(tmp_path, monkeypatch):
     """A website job whose Atlas review is retained, at the first scene stage."""
-    from blueprint_pipeline import atlas_video_inputs as inputs, website_atlas_pose as pose_api
+    from blueprint_pipeline import atlas_video_inputs as inputs
+    from blueprint_pipeline import website_atlas_pose as pose_api
     monkeypatch.delenv(CATALOG_PATH_ENV, raising=False)
     capture = tmp_path / "walkthrough-synthetic-job"
     root = capture / "pipeline" / "atlas"
@@ -303,9 +308,9 @@ def test_installed_runtimes_list_the_catalogs_families(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("schema", ["website_preparation_status.v1", "website_preparation_status.v3"])
 def test_the_status_reader_reports_an_early_hold_as_awaiting_inputs(request, schema):
-    from tests import test_website_preparation_status as status_tests
     from blueprint_pipeline import pubsub_handoff_listener as listener
     from blueprint_pipeline.website_preparation_status import read_preparation_status
+    from tests import test_website_preparation_status as status_tests
     source = request.getfixturevalue("prepared_source")
     root, owner, context, selected, ledger, _ = source
     context["task_family"] = "unimplemented_task_family"  # a declared family with no native profile
@@ -332,3 +337,178 @@ def test_the_status_reader_reports_an_early_hold_as_awaiting_inputs(request, sch
     if schema.endswith("v3"):
         assert result["outcome"] is None  # a preparation hold is not a robot verdict
     assert status_tests._post(source).json()["state"] == "awaiting_inputs"
+
+
+# --- What the hold cost, and no new upstream spend while it stands (WP-12) ---------------------------
+
+def _row(binding, provider, *, source, context, settled=None, maximum=1.0):
+    return {"allocation_binding_digest": "sha256:" + binding * 64, "provider": provider, "maximum_cost_usd": maximum,
+            "settled_cost_usd": settled, "accounted_cost_usd": maximum if settled is None else settled,
+            "request_count": 1, "status": "held" if settled is None else "settled", "task_context_digest": context,
+            "source_video_digest": source, "atlas_authorization_digest": None,
+            "settlement_digest": None if settled is None else "sha256:" + "e" * 64}
+
+
+def _ledger(rows, *, native):
+    return {"schema_version": "website_native_preparation_accounting.v1" if native
+            else "website_atlas_allowance_accounting.v1",
+            "source_scope": "request_native_preparation_ledger" if native else "request_atlas_allowance",
+            "external_capture_assessment_costs": "not_in_preparation_ledger", "reservations": rows,
+            "request_count": len(rows),
+            "settled_cost_usd": sum(row["accounted_cost_usd"] for row in rows if row["status"] == "settled"),
+            "held_cost_usd": sum(row["accounted_cost_usd"] for row in rows if row["status"] == "held"),
+            "reserved_or_settled_cost_usd": sum(row["accounted_cost_usd"] for row in rows)}
+
+
+def _hold_at(job, monkeypatch, configuration, *, intake=1_000, now=1_600):
+    from blueprint_pipeline import website_task_context as wtc
+    write_json(job.root / "preview_job.json", {"schema_version": "website_atlas_preview_job.v1",
+                                               "enqueued_at_epoch": intake, "state": "processing"})
+    reads = []
+
+    def getter(context, source, *, create=True):
+        reads.append(create)
+        if isinstance(configuration, Exception):
+            raise configuration
+        return configuration
+    monkeypatch.setattr(wtc, "load_atlas_configuration", getter)
+    monkeypatch.setattr(early.time, "time", lambda: now)
+    context, _, _ = _held(job, "door")
+    assert reads == [False]  # the read-only getter: no allowance is created or reserved
+    return context, json.loads((job.root / early.HOLD_FILE).read_text())
+
+
+def test_the_hold_record_carries_its_time_and_the_settled_spend_by_ledger(job, monkeypatch):
+    other = "sha256:" + "9" * 64
+    context = _context("general_task", CANNOT_EVALUATE["door"][0])
+    mine = context["context_digest"]
+    configuration = {
+        "allowance_accounting": _ledger([_row("1", "openai", source=job.source, context=mine, settled=0.42),
+                                         _row("2", "openai", source=other, context=other, settled=0.9)], native=False),
+        "native_preparation_accounting": _ledger([
+            _row("3", "google", source=None, context=mine, settled=0.05),
+            _row("4", "meta", source=job.source, context=mine, maximum=0.64),
+            _row("5", "google", source=other, context=other, settled=0.3)], native=True)}
+    _, record = _hold_at(job, monkeypatch, configuration)
+    assert record["digest"] == canonical_digest(record, digest_field="digest")
+    spend = record["spend_before_hold"]
+    assert (spend["intake_at_epoch"], spend["held_at_epoch"], spend["seconds_since_intake"]) == (1_000, 1_600, 600)
+    assert spend["ledgers"]["atlas_review"] == {"status": "read", "source_scope": "request_atlas_allowance",
+                                                "settled_cost_usd": 0.42, "held_cost_usd": 0, "reservation_count": 1}
+    assert spend["ledgers"]["upstream"] == {"status": "read", "source_scope": "request_native_preparation_ledger",
+                                            "settled_cost_usd": 0.05, "held_cost_usd": 0.64, "reservation_count": 2}
+
+
+@pytest.mark.parametrize("case", ["getter_refused", "upstream_missing"])
+def test_an_unreadable_ledger_is_recorded_as_unknown_never_zero(job, monkeypatch, case):
+    configuration = (ValueError("website_task_context_unreachable") if case == "getter_refused"
+                     else {"allowance_accounting": _ledger([], native=False)})
+    _, record = _hold_at(job, monkeypatch, configuration)
+    ledgers = record["spend_before_hold"]["ledgers"]
+    unknown = {"settled_cost_usd": None, "held_cost_usd": None, "reservation_count": None}
+    assert ledgers["upstream"]["status"] == "unreadable" and unknown.items() <= ledgers["upstream"].items()
+    if case == "getter_refused":
+        assert ledgers["atlas_review"]["status"] == "unreadable" and ledgers["atlas_review"]["reason"] == "ValueError"
+    else:
+        assert ledgers["atlas_review"]["settled_cost_usd"] == 0 and ledgers["atlas_review"]["status"] == "read"
+
+
+def test_an_unknown_intake_time_stays_unknown(job, monkeypatch):
+    _, record = _hold_at(job, monkeypatch, {}, intake="later")
+    assert record["spend_before_hold"]["seconds_since_intake"] is None
+    assert record["spend_before_hold"]["intake_at_epoch"] is None
+
+
+def test_a_held_job_reserves_no_new_upstream_spend_and_a_resumed_job_does(job, monkeypatch):
+    from blueprint_pipeline import paid_resource_admission as admission
+    from blueprint_pipeline import website_task_context as wtc
+    from blueprint_pipeline.website_atlas_preview import retry_failed_job
+    context, result, _ = _held(job, "door")
+    _preview_job(job, result)
+
+    class Reached(Exception):
+        pass
+
+    def budget(**_):
+        raise Reached
+    monkeypatch.setattr(admission, "require_paid_resource_budget", budget)
+
+    def reserve():
+        wtc.reserve_website_preparation_spend(task_context=context, binding_digest="sha256:" + "c" * 64,
+            maximum_cost_usd=0.1, request_count=1, resource_class="evaluator_api", provider="google")
+    with (early.stop_paid_work_when_held(capture_root=job.capture, task_context=context),
+          pytest.raises(TaskPreparationHeld)):
+        reserve()  # refused before the budget check, the WebApp hold or any provider
+    with pytest.raises(Reached):
+        reserve()  # outside a guarded lane, nothing changes
+    retry_failed_job(job.root / "preview_job.json", now=lambda: 200)
+    with (early.stop_paid_work_when_held(capture_root=job.capture, task_context=context),
+          pytest.raises(Reached)):
+        reserve()  # resumed: the stop was never a marker
+
+
+def _clean_plate(tmp_path, monkeypatch, *, held_after):
+    """A website clean plate whose two paid calls record a charge once past the hold check."""
+    from blueprint_pipeline import website_atlas_task_selection as selection
+    from blueprint_pipeline.clean_plate_removal_analysis_gemini import build_removal_plan
+    from tests.test_clean_plate_stage import _make_capture
+    capture = _make_capture(tmp_path)
+    state, charged = {"held": held_after == 0}, []
+
+    def paid(kind):
+        refuse_paid_work_when_held()  # what reserve_website_preparation_spend does first
+        charged.append(kind)
+        state["held"] = state["held"] or len(charged) >= held_after
+
+    monkeypatch.setattr(early, "_standing_hold", lambda **_: ({}, {}) if state["held"] else None)
+    monkeypatch.setattr(selection, "load_retained_uncertain_analysis", lambda **_: None)
+    monkeypatch.setattr(selection, "resolve_retained_target_selection", lambda *, plan, **_: plan)
+    plan = build_removal_plan(targets=[{
+        "target_id": "box", "semantic_label": "blue box", "target_class": "movable_object",
+        "target_role": "task_object", "task_effect": "manipulated", "disposition": "remove",
+        "rebuild_intent": "rebuild_and_compose", "spatial_evidence": [], "confidence": 0.9,
+    }], status="completed", model="test", processing="agentic")
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.analyze_removal_targets",
+                        lambda **_: paid("gemini_analysis") or plan)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_website_source_frames",
+                        lambda **_: {"status": "estimated", "frames": [{"frame_id": "f0"}]})
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks",
+                        lambda **_: paid("sam_masks") or {"targets": []})
+    from blueprint_pipeline.clean_plate_stage import run_clean_plate_stage
+    result = run_clean_plate_stage(capture_root=capture, website_source_video=capture / "raw/walkthrough.mp4",
+                                   task_context=_context("general_task", DOOR),
+                                   privacy_processing={"status": "pending_website_review"})
+    return capture, result, charged
+
+
+@pytest.mark.parametrize("held_after", [0, 1])
+def test_a_clean_plate_call_after_the_hold_is_not_made(tmp_path, monkeypatch, held_after):
+    capture, result, charged = _clean_plate(tmp_path, monkeypatch, held_after=held_after)
+    # Held before the analysis: nothing bought. Held while it ran: the analysis finished, no masks.
+    assert charged == ["gemini_analysis"][:held_after]
+    assert result["status"] == result["mode"] == "held_for_task_preparation"
+    assert result["blockers"] == ["website_task_preparation_held"] and result["task_masks"] is None
+    # No stage record is left behind, so a resumed job runs its clean plate again.
+    assert not (capture / "pipeline/clean_plate/clean_plate_stage_manifest.json").exists()
+
+
+def test_a_clean_plate_before_any_hold_buys_as_before(tmp_path, monkeypatch):
+    _, result, charged = _clean_plate(tmp_path, monkeypatch, held_after=99)
+    assert charged == ["gemini_analysis", "sam_masks"]
+    assert result["status"] == "objects_removed" and result["mode"] == "task_masks_ready"
+
+
+def test_a_hold_that_appears_while_the_clean_plate_runs_ends_the_capture_stage_held(job):
+    from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
+    context, result, code = _held(job, "door")
+
+    def media(**_):
+        _preview_job(job, result)  # the Atlas lane holds the job while the clean plate runs
+        return {"status": "held_for_task_preparation", "blockers": ["website_task_preparation_held"]}
+    descriptor = SimpleNamespace(metadata={"site_task_context": context}, requested_outputs=["preview_simulation"])
+    value = run_website_capture_preparation(
+        descriptor=descriptor, capture_root=job.capture, pipeline_dir=job.capture / "pipeline",
+        source_video=job.video, derived_scene_generation_allowed=True, gates=[], prepare_media=media,
+        check_privacy=lambda **_: pytest.fail("nothing is processed"), make_gate=lambda *_: None)
+    assert value["status"] == "completed" and value["website_scene_preparation"]["blockers"] == [code]
+    assert holds_native_task_preparation(value["website_scene_preparation"], context)

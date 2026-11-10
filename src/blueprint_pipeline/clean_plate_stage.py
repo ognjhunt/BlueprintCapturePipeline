@@ -32,8 +32,10 @@ from .core.handoff_lease import (
     HandoffLeaseError, handoff_lease_checkpoint, guarded_handoff_write_json as write_json,
 )
 from .local_capture import resolve_local_capture_context
+from .website_paid_work_stop import TaskPreparationHeld
 from .website_scene_geometry import prepare_website_source_frames
 from .website_task_masks import run_website_task_masks
+from .website_early_task_hold import stop_paid_work_when_held
 from .website_task_target_choice import load_target_choices, retain_questions
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
@@ -266,7 +268,38 @@ def _stage_uri(ctx: Any, filename: str) -> str:
     )
 
 
-def run_clean_plate_stage(
+#: A website clean plate that started no new upstream purchase because the capture's job is held.
+HELD_STATUS = "held_for_task_preparation"
+
+
+def run_clean_plate_stage(*, capture_root: str | Path, task_context: Mapping[str, Any] | None = None,
+                          website_source_video: Path | None = None, **options: Any) -> dict[str, Any]:
+    """Run (or no-op) the clean-plate stage for one capture.
+
+    For a website capture, a new upstream reservation (Gemini analysis, SAM masks) is
+    refused while the capture's Atlas job is held for task preparation
+    (``website_early_task_hold``); the stage then ends ``held_for_task_preparation``,
+    writes no stage manifest and leaves every reservation as it stands. A call already
+    reserved finishes. The next run after ``retry_failed_job`` reads no hold and goes on.
+    """
+    if website_source_video is None or task_context is None:
+        return _run_clean_plate_stage(capture_root=capture_root, task_context=task_context,
+                                      website_source_video=website_source_video, **options)
+    with stop_paid_work_when_held(capture_root=Path(capture_root), task_context=task_context) as stop:
+        try:
+            result = _run_clean_plate_stage(capture_root=capture_root, task_context=task_context,
+                                            website_source_video=website_source_video, **options)
+        except TaskPreparationHeld:
+            stop.stopped = True
+    if not stop.stopped:
+        return result
+    return {"status": HELD_STATUS, "mode": HELD_STATUS, "reason": "website_task_preparation_held",
+            "clean_plate_video_uri": None, "program_id": PROGRAM_ID, "claim_ceiling": CLAIM_CEILING,
+            "privacy_status": "pending_website_review", "privacy_verified": False, "task_masks": None,
+            "blockers": ["website_task_preparation_held"]}
+
+
+def _run_clean_plate_stage(
     *,
     capture_root: str | Path,
     privacy_processing: Optional[Mapping[str, Any]] = None,
@@ -393,7 +426,7 @@ def run_clean_plate_stage(
                 output_root=clean_plate_root / "source_geometry", capture_id=ctx.capture_id,
             )
             handoff_lease_checkpoint("clean_plate_after_source_frames")
-        except HandoffLeaseError:
+        except (HandoffLeaseError, TaskPreparationHeld):
             raise
         except Exception as exc:
             status, mode = "blocked", "source_geometry_blocked"
@@ -426,7 +459,7 @@ def run_clean_plate_stage(
             except Exception:  # noqa: BLE001 - the guess stands and stays recorded in the task masks
                 pass
             handoff_lease_checkpoint("clean_plate_after_task_masks")
-        except HandoffLeaseError:
+        except (HandoffLeaseError, TaskPreparationHeld):
             raise
         except Exception as exc:
             status, mode = "blocked", "task_masks_blocked"
