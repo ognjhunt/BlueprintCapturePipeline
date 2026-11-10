@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 import json
 import math
+import re
 import stat
 import time
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .control_plane_disk_usage import DEFAULT_SURVEY_ALIASES, allocated_bytes, sanitize_public_survey
@@ -577,4 +578,247 @@ def build_census(
     return sanitize_public_survey(report)
 
 
-__all__ = ["build_census", "DEFAULT_WORK_ROOT", "DEFAULT_INPUTS_ROOT"]
+# --- reference-only census of orphan scratch -----------------------------------------------------
+#
+# ``build_census`` sizes every candidate tree, which on the host (1.6M unclassified files)
+# always stops at MAX_ENTRIES, so it can never be complete there. The reference census
+# below asks only "does anything refer to this folder?"; the capacity survey, which
+# already walks these roots in bounded partitions, supplies the bytes. It reads, it never
+# writes, and its record has its own schema, so no retirement path accepts it as proof.
+
+REFERENCE_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v1"
+REFERENCE_CENSUS_MAX_SECONDS = 120.0
+DEFAULT_UNIT_DIRECTORIES = (Path("/etc/systemd/system"), Path("/run/systemd/system"),
+                            Path("/run/systemd/transient"))
+_UNIT_NAME_CHARS = "A-Za-z0-9_.-"
+_MAX_UNIT_FILES = 20_000
+_MAX_MOUNTINFO_BYTES = 1024 * 1024
+
+
+def _named(text: str, needle: str) -> bool:
+    return needle in text and re.search(
+        f"(?<![{_UNIT_NAME_CHARS}]){re.escape(needle)}(?![{_UNIT_NAME_CHARS}])", text) is not None
+
+
+def _unit_references(paths: Sequence[Path], directories: Sequence[Path], errors: list[str],
+                     deadline: float) -> set[Path]:
+    """Candidates a systemd unit or drop-in names, by full path or folder name."""
+    found: set[Path] = set()
+    files = 0
+    remaining = MAX_REFERENCE_BYTES
+    for directory in directories:
+        if _expired(deadline, errors):
+            break
+        if not directory.exists() and not directory.is_symlink():
+            continue
+        if directory.is_symlink() or not directory.is_dir():
+            errors.append("unit_inventory_unreadable")
+            continue
+
+        def failed(_error: OSError) -> None:
+            errors.append("unit_inventory_unreadable")
+
+        for root, _names, leaves in os.walk(directory, followlinks=False, onerror=failed):
+            for leaf in leaves:
+                if _expired(deadline, errors):
+                    return found
+                files += 1
+                if files > _MAX_UNIT_FILES:
+                    errors.append("unit_inventory_truncated")
+                    return found
+                path = Path(root) / leaf
+                try:
+                    info = path.lstat()
+                    if not stat.S_ISREG(info.st_mode):
+                        continue  # a link to a unit elsewhere is read where it lives
+                    if info.st_size > 1024 * 1024 or info.st_size > remaining:
+                        errors.append("unit_inventory_truncated")
+                        continue
+                    text = path.read_bytes()[:info.st_size].decode("utf-8", "replace")
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    errors.append("unit_inventory_unreadable")
+                    continue
+                remaining -= len(text)
+                for candidate in paths:
+                    if _named(text, str(candidate)) or _named(text, candidate.name):
+                        found.add(candidate)
+    return found
+
+
+def _sibling_link_references(paths: Sequence[Path], errors: list[str], deadline: float) -> set[Path]:
+    """Candidates a symlink beside them points into; an unreadable link holds every sibling."""
+    found: set[Path] = set()
+    for parent in sorted({path.parent for path in paths}, key=str):
+        if _expired(deadline, errors):
+            break
+        targets: list[Path] = []
+        try:
+            with os.scandir(parent) as iterator:
+                for entry in iterator:
+                    if _expired(deadline, errors):
+                        break
+                    if not entry.is_symlink():
+                        continue
+                    try:
+                        targets.append(Path(os.path.normpath(parent / os.readlink(entry.path))))
+                    except OSError:
+                        targets.append(parent)
+        except OSError:
+            errors.append("sibling_link_inventory_unreadable")
+            continue
+        for path in paths:
+            if path.parent == parent and any(_intersects(path, target) for target in targets):
+                found.add(path)
+    return found
+
+
+def _decode_mount_field(value: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+
+
+def _mountinfo(raw: bytes) -> list[tuple[str, str, str]]:
+    """``(major:minor, root inside the filesystem, mount point)`` per line."""
+    rows = []
+    for line in raw.decode("utf-8", "surrogateescape").splitlines():
+        fields = line.split(" ")
+        if len(fields) < 5:
+            raise ValueError("mountinfo_unparsed")
+        rows.append((fields[2], _decode_mount_field(fields[3]), _decode_mount_field(fields[4])))
+    return rows
+
+
+def _read_small(path: Path, cap: int) -> bytes:
+    with path.open("rb") as stream:
+        raw = stream.read(cap + 1)
+    if len(raw) > cap:
+        raise ValueError("mountinfo_truncated")
+    return raw
+
+
+def _filesystem_location(path: Path, own_mounts: Sequence[tuple[str, str, str]]) -> tuple[str, PurePosixPath] | None:
+    """The device and path inside its filesystem that ``path`` names in this namespace."""
+    best = None
+    for device, root, point in own_mounts:
+        mount = PurePosixPath(point)
+        if (PurePosixPath(str(path)) == mount or mount in PurePosixPath(str(path)).parents) and (
+                best is None or len(point) > len(best[2])):
+            best = (device, root, point)
+    if best is None:
+        return None
+    relative = PurePosixPath(str(path)).relative_to(best[2])
+    return best[0], PurePosixPath(best[1]) / relative
+
+
+def _namespace_mount_references(paths: Sequence[Path], process_root: Path, errors: list[str],
+                                deadline: float) -> set[Path]:
+    """Candidates a process in another mount namespace (a container) has mounted.
+
+    Its cwd and descriptors name paths inside that namespace, so the process scan
+    cannot match them. A mount of the same filesystem whose root lies in, or
+    contains, a candidate holds that candidate.
+    """
+    found: set[Path] = set()
+    try:
+        own_namespace = os.readlink(process_root / "self" / "ns" / "mnt")
+        own_mounts = _mountinfo(_read_small(process_root / "self" / "mountinfo", _MAX_MOUNTINFO_BYTES))
+    except (OSError, ValueError):
+        errors.append("mount_namespace_inventory_unreadable")
+        return found
+    locations = {path: _filesystem_location(path, own_mounts) for path in paths}
+    if any(location is None for location in locations.values()):
+        errors.append("mount_namespace_inventory_unreadable")
+        return found
+    seen: set[str] = {own_namespace}
+    try:
+        processes = [entry for entry in process_root.iterdir() if entry.name.isdigit()]
+    except OSError:
+        errors.append("mount_namespace_inventory_unreadable")
+        return found
+    for process in processes[:MAX_CANDIDATES]:
+        if _expired(deadline, errors):
+            break
+        try:
+            namespace = os.readlink(process / "ns" / "mnt")
+            if namespace in seen:
+                continue
+            mounts = _mountinfo(_read_small(process / "mountinfo", _MAX_MOUNTINFO_BYTES))
+        except FileNotFoundError:
+            continue  # exited during the scan
+        except (OSError, ValueError):
+            errors.append("mount_namespace_inventory_unreadable")
+            continue
+        seen.add(namespace)
+        for device, root, _point in mounts:
+            mounted = PurePosixPath(root)
+            for path, location in locations.items():
+                if location is not None and location[0] == device and (
+                        mounted == location[1] or mounted in location[1].parents
+                        or location[1] in mounted.parents):
+                    found.add(path)
+    if len(processes) > MAX_CANDIDATES:
+        errors.append("mount_namespace_inventory_truncated")
+    return found
+
+
+def build_reference_census(
+    *, work_root: Path = DEFAULT_WORK_ROOT, inputs_root: Path = DEFAULT_INPUTS_ROOT,
+    process_root: Path = Path("/proc"), pins_root: Path = DEFAULT_PINS_ROOT,
+    queue_roots: Sequence[Path] | None = None, release_link: Path = DEFAULT_RELEASE_LINK,
+    active_run_roots: Sequence[Path] | None = None,
+    unit_directories: Sequence[Path] = DEFAULT_UNIT_DIRECTORIES,
+    now: float | None = None, max_seconds: float = REFERENCE_CENSUS_MAX_SECONDS,
+) -> dict[str, Any]:
+    """Which orphan scratch folders anything refers to; reads only, sizes nothing.
+
+    ``status`` is ``complete`` only when every reference inventory was read in full
+    within the deadline. Otherwise a reader must count every folder as referenced.
+    """
+
+    observed = time.time() if now is None else now
+    if not 0 < max_seconds <= MAX_SECONDS:
+        raise ValueError("max_seconds must be between 0 and 240")
+    started = time.monotonic()
+    deadline = started + max_seconds
+    errors: list[str] = []
+    paths = _candidates(work_root, inputs_root, errors, deadline)
+    if queue_roots is None:
+        errors.append("queue_inventory_unavailable")
+    if active_run_roots is None:
+        errors.append("active_run_inventory_unavailable")
+    kinds: dict[str, set[Path]] = {
+        "queue": _queue_references(paths, queue_roots or (), errors, deadline),
+        "process": _process_references(paths, process_root, errors, deadline),
+        "container_mount": _namespace_mount_references(paths, process_root, errors, deadline),
+        "unit_file": _unit_references(paths, unit_directories, errors, deadline),
+        "sibling_link": _sibling_link_references(paths, errors, deadline),
+    }
+    pin_paths = _pin_references(pins_root, observed, errors, deadline)
+    try:
+        release_path: Path | None = release_link.resolve(strict=True)
+    except OSError:
+        errors.append("live_release_unavailable")
+        release_path = None
+    active_paths = tuple(active_run_roots or ())
+    rows = []
+    for path in paths:
+        references = sorted(kind for kind, found in kinds.items() if path in found)
+        if _referenced(path, pin_paths, deadline, errors):
+            references.append("pin")
+        if release_path is not None and _intersects(path, release_path):
+            references.append("live_release")
+        if _referenced(path, active_paths, deadline, errors):
+            references.append("active_run")
+        family, _guess, _basis = _family(path.name)
+        rows.append({"path": str(path), "family": family, "references": references})
+    _expired(deadline, errors)
+    return {"schema_version": REFERENCE_CENSUS_SCHEMA_VERSION,
+            "status": "incomplete" if errors else "complete", "observed_at_epoch": observed,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "candidate_count": len(paths), "rows": rows,
+            "scan_errors": sorted(set(errors)), "mutations": 0}
+
+
+__all__ = ["build_census", "build_reference_census", "DEFAULT_WORK_ROOT", "DEFAULT_INPUTS_ROOT",
+           "REFERENCE_CENSUS_SCHEMA_VERSION"]
