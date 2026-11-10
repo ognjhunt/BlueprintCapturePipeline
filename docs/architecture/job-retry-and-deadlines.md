@@ -43,7 +43,7 @@ never to skip a check.
 | Beta screening (`beta_policy_screening_coordinator.py`) | A candidate refused before any allocation was planned again only after a deploy. One candidate's harness failure held every other candidate until a deploy. | #3550 on `main` added the self re-plans: a transient failure on the rented machine retries at the same commit, a policy-load failure holds only its candidate and other harness failures hold same-backend siblings, and a row out of GPU offers or with an expired quote is planned again by itself, three times each. This work adds the default beside them: any other refusal before allocation that no rule owns is planned again on the six timed retries, per site and candidate, only for its own reason. Privacy, rights and money refusals, and answers about the candidate, are never retried by the clock. |
 | Team scene packet (`team_scene_packet_worker.py`) | A refusal not on the transient list went back to pending once per deployed release. | It also goes back on the six timed retries. The count is on the status and nothing resets it. |
 | Rigid probe (`rigid_robot_free_probe_runner.py`) | A staging refusal was set aside once per deployed release. | It is also set aside on the six timed retries, through the same supersession markers, which are the count. |
-| WebApp scene intake (`taskEvaluationSceneIntake.ts`) | Forwarding gave up for good after 20 one-minute tries. | It retries until the intent's expiry: five tries a minute apart, then doubling to 30 minutes. |
+| WebApp scene intake (`taskEvaluationSceneIntake.ts`) | Forwarding gave up for good after 20 one-minute tries. | It backs off from 1 to 15 minutes and retries until the job's window ends (WebApp #1257). |
 
 What stays as it was, on purpose:
 
@@ -81,18 +81,17 @@ in-flight attempt.
 ## 4. Every job has a deadline
 
 The deadline is the job's window: the grant's expiry with the owner's one
-extension, or seven days after creation for a website job that never received
-a grant (WebApp `websiteJobDeadline`).
+extension. The WebApp half landed as WebApp #1257.
 
-- The WebApp's beta ops monitor pass ends each website job whose deadline has
-  passed while its page still shows it open (`websiteJobDeadlineSweep.ts`). It
-  writes one ending record and, in the same transaction, the intent for one
-  email. It runs in the web process, so it does not depend on the Pipeline
-  host being alive.
-- The job page shows a job past its deadline as ended without waiting for the
-  sweep.
-- A result or a hold that arrives later still wins on the page. A withdrawn job
-  is never ended or emailed by the sweep.
+- The WebApp worker's sweep (`websiteJobWindowSweep.ts`) ends each website job
+  whose window has passed with no outcome on record. One transaction writes the
+  stored ending the job pages show and queues one email, which is never sent
+  twice. It runs in the WebApp, so it does not depend on the Pipeline host
+  being alive.
+- It never ends a job that already has an outcome, a withdrawal or an owner
+  closure on record, or whose window an extension moved into the future.
+- A window that ended before 2026-11-11T00:00Z gets the stored ending and no
+  email.
 - On the Pipeline, the same window already ends an Atlas job
   (`atlas_preview_expired`), a scene intent (`authority_expired`) and a silent
   preparation whose grant the WebApp refuses as expired (WP-03).
@@ -119,7 +118,6 @@ a grant (WebApp `websiteJobDeadline`).
    Pipeline ledger stays as it was.
 4. **Refusals cached by a revision constant** (Atlas levelling). A timed retry
    of the same inputs and code gives the same answer.
-5. **WebApp:** result schemas still reject unknown fields, and a sponsorship
-   policy edit still revokes accepted intakes. (An email with an unknown send
-   outcome is no longer a dead end: WebApp #1255 re-sends it safely with a
-   provider idempotency key.)
+5. **A website job that never received a grant has no deadline.** The WebApp
+   sweep reads the grant's window, and such a job has none, so it is not
+   ended.
