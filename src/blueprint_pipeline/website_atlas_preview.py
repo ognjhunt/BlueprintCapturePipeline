@@ -16,6 +16,15 @@ finds it after the workspace is retired; then every Atlas asset the job uploaded
 or received is deleted at World Labs, and the WebApp is told each state. A
 withdrawal, re-checked before every paid stage, stops the job, archives nothing
 and deletes its Atlas assets.
+
+A failed step is retried on a timer until the job ends (``job_retry_policy``):
+an outage until the job's seven-day deadline; any other refusal, a defect or a
+step killed before it returned on the bounded refusal schedule. A money refusal
+waits as ``needs_input`` with its own code, re-asked every
+``AUTHORITY_RECHECK_SECONDS`` until the job expires, as a missing grant does.
+Only a privacy or rights refusal fails at once. A
+retry re-asks every gate; it never bypasses one. No operator command is needed
+for a retry; ``retry_failed_job`` reopens a job that has already ended.
 """
 from __future__ import annotations
 
@@ -31,12 +40,14 @@ from pathlib import Path
 from typing import Any
 
 from .atlas_preparation_job_control import (
-    _Withdrawn, PreparationJobBusy, _transition, _reason, _NEEDS_NEW_CAPTURE,
+    STEP_IN_FLIGHT, _Withdrawn, PreparationJobBusy, _transition, _reason, _NEEDS_NEW_CAPTURE,
     preparation_job_lock as preparation_job_lock, retry_preparation_job as retry_preparation_job,
 )
 from .common import write_json
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .file_digest_cache import SIDECAR as DIGEST_CACHE_FILE, file_digest_cache
+from .job_retry_policy import (
+    MONEY, PRIVACY_RIGHTS, REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, outage_retry_delay, refusal_retry_delay)
 from .website_atlas_preview_store import (
     ARTIFACT_KIND, JOB_FILE, LOCK_FILE, MAXIMUM_JOB_SECONDS, SCHEMA, TERMINAL,
     bundle_filename, capture_name_matches_request, capture_withdrawn as _withdrawn,
@@ -48,7 +59,9 @@ ROUTING_ENV = "BLUEPRINT_WEBSITE_ATLAS_ROUTING"
 ALLOWLIST_ENV = "BLUEPRINT_WEBSITE_ATLAS_CAPTURE_IDS_JSON"
 ROUTING_MODES = ("off", "allowlist", "consented")
 PREVIEW_SCHEMA = "website_atlas_preview.v1"
-MAXIMUM_TRANSIENT_FAILURES = 8
+#: Automatic refusal retries in a job's whole life, across streaks that forward
+#: progress ended, so refusals alternating with progress cannot retry without bound.
+MAXIMUM_REFUSAL_RETRIES = 2 * len(REFUSAL_RETRY_DELAYS_SECONDS)
 MAXIMUM_CLEANUP_ATTEMPTS = 12
 AUTHORITY_RECHECK_SECONDS = 1800
 #: While a pass advances jobs, the tick command steps those jobs again at once,
@@ -156,17 +169,66 @@ def enqueue_preview(*, descriptor: Any, capture_root: Path, pipeline_dir: Path,
 _TASK_CONTEXT_CHANGED = frozenset({"website_scene_sponsorship_binding_invalid"})
 
 
-def _transient(error: BaseException) -> bool:
+def _outage(error: BaseException) -> bool:
+    """A provider 429 or 5xx, a changed task context, or a transport or OS error (timeouts included)."""
     status = getattr(error, "status", None)
     if isinstance(status, int):
         return status == 429 or status >= 500
     if isinstance(error, ValueError):
         return (_reason(error) in _TASK_CONTEXT_CHANGED
                 or re.match(r"(?:website_control_|owned_capture_atlas_control_)[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None)
-    return True  # Typed refusals are ValueErrors; transport, storage and lock contention retry.
+    return isinstance(error, OSError)
+
+
+def _by_deadline(job: Mapping[str, Any], at: int) -> int:
+    """Never later than the job's deadline, so the expiry check ends a waiting job on time."""
+    return min(at, job["enqueued_at_epoch"] + MAXIMUM_JOB_SECONDS)
+
+
+def _outage_retry(job: Mapping[str, Any], current: int, code: str, detail: Mapping[str, Any]) -> dict[str, Any]:
+    failures = job.get("transient_failures", 0) + 1
+    return {**job, "transient_failures": failures, "last_transient_reason": code, **detail,
+            "next_attempt_at_epoch": _by_deadline(job, current + outage_retry_delay(failures))}
+
+
+def _refusal_retry(job: Mapping[str, Any], current: int, code: str, detail: Mapping[str, Any]) -> dict[str, Any]:
+    """The bounded schedule; once spent (or the job's lifetime allowance is), the refusal ends the job."""
+    done, total = job.get("refusal_retries", 0), job.get("refusal_retries_total", 0)
+    delay = (refusal_retry_delay(done) if isinstance(total, int) and 0 <= total < MAXIMUM_REFUSAL_RETRIES
+             else None)
+    if delay is None:
+        return _transition(job, current, "failed", code, **detail)
+    return {**job, "refusal_retries": done + 1, "refusal_retries_total": total + 1, "last_refusal_reason": code,
+            **detail, "next_attempt_at_epoch": _by_deadline(job, current + delay)}
+
+
+def _interrupted(job: dict[str, Any], current: int) -> dict[str, Any]:
+    """A step whose process died before it returned (a memory kill, a restart): an unclassified refusal."""
+    mark = job.pop(STEP_IN_FLIGHT)
+    if job["state"] in TERMINAL and not job.get("retry_at_epoch"):
+        return job
+    mark = mark if isinstance(mark, dict) else {}
+    logger.warning("website_atlas_preview_step_interrupted capture=%s stage=%s", job.get("capture_id"),
+                   mark.get("stage"))
+    detail = {"last_error": {"type": "step_interrupted", "message": f"a step at stage {mark.get('stage')} "
+                             f"started at {mark.get('since_epoch')} never returned"}}
+    return _refusal_retry(job, current, "atlas_preview_step_interrupted", detail)
+
+
+def _answered(job: Mapping[str, Any], stage: Any) -> dict[str, Any]:
+    """Counters after a step returned: an outage streak ends; a refusal streak ends only at a new stage."""
+    fields: dict[str, Any] = {"transient_failures": 0}
+    if job.get("refusal_retries") and stage != job.get("stage"):
+        fields["refusal_retries"] = 0
+    return fields
 
 
 def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> dict[str, Any]:
+    """The job after a failed step: the explicit sets first, then ``job_retry_policy``.
+
+    Jobs failed before this policy may carry ``atlas_preview_retries_exhausted``;
+    it is no longer produced and reads as any other recoverable failure.
+    """
     code = _reason(error)
     if code in _WITHDRAWN:
         return _transition(job, current, "withdrawn", "website_capture_withdrawn" if job.get("schema_version") == SCHEMA else code)
@@ -183,14 +245,18 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     # The retained job, never the WebApp's preview, keeps the failure behind the
     # code: its type and a redacted, trimmed message. It is the last one seen.
     detail = {"last_error": error_description(error)}
-    if _transient(error):
-        failures = job["transient_failures"] + 1
-        if failures >= MAXIMUM_TRANSIENT_FAILURES:
-            return _transition(job, current, "failed", "atlas_preview_retries_exhausted", transient_failures=failures,
-                               **detail)
-        return {**job, "transient_failures": failures, "last_transient_reason": code, **detail,
-                "next_attempt_at_epoch": current + min(3600, 60 * 2 ** failures)}
-    return _transition(job, current, "failed", code, **detail)
+    if _outage(error):
+        return _outage_retry(job, current, code, detail)
+    if not isinstance(error, ValueError):
+        return _refusal_retry(job, current, code, detail)  # a defect: not proven permanent, not an outage
+    kind = hard_stop_kind(code)
+    if kind == PRIVACY_RIGHTS:
+        return _transition(job, current, "failed", code, **detail)
+    if kind == MONEY:
+        # Shown to the owner, who can raise the limit; the step's own admission is re-asked on each recheck.
+        return _transition(job, current, "needs_input", code, **detail,
+                           retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
+    return _refusal_retry(job, current, code, detail)
 
 
 def _archive(job: Mapping[str, Any], result: Mapping[str, Any]) -> dict[str, Any]:
@@ -264,8 +330,8 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
         result = (run_step() if run_step is not None else run_atlas_pipeline(source_video=source_video,
             output_root=job_dir, task_context=task_context, max_polls=1, checkpoint=checkpoint))
         if result["status"] == "processing":
-            return _transition(job, current, "processing", None, stage=result["stage"], transient_failures=0,
-                               next_attempt_at_epoch=current)
+            return _transition(job, current, "processing", None, stage=result["stage"],
+                               next_attempt_at_epoch=current, **_answered(job, result["stage"]))
         completion = result.get('scene_completion') or {}
         if completion.get('status') not in (None, 'completed'):
             # A downloadable source reconstruction is retained evidence, not a
@@ -293,6 +359,10 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
         checkpoint("archive_complete")
     except Exception as error:  # noqa: BLE001 - retract a copy overtaken by loss of source authority
         return _failed_step({**job, "archive": archive, "archive_retraction": "pending"}, error, current)
+    # A retraction left pending by an earlier attempt's failed authority check
+    # never ran (it runs only once a job ends); the source is authorized now.
+    if job.get("archive_retraction") == "pending":
+        job = {**job, "archive_retraction": None}
     # The adopted refined-splat form; a minimal one that left gap views out may be upgraded once.
     return _transition(job, current, "ready", None, stage="archived", archive=archive, transient_failures=0,
                        result_digest=result["digest"], splat_available=bool(result.get("splat_available")),
@@ -490,7 +560,13 @@ def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, An
                             deliver: Callable[[dict[str, Any]], dict[str, Any]],
                             refresh: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
                             now: Callable[[], float] = time.time, transport: Any = None) -> str:
-    """One shared lock, terminal cleanup and delivery cycle for an admitted source adapter."""
+    """One shared lock, terminal cleanup and delivery cycle for an admitted source adapter.
+
+    A step that will run is marked in flight in the job file first; the write
+    after it removes the mark. Under this lock a mark can only be one a killed
+    process left, so it takes the bounded refusal schedule instead of re-running
+    every tick. A tick that only waits writes no mark.
+    """
     job_dir = path.parent
     try:
         # Retained files are re-verified every tick; their unchanged ones are not re-hashed.
@@ -499,7 +575,14 @@ def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, An
             before = json.dumps(job, sort_keys=True)
             if refresh is not None:
                 job = refresh(job)
+            current = int(now())
+            if STEP_IN_FLIGHT in job:
+                job = _interrupted({**job}, current)
             if job["state"] not in TERMINAL or job.get("retry_at_epoch"):
+                if current >= max(job["next_attempt_at_epoch"], job.get("retry_at_epoch") or 0):
+                    marked = {**job, STEP_IN_FLIGHT: {"since_epoch": current, "stage": job.get("stage")}}
+                    write_json(path, marked)
+                    before = json.dumps(marked, sort_keys=True)
                 job = step(job)
             if job["state"] in TERMINAL and not job.get("retry_at_epoch"):
                 job = _retract_archive(job)
@@ -517,9 +600,10 @@ def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, An
 
 def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
                      preflight: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
-    """Resume one failed or stopped job once its cause is fixed in the deployed release.
+    """Reopen one job that has ended as failed or needs_input, once its cause is fixed in the deployed release.
 
-    An operator action, never automatic. The next tick resumes at the first
+    Until a job ends, its retries are automatic and timed (module docstring);
+    this operator action is for a job that has ended. The next tick resumes at the first
     unfinished stage, so the survey, plans and other receipts already bought are
     reused, not bought again. A job stopped for input (a background that needs
     review) resumes the same way. A ready job reopens only when its minimal

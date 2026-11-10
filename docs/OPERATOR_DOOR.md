@@ -243,7 +243,8 @@ After reviewing that result against the run's authorized cumulative ceiling,
 use `--atlas-retry --atlas-status-digest sha256:... --wait` with the same selector.
 The existing preview job lock protects a fresh source/rights/grant/accounting
 check and refuses any snapshot drift. Only `website_atlas_preview.retry_failed_job`
-may requeue that failed job. It preserves its original seven-day expiry, source,
+may requeue that failed job. A job that has not ended needs no retry: the timer
+retries it by itself until it ends (`docs/runbooks/atlas-beta.md`, Automatic retries). It preserves its original seven-day expiry, source,
 grant and bought receipts; the later timer can make paid calls through existing
 admission. Status/retry never advance the job or alter timer holds. Native resume
 options, paths, commands, profiles and spending overrides are refused. Both run

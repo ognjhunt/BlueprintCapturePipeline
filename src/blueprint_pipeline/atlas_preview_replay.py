@@ -474,7 +474,7 @@ def run_steps(*, job_path: Path, capture_root: Path, workspace: Path, prefix: st
               commit: str = "") -> dict[str, Any]:
     """Advance the job's copy at ``workspace`` until it stops; ``replay`` makes the copy and checks the evidence."""
     from . import website_atlas_preview as preview
-    from .atlas_preparation_job_control import _reason
+    from .atlas_preparation_job_control import STEP_IN_FLIGHT, _reason
 
     workspace, capture_root = Path(workspace), Path(capture_root)
     path = workspace / "pipeline" / "atlas" / JOB_FILE
@@ -510,6 +510,9 @@ def run_steps(*, job_path: Path, capture_root: Path, workspace: Path, prefix: st
                 job = {**job, "next_attempt_at_epoch": min(job["next_attempt_at_epoch"], current),
                        "retry_at_epoch": job.get("retry_at_epoch") and current}
                 write_json(path, job)
+            if STEP_IN_FLIGHT in job:  # a host step that never returned: replay the step itself
+                job = {key: value for key, value in job.items() if key != STEP_IN_FLIGHT}
+                write_json(path, job)
             harness.failure = harness.failure_stage = None
             try:
                 preview.advance_job(path)
@@ -520,7 +523,8 @@ def run_steps(*, job_path: Path, capture_root: Path, workspace: Path, prefix: st
                 first = harness.classify(error)
                 break
             after = read_job(path)
-            report["steps"].append({key: after.get(key) for key in ("state", "stage", "reason", "transient_failures")})
+            report["steps"].append({key: after.get(key) for key in ("state", "stage", "reason", "transient_failures",
+                                                                  "refusal_retries")})
             harness.reached(after.get("stage"))
             if harness.stops:  # a stop raised where something absorbed it
                 first = harness.stops[0].report()

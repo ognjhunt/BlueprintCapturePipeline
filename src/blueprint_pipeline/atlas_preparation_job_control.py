@@ -16,6 +16,11 @@ _NEEDS_NEW_CAPTURE = frozenset({"atlas_task_and_scene_coverage_gap",
                                 "atlas_insufficient_overlapping_distinct_views",
                                 "atlas_coverage_anchor_quality_insufficient"})
 _NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video_unavailable"})
+#: Written to the job file just before a step runs and removed by the write that follows it.
+#: Read under the job lock, it can only be left by a step whose process died before returning.
+STEP_IN_FLIGHT = "step_in_flight"
+#: Automatic-retry state an operator's reopen starts afresh, with ``transient_failures``.
+_AUTOMATIC_RETRY_FIELDS = frozenset({STEP_IN_FLIGHT, "refusal_retries", "refusal_retries_total"})
 
 class _Withdrawn(Exception):
     pass
@@ -131,6 +136,7 @@ def retry_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]
         # so cleanup is armed again, keeping what was already deleted.
         cleanup = {**(job.get("provider_cleanup") or {}), "state": "pending", "attempts": 0,
                    "next_attempt_at_epoch": 0}
+        job = {key: value for key, value in job.items() if key not in _AUTOMATIC_RETRY_FIELDS}
         job = _transition(job, current, "processing", None, stage="queued", transient_failures=0,
                           next_attempt_at_epoch=current, retries=retries, provider_cleanup=cleanup)
         write_json(path, job)
