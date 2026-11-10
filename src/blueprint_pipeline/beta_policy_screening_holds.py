@@ -35,6 +35,25 @@ probe or the team half, the probe passed, a campaign was planned), the same hold
 is published again as ``released``, and the website reads the campaign. Privacy
 and rights refusals are never published as holds; the website ends those itself.
 Nothing here spends, launches or writes outside the hold store.
+
+Three more ends used to say nothing for good, and are held the same way:
+
+- a source whose planning keeps failing with the same refusal for
+  ``STALL_HOLD_AFTER_SECONDS`` (``stalled_source_hold``: the scene profile is
+  unavailable, the job's dollar ceiling cannot be read). Planning is still tried
+  on every pass, and the hold is released the pass it succeeds;
+- a planned campaign with a row whose provider outcome stays unproven
+  (``reconciliation_required``) past its bound;
+- a planned campaign that ended with nothing scored on a reached account
+  monthly limit, a money stop that is never retried here.
+
+The last two come from the coordinator (``campaign_hold_detail``) as a detail
+code (``campaign_hold``). The WebApp accepts a closed set of reasons
+(``REASONS``, its ``betaPolicyScreeningHold.ts``) and none names these ends, so
+they are sent under ``STALL_HOLD_REASON``, the accepted reason the site is told
+as a problem on our side, with the real cause in ``detail_code``. Publishing a
+hold changes no ledger row: an unproven reservation stays open and is still
+reconciled, and nothing is released or settled.
 """
 from __future__ import annotations
 
@@ -65,6 +84,13 @@ _CODE = re.compile(r"[a-z][a-z0-9_:.=-]{0,199}")
 _RIGHTS = re.compile(r"withdrawn|revoked|consent|rights")
 _SOURCE_FIELDS = ("scene_intent_id", "scene_intent_digest", "capture_id", "task_id", "task_context_digest",
                   "scene_revision_digest")
+#: How long a source's planning may keep failing the same way before its job is told it is held.
+STALL_HOLD_AFTER_SECONDS = 6 * 3600
+#: The accepted reason a stalled source, a stalled campaign or a money stop is sent under: the website
+#: words it as a problem on our side (``held_setup``). ``detail_code`` carries the real cause.
+STALL_HOLD_REASON = "team_scene_packet_blocked"
+#: A re-plan refused because the job's window closed: the job's own end, never a hold.
+WINDOW_CLOSED = "beta_screening_job_window_closed"
 
 
 def hold_id(scene_intent_id: str) -> str:
@@ -120,6 +146,36 @@ def probe_hold(code: str, capture_root: str | Path, *, queue_root: str | Path | 
         if terminal is not None:
             return "robot_free_probe_not_completed", _code(terminal.get("status"))
     return None
+
+
+def campaign_hold(detail: str) -> tuple[str, str | None]:
+    """The hold a planned campaign's own end stands for (``coordinator.campaign_hold_detail``)."""
+    return STALL_HOLD_REASON, _code(detail)
+
+
+def blocked_since(previous: Mapping[str, Any] | None, blockers: list[str], *, now: datetime | None = None) -> str:
+    """Since when a source has been refused with exactly ``blockers``, carried from its previous outcome."""
+    kept = (previous or {}).get("blocked_since") if (previous or {}).get("blockers") == blockers else None
+    try:
+        valid = isinstance(kept, str) and datetime.fromisoformat(kept).tzinfo is not None
+    except ValueError:
+        valid = False
+    return kept if valid else (now or datetime.now(timezone.utc)).isoformat()
+
+
+def stalled_source_hold(code: str, since: str, *, now: datetime | None = None) -> tuple[str, str | None] | None:
+    """The hold a source refusal stands for once it has failed the same way long enough; else None.
+
+    Never for a privacy or rights refusal (the website ends those itself) or a
+    closed job window. An unreadable start reads as not yet.
+    """
+    if _RIGHTS.search(code) or code == WINDOW_CLOSED:
+        return None
+    try:
+        elapsed = ((now or datetime.now(timezone.utc)) - datetime.fromisoformat(since)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return (STALL_HOLD_REASON, _code(code)) if elapsed >= STALL_HOLD_AFTER_SECONDS else None
 
 
 def scene_preparation_probe_failed(request: Mapping[str, Any]) -> bool:
@@ -295,5 +351,7 @@ def deliver_holds(*, queue_root: str | Path, transport=None) -> dict[str, Any]:
     return {"acknowledged": sent, "pending": failed, **failure}
 
 
-__all__ = ["HOLD_SCHEMA", "REASONS", "RELEASE", "ROUTE", "acknowledge_hold", "deliver_holds", "hold_id", "packet_hold",
-           "pending_holds", "probe_hold", "publish_hold", "scene_preparation_probe_failed", "settle_hold"]
+__all__ = ["HOLD_SCHEMA", "REASONS", "RELEASE", "ROUTE", "STALL_HOLD_AFTER_SECONDS", "STALL_HOLD_REASON",
+           "WINDOW_CLOSED", "acknowledge_hold", "blocked_since", "campaign_hold", "deliver_holds", "hold_id",
+           "packet_hold", "pending_holds", "probe_hold", "publish_hold", "scene_preparation_probe_failed",
+           "settle_hold", "stalled_source_hold"]
