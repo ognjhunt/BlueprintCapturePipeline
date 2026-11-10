@@ -3,6 +3,7 @@
  "set_id": "replay_set_v1",
  "synthetic": true,
  "materialize_root": "/tmp/blueprint-replay-set-v1",
+ "replay_clock_epoch": 1794250430,
  "built_by": "PYTHONPATH=src python -m tests.replay_set_v1_build --out tests/fixtures/replay_set_v1",
  "records": [
   {

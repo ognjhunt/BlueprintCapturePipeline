@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .paid_spend_meter import (
+    BILLABLE_UNTIL_FIELD,
     DEFAULT_SCREENING_QUEUE_ROOT,
     MAX_LEDGER_BYTES,
     SCREENING_QUEUE_ROOT_ENV,
@@ -54,11 +55,37 @@ def _read_screening_ledger(queue_root: Path) -> dict[str, Any] | None:
     return ledger
 
 
+def _unsettled_close(attempt: Mapping[str, Any]) -> dict[str, Any]:
+    """When a committed attempt that keeps its whole cap could last be billed, from its own record.
+
+    The coordinator commits an attempt only after the provider confirmed its
+    instance gone, and decides it once: settled, or held at its cap for good
+    (``settlement_held``, stamped ``held_at`` then). Nothing can be billed to
+    the attempt after ``held_at``. An attempt not decided yet, or whose record
+    puts that time before its own launch intent, has no recorded end: its hold
+    stays open.
+    """
+
+    from .beta_policy_screening_coordinator import SETTLEMENT_HELD_FIELD
+
+    held = attempt.get(SETTLEMENT_HELD_FIELD)
+    closed = _epoch(held.get("held_at")) if isinstance(held, Mapping) else None
+    if closed is None:
+        return {}
+    intent = attempt.get("launch_intent_at")
+    launched = _epoch(intent) if intent is not None else None
+    if intent is not None and (launched is None or closed < launched):
+        return {}
+    return {BILLABLE_UNTIL_FIELD: closed, **({"hold_reason": str(held["reason"])} if held.get("reason") else {})}
+
+
 def screening_rows(queue_root: Path | None) -> tuple[list[dict[str, Any]], list[str]]:
     """Each screening attempt, read from the screening ledger without its write lock.
 
     The ledger is replaced atomically, so a read sees one whole revision.
-    Counted as the ledger's own site budget counts it (``_budget``).
+    Counted as the ledger's own site budget counts it (``_budget``); a
+    committed attempt held at its cap also carries when it could last be
+    billed (``_unsettled_close``), which the month's view reads.
     """
 
     from .beta_policy_screening_settlement import settled_cost
@@ -98,7 +125,7 @@ def screening_rows(queue_root: Path | None) -> tuple[list[dict[str, Any]], list[
                     settled = settled_cost(attempt)
                     settled_at = _epoch(attempt.get("settled_at"))
                     if settled is None or settled_at is None:
-                        row.update(status="held", held_usd=cap)
+                        row.update(status="held", held_usd=cap, **_unsettled_close(attempt))
                     else:
                         row.update(status="settled", settled_usd=settled, settled_at_epoch=settled_at)
                 rows.append(row)

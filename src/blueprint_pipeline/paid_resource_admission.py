@@ -155,7 +155,11 @@ def _spend_effect_blockers(admission: Mapping[str, Any], spend_effect: str) -> t
 
 
 def _account_monthly_limit_blockers() -> list[str]:
-    """The account-wide monthly limit (``account_monthly_spend``); ``[]`` while none is configured.
+    """The account-wide monthly limit (``account_monthly_spend``).
+
+    ``[]`` while the month is under its limit. With no limit file the
+    production control plane refuses (``account_monthly_spend_limit_not_configured``);
+    any other process has no limit and gets ``[]``.
 
     Checked where a new paid admission is made or about to be reserved, never
     for a clear stop (``spend_effect``) and never when an issued grant is

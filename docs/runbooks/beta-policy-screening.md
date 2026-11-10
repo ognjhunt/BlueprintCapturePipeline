@@ -1,8 +1,11 @@
 # Automatic beta policy screening
 
 For the free beta, a completed customer scene can run a configurable set of
-candidate policies under one persistent **$15 per site** screening allowance.
-The default catalog contains 128 candidate rows: ten original policy candidates,
+candidate policies under one persistent **$30 per site** screening allowance
+(`SITE_LIMIT`, raised from $15 on 2026-11-05).
+The default catalog contains 136 candidate rows (counted in
+`config/beta_policy_candidates.v1.json` on 2026-11-10; the breakdown that follows
+was written for 128 rows and has not been recounted): ten original policy candidates,
 sixteen further public OpenPI DROID checkpoints from `gs://openpi-assets`, one
 for each of the 74 recorded embodiment–policy routes, 24 public controller
 integrations and scripted baselines, and four pinned native G1/Dex3/SONIC
@@ -138,7 +141,7 @@ construction and screening together. Before planning, the worker reads the
 job's `job_ceiling` from the non-creating `atlas-configuration` read and
 subtracts this queue's own screening the WebApp has not seen yet (reservations
 since its last accepted publication and other campaigns' unreserved
-selections). The plan's `budget_usd` is the smaller of $15 and what is left; the
+selections). The plan's `budget_usd` is the smaller of $30 and what is left; the
 plan records `budget_basis: "website_job_ceiling"` and the read. Candidates that
 no longer fit are deferred with `website_job_ceiling_insufficient`; with less
 left than any quote, every candidate is deferred and the plan still publishes.
@@ -190,24 +193,6 @@ campaign for the same source. One ledger write enqueues it and closes the old
 campaign's queued rows as `beta_screening_replanned_for_new_implementation`.
 The site budget is shared, so the new campaign sees what the old one spent.
 
-A candidate refused before any allocation needs no deploy. Once the campaign
-holds no reservation and no active row, and one blocked candidate's wait on the
-shared refusal schedule has passed (`job_retry_policy`: 15 minutes, then 1, 3,
-6, 12 and 24 hours by how many timed re-plans it had, counted from the
-campaign's last change), source adoption plans again at the same commit every
-candidate that never ran or allocated and is not blocked, and every blocked one
-the timer may retry, whether its own wait has passed or not. Each blocked
-candidate carried counts as one timed re-plan: the superseded campaign records
-them (`timed_replan_candidate_ids`), the count is read across every campaign of
-the site, and a candidate is carried by the clock at most six times. The timer
-never carries a refusal that protects privacy, rights or money, a definite
-answer about the candidate (the site stopped it, the WebApp refused its
-execution, measured geometry), a commit change, a harness hold or failure, or a
-candidate with no timed re-plan left. Such a row stays blocked in the old
-campaign and is planned again once at the next commit or scene half. A harness
-failure holds only the campaign's unspent candidates on its own backend, and
-they wait for a deploy.
-
 A plan also freezes the scene's team half it was built from. A completed half
 can be compiled again later with the same source: a newer stance search finds
 another station, or the site owner approves moving chairs. On each pass,
@@ -233,6 +218,60 @@ the individual attempt; it makes no claim that the whole provider account is
 empty. Missing or stale evidence keeps the reservation open. Proven teardown
 with lost scientific output closes as a paid failure and publishes no score.
 
+## What a campaign does by itself
+
+No operator command and no deploy is needed for a campaign to move or to end.
+The rules live in `beta_policy_screening_failure_scope` and the coordinator.
+
+- **Transient infrastructure, after allocation.** The rented machine, its
+  network or its package mirror failed before our harness said anything about
+  the policy (`beta_screening_session_provisioning_transient:<class>`:
+  `rented_machine`, `bundle_download`, `package_mirror`, `provider_log_silent`).
+  The candidate is planned again at the same commit, at most
+  `MACHINE_FAULT_RETRY_LIMIT` times per site and candidate (one counter with
+  machine faults), inside its cap and the site limit. It spends no harness
+  retry and holds no sibling.
+- **A candidate's own policy failure** (`policy_canary_session_setup_failed:policy_load`,
+  `beta_screening_session_policy_provisioning_failed`) is that candidate's
+  harness failure: it waits for a deploy under `HARNESS_RETRY_LIMIT`, and its
+  siblings run.
+- **A shared-stage harness failure** (simulator start, scene gate, a run that
+  names no stage) holds the pending candidates on the same runtime backend
+  (`beta_screening_held_after_launch_failure`) until the next deploy.
+- **No GPU offer.** After its 12 searches a row closes
+  `beta_screening_gpu_capacity_unavailable`. It is planned again after a
+  two-hour cool-off, at most three times per site and candidate.
+- **An expired quote** (`beta_screening_cost_quote_expired`) is planned again
+  with a fresh quote, at most three times per site and candidate.
+- **Any other refusal before allocation** that no rule above owns (for
+  example `beta_screening_transport_retry_cap_exhausted`,
+  `beta_screening_capacity_preflight_failed`, a typed preparation or allocator
+  refusal) is planned again at the same commit on the shared refusal schedule
+  (`job_retry_policy`: 15 minutes, then 1, 3, 6, 12 and 24 hours from the row's
+  close), at most six times per site and candidate. It never applies to a
+  refusal that protects privacy, rights or money, or to an answer about the
+  candidate (the site stopped it, the WebApp refused its execution, measured
+  geometry).
+- **Money evidence too old to read** (a stale spend lock,
+  `account_monthly_spend_report_stale`, `account_monthly_spend_report_missing_or_invalid`)
+  waits and is read again, at most six times per row. A reached limit
+  (`account_monthly_spend_limit_reached`) never retries: the row closes and
+  only a deploy plans it again.
+- **A campaign that cannot move** is told to the website as a hold
+  (`beta_policy_screening_holds`): a row in `reconciliation_required` for six
+  hours (`beta_screening_reconciliation_stalled`), a campaign ended on the
+  account limit, or a source whose planning failed the same way for six hours
+  (for example `website_job_ceiling_unavailable`). The hold uses the reason
+  `team_scene_packet_blocked`, the accepted reason the site reads as a problem
+  on our side, with the real cause in `detail_code`. It changes no ledger row:
+  an unproven reservation stays open and is still reconciled. The WebApp reads
+  a hold only while no campaign was published for the scene.
+
+The three self re-plans (no GPU offer, an expired quote, any other refusal)
+each take a row only for its own reason: a row whose own wait or bound has not
+come is never carried by a sibling that is due, and the next deploy's re-plan
+takes it up. A self re-plan ends once the job's window has closed.
+
 ## Candidate configuration and intentional retries
 
 The shipped catalog is `config/beta_policy_candidates.v1.json`; an
@@ -244,9 +283,10 @@ sealed `screening_candidates` runtime entry in the existing operator scene
 profile. Existing adapters are reused; a genuinely different interface needs
 an adapter and its validation before the planner can select it.
 
-Plans are immutable. If a quote expires or a runtime, account or credential
-becomes available after planning, increment the catalog's `revision` and
-re-seal the catalog to request a fresh campaign. This is an intentional retry
+Plans are immutable. A row whose quote expired before it could launch is
+planned again by itself with a fresh quote (below). If a runtime, account or
+credential becomes available after planning, increment the catalog's `revision`
+and re-seal the catalog to request a fresh campaign. This is an intentional retry
 generation, not a fresh spending allowance. Completed and uncertain earlier
 attempts remain in the site's ledger. Merely restarting or deploying code
 does not rerun a site's candidates.
@@ -321,7 +361,7 @@ Only an explicit `hosted_inference_payment` of `free` or `caller_paid` permits
 both API price and API maximum to be `"0"`. For Blueprint-paid inference, both
 must be positive. The candidate reservation and quote include GPU **plus** API
 ceilings; the canonical GPU allocator receives only the GPU portion. The $4
-GPU and $1 API example reserves $5 from the site's shared $15 allowance. Live
+GPU and $1 API example reserves $5 from the site's shared $30 allowance. Live
 metadata identity is verified before every inference inside the paid session;
 planning performs no potentially billable endpoint calls.
 

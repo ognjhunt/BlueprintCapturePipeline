@@ -238,9 +238,11 @@ def test_a_named_cell_setup_failure_is_a_harness_failure_for_retry_and_sibling_h
     for _ in range(2):
         coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
                                             executor=Backend({**HARNESS_FAILED, "blockers": [code]}))
-    # The named stage reaches the published row; the sibling is held unspent.
+    # The named stage reaches the published row. A stage the backend shares (the simulator, the scene's
+    # gate) holds the sibling unspent; the candidate's own policy load predicts nothing about a sibling,
+    # which runs (here it meets the same stand-in failure).
     assert [(row["status"], row["blockers"]) for row in publication(tmp_path)["candidates"]] == [
-        ("blocked", [code]), ("blocked", [coordinator.HARNESS_HOLD_BLOCKER])]
+        ("blocked", [code]), ("blocked", [code if stage == "policy_load" else coordinator.HARNESS_HOLD_BLOCKER])]
     assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) is None
     assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
         "candidate-000", "candidate-001"]

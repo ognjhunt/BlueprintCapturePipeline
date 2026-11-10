@@ -295,7 +295,8 @@ month**, across every provider. The design and the stage-2 plan are in
 | `account_spend_report_stale` (page); refusals `account_monthly_spend_report_stale` / `_missing_or_invalid` | The spend guard has not rewritten the report for 15 min, so every paid admission is refused. | Check `blueprint-gpu-spend-guard.service` (`door status`, `failed_units`). For up to a minute after a deploy or after 00:00 UTC on the 1st, this is expected. |
 | `account_spend_limit_config_invalid` (page) | The installed config does not validate, so every paid admission is refused. | Fix the file in a reviewed commit and deploy. |
 | `account_spend_unverifiable` (warn) | A provider reading is missing or stale (`reason`). The month counts what it can see. | See section 2a for that provider. |
-| `account_spend_limit_not_set` (warn) | No config is installed: the month is reported, nothing is refused. | Expected only off the host or before the deploy. |
+| `account_spend_limit_missing` (page); refusal `account_monthly_spend_limit_not_configured` | The limit file is not where the control plane reads it (`config_path` in `python -m blueprint_pipeline.account_monthly_spend`), so every new paid admission is refused. Stops still work. | Find out why the file is gone from the promoted release, then deploy `main`, which installs it. Do not write the file by hand. |
+| `account_spend_limit_not_set` (warn) | No config is installed on a machine that is not the control plane: the month is reported, nothing is refused. | Expected only off the host. |
 
 To read the month:
 
@@ -308,6 +309,15 @@ To read the month:
 
 Holds count in full on top of billing. A busy day can therefore read high
 until attempts settle. Provider bills lag by hours.
+
+`old_unsettled_holds` lists holds that no longer count: their attempt ended in
+an earlier month and its settlement was never proven. They still count against
+their site's screening allowance until someone settles them.
+
+A provider with `status: carried_forward` means its last billing call failed.
+The lock and the month use its last good total, with the time it was read, for
+24 hours; after that, launches on that provider are refused until billing
+answers (`spend_admission_lock_required_provider_billing_missing`).
 
 ## 3. The work volume is full
 
