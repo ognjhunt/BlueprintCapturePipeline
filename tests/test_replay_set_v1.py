@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
+
+import pytest
 
 from blueprint_pipeline import replay_set
 from blueprint_pipeline.task_evaluation_downstream_replay import STAGES, STOP_KINDS
@@ -78,3 +81,34 @@ def test_materialize_puts_a_record_back_byte_for_byte_and_makes_its_empty_direct
     replay_set.materialize(SET / "records" / record["record_id"], target, empty_dirs=record["empty_dirs"])
     assert all((target / relative).is_dir() for relative in record["empty_dirs"])
     assert not list(target.rglob("*" + replay_set.GZIP_SUFFIX))
+
+def test_the_set_replays_at_its_recorded_clock_whatever_today_is(tmp_path, monkeypatch):
+    """The records carry real grant times; a month later they must still replay the same."""
+    clock = _manifest()[replay_set.CLOCK_FIELD]
+    assert isinstance(clock, int) and clock > 0
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 30 * 86400)
+    seen: list[float] = []
+    runner = replay_set.TOOLS["task_evaluation_downstream_replay"]
+
+    def watching(inputs, **kwargs):
+        seen.append(time.time())
+        return runner(inputs, **kwargs)
+
+    monkeypatch.setitem(replay_set.TOOLS, "task_evaluation_downstream_replay", watching)
+    lines: list[str] = []
+    result = replay_set.run_set(SET, replay_root=tmp_path / "replays", echo=lines.append)
+    assert result["passed"] is True, "\n".join(lines)
+    # Each record ran at the recorded instant, and the shifted wall clock is back afterwards.
+    assert seen and all(clock <= moment < clock + 3600 for moment in seen)
+    assert time.time() > clock + 29 * 86400
+
+
+def test_a_manifest_clock_that_is_not_a_time_is_refused(tmp_path):
+    copy = tmp_path / "set"
+    shutil.copytree(SET, copy)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    manifest[replay_set.CLOCK_FIELD] = "yesterday"
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="replay_clock_epoch"):
+        replay_set.run_set(copy, replay_root=tmp_path / "replays", echo=lambda _line: None)
