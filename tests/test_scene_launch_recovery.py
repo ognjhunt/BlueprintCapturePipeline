@@ -466,7 +466,11 @@ def test_rows_reserved_before_the_count_existed_do_not_strand_an_in_flight_job(t
         row = _configure(root, intent, name)
         path = directory / "attempts" / (row["attempt_id"] + ".json")
         legacy = {key: value for key, value in row.items() if key not in {intake.PAID_ATTEMPT_FIELD, "attempt_digest"}}
+        # A sealed row is read-only: put the earlier release's row in its place, with the same mode.
+        mode = path.stat().st_mode
+        path.unlink()
         path.write_text(json.dumps(intake._seal(legacy, "attempt_digest")))
+        path.chmod(mode)
     assert _configure(root, intent, "a").get(intake.PAID_ATTEMPT_FIELD) is None  # in-flight row re-reads unchanged
     assert _configure(root, intent, "next")[intake.PAID_ATTEMPT_FIELD] is True  # counted from now on
     with pytest.raises(intake.SceneIntakeError, match="attempt_cap_exhausted"):
