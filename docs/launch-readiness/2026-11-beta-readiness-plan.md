@@ -199,27 +199,27 @@ Not packaged, and why:
 
 ## 6. Progress
 
-Updated after every wave. Last update: 2026-11-09 23:20Z, after waves 1 and 2, with every executor finished.
+Updated after every wave. Last update: 2026-11-10 04:00Z. Eight packages merged: WP-01, 04, 05, 06, 07, 08, 11, 15.
 Status: merged, PR (open, with its CI result), or deferred with a reason. "CI"
 counts the checks that ran; checks the workflow skipped are not counted.
 
 | ID | Status | Pull request | CI | Note |
 |---|---|---|---|---|
 | WP-01 | merged | [#3517](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3517) | green, 3 passed | The leak came from one import added by #3488. The import-closure tests now run on every pull request (about 25 s). |
-| WP-02 | PR open, not merged | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | red: 14 passed, 3 failed (full-suite shard 11 and its two rollups) | 5 synthetic records, 2 job kinds, 7 s. Covers the downstream replay only. Shard 11 failed on `test_canonical_cpu_env_collects_without_errors`, a 180 s limit on collecting the whole suite (G58); the same shard passed on #3518, so the failure is intermittent. Merge after a green run. |
+| WP-02 | PR open, CI re-running | [#3515](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3515) | was red on one full-suite shard (the 180 s collection limit, G58); updated from `main` after #3523 fixed that limit, CI re-running | 5 synthetic records, 2 job kinds, 7 s. Covers the downstream replay only. Merge when the re-run is green. |
 | WP-03 | PR open, verifier approved, merge held | [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516) | green, 4 passed | Merge held on purpose: see O-18. The first version was refused by its verifier (it ended extended and renewed jobs); the second asks the WebApp and ends only on its refusal. |
 | WP-04 | merged | [WebApp #1245](https://github.com/ognjhunt/Blueprint-WebApp/pull/1245) | green, 9 passed | The first version was refused by its verifier (3 bypasses). Enforced only once `BLUEPRINT_INVITEE_ALLOWLIST` is set. |
-| WP-05 | PR open, reworked, waits on a second verifier | [#3518](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3518) | green, 16 passed | 109 call sites classified: 36 admitted, 24 not paid, 49 can spend with no admission. The first verifier checked that none of the original 30 is reachable from an automatic website job; the 19 added by the rework have not had that check. |
-| WP-06 | PR open, two verifier passes, not merged | [WebApp #1246](https://github.com/ognjhunt/Blueprint-WebApp/pull/1246) | red: 8 passed, `test` failed on one test in a file the change does not touch (`JobWorkspace.test.tsx`, "saves optional planning details without requiring a budget") | Needs a re-run of `test` by someone with access (sessions get 403), or a diagnosis of that test. |
+| WP-05 | merged | [#3518](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3518) | green, 16 passed | Second verifier approved. 109 call sites: 36 admitted, 24 not paid, 49 can spend with no admission. None of the 49 is reachable from an automatic website job without an operator flag or environment opt-in; DreamLabs is reachable from screening only if an enabled Dream candidate and its credential are configured (WP-23). |
+| WP-06 | merged | [WebApp #1246](https://github.com/ognjhunt/Blueprint-WebApp/pull/1246) | green, 9 passed | Two verifier passes. The one red `test` was a real race in the job workspace form (a late reset could erase the first keystroke); fixed in the same pull request. |
 | WP-07 | merged | [#3520](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3520) | green, 3 passed | Verifier approved. New clips are normalized to at most 1920 px and 30 fps; jobs in flight keep their original. Operator note: O-19. |
-| WP-08 | PR open, reworked, waits on a second verifier | [#3519](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3519) | green, 4 passed | The plan process is now one at a time, bounded to 30 minutes and 1 GiB, lowest priority, with no inherited secrets; a failed plan is recorded and retried. |
+| WP-08 | merged, split | [#3519](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3519) | green, 3 passed | Fourth verifier pass approved the split version: the offline drill, the receipt's policy copy classes, unresolved roots, the runbook section. The automatic deletion plan failed three reviews and was removed; it continues as WP-24. |
 | WP-09 | deferred | | | Not started: this session reached its turn limit after wave 2. Nothing blocks it. Add to it: a planned screening campaign can still reserve for a withdrawn site (G52). |
 | WP-10 | deferred | | | Not started (turn limit). Depends on WP-03, which is not merged. |
-| WP-11 | PR open, waits on a diff review | [WebApp #1247](https://github.com/ognjhunt/Blueprint-WebApp/pull/1247) | green, 9 passed | Full release scope for 28 job-page and intake files, and a reference-only case. The three intake suites were NOT wired into CI: all three fail on `main` on stale assertions, and the backend suite runs out of the 5-a-day intake cap after five cases (G59, O-20). |
+| WP-11 | merged, in part | [WebApp #1247](https://github.com/ognjhunt/Blueprint-WebApp/pull/1247) | green, 9 passed | Full release scope for 28 job-page and intake files, and a reference-only case. The three intake suites are NOT in CI: all three fail on `main` (G59, O-20). |
 | WP-12 | deferred | | | Not started (turn limit). Nothing blocks it. |
 | WP-13 | deferred | | | Not started (turn limit). The host drill also needs O-14. |
 | WP-14 | deferred | | | Not started (turn limit). Depends on WP-03 and WP-06. Add to it: the `authority_ended` sentence (G51). |
-| WP-15 | deferred | | | Not started (turn limit). The gate decision is taken (section 4); only the documents remain. |
+| WP-15 | merged | [#3523](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3523) | green, 28 check runs, none failed | Verifier approved. Suite collection from about 185 s to about 45 s; one deploy gate per deploy kind in the documents; a `/proc` race fixed; ffmpeg and browser caches. Left: the `registered_feature` nightly failure needs a production budget change (G60). |
 | WP-16 | deferred | | | Not started (turn limit). Add to it: `/v1/creator/captures` is outside the allowlist (G53). |
 | WP-17 | deferred | | | Not started (turn limit). Depends on WP-15. |
 | WP-18 | deferred | | | Not started (turn limit). Its merge needs the library-aisle session's agreement, because a lower memory cap can kill a stage that survives today. |
@@ -228,6 +228,7 @@ counts the checks that ran; checks the workflow skipped are not counted.
 | WP-21 | deferred | | | Not started (turn limit). Deletion stays off until O-17 either way. |
 | WP-22 | deferred | | | Not started (turn limit). The most urgent of the deferred packages: O-02 waits on it. |
 | WP-23 | new, deferred | | | Put the 49 unadmitted API-priced call sites (WP-05's list) behind the existing account-limit check, or refuse them when no reservation exists. Serves E4 (a). |
+| WP-24 | new, deferred | | | Produce the Pipeline's deletion plan after a withdrawal with no operator, run OUTSIDE the intake service. Work so far and three reviews' findings are on branch `claude/inspiring-turing-xbkcyh-wp-24`. Serves E5 (c). |
 
 Gaps found while doing the work, added to the register:
 
@@ -245,6 +246,7 @@ Gaps found while doing the work, added to the register:
 | G57 | None of the nine uncovered storage roots has a per-site binding, so a withdrawal cannot find a site's files in them | E5 | #3519 | open |
 | G58 | Collecting the whole test suite takes about 185 s on `main` against a 180 s limit, so one full-suite shard fails on any pull request that runs it, and the nightly lane is at risk | E6 | `tests/test_cpu_env_contract.py::test_canonical_cpu_env_collects_without_errors`; #3515 shard 11 | WP-15 |
 | G59 | The three intake browser suites fail on `main`: 7 cases assert headings the pages no longer show, and 15 backend cases hit the 5-a-day intake cap, which the local launcher cannot raise | E9 | WebApp `playwright.intake*.config.ts`; `scripts/qa/reliability-local-app.mjs` | open; O-20 |
+| G60 | The nightly `registered_feature` test fails when the runner is busy: one 20,000-entry budget covers every process's file-descriptor listing | E6 | #3523 report; `reference_entries_limit` | open: needs a production budget change |
 
 Added to the owner list:
 
@@ -255,7 +257,7 @@ Added to the owner list:
 | O-04 (note) | When you set the invitee list, use exact emails, not domains: the public form trusts a typed email. Tenant users, robot teams and people invited through account invitations need listing too. | | E9 (a) |
 | O-20 | Allow a test-only intake cap in the local emulator launcher (`scripts/qa/reliability-local-app.mjs`). | Yes: no real job or spend is involved there. | Running the intake backend suite in CI (E9 d) |
 
-Criteria after waves 1 and 2: none passes yet. E6 (b) is done on `main`
+Criteria on 2026-11-10: none passes yet. E2 (b) is done on `main` (WebApp #1246). E5 (a) is done on `main` (#3519). E6 (c) and (d) are done on `main` (#3523). E4 (a) is done except that 49 call sites remain unadmitted (WP-23). E6 (b) is done on `main`
 (#3517) and the 7-night count for E6 (a) starts with the 2026-11-10 run. E7 (c)
 is done on `main` (#3520) and takes effect at the next deploy. E9 (a) is ready
 on `main` (WebApp #1245) and waits on the list (O-04).
