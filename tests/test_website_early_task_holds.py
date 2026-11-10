@@ -28,6 +28,10 @@ from blueprint_pipeline import website_early_task_hold as early
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
+from blueprint_pipeline.website_paid_work_stop import (
+    TaskPreparationHeld,
+    refuse_paid_work_when_held,
+)
 from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
 from tests.test_website_preparation_status import prepared_source  # noqa: F401  (fixture, by name)
 
@@ -433,7 +437,7 @@ def test_a_held_job_reserves_no_new_upstream_spend_and_a_resumed_job_does(job, m
         wtc.reserve_website_preparation_spend(task_context=context, binding_digest="sha256:" + "c" * 64,
             maximum_cost_usd=0.1, request_count=1, resource_class="evaluator_api", provider="google")
     with (early.stop_paid_work_when_held(capture_root=job.capture, task_context=context),
-          pytest.raises(early.TaskPreparationHeld)):
+          pytest.raises(TaskPreparationHeld)):
         reserve()  # refused before the budget check, the WebApp hold or any provider
     with pytest.raises(Reached):
         reserve()  # outside a guarded lane, nothing changes
@@ -452,7 +456,7 @@ def _clean_plate(tmp_path, monkeypatch, *, held_after):
     state, charged = {"held": held_after == 0}, []
 
     def paid(kind):
-        early.refuse_paid_work_when_held()  # what reserve_website_preparation_spend does first
+        refuse_paid_work_when_held()  # what reserve_website_preparation_spend does first
         charged.append(kind)
         state["held"] = state["held"] or len(charged) >= held_after
 

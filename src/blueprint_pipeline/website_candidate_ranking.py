@@ -29,7 +29,7 @@ from typing import Any
 from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as write_json, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .website_task_context_lineage import accepts_bound_digest
-from .website_early_task_hold import TaskPreparationHeld
+from .website_paid_work_stop import TaskPreparationHeld
 from .website_gemini_receipts import gemini_quote, retained_gemini_call
 
 SCHEMA_VERSION = "website_candidate_ranking.v1"

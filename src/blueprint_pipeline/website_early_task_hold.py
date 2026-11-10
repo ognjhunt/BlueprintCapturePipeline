@@ -42,11 +42,11 @@ import contextlib
 import json
 import time
 from collections.abc import Iterator, Mapping
-from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .website_paid_work_stop import paid_work_stop
 
 WEBSITE_CONTEXT_SCHEMA = "website_site_task_context.v1"
 SCHEMA = "website_atlas_task_preparation_hold.v1"
@@ -297,45 +297,26 @@ def spend_before_hold(*, output_root: Path, task_context: Mapping[str, Any],
     return value
 
 
-class TaskPreparationHeld(Exception):
-    """A new upstream reservation refused because the capture's job is held for task preparation.
-
-    Not a failure: the lane ends with a held outcome. Deliberately not a ``ValueError``,
-    so the per-target recoveries that catch those do not turn it into another attempt.
-    """
-
-
 class _Stop:
     def __init__(self, capture_root: Path, task_context: Mapping[str, Any]) -> None:
         self.capture_root, self.task_context, self.stopped = Path(capture_root), task_context, False
 
-
-_STOP: ContextVar[_Stop | None] = ContextVar("blueprint_website_task_preparation_hold_stop", default=None)
+    def __call__(self) -> bool:
+        if not self.stopped:
+            try:
+                self.stopped = _standing_hold(capture_root=self.capture_root, task_context=self.task_context) is not None
+            except (OSError, ValueError, TypeError, KeyError):
+                return False  # An unreadable hold holds nothing, as at the capture stage.
+        return self.stopped
 
 
 @contextlib.contextmanager
 def stop_paid_work_when_held(*, capture_root: Path, task_context: Mapping[str, Any] | None) -> Iterator[_Stop]:
     """Within this scope, refuse each new website upstream reservation once the capture's job is held.
 
-    The check reads the hold record at each reservation; it adds no wait and no marker.
+    The check reads the hold record at each reservation (``website_paid_work_stop``); it
+    adds no wait and leaves no marker. Once it has refused, it refuses for the rest of the scope.
     """
     stop = _Stop(capture_root, task_context or {})
-    token = _STOP.set(stop if task_context else None)
-    try:
+    with paid_work_stop(stop if task_context else None):
         yield stop
-    finally:
-        _STOP.reset(token)
-
-
-def refuse_paid_work_when_held() -> None:
-    """Called before a website upstream reservation; raises ``TaskPreparationHeld`` while the job is held."""
-    stop = _STOP.get()
-    if stop is None:
-        return
-    if not stop.stopped:
-        try:
-            stop.stopped = _standing_hold(capture_root=stop.capture_root, task_context=stop.task_context) is not None
-        except (OSError, ValueError, TypeError, KeyError):
-            return  # An unreadable hold holds nothing, as at the capture stage.
-    if stop.stopped:
-        raise TaskPreparationHeld("website_task_preparation_held")

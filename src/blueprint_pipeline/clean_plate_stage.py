@@ -32,9 +32,10 @@ from .core.handoff_lease import (
     HandoffLeaseError, handoff_lease_checkpoint, guarded_handoff_write_json as write_json,
 )
 from .local_capture import resolve_local_capture_context
+from .website_paid_work_stop import TaskPreparationHeld
 from .website_scene_geometry import prepare_website_source_frames
 from .website_task_masks import run_website_task_masks
-from .website_early_task_hold import TaskPreparationHeld, stop_paid_work_when_held
+from .website_early_task_hold import stop_paid_work_when_held
 from .website_task_target_choice import load_target_choices, retain_questions
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"

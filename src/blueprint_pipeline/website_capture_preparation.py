@@ -70,11 +70,8 @@ def run_website_capture_preparation(
                 'native_execution_complete': False}
     # The Atlas lane held the task right after its review (no native profile or no
     # installed runtime): hold here too, before the clean-plate analysis buys anything.
-    from .website_early_task_hold import (
-        TaskPreparationHeld,
-        retain_task_preparation_hold,
-        stop_paid_work_when_held,
-    )
+    from .website_early_task_hold import retain_task_preparation_hold, stop_paid_work_when_held
+    from .website_paid_work_stop import TaskPreparationHeld
 
     def task_preparation_hold() -> dict[str, Any] | None:
         handoff_lease_checkpoint("website_preparation_task_preparation_hold")

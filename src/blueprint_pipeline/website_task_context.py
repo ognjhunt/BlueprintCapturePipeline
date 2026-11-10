@@ -153,7 +153,7 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
     if source_checkpoint is not None:
         source_checkpoint("owned_atlas_spend_reservation")
     # A capture whose job is held for task preparation starts no new upstream purchase.
-    from .website_early_task_hold import refuse_paid_work_when_held
+    from .website_paid_work_stop import refuse_paid_work_when_held
     refuse_paid_work_when_held()
     if (resource_class, provider) not in {("evaluator_api", "meta"), ("evaluator_api", "google"), ("openai_api_candidate", "openai"),
                                          ("provider_reconstruction_api", "world_labs_atlas"), ("gpu_render", "vast")}:
