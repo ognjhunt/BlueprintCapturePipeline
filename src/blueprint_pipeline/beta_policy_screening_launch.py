@@ -489,6 +489,23 @@ def _unstarted_refusal(fenced: Mapping[str, Any], stopped: Mapping[str, Any] | N
                          else [str(stopped["reason"])])}
 
 
+def _unscored_blockers(adapter: Mapping[str, Any], root: Path, harness_code: str) -> list[str]:
+    """The row's codes for a closed run that returned no usable result.
+
+    The run's own typed codes say when the rented machine or its network failed (run again at
+    the same commit) or the candidate's own policy provisioning did (no sibling held); see
+    ``beta_policy_screening_failure_scope``. Anything else keeps ``harness_code``. The money is
+    the same either way: the attempt is committed and settled as any closed run.
+    """
+    from .beta_policy_screening_failure_scope import unscored_run_blockers
+
+    try:
+        scoped = unscored_run_blockers(adapter, attempt_dir=root)
+    except Exception:  # noqa: BLE001 - reading the scope never changes that the run closed
+        scoped = None
+    return scoped or [harness_code]
+
+
 def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,
                         prepared: Mapping[str, Any], handle: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Read retained allocator receipts; never start or restart an allocation."""
@@ -593,7 +610,7 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             except (OSError, ValueError, KeyError, TypeError):
                 return kept({"status": "blocked", "provider_allocation_performed": True,
                              "provider_zero_verified": True, "no_allocation_proven": False,
-                             "blockers": ["g1_beta_native_result_missing_or_invalid"]})
+                             "blockers": _unscored_blockers(adapter, root, "g1_beta_native_result_missing_or_invalid")})
             return kept({"status": "completed", "provider_allocation_performed": True,
                          "provider_zero_verified": True, "no_allocation_proven": False,
                          "result": joined, "blockers": joined.get("blockers") or []})
@@ -622,7 +639,8 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             # missing or invalid. Debit the full reservation and publish no score.
             return kept({"status": "blocked", "provider_allocation_performed": True,
                          "provider_zero_verified": True, "no_allocation_proven": False,
-                         "blockers": ["beta_screening_native_result_missing_or_invalid"]})
+                         "blockers": _unscored_blockers(adapter, root,
+                                                        "beta_screening_native_result_missing_or_invalid")})
         return kept({"status": "completed", "provider_allocation_performed": True,
                      "provider_zero_verified": True, "no_allocation_proven": False,
                      "result": joined, "blockers": joined.get("blockers") or []})

@@ -276,11 +276,20 @@ if [ $credential_rc -ne 0 ]; then
 fi
 '''
     names = " ".join(shlex.quote(candidate) for candidate in local_candidates)
+    provisioning_failed = " || exit $?"
+    if run_kind == BETA_RUN_KIND:
+        # A beta run names the stage: its candidate's own policy provisioning failed (its client
+        # dependencies or checkpoint), which predicts nothing about another candidate. Without
+        # it the exit trap's general code held every sibling (2026-11-05, a cuDNN wheel download).
+        from .beta_policy_screening_failure_scope import POLICY_PROVISIONING_STAGE_CODE
+        provisioning_failed = ('\nprovisioning_rc=$?\nif [ $provisioning_rc -ne 0 ]; then\n'
+                               f'  write_fallback_result {POLICY_PROVISIONING_STAGE_CODE} "$provisioning_rc"\n'
+                               '  exit $provisioning_rc\nfi')
     provisioning = "\n".join(
         f'cp "$RUNTIME_DIR/runtime_inputs/policy_execution_spec.{candidate}.json" '
         f'"$RUNTIME_DIR/{POLICY_EXECUTION_SPEC_STAGED_NAME}"\n'
         f'bash "$RUNTIME_DIR/adp009d_policy_provisioning.{candidate}.sh" '
-        f'>"$OUT_DIR/policy_provisioning.{candidate}.log" 2>&1 || exit $?'
+        f'>"$OUT_DIR/policy_provisioning.{candidate}.log" 2>&1' + provisioning_failed
         for candidate in local_candidates
     )
     catalog_config = ('export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"'

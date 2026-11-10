@@ -48,6 +48,20 @@ def require_current_source(source: Mapping[str, Any], *, site_id: str) -> dict[s
     return current
 
 
+def job_window_closed(context: Mapping[str, Any]) -> bool:
+    """Whether the current source says its job's window has ended (its execution deadline or its
+    consent's expiry). Unknown or unreadable is not closed: the launch preflight still decides."""
+    import time
+
+    from .beta_policy_screening_control import _deadline
+
+    try:
+        deadline = _deadline(context)
+    except ValueError:
+        return False
+    return deadline is not None and deadline <= time.time()
+
+
 def implementation_commit() -> str:
     """The deployed commit, as planning binds it (``build_planning_inputs``)."""
     import subprocess
@@ -62,9 +76,13 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .beta_policy_candidate_catalog import load_default_catalog
     from .beta_policy_screening_capabilities import build_planning_inputs
     from .beta_policy_screening_coordinator import (
-        _lock, _read, _root, _write, enqueue_screening_campaign, latest_campaign, replan_scope, supersede_campaign,
+        _lock, _read, _root, _write, campaign_hold_detail, close_self_replan, enqueue_screening_campaign,
+        latest_campaign, replan_scope, supersede_campaign,
     )
-    from .beta_policy_screening_holds import RELEASE, packet_hold, probe_hold, settle_hold
+    from .beta_policy_screening_holds import (
+        RELEASE, WINDOW_CLOSED, blocked_since, campaign_hold, packet_hold, probe_hold, settle_hold,
+        stalled_source_hold,
+    )
     from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
     from .beta_policy_screening_scene_half import current_half
     from .beta_policy_screening_team import catalog_for_profile
@@ -115,6 +133,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
             request: dict[str, Any] | None = None
             # A hold, RELEASE on positive progress, or None: nothing decided, so a hold is kept.
             hold: tuple[str, str | None] | str | None = None
+            # Since when this source has been refused the same way (kept in its state file only).
+            refused_since: str | None = None
             try:
                 request = validated_request(_read_json(path))
                 if request_key(request) != path.stem:
@@ -156,7 +176,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     "catalog_digest": catalog["catalog_digest"], "protocol": "beta_policy_screening.v1"})[7:39]
                 existing = root / "plans" / f"{campaign_id}.json"
                 replan: list[str] | None = None
-                superseded = None
+                superseded = current = None
                 if existing.exists():
                     # A deploy since planning leaves unprepared candidates bound to
                     # a commit preparation refuses: plan them again at this one.
@@ -178,6 +198,14 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                             **({"scene_half": half} if half is not None else {})})[7:39]
                 if not existing.exists() or replan is not None:
                     context = require_current_source(source, site_id=retained["scene_id"])
+                    if (superseded is not None and job_window_closed(context)
+                            and replan_scope(superseded, implementation_commit=commit, scene_half=half,
+                                             queue_root=root, self_replan=False) is None):
+                        # Only a row due again by itself (no GPU offer, an expired quote) asks for this
+                        # re-plan, and the job's window has closed: it ends here, once. A deploy's
+                        # re-plan is refused at launch as before.
+                        close_self_replan(superseded, queue_root=root)
+                        raise ValueError(WINDOW_CLOSED)
                     result, receipt, _zero = _validate_source(Path(request["source_launch_root"]))
                     if (result.get("configured_scene_revision_digest") != source["scene_revision_digest"]
                             or receipt.get("receipt_digest") != request["launch_receipt_digest"]):
@@ -214,6 +242,12 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                                                           queue_root=root))
                 # A campaign is planned (now or before): the evaluation started.
                 hold = RELEASE
+                if current is not None and replan is None:
+                    # Unless that campaign cannot move: a row unresolved past its bound, or a money stop.
+                    detail = campaign_hold_detail(current, queue_root=root)
+                    if detail is not None:
+                        outcome["campaign_hold"] = detail
+                        hold = campaign_hold(detail)
             except (OSError, ValueError, RuntimeError, KeyError) as exc:
                 # No raw remote response, URL, credentials or customer content in operational logs.
                 code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else ""
@@ -231,12 +265,18 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                         hold = probe_hold(code, resolve_capture_root(request), release=probe_release) or RELEASE
                     except (OSError, ValueError, KeyError, TypeError):
                         hold = None  # unreadable now: the hold is kept and the next pass decides again
+                # A refusal that keeps coming back the same way is told to the job as held, once it has
+                # lasted long enough; planning is still tried on every pass.
+                refused_since = blocked_since(_read_json(states / path.name), outcome["blockers"])
+                if hold is None:
+                    hold = stalled_source_hold(outcome["blockers"][0], refused_since)
             if request is not None and newest.get(request["intent_id"]) == ("processed", path.name):
                 # The website job hears by name when its evaluation cannot start, and again when it moves.
                 settled = settle_hold(root, request, hold)
                 if settled is not None:
                     outcome["evaluation_hold"] = settled
-            _write(states / path.name, outcome)
+            _write(states / path.name, outcome if refused_since is None
+                   else {**outcome, "blocked_since": refused_since})
             _write(cursor_path, {"last": path.name})
             outcomes.append(outcome)
         # A team half a new release (or a due retry) returned to its queue is moving again: release its hold.
