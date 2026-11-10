@@ -362,7 +362,7 @@ compute and moves no money.
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |
 | `unit` | operate | `unit` (`blueprint-*`), `action` `start`\|`reset-failed`\|`stop`\|`restart` | `systemctl --no-block <action> -- <unit>`; bare `stop` of a `.timer`/`.path` refuses with `unit_stop_requires_hold`, and `restart` remains limited to safe triggers. The door's own and safety-critical triggers cannot be paused or restarted. |
-| `hold` | operate | `.timer`/`.path` `unit`, `owner`, printable `reason`, `expires_in_seconds` (60–86400) | stops and disables the unit, writes a root-owned hold record with its prior boot policy, and schedules an expiry timer; a different owner cannot replace an active hold |
+| `hold` | operate | `.timer`/`.path` `unit`, `owner`, printable `reason`, `expires_in_seconds` (60–86400) | stops and disables the unit, writes a root-owned hold record with its prior boot policy, and schedules an expiry timer; a different owner cannot replace an active hold. Under the dispatcher-only profile the only units that can be held are the dispatcher timer and the retired units listed below |
 | `release-hold` | operate | `.timer`/`.path` `unit` | restores the prior boot policy, starts the held unit, and records who released it; refuses if no active hold exists |
 | `door-upgrade` | deploy | `commit` on `origin/main` | `door-upgrade.sh`: that commit's `install.sh --upgrade`, rolled back on a failed health check |
 | `retire-scene-workspace` | operate | `scene_id`, optional `bucket`, `apply` (default `false`) | `door-retire-scene-workspace.sh`: the active release's `website_scene_workspace_retention retire` for that scene; without `apply` it only plans. Outcome `planned`, `retained` (code = first reason), `retired` or `failed`; the module's full result is `results/<id>.retirement.json` |
@@ -567,6 +567,33 @@ Lanes that deploy by hand should keep naming their transient units
 `blueprint-<label>-deploy-<sha>` so the door's in-progress check and `status`
 see them.
 
+### Holding a retired unit that is still installed
+
+Removing a unit file from this repository does not stop the unit on the host,
+and only root can remove it there. Until that happens the door can keep three
+retired triggers off (`RETIRED_HOLD_UNITS` in
+`deploy/operator-door/operator_door/requests.py`):
+
+- `blueprint-pipeline-control-plane.timer` (the legacy control-plane loop)
+- `blueprint-capture-reconstruction-dispatcher.timer`
+- `blueprint-capture-reconstruction-dispatcher.path`
+
+They are the only holds besides the dispatcher's that the dispatcher-only
+profile admits, and the only other units that accept `--until-released`. With
+it the unit stays stopped and disabled past the `--for` deadline and across a
+reboot, until `release-hold` or until root removes the unit. Every other unit
+keeps automatic expiry, and money-safety triggers still cannot be held.
+
+```bash
+python3 scripts/operator_door.py hold blueprint-pipeline-control-plane.timer \
+  --owner <name> --reason "Retired unit still installed" --for 24h --until-released --wait
+```
+
+The door on the host must first be upgraded to a commit that has this rule
+(`upgrade-door`). A hold needs the unit's own hold guard; the three units above
+had one while they were shipped, and the door refuses with
+`hold_unit_guard_missing` if the installed copy does not.
+
 ## Install, tokens, upgrade, removal
 
 Install from a commit on `main`. The repository is private and, until the
@@ -695,6 +722,7 @@ python3 scripts/operator_door.py confirm-owner-success-contract <intent_id> --ow
     --owner-organization-id <org> --approved-by <uid> --approval-evidence "<owner approval>" \
     --apply --apply-ack sha256:<preview apply_ack> --ack confirm-owner-success-contract --wait     # record
 ```
+
 
 ### Owner confirmation of a website job's success thresholds
 
