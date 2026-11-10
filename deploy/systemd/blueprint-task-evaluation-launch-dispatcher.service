@@ -1,5 +1,7 @@
 [Unit]
 Description=Dispatch one Blueprint Task Evaluation launch through the canonical allocator
+# A failed or killed run is recorded and reported (blueprint-unit-failure@.service).
+OnFailure=blueprint-unit-failure@%n.service
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 Wants=network-online.target blueprint-gpu-spend-guard.service
 After=network-online.target blueprint-gpu-spend-guard.service
@@ -47,10 +49,13 @@ ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 TasksMax=512
 LimitNOFILE=65536
 # Host memory (8.3 GB, no swap): it reached 4.2G; staging's 2.4 GB of that is
-# gone (66 MB now), the rest is not measured on the host, so MemoryMax stays
-# at main's, with no throttle, until it is. It holds paid work: -200, after
-# batch jobs, before the money-safety units.
-MemoryMax=8G
+# gone (66 MB now), the rest is not measured on the host.
+# It runs in system-blueprintbatch.slice, which bounds the batch units
+# together, and its own cap is the slice's (8G was above the host and never
+# acted).
+# It holds paid work: -200, after batch jobs, before the money-safety units.
+Slice=system-blueprintbatch.slice
+MemoryMax=5G
 OOMScoreAdjust=-200
 CPUQuota=200%
 # The allocator child may run for the profile's hard TTL plus 300 s (7 h 35 min

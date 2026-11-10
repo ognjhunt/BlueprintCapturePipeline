@@ -1,5 +1,7 @@
 [Unit]
 Description=Drain Blueprint capture-bridge Pub/Sub handoffs
+# A failed or killed run is recorded and reported (blueprint-unit-failure@.service).
+OnFailure=blueprint-unit-failure@%n.service
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 Wants=network-online.target
 After=network-online.target
@@ -36,13 +38,28 @@ TasksMax=512
 LimitNOFILE=65536
 # Host memory (8.3 GB, no swap): website captures prepare in this unit
 # (run_e2e, in-process); a preparation at production density passed 4.8 GB
-# locally and a full room is not measured on the host, so MemoryMax stays at
-# main's, with no throttle, until it is. Batch job, retried: +200, so it goes
-# before the always-on services, paid work and the money-safety units.
-MemoryMax=8G
+# locally and a full room is not measured on the host.
+# It runs in system-blueprintbatch.slice, which bounds the batch units
+# together, and its own cap is the slice's (8G was above the host and never
+# acted).
+# Batch job, retried: +200, so it goes before the always-on services, paid
+# work and the money-safety units.
+Slice=system-blueprintbatch.slice
+MemoryMax=5G
 OOMScoreAdjust=200
 CPUQuota=200%
 Type=oneshot
+# A run that never returned used to stop website hand-offs for good: the
+# timer waits for this unit to go inactive (OnUnitInactiveSec). How long a
+# full-room preparation takes on the host is not on record, so the bound is
+# sized from the code: the longest capped step of a hand-off is the
+# normalization encode, at one hour (website_source_video); its other
+# capped steps (ffmpeg, hosted SAM 3.1, Gemini) are ten minutes or less;
+# and the WebApp admits five new jobs a day. Five one-hour hand-offs in one
+# tick, plus an hour, is 6h. systemd then stops only the main process
+# (KillMode=process above), so a geometry watchdog keeps its deadline, and
+# the unacknowledged message is delivered again.
+TimeoutStartSec=6h
 Environment=BLUEPRINT_PUBSUB_HANDOFF_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_PIPELINE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production

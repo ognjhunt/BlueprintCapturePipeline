@@ -1,0 +1,53 @@
+[Unit]
+Description=Record and report a failed Blueprint unit (%i)
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+# Started by OnFailure=blueprint-unit-failure@%n.service in the units whose
+# failure is abnormal and matters (the money guard, the intake, the units that
+# move a website job). Before it, a unit that failed or was killed was a journal
+# line only. It names no OnFailure= itself: its own failure stays in the journal
+# and in `door status` (failed_units), and can never loop.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# One small record per failed unit (<unit>.json); nothing else is writable.
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/unit-failures
+TasksMax=32
+# Host memory (8.3 GB, no swap): a run imports the capacity controller's alert
+# code and peaked at 27 MB locally. It carries a page: -200, after batch jobs.
+MemoryMax=256M
+OOMScoreAdjust=-200
+CPUQuota=100%
+# One record write and one webhook post with a 10 s timeout.
+TimeoutStartSec=2min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_UNIT_FAILURE_RECORD_ROOT=/var/lib/blueprint/pipeline-control-plane/unit-failures
+# BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL, the capacity controller's alert route,
+# comes from the environment file. Without it the failure is still recorded.
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.unit_failure_notifier --unit "%i"'

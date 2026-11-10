@@ -21,6 +21,8 @@ Before you act:
 | Section | Use it when |
 |---|---|
 | [1. A job stops moving](#1-a-job-stops-moving) | A stall page arrives, or a job shows the same state for hours. |
+| [1a. A unit failed](#1a-a-unit-failed) | A `unit_failed:<unit>:…` post arrives, or `failed_units` names a unit. |
+| [1b. The batch memory slice](#1b-the-batch-memory-slice) | A batch unit was killed for memory, or runs slowly near 4.5G. |
 | [2. Vast credit runs out](#2-vast-credit-runs-out) | `provider_credit_insufficient` pages, or a launch is refused for credit. |
 | [2a. Provider funding](#2a-provider-funding) | An OpenAI, World Labs or Google Cloud spend page arrives (`*_spend_*_high`). |
 | [2b. Account monthly limit](#2b-account-monthly-limit) | An `account_spend_*` alert arrives, or a paid admission is refused with `account_monthly_spend_*`. |
@@ -77,6 +79,72 @@ What frequent states mean:
 | `blocked` / `configuration_capacity` | A $0 refusal before allocation waits for credit or disk. | Section 2 or 3. |
 | blocker `scene_intake_spend_cap_exhausted` or `scene_intake_attempt_cap_exhausted` | The scene's own budget is used up. This is a money hold, so it does not page. | Owner decision. Preview, then apply, `door extend-scene-execution-budget` ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)). |
 | blocker `scene_intake_authority_expired` | The execution window expired. | Owner decision. Plan, then apply, `door extend-scene-execution-window`. |
+
+## 1a. A unit failed
+
+Thirteen units start `blueprint-unit-failure@<unit>.service` when they fail
+(`OnFailure=`): the spend guard, the intake, the capacity controller and the
+units that move a website job (the handoff listener, Atlas preview and provider
+poll, scene progression, launch preparation, activation and dispatcher, team
+scene packet, the rigid probe runner, screening). The list is
+`UNIT_FAILURE_NOTIFIED_UNITS` in `tests/test_deploy_systemd_contract.py`.
+
+The notifier (`src/blueprint_pipeline/unit_failure_notifier.py`) does two things:
+
+- It rewrites one record,
+  `/var/lib/blueprint/pipeline-control-plane/unit-failures/<unit>.json`:
+  `result`, `exit_status`, `failure_count`, first and last failure, last post.
+  `door status` and the capacity summary do not show this record yet; read it
+  with `door cat`. `door status` still lists the unit under `failed_units`.
+- It posts on the capacity alert route, `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`,
+  with the capacity controller's own posting code. The text reads
+  `systemd unit_failed:<unit>:<result>`. A unit that fails on every run posts
+  once, then once an hour.
+
+| `result` | Meaning | Do this |
+|---|---|---|
+| `timeout` | The run passed its `TimeoutStartSec` and systemd stopped it. A timer starts the next run. | Read the journal for the step it hung in. |
+| `oom-kill` | The kernel killed it for memory, in its own cgroup or in the batch slice (1b). | `door status`, `memory.oom_reports`. |
+| `exit-code` | The worker exited non-zero. For the spend guard, status 2 means that paid admission is closed or a reap failed. | Read the journal. For the guard read `gpu_spend_guard/latest.json`. |
+| `signal`, `core-dump` | The worker was killed or crashed. | Read the journal. |
+| `null` | systemd did not pass the result (older than 251). | Read the journal. |
+
+```bash
+door cat /var/lib/blueprint/pipeline-control-plane/unit-failures/<unit>.json
+door journal <unit> -n 200 --since -1h
+```
+
+Two units on the job's path have no notifier on purpose, because a non-zero
+exit is an ordinary result there: the launch reconciler (exit 2 while a
+teardown is still being proven) and the billing reconciler (exit 2 when a
+provider read is blocked; the spend guard then reports it).
+
+## 1b. The batch memory slice
+
+The 23 units that decode video, fuse or load scenes, compile episodes or stage
+GPU bundles run in `system-blueprintbatch.slice`
+(`deploy/systemd/system-blueprintbatch.slice`; the list is `BATCH_SLICE_UNITS`
+in `tests/test_deploy_systemd_contract.py`). The slice bounds them together:
+`MemoryHigh=4.5G`, `MemoryMax=5G` (binary units; 5G is 5.37 GB). The host has
+8.33 GB and 6.19 GB of it free with nothing heavy running (2026-11-10).
+
+- Above 4.5G the kernel reclaims the slice's page cache and slows its
+  allocations. Above 5G it kills inside the slice, by each unit's
+  `OOMScoreAdjust`. The killed unit fails with `oom-kill` and its timer or path
+  unit starts it again.
+- The intake, the operator door, the spend guard, the billing reconciler, the
+  capacity controller and the other money-safety and housekeeping units are
+  outside the slice.
+- `door status`, `memory.system_units`, lists the slice as one row with the
+  batch units' total and peak. It no longer lists the batch units one by one;
+  each unit's journal still records its peak when a run ends.
+- A unit joins the slice the next time it starts with an empty cgroup. A run in
+  flight at the deploy, and a unit whose GPU watchdog is still alive, keep the
+  cgroup they have until they end.
+
+A stage that needs more than 5G by itself now fails here every time. That is a
+capacity decision for the owner (a larger host), not a setting to raise: 5G
+plus the always-on units is what this host has.
 
 ## 2. Vast credit runs out
 

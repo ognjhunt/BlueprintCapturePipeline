@@ -36,11 +36,14 @@ ReadWritePaths=/var/lib/blueprint
 ReadOnlyPaths=/etc/blueprint/provider-secrets
 TasksMax=512
 LimitNOFILE=65536
-# Host memory (8.3 GB, no swap): its allocator child's bundle reads at a full
-# room are not measured on the host, so MemoryMax stays at main's, with no
-# throttle, until it is. It holds paid work: -200, after batch jobs, before
-# the money-safety units.
-MemoryMax=8G
+# Host memory (8.3 GB, no swap): it runs in system-blueprintbatch.slice, which
+# bounds the batch units together, and its own cap is the slice's (8G was above
+# the host and never acted).
+# Its allocator child's bundle reads at a full room are still not measured on
+# the host. It holds paid work: -200, after batch jobs, before the
+# money-safety units.
+Slice=system-blueprintbatch.slice
+MemoryMax=5G
 OOMScoreAdjust=-200
 CPUQuota=200%
 TimeoutStartSec=5h

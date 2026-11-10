@@ -46,10 +46,13 @@ EnvironmentFile=/etc/blueprint/existing-policy-canary-continuation.env
 Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
 Environment=BLUEPRINT_GPU_PROVIDER_SECRETS_DIR=/etc/blueprint/provider-secrets
 TimeoutStartSec=75min
-# Host memory (8.3 GB, no swap): it has not run on the host since 10-27, so
-# MemoryMax stays at main's, with no throttle, until it is. It holds paid
-# work: -200, after batch jobs, before the money-safety units.
-MemoryMax=8G
+# Host memory (8.3 GB, no swap): it runs in system-blueprintbatch.slice, which
+# bounds the batch units together, and its own cap is the slice's (8G was above
+# the host and never acted).
+# It has not run on the host since 10-27, so its peak is not measured. It
+# holds paid work: -200, after batch jobs, before the money-safety units.
+Slice=system-blueprintbatch.slice
+MemoryMax=5G
 OOMScoreAdjust=-200
 TasksMax=128
 LimitNOFILE=65536

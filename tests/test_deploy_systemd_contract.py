@@ -206,6 +206,17 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert "LoadCredential=remote-cpu-dispatcher:/etc/blueprint/credentials/remote-cpu-dispatcher.json" in text
             assert "TasksMax=512" in text and "MemoryMax=2G" in text
             continue
+        if unit.name == NOTIFIER_UNIT:
+            # The failure notifier: the service account, the full sandbox, and one writable directory
+            # for its records; it posts on the capacity controller's webhook, so it keeps the network.
+            text = unit.read_text(encoding="utf-8")
+            for control in required_controls:
+                if not control.startswith(("ReadWritePaths=", "CPUQuota=")):
+                    assert control in text, (unit.name, control)
+            assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/unit-failures\n" in text
+            assert "ReadWritePaths=/var/lib/blueprint\n" not in text and "ReadWritePaths=/var/lib/blueprint " not in text
+            assert "TasksMax=32" in text and "MemoryMax=256M" in text and "CPUQuota=100%" in text
+            continue
         if unit.name == "blueprint-operator-door.service":
             # Cloud agents' HTTPS window onto this host (deploy/operator-door). It
             # reads as the service account, with journal access, in a read-only,
@@ -360,6 +371,8 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
 
 #: Money safety, and the door to the host (#3329): the OOM killer passes them over. Never weakened: no
 #: throttle, no pressure kill, the memory cap each had before. G1 campaign settlement settles money too.
+#: Five of them keep 8G, which is above the host and never acts; each file says so. Their peaks are not
+#: measured on the host and a guessed cap must not kill a money-safety unit. They are outside BATCH_SLICE.
 HOST_SAFETY_GUARD_UNITS = (
     "blueprint-gpu-spend-guard.service",
     "blueprint-operator-door.service",
@@ -393,33 +406,36 @@ HOST_MEMORY = {
     # code; landing a capture-447-scale half (1.07 GB) in 1 MiB blocks peaked at 69M locally.
     "blueprint-team-scene-packet-remote.service": ("-200", "1G", "2G", "424M"),
 }
-#: Units that keep the cap main gave them, with no throttle, and only gain an OOM order. Their heavy step at a
+#: Units with no throttle of their own and an OOM order. For the batch units among them the heavy step at a
 #: full room is not measured on the host (a website capture's preparation in the handoff listener, which
 #: passed 4.8 GB locally; a full Atlas run; an allocator child's bundle reads), or a recorded peak times 1.5 does
-#: not fit below the host (activation and embodiment preparation, 4.2 GB), or the cap is already small.
-#: -500 for the door's own units, as the door.
+#: not fit below the host (activation and embodiment preparation, 4.2 GB). Each of those was capped at 8G,
+#: above the host, so the cap never acted; now BATCH_SLICE bounds them together and their own cap is the
+#: slice's 5G. The rest have a cap that is already small. -500 for the door's own units, as the door.
 HOST_MEMORY_KEPT = {
-    "blueprint-pubsub-handoff-listener.service": ("200", "8G"),
-    "blueprint-task-evaluation-launch-activation.service": ("200", "8G"),
-    "blueprint-embodiment-preparation.service": ("200", "8G"),
-    "blueprint-scene-object-discovery.service": ("200", "8G"),
+    "blueprint-pubsub-handoff-listener.service": ("200", "5G"),
+    "blueprint-task-evaluation-launch-activation.service": ("200", "5G"),
+    "blueprint-embodiment-preparation.service": ("200", "5G"),
+    "blueprint-scene-object-discovery.service": ("200", "5G"),
     "blueprint-control-plane-preflight.service": ("200", "1G"),
     "blueprint-control-plane-capacity.service": ("200", "512M"),
     "blueprint-completed-replay-cache-gc.service": ("200", "512M"),
     "blueprint-control-plane-release-lifecycle.service": ("200", "512M"),
     "blueprint-owner-approved-deletion-plan.service": ("200", "1G"),
     "blueprint-owner-approved-deletion.service": ("200", "1G"),
-    "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "8G"),
-    "blueprint-website-atlas-preview.service": ("-200", "8G"),
-    "blueprint-team-evaluation-runner.service": ("-200", "8G"),
-    "blueprint-beta-policy-screening.service": ("-200", "8G"),
-    "blueprint-rigid-robot-free-probe-runner.service": ("-200", "8G"),
-    "blueprint-task-evaluation-policy-canary-dispatcher.service": ("-200", "8G"),
-    "blueprint-native-g1-team-campaign-dispatcher.service": ("-200", "8G"),
-    "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "8G"),
-    "blueprint-existing-policy-canary-continuation.service": ("-200", "8G"),
-    "blueprint-agent-run-dispatcher.service": ("-200", "8G"),
+    "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "5G"),
+    "blueprint-website-atlas-preview.service": ("-200", "5G"),
+    "blueprint-team-evaluation-runner.service": ("-200", "5G"),
+    "blueprint-beta-policy-screening.service": ("-200", "5G"),
+    "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5G"),
+    "blueprint-task-evaluation-policy-canary-dispatcher.service": ("-200", "5G"),
+    "blueprint-native-g1-team-campaign-dispatcher.service": ("-200", "5G"),
+    "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "5G"),
+    "blueprint-existing-policy-canary-continuation.service": ("-200", "5G"),
+    "blueprint-agent-run-dispatcher.service": ("-200", "5G"),
     "blueprint-scene-project-spend-refresh.service": ("-200", "512M"),
+    # The failure notifier carries a page; a run peaked at 27 MB locally.
+    "blueprint-unit-failure@.service": ("-200", "256M"),
     "blueprint-operator-door-runner.service": ("-500", "256M"),
     "blueprint-operator-door-hold-sweep.service": ("-500", "256M"),
 }
@@ -438,13 +454,17 @@ def _gigabytes(value: str) -> float:
     return float(value[:-1]) / (1024 if value.endswith("M") else 1)
 
 
-def _deployed_services() -> set[str]:
+def _deployed_units() -> tuple[str, ...]:
     import ast
 
     tree = ast.parse((REPO_ROOT / "scripts" / "deploy_control_plane_commit.py").read_text(encoding="utf-8"))
     node = next(n for n in tree.body if isinstance(n, ast.Assign)
                 and any(getattr(t, "id", "") == "DEFAULT_DEPLOYED_SYSTEMD_UNITS" for t in n.targets))
-    return {unit for unit in ast.literal_eval(node.value) if unit.endswith(".service")}
+    return tuple(ast.literal_eval(node.value))
+
+
+def _deployed_services() -> set[str]:
+    return {unit for unit in _deployed_units() if unit.endswith(".service")}
 
 
 def test_every_control_plane_unit_is_capped_below_the_host() -> None:
@@ -475,6 +495,289 @@ def test_every_control_plane_unit_is_capped_below_the_host() -> None:
         assert values["MemoryMax"] == (["1G"] if unit in {"blueprint-operator-door.service",
                                                           "blueprint-existing-policy-canary-watchdog.service"}
                                        else ["8G"]), unit
+
+
+#: The one memory slice for the batch units, and the failure notifier (docs/SYSTEMD_SECURITY_BASELINE.md).
+BATCH_SLICE = "system-blueprintbatch.slice"
+NOTIFIER_UNIT = "blueprint-unit-failure@.service"
+NOTIFIER_ON_FAILURE = "blueprint-unit-failure@%n.service"
+#: The live reading the slice is sized from (2026-11-10 15:10Z, nothing heavy running), in the decimal GB that
+#: /proc/meminfo's kB make, and the readiness plan's ceiling for the heavy units' caps together.
+HOST_MEMTOTAL_GB = 8.33
+HOST_IDLE_AVAILABLE_GB = 6.19
+PLAN_BATCH_CEILING_GB = 6.5
+#: The largest peak recorded on the host for one batch unit (launch activation and embodiment preparation,
+#: docs/research/control-plane-host-profile-2026-10-31.md), in systemd's binary units like the caps.
+LARGEST_RECORDED_BATCH_PEAK = "4.2G"
+#: Every worker that moves a job's payload: it decodes video, fuses or loads scenes, compiles episodes or
+#: stages GPU bundles. BATCH_SLICE bounds them together.
+BATCH_SLICE_UNITS = (
+    "blueprint-pubsub-handoff-listener.service",
+    "blueprint-website-atlas-preview.service",
+    "blueprint-website-atlas-provider-poll.service",
+    "blueprint-task-evaluation-scene-progression.service",
+    "blueprint-task-evaluation-launch-preparation.service",
+    "blueprint-task-evaluation-launch-activation.service",
+    "blueprint-task-evaluation-launch-dispatcher.service",
+    "blueprint-team-scene-packet.service",
+    "blueprint-team-scene-packet-remote.service",
+    "blueprint-rigid-robot-free-probe-runner.service",
+    "blueprint-beta-policy-screening.service",
+    "blueprint-embodiment-preparation.service",
+    "blueprint-scene-object-discovery.service",
+    "blueprint-task-evaluation-sam31-preparation-execution.service",
+    "blueprint-task-evaluation-policy-canary-dispatcher.service",
+    "blueprint-existing-policy-canary-continuation.service",
+    "blueprint-native-g1-team-campaign-dispatcher.service",
+    "blueprint-team-evaluation-runner.service",
+    "blueprint-agent-run-dispatcher.service",
+    "blueprint-task-evaluation-episode-compilation.service",
+    "blueprint-task-evaluation-episode-compilation-remote.service",
+    "blueprint-task-evaluation-configured-controls-progression.service",
+    "blueprint-agent-stage-replay.service",
+)
+#: Every other service stays outside the slice, for the reason given: it must keep running, or keep money
+#: safe, while the batch units sit at their bound.
+OUTSIDE_BATCH_SLICE = {
+    "blueprint-pipeline-intake.service": "always on: the WebApp's signed intake",
+    "blueprint-agent-execution.service": "always on: a continuous service",
+    "blueprint-operator-door.service": "always on: the door to the host",
+    "blueprint-operator-door-runner.service": "the door's runner",
+    "blueprint-operator-door-hold-sweep.service": "the door's hold sweep",
+    "blueprint-gpu-spend-guard.service": "money safety: the spend guard and orphan reaper",
+    "blueprint-provider-billing-reconciler.service": "money safety: the billing feed the guard reads",
+    "blueprint-scene-project-spend-refresh.service": "money safety: the scene spend ledger's refresh",
+    "blueprint-native-g1-team-campaign-settlement.service": "money safety: settles campaign spend",
+    "blueprint-task-evaluation-launch-reconciler.service": "money safety: the provider-zero proof",
+    "blueprint-task-evaluation-launch-supervisor.service": "money safety: launch supervision",
+    "blueprint-task-evaluation-terminal-resource-release.service": "money safety: releases paid resources",
+    "blueprint-existing-policy-canary-watchdog.service": "money safety: a paid canary's watchdog",
+    "blueprint-control-plane-capacity.service": "the pager: capacity, stall and spend alerts",
+    NOTIFIER_UNIT: "the failure notifier: it must run while the batch units are at their bound",
+    "blueprint-control-plane-storage-gc.service": "housekeeping that frees the disk batch units wait for",
+    "blueprint-completed-replay-cache-gc.service": "housekeeping, capped at 512M",
+    "blueprint-control-plane-release-lifecycle.service": "housekeeping, capped at 512M",
+    "blueprint-control-plane-preflight.service": "a diagnostic, capped at 1G",
+    "blueprint-owner-approved-deletion-plan.service": "started by hand, capped at 1G",
+    "blueprint-owner-approved-deletion.service": "started by hand, capped at 1G",
+}
+#: Units whose failure is abnormal and matters: the money guard, the intake, the pager and the units that
+#: move a website job. Each starts the notifier when it fails.
+UNIT_FAILURE_NOTIFIED_UNITS = (
+    "blueprint-gpu-spend-guard.service",
+    "blueprint-pipeline-intake.service",
+    "blueprint-control-plane-capacity.service",
+    "blueprint-pubsub-handoff-listener.service",
+    "blueprint-website-atlas-preview.service",
+    "blueprint-website-atlas-provider-poll.service",
+    "blueprint-task-evaluation-scene-progression.service",
+    "blueprint-task-evaluation-launch-preparation.service",
+    "blueprint-task-evaluation-launch-activation.service",
+    "blueprint-task-evaluation-launch-dispatcher.service",
+    "blueprint-team-scene-packet.service",
+    "blueprint-rigid-robot-free-probe-runner.service",
+    "blueprint-beta-policy-screening.service",
+)
+#: Units on the website job's path that are left without the notifier on purpose: there a non-zero exit is an
+#: ordinary result, so the notifier would report routine work every hour.
+UNIT_FAILURE_ROUTINE_EXIT_UNITS = {
+    "blueprint-task-evaluation-launch-reconciler.service":
+        "exits 2 while any teardown is still being proven (provider_zero_pending, recovery_pending)",
+    "blueprint-provider-billing-reconciler.service":
+        "exits 2 when a provider read is blocked; the spend guard then closes admission and reports it",
+}
+#: Units that keep an independent GPU watchdog child alive past their own stop or timeout.
+KILL_MODE_PROCESS_UNITS = (
+    "blueprint-agent-run-dispatcher.service",
+    "blueprint-beta-policy-screening.service",
+    "blueprint-embodiment-preparation.service",
+    "blueprint-native-g1-team-campaign-dispatcher.service",
+    "blueprint-pubsub-handoff-listener.service",
+    "blueprint-rigid-robot-free-probe-runner.service",
+    "blueprint-task-evaluation-launch-dispatcher.service",
+    "blueprint-task-evaluation-policy-canary-dispatcher.service",
+    "blueprint-task-evaluation-sam31-preparation-execution.service",
+    "blueprint-team-evaluation-runner.service",
+)
+#: Timer- or path-driven oneshots allowed to run with no start timeout, each with its reason. None today.
+ONESHOTS_WITHOUT_A_START_TIMEOUT: dict[str, str] = {}
+
+
+def _binary_gigabytes(decimal_gigabytes: float) -> float:
+    return decimal_gigabytes * 1e9 / 2**30
+
+
+def _timeout_seconds(value: str) -> int | None:
+    """A bounded systemd time span in seconds; None for anything else (infinity, 0, a typo)."""
+    match = re.fullmatch(r"(\d+)(s|m|min|h|d)?", value)
+    if match is None:
+        return None
+    return int(match[1]) * {None: 1, "s": 1, "m": 60, "min": 60, "h": 3600, "d": 86400}[match[2]] or None
+
+
+def _triggered_services() -> dict[str, list[str]]:
+    """Each service a timer or a path unit starts, with the triggers that start it."""
+    started: dict[str, list[str]] = {}
+    for trigger in sorted([*SYSTEMD_DIR.glob("*.timer"), *SYSTEMD_DIR.glob("*.path")]):
+        target = (_directives(trigger.name).get("Unit") or [f"{trigger.stem}.service"])[0]
+        started.setdefault(target, []).append(trigger.name)
+    return started
+
+
+def test_every_timer_or_path_driven_oneshot_has_a_start_timeout() -> None:
+    """A oneshot has no start timeout by default, and a timer that waits for it to go inactive
+    (OnUnitInactiveSec) never fires again once one run hangs: the spend guard and the handoff
+    listener ran that way."""
+    started = _triggered_services()
+    assert len(started) >= 30 and all((SYSTEMD_DIR / service).is_file() for service in started)
+    unbounded = []
+    for service in started:
+        values = _directives(service)
+        if values.get("Type") != ["oneshot"]:
+            continue
+        spans = values.get("TimeoutStartSec") or []
+        if len(spans) != 1 or _timeout_seconds(spans[0]) is None:
+            unbounded.append(service)
+    assert sorted(unbounded) == sorted(ONESHOTS_WITHOUT_A_START_TIMEOUT)
+    assert all(ONESHOTS_WITHOUT_A_START_TIMEOUT.values()), "each exception says why"
+    # The oneshots nothing triggers (started by hand or by Wants=) are bounded too.
+    for unit in SYSTEMD_DIR.glob("*.service"):
+        values = _directives(unit.name)
+        if values.get("Type") == ["oneshot"]:
+            assert _timeout_seconds((values.get("TimeoutStartSec") or [""])[0]) is not None, unit.name
+
+
+def test_a_hung_spend_guard_or_handoff_listener_run_ends_without_ending_real_work() -> None:
+    guard = _directives("blueprint-gpu-spend-guard.service")
+    guard_bound = _timeout_seconds(guard["TimeoutStartSec"][0])
+    environment = dict(row.split("=", 1) for row in guard["Environment"])
+    # Longer than the slowest run the refresh contract above models (600 s), and far shorter than the
+    # age at which the guard itself reaps a booted orphan: a hang cannot outlast what it is there to end.
+    assert 600 < guard_bound < int(environment["BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOTED_ORPHAN_SECONDS"])
+    assert guard_bound <= 30 * 60
+    assert "KillMode" not in guard, "the guard starts no child that must outlive it"
+
+    from blueprint_pipeline.website_source_video import _ENCODE_TIMEOUT_SECONDS
+
+    listener = _directives("blueprint-pubsub-handoff-listener.service")
+    listener_bound = _timeout_seconds(listener["TimeoutStartSec"][0])
+    # Its longest capped step is the one-hour normalization encode; a tick may hold several hand-offs.
+    assert 5 * _ENCODE_TIMEOUT_SECONDS < listener_bound <= 24 * 3600
+    assert listener["KillMode"] == ["process"], "a timeout stops the worker, never its geometry watchdog"
+
+
+def test_units_that_keep_a_watchdog_child_alive_still_do() -> None:
+    services = {unit.name for unit in SYSTEMD_DIR.glob("*.service")}
+    assert {unit for unit in services if _directives(unit).get("KillMode") == ["process"]} == set(
+        KILL_MODE_PROCESS_UNITS
+    )
+    assert {unit for unit in services if "KillMode" in _directives(unit)} == set(KILL_MODE_PROCESS_UNITS)
+
+
+def test_the_batch_slice_bounds_the_batch_units_below_the_host() -> None:
+    values = _directives(BATCH_SLICE)
+    assert len(values["MemoryHigh"]) == len(values["MemoryMax"]) == 1
+    high, maximum = _gigabytes(values["MemoryHigh"][0]), _gigabytes(values["MemoryMax"][0])
+    idle = _binary_gigabytes(HOST_IDLE_AVAILABLE_GB)
+    # Below what the host has free with nothing heavy running, so the batch units at their bound leave
+    # the always-on and money-safety units the difference; and within the plan's ceiling.
+    assert maximum < idle < _binary_gigabytes(HOST_MEMTOTAL_GB)
+    assert maximum <= _binary_gigabytes(PLAN_BATCH_CEILING_GB)
+    # The throttle starts above every peak recorded on the host for a batch unit, below the kill line.
+    recorded = [_gigabytes(LARGEST_RECORDED_BATCH_PEAK),
+                *(_gigabytes(row[3]) for unit, row in HOST_MEMORY.items() if unit in BATCH_SLICE_UNITS)]
+    assert max(recorded) < high < maximum
+    assert not {"ManagedOOMMemoryPressure", "ManagedOOMSwap", "MemoryLow", "MemoryMin"} & set(values)
+
+
+def test_batch_units_are_in_the_slice_and_always_on_and_money_units_are_not() -> None:
+    services = {unit.name for unit in SYSTEMD_DIR.glob("*.service")}
+    assert len(set(BATCH_SLICE_UNITS)) == len(BATCH_SLICE_UNITS)
+    assert not set(BATCH_SLICE_UNITS) & set(OUTSIDE_BATCH_SLICE)
+    assert set(BATCH_SLICE_UNITS) | set(OUTSIDE_BATCH_SLICE) == services, "every service is placed"
+    assert all(OUTSIDE_BATCH_SLICE.values()), "each unit outside the slice says why"
+    slice_maximum = _gigabytes(_directives(BATCH_SLICE)["MemoryMax"][0])
+    for unit in BATCH_SLICE_UNITS:
+        values = _directives(unit)
+        assert values.get("Slice") == [BATCH_SLICE], unit
+        # A unit's own cap above the slice's would never act; 8G did not act at all.
+        assert _gigabytes(values["MemoryMax"][0]) <= slice_maximum, unit
+        # The slice bounds the sum; which unit goes first inside it is still each unit's own order.
+        assert values["OOMScoreAdjust"] in (["200"], ["-200"]), unit
+    for unit in OUTSIDE_BATCH_SLICE:
+        assert "Slice" not in _directives(unit), unit
+    for unit in ("blueprint-pipeline-intake.service", "blueprint-operator-door.service",
+                 "blueprint-operator-door-runner.service", "blueprint-gpu-spend-guard.service",
+                 "blueprint-provider-billing-reconciler.service", "blueprint-control-plane-capacity.service",
+                 *HOST_SAFETY_GUARD_UNITS):
+        assert unit in OUTSIDE_BATCH_SLICE, unit
+    for unit in ("blueprint-pubsub-handoff-listener.service", "blueprint-website-atlas-preview.service",
+                 "blueprint-website-atlas-provider-poll.service",
+                 "blueprint-task-evaluation-scene-progression.service",
+                 "blueprint-task-evaluation-launch-dispatcher.service",
+                 "blueprint-task-evaluation-launch-activation.service",
+                 "blueprint-task-evaluation-launch-preparation.service",
+                 "blueprint-team-scene-packet.service", "blueprint-rigid-robot-free-probe-runner.service",
+                 "blueprint-beta-policy-screening.service"):
+        assert unit in BATCH_SLICE_UNITS, unit
+    # The five money-safety units that keep 8G say that it never acts.
+    capped_above_the_host = sorted(
+        unit for unit in services if _directives(unit)["MemoryMax"] == ["8G"]
+    )
+    assert capped_above_the_host == sorted(
+        unit for unit in HOST_SAFETY_GUARD_UNITS
+        if unit not in {"blueprint-operator-door.service", "blueprint-existing-policy-canary-watchdog.service"}
+    )
+    for unit in capped_above_the_host:
+        assert "this cap never acts" in _read(unit), unit
+
+
+def test_units_whose_failure_matters_start_the_failure_notifier() -> None:
+    template = _read(NOTIFIER_UNIT)
+    assert "OnFailure" not in _directives(NOTIFIER_UNIT), "the notifier never reports itself: no loop"
+    assert '-m blueprint_pipeline.unit_failure_notifier --unit "%i"' in template
+    # The capacity controller's alert route: the same environment file names the webhook for both.
+    route = "EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env"
+    assert route in template and route in _read("blueprint-control-plane-capacity.service")
+    assert _timeout_seconds(_directives(NOTIFIER_UNIT)["TimeoutStartSec"][0]) <= 5 * 60
+
+    notified = set()
+    for unit in sorted(path for suffix in ("service", "timer", "path") for path in SYSTEMD_DIR.glob(f"*.{suffix}")):
+        values = _directives(unit.name)
+        if "OnFailure" not in values:
+            continue
+        assert values["OnFailure"] == [NOTIFIER_ON_FAILURE], unit.name
+        text = unit.read_text(encoding="utf-8")
+        assert text.index("\nOnFailure=") < text.index("\n[Service]"), unit.name
+        notified.add(unit.name)
+    assert notified == set(UNIT_FAILURE_NOTIFIED_UNITS)
+    for unit in UNIT_FAILURE_NOTIFIED_UNITS:
+        # A non-zero exit is abnormal in each of them; none turns an exit status into success.
+        assert "SuccessExitStatus" not in _directives(unit), unit
+    assert not notified & set(UNIT_FAILURE_ROUTINE_EXIT_UNITS)
+    assert all(UNIT_FAILURE_ROUTINE_EXIT_UNITS.values())
+    assert all((SYSTEMD_DIR / unit).is_file() for unit in UNIT_FAILURE_ROUTINE_EXIT_UNITS)
+
+
+def test_the_slice_and_the_notifier_are_installed_before_the_units_that_name_them() -> None:
+    deployed = _deployed_units()
+    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
+    naming = [unit for unit in deployed
+              if unit.endswith(".service") and {"Slice", "OnFailure"} & set(_directives(unit))]
+    assert set(BATCH_SLICE_UNITS) & set(deployed) <= set(naming)
+    for name in (BATCH_SLICE, NOTIFIER_UNIT):
+        assert (SYSTEMD_DIR / name).is_file()
+        assert deployed.count(name) == 1
+        assert deployed.index(name) < min(deployed.index(unit) for unit in naming)
+        target = '"${SYSTEMD_DIR}/' + name + '"'
+        assert installer.count(target) == 1
+        first_naming_install = min(
+            installer.index('"${SYSTEMD_DIR}/' + unit + '"') for unit in naming
+            if '"${SYSTEMD_DIR}/' + unit + '"' in installer
+        )
+        assert installer.index(target) < first_naming_install < installer.index("systemctl daemon-reload")
+    # The installer creates the notifier's one writable directory; the deploy tool derives it from the unit.
+    assert '"${STATE_DIR}/unit-failures"' in installer
 
 
 def test_pubsub_handoff_listener_has_repeated_deployed_runner():

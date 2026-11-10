@@ -1,0 +1,37 @@
+[Unit]
+Description=Blueprint batch work: one memory bound for the job-moving units together
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+
+[Slice]
+# The whole control plane is one host: 8.33 GB of RAM, no swap. With nothing
+# heavy running 6.19 GB was available (2026-11-10 15:10Z). Those readings are
+# taken as decimal GB, the smaller reading: 7.76 GiB and 5.76 GiB.
+# Before this slice each batch unit was capped alone, 19 of them at 8G, above
+# the host, so no cap acted before the kernel's host-wide OOM killer did (six
+# times in one day that week).
+#
+# The units that decode video, fuse or load scenes, or stage GPU bundles name
+# this slice (Slice=), so the two lines below bound their SUM. systemd sizes are
+# binary: 5G is 5.37 GB.
+# - MemoryMax=5G: below what the host has free at idle, by 0.76 GiB (0.82 GB),
+#   and below the readiness plan's 6.5 GB ceiling. It is also the most the
+#   contract already lets one unit take (scene progression, team scene packet).
+#   Above it the kernel kills inside this slice, by each unit's own
+#   OOMScoreAdjust; the always-on and money-safety units are outside it and
+#   are not candidates.
+# - MemoryHigh=4.5G: above the largest peak recorded on the host (4.2G: launch
+#   activation and embodiment preparation, 2026-10-31). Above it the kernel
+#   reclaims this slice's page cache and slows its allocations.
+#
+# The trade-off: a batch stage, or two overlapping ones, that need more than 5G
+# of memory the kernel cannot reclaim are now killed here, not host-wide. No
+# stage on record that survives today is that large; the two that were (Atlas
+# draft fusion at 5.4 GB, a 4K mask decode) were being OOM-killed already and
+# have been cut down (#3488, #3438).
+#
+# Named system-*.slice on purpose: it stays a child of system.slice, where the
+# operator door's memory view (status.memory.system_units) already lists it,
+# with the batch units' total and peak. A unit moves in the next time it starts
+# with an empty cgroup; a run already in flight keeps the cgroup it has.
+MemoryHigh=4.5G
+MemoryMax=5G

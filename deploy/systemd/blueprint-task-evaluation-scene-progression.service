@@ -1,5 +1,7 @@
 [Unit]
 Description=Advance authenticated persistent scene intents into bounded preparation
+# A failed or killed run is recorded and reported (blueprint-unit-failure@.service).
+OnFailure=blueprint-unit-failure@%n.service
 Wants=network-online.target
 After=network-online.target
 ConditionPathExists=/etc/blueprint/task-evaluation-scene-progression.json
@@ -35,6 +37,8 @@ TasksMax=512
 # before the always-on services, paid work and the money-safety units.
 # Measured: 3.2 GB on 2026-10-31 (docs/research/control-plane-host-profile-2026-10-31.md);
 # MemoryMax is 1.5x that.
+# One of the batch units system-blueprintbatch.slice bounds together.
+Slice=system-blueprintbatch.slice
 MemoryHigh=4G
 MemoryMax=5G
 OOMScoreAdjust=200
