@@ -34,7 +34,9 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-REVISION = "atlas_world_levelling.v12"
+#: v13 changes no levelling. It re-derives scenes whose route anchors were chosen under the old start rule
+#: (``website_locomotion_task.route_anchors``): a re-derive runs on a new levelling revision.
+REVISION = "atlas_world_levelling.v13"
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0

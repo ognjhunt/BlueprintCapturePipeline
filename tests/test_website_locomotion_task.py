@@ -96,11 +96,11 @@ def test_a_fallback_floor_is_carried_into_the_facts_and_spec_only_when_the_level
                "band_spread_m": [-0.052, 0.048]}
     assert facts["metric_scale"]["evidence"][0]["levelling_floor_estimate"] == compact
     # Only that field differs: with it removed, the facts and their digest are the plain ones.
-    stripped = copy.deepcopy({key: value for key, value in facts.items() if key != "_obstacles_xy"})
+    stripped = copy.deepcopy({key: value for key, value in facts.items() if not key.startswith("_obstacles")})
     stripped["metric_scale"]["evidence"][0].pop("levelling_floor_estimate")
     assert canonical_digest(stripped, digest_field="facts_digest") == plain["facts_digest"] != facts["facts_digest"]
     assert {key: value for key, value in stripped.items() if key != "facts_digest"} == {
-        key: value for key, value in plain.items() if key not in ("facts_digest", "_obstacles_xy")}
+        key: value for key, value in plain.items() if key != "facts_digest" and not key.startswith("_obstacles")}
     # It travels in the compiled spec and the navigation task that embeds it, which the G1 packet copies.
     spec = compile_locomotion_spec(task_context=_context(), facts=facts, requirements=WALK)
     navigation = navigation_task_spec(spec, task_context=_context())
@@ -133,6 +133,80 @@ def test_the_goal_is_pulled_back_until_a_robot_can_stand_clear_and_every_guess_i
             "metric_scale_provider_declared_not_independently_validated"} <= set(spec["flags"])
     assert [row["kind"] for row in spec["success"]["predicates"]] == ["region_reached", "height_stable", "no_contact"]
     assert spec["task_id"] == "website-" + _context()["context_digest"][7:27]
+
+
+def _lane(clear_from: float | None, clear_to: float | None = None) -> tuple[list[list[float]], np.ndarray]:
+    """A 4 m filmed line along +x, and one obstacle beside each stretch that is not clear."""
+    path = [[round(x, 2), 0.0, 0.0] for x in np.arange(0.0, 4.01, 0.25)]
+
+    def beside(x0: float, x1: float, y: float) -> list[list[float]]:
+        return [[x0, y], [x1, y], [x0, y + 0.01]]
+
+    rows = []
+    if clear_from is None:
+        rows.append(beside(-1.0, 5.0, 0.2))
+    else:
+        if clear_from > 0:
+            rows.append(beside(-1.0, clear_from - 0.36, 0.2))
+        if clear_to is not None:
+            rows.append(beside(clear_to + 0.36, 5.0, 0.2))
+    return path, np.asarray(rows, dtype=np.float64).reshape(-1, 3, 2)
+
+
+def test_an_anchor_moves_to_clear_an_obstacle_only_within_a_quarter_of_the_filmed_path() -> None:
+    from blueprint_pipeline.website_locomotion_task import NEAR_END, NEAR_START, route_anchors
+
+    cleared = "filmed_path_cleared_of_obstacles"
+    # Both ends clear: the filmed start and end stand, and nothing is said.
+    path, obstacles = _lane(0.0)
+    assert route_anchors(path, obstacles) == {}
+    # The first clear point is half a metre in, the last half a metre from the end: each end moves to it.
+    path, obstacles = _lane(0.5, 3.5)
+    assert route_anchors(path, obstacles) == {"start_world_m": [0.5, 0.0, 0.0], "start_source": cleared,
+                                              "goal_world_m": [3.5, 0.0, 0.0], "goal_source": cleared}
+    # capture-5b067498: the first clear point lies most of the way down the walk. The start does not
+    # follow it there; it stays in the first quarter, at its best-cleared filmed point, and says so.
+    path, obstacles = _lane(3.25)
+    anchors = route_anchors(path, obstacles)
+    assert anchors["start_source"] == NEAR_START and anchors["start_world_m"][0] <= 1.0
+    assert "goal_source" not in anchors
+    # The same from the far end, and when no filmed point is clear at all.
+    path, obstacles = _lane(0.0, 0.5)
+    anchors = route_anchors(path, obstacles)
+    assert anchors["goal_source"] == NEAR_END and anchors["goal_world_m"][0] >= 3.0 and "start_source" not in anchors
+    path, obstacles = _lane(None)
+    anchors = route_anchors(path, obstacles)
+    assert (anchors["start_source"], anchors["goal_source"]) == (NEAR_START, NEAR_END)
+    assert anchors["start_world_m"][0] <= 1.0 and anchors["goal_world_m"][0] >= 3.0
+    # Among equally tight points the start keeps the filmed start and the goal the filmed end.
+    assert anchors["start_world_m"] == path[0] and anchors["goal_world_m"] == path[-1]
+
+
+def test_a_start_with_too_little_room_keeps_the_filmed_route_is_flagged_and_its_room_is_recorded(tmp_path) -> None:
+    from blueprint_pipeline.website_locomotion_task import NEAR_START, ROUTE_SCHEMA, route_record
+
+    base, path = _corridor(tmp_path)
+    facts = scene_facts(base_scene=base, camera_path_levelled_m=path)
+    # A low box hugs the lane for its first four metres: 0.2 m of room where the robot needs 0.35.
+    box = np.array([[[-0.5, 0.2], [4.0, 0.2], [-0.5, 0.3]], [[4.0, 0.2], [4.0, 0.3], [-0.5, 0.3]]])
+    facts["_obstacles_xy"] = np.concatenate([facts["_obstacles_xy"], box])
+    facts["_obstacles_z"] = np.concatenate([facts["_obstacles_z"], [[0.0, 0.4], [0.0, 0.4]]])
+    spec = compile_locomotion_spec(task_context=_context(), facts=facts, requirements=WALK)
+    assert spec["start"]["source"] == NEAR_START and "start_clearance_below_robot_radius" in spec["flags"]
+    assert "start_moved_for_obstacle_clearance" not in spec["flags"]
+    start = spec["start"]["region"]["center_world_m"]
+    goal = spec["success"]["predicates"][0]["region"]["center_world_m"]
+    assert start[0] <= 0.25 * 5.25 and goal[0] - start[0] >= 3.5  # still the filmed walk, not its last steps
+    record = route_record(facts)
+    assert record["schema_version"] == ROUTE_SCHEMA and record["facts_digest"] == facts["facts_digest"]
+    assert record["start_source"] == NEAR_START and record["goal_source"] == "filmed_path_cleared_of_obstacles"
+    assert record["path_length_m"] == pytest.approx(5.25)
+    first, last = record["points"][0], record["points"][-1]
+    assert first == {"along_m": 0.0, "clearance_m": 0.2, "nearest_low_m": 0.0, "nearest_high_m": 0.4}
+    assert last["along_m"] == pytest.approx(5.25) and last["clearance_m"] == pytest.approx(0.25, abs=0.01)
+    assert last["nearest_high_m"] == pytest.approx(2.0, abs=0.03)  # the 2 m end obstacle
+    assert len(record["points"]) == len(path)
+    json.dumps(record)
 
 
 def test_bodies_and_policies_are_chosen_by_requirement_from_data() -> None:

@@ -518,7 +518,7 @@ def test_planarizing_keeps_a_flat_floor_and_needs_a_floor_to_fit():
 
 def test_a_levelled_world_with_a_warped_floor_records_its_planarized_corridor(tmp_path):
     value, _ = level(tmp_path)
-    assert value["binding"]["revision"] == levelling.REVISION == "atlas_world_levelling.v12"
+    assert value["binding"]["revision"] == levelling.REVISION == "atlas_world_levelling.v13"
     planarized = value["walked_floor"].get("planarized")
     # The fixture's floor is flat: the corridor's floor is fitted, and nothing off the plane needed replacing.
     assert planarized is not None and planarized["surface_offset_m"]["max"] < 0.02
