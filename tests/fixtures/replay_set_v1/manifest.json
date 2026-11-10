@@ -1,5 +1,5 @@
 {
- "schema_version": "blueprint_replay_set_manifest.v1",
+ "schema_version": "blueprint_replay_set_manifest.v2",
  "set_id": "replay_set_v1",
  "synthetic": true,
  "materialize_root": "/tmp/blueprint-replay-set-v1",
@@ -18,6 +18,8 @@
    },
    "empty_dirs": [],
    "file_count": 28,
+   "replay_at_epoch": 1794246890.0,
+   "replay_at_basis": "partition/scenes/site-req-1/captures/walkthrough-req-1/pipeline/website_scene_sponsorship.json consent.accepted_at_epoch + 60 s, inside its window to 1794332830.0988107",
    "tools": [
     {
      "tool": "task_evaluation_downstream_replay",
@@ -51,6 +53,8 @@
    },
    "empty_dirs": [],
    "file_count": 93,
+   "replay_at_epoch": 1794246890.0,
+   "replay_at_basis": "partition/scenes/site-req-1/captures/walkthrough-req-1/pipeline/website_scene_sponsorship.json consent.accepted_at_epoch + 60 s, inside its window to 1794332830.4855547",
    "tools": [
     {
      "tool": "task_evaluation_downstream_replay",
@@ -84,6 +88,8 @@
    },
    "empty_dirs": [],
    "file_count": 27,
+   "replay_at_epoch": 1794246890.0,
+   "replay_at_basis": "partition/scenes/site-req-1/captures/walkthrough-req-1/pipeline/website_scene_sponsorship.json consent.accepted_at_epoch + 60 s, inside its window to 1794332830.5756547",
    "tools": [
     {
      "tool": "task_evaluation_downstream_replay",
@@ -119,6 +125,8 @@
     "launch-runs/none"
    ],
    "file_count": 4,
+   "replay_at_epoch": 1800000060.0,
+   "replay_at_basis": "intents/scene-c09dee8eab582b003dc09e9a5d3552a597be87d87f57925674f3c6ceef4c7ed3/intent.json accepted_at_epoch + 60 s, inside its window to 1800003600.0",
    "tools": [
     {
      "tool": "task_evaluation_downstream_replay",
@@ -150,6 +158,8 @@
     "launch-runs/none"
    ],
    "file_count": 4,
+   "replay_at_epoch": 1800000060.0,
+   "replay_at_basis": "intents/scene-adff486e4f0be12d651c8e058c97898948c11a7fc8a3ae1231bbd15dced7d879/intent.json accepted_at_epoch + 60 s, inside its window to 1800003600.0",
    "tools": [
     {
      "tool": "task_evaluation_downstream_replay",

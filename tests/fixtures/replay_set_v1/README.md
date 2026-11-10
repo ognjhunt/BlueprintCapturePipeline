@@ -16,19 +16,42 @@ python -m blueprint_pipeline.replay_set --set tests/fixtures/replay_set_v1
 The command prints one line per record and tool (record, job kind, tool, expected stop, actual stop,
 PASS or FAIL) and exits 1 if any record's first stop differs from the expected one. A record also
 fails if its report shows a network attempt, a new paid call, a provider mutation or a changed input.
-The replays enforce their own boundaries (see each replay module's docstring), so the run costs $0 and
+Each record runs with the clock at its declared replay time (below), so the result does not depend on
+the day the command runs. The replays enforce their own boundaries (see each replay module's docstring), so the run costs $0 and
 uses no host and no network. It takes about 5 seconds locally. CI runs it nightly and on pull requests
 that touch preparation, levelling, screening or the replay modules (`.github/workflows/replay-set.yml`),
 along with `tests/test_replay_set_v1.py`.
 
 ## Layout
 
-- `manifest.json`: one entry per record. Each entry gives the job kind, the declared input variety,
-  the replay tool or tools to run, each tool's inputs (relative to the record's host root), its
-  `until` stage and its `expected_stop` (`kind`, `stage`, `code`; `{host}` in a code stands for the
-  record's host root).
+- `manifest.json` (`blueprint_replay_set_manifest.v2`): one entry per record. Each entry gives the
+  job kind, the declared input variety, the time the record replays at (`replay_at_epoch`, with
+  `replay_at_basis` saying where it comes from), the replay tool or tools to run, each tool's inputs
+  (relative to the record's host root), its `until` stage and its `expected_stop` (`kind`, `stage`,
+  `code`; `{host}` in a code stands for the record's host root).
 - `records/<record_id>/`: the record's files, laid out as the pulled host tree. JSON files over 32 KB
   are stored gzipped (`*.gz`) and are decompressed when the record is put back.
+
+## A record replays at its own time
+
+The builders stamp each record's grants from the wall clock when it is built: a rigid record's website
+scene sponsorship is valid for one day after it was accepted. Replayed at today's clock, such a record
+would expire and change its stop on a date nobody chose. So every record declares the moment it
+replays at, `replay_at_epoch`, and the runner starts the replayed code's wall clock there for exactly
+the duration of that record's tool run, restoring it afterwards (also if the tool raises). Durations
+still use `time.monotonic`. No check is skipped or loosened: the grant, the job window and the consent
+are all read as of the record's own time.
+
+The time is derived from the record's own files (`replay_at` in `tests/replay_set_v1_build.py`): one
+minute after the latest grant acceptance the record carries, inside that grant's window. For the
+rigid records that is the sponsorship's `consent.accepted_at_epoch` (2026-11-09); for the navigation
+records it is the intent's `accepted_at_epoch` (2027-01-15, inside its one-hour execution window). A
+record without a declared time fails (`replay_at_epoch_not_declared`) instead of replaying at today's
+clock, and `tests/test_replay_set_v1.py` replays the whole set with the real clock moved a day, a year
+and ten years ahead and back before the records were built, and expects the same stops each time.
+
+A rebuild stamps new grant times and writes new replay times with them, so it rewrites every record;
+review that diff as a rebuild, not as a change of behaviour.
 
 Some records name absolute paths. For example, a launch receipt names its result file by path, and
 that path is covered by the receipt's digest. Each record was therefore built at

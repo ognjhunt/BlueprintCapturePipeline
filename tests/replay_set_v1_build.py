@@ -9,6 +9,10 @@ The records name absolute paths (a launch receipt names its result by path, and 
 receipt's digest), so each record is built at ``<materialize_root>/<record_id>/host`` and the replay set
 runner (``python -m blueprint_pipeline.replay_set``) puts it back at exactly that path before replaying it.
 
+The builders stamp grants from the wall clock, so each record also declares ``replay_at_epoch`` (derived
+by :func:`replay_at` from the record's own grant windows) and the runner replays it at that time. A rebuild
+therefore writes new grant times and new replay times together; it is not byte-reproducible.
+
 Rebuild (rewrites the records and the manifest; review the diff)::
 
     PYTHONPATH=src python -m tests.replay_set_v1_build --out tests/fixtures/replay_set_v1
@@ -29,11 +33,14 @@ from blueprint_pipeline.replay_set import (
     GZIP_SUFFIX,
     MANIFEST_FILENAME,
     MANIFEST_SCHEMA,
+    REPLAY_AT_FIELD,
 )
 
 DOWNSTREAM = "task_evaluation_downstream_replay"
 PROVENANCE = ("synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; "
               "no real capture, clip or job record is in it")
+# A record replays this long after the latest grant it carries was accepted (inside that grant's window).
+REPLAY_AFTER_ACCEPTANCE_SECONDS = 60
 # JSON larger than this is committed gzipped (deterministically) and decompressed when the record is put back.
 GZIP_ABOVE_BYTES = 32 * 1024
 
@@ -117,6 +124,46 @@ RECORDS: list[dict[str, Any]] = [
 ]
 
 
+def _read_json(path: Path) -> Any:
+    data = path.read_bytes()
+    return json.loads(gzip.decompress(data) if path.name.endswith(GZIP_SUFFIX) else data)
+
+
+def grant_windows(host: Path) -> list[tuple[float, float, str]]:
+    """Every (accepted, expires, where) validity window a record's grants carry, read from its own files.
+
+    The scene intents (``accepted_at_epoch`` to ``request.execution.expires_at_epoch``) and the website
+    scene sponsorships (``consent.accepted_at_epoch`` to ``expires_at_epoch``).
+    """
+    windows = []
+    for path in sorted(host.glob("intents/*/intent.json*")):
+        intent = _read_json(path)
+        windows.append((float(intent["accepted_at_epoch"]), float(intent["request"]["execution"]["expires_at_epoch"]),
+                        f"{path.relative_to(host).as_posix()} accepted_at_epoch"))
+    for path in sorted(host.glob("partition/scenes/*/captures/*/pipeline/website_scene_sponsorship.json*")):
+        grant = _read_json(path)
+        windows.append((float(grant["consent"]["accepted_at_epoch"]), float(grant["expires_at_epoch"]),
+                        f"{path.relative_to(host).as_posix()} consent.accepted_at_epoch"))
+    return windows
+
+
+def replay_at(host: Path) -> tuple[float, str]:
+    """The record's replay time: a minute after its latest grant acceptance, inside that grant's window.
+
+    An earlier grant may already have lapsed by then (the rigid builder's intent window is epoch 100 to
+    1000, which no later moment is inside); the replayed chain reads the latest grant, so that is the one
+    the time must sit inside.
+    """
+    windows = grant_windows(host)
+    if not windows:
+        raise RuntimeError(f"no grant window in {host}; a record must declare the time it replays at")
+    accepted, expires, where = max(windows)
+    moment = float(int(accepted) + REPLAY_AFTER_ACCEPTANCE_SECONDS)
+    if not accepted <= moment < expires:
+        raise RuntimeError(f"{where}: {moment} is outside its window [{accepted}, {expires})")
+    return moment, f"{where} + {REPLAY_AFTER_ACCEPTANCE_SECONDS} s, inside its window to {expires}"
+
+
 def _commit_tree(source: Path, target: Path) -> list[str]:
     """Copy a built host tree into the fixture, gzipping large JSON; return the committed relative paths."""
     written = []
@@ -148,13 +195,14 @@ def build(out: Path, *, materialize_root: Path = Path(DEFAULT_MATERIALIZE_ROOT))
         inputs: Callable[[Path], dict[str, Any]] = spec["build"]
         built = inputs(parent)
         empty_dirs = built.pop("empty_dirs", [])
+        moment, basis = replay_at(parent / "host")
         files = _commit_tree(parent / "host", records_dir / record_id)
         shutil.rmtree(parent, ignore_errors=True)
         entries.append({
             "record_id": record_id, "synthetic": True, "provenance": PROVENANCE, "job_kind": spec["job_kind"],
             "description": spec["description"],
             "input_variety": {**spec["input_variety"], "read_by_replayed_code": False},
-            "empty_dirs": empty_dirs, "file_count": len(files),
+            "empty_dirs": empty_dirs, "file_count": len(files), REPLAY_AT_FIELD: moment, "replay_at_basis": basis,
             "tools": [{"tool": DOWNSTREAM, "until": spec["until"], "inputs": built,
                        "expected_stop": spec["expected_stop"]}]})
     manifest = {"schema_version": MANIFEST_SCHEMA, "set_id": out.name, "synthetic": True,

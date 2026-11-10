@@ -266,7 +266,7 @@ Added to the owner list:
 | O-04 (note) | When you set the invitee list, use exact emails, not domains: the public form trusts a typed email. Tenant users, robot teams and people invited through account invitations need listing too. | | E9 (a) |
 | O-20 | Allow a test-only intake cap in the local emulator launcher (`scripts/qa/reliability-local-app.mjs`). | Yes: no real job or spend is involved there. | Running the intake backend suite in CI (E9 d) |
 
-Criteria on 2026-11-10: none passes yet. E3 has a first replay set on `main` (#3515), synthetic records only. E2 (b) is done on `main` (WebApp #1246). E5 (a) is done on `main` (#3519). E6 (c) and (d) are done on `main` (#3523). E4 (a) is done except that 49 call sites remain unadmitted (WP-23). E6 (b) is done on `main`
+Criteria on 2026-11-10: none passes yet. E3 has a first replay set on `main` (#3515), synthetic records only; each record replays at its own declared time (`replay_at_epoch`), so the set gives the same stops on any day. E2 (b) is done on `main` (WebApp #1246). E5 (a) is done on `main` (#3519). E6 (c) and (d) are done on `main` (#3523). E4 (a) is done except that 49 call sites remain unadmitted (WP-23). E6 (b) is done on `main`
 (#3517) and the 7-night count for E6 (a) starts with the 2026-11-10 run. E7 (c)
 is done on `main` (#3520) and takes effect at the next deploy. E9 (a) is ready
 on `main` (WebApp #1245) and waits on the list (O-04).
