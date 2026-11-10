@@ -191,16 +191,22 @@ campaign's queued rows as `beta_screening_replanned_for_new_implementation`.
 The site budget is shared, so the new campaign sees what the old one spent.
 
 A candidate refused before any allocation needs no deploy. Once the campaign
-holds no reservation and no active row, source adoption plans it again at the
-same commit on the shared refusal schedule (`job_retry_policy`: 15 minutes,
-then 1, 3, 6, 12 and 24 hours, counted from the campaign's last change), at
-most six times per site and candidate. The superseded campaign records which
-candidates the timer re-planned (`timed_replan_candidate_ids`); the count is
-read across every campaign of the site. The timer never retries a refusal
-that protects privacy, rights or money, a definite answer about the candidate
-(the site stopped it, the WebApp refused its execution, measured geometry), a
-commit change, or a harness hold or failure. A harness failure holds only the
-campaign's unspent candidates on its own backend, and they wait for a deploy.
+holds no reservation and no active row, and one blocked candidate's wait on the
+shared refusal schedule has passed (`job_retry_policy`: 15 minutes, then 1, 3,
+6, 12 and 24 hours by how many timed re-plans it had, counted from the
+campaign's last change), source adoption plans again at the same commit every
+candidate that never ran or allocated and is not blocked, and every blocked one
+the timer may retry, whether its own wait has passed or not. Each blocked
+candidate carried counts as one timed re-plan: the superseded campaign records
+them (`timed_replan_candidate_ids`), the count is read across every campaign of
+the site, and a candidate is carried by the clock at most six times. The timer
+never carries a refusal that protects privacy, rights or money, a definite
+answer about the candidate (the site stopped it, the WebApp refused its
+execution, measured geometry), a commit change, a harness hold or failure, or a
+candidate with no timed re-plan left. Such a row stays blocked in the old
+campaign and is planned again once at the next commit or scene half. A harness
+failure holds only the campaign's unspent candidates on its own backend, and
+they wait for a deploy.
 
 A plan also freezes the scene's team half it was built from. A completed half
 can be compiled again later with the same source: a newer stance search finds

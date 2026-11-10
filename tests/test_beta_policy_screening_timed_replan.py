@@ -413,3 +413,138 @@ def test_the_source_timer_replans_a_refusal_at_the_same_commit_with_no_operator_
         assert {row["execution_spec"]["implementation_commit"] for row in plan_value["candidates"]
                 if row["status"] in {"selected", "waitlisted"}} == {"a" * 40}
     assert value["campaigns"][chain[-1]]["site_budget"]["committed_upper_bound_usd"] == "0"
+
+
+def set_rows(root, campaign_id, rows_by_id):
+    """Record each named row as ``(status, blockers)``, never spent; a candidate the campaign lacks is skipped."""
+    value = ledger(root)
+    states = value["campaigns"][campaign_id]["candidates"]
+    for candidate_id, (status, blockers) in rows_by_id.items():
+        if candidate_id in states:
+            states[candidate_id] = {"status": status, "blockers": list(blockers)}
+    coordinator._save(coordinator._root(root), value)
+
+
+def spend_timed_replans(root, candidate_id, count, *, size=3):
+    """Six earlier campaigns of the site each recorded one timed re-plan of ``candidate_id``."""
+    for index in range(count):
+        campaign_id = f"earlier-{candidate_id}-{index}"
+        coordinator.enqueue_screening_campaign(plan(campaign_id=campaign_id, count=size), queue_root=root)
+        set_rows(root, campaign_id, {f"candidate-{n:03}": ("unavailable", ["candidate_disabled"])
+                                     for n in range(size)})
+        value = ledger(root)
+        value["campaigns"][campaign_id][coordinator.TIMED_REPLAN_FIELD] = [candidate_id]
+        coordinator._save(coordinator._root(root), value)
+
+
+REFUSED = ("blocked", ["beta_screening_allocator_refused"])
+
+
+def test_rule_3_a_row_with_no_timed_replan_left_stays_behind_and_rejoins_at_the_next_commit(tmp_path):
+    coordinator.enqueue_screening_campaign(plan(count=3, cost="2.00"), queue_root=tmp_path)
+    spend_timed_replans(tmp_path, "candidate-000", 6)
+    set_rows(tmp_path, "campaign-1", {"candidate-000": REFUSED, "candidate-001": REFUSED})
+    age(tmp_path, "campaign-1", REFUSAL_RETRY_DELAYS_SECONDS[0])
+    # The due sibling and the pending row go; the exhausted row does not.
+    assert scope(tmp_path, "campaign-1") == ["candidate-001", "candidate-002"]
+    coordinator.supersede_campaign("campaign-1", successor(plan(count=3, cost="2.00"),
+                                                           keep={"candidate-001", "candidate-002"}, commit=OLD),
+                                   implementation_commit=OLD, queue_root=tmp_path)
+    assert ledger(tmp_path)["campaigns"]["campaign-1"][coordinator.TIMED_REPLAN_FIELD] == ["candidate-001"]
+    assert rows(tmp_path)[0] == REFUSED
+    # However long the successor waits, the clock never carries it.
+    set_rows(tmp_path, "campaign-1b", {"candidate-001": REFUSED, "candidate-002": REFUSED})
+    age(tmp_path, "campaign-1b", 30 * DAY)
+    assert scope(tmp_path, "campaign-1b") == ["candidate-001", "candidate-002"]
+    # The next commit plans it again, once, as it would have had it stayed in the plan.
+    assert scope(tmp_path, "campaign-1b", NEW) == ["candidate-001", "candidate-002", "candidate-000"]
+    coordinator.supersede_campaign("campaign-1b", successor(plan(count=3, cost="2.00"), campaign_id="campaign-1c"),
+                                   implementation_commit=NEW, queue_root=tmp_path)
+    assert [row["status"] for row in publication(tmp_path, "campaign-1c")["candidates"]] == ["pending"] * 3
+    assert scope(tmp_path, "campaign-1c", NEW) is None
+
+
+@pytest.mark.parametrize("left", [["paid_resource_admission_not_admitted"], ["beta_screening_current_source_stopped"]])
+def test_rules_3_and_5_a_money_or_answer_refusal_stays_behind_and_supersede_refuses_to_carry_it(tmp_path, left):
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    set_rows(tmp_path, "campaign-1", {"candidate-000": ("blocked", left), "candidate-001": REFUSED})
+    age(tmp_path, "campaign-1", REFUSAL_RETRY_DELAYS_SECONDS[0])
+    assert scope(tmp_path, "campaign-1") == ["candidate-001"]
+    with pytest.raises(coordinator.ScreeningCoordinatorError, match="replan_not_admitted"):
+        coordinator.supersede_campaign("campaign-1", successor(plan(count=2), commit=OLD),
+                                       implementation_commit=OLD, queue_root=tmp_path)
+    coordinator.supersede_campaign("campaign-1", successor(plan(count=2), keep={"candidate-001"}, commit=OLD),
+                                   implementation_commit=OLD, queue_root=tmp_path)
+    assert ledger(tmp_path)["campaigns"]["campaign-1"][coordinator.TIMED_REPLAN_FIELD] == ["candidate-001"]
+    assert rows(tmp_path)[0] == ("blocked", left)
+    # At the next commit it is planned again, as before the timer existed.
+    assert scope(tmp_path, "campaign-1b", NEW) == ["candidate-001", "candidate-000"]
+
+
+def test_rules_1_and_2_an_eligible_row_rides_with_a_due_sibling_and_every_ride_is_counted(tmp_path):
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    spend_timed_replans(tmp_path, "candidate-001", 1, size=2)
+    current = "campaign-1"
+    for index in range(5):
+        set_rows(tmp_path, current, {"candidate-000": REFUSED, "candidate-001": REFUSED})
+        counts = [coordinator._timed_replans(ledger(tmp_path), "site-job-1", key)
+                  for key in ("candidate-000", "candidate-001")]
+        assert counts == [index, index + 1]
+        # Only candidate-000's (shorter) wait has passed; candidate-001 rides with it, counted.
+        age(tmp_path, current, REFUSAL_RETRY_DELAYS_SECONDS[index])
+        assert coordinator._timed_replan_due(ledger(tmp_path), ledger(tmp_path)["campaigns"][current],
+                                             plan(count=2)) == ["candidate-000"]
+        assert scope(tmp_path, current) == ["candidate-000", "candidate-001"]
+        following = f"campaign-1-{index}"
+        coordinator.supersede_campaign(current, successor(plan(count=2), campaign_id=following, commit=OLD),
+                                       implementation_commit=OLD, queue_root=tmp_path)
+        assert ledger(tmp_path)["campaigns"][current][coordinator.TIMED_REPLAN_FIELD] == [
+            "candidate-000", "candidate-001"]
+        current = following
+    # candidate-001 has had six counted re-plans: it never rides again; candidate-000 goes alone.
+    set_rows(tmp_path, current, {"candidate-000": REFUSED, "candidate-001": REFUSED})
+    assert coordinator._timed_replans(ledger(tmp_path), "site-job-1", "candidate-001") == 6
+    age(tmp_path, current, 30 * DAY)
+    assert scope(tmp_path, current) == ["candidate-000"]
+
+
+def test_rule_2_the_six_retry_bound_is_exact_with_two_candidates_however_their_waits_interleave(tmp_path):
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    patterns = [(REFUSED, REFUSED), (REFUSED, ("pending", [])), (("pending", []), REFUSED),
+                (REFUSED, ("waitlisted", [coordinator.WAITLIST_BLOCKER]))]
+    carried = {"candidate-000": 0, "candidate-001": 0}
+    current, made = "campaign-1", 0
+    for round_index in range(40):
+        first, second = patterns[round_index % len(patterns)]
+        set_rows(tmp_path, current, {"candidate-000": first, "candidate-001": second})
+        # Waits interleave: some rounds wait only the shortest step, some a month.
+        age(tmp_path, current, REFUSAL_RETRY_DELAYS_SECONDS[0] if round_index % 3 else 30 * DAY)
+        found = scope(tmp_path, current)
+        if found is None:
+            continue
+        states = ledger(tmp_path)["campaigns"][current]["candidates"]
+        for key in found:
+            carried[key] += states[key]["status"] == "blocked"
+        following = f"campaign-1-{made}"
+        coordinator.supersede_campaign(current, successor(plan(count=2), campaign_id=following, keep=set(found),
+                                                          commit=OLD), implementation_commit=OLD, queue_root=tmp_path)
+        current, made = following, made + 1
+    counts = {key: coordinator._timed_replans(ledger(tmp_path), "site-job-1", key) for key in carried}
+    assert counts == carried == {"candidate-000": 6, "candidate-001": 6}
+
+
+def test_rule_4_a_row_left_behind_rejoins_on_a_new_scene_half_too(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_scene_half as scene_half
+
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    set_rows(tmp_path, "campaign-1", {"candidate-000": ("blocked", ["paid_resource_admission_not_admitted"]),
+                                      "candidate-001": REFUSED})
+    age(tmp_path, "campaign-1", REFUSAL_RETRY_DELAYS_SECONDS[0])
+    coordinator.supersede_campaign("campaign-1", successor(plan(count=2), keep={"candidate-001"}, commit=OLD),
+                                   implementation_commit=OLD, queue_root=tmp_path)
+    monkeypatch.setattr(scene_half, "planned_half", lambda _plan: "sha256:" + "1" * 64)
+    same = coordinator.replan_scope("campaign-1b", implementation_commit=OLD, scene_half="sha256:" + "1" * 64,
+                                    queue_root=tmp_path)
+    assert same is None
+    assert coordinator.replan_scope("campaign-1b", implementation_commit=OLD, scene_half="sha256:" + "2" * 64,
+                                    queue_root=tmp_path) == ["candidate-001", "candidate-000"]
