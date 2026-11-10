@@ -418,8 +418,15 @@ and archives to the same artifact store as the reclaim timer. See
    new starts before the release moves while the spend guard and every other
    watcher stay live; an older tool gets the original idle poll;
 4. run the **target commit's** `scripts/deploy_control_plane_commit.py` from a
-   throwaway worktree with `--iteration --preserve-configured-controls-state`,
-   receipt `deploy-receipts/iteration_<sha12>_door.json`.
+   throwaway worktree with `--preserve-configured-controls-state` and either
+   `--iteration` (no `--release-provenance` sent: the beta deploy, receipt
+   `deploy-receipts/iteration_<sha12>_door.json`) or `--release-provenance`
+   (a verified Full Test Lane receipt for the commit sent: a production deploy,
+   receipt `deploy-receipts/production_<sha12>_door.json`). Which CI gate each
+   mode needs is in [`CI_REQUIRED_CHECKS.md`](CI_REQUIRED_CHECKS.md), "Deploy
+   gates": an iteration deploy needs main CI's supply-chain attestation and
+   skips the Full Test Lane; a production deploy needs both. When a deploy may
+   happen is `AGENTS.md`, "Beta Deploy Policy" (D-08).
 
 The request log prints `phase=` timestamps for each of these steps, ending at
 `phase=tool_start`; the receipt's stage timings cover the tool from there.

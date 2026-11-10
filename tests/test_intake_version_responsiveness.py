@@ -56,8 +56,18 @@ def test_slow_identity_probe_is_bounded_and_not_multiplied_by_polling(monkeypatc
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=service.create_app()),
                                     base_url="http://test") as client:
             try:
+                # What proves each request is bounded is its payload: a 503 with
+                # `deployment_identity_probe_timeout` exists only if the request
+                # stopped waiting while the probe was still blocked (release is
+                # set only after this burst). The outer bound proves the
+                # configured 0.03 s timeout is the one used: it stays below the
+                # service's 2.0 s default, so a handler that ignored the setting
+                # (or waited for the 5 s probe) still fails. The burst takes
+                # ~35 ms; a 0.5 s bound timed out once in a 3,368-test nightly
+                # shard process (2026-11-08), so the bound is no tighter than
+                # that distinction needs.
                 responses = await asyncio.wait_for(asyncio.gather(*(
-                    client.get("/api/live-pipeline/version") for _ in range(12))), 0.5)
+                    client.get("/api/live-pipeline/version") for _ in range(12))), 1.5)
                 assert entered.is_set() and len(calls) == 1
                 for response in responses:
                     assert response.status_code == 503
@@ -68,7 +78,10 @@ def test_slow_identity_probe_is_bounded_and_not_multiplied_by_polling(monkeypatc
                     assert payload["disk_headroom"]["refused_roles"] == list(service.CHAIN_ROLES)
             finally:
                 release.set()
-            await asyncio.sleep(0.03)
+            # Give the released probe (the in-flight one, or a fresh one if it
+            # already returned) time to answer, instead of sleeping a fixed
+            # 0.03 s and hoping its thread has returned by then.
+            monkeypatch.setattr(service, "DEPLOYMENT_DIAGNOSTIC_TIMEOUT_SECONDS", 4.0)
             response = await client.get("/api/live-pipeline/version")
             assert response.status_code == 200
             assert response.json()["source_commit"] == "b" * 40

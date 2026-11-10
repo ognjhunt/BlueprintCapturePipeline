@@ -2,12 +2,12 @@
 
 import json
 import os
-from pathlib import Path
 import platform
+import shutil
 import subprocess
 import sys
-import shutil
 import time
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +23,7 @@ pytestmark = [
 def isolated(tmp_path, monkeypatch, request):
     if request.param is not None:
         import functools
+
         from blueprint_pipeline import asset_landlock
 
         monkeypatch.setattr(
@@ -165,7 +166,9 @@ time.sleep(60)
     def stopped():
         try:
             return "\nState:\tZ" in status.read_text()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # Reaped before open (ENOENT) or between open and read (ESRCH,
+            # seen on a hosted runner 2026-11-09): either way it is gone.
             return True
     deadline = time.monotonic() + 1
     while not stopped() and time.monotonic() < deadline:
@@ -217,7 +220,7 @@ def test_uncaptured_output_is_forwarded_without_inheriting_parent_file_fds(isola
 def test_foreign_owned_python_tree_is_readable_without_restoring_capabilities(tmp_path):
     if os.geteuid() != 0:
         sudo = shutil.which("sudo")
-        if not sudo or subprocess.run([sudo, "-n", "true"], capture_output=True).returncode:
+        if not sudo or subprocess.run([sudo, "-n", "true"], capture_output=True, check=False).returncode:
             pytest.skip("provider-root fixture requires root or passwordless sudo")
         # CI's unprivileged pytest still executes the real root-only kernel
         # boundary. No service credentials or outer shard state enter the child.
@@ -227,7 +230,7 @@ def test_foreign_owned_python_tree_is_readable_without_restoring_capabilities(tm
             "PYTHONDONTWRITEBYTECODE=1", "BLUEPRINT_ALLOW_REPO_OUTPUT=0",
             sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
             "-o", "addopts=", f"{Path(__file__).resolve()}::{test_foreign_owned_python_tree_is_readable_without_restoring_capabilities.__name__}",
-        ], capture_output=True, text=True, timeout=60, cwd=root)
+        ], capture_output=True, text=True, timeout=60, cwd=root, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "1 passed" in result.stdout
         return

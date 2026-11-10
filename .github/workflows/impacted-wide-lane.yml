@@ -105,6 +105,14 @@ jobs:
           version: "0.10.7"
           python-version: "3.12"
 
+      # Release bytes only: every restored file still passes the same SHA-256
+      # check as a fresh download, and a mismatch falls back to downloading.
+      - name: Restore pinned ffmpeg release assets
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/blueprint-ffmpeg-static
+          key: ffmpeg-static-b6.1.1-bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa-25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067
+
       - name: Install system media dependencies
         shell: bash
         timeout-minutes: 12
@@ -125,13 +133,22 @@ jobs:
             exit 0
           fi
           FFMPEG_RELEASE="https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1"
+          FFMPEG_CACHE="${HOME}/.cache/blueprint-ffmpeg-static"
           download_verified() {
             local name="$1" expected="$2" destination="${RUNNER_TEMP}/$1"
+            if test -f "${FFMPEG_CACHE}/${name}" \
+              && echo "${expected}  ${FFMPEG_CACHE}/${name}" | sha256sum -c -; then
+              cp "${FFMPEG_CACHE}/${name}" "${destination}"
+              echo "${expected}  ${destination}" | sha256sum -c -
+              return 0
+            fi
             for attempt in 1 2 3; do
               rm -f "${destination}"
               if curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 420 \
                 -o "${destination}" "${FFMPEG_RELEASE}/${name}" \
                 && echo "${expected}  ${destination}" | sha256sum -c -; then
+                mkdir -p "${FFMPEG_CACHE}"
+                cp "${destination}" "${FFMPEG_CACHE}/${name}"
                 return 0
               fi
               echo "${name} attempt ${attempt} failed byte verification"
@@ -179,6 +196,23 @@ jobs:
           node -e 'if (require("./node_modules/@google-cloud/firestore/package.json").version !== "7.11.6") process.exit(1)'
           printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_SDK=$PWD/node_modules/@google-cloud/firestore" >> "${GITHUB_ENV}"
           printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_NODE=$(command -v node)" >> "${GITHUB_ENV}"
+
+      - name: Resolve installed Playwright version
+        id: playwright-version
+        working-directory: tools/splat_render
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./node_modules/playwright/package.json").version')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'version=%s\n' "$version" >> "${GITHUB_OUTPUT}"
+
+      # The browser download only; system dependencies are still installed below,
+      # and `playwright install chromium` still runs and checks what it finds.
+      - name: Restore Playwright Chromium
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
       - name: Install sealed-camera renderer dependencies
         working-directory: tools/splat_render

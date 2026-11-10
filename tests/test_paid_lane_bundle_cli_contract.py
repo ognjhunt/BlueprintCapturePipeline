@@ -198,7 +198,14 @@ def _authority_materializers() -> list[tuple[Path, str]]:
 
     found: list[tuple[Path, str]] = []
     for path in sorted(SOURCE_ROOT.glob("*.py")):
-        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        source = path.read_text(encoding="utf-8")
+        # A function whose name ends in the suffix has the suffix in its
+        # source, so the cheap text test drops no module the AST walk would
+        # find. Parsing all ~2,400 modules ran at collection time and cost
+        # ~13 s of every `pytest --collect-only tests`.
+        if "_paid_attempt_authority" not in source:
+            continue
+        tree = _ast.parse(source)
         for node in _ast.walk(tree):
             if (
                 isinstance(node, _ast.FunctionDef)
