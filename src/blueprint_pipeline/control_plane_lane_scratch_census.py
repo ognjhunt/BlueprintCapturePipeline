@@ -588,7 +588,7 @@ def build_census(
 # which already walks these roots in bounded partitions, supplies the bytes. It reads,
 # never writes, and its record has its own schema, so no retirement path accepts it.
 
-REFERENCE_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v3"
+REFERENCE_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v4"
 REFERENCE_CENSUS_MAX_SECONDS = 180.0
 REFERENCE_CENSUS_FILENAME = "orphan-scratch-census.json"
 #: Said in every record and every projection of one.
@@ -596,6 +596,9 @@ EVIDENCE_STATEMENT = (
     "No reference found means none was found among the kinds checked, at the census time. "
     "It is evidence for an owner's decision, not a statement that deletion is safe, and a "
     "reference can appear after the census.")
+ROOT_REACHABILITY_STATEMENT = (
+    "Anything that uses a scratch root can reach every folder under it, and this census cannot "
+    "rule that out. Folder family and age are the other evidence.")
 DEFAULT_UNIT_DIRECTORIES = tuple(Path(path) for path in (
     "/etc/systemd/system", "/run/systemd/system", "/run/systemd/transient", "/run/systemd/generator",
     "/run/systemd/generator.late", "/usr/lib/systemd/system", "/lib/systemd/system",
@@ -873,7 +876,8 @@ def _filesystem_location(path: Path, own_mounts: Sequence[tuple[str, str, str]])
 
 
 def _namespace_mount_references(paths: Sequence[Path], process_root: Path, errors: list[str],
-                                deadline: float) -> set[Path]:
+                                deadline: float, *, scan_roots: Sequence[Path] = (),
+                                reachable: dict[str, set[Path]] | None = None) -> set[Path]:
     """Candidates a process in another mount namespace (a container, a sandboxed unit) can use.
 
     A mount of the candidate, of a folder inside it or of a folder containing it
@@ -893,6 +897,7 @@ def _namespace_mount_references(paths: Sequence[Path], process_root: Path, error
         errors.append("mount_namespace_inventory_unreadable")
         return found
     own_points = {(device, point) for device, root, point in own_mounts if root == "/"}
+    root_locations = [(root, _filesystem_location(root, own_mounts)) for root in scan_roots]
     try:
         processes = sorted(entry for entry in process_root.iterdir() if entry.name.isdigit())
     except OSError:
@@ -912,12 +917,22 @@ def _namespace_mount_references(paths: Sequence[Path], process_root: Path, error
                 view: dict[PurePosixPath, Path] = {}
                 for device, root, point in _mountinfo(_read_small(process / "mountinfo", _MAX_MOUNTINFO_BYTES)):
                     mounted = PurePosixPath(root)
+                    # A scan root (or above) mounted is root reachability, not a hold on
+                    # any one folder: say so once and match this process's use instead.
+                    whole_root = False
+                    for scan_root, location in root_locations:
+                        if location is not None and location[0] == device and (
+                                mounted == location[1] or mounted in location[1].parents):
+                            whole_root = True
+                            if reachable is not None and not (root == "/" and (device, point) in own_points):
+                                reachable.setdefault(str(scan_root), set()).update(
+                                    path for path in paths if path == scan_root or scan_root in path.parents)
                     for path, location in locations.items():
                         if location is None or location[0] != device or not (
                                 mounted == location[1] or location[1] in mounted.parents
                                 or mounted in location[1].parents):
                             continue
-                        if root == "/" and (device, point) in own_points:
+                        if whole_root or (root == "/" and (device, point) in own_points):
                             view[PurePosixPath(point) / location[1].relative_to(mounted)] = path
                         else:
                             found.add(path)
@@ -984,6 +999,13 @@ def build_reference_census(
     listing_errors: list[str] = []
     paths = _candidates(work_root, inputs_root, listing_errors, deadline)
     matcher = _PathMatcher(paths, dict(aliases))
+    # The designated roots the census walks. A lane directory holds only that lane's
+    # folders, so naming it is an intermediate ancestor, not root reachability.
+    scan_roots = {work_root, inputs_root}
+
+    def scan_root_or_above(ancestor: str) -> bool:
+        return any(Path(ancestor) == root or Path(ancestor) in root.parents for root in scan_roots)
+
     ancestors: dict[str, dict[str, set[Path]]] = {}
     try:
         release_path: Path | None = release_link.resolve(strict=True)
@@ -1016,7 +1038,9 @@ def build_reference_census(
     run("pubsub_handoff", records(handoff_roots, "pubsub_handoff", suffixes=frozenset({".json"})))
     run("door_request", records(door_request_roots, "door_request", suffixes=frozenset({".json"})))
     run("process", lambda errors: _process_references(paths, process_root, errors, deadline))
-    run("container_mount", lambda errors: _namespace_mount_references(paths, process_root, errors, deadline))
+    run("container_mount", lambda errors: _namespace_mount_references(
+        paths, process_root, errors, deadline, scan_roots=sorted(scan_roots, key=str),
+        reachable=ancestors.setdefault("container_mount", {})))
     run("docker_container", records((docker_containers,), "docker_container",
                                     file_names=frozenset({"config.v2.json", "hostconfig.json"})))
     run("unit_file", records(unit_directories, "unit_file", follow_files=True))
@@ -1039,7 +1063,8 @@ def build_reference_census(
         family, _guess, _basis = _family(path.name)
         not_proven = [{"reason": "ancestor_referenced", "kind": kind, "ancestor": ancestor}
                       for kind, reached in sorted(ancestors.items())
-                      for ancestor, beneath in sorted(reached.items()) if path in beneath]
+                      for ancestor, beneath in sorted(reached.items())
+                      if path in beneath and not scan_root_or_above(ancestor)]
         if path in matcher.unmatchable:
             not_proven.append({"reason": "name_not_reliably_matchable"})
         rows.append({"path": str(path), "lane_family": family, "use_guess": use, "use_basis": "name_pattern",
@@ -1047,10 +1072,14 @@ def build_reference_census(
                      "references": [kind for kind in REFERENCE_KINDS if path in found.get(kind, ())],
                      "not_proven": not_proven,
                      "top_level_mtime_epoch": mtime, "top_level_mtime_complete": mtime_complete})
-    # Said once: an ancestor named in a record reaches every folder under it.
+    # Said once. A scan root (or a directory above one) named in a record is how the
+    # system finds its workspace: it changes no row. An intermediate ancestor does.
+    named = [(kind, ancestor, beneath) for kind, reached in sorted(ancestors.items())
+             for ancestor, beneath in sorted(reached.items())]
+    root_reachable_by = [{"kind": kind, "root": ancestor, "folders": len(beneath)}
+                         for kind, ancestor, beneath in named if scan_root_or_above(ancestor)]
     ancestor_references = [{"kind": kind, "ancestor": ancestor, "folders": len(beneath)}
-                           for kind, reached in sorted(ancestors.items())
-                           for ancestor, beneath in sorted(reached.items())]
+                           for kind, ancestor, beneath in named if not scan_root_or_above(ancestor)]
     complete = not listing_errors and all(statuses.get(kind, {}).get("status") == "checked"
                                           for kind in REFERENCE_KINDS)
     return {"schema_version": REFERENCE_CENSUS_SCHEMA_VERSION, "statement": EVIDENCE_STATEMENT,
@@ -1059,6 +1088,7 @@ def build_reference_census(
             "candidate_count": len(paths), "candidate_listing_errors": sorted(set(listing_errors)),
             "kinds": {kind: statuses[kind] for kind in REFERENCE_KINDS},
             "not_checked_sources": list(NOT_CHECKED_SOURCES), "ancestor_references": ancestor_references,
+            "root_reachable_by": root_reachable_by, "root_reachability_statement": ROOT_REACHABILITY_STATEMENT,
             "rows": rows, "mutations": 0}
 
 

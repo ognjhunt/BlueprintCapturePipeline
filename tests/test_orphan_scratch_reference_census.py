@@ -122,14 +122,19 @@ def test_a_run_record_holds_its_folder_between_processes(tmp_path):
     assert "active_run" in _rows(build_reference_census(**world["kwargs"]))[held]["references"]
 
 
-def test_a_container_mounting_a_parent_folder_holds_everything_below_it(tmp_path):
+def test_a_running_container_mounting_the_scratch_root_is_root_reachability_not_a_hold(tmp_path):
     world = _world(tmp_path)
     (tmp_path / "proc" / "5151" / "mountinfo").write_text("7 1 8:1 /work /data rw - ext4 /dev/x rw\n")
+    (tmp_path / "proc" / "5151" / "fd" / "3").symlink_to("/data/held-by-queue/data.bin")
 
-    rows = _rows(build_reference_census(**world["kwargs"]))
+    census = build_reference_census(**world["kwargs"])
 
-    assert all("container_mount" in row["references"] for path, row in rows.items() if "/work/" in path)
-    assert "container_mount" not in rows[str(world["folders"]["free"])]["references"]
+    rows = _rows(census)
+    assert {"kind": "container_mount", "root": str(tmp_path / "work"), "folders": len(HELD)} in census[
+        "root_reachable_by"]
+    assert "container_mount" in rows[str(world["folders"]["queue"])]["references"]  # the one it uses
+    assert "container_mount" not in rows[str(world["folders"]["pin"])]["references"]
+    assert all(row["not_proven"] == [] for row in rows.values())
 
 
 def test_a_sandboxed_unit_seeing_the_host_volume_holds_only_what_it_uses(tmp_path):
@@ -164,7 +169,7 @@ def test_a_kind_not_checked_or_failed_makes_the_census_incomplete_and_totals_unk
     projection = cap.orphan_scratch_census_projection(
         census, {"orphan_scratch_root_bytes": [[free, 9]]}, now=NOW + 60)
     assert projection["status"] == "incomplete"
-    assert projection["no_reference_found_bytes"] is None
+    assert projection["no_specific_reference_found_bytes"] is None
     assert projection["roots"][0]["disposition"] == "not_proven"
 
 
@@ -206,7 +211,7 @@ def test_a_full_path_match_respects_the_name_boundary(tmp_path):
     assert "door_request" not in rows[str(tmp_path / "work" / "run")]["references"]
 
 
-def test_a_name_a_record_could_escape_is_never_no_reference_found(tmp_path):
+def test_a_name_a_record_could_escape_is_never_no_specific_reference_found(tmp_path):
     world = _world(tmp_path)
     (tmp_path / "work" / 'quo"te').mkdir()
 
@@ -215,31 +220,51 @@ def test_a_name_a_record_could_escape_is_never_no_reference_found(tmp_path):
     assert row["references"] == [] and row["not_proven"] == [{"reason": "name_not_reliably_matchable"}]
 
 
-@pytest.mark.parametrize("kind", ["docker_container", "unit_file"])
-def test_a_record_naming_only_the_parent_makes_every_folder_below_it_not_proven(tmp_path, kind):
+@pytest.mark.parametrize("kind", ["docker_container", "unit_file", "release_source"])
+def test_a_record_naming_only_the_scratch_root_changes_no_row_and_is_said_once(tmp_path, kind):
     world = _world(tmp_path)
     work = tmp_path / "work"
-    if kind == "docker_container":  # stopped, set to restart, the whole scratch parent bound in
-        (tmp_path / "docker" / "def456" / "hostconfig.json").parent.mkdir()
+    if kind == "docker_container":  # stopped, set to restart, the whole scratch root bound in
+        (tmp_path / "docker" / "def456").mkdir()
         (tmp_path / "docker" / "def456" / "hostconfig.json").write_text(json.dumps(
             {"Binds": [f"{work}:/scratch"], "RestartPolicy": {"Name": "always"}}))
-    else:
+    elif kind == "unit_file":
         (tmp_path / "usr-lib-systemd" / "sim.service").write_text(f"[Service]\nReadWritePaths={work}/\n")
+    else:
+        release = world["folders"]["live_release"] / "release"
+        (release / "src" / "roots.py").write_text(f"WORK_ROOT = '{work}'\n")
 
     census = build_reference_census(**world["kwargs"])
 
-    assert {"kind": kind, "ancestor": str(work), "folders": len(HELD)} in census["ancestor_references"]
+    assert {"kind": kind, "root": str(work), "folders": len(HELD)} in census["root_reachable_by"]
+    assert "cannot rule that out" in census["root_reachability_statement"]
+    assert census["ancestor_references"] == []
     rows = _rows(census)
-    for path, row in rows.items():
-        expected = {"reason": "ancestor_referenced", "kind": kind, "ancestor": str(work)}
-        assert (expected in row["not_proven"]) == path.startswith(f"{work}/"), path
-    free = str(world["folders"]["free"])
-    survey = {"orphan_scratch_root_bytes": [[path, 1] for path in rows]}
-    projection = cap.orphan_scratch_census_projection(census, survey, now=NOW + 60)
+    assert all(row["not_proven"] == [] for row in rows.values())
+    projection = cap.orphan_scratch_census_projection(
+        census, {"orphan_scratch_root_bytes": [[path, 1] for path in rows]}, now=NOW + 60)
     by_root = {row["root"]: row["disposition"] for row in projection["roots"]}
-    assert by_root[free] == "no_reference_found"
-    assert {by_root[path] for path in rows if path.startswith(f"{work}/")} <= {"referenced", "not_proven"}
-    assert projection["ancestor_references"]
+    assert by_root[str(world["folders"]["free"])] == "no_specific_reference_found"
+    assert projection["root_reachable_by"] and projection["no_specific_reference_found_bytes"] == 1
+
+
+def test_an_intermediate_ancestor_makes_only_the_folders_below_it_not_proven(tmp_path):
+    world = _world(tmp_path)
+    lane = tmp_path / "work" / "lanes" / "g1"
+    stray = lane / "unregistered-folder"
+    stray.mkdir(parents=True)
+    (tmp_path / "usr-lib-systemd" / "g1.service").write_text(f"[Service]\nReadWritePaths=-{lane}\n")
+
+    census = build_reference_census(**world["kwargs"])
+
+    rows = _rows(census)
+    assert rows[str(stray)]["not_proven"] == [{"reason": "ancestor_referenced", "kind": "unit_file",
+                                               "ancestor": str(lane)}]
+    assert rows[str(world["folders"]["free"])]["not_proven"] == []
+    assert census["root_reachable_by"] == []
+    projection = cap.orphan_scratch_census_projection(
+        census, {"orphan_scratch_root_bytes": [[str(stray), 5]]}, now=NOW + 60)
+    assert projection["roots"][0]["disposition"] == "not_proven"
 
 
 def _census(rows, *, observed=NOW, status="complete"):
@@ -263,16 +288,16 @@ def test_the_report_carries_family_use_age_and_the_evidence_statement():
 
     assert "not a statement that deletion is safe" in projection["statement"]
     assert projection["status"] == "complete" and projection["age_seconds"] == 600.0
-    assert projection["no_reference_found_bytes"] == 30
-    assert projection["no_reference_found_run_time_only_bytes"] == 30
+    assert projection["no_specific_reference_found_bytes"] == 30
+    assert projection["no_specific_reference_found_run_time_only_bytes"] == 30
     assert projection["retirement_authorized"] is False
     first = projection["roots"][0]
-    assert first == {"root": "/w/sdk-inputs", "allocated_bytes": 30, "disposition": "no_reference_found",
+    assert first == {"root": "/w/sdk-inputs", "allocated_bytes": 30, "disposition": "no_specific_reference_found",
                      "references": [], "not_proven": [], "lane_family": "other",
                      "use_guess": "rebuildable_run_input_cache",
                      "run_time_only": True, "top_level_unchanged_days": 10.0}
     by_root = {row["root"]: row["disposition"] for row in projection["roots"]}
-    assert by_root == {"/w/sdk-inputs": "no_reference_found", "/w/held": "referenced", "/w/unlisted": "not_proven"}
+    assert by_root == {"/w/sdk-inputs": "no_specific_reference_found", "/w/held": "referenced", "/w/unlisted": "not_proven"}
     assert "unreferenced" not in json.dumps(projection) and "safe_to" not in json.dumps(projection)
 
 
@@ -287,7 +312,7 @@ def test_the_report_carries_family_use_age_and_the_evidence_statement():
 def test_a_missing_stale_incomplete_or_foreign_census_proves_nothing(census):
     projection = cap.orphan_scratch_census_projection(
         census, {"orphan_scratch_root_bytes": [["/w/free", 30]]}, now=NOW)
-    assert projection["no_reference_found_bytes"] is None
+    assert projection["no_specific_reference_found_bytes"] is None
     assert projection["roots"][0]["disposition"] == "not_proven"
 
 
@@ -312,7 +337,7 @@ def test_the_capacity_summary_reports_the_census(tmp_path, monkeypatch):
 
     census = json.loads((tmp_path / "capacity" / "summary.json").read_text())["usage"]["orphan_scratch_census"]
     assert census["status"] == "complete" and census["age_seconds"] == 120.0
-    assert census["no_reference_found_bytes"] == 30 * 1024**3
+    assert census["no_specific_reference_found_bytes"] == 30 * 1024**3
     assert census["roots"][0]["run_time_only"] is True
     assert census["kinds"]["active_run"] == {"status": "checked"}
 

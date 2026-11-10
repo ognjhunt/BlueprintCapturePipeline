@@ -699,7 +699,7 @@ def usage_projection(
     return projection
 
 
-ORPHAN_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v3"
+ORPHAN_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v4"
 ORPHAN_CENSUS_MAX_AGE_SECONDS = 2 * GC_SUMMARY_INTERVAL_SECONDS
 ORPHAN_CENSUS_ROWS = 25
 ORPHAN_CENSUS_STATEMENT = (
@@ -714,7 +714,7 @@ def orphan_scratch_census_projection(
     """Per orphan scratch folder: its size, what the census found referring to it, and its age.
 
     Bytes come from the usage survey, references from the storage GC's hourly
-    reference census. A folder is ``no_reference_found`` only when a fresh census
+    reference census. A folder is ``no_specific_reference_found`` only when a fresh census
     that checked every reference kind lists it with none; any other folder is
     ``referenced`` or ``not_proven``, and an incomplete census publishes no total.
     This is evidence for an owner's decision. It grants no retirement.
@@ -752,7 +752,7 @@ def orphan_scratch_census_projection(
         if references:
             disposition = "referenced"
         elif row is not None and status == "complete" and reasons == []:
-            disposition = "no_reference_found"
+            disposition = "no_specific_reference_found"
         else:
             disposition = "not_proven"
         mtime = (row or {}).get("top_level_mtime_epoch")
@@ -765,9 +765,9 @@ def orphan_scratch_census_projection(
             "top_level_unchanged_days": (round(max(0.0, now - mtime) / 86400, 1)
                                          if type(mtime) in (int, float) and _finite_number(mtime) else None),
         })
-    order = {"no_reference_found": 0, "not_proven": 1, "referenced": 2}
+    order = {"no_specific_reference_found": 0, "not_proven": 1, "referenced": 2}
     folders.sort(key=lambda row: (order[row["disposition"]], -row["allocated_bytes"], row["root"]))
-    found_none = [row for row in folders if row["disposition"] == "no_reference_found"]
+    found_none = [row for row in folders if row["disposition"] == "no_specific_reference_found"]
     survey_observed = survey.get("observed_at_epoch") if isinstance(survey, Mapping) else None
     projection = {
         "statement": ORPHAN_CENSUS_STATEMENT,
@@ -779,7 +779,12 @@ def orphan_scratch_census_projection(
                   if isinstance(kinds, Mapping) else {}),
         "not_checked_sources": list(census.get("not_checked_sources") or [])[:10]
         if isinstance(census, Mapping) else [],
-        # An ancestor named in a record reaches every folder under it: those are not_proven.
+        # Said once: a scan root named or mounted reaches every folder; it changes no row.
+        "root_reachable_by": [row for row in (census.get("root_reachable_by") or [])
+                              if isinstance(row, Mapping)][:20] if isinstance(census, Mapping) else [],
+        "root_reachability_statement": (census.get("root_reachability_statement")
+                                        if isinstance(census, Mapping) else None),
+        # An intermediate ancestor named in a record reaches the folders under it: those are not_proven.
         "ancestor_references": [row for row in (census.get("ancestor_references") or [])
                                 if isinstance(row, Mapping)][:20] if isinstance(census, Mapping) else [],
         "bytes_available": raw_rows is not None,
@@ -788,9 +793,9 @@ def orphan_scratch_census_projection(
         "bytes_observed_at_epoch": survey_observed if type(survey_observed) in (int, float) else None,
         "folders": len(folders),
         # Totals only from a census that checked every kind; otherwise unknown, never zero.
-        "no_reference_found_folders": len(found_none) if status == "complete" else None,
-        "no_reference_found_bytes": sum(row["allocated_bytes"] for row in found_none) if status == "complete" else None,
-        "no_reference_found_run_time_only_bytes": (sum(row["allocated_bytes"] for row in found_none
+        "no_specific_reference_found_folders": len(found_none) if status == "complete" else None,
+        "no_specific_reference_found_bytes": sum(row["allocated_bytes"] for row in found_none) if status == "complete" else None,
+        "no_specific_reference_found_run_time_only_bytes": (sum(row["allocated_bytes"] for row in found_none
                                                        if row["run_time_only"]) if status == "complete" else None),
         "retirement_authorized": False,
         "roots": folders[:ORPHAN_CENSUS_ROWS],

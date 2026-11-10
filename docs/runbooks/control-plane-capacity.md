@@ -221,7 +221,14 @@ safe, and a reference can appear after the census.** Read `age_seconds` first.
   `not_checked_sources` names what no kind covers (podman or bare containerd
   containers; a /proc read that blocks is not interrupted by the deadline).
 - `status` is `complete` only when every kind is `checked`. Otherwise every
-  folder is `not_proven` and `no_reference_found_bytes` is null, never zero.
+  folder is `not_proven` and `no_specific_reference_found_bytes` is null, never zero.
+- A reference to a scan root itself (`/mnt/blueprint-work`,
+  `/var/lib/blueprint/task-evaluation-inputs`, or a directory above one) is how the
+  system finds its workspace, not evidence about any one folder. It changes no row
+  and is listed once in `root_reachable_by`: anything that uses a scratch root can
+  reach every folder under it, and this census cannot rule that out. Folder family
+  and age are the other evidence. A named intermediate directory (a lane folder)
+  makes the folders under it `not_proven` (`ancestor_references`).
 - Each folder row gives its bytes, `references`, `lane_family`, `use_guess` (a
   name-pattern guess), `top_level_unchanged_days` (the folder and its direct
   children only), and `run_time_only`. A run-time-only folder (SDK inputs, a
