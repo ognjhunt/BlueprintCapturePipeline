@@ -16,7 +16,6 @@ ACTIVE_LAUNCH_DOCS_AND_COMMAND_SOURCES = (
     REPO_ROOT / "README.md",
     REPO_ROOT / "docs" / "PAID_MARKETPLACE_BETA_LAUNCH_GATE.md",
     REPO_ROOT / "docs" / "FIRST_GPU_E2E_RUNBOOK.md",
-    REPO_ROOT / "src" / "blueprint_pipeline" / "first_gpu_run_packet.py",
     REPO_ROOT / "src" / "blueprint_pipeline" / "g1_controlled_proof_setup.py",
     REPO_ROOT / "src" / "blueprint_pipeline" / "wam_vla_policy_endpoint_setup.py",
 )

@@ -1,5 +1,7 @@
 # Manipulation Task Stack
 
+> **Archived 2026-11-10.** The manipulation task stack lane was removed: `manipulation_task_stack.py`, `manipulation_physics_simulator_command.py`, `lucky_g1_reference_adapter.py` and their three console scripts. The last commit that has them is `bfbfdc4bf`. Kept for history only.
+
 Blueprint manipulation tasks use object affordance contracts before any scored
 pick/carry/place eval can run. The first supported reference task is:
 

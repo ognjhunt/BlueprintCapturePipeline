@@ -212,6 +212,27 @@ sudo rm /etc/systemd/system/blueprint-pipeline-control-plane.{service,timer} /et
 
 The unit file paths are the standard ones; confirm them with `systemctl cat <unit>` first. On 2026-11-10 13:25 UTC the control-plane timer was still firing, and the dispatcher timer and path units were `enabled`, so they start again at the next boot although their module is gone. After that, `live_pipeline_control_plane.py`, `live_pipeline_proof_audit.py`, `deploy/systemd/blueprint-control-plane-postchecks.sh` and the door's notifier-binding view and repair can be removed in one PR.
 
+### Third batch (2026-11-10, after "place the 24-hour door hold and keep going on the lanes")
+
+**The door hold could not be placed.** `python3 scripts/operator_door.py hold blueprint-pipeline-control-plane.timer … --for 24h` was refused with `hold_unit_profile_refused` at about 14:27 UTC. On this host the door holds only `blueprint-agent-run-dispatcher.timer` (`DISPATCHER_HOLD_ONLY`, `deploy/operator-door/operator_door/requests.py:278`), and it refuses a bare stop of a timer. Nothing on the host changed. The legacy loop therefore needs root on the host (commands above), or a reviewed change to the door's hold profile.
+
+**Lanes retired in this batch** (one PR, one commit per lane):
+
+| Lane | What went | Lines removed | Evidence |
+|---|---|---:|---|
+| Manipulation task stack | `manipulation_task_stack.py`, `manipulation_physics_simulator_command.py`, `lucky_g1_reference_adapter.py`, 3 console scripts, 2 test files; `docs/MANIPULATION_TASK_STACK.md` moved to `docs/archive/` | 3,718 | Named only by each other, their console scripts, their tests and that one doc |
+| First-GPU (July) | `first_gpu_run_packet.py`, `cross_repo_first_gpu_readiness.py`, `first_gpu_e2e_readiness.py`, `first_gpu_sample_video_stage.py`, `first_gpu_sample_video_preflight.py`, `first_gpu_candidate_audit.py`, 6 console scripts, 7 test files, 4 command-safety matrix rows, 2 line-cap entries | 16,320 | The runbook was archived on 2026-11-02 (tracker H-01) and said it stayed only because this code and the spend verifier read it. No unit, door script, workflow or WebApp code names the modules. `docs/FIRST_GPU_E2E_RUNBOOK.md` stays at its path because `scripts/verify_paid_resource_allocator.py` requires it to exist |
+
+**Lanes checked and kept, with the reason:**
+
+| Lane | Why it stays |
+|---|---|
+| Kitchen task scaling | Its fixture `tests/fixtures/kitchen_task_min` is named in `docs/arm_decision_proof_v1/north_star_contract.json`, that folder's `README.md` and its `IMPLEMENTATION_BACKLOG.md`. Arm Decision Proof decides |
+| Policy autoresearch and `policy_improvement_run` | `post_training_data_package.py:5537-5541` reads their artifact paths, and `docs/webapp_handoff/decision-evidence-router.v1/compatibility-policy.json` names `policy_improvement_run`: a stored-record and WebApp handoff shape |
+| OpenVLA, WAM VLA endpoint | `mujoco_g1_wam_vla_policy_endpoint_eval.py` names their schemas and is itself started by command from `unitree_groot_n17_sonic_policy_runtime.py:1090`, part of the G1 stack that is in use. `tests/test_paid_lane_independent_watchdog_coverage.py` lists `openvla_policy_provider_smoke` among paid lanes that must have a teardown watchdog |
+| Unitree UnifoLM | `unitree_unifolm_runpod_server.py` is a listed paid-resource surface and is named in `tests/test_paid_lane_terminal_artifact_contract.py`. It goes with the RunPod code, after the account is closed |
+| `owner_gpu_default_smoke_artifacts`, `production_handoff_readiness` | The first has tests of the owner GPU proof runner; the second reads stored `first_gpu_run_packet.v1` records |
+
 ## Executive summary (for the owner)
 
 Blueprint's running system is much smaller than its codebase.
