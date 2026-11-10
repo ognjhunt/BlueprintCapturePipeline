@@ -726,20 +726,22 @@ The team packet worker reads the record from the request's own intent
 the request's, by id and digest, and its progression must have queued that
 exact request). It recomputes the binding (revision digest, success document
 reference, thresholds digest, proposal digest, owner) from what it compiled,
-and only an exact match makes the owner contract `task_owner`/`confirmed` with
-author `owner-success-confirmation:<confirmation_digest>` and no
-`owner_success_assumption`; anything else stays assumed. A completed request
-whose half assumed its thresholds returns to `pending/` once per confirmation
-of exactly them, on the worker's own pass or the screening timer's
-(`requeue_transient_blocked`, reason `owner_success_confirmation`), and the
-half is compiled once more as the owner's; to run it now,
-`python3 scripts/operator_door.py unit start blueprint-team-scene-packet.service`.
-The recompiled half has a new contract digest, so it is a new half to the lanes
-after it, exactly as after any other recompile: the robot-free probe runs for
-it (its own $1.00 cap, on the job's upstream ledger), and screening plans the
-candidates that have not run against it
-(`beta_policy_screening_scene_half`). Candidates that already ran keep their
-results, in the campaign that ran them, under the assumed contract.
+and only an exact match, found when the revision's half is first compiled,
+makes the owner contract `task_owner`/`confirmed` with author
+`owner-success-confirmation:<confirmation_digest>` and no
+`owner_success_assumption`.
+
+A confirmation of exactly the assumed thresholds that arrives after that
+compile is only recorded. On the worker's own pass or the screening timer's
+(`requeue_transient_blocked`) the request's status gains, inside
+`owner_success_assumption`, `site_answer` `confirmed` and `confirmed_later`
+(`confirmation_digest`, `confirmed_at`, `issuer_channel`): scored on
+Blueprint's standard thresholds, assumed at the time; the site confirmed the
+same thresholds later. Nothing is requeued or compiled again, so the contract
+digest, the robot-free probe and the screening campaign stand and nothing is
+bought twice. If the half is compiled again for another reason (a new stance
+search, moved furniture), it keeps the assumed contract and its record carries
+the same `confirmed_later`.
 
 The owner can also confirm on the website job page, with no operator
 (`website_owner_success_confirmation`). On the screening timer's pass,
@@ -751,11 +753,13 @@ sealing the whole binding. The WebApp shows them to the job's owner link only,
 in plain words, with Confirm and "this is wrong" (a typed reason, no numbers),
 and answers with the owner's decision on exactly that proposal. A confirmation
 is written by the door's own writer and validators, with `issuer_channel`
-`website`, and the same pass returns the request to `pending/`. A "wrong"
+`website`, and the same pass records it in the status as above. A "wrong"
 answer writes nothing under the intent, changes no number and stops nothing:
-the half and its screening go on, still marked as assumed, and the request's
-status keeps the reason under `website_owner_success`, as it keeps `pending`
-or a `failed` exchange. A corrected threshold reaches the Pipeline only as a
+the half and its screening go on, and the status says the site disputed the
+thresholds (`owner_success_assumption.site_answer` `this_is_wrong`, with the
+reason under `this_is_wrong`; without `site_answer` the site has not
+answered). It also keeps the exchange under `website_owner_success`, as it
+keeps `pending` or a `failed` exchange. A corrected threshold reaches the Pipeline only as a
 republished job (a new scene revision, so a new request, half and screening
 source); the earlier revision's results stay in their own campaigns. Each
 request is asked again only at its kept

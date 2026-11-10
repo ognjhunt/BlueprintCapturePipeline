@@ -107,6 +107,14 @@ def test_an_unconfirmed_website_job_compiles_at_once_on_the_same_thresholds_mark
     assert read_team_scene_inputs(compiled["path"])["task_success_contract"] == contract
     assert assumption.half_assumption(compiled["path"]) == marker
     assert applied["confirmation_digest"] == confirmed["owner_success_confirmation"]
+    # A half of a revision that already assumed keeps that contract when compiled again: the confirmation
+    # made since is recorded beside the assumption, and no digest changes.
+    kept = _compile(job, {**inputs, **ASSUME, "keep_assumed_thresholds": True}, tmp_path / "kept")
+    assert read_team_scene_inputs(kept["path"])["task_success_contract"] == contract
+    assert "owner_success_confirmation" not in kept
+    assert kept[assumption.FIELD] == {**marker, "site_answer": "confirmed", "confirmed_later": {
+        "confirmation_digest": applied["confirmation_digest"], "confirmed_at": applied["confirmed_at"],
+        "issuer_channel": "operator_door"}}
 
 
 def test_a_job_its_site_already_confirmed_compiles_exactly_as_before_with_no_marker(tmp_path, monkeypatch):
@@ -165,7 +173,7 @@ def test_a_confirmation_of_other_thresholds_confirms_nothing_about_these(tmp_pat
                         lambda _request: ({"intent": job.intent, "directory": job.directory}, None))
     assert assumption.site_confirmation(compiled["path"], {}) is None
     status = {"status": "completed", "team_scene_inputs_path": compiled["path"], assumption.FIELD: marker}
-    assert assumption.status_assumed(status) and assumption.untried_confirmations(status, {}, tried=[]) == []
+    assert assumption.status_assumed(status) and assumption.noted_status(status, {}, exchange=None) is None
 
 
 def test_thresholds_that_cannot_be_sealed_still_refuse_by_name(tmp_path, monkeypatch):
@@ -321,8 +329,11 @@ def clock(monkeypatch):
     monkeypatch.setattr(website, "_now", tick)
 
 
-def test_the_worker_compiles_an_unconfirmed_job_without_waiting_and_a_later_confirmation_recompiles_it_once(
+def test_the_worker_compiles_an_unconfirmed_job_without_waiting_and_a_later_confirmation_is_only_recorded(
         tmp_path, monkeypatch, clock):
+    from blueprint_pipeline import team_scene_packet
+    from blueprint_pipeline.rigid_robot_free_probe_bundle import current_probe_state
+
     world = _world(tmp_path, monkeypatch)
     job, queue, key = world["job"], world["queue"], world["key"]
     context_before = world["context_path"].read_bytes()
@@ -331,18 +342,17 @@ def test_the_worker_compiles_an_unconfirmed_job_without_waiting_and_a_later_conf
     assert not (job.directory / confirmation.DIRECTORY).exists()
     assert (first["status"], first["outcome"], first["blockers"]) == ("completed", "compiled", [])
     assert first[assumption.FIELD]["status"] == assumption.ASSUMED and "owner_success_confirmation" not in first
+    assert "site_answer" not in first[assumption.FIELD]  # the site has not answered
     assert _status(world) == first and (queue / "processed" / f"{key}.json").is_file()
     assumed_path = first["team_scene_inputs_path"]
     assumed = read_team_scene_inputs(assumed_path)["task_success_contract"]
     assert assumption.contract_assumed(assumed)
     profile = profile_for_capture(world["capture"])
     revision = job.revision["revision_digest"]
-    assert profile["team_scene_inputs_path"] == assumed_path
     assumed_half = current_half(profile, scene_revision_digest=revision)
-    assert assumed_half is not None
+    probe_before = current_probe_state(world["capture"])["request"]["request_digest"]
     source_before = world["screening_source"]()
-    # The robot-free probe of this half was queued by the compile: the journey goes on to the probe and screening.
-    assert (tmp_path / "rigid-robot-free-probes").is_dir()
+    record_before = Path(assumed_path).read_bytes()
 
     # The timer's pass sends the thresholds to the job page, as it did for a blocked job; nothing moves.
     webapp = FakeWebApp()
@@ -352,61 +362,62 @@ def test_the_worker_compiles_an_unconfirmed_job_without_waiting_and_a_later_conf
     assert notice["binding_digest"] == first[assumption.FIELD]["binding_digest"]
     assert _core(_status(world)[website.STATUS_FIELD]) == {"status": "pending",
                                                          "proposal_digest": notice["proposal_digest"]}
-    assert _status(world)["status"] == "completed"
+    assert "site_answer" not in _status(world)[assumption.FIELD]
 
-    # The owner confirms on the job page: the confirmation is recorded and the completed request returns once.
+    # The owner confirms on the job page: the confirmation is sealed and RECORDED beside the assumption.
     webapp.decide("confirmed")
+    monkeypatch.setattr(team_scene_packet, "prepare_team_scene", lambda **_: pytest.fail("compiled again"))
     confirmed = worker.requeue_transient_blocked(queue_root=queue, website_transport=webapp)
     [row] = confirmation.confirmations(job.directory, job.intent)
-    assert confirmed["requeued"] == [{"request_key": key, "reason": "owner_success_confirmation",
-                                      "confirmation_digests": [row["confirmation_digest"]]}]
-    [second] = world["process"]()["results"]
-    assert (second["status"], second["outcome"], second["blockers"]) == ("completed", "compiled", [])
-    assert second["owner_success_confirmation"] == {"status": "applied",
-                                                    "confirmation_digest": row["confirmation_digest"]}
-    assert assumption.FIELD not in second and second["team_scene_inputs_path"] != assumed_path
-    owners = read_team_scene_inputs(second["team_scene_inputs_path"])["task_success_contract"]
-    assert owners["provenance"]["author_source"] == "task_owner" and owners["criteria"] == assumed["criteria"]
-    # The job is not stranded (2026-11-07): confirming the thresholds touches neither the task context nor
-    # the request, so the screening source is the same one and still binds the job's current context (no
-    # task_context_changed), and the capture's row names the new half at the same revision. Its identity
-    # changed, which is what plans the candidates that have not run against it.
-    assert world["context_path"].read_bytes() == context_before
-    assert _record(queue / "processed" / f"{key}.json") == world["request"]
-    assert world["screening_source"]() == source_before
-    profile = profile_for_capture(world["capture"])
-    assert profile["team_scene_inputs_path"] == second["team_scene_inputs_path"]
-    assert profile["scene_revision_digest"] == revision
-    assert current_half(profile, scene_revision_digest=revision) not in (None, assumed_half)
-    # What was scored under the assumption stays labelled so: the earlier half and its contract are untouched.
+    assert confirmed["requeued"] == [] and not list((queue / "pending").iterdir())
+    status = _status(world)
+    assert status["status"] == "completed" and status["team_scene_inputs_path"] == assumed_path
+    assert status[assumption.FIELD] == {**first[assumption.FIELD], "site_answer": "confirmed", "confirmed_later": {
+        "confirmation_digest": row["confirmation_digest"], "confirmed_at": row["confirmed_at"],
+        "issuer_channel": "website"}}
+    # Nothing is bought again: the same half, contract digest and probe request, so the same screening half
+    # (no re-plan), and the screening source still binds the job's context (2026-11-07: no
+    # task_context_changed). What was scored stays labelled as scored on assumed thresholds.
+    assert Path(assumed_path).read_bytes() == record_before
     assert read_team_scene_inputs(assumed_path)["task_success_contract"] == assumed
-    assert assumption.half_assumption(assumed_path)["status"] == assumption.ASSUMED
-    # Once: later passes return nothing, compile nothing and ask the website nothing more.
+    profile = profile_for_capture(world["capture"])
+    assert profile["team_scene_inputs_path"] == assumed_path
+    assert current_half(profile, scene_revision_digest=revision) == assumed_half
+    assert current_probe_state(world["capture"])["request"]["request_digest"] == probe_before
+    assert world["context_path"].read_bytes() == context_before
+    assert world["screening_source"]() == source_before
+    # Later passes ask the website nothing more, move nothing and leave the status as it is.
     calls = webapp.calls
     for _ in range(2):
         later = worker.requeue_transient_blocked(queue_root=queue, website_transport=webapp)
         assert later["requeued"] == [] and later["website_owner_decisions"] == {}
-    assert webapp.calls == calls and world["process"]()["status"] == "idle"
+    assert webapp.calls == calls and world["process"]()["status"] == "idle" and _status(world) == status
 
 
-def test_a_door_confirmation_of_an_assumed_half_recompiles_it_once_with_no_website_call(tmp_path, monkeypatch, clock):
+def test_an_assumed_half_compiled_again_for_another_reason_keeps_its_contract_and_the_recorded_confirmation(
+        tmp_path, monkeypatch, clock):
     world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
     [first] = world["process"]()["results"]
-    assert first[assumption.FIELD]["status"] == assumption.ASSUMED
+    assumed = read_team_scene_inputs(first["team_scene_inputs_path"])["task_success_contract"]
     applied = confirm(world["job"])
-    webapp = FakeWebApp()
-    result = worker.requeue_transient_blocked(queue_root=world["queue"], website_transport=webapp)
-    assert webapp.calls == 0
-    assert result["requeued"] == [{"request_key": world["key"], "reason": "owner_success_confirmation",
-                                   "confirmation_digests": [applied["confirmation_digest"]]}]
+    assert worker.requeue_transient_blocked(queue_root=queue, website_transport=FakeWebApp())["requeued"] == []
+    assert _status(world)[assumption.FIELD]["confirmed_later"]["issuer_channel"] == "operator_door"
+    # Something else sends the half to be compiled again (here: it is found unscorable once).
+    monkeypatch.setattr(worker, "unscorable_half", lambda _path: "start_spawn_mismatch")
+    shutil.copyfile(queue / "processed" / f"{key}.json", queue / "pending" / f"{key}.json")
     [second] = world["process"]()["results"]
-    assert second["owner_success_confirmation"]["confirmation_digest"] == applied["confirmation_digest"]
-    assert assumption.FIELD not in second
-    assert second[worker.OWNER_CONFIRMATION_REQUEUE_FIELD] == [applied["confirmation_digest"]]
-    assert worker.requeue_transient_blocked(queue_root=world["queue"], website_transport=webapp)["requeued"] == []
+    assert (second["status"], second["outcome"]) == ("completed", "compiled")
+    assert second["team_scene_inputs_path"] != first["team_scene_inputs_path"]
+    # The same assumed contract, digest for digest: the confirmation is recorded in the new half, not applied.
+    assert read_team_scene_inputs(second["team_scene_inputs_path"])["task_success_contract"] == assumed
+    assert "owner_success_confirmation" not in second
+    recorded = _record(second["team_scene_inputs_path"])[assumption.FIELD]
+    assert recorded["confirmed_later"]["confirmation_digest"] == applied["confirmation_digest"]
+    assert second[assumption.FIELD] == recorded and recorded["site_answer"] == "confirmed"
 
 
-def test_a_request_whose_intent_cannot_be_read_is_assumed_too_and_confirms_once_it_can(tmp_path, monkeypatch, clock):
+def test_a_request_whose_intent_cannot_be_read_is_assumed_too_and_matches_no_confirmation(tmp_path, monkeypatch, clock):
     from blueprint_pipeline.task_evaluation_scene_intent_contracts import ROOT_ENV
 
     world = _world(tmp_path, monkeypatch)
@@ -422,17 +433,11 @@ def test_a_request_whose_intent_cannot_be_read_is_assumed_too_and_confirms_once_
     unbound = worker.requeue_transient_blocked(queue_root=world["queue"], website_transport=webapp)
     assert unbound["requeued"] == [] and webapp.calls == 0
     assert unbound["website_owner_decisions"][world["key"]]["status"] == "intent_unbound"
-    # Once the intent reads again and its owner has confirmed, the half is compiled as the owner's, once.
+    # A confirmation made later cannot be matched to a half that named no binding: unknown stays unknown.
     monkeypatch.setenv(ROOT_ENV, intents)
-    applied = confirm(world["job"])
+    confirm(world["job"])
     result = worker.requeue_transient_blocked(queue_root=world["queue"], website_transport=webapp)
-    assert result["requeued"] == [{"request_key": world["key"], "reason": "owner_success_confirmation",
-                                   "confirmation_digests": [applied["confirmation_digest"]]}]
-    [second] = world["process"]()["results"]
-    assert second["owner_success_confirmation"] == {"status": "applied",
-                                                    "confirmation_digest": applied["confirmation_digest"]}
-    assert assumption.FIELD not in second
-    assert worker.requeue_transient_blocked(queue_root=world["queue"], website_transport=webapp)["requeued"] == []
+    assert result["requeued"] == [] and "confirmed_later" not in _status(world)[assumption.FIELD]
 
 
 def test_this_is_wrong_is_kept_with_its_reason_and_changes_nothing_else(tmp_path, monkeypatch, clock):
@@ -447,10 +452,22 @@ def test_this_is_wrong_is_kept_with_its_reason_and_changes_nothing_else(tmp_path
     assert _core(status[website.STATUS_FIELD]) == {
         "status": "held", "reason": "too_strict", "proposal_digest": decision["proposal_digest"],
         "decision_digest": decision["decision_digest"]}
-    # The half stands, still marked as assumed; no number changed and nothing was stopped or compiled again.
-    assert {key: value for key, value in status.items() if key != website.STATUS_FIELD} == first
+    # The half stands; no number changed and nothing was stopped or compiled again. Its marker now says the
+    # site disputed the thresholds, which a site that has not answered never carries.
+    assert status[assumption.FIELD] == {**first[assumption.FIELD], "site_answer": "this_is_wrong", "this_is_wrong": {
+        "reason": "too_strict", "decision_digest": decision["decision_digest"],
+        "proposal_digest": decision["proposal_digest"]}}
+    assert {key: value for key, value in status.items()
+            if key not in (website.STATUS_FIELD, assumption.FIELD)} == {
+        key: value for key, value in first.items() if key != assumption.FIELD}
     assert profile_for_capture(world["capture"])["team_scene_inputs_path"] == first["team_scene_inputs_path"]
     assert world["process"]()["status"] == "idle"
+    # If the site then changes its mind and confirms, that is recorded too; still nothing moves.
+    webapp.decide("confirmed")
+    assert worker.requeue_transient_blocked(queue_root=world["queue"], website_transport=webapp)["requeued"] == []
+    changed = _status(world)[assumption.FIELD]
+    assert changed["site_answer"] == "confirmed" and changed["confirmed_later"]["issuer_channel"] == "website"
+    assert changed["this_is_wrong"]["reason"] == "too_strict"
 
 
 def test_a_request_an_older_release_left_waiting_for_the_owner_is_compiled_by_the_new_release(tmp_path, monkeypatch):
@@ -499,8 +516,8 @@ def test_halves_and_statuses_stored_before_the_marker_existed_still_read(tmp_pat
     # Statuses of other shapes an older release wrote are read as having assumed nothing.
     for old in ({}, {"status": "completed"}, {"status": "completed", "team_scene_inputs_path": "/gone"},
                 {"status": "blocked", "blockers": ["team_scene_task_invalid"]}, {"status": "skipped"}):
-        assert not assumption.status_assumed(old)
-        assert assumption.untried_confirmations(old, world["request"], tried=None) == []
+        assert not assumption.status_assumed(old) and not assumption.awaiting_site(old)
+        assert assumption.noted_status(old, world["request"], exchange=None) is None
     assert assumption.half_assumption(tmp_path / "missing.json") is None and assumption.half_assumption(None) is None
 
 

@@ -27,14 +27,26 @@ what it did:
   (when the request's intent is bound) the digest of everything a confirmation
   of them is bound to. A half or status without ``FIELD`` assumed nothing.
 
-The site can still confirm, on the job page or through the operator door. The
+The site can still answer, on the job page or through the operator door. The
 packet queue's timer pass keeps sending the thresholds of a half compiled this
-way to the WebApp (``website_owner_success_confirmation``), and a sealed
-confirmation of exactly them returns the completed request to pending once
-(``untried_confirmations``); the half is then compiled again as the site's
-(``site_confirmation``), with no ``FIELD``, through the path that already
-recompiles a half (``beta_policy_screening_scene_half`` plans what has not run
-against the new one). Nothing waits for any of it.
+way to the WebApp (``website_owner_success_confirmation``). Its answer is only
+recorded, in the request's status under ``FIELD`` (``noted_status``):
+
+- a sealed confirmation of exactly the assumed thresholds adds
+  ``confirmed_later`` (the confirmation's digest, time and channel) and
+  ``site_answer`` ``confirmed``. Nothing is requeued or compiled again, so the
+  contract's digest, the robot-free probe and the screening campaign stand and
+  nothing is bought twice: the record reads "scored on Blueprint's standard
+  thresholds, assumed at the time; the site confirmed the same thresholds
+  later". A half of the same revision compiled again for another reason keeps
+  the assumed contract (``keep_assumed_thresholds``) and records the same.
+- "this is wrong" adds ``site_answer`` ``this_is_wrong`` with the reason, so a
+  result scored on thresholds the site disputed can be labelled so. No number
+  changes and nothing stops.
+- without ``site_answer`` the site has not answered.
+
+Nothing waits for any of it. A confirmation made before the revision's first
+compile is applied as before: the contract is the site's, with no ``FIELD``.
 
 An operator's or Arm Decision Proof compile never passes the flag, and refuses a
 ``proposal_only`` authority exactly as before. No threshold changes here, and
@@ -127,12 +139,22 @@ def assumption_record(*, task_spec: Mapping[str, Any], revision: Mapping[str, An
              "configured_success_criteria_digest": canonical_digest(json.loads(json.dumps(criteria))),
              "proposal_authority_digest": canonical_digest(json.loads(json.dumps(authority)))}
     if scope is not None:
+        from .task_evaluation_owner_success_confirmation import find_confirmation
+
         try:
-            value["binding_digest"] = canonical_digest(binding(intent=scope["intent"], revision=revision,
-                                                               criteria=criteria, proposal=authority))
+            bound = binding(intent=scope["intent"], revision=revision, criteria=criteria, proposal=authority)
+            value["binding_digest"] = canonical_digest(bound)
+            # Only a half compiled again after the site confirmed finds one (``keep_assumed_thresholds``).
+            row = find_confirmation(Path(scope["directory"]), scope["intent"], bound)
+            if row is not None:
+                value.update(site_answer="confirmed", confirmed_later=_confirmed_later(row))
         except (KeyError, TypeError, ValueError):
             pass  # an intent or revision a confirmation cannot be bound to: recorded without one
     return value
+
+
+def _confirmed_later(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: row[key] for key in ("confirmation_digest", "confirmed_at", "issuer_channel")}
 
 
 def half_assumption(path: Any) -> dict[str, Any] | None:
@@ -160,12 +182,11 @@ def status_assumed(status: Mapping[str, Any]) -> bool:
 
 
 def site_confirmation(path: Any, request: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The site's sealed confirmation of the thresholds the half at ``path`` assumed (it is then compiled again).
+    """The site's sealed confirmation of exactly the thresholds the half at ``path`` assumed, else None.
 
     Only a record under the request's own intent bound to exactly what the half
     recorded counts. A half compiled while its intent was unbound recorded no
-    binding: any confirmation of the intent's owner then sends it to the compile,
-    which decides.
+    binding, so nothing can be matched to it.
     """
 
     from .task_evaluation_owner_success_confirmation import _BINDING_FIELDS, confirmations
@@ -179,22 +200,48 @@ def site_confirmation(path: Any, request: Mapping[str, Any]) -> dict[str, Any] |
         return None
     # The intent's few records are listed first: most jobs have none, and the half is then never opened.
     marker = half_assumption(path) if rows else None
-    if marker is None:
+    bound = (marker or {}).get("binding_digest")
+    if bound is None:
         return None
-    bound = marker.get("binding_digest")
-    return next((row for row in rows if bound is None
-                 or canonical_digest({field: row[field] for field in _BINDING_FIELDS}) == bound), None)
+    return next((row for row in rows
+                 if canonical_digest({field: row[field] for field in _BINDING_FIELDS}) == bound), None)
 
 
-def untried_confirmations(status: Mapping[str, Any], request: Mapping[str, Any], *, tried: Any) -> list[str]:
-    """The site's confirmation of a completed half's assumed thresholds that no compile has tried yet."""
+def awaiting_site(status: Mapping[str, Any]) -> bool:
+    """A completed, assumed half whose site has not confirmed: the job page may still be asked."""
+
+    return status_assumed(status) and "confirmed_later" not in status[FIELD]
+
+
+def carried(marker: Mapping[str, Any], prior: Any) -> dict[str, Any]:
+    """``marker`` with the site's answers an earlier status of the same assumed contract kept."""
+
+    if (not isinstance(prior, Mapping)
+            or prior.get("task_success_contract_digest") != marker.get("task_success_contract_digest")):
+        return dict(marker)
+    return {**{key: prior[key] for key in ("site_answer", "this_is_wrong", "confirmed_later") if key in prior},
+            **marker}
+
+
+def noted_status(status: Mapping[str, Any], request: Mapping[str, Any], *, exchange: Any) -> dict[str, Any] | None:
+    """``status`` with the site's answer recorded under ``FIELD``, or None when there is nothing new to record.
+
+    ``exchange`` is the request's kept website exchange. Recording never moves
+    the request: a confirmation of exactly the assumed thresholds is
+    ``confirmed_later``, "this is wrong" is ``this_is_wrong`` with its reason.
+    """
 
     if not status_assumed(status):
-        return []
-    row = site_confirmation(status.get("team_scene_inputs_path"), request)
-    if row is None or row["confirmation_digest"] in (tried if isinstance(tried, list) else []):
-        return []
-    return [row["confirmation_digest"]]
+        return None
+    marker = dict(status[FIELD])
+    if isinstance(exchange, Mapping) and exchange.get("status") == "held" and "confirmed_later" not in marker:
+        marker.update(site_answer="this_is_wrong", this_is_wrong={
+            key: exchange[key] for key in ("reason", "decision_digest", "proposal_digest") if key in exchange})
+    if "confirmed_later" not in marker:
+        row = site_confirmation(status.get("team_scene_inputs_path"), request)
+        if row is not None:
+            marker.update(site_answer="confirmed", confirmed_later=_confirmed_later(row))
+    return None if marker == status[FIELD] else {**status, FIELD: marker}
 
 
 __all__ = [
@@ -205,9 +252,11 @@ __all__ = [
     "assumable",
     "assumed_contract",
     "assumption_record",
+    "awaiting_site",
+    "carried",
     "contract_assumed",
     "half_assumption",
+    "noted_status",
     "site_confirmation",
     "status_assumed",
-    "untried_confirmations",
 ]

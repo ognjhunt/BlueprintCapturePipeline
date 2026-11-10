@@ -870,6 +870,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            embodiment_models: Mapping[str, str | Path] | None = None,
                            owner_success_confirmation_scope: Mapping[str, Any] | None = None,
                            assume_unconfirmed_standard_thresholds: bool = False,
+                           keep_assumed_thresholds: bool = False,
                            movable_furniture: Mapping[str, Any] | None = None,
                            robot_access_scope: Mapping[str, Any] | None = None,
                            robot_access_offer: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -883,7 +884,9 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     sealed confirmation of these exact thresholds (``_owner_confirmed``). Without one such a task is refused,
     unless ``assume_unconfirmed_standard_thresholds`` is set (the website worker's alone, never an
     operator's or Arm Decision Proof's): it then compiles on those same thresholds as Blueprint's stated
-    assumption, and the record says so (``website_owner_success_assumption``).
+    assumption, and the record says so (``website_owner_success_assumption``). ``keep_assumed_thresholds``
+    (a half of this revision already assumed them) keeps that contract whatever the site confirmed since:
+    a later confirmation is recorded, never applied, so no digest changes and nothing is bought again.
     ``movable_furniture`` is what the scene knows of its own movable furniture: its measurement's
     sidecar, or that none was made (``robot_access_measurement.furniture_for_scope``). When none was made
     and furniture plausibly blocks the carry, the record says the measurement is due (``measurement_due``),
@@ -943,10 +946,11 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     physics_collision = assets["collision"]
     owner, motion, destination_asset, seating, support = None, None, None, None, None
     assumed: dict[str, Any] | None = None
+    confirmation_scope = None if keep_assumed_thresholds else owner_success_confirmation_scope
     if articulated:
         try:
             task = _articulated_task(revision=revision, references=references, replacement=assets["replacement"],
-                                     root=root, owner_success_confirmation_scope=owner_success_confirmation_scope)
+                                     root=root, owner_success_confirmation_scope=confirmation_scope)
         except (KeyError, StopIteration, TypeError, ValueError) as exc:
             raise TeamScenePacketError("team_scene_articulated_task_invalid:" + str(exc)) from exc
         adapter, definition, task_spec = task["adapter"], task["definition"], task["task_spec"]
@@ -976,8 +980,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                     support_plane_digest=_sha256(Path(documents[SUPPORT_PLANE_CONTRACT_PATH])))
             except (ValueError, KeyError, TypeError) as exc:
                 raise TeamScenePacketError("team_scene_destination_qualification_invalid:" + str(exc)) from exc
-        task_spec, confirmation = _owner_confirmed(task_spec, revision=revision,
-                                                   scope=owner_success_confirmation_scope)
+        task_spec, confirmation = _owner_confirmed(task_spec, revision=revision, scope=confirmation_scope)
         try:
             if assume_unconfirmed_standard_thresholds and confirmation is None and assumption.assumable(task_spec):
                 # The site has not confirmed Blueprint's standard thresholds: scored on them, and said so.

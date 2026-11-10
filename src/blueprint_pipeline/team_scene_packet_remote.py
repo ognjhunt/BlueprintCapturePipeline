@@ -106,7 +106,7 @@ SCOPE_ARGUMENTS = ("owner_success_confirmation_scope", "robot_access_scope")
 # Read on the host and carried as data: ``movable_furniture`` by the host worker, ``robot_access_offer`` here.
 DATA_ARGUMENTS = ("movable_furniture", "robot_access_offer")
 # The website worker's own switches, carried only when set (``team_scene_packet_worker.WEBSITE_COMPILE``).
-FLAG_ARGUMENTS = ("assume_unconfirmed_standard_thresholds",)
+FLAG_ARGUMENTS = ("assume_unconfirmed_standard_thresholds", "keep_assumed_thresholds")
 
 
 class TeamScenePacketRemoteError(RuntimeError):

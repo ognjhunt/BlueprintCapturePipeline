@@ -21,15 +21,17 @@ owner's decision on exactly this proposal, if there is one:
 - ``confirmed``: the decision must name this proposal's digest, revision and
   binding. The record is written by ``confirm_owner_success_contract``, the
   door's own writer, under the same validators, with ``issuer_channel``
-  ``website``. The same pass then returns the request to pending, as it does
-  for a door confirmation, and the team packet compiles the half once more,
-  with the owner contract as the owner's. Results already scored stay bound to
-  the assumed contract they were scored under.
+  ``website``. For a half compiled on assumed thresholds the same pass only
+  records it in the request's status (``confirmed_later``): nothing is
+  requeued or compiled again, so no digest changes and nothing is bought
+  twice. (A request an older release left blocked returns to pending and
+  compiles the owner contract as the owner's.)
 - ``held``: the owner said the thresholds are wrong, with a typed reason.
   Nothing is written under the intent and no number changes. The request's
-  status keeps the answer and the reason, and the WebApp alerts Blueprint's
-  team; the half and its screening go on as they were, still marked as
-  assumed. (A request an older release left blocked stays blocked.)
+  status keeps the answer and the reason (also under its assumption marker,
+  ``site_answer`` ``this_is_wrong``), and the WebApp alerts Blueprint's team;
+  the half and its screening go on as they were. (A request an older release
+  left blocked stays blocked.)
 - ``pending``: no decision yet.
 
 Each request keeps its next check time in its status (``STATUS_FIELD``) and is
@@ -249,12 +251,12 @@ def _owner_contract_blocked(status: Mapping[str, Any]) -> bool:
 
 
 def _unconfirmed(status: Mapping[str, Any]) -> bool:
-    """A request whose owner may still decide on its thresholds: its completed half assumed them, or an
-    older release's refusal waits on the owner contract."""
+    """A request whose owner may still decide on its thresholds: its completed half assumed them and the
+    owner has not confirmed, or an older release's refusal waits on the owner contract."""
 
-    from .website_owner_success_assumption import status_assumed
+    from .website_owner_success_assumption import awaiting_site
 
-    return status_assumed(status) or _owner_contract_blocked(status)
+    return awaiting_site(status) or _owner_contract_blocked(status)
 
 
 def _error_code(exc: BaseException) -> str:
