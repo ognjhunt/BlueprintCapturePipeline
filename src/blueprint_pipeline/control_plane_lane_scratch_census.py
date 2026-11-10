@@ -7,7 +7,9 @@ import json
 import math
 import re
 import stat
+import sys
 import time
+import traceback
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -839,5 +841,37 @@ def build_reference_census(
             "scan_errors": sorted(set(errors)), "mutations": 0}
 
 
+REFERENCE_CENSUS_FILENAME = "orphan-scratch-census.json"
+
+
+def publish_reference_census(directory: Path, *, pins_root: Path, queue_roots: Sequence[str | Path],
+                             active_run_roots: Sequence[str | Path], now: float | None = None,
+                             build: Any = None) -> bool:
+    """Write the reference census beside the storage GC summary, after the GC tick.
+
+    Called once a tick's report is written, so it never changes that report, its
+    digest or the exit code, and no retirement path reads it. A failure withdraws
+    the previous record: the capacity summary then shows the census missing, not stale.
+    """
+    path = directory / REFERENCE_CENSUS_FILENAME
+    try:
+        census = (build or build_reference_census)(
+            pins_root=pins_root, queue_roots=[Path(root) for root in queue_roots] or None,
+            active_run_roots=[Path(root) for root in active_run_roots] or None, now=now)
+        temporary = directory / f".{REFERENCE_CENSUS_FILENAME}.{os.getpid()}"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(census, stream, sort_keys=True)
+        os.replace(temporary, path)
+    except Exception:  # noqa: BLE001 - the GC tick's own outcome stands
+        traceback.print_exc(file=sys.stderr)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 __all__ = ["DEFAULT_INPUTS_ROOT", "DEFAULT_WORK_ROOT", "REFERENCE_CENSUS_SCHEMA_VERSION",
-           "build_census", "build_reference_census"]
+           "build_census", "build_reference_census", "publish_reference_census"]

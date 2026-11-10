@@ -13,8 +13,11 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import control_plane_capacity_controller as cap
-from blueprint_pipeline import control_plane_storage_gc as gc
-from blueprint_pipeline.control_plane_lane_scratch_census import build_reference_census
+from blueprint_pipeline.control_plane_lane_scratch_census import (
+    REFERENCE_CENSUS_FILENAME,
+    build_reference_census,
+    publish_reference_census,
+)
 from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
 
 NOW = 1_800_000_000.0
@@ -221,16 +224,16 @@ def _disk_usage():
 
 
 def test_gc_census_failure_withdraws_the_record_and_never_raises(tmp_path):
-    record = tmp_path / gc.ORPHAN_SCRATCH_CENSUS_FILENAME
+    record = tmp_path / REFERENCE_CENSUS_FILENAME
     record.write_text("{}")
 
     def broken(**_kwargs):
         raise OSError("proc gone")
 
-    assert gc._write_orphan_scratch_census(tmp_path, pins_root=tmp_path, queue_roots=[], active_run_roots=[],
+    assert publish_reference_census(tmp_path, pins_root=tmp_path, queue_roots=[], active_run_roots=[],
                                            build=broken) is False
     assert not record.exists()
-    assert gc._write_orphan_scratch_census(
+    assert publish_reference_census(
         tmp_path, pins_root=tmp_path, queue_roots=[], active_run_roots=[],
         build=lambda **kwargs: {"queue_roots": kwargs["queue_roots"], "rows": []}) is True
     assert json.loads(record.read_text())["queue_roots"] is None  # no queue inventory is not "no queues"
