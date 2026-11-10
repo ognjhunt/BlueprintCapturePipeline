@@ -288,7 +288,7 @@ Pull requests: [#3549](https://github.com/ognjhunt/BlueprintCapturePipeline/pull
 | The door holds a deploy while a launch, a paid-launch slot or a screening candidate is live, as it did for an activation | E6 e | WP-17, built. It needs the owner's door upgrade (O-21). G31 stays open for a deploy that changes runtime code: succession is not built. |
 | The door client does not send a deploy that differs only under `docs/launch-readiness/` | E6 | A tracker-only deploy no longer retires attempts. |
 | WebApp: every website job ends at its deadline by itself, with one email; the page shows it without waiting | E1 a, b, d | G50 for the site: the three states now end on the job page and by email. The Pipeline ledger for them is unchanged. |
-| WebApp: scene-intake forwarding retries until the intent's expiry; an email with an unknown send outcome is alerted | E1, E8 | A 20-minute host outage no longer ends a job. |
+| WebApp: scene-intake forwarding retries until the intent's expiry | E1 | A 20-minute host outage no longer ends a job. |
 
 | # | Gap | Crit. | Evidence | Goes to |
 |---|---|---|---|---|

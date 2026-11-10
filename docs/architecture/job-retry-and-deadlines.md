@@ -120,6 +120,7 @@ a grant (WebApp `websiteJobDeadline`).
    Pipeline ledger stays as it was.
 5. **Refusals cached by a revision constant** (Atlas levelling). A timed retry
    of the same inputs and code gives the same answer.
-6. **WebApp:** an email with an unknown send outcome is alerted, not resent
-   (the provider call has no idempotency key). Result schemas still reject
-   unknown fields. A sponsorship policy edit still revokes accepted intakes.
+6. **WebApp:** result schemas still reject unknown fields, and a sponsorship
+   policy edit still revokes accepted intakes. (An email with an unknown send
+   outcome is no longer a dead end: WebApp #1255 re-sends it safely with a
+   provider idempotency key.)
