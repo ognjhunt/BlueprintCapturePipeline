@@ -983,6 +983,34 @@ def test_scratch_inputs_rule_is_opt_in_and_unit_unchanged(tmp_path, monkeypatch,
         gc.main()
 
 
+def test_a_tick_with_nothing_to_reclaim_leaves_no_receipt(tmp_path, monkeypatch, capsys):
+    """The timer's command on an empty replay root: the plan has no candidate row, so the tick
+    writes no plan or result file (P-RT-05), still calls apply, and still prints its summary."""
+    root = tmp_path / "stage-replays"
+    root.mkdir()
+    reports = tmp_path / "reports"
+    applied: list[dict] = []
+    real_apply = gc.apply_replay_cache_retention
+    monkeypatch.setattr(gc, "apply_replay_cache_retention",
+                        lambda plan, **options: applied.append(plan) or real_apply(plan, **options))
+    monkeypatch.setattr("sys.argv", ["completed_replay_cache_retention", "--replay-root", str(root),
+                                     "--report-root", str(reports), "--apply", "--ack", gc.ACK])
+    gc.main()
+
+    assert [plan["rows"] for plan in applied] == [[]]
+    assert reports.is_dir() and list(reports.iterdir()) == []
+    assert capsys.readouterr().out == json.dumps(
+        {"status": "applied", "removed_bytes": 0, "reports_and_original_evidence_removed": False}) + "\n"
+
+    # Without --apply the plan itself is the result; an empty one is not recorded either.
+    monkeypatch.setattr("sys.argv", ["completed_replay_cache_retention", "--replay-root", str(root),
+                                     "--report-root", str(reports)])
+    gc.main()
+    assert list(reports.iterdir()) == []
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "dry_run", "candidate_bytes": 0, "reports_and_original_evidence_removed": False}
+
+
 def test_directories_the_scratch_inputs_leave_empty_are_removed_and_nothing_else(tmp_path, monkeypatch):
     """Once a row's scratch inputs are gone, the directories left empty inside prepared-references
     go too, deepest first, each opened O_NOFOLLOW from its parent's descriptor and removed
