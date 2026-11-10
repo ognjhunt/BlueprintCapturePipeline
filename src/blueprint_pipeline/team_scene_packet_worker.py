@@ -78,8 +78,14 @@ release checkout this module runs from), so any other deterministic refusal
 goes back once per newly deployed release, on the same passes: a deploy that
 fixes its cause re-drives it, and the status keeps the releases already tried
 (``release_requeued``), so a refusal never loops. Without a known running
-release nothing is requeued on that basis; ``--requeue-unfinished`` retries the
-rest once their cause is fixed. A completed rigid half whose own plan spawns its
+release nothing is requeued on that basis. A deploy is not required: such a
+refusal also goes back on the shared schedule (``job_retry_policy``: six timed
+retries, 15 min to 24 h after each block), on the same passes, unless a
+blocker names privacy, rights or money, or the block is an owner-contract
+refusal, a held furniture measurement, or one from an attempt that reached the
+remote CPU lane (``refusal_retry_cause``). The status keeps the count under
+``refusal_retry``; no release or run resets it, so a refusal never loops.
+``--requeue-unfinished`` retries the rest once their cause is fixed. A completed rigid half whose own plan spawns its
 task object farther from the task's start than the scorer's reset tolerance
 (``rigid_support_seating.start_spawn_mismatch``; capture-447ae4f4: 14.7 mm), or
 whose support record holds it (the CPU rest check refused it, or it was compiled
@@ -115,6 +121,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .job_retry_policy import REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, refusal_retry_delay
 # Re-exported: callers import these from the worker. The capture lookup and the queue's layout live in a
 # module the CPU-only intake and withdrawal deletion import without the paid launch path (see
 # team_scene_capture_root).
@@ -150,7 +157,7 @@ _CAPTURE_KEY = re.compile(r"[0-9a-f]{32}")
 Fetcher = Callable[[Mapping[str, Any]], bytes]
 # Blocks a later run can clear by itself: a run killed mid-compile (a unit timeout included), a WebApp outage on
 # the offer post, a failed object-store fetch. An operating-system error (``team_scene_packet_failed:<OSError>``)
-# is one too. Every other blocker is a deterministic refusal and stays blocked.
+# is one too. Every other blocker is a refusal: a new release, or the shared schedule (``REFUSAL_RETRY_FIELD``), retries it.
 TRANSIENT_BLOCKERS = frozenset({"team_scene_packet_interrupted", "team_scene_offer_publication_failed",
                                 "configured_controls_deferred_fetch_failed", "team_scene_remote_compile_deferred"})
 # The wait before each automatic retry, in order; once all are used the request stays blocked.
@@ -189,6 +196,11 @@ ROBOT_ACCESS_MEASUREMENT_HOLD = "team_scene_robot_access_measurement_held"
 # and each try reserves only through the job's preparation-spend path within its approved caps.
 ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD = "robot_access_measurement_retried"
 ROBOT_ACCESS_MEASUREMENT_RETRY_SECONDS = 1800
+# Any other refusal (``refusal_retry_cause``: not transient, not the owner contract, no privacy, rights or money
+# word in any blocker, no held measurement, no paid remote attempt behind it) also goes back to pending on the
+# shared schedule (``job_retry_policy.refusal_retry_delay``: six timed retries, 15 min to 24 h), so a passing
+# cause never waits for a deploy. The status keeps the count under this field; nothing resets it.
+REFUSAL_RETRY_FIELD = "refusal_retry"
 # A service's answer a later try can get past: a timeout, too early, throttled, or the service failing.
 _TRANSIENT_HTTP = re.compile(r"_http_(?:408|425|429|5[0-9]{2})(?![0-9])")
 _TRANSIENT_CODES = frozenset({408, 425, 429})
@@ -312,6 +324,60 @@ def _due(retry: Mapping[str, Any], now: datetime) -> bool:
     return not_before.tzinfo is None or not_before <= now
 
 
+def refusal_retry_cause(status: Mapping[str, Any]) -> str | None:
+    """The first blocker of a blocked status the shared refusal schedule returns to pending, or None.
+
+    None for a block another rule owns or that must not be retried by the clock: a transient block (its own
+    backoff), an owner-contract refusal (the owner's confirmation), any blocker ``hard_stop_kind`` reads as
+    privacy, rights or money, a held furniture measurement (its own retry: a second try may buy again), and a
+    block from an attempt that reached the remote CPU lane (``remote_compile``: a paid compile already ran or was
+    given up on, so only a new release tries it again, as before).
+    """
+
+    blockers = status.get("blockers")
+    if (status.get("status") != "blocked" or not isinstance(blockers, list) or not blockers
+            or transient_cause(status) is not None or "remote_compile" in status):
+        return None
+    measurement = status.get("robot_access_measurement")
+    if measurement is not None and not (isinstance(measurement, Mapping) and measurement.get("status") == "measured"):
+        return None
+    for blocker in map(str, blockers):
+        if (blocker.startswith((OWNER_CONTRACT_BLOCKER_PREFIX, ROBOT_ACCESS_MEASUREMENT_HOLD))
+                or hard_stop_kind(blocker) is not None):
+            return None
+    return str(blockers[0])
+
+
+def _refusal_retries(status: Mapping[str, Any]) -> int:
+    """Timed refusal retries already used; an unreadable record counts as spent, so the bound always holds."""
+
+    record = status.get(REFUSAL_RETRY_FIELD)
+    if record is None:
+        return 0
+    attempts = record.get("attempts") if isinstance(record, Mapping) else None
+    valid = isinstance(attempts, int) and not isinstance(attempts, bool) and attempts >= 0
+    return attempts if valid else len(REFUSAL_RETRY_DELAYS_SECONDS)
+
+
+def _with_refusal_retry(status: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
+    """Name when a refusal the shared schedule covers may run again, or that its timed retries are spent."""
+
+    cause = refusal_retry_cause(status)
+    if cause is None:
+        return dict(status)
+    prior = status.get(REFUSAL_RETRY_FIELD)
+    record = {key: value for key, value in (dict(prior) if isinstance(prior, Mapping) else {}).items()
+              if key not in {"not_before", "exhausted"}}
+    attempts = _refusal_retries(status)
+    record.update(attempts=attempts, limit=len(REFUSAL_RETRY_DELAYS_SECONDS), reason=cause)
+    delay = refusal_retry_delay(attempts)
+    if delay is None:
+        record["exhausted"] = True
+    else:
+        record["not_before"] = (now + timedelta(seconds=delay)).isoformat(timespec="seconds")
+    return {**status, REFUSAL_RETRY_FIELD: record}
+
+
 def _owner_confirmations_untried(path: Path, status: Mapping[str, Any]) -> list[str]:
     """The owner's sealed confirmations of an owner-contract refusal's own intent not yet tried, else none.
 
@@ -382,16 +448,18 @@ def _new_release_untried(status: Mapping[str, Any], release: str | None) -> bool
 def final_block(status: Mapping[str, Any], *, release: str | None) -> bool:
     """A blocked status that no pass under ``release`` returns to pending, so the scene's team half stays uncompiled.
 
-    Not final: a transient block with automatic retries left, an owner-contract refusal (the owner's sealed
-    confirmation returns it), one a newly deployed release has not yet tried, or any block when the running
-    release cannot be told. The screening pass names a final one to the website job
-    (``beta_policy_screening_holds``).
+    Not final: a transient block with automatic retries left, a refusal with timed retries left
+    (``refusal_retry_cause``), an owner-contract refusal (the owner's sealed confirmation returns it), one a
+    newly deployed release has not yet tried, or any block when the running release cannot be told. The
+    screening pass names a final one to the website job (``beta_policy_screening_holds``).
     """
 
     blockers = status.get("blockers")
     if (status.get("status") != "blocked" or not isinstance(blockers, list) or not blockers
             or any(str(blocker).startswith(OWNER_CONTRACT_BLOCKER_PREFIX) for blocker in blockers)
             or _release(release) is None or _new_release_untried(status, release)):
+        return False
+    if refusal_retry_cause(status) is not None and refusal_retry_delay(_refusal_retries(status)) is not None:
         return False
     retry = status.get("automatic_retry")
     return (transient_cause(status) is None
@@ -552,8 +620,9 @@ def _measurement_retry_untried(status: Mapping[str, Any], release: str | None, n
 
 def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[dict[str, Any]]:
     """Return each due transient block, each owner-contract refusal the owner has since confirmed, each
-    other deterministic refusal once per newly deployed ``release``, and each held furniture measurement once
-    per release (``_measurement_retry_untried``), to pending, recording the attempt first (the lock is held)."""
+    other deterministic refusal once per newly deployed ``release`` and, on the shared schedule, once its wait
+    has passed (``refusal_retry_cause``), and each held furniture measurement once per release
+    (``_measurement_retry_untried``), to pending, recording the attempt first (the lock is held)."""
 
     release = _release(release)
     requeued: list[dict[str, Any]] = []
@@ -632,6 +701,25 @@ def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[
             os.replace(path, target)
             requeued.append({"request_key": path.stem, "reason": "stance_search_version", "detail": stale,
                              "stance_search_version": STANCE_SEARCH_VERSION, "release_commit": release})
+            continue
+        refusal = None if target.exists() else refusal_retry_cause(status)
+        if refusal is not None:
+            done = _refusal_retries(status)
+            record = status.get(REFUSAL_RETRY_FIELD)
+            if record is None:
+                # Blocked before timed refusal retries existed: its clock starts now, it is not due at once.
+                _write_replace(root / "status" / path.name, _with_refusal_retry(status, now=now))
+                continue
+            if refusal_retry_delay(done) is None or not _due(record, now):
+                continue
+            record = {key: value for key, value in record.items() if key != "not_before"}
+            record.update(attempts=done + 1, limit=len(REFUSAL_RETRY_DELAYS_SECONDS), reason=refusal,
+                          requeued_at=now.isoformat(timespec="seconds"))
+            # Counted before the move, so an interruption between the two never adds an uncounted retry.
+            _write_replace(root / "status" / path.name, {**status, REFUSAL_RETRY_FIELD: record})
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "refusal_retry", "attempt": done + 1,
+                             "blocker": refusal})
             continue
         retry = dict(status.get("automatic_retry") or {})
         attempts = _retry_attempts(retry)
@@ -1175,6 +1263,9 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
             status[field] = list(prior[field])
     if isinstance(prior.get(STANCE_SEARCH_REQUEUE_FIELD), list):
         status[STANCE_SEARCH_REQUEUE_FIELD] = list(prior[STANCE_SEARCH_REQUEUE_FIELD])
+    if REFUSAL_RETRY_FIELD in prior:
+        # Kept as it is, an unreadable one included (read as spent): no run resets the timed retry count.
+        status[REFUSAL_RETRY_FIELD] = json.loads(json.dumps(prior[REFUSAL_RETRY_FIELD]))
 
     def skipped(reason: str) -> dict[str, Any]:
         return {**status, "status": "skipped", "reason": reason, "blockers": []}
@@ -1268,7 +1359,8 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
 
 def _finish(root: Path, claimed: Path, status: Mapping[str, Any], *, now: datetime,
             release: str | None = None) -> dict[str, Any]:
-    status = {key: value for key, value in _with_retry(status, now=now).items() if key != RELEASE_COMMIT_FIELD}
+    status = {key: value for key, value in _with_refusal_retry(_with_retry(status, now=now), now=now).items()
+              if key != RELEASE_COMMIT_FIELD}
     # The stance-search versions already tried survive any end, an interrupted run's included, so none loops.
     prior = _read_json(root / "status" / claimed.name) or {}
     if STANCE_SEARCH_REQUEUE_FIELD not in status and isinstance(prior.get(STANCE_SEARCH_REQUEUE_FIELD), list):
@@ -1294,7 +1386,7 @@ def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: s
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
                                         RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
                                         ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD,
-                                        ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD, "remote_compile")
+                                        ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD, REFUSAL_RETRY_FIELD, "remote_compile")
                          if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
                                    "scenario_id": SCENARIO_ID, "status": "blocked",
@@ -1336,7 +1428,7 @@ def _deferred(root: Path, claimed: Path, prior: Mapping[str, Any], route: Mappin
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
                                         RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
                                         ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD,
-                                        ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD) if key in prior}
+                                        ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD, REFUSAL_RETRY_FIELD) if key in prior}
     return {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept, "scenario_id": SCENARIO_ID,
             "status": "blocked", "blockers": ["team_scene_remote_compile_deferred"],
             "remote_compile": {**route, "mode": "fallback_deferred"}, "provider_mutation_performed": False,
@@ -1380,8 +1472,10 @@ def _settle_remote(root: Path, held: Mapping[str, Mapping[str, Any]], *, fetcher
                 _discard_unreferenced(record.get("attempt_root"), prior["capture_root"])
         if "collected" in live:
             path, record = live["collected"]
+            # Named on the status whatever it ends in, so a landing refused here is never retried by the clock.
             status = _process(root, claimed, fetcher=fetcher, offer_transport=offer_transport, remote=remote,
-                              collected=record)
+                              collected=record, carried={"remote_compile": {
+                                  "mode": "remote", "queue_row": record["queue_row"]["name"]}})
             results.append(_finish(root, claimed, status, now=_utc_now(), release=release))
             if status.get("attempt_root") != record.get("attempt_root"):
                 _discard_unreferenced(record.get("attempt_root"), status.get("capture_root"))
@@ -1499,9 +1593,9 @@ def requeue_transient_blocked(*, queue_root: str | Path,
 
     The worker runs only when something is pending, so a request its unit's
     timeout left in ``processing/``, a block waiting out its backoff, an
-    owner-contract refusal the owner has since confirmed, or a deterministic
-    refusal a newly deployed release has not yet tried, needs a pass from
-    outside. This pass reads the release it runs from itself
+    owner-contract refusal the owner has since confirmed, a refusal whose timed
+    retry is due, or a deterministic refusal a newly deployed release has not
+    yet tried, needs a pass from outside. This pass reads the release it runs from itself
     (``current_release_commit``). When a worker run holds the queue this does
     nothing: that run recovers and requeues the same way. A request the remote
     CPU lane holds is never recovered here; the worker settles it.
@@ -1607,6 +1701,7 @@ __all__ = [
     "OWNER_CONFIRMATION_REQUEUE_FIELD",
     "OWNER_CONTRACT_BLOCKER_PREFIX",
     "RELEASE_COMMIT_FIELD",
+    "REFUSAL_RETRY_FIELD",
     "RELEASE_REQUEUE_FIELD",
     "STANCE_SEARCH_REQUEUE_FIELD",
     "SCENARIO_ID",
@@ -1622,6 +1717,7 @@ __all__ = [
     "packet_inputs",
     "process_team_scene_queue",
     "registered_embodiment_models",
+    "refusal_retry_cause",
     "registered_embodiments",
     "request_key",
     "requeue_transient_blocked",

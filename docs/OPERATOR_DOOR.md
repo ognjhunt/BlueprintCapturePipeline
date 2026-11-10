@@ -815,11 +815,19 @@ deterministic refusal (neither transient nor owner-contract) returns to
 `pending/` once per newly deployed release, on the same two passes, so a deploy
 that fixes its cause re-drives it with no operator step; a status without
 `release_commit` counts as an older release. The status keeps the releases
-already tried under `release_requeued` (written before the move), so a refusal
-the new release does not fix stays blocked until the next deploy. The pass
+already tried under `release_requeued` (written before the move). The pass
 reports it as `{"reason": "new_release", ...}`. When the running release cannot
-be read, nothing is requeued on that basis. Completed and skipped requests never
-move, except as follows.
+be read, nothing is requeued on that basis. A deploy is not required: the same
+refusal also returns to `pending/` on the shared schedule
+(`job_retry_policy.refusal_retry_delay`: 15 min, 1 h, 3 h, 6 h, 12 h and 24 h
+after each block, six in all), on the same two passes, reported as
+`{"reason": "refusal_retry", ...}`. The status keeps the count under
+`refusal_retry` (written before the move); no release or run resets it, and an
+unreadable count is spent. The clock never returns a blocker that names
+privacy, rights or money, an owner-contract refusal, a held furniture
+measurement, or a block from an attempt that reached the remote CPU lane. Once
+the six are spent, a refusal stays blocked until the next deploy. Completed and
+skipped requests never move, except as follows.
 
 A completed rigid half whose recorded carry search found no stance the Franka
 carries from (`robot_station_search.cleared` false, or `reach_shortfall`

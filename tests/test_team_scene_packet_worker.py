@@ -449,18 +449,66 @@ def _release(monkeypatch: pytest.MonkeyPatch, commit: str | None) -> None:
     monkeypatch.setattr(worker, "current_release_commit", lambda: commit)
 
 
-def test_a_deterministic_refusal_is_never_retried_automatically_under_the_same_release(tmp_path, monkeypatch):
+def test_an_unlisted_refusal_is_retried_on_the_shared_schedule_six_times_then_stays_under_its_release(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline.job_retry_policy import REFUSAL_RETRY_DELAYS_SECONDS
+
     world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
     _release(monkeypatch, RELEASE_1)
     _registry(world["operator"], packet_inputs={**world["inputs"], "droid_profile_digest": "sha256:" + "0" * 64})
     _at(monkeypatch, 0)
     [status] = world["process"]()["results"]
     assert status["blockers"] == ["team_scene_droid_profile_binding_invalid"] and "automatic_retry" not in status
     assert status[worker.RELEASE_COMMIT_FIELD] == RELEASE_1
+    assert status[worker.REFUSAL_RETRY_FIELD] == {"attempts": 0, "limit": 6,
+                                                  "reason": "team_scene_droid_profile_binding_invalid",
+                                                  "not_before": "2026-10-31T12:15:00+00:00"}
+    assert not worker.final_block(status, release=RELEASE_1)
+    elapsed = 0
+    # No deploy: the clock alone retries it, alternately from the timer's pass and the worker's own.
+    for attempt, wait in enumerate(REFUSAL_RETRY_DELAYS_SECONDS, start=1):
+        _at(monkeypatch, elapsed + wait - 1)
+        assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+        assert world["process"]()["automatic_requeue"] == []
+        _at(monkeypatch, elapsed + wait)
+        expected = [{"request_key": key, "reason": "refusal_retry", "attempt": attempt,
+                     "blocker": "team_scene_droid_profile_binding_invalid"}]
+        if attempt % 2:
+            assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == expected
+            [status] = world["process"]()["results"]
+        else:
+            run = world["process"]()
+            assert run["automatic_requeue"] == expected
+            [status] = run["results"]
+        assert status["blockers"] == ["team_scene_droid_profile_binding_invalid"]
+        assert status[worker.REFUSAL_RETRY_FIELD]["attempts"] == attempt
+        elapsed += wait
+    # Spent: it stays blocked under this release, final, from either pass, however long it waits.
+    assert status[worker.REFUSAL_RETRY_FIELD]["exhausted"] is True
+    assert "not_before" not in status[worker.REFUSAL_RETRY_FIELD]
+    assert worker.final_block(status, release=RELEASE_1)
     _at(monkeypatch, 10 ** 7)
-    assert worker.requeue_transient_blocked(queue_root=world["queue"])["requeued"] == []
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
     assert world["process"]()["automatic_requeue"] == []
-    assert (world["queue"] / "processed" / f"{world['key']}.json").is_file()
+    assert (queue / "processed" / f"{key}.json").is_file()
+    # A new release still gets its own one try, and does not reset the count: refused again, still spent.
+    _release(monkeypatch, RELEASE_2)
+    assert [row["reason"] for row in worker.requeue_transient_blocked(queue_root=queue)["requeued"]] == [
+        "new_release"]
+    [status] = world["process"]()["results"]
+    assert status[worker.REFUSAL_RETRY_FIELD]["attempts"] == 6 and status[worker.REFUSAL_RETRY_FIELD]["exhausted"]
+    _at(monkeypatch, 2 * 10 ** 7)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    # The cause fixed and a timed retry left: the clock re-drives it and it compiles, keeping the count.
+    _registry(world["operator"], packet_inputs=world["inputs"])
+    (queue / "status" / f"{key}.json").write_text(json.dumps(
+        {**status, worker.REFUSAL_RETRY_FIELD: {**status[worker.REFUSAL_RETRY_FIELD], "attempts": 5,
+                                                "not_before": "2026-10-31T12:00:00+00:00"}}))
+    assert [row["attempt"] for row in worker.requeue_transient_blocked(queue_root=queue)["requeued"]] == [6]
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    assert status[worker.REFUSAL_RETRY_FIELD]["attempts"] == 6
 
 
 def test_a_deploy_that_fixes_a_deterministic_refusal_re_drives_it_once_per_release(tmp_path, monkeypatch):
@@ -607,7 +655,10 @@ def test_a_refusal_recorded_without_a_release_requeues_once_under_a_known_releas
     _release(monkeypatch, None)
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
     assert world["process"]()["automatic_requeue"] == []
-    assert _status(world) == legacy
+    # The shared schedule's clock starts at the first pass that sees it: it is not due at once.
+    started = _status(world)
+    assert started.pop(worker.REFUSAL_RETRY_FIELD)["not_before"] == "2026-10-31T12:15:00+00:00"
+    assert started == legacy
     _release(monkeypatch, RELEASE_1)
     run = world["process"]()
     assert run["automatic_requeue"] == [{"request_key": key, "reason": "new_release", "release_commit": RELEASE_1,
@@ -707,3 +758,82 @@ def test_the_running_release_is_the_release_checkouts_commit_or_unknown(monkeypa
 ])
 def test_only_a_cause_a_later_run_can_clear_is_transient(status, cause):
     assert worker.transient_cause(status) == cause
+
+
+BLOCKED_AT = {"status": "blocked", "release_commit": RELEASE_1,
+              "refusal_retry": {"attempts": 0, "not_before": "2026-10-31T12:15:00+00:00"}}
+
+
+@pytest.mark.parametrize("status", [
+    # Privacy, rights and money keep their own rules: the clock never returns them.
+    {**BLOCKED_AT, "blockers": ["team_scene_capture_withdrawn"]},
+    {**BLOCKED_AT, "blockers": ["website_site_consent_missing"]},
+    {**BLOCKED_AT, "blockers": ["dataset_license_unverified"]},
+    {**BLOCKED_AT, "blockers": ["upstream_spend_limit_reached"]},
+    {**BLOCKED_AT, "blockers": ["team_scene_bundle_invalid", "preparation_budget_exhausted"]},
+    # The owner's confirmation returns an owner-contract refusal, never the clock.
+    {**BLOCKED_AT, "blockers": [worker.OWNER_CONTRACT_BLOCKER_PREFIX + "proposal_only"]},
+    # A held furniture measurement (caps, window, any cause) keeps its own once-per-release retry: a second
+    # try could buy the same measurement again.
+    {**BLOCKED_AT, "blockers": [worker.ROBOT_ACCESS_MEASUREMENT_HOLD + ":analysis_reservation_refused"]},
+    {**BLOCKED_AT, "blockers": ["team_scene_derived_profile_conflict"],
+     "robot_access_measurement": {"status": "held", "hold": worker.ROBOT_ACCESS_MEASUREMENT_HOLD + ":window",
+                                  "cause": "refusal"}},
+    {**BLOCKED_AT, "blockers": ["team_scene_derived_profile_conflict"], "robot_access_measurement": "garbled"},
+    # A block from an attempt that reached the remote CPU lane: a paid compile ran or was given up on.
+    {**BLOCKED_AT, "blockers": ["native_task_appearance_layer_transform_spurious"],
+     "remote_compile": {"mode": "remote", "queue_row": "row.json"}},
+    {**BLOCKED_AT, "blockers": ["team_scene_derived_profile_conflict"],
+     "remote_compile": {"mode": "fallback_host", "reason": "remote_cpu_attempts_exhausted"}},
+    # A transient block keeps its own three backoffs, spent ones included.
+    {**BLOCKED_AT, "blockers": ["team_scene_packet_interrupted"], "automatic_retry": {"attempts": 3}},
+    {**BLOCKED_AT, "status": "skipped", "blockers": []},
+    {**BLOCKED_AT, "status": "completed", "blockers": []},
+])
+def test_the_clock_never_returns_a_block_another_rule_owns(tmp_path, status):
+    assert worker.refusal_retry_cause(status) is None
+    queue = worker._queue(tmp_path / "queue")
+    (queue / "processed" / "k.json").write_text("{}")
+    (queue / "status" / "k.json").write_text(json.dumps(status))
+    late = T0 + timedelta(days=30)
+    assert [row for row in worker._requeue_due(queue, late, RELEASE_1) if row["reason"] == "refusal_retry"] == []
+    assert json.loads((queue / "status" / "k.json").read_text()) == status
+    # Nor does any run's end put such a block on the schedule.
+    assert worker.REFUSAL_RETRY_FIELD not in worker._with_refusal_retry(
+        {key: value for key, value in status.items() if key != worker.REFUSAL_RETRY_FIELD}, now=T0)
+
+
+@pytest.mark.parametrize("record", [
+    "garbled", ["attempts", 0], {}, {"attempts": "1"}, {"attempts": -1}, {"attempts": True}, {"attempts": 1.0},
+    {"attempts": None}, {"attempts": 6}, {"attempts": 7},
+])
+def test_a_spent_or_unreadable_timed_retry_count_never_retries(tmp_path, record):
+    status = {"status": "blocked", "blockers": ["team_scene_bundle_invalid"], "release_commit": RELEASE_1,
+              worker.REFUSAL_RETRY_FIELD: record}
+    queue = worker._queue(tmp_path / "queue")
+    (queue / "processed" / "k.json").write_text("{}")
+    (queue / "status" / "k.json").write_text(json.dumps(status))
+    assert worker._requeue_due(queue, T0 + timedelta(days=365), RELEASE_1) == []
+    assert (queue / "processed" / "k.json").is_file()
+    assert worker.final_block(status, release=RELEASE_1)
+    # A run's end reads it as spent, and says so; it never starts the count again.
+    assert worker._with_refusal_retry(status, now=T0)[worker.REFUSAL_RETRY_FIELD] == {
+        **(record if isinstance(record, dict) else {}), "attempts": 7 if record == {"attempts": 7} else 6, "limit": 6,
+        "reason": "team_scene_bundle_invalid", "exhausted": True}
+
+
+def test_the_timed_count_survives_an_interrupted_run_and_a_remote_deferral(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    _release(monkeypatch, RELEASE_1)
+    record = {"attempts": 4, "limit": 6, "reason": "team_scene_bundle_invalid",
+              "requeued_at": "2026-10-31T11:00:00+00:00"}
+    os.replace(queue / "pending" / f"{key}.json", queue / "processing" / f"{key}.json")
+    (queue / "status" / f"{key}.json").write_text(json.dumps(
+        {"status": "processing", "capture_root": str(world["capture"]), worker.REFUSAL_RETRY_FIELD: record}))
+    _at(monkeypatch, 0)
+    swept = worker.requeue_transient_blocked(queue_root=queue)
+    assert swept["recovered"] == [key]
+    assert _status(world)[worker.REFUSAL_RETRY_FIELD] == record
+    deferred = worker._deferred(queue, queue / "processed" / f"{key}.json", _status(world), {"mode": "fallback_host"})
+    assert deferred[worker.REFUSAL_RETRY_FIELD] == record
