@@ -33,7 +33,8 @@ By that definition adaptation is already shipped, unnamed:
 (conditioning channels at inference), and `oscar_visual_augmentation_*`
 (constructed generation inputs).
 
-Explicitly **outside** this ADR: `policy_ranking_causal_conditioning` is a
+Explicitly **outside** this ADR: `policy_ranking_causal_conditioning` (archived
+2026-11-10, see [`../archive/policy-ranking-research.md`](../archive/policy-ranking-research.md)) is a
 label-blind causal/placebo diagnostic over generated outputs, and
 `wam_conditioning_fidelity` is a fail-closed admission contract. Neither
 modifies or conditions an executable backend. They are grader-side machinery

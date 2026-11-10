@@ -62,12 +62,7 @@ TUNABLE_DEFINING_MODULES = {
     # The Panda command bounds. #793 made native_task_construction_plan their
     # single home; both control-plan compilers import from there, so
     # construction and controls cannot sit on different bounds.
-    "MAX_JOINT_DELTA_RAD": {
-        "native_task_construction_plan.py",
-        # DROID @ 15 Hz, not a Panda @ 20 Hz -- a different robot's limit, in
-        # the frozen policy-ranking program.
-        "policy_ranking_droid_kinematics.py",
-    },
+    "MAX_JOINT_DELTA_RAD": {"native_task_construction_plan.py"},
     "MAX_JOINT_SETPOINT_LEAD_RAD": {"native_task_construction_plan.py"},
     # Per-phase step budgets. Each generation sizes these to its OWN action
     # budget and the sizes are structurally incompatible -- see
