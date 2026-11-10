@@ -113,6 +113,43 @@ PROVIDER_COPIES = (
     {"holder": "webapp_and_delivered_copies", "reason": "WebApp records and copies delivered to robot teams are "
      "outside the Pipeline"},
 )
+# Why each one stays uncovered: what control_plane_storage_roots says it holds. No per-site
+# binding on disk has been verified for any of them, so none is scanned yet.
+UNCOVERED_ROOT_HOLDS = {
+    "completed-scene-preparation-inputs": "mixed owner-scoped materialized preparation work and a shared "
+                                          "content-addressed store",
+    "sam31-preparations": "reproducible SAM preparation artifacts",
+    "compiled-episodes": "compiled episodes and a shared adapter member store",
+    "prepared-references": "materialized references and a shared content store",
+    "task-evaluation-terminal-results": "sealed terminal result indexes and lineage",
+    "scene-object-discovery-outputs": "scene object discovery outputs",
+    "result-artifact-cache": "a download cache rehydrated from verified remote artifacts under read leases",
+    "capture-reconstruction-derived": "derived reconstruction bytes",
+    "scene-configuration-diagnostics": "sealed diagnostic bundles with their own retention tool",
+}
+# Every data class the beta retention policy names (docs/beta_data_retention_policy_2026-07-09.json,
+# ``data_classes``) and what this deletion does about it; a receipt names each one.
+POLICY_COPY_CLASSES = {
+    "raw_capture_truth": {
+        "covered": ("the site's local capture files under scenes/site-<id>/",
+                    "the site's capture source bucket prefix scenes/site-<id>/ (with a source bucket)"),
+        "not_covered": "targets/ objects are not keyed by the site's scene id and are not scanned"},
+    "temporary_processing": {
+        "covered": (),
+        "not_covered": "bucket prefixes tmp/, staging/ and debug/ are not scanned; the policy deletes them "
+                       "after 14 days unless a legal hold overrides"},
+    "buyer_eval_hosted_artifacts": {
+        "covered": (),
+        "not_covered": "bucket prefixes buyer_delivery/, marketplace/, hosted_sessions/ and robot_eval_jobs/ "
+                       "and copies delivered to robot teams are not scanned; the policy deletes them after "
+                       "365 days unless a contract hold overrides"},
+    "local_output_snapshots": {
+        "covered": (),
+        "not_covered": "repo-local output/ snapshots are not scanned; the output retention tool ages them out"},
+    "local_robot_eval_jobs_cache": {
+        "covered": (),
+        "not_covered": "the repo-root robot_eval_jobs/ cache is not scanned; the policy deletes it after 30 days"},
+}
 POINTER_SUFFIXES = (".offloaded.v1.json", ".residue.v1.json", ".residue-restore.v1.json")
 # Each sidecar's writer seals it: (schemas, digest field, the field naming its run).
 _POINTER_SEALS = {
@@ -329,7 +366,13 @@ class _Units:
                 unresolved.append({"path": str(root), "reason": "website_withdrawal_deletion_root_unsafe"})
                 continue
             dots = []
-            for child in sorted(root.iterdir()):
+            try:
+                children = sorted(root.iterdir())
+            except OSError:
+                # A root this user cannot list is unresolved, never skipped, so apply refuses.
+                unresolved.append({"path": str(root), "reason": "website_withdrawal_deletion_root_unreadable"})
+                continue
+            for child in children:
                 name = child.name
                 pointer = next((suffix for suffix in POINTER_SUFFIXES if name.endswith(suffix)), None)
                 if name.startswith("."):
@@ -592,7 +635,9 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
         remaining.append({"holder": "capture_source_bucket", "prefix": f"scenes/{plan['scene_id']}/",
                           "reason": "no source bucket was named for this deletion; use --bucket"})
     remaining.extend({"holder": "pipeline_root_not_covered", "path": path,
-                      "reason": "not scanned by withdrawal deletion v1; may hold derived copies"}
+                      "reason": "not scanned by withdrawal deletion v1; may hold derived copies"
+                                + (f" ({UNCOVERED_ROOT_HOLDS[Path(path).name]}; no per-site binding on disk is "
+                                   "verified for it)" if Path(path).name in UNCOVERED_ROOT_HOLDS else "")}
                      for path in plan["uncovered_pipeline_roots"])
     remaining.append({"holder": "retained_audit_and_lineage_metadata",
                       "paths": [str(Path(plan["site_root"]) / "website_withdrawal"),
@@ -604,6 +649,22 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
     remaining.extend(native_g1.remaining(plan["native_g1"]))
     remaining.extend(team_scene.remaining(plan["team_scene"]))
     return remaining
+
+
+def policy_copy_classes(plan: Mapping[str, Any], *, cloud_deleted: bool, applied: bool) -> list[dict[str, Any]]:
+    """Each retention-policy data class: what this deletion removes (or plans to) and what remains, and why."""
+
+    rows = []
+    for name, row in POLICY_COPY_CLASSES.items():
+        covered = list(row["covered"])
+        remaining = [{"what": name, "reason": row["not_covered"]}]
+        if name == "raw_capture_truth" and not cloud_deleted:
+            covered = covered[:1]
+            remaining.append({"what": f"scenes/{plan['scene_id']}/ in the capture source bucket",
+                              "reason": "no source bucket was named for this deletion; use --bucket"})
+        rows.append({"class": name, "status": "removed_in_part" if covered else "remaining",
+                     "removed" if applied else "planned_removal": covered, "remaining": remaining})
+    return rows
 
 
 def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
@@ -745,6 +806,7 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                                                                 screening_objects),
                     "native_g1": g1_deleted, "team_scene": team_deleted},
         "remaining": remaining,
+        "policy_copy_classes": policy_copy_classes(plan, cloud_deleted=cloud_storage is not None, applied=True),
         # A deferred screening attempt is covered but not yet deleted.
         "covered_copies_deleted": not plan["screening"]["deferred"],
         "pipeline_controlled_deletion_complete": (not plan["uncovered_pipeline_roots"] and cloud_storage is not None
@@ -834,6 +896,7 @@ __all__ = [
     "WithdrawalDeletionError",
     "apply_withdrawal_deletion",
     "plan_withdrawal_deletion",
+    "policy_copy_classes",
 ]
 
 
