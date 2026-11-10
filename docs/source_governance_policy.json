@@ -444,7 +444,7 @@
     "tests/test_nurec_volume_codec.py",
     "tests/test_stage_paid_lane_bundle.py"
   ],
-  "max_project_scripts": 175,
+  "max_project_scripts": 171,
   "policy_owner": "@ognjhunt",
   "review_by": "2026-12-10",
   "schema_version": "blueprint.source_governance_policy.v1",

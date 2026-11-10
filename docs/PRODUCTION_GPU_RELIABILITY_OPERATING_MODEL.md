@@ -3,8 +3,9 @@
 > **RETIRED (2026-11-06):** the GCP warm pool this describes was never installed
 > on the production host and has been retired: its systemd units, the campaign
 > control plane, the release-candidate, image-contract and reliability
-> qualification modules, the warm-bind probe and the `production-gpu-reliability`
-> workflow are gone. The website beta runs paid work on Vast through
+> qualification modules, the warm-bind probe, the `production-gpu-reliability`
+> workflow and (2026-11-10) the worker pool, its launch qualification,
+> replenishment probe, rollback drill and RunPod autoscaler modules are gone. The website beta runs paid work on Vast through
 > `blueprint_pipeline.paid_resource_allocator`. Kept for history only.
 
 This is the one production path for customer-facing G1 kitchen evaluation.
