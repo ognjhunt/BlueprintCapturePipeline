@@ -1,0 +1,605 @@
+{
+  "schema_version": "paid_api_call_sites.v1",
+  "description": "Every API-priced call site (OpenAI incl. Codex CLI and Agents SDK, Gemini, World Labs, hosted SAM, Anthropic, NVIDIA NIM, DeepInfra, DreamLabs, Palatial, RunPod serverless) found by scripts/verify_paid_resource_allocator.py. Keys are path::enclosing scope::signal. admitted: via (where the path reaches it) and admission (the admission, reservation or ledger function), both path::name. not_paid: reason. unadmitted: can_spend_on, and the key must be named in UNADMITTED_API_CALL_SITES, which tests/test_paid_resource_allocator_verifier.py pins (adding one needs an explicit edit to that test). admitted means the admission, reservation or ledger call runs before the paid request on every path.",
+  "sites": {
+    "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>::openai_codex_cli": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "paid Codex CLI (npx @openai/codex exec) advisory reviews via run_codex_cli_operator; the operator ledger records the run, it does not bound spend"
+    },
+    "src/blueprint_pipeline/agent_execution/openai_transport.py::OpenAIAgentsHTTP.request::openai_api_url": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Agents API sessions; bounded only by the OpenAI project's dashboard spend limit, checked through a caller-injected validate_admission; no reservation or ledger before the request"
+    },
+    "src/blueprint_pipeline/agent_execution/sdk_runtime.py::OpenAIAgentsSDKRuntime._run::openai_agents_sdk_runner": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/agent_execution/sdk_runtime.py::configure_reservation_audit",
+      "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation",
+      "note": "step always configures the invoker's durable reservation audit before invoke; the model loop runs only through that invoker"
+    },
+    "src/blueprint_pipeline/agent_execution/sdk_runtime.py::OpenAIAgentsSDKRuntime.step::openai_agents_provider": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/agent_execution/sdk_runtime.py::configure_reservation_audit",
+      "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation",
+      "note": "step always configures the invoker's durable reservation audit before invoke; the model loop runs only through that invoker"
+    },
+    "src/blueprint_pipeline/agent_execution/sdk_runtime.py::OpenAIAgentsSDKRuntime.step::openai_api_url": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/agent_execution/sdk_runtime.py::configure_reservation_audit",
+      "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation",
+      "note": "step always configures the invoker's durable reservation audit before invoke; the model loop runs only through that invoker"
+    },
+    "src/blueprint_pipeline/agent_execution/sdk_runtime.py::OpenAIAgentsSDKRuntime.step::openai_client_construction": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/agent_execution/sdk_runtime.py::configure_reservation_audit",
+      "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation",
+      "note": "step always configures the invoker's durable reservation audit before invoke; the model loop runs only through that invoker"
+    },
+    "src/blueprint_pipeline/agent_execution/service.py::AgentTaskService.receive_webhook::openai_client_construction": {
+      "provider": "openai",
+      "class": "not_paid",
+      "reason": "local webhook signature verification with a placeholder key and max_retries=0; no request is sent"
+    },
+    "src/blueprint_pipeline/agent_operator_runtime.py::run_agents_sdk_operator._run::openai_agents_sdk_runner": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Agents SDK model calls (operator run); env opt-in only"
+    },
+    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_cli_operator::openai_codex_cli": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "paid Codex CLI exec run; env opt-in only"
+    },
+    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator::openai_codex_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Codex SDK session (operator run); env opt-in only"
+    },
+    "src/blueprint_pipeline/agent_runtime/openai_phase2.py::CodexOpenAIPhase2Runner.__call__::openai_codex_cli": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "paid Codex CLI exec run for agent runtime phase 2"
+    },
+    "src/blueprint_pipeline/agent_runtime/openai_phase2.py::_OpenAISDKRunner.__call__::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Responses calls for agent runtime phase 2; usage receipt recorded after the call only"
+    },
+    "src/blueprint_pipeline/arena_result_ingest.py::_run_agents_sdk_operator._run::openai_agents_sdk_runner": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Agents SDK model calls (arena ingest operator); env opt-in only"
+    },
+    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_cli": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "paid Codex CLI fallback via run_codex_cli_operator; env opt-in only"
+    },
+    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Codex SDK session (arena ingest operator); env opt-in only"
+    },
+    "src/blueprint_pipeline/atlas_background_automation.py::_provider_preflight::meta_sam_credentials": {
+      "provider": "meta_sam",
+      "class": "not_paid",
+      "reason": "credential presence check before any purchase; no request"
+    },
+    "src/blueprint_pipeline/atlas_background_automation.py::_provider_preflight::openai_credentials": {
+      "provider": "openai",
+      "class": "not_paid",
+      "reason": "credential presence check before any purchase; no request"
+    },
+    "src/blueprint_pipeline/atlas_observed_room.py::run_observed_room::world_labs_atlas_credentials": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "credential validation; the room's Atlas calls run through the allocator's Atlas capabilities"
+    },
+    "src/blueprint_pipeline/atlas_preview_replay.py::<module>::world_labs_api_url": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "offline replay: the documented base is recorded only; network is blocked and keys are placeholders"
+    },
+    "src/blueprint_pipeline/atlas_removal_visibility.py::locate_target.invoke::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/atlas_removal_visibility.py::retained_gemini_call",
+      "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend"
+    },
+    "src/blueprint_pipeline/atlas_scene_task_regions.py::plan_task_regions::meta_sam_credentials": {
+      "provider": "meta_sam",
+      "class": "not_paid",
+      "reason": "credential presence check; segmentation spend runs in meta_sam31.run_meta_sam31"
+    },
+    "src/blueprint_pipeline/atlas_webhook.py::<module>::world_labs_api_url": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "public JWKS key fetch for webhook verification; not billed"
+    },
+    "src/blueprint_pipeline/atlas_whole_view_review.py::_ask::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/atlas_whole_view_review.py::retained_gemini_call",
+      "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend",
+      "note": "_ask is reached only from the invoke closure passed to retained_gemini_call"
+    },
+    "src/blueprint_pipeline/capture_enrichment_llm.py::_ClaudeHTTPRunner.__call__::anthropic_api_url": {
+      "provider": "anthropic",
+      "class": "unadmitted",
+      "can_spend_on": "Anthropic Messages API (POST /v1/messages) for capture enrichment; usage recorded after the call only"
+    },
+    "src/blueprint_pipeline/capture_enrichment_llm.py::_CodexRunner.__call__::openai_codex_cli": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "paid Codex CLI exec run for capture enrichment"
+    },
+    "src/blueprint_pipeline/capture_enrichment_llm.py::_OpenAISDKRunner.__call__::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Responses calls for capture enrichment; usage receipt recorded after the call only"
+    },
+    "src/blueprint_pipeline/claude_opus_authoring_invoker.py::<module>::anthropic_api_url": {
+      "provider": "anthropic",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/claude_opus_authoring_invoker.py::record_reservation",
+      "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation",
+      "note": "the Messages endpoint is sent only by ClaudeOpusAuthoringInvoker.invoke/invoke_tool_turn, each after audit.record_reservation under the admission lock; the audit is a required constructor argument"
+    },
+    "src/blueprint_pipeline/claude_opus_authoring_invoker.py::_request_json::anthropic_api_url": {
+      "provider": "anthropic",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/claude_opus_authoring_invoker.py::record_reservation",
+      "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation",
+      "note": "POST /v1/messages only via _post_message, the invoker's send after record_reservation; GET /v1/models is a free model read"
+    },
+    "src/blueprint_pipeline/claude_opus_model_preflight.py::<module>::anthropic_api_url": {
+      "provider": "anthropic",
+      "class": "not_paid",
+      "reason": "GET /v1/models/{model} model read; not billed"
+    },
+    "src/blueprint_pipeline/claude_opus_sdk_session.py::execute_claude_sdk_agent_authoring::openai_agents_sdk_runner": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/claude_opus_sdk_session.py::InferenceReservationAudit",
+      "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation",
+      "note": "Agents SDK loop running Claude (Anthropic); each model request reserved in the run's inference reservation ledger"
+    },
+    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_agentic_video::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini video analysis; the website path (task context with capture_id) is reserved via retained_gemini_call, but the legacy diagnostic path (no capture_id) reaches the same call behind only an env gate"
+    },
+    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_text_repair::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini video analysis; the website path (task context with capture_id) is reserved via retained_gemini_call, but the legacy diagnostic path (no capture_id) reaches the same call behind only an env gate"
+    },
+    "src/blueprint_pipeline/dreamlabs_policy_client.py::<module>::dreamlabs_api_url": {
+      "provider": "dreamlabs",
+      "class": "unadmitted",
+      "can_spend_on": "DreamLabs policy gateway get_action inference per step; pricing not shown free and no admission before infer"
+    },
+    "src/blueprint_pipeline/groot_oscar_runpod_serverless.py::<module>::runpod_serverless_api_url": {
+      "provider": "runpod_serverless",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/groot_oscar_runpod_serverless.py::run_active_worker",
+      "admission": "src/blueprint_pipeline/groot_oscar_runpod_serverless.py::require_paid_resource_admission",
+      "note": "every _submit_job call is in run_active_worker after the admission; RunPod is retired, so the admission refuses"
+    },
+    "src/blueprint_pipeline/hosted_image_generation_preflight.py::<module>::openai_api_url": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "one OpenAI image generation (POST /v1/images/generations) per preflight run"
+    },
+    "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::nvidia_nim_api_url": {
+      "provider": "nvidia_nim",
+      "class": "unadmitted",
+      "can_spend_on": "one NVIDIA NIM chat completion per preflight run"
+    },
+    "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::openai_api_url": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "one OpenAI chat completion (POST /v1/chat/completions) per preflight run"
+    },
+    "src/blueprint_pipeline/meta_sam31.py::<module>::meta_sam_api_url": {
+      "provider": "meta_sam",
+      "class": "not_paid",
+      "reason": "endpoint constant; requests are made in run_meta_sam31 and _upload_video, classified separately"
+    },
+    "src/blueprint_pipeline/meta_sam31.py::_upload_video::meta_sam_api_url": {
+      "provider": "meta_sam",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/meta_sam31.py::require_paid_resource_admission_grant",
+      "admission": "src/blueprint_pipeline/meta_sam31.py::reserve_website_sam_spend",
+      "note": "called only from run_meta_sam31 after the reservation and grant check"
+    },
+    "src/blueprint_pipeline/meta_sam31.py::run_meta_sam31::meta_sam_api_url": {
+      "provider": "meta_sam",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/meta_sam31.py::require_paid_resource_admission_grant",
+      "admission": "src/blueprint_pipeline/meta_sam31.py::reserve_website_sam_spend"
+    },
+    "src/blueprint_pipeline/meta_sam31.py::run_meta_sam31::meta_sam_credentials": {
+      "provider": "meta_sam",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/meta_sam31.py::require_paid_resource_admission_grant",
+      "admission": "src/blueprint_pipeline/meta_sam31.py::reserve_website_sam_spend"
+    },
+    "src/blueprint_pipeline/nvidia_nim_model_preflight.py::<module>::nvidia_nim_api_url": {
+      "provider": "nvidia_nim",
+      "class": "unadmitted",
+      "can_spend_on": "NVIDIA NIM chat-completion probe (and a free /v1/models read) per preflight run"
+    },
+    "src/blueprint_pipeline/openai_credential_preflight.py::<module>::openai_api_url": {
+      "provider": "openai",
+      "class": "not_paid",
+      "reason": "GET /v1/models credential check; not billed"
+    },
+    "src/blueprint_pipeline/openai_organization_costs.py::<module>::openai_api_url": {
+      "provider": "openai",
+      "class": "not_paid",
+      "reason": "GET of the organization Costs API (a spend read); not billed"
+    },
+    "src/blueprint_pipeline/openai_prompt_cache_canary.py::run_mechanics_canary::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Responses canary; local cap max_total_cost_usd <= 1.0, no admission or ledger"
+    },
+    "src/blueprint_pipeline/palatial_physready.py::<module>::palatial_api_url": {
+      "provider": "palatial",
+      "class": "unadmitted",
+      "can_spend_on": "Palatial asset generation (POST external/generate); env gate only"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini.py::run_canary::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini evaluator diagnostic canary; env gate only"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::collect_pilot::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "not_paid",
+      "reason": "reads a submitted batch's results; billing happens at submission"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::submit_pilot::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini batch submission (7 requests); env gate only"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::cleanup_matrix_media::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "not_paid",
+      "reason": "deletes uploaded media files; not billed"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::submit_matrix_batch::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::_require_complete_graph_paid_admission",
+      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::require_paid_resource_admission"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::upload_matrix_media.upload_one::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::_require_complete_graph_paid_admission",
+      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::require_paid_resource_admission"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::upload_matrix_media::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::_require_complete_graph_paid_admission",
+      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::require_paid_resource_admission"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::stage_transport_canary_media::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::_require_transport_canary_paid_admission",
+      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::require_paid_resource_admission"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::submit_transport_canary::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::_require_transport_canary_paid_admission",
+      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::require_paid_resource_admission"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai.py::run_canary::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI evaluator diagnostic (441 or 1323 pairs); env gate only"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai_batch.py::collect_shard::openai_client_construction": {
+      "provider": "openai",
+      "class": "not_paid",
+      "reason": "reads a submitted batch's output file; billing happens at submission"
+    },
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_openai_batch.py::submit_shard::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Batch API submission; env gate only"
+    },
+    "src/blueprint_pipeline/policy_ranking_roboarena_evaluator_openai.py::run_evaluator_inventory::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI evaluator requests; local cap max_cost_usd <= 25, no admission or ledger"
+    },
+    "src/blueprint_pipeline/policy_ranking_thesis_judge_openai.py::run_inventory::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI judge requests; env gate only"
+    },
+    "src/blueprint_pipeline/policy_ranking_thesis_judge_openai.py::run_inventory_v2::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI judge requests; local projected-cost cap, no admission or ledger"
+    },
+    "src/blueprint_pipeline/provider_preview.py::<module>::world_labs_api_url": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "base URL constant; requests are made through _worldlabs_api_request, classified at each caller"
+    },
+    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider._upload_video_as_media_asset::world_labs_marble_request": {
+      "provider": "world_labs",
+      "class": "unadmitted",
+      "can_spend_on": "World Labs Marble media upload, a step of the Marble submit (refused for website captures only)"
+    },
+    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.poll::world_labs_marble_request": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "GET of an operation and world status; not billed"
+    },
+    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.submit::world_labs_marble_request": {
+      "provider": "world_labs",
+      "class": "unadmitted",
+      "can_spend_on": "World Labs Marble world generation (POST worlds:generate); refused for website captures, otherwise no admission"
+    },
+    "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::_scoped_review_model_provider::openai_agents_provider": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::OpenAIAgentsSDKInvoker",
+      "admission": "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::reserve",
+      "note": "official OpenAI cost run gate reserve() runs unconditionally before the capped invoker"
+    },
+    "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::_scoped_review_model_provider::openai_api_url": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::OpenAIAgentsSDKInvoker",
+      "admission": "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::reserve",
+      "note": "official OpenAI cost run gate reserve() before the capped invoker runs"
+    },
+    "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::_scoped_review_model_provider::openai_client_construction": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::OpenAIAgentsSDKInvoker",
+      "admission": "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::reserve",
+      "note": "official OpenAI cost run gate reserve() before the capped invoker runs"
+    },
+    "src/blueprint_pipeline/render_visual_qc.py::_gemini_review_image::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini image review for render QC; runs whenever a Gemini API key is set"
+    },
+    "src/blueprint_pipeline/rollout_vision_label_openai.py::_openai_label::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI vision labels for rollouts; env gate only"
+    },
+    "src/blueprint_pipeline/runpod_provider_adapter.py::<module>::runpod_serverless_api_url": {
+      "provider": "runpod_serverless",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/runpod_provider_adapter.py::run_runpod_provider_adapter",
+      "admission": "src/blueprint_pipeline/runpod_provider_adapter.py::require_paid_resource_admission_grant",
+      "note": "live modes validate the shared admission grant before any API call; RunPod is retired"
+    },
+    "src/blueprint_pipeline/scene_placement/target_resolver.py::_gemini_resolve_text::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini text resolution for placement targets; runs whenever a Gemini API key is set"
+    },
+    "src/blueprint_pipeline/scene_semantics.py::_infer_capture_review_with_gemini_video::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini video review of a capture; runs whenever a Gemini API key is set"
+    },
+    "src/blueprint_pipeline/scene_semantics.py::_infer_with_gemini_video::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini video scene semantics; runs whenever a Gemini API key is set"
+    },
+    "src/blueprint_pipeline/simulation_automation.py::CodexSdkSimulationAutomationAgentAdapter.build_ledger::openai_codex_cli": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "paid Codex CLI via run_codex_cli_operator; the operator ledger records the run, it does not bound spend"
+    },
+    "src/blueprint_pipeline/site_eval_director.py::CodexSdkCodeMaintainerAdapter.build_request_manifest::openai_codex_cli": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "paid Codex CLI via run_codex_cli_operator; the operator ledger records the run, it does not bound spend"
+    },
+    "src/blueprint_pipeline/task_evaluation_authoring_auth_recovery.py::authenticate_key::openai_api_url": {
+      "provider": "openai",
+      "class": "not_paid",
+      "reason": "GET /v1/models credential check; not billed"
+    },
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py::_stage_sdk_environment::openai_api_url": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py::budgeted_invoker",
+      "admission": "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py::reserve",
+      "note": "official OpenAI cost gate reserve() and the budgeted invoker precede each staged SDK client"
+    },
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py::_stage_sdk_environment::openai_client_construction": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py::budgeted_invoker",
+      "admission": "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py::reserve",
+      "note": "official OpenAI cost gate reserve() and the budgeted invoker precede each staged SDK client"
+    },
+    "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_agents_sdk_runner": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Agents SDK model calls; the reservation is optional (recorded only if the caller configured an audit) and the cap is caller-set. Callers that do reserve: agent_execution/sdk_runtime.py, task_object_astra_authoring.budgeted_invoker, public_scene_sam31_ai_visual_reviewer. task_evaluation_passive_destination_cad_agent spends through it without one"
+    },
+    "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_credentials": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI Agents SDK model calls; the reservation is optional (recorded only if the caller configured an audit) and the cap is caller-set. Callers that do reserve: agent_execution/sdk_runtime.py, task_object_astra_authoring.budgeted_invoker, public_scene_sam31_ai_visual_reviewer. task_evaluation_passive_destination_cad_agent spends through it without one"
+    },
+    "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_provider": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "default OpenAIProvider model for the same session; reservation depends on the caller's invoker"
+    },
+    "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_sdk_runner": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI model turns through a caller-supplied invoker whose reservation is optional; the ASTRA driver passes a budgeted_invoker that reserves"
+    },
+    "src/blueprint_pipeline/task_object_artisan_bridge.py::main::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "the client itself only reads models.retrieve, but the bridge then runs upstream ARTISAN with this key; install_metering bounds only Responses.create and compact, and other billable calls are not shown to be absent"
+    },
+    "src/blueprint_pipeline/task_object_astra_worker.py::author_one::openai_api_url": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/task_object_astra_worker.py::budgeted_invoker",
+      "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation"
+    },
+    "src/blueprint_pipeline/task_object_astra_worker.py::author_one::openai_client_construction": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/task_object_astra_worker.py::budgeted_invoker",
+      "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation"
+    },
+    "src/blueprint_pipeline/team_candidate_quick10_admission.py::_dream_config::dreamlabs_api_url": {
+      "provider": "dreamlabs",
+      "class": "not_paid",
+      "reason": "allowed-origin value in a policy config; no request"
+    },
+    "src/blueprint_pipeline/team_candidate_rights.py::validate_provider_disclosure::dreamlabs_api_url": {
+      "provider": "dreamlabs",
+      "class": "not_paid",
+      "reason": "origin value compared in a disclosure check; no request"
+    },
+    "src/blueprint_pipeline/wam_compute_providers.py::_deepinfra_api_base_url::deepinfra_api_url": {
+      "provider": "deepinfra",
+      "class": "unadmitted",
+      "can_spend_on": "DeepInfra Cosmos inference; env gate only, cost ledger written after the call"
+    },
+    "src/blueprint_pipeline/wam_compute_providers.py::_resolve_deepinfra_download_url::deepinfra_api_url": {
+      "provider": "deepinfra",
+      "class": "not_paid",
+      "reason": "resolves the download URL of an already generated output; not billed"
+    },
+    "src/blueprint_pipeline/wam_episode_consistency_label_gemini.py::build_gemini_wam_episode_consistency_labels::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini WAM episode labels; env gate only"
+    },
+    "src/blueprint_pipeline/wam_episode_consistency_label_openai.py::_openai_score_one::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI WAM episode labels; env gate only"
+    },
+    "src/blueprint_pipeline/wam_generated_video_success_label_gemini.py::build_gemini_wam_success_labels::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini WAM success labels; env gate only"
+    },
+    "src/blueprint_pipeline/wam_generated_video_success_label_openai.py::_openai_label_one::openai_client_construction": {
+      "provider": "openai",
+      "class": "unadmitted",
+      "can_spend_on": "OpenAI WAM success labels; env gate only"
+    },
+    "src/blueprint_pipeline/website_assembly_coverage.py::classify_frames.invoke::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/website_assembly_coverage.py::retained_gemini_call",
+      "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend"
+    },
+    "src/blueprint_pipeline/website_assembly_coverage.py::read_brand_labels.invoke::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/website_assembly_coverage.py::retained_gemini_call",
+      "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend"
+    },
+    "src/blueprint_pipeline/website_atlas_operator.py::main::world_labs_api_url": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "argparse default base URL written to the environment; no request here"
+    },
+    "src/blueprint_pipeline/website_atlas_pipeline.py::_run_atlas_pipeline::world_labs_atlas_credentials": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "credential validation before a review; Atlas spend runs through the allocator's sponsored Atlas entries"
+    },
+    "src/blueprint_pipeline/website_atlas_pose.py::run_admitted_atlas_pose::world_labs_atlas_credentials": {
+      "provider": "world_labs",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/paid_resource_allocator.py::run_admitted_atlas_pose",
+      "admission": "src/blueprint_pipeline/website_atlas_pose.py::reserve_website_preparation_spend",
+      "note": "only paid_resource_allocator.run_sponsored_website_atlas_pose may call it (ATLAS_POSE_CAPABILITIES)"
+    },
+    "src/blueprint_pipeline/website_atlas_preview.py::_clean_provider::world_labs_atlas_credentials": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "deletes provider assets and polls operations; not billed"
+    },
+    "src/blueprint_pipeline/website_atlas_preview.py::_read_only_client::world_labs_atlas_credentials": {
+      "provider": "world_labs",
+      "class": "not_paid",
+      "reason": "transport refuses every method except GET and read-URL creation"
+    },
+    "src/blueprint_pipeline/website_atlas_tasks.py::_run_admitted_atlas_task_attempt::world_labs_atlas_credentials": {
+      "provider": "world_labs",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/paid_resource_allocator.py::run_admitted_atlas_task",
+      "admission": "src/blueprint_pipeline/website_atlas_tasks.py::reserve_website_preparation_spend",
+      "note": "only the allocator's sponsored Atlas task entry may reach it (ATLAS_TASK_CAPABILITIES)"
+    },
+    "src/blueprint_pipeline/website_candidate_ranking.py::_gemini.invoke::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/website_candidate_ranking.py::retained_gemini_call",
+      "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend"
+    },
+    "src/blueprint_pipeline/website_image_completion.py::_verify_completed_background::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "unadmitted",
+      "can_spend_on": "Gemini background review; verify_completed_background calls it without a reservation when the task context has no capture_id"
+    },
+    "src/blueprint_pipeline/website_image_completion.py::complete_background_images::openai_credentials": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/website_image_completion.py::require_paid_resource_admission_grant",
+      "admission": "src/blueprint_pipeline/website_image_completion.py::reserve_website_preparation_spend"
+    },
+    "src/blueprint_pipeline/website_image_completion.py::complete_background_images::openai_image_edit_request": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/website_image_completion.py::require_paid_resource_admission_grant",
+      "admission": "src/blueprint_pipeline/website_image_completion.py::reserve_website_preparation_spend"
+    },
+    "src/blueprint_pipeline/website_image_completion.py::diagnose_inconsistent_background.invoke::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/website_image_completion.py::retained_gemini_call",
+      "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend"
+    },
+    "src/blueprint_pipeline/website_object_spec_research.py::_bounded_run::openai_agents_sdk_runner": {
+      "provider": "openai",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/website_object_spec_research.py::_bounded_run",
+      "admission": "src/blueprint_pipeline/website_object_spec_research.py::reserve_website_preparation_spend"
+    },
+    "src/blueprint_pipeline/website_task_grounding.py::ground_task_target.invoke::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/website_task_grounding.py::retained_gemini_call",
+      "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend"
+    }
+  }
+}

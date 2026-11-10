@@ -178,6 +178,12 @@ def _locomotion(brief: Mapping[str, Any], scene: Mapping[str, Any], spec: dict[s
         flags.append("goal_pulled_back_for_obstacle_clearance")
     if start_source == "filmed_path_cleared_of_obstacles":
         flags.append("start_moved_for_obstacle_clearance")
+    # No filmed point near that end clears the robot's radius: the best-cleared one stands in
+    # (``website_locomotion_task.route_anchors``), so the route stays the filmed one.
+    if start_source == "filmed_path_near_start_clearance_below_robot_radius":
+        flags.append("start_clearance_below_robot_radius")
+    if goal_source == "filmed_path_near_end_clearance_below_robot_radius":
+        flags.append("goal_clearance_below_robot_radius")
     start, goal = [start[0], start[1], floor], [goal[0], goal[1], floor]
     scale = spec["metric_scale"]["status"]
     radius, radius_flags = goal_radius(base_m=float(brief.get("goal_tolerance_m") or GOAL_RADIUS_MIN_M),

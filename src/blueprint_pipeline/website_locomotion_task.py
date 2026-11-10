@@ -40,6 +40,18 @@ SPEC_FILE = "compiled_task_spec.json"
 ROBOT_CLEARANCE_RADIUS_M = 0.35
 #: Obstacles are surfaces a walking body can touch: above the floor band, below head height.
 OBSTACLE_BAND_M = (0.05, 1.9)
+#: The site's route is the filmed one, end to end. Clearing an anchor of obstacles may move it at most this
+#: share of the filmed path's length. capture-5b067498 (2026-11-09): the first clear point lay 2.7 m down a
+#: 3.3 m walk, half a metre from the goal, and a run there would have scored a quarter-metre shuffle. Beyond
+#: the share, the anchor is the best-cleared filmed point inside it, named and flagged: the task stays the
+#: site's, and the robot's own spawn check decides whether it can stand there.
+ANCHOR_SEARCH_FRACTION = 0.25
+NEAR_START = "filmed_path_near_start_clearance_below_robot_radius"
+NEAR_END = "filmed_path_near_end_clearance_below_robot_radius"
+#: How much room each filmed point has, heights only, written beside the compiled spec (``route_record``).
+ROUTE_FILE = "route_clearance.json"
+ROUTE_SCHEMA = "website_locomotion_route_clearance.v1"
+ROUTE_POINTS = 64
 #: The Pipeline pieces a locomotion policy still needs beyond a registered body and policy.
 NAVIGATION_SCENE_PACKET = "navigation_scene_packet_from_compiled_spec"
 #: The pieces a G1 navigation run needs beyond the compiled spec, in build order
@@ -105,10 +117,8 @@ def _segment_distance(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.nd
     return np.linalg.norm(points - (a + ab * t[:, None]), axis=1)
 
 
-def obstacle_distance(point_xy: Sequence[float], triangles_xy: np.ndarray) -> float:
-    """Horizontal distance from a point to the nearest obstacle triangle (0 inside one)."""
-    if len(triangles_xy) == 0:
-        return math.inf
+def _obstacle_distances(point_xy: Sequence[float], triangles_xy: np.ndarray) -> np.ndarray:
+    """Horizontal distance from a point to each obstacle triangle (0 inside one)."""
     p = np.broadcast_to(np.asarray(point_xy, dtype=np.float64), (len(triangles_xy), 2))
     a, b, c = triangles_xy[:, 0], triangles_xy[:, 1], triangles_xy[:, 2]
 
@@ -121,7 +131,86 @@ def obstacle_distance(point_xy: Sequence[float], triangles_xy: np.ndarray) -> fl
     area = np.abs(cross(a, b, c))
     inside = (area > 1e-12) & ~(((d1 < 0) | (d2 < 0) | (d3 < 0)) & ((d1 > 0) | (d2 > 0) | (d3 > 0)))
     edges = np.minimum(np.minimum(_segment_distance(p, a, b), _segment_distance(p, b, c)), _segment_distance(p, c, a))
-    return float(np.min(np.where(inside, 0.0, edges)))
+    return np.where(inside, 0.0, edges)
+
+
+def obstacle_distance(point_xy: Sequence[float], triangles_xy: np.ndarray) -> float:
+    """Horizontal distance from a point to the nearest obstacle triangle (0 inside one)."""
+    if len(triangles_xy) == 0:
+        return math.inf
+    return float(np.min(_obstacle_distances(point_xy, triangles_xy)))
+
+
+def _along(path: Sequence[Sequence[float]]) -> list[float]:
+    points = np.asarray([row[:2] for row in path], dtype=np.float64).reshape(-1, 2)
+    steps = np.linalg.norm(np.diff(points, axis=0), axis=1) if len(points) > 1 else np.zeros(0)
+    return [0.0, *np.cumsum(steps).tolist()]
+
+
+def route_anchors(path: Sequence[Sequence[float]], obstacles_xy: np.ndarray,
+                  clearance_m: float = ROBOT_CLEARANCE_RADIUS_M) -> dict[str, Any]:
+    """Where the route starts and ends when a filmed end is not clear of obstacles; {} when both are.
+
+    The first (last) filmed point a robot can stand at clear, when it lies within
+    ``ANCHOR_SEARCH_FRACTION`` of the path's length from that end. Otherwise the best-cleared
+    filmed point within that share, named ``NEAR_START`` / ``NEAR_END``: the route stays the filmed one.
+    """
+    points = [list(point) for point in path]
+    if len(points) < 2:
+        return {}
+    cleared = "filmed_path_cleared_of_obstacles"
+    along = _along(points)
+    reach = ANCHOR_SEARCH_FRACTION * along[-1]
+    room = [obstacle_distance(point[:2], obstacles_xy) for point in points]
+    anchors: dict[str, Any] = {}
+    first = next((index for index, value in enumerate(room) if value >= clearance_m), None)
+    if first is None or along[first] > reach:
+        near = [index for index in range(len(points)) if along[index] <= reach] or [0]
+        best = max(near, key=lambda index: (room[index], -index))
+        anchors.update(start_world_m=points[best], start_source=NEAR_START)
+    elif first:
+        anchors.update(start_world_m=points[first], start_source=cleared)
+    last = next((index for index in range(len(points) - 1, -1, -1) if room[index] >= clearance_m), None)
+    if last is None or along[-1] - along[last] > reach:
+        near = [index for index in range(len(points)) if along[-1] - along[index] <= reach] or [len(points) - 1]
+        best = max(near, key=lambda index: (room[index], index))
+        anchors.update(goal_world_m=points[best], goal_source=NEAR_END)
+    elif last != len(points) - 1:
+        anchors.update(goal_world_m=points[last], goal_source=cleared)
+    return anchors
+
+
+def route_record(facts: Mapping[str, Any]) -> dict[str, Any]:
+    """How much room each filmed point has, and where the anchors fell; heights only, evidence, never a gate.
+
+    Per point (at most ``ROUTE_POINTS``, evenly taken): the distance along the path, the horizontal
+    distance to the nearest obstacle, and that obstacle's height range above the floor.
+    """
+    path = [list(point) for point in facts["filmed_path_world_m"]]
+    obstacles, heights = facts.get("_obstacles_xy"), facts.get("_obstacles_z")
+    value: dict[str, Any] = {"schema_version": ROUTE_SCHEMA, "facts_digest": facts["facts_digest"],
+                             "robot_clearance_radius_m": ROBOT_CLEARANCE_RADIUS_M,
+                             "anchor_search_fraction": ANCHOR_SEARCH_FRACTION,
+                             "obstacle_band_m": list(OBSTACLE_BAND_M), "points": []}
+    if obstacles is None or len(path) < 2:
+        return value
+    along = _along(path)
+    taken = sorted({int(round(index)) for index in np.linspace(0, len(path) - 1, min(len(path), ROUTE_POINTS))})
+    for index in taken:
+        row: dict[str, Any] = {"along_m": round(along[index], 3), "clearance_m": None}
+        if len(obstacles):
+            distances = _obstacle_distances(path[index][:2], obstacles)
+            nearest = int(np.argmin(distances))
+            row["clearance_m"] = round(float(distances[nearest]), 3)
+            if heights is not None:
+                row.update(nearest_low_m=round(float(heights[nearest][0]), 3),
+                           nearest_high_m=round(float(heights[nearest][1]), 3))
+        value["points"].append(row)
+    anchors = route_anchors(path, obstacles)
+    value.update(path_length_m=round(along[-1], 3), obstacle_triangle_count=int(len(obstacles)),
+                 start_source=anchors.get("start_source", "filmed_path_start"),
+                 goal_source=anchors.get("goal_source", "filmed_path_endpoint"))
+    return value
 
 
 def scene_facts(*, base_scene: Mapping[str, Any], camera_path_levelled_m: Sequence[Sequence[float]]) -> dict[str, Any]:
@@ -171,7 +260,8 @@ def scene_facts(*, base_scene: Mapping[str, Any], camera_path_levelled_m: Sequen
                                        **floor_estimate}]},
     }
     facts["facts_digest"] = canonical_digest(facts, digest_field="facts_digest")
-    return {**facts, "_obstacles_xy": corners[touching][:, :, :2]}
+    return {**facts, "_obstacles_xy": corners[touching][:, :, :2],
+            "_obstacles_z": np.column_stack([low[touching], high[touching]]) - float(floor_z)}
 
 
 def clear_goal_along_path(path: Sequence[Sequence[float]], obstacles_xy: np.ndarray,
@@ -189,16 +279,7 @@ def compile_locomotion_spec(*, task_context: Mapping[str, Any], facts: Mapping[s
 
     path = facts["filmed_path_world_m"]
     obstacles = facts.get("_obstacles_xy")
-    goal, skipped = (clear_goal_along_path(path, obstacles) if obstacles is not None and len(path) >= 2
-                     else (None, 0))
-    start = None
-    if obstacles is not None and len(path) >= 2:
-        start = next((list(point) for point in path if obstacle_distance(point[:2], obstacles)
-                      >= ROBOT_CLEARANCE_RADIUS_M), None)
-    cleared = "filmed_path_cleared_of_obstacles"
-    anchors = {**({"goal_world_m": goal, "goal_source": cleared} if goal is not None and skipped else {}),
-               **({"start_world_m": start, "start_source": cleared}
-                  if start is not None and start != list(path[0]) else {})}
+    anchors = route_anchors(path, obstacles) if obstacles is not None and len(path) >= 2 else {}
     scene = {"scene_revision_digest": facts["facts_digest"], "floor_height_world_m": facts["floor_height_world_m"],
              "metric_scale": facts["metric_scale"], "filmed_path_world_m": path, "anchors": anchors}
     brief = {"site_id": task_context["scene_id"], "task_id": "website-" + task_context["context_digest"][7:27],
@@ -317,7 +398,7 @@ def retained_spec(root: Path) -> dict[str, Any] | None:
 
 __all__ = [
     "BUILT_NAVIGATION_PIECES", "HOLD_CODE", "NAVIGATION_PIECE_OUTPUTS", "NAVIGATION_PIPELINE_PIECES",
-    "NAVIGATION_SCENE_PACKET", "NAVIGATION_TASK_FILE", "SOURCE_IDENTITY_PIECE", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec",
+    "NAVIGATION_SCENE_PACKET", "NAVIGATION_TASK_FILE", "SOURCE_IDENTITY_PIECE", "SPEC_FILE", "clear_goal_along_path", "compile_locomotion_spec", "route_anchors", "route_record", "ROUTE_FILE",
     "navigation_pieces_built", "obstacle_distance", "policy_requirements_served", "retained_spec",
     "runnable_options", "runnable_policy_gap", "scene_facts",
 ]
