@@ -108,7 +108,7 @@ jobs:
       # Release bytes only: every restored file still passes the same SHA-256
       # check as a fresh download, and a mismatch falls back to downloading.
       - name: Restore pinned ffmpeg release assets
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/blueprint-ffmpeg-static
           key: ffmpeg-static-b6.1.1-bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa-25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067
@@ -209,7 +209,7 @@ jobs:
       # The browser download only; system dependencies are still installed below,
       # and `playwright install chromium` still runs and checks what it finds.
       - name: Restore Playwright Chromium
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
