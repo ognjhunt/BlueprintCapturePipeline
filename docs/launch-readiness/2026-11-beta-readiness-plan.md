@@ -275,11 +275,12 @@ on `main` (WebApp #1245) and waits on the list (O-04).
 
 An owner-requested audit on 2026-11-10 named three root causes: the code stops
 by default, a deploy is the retry mechanism and destroys work, and no job has a
-deadline. One pull request in each repo answers them; neither is merged yet.
-The rules and what they leave open are in
+deadline. The rules and what they leave open are in
 [`../architecture/job-retry-and-deadlines.md`](../architecture/job-retry-and-deadlines.md).
-Pull requests: [#3549](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3549) and
-[WebApp #1256](https://github.com/ognjhunt/Blueprint-WebApp/pull/1256).
+The Pipeline half is [#3549](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3549)
+(merged) beside #3550. The WebApp half landed as
+[WebApp #1257](https://github.com/ognjhunt/Blueprint-WebApp/pull/1257);
+[WebApp #1256](https://github.com/ognjhunt/Blueprint-WebApp/pull/1256) was reduced to a copy fix.
 
 | What | Serves | Effect on this plan |
 |---|---|---|
@@ -287,19 +288,19 @@ Pull requests: [#3549](https://github.com/ognjhunt/BlueprintCapturePipeline/pull
 | Screening: beside #3550's self re-plans (GPU offers, expired quotes, transient machine failures), any other refusal before allocation that no rule owns is planned again on the six timed retries | E1 | No unspent refusal waits for a deploy, except one that protects privacy, rights or money or is an answer about the candidate. |
 | The door holds a deploy while a launch, a paid-launch slot or a screening candidate is live, as it did for an activation | E6 e | WP-17, built. It needs the owner's door upgrade (O-21). G31 stays open for a deploy that changes runtime code: succession is not built. |
 | The door client does not send a deploy that differs only under `docs/launch-readiness/` | E6 | A tracker-only deploy no longer retires attempts. |
-| WebApp: every website job ends at its deadline by itself, with one email; the page shows it without waiting | E1 a, b, d | G50 for the site: the three states now end on the job page and by email. The Pipeline ledger for them is unchanged. |
-| WebApp: scene-intake forwarding retries until the intent's expiry | E1 | A 20-minute host outage no longer ends a job. |
+| WebApp #1257: a worker sweep ends each website job whose window has passed with no outcome on record, with one email | E1 a, b, d | G50 for the site: a job with a grant now ends on the job page and by email. The Pipeline ledger for those states is unchanged. A job that never received a grant has no window and is not ended (G65). |
+| WebApp #1257: the scene request backs off from 1 to 15 minutes until the window ends | E1 | A 20-minute host outage no longer ends a job. |
 
 | # | Gap | Crit. | Evidence | Goes to |
 |---|---|---|---|---|
 | G63 | After Pub/Sub's five deliveries only `--resume-preparation` moves a preparation. The handoff bytes are kept only for the two explicit waits, and an unknown provider outcome must not become new retry capacity | E1 | `website_reconstruction_resume.py` (`safe_to_arm`); `pubsub_handoff_scene_operations.py` | open; O-22 |
 | G64 | An in-flight attempt is still bound to a commit. The old release does not drain its own attempts | E6 | `task_evaluation_scene_progression.py` (`attempt_commit`); the architecture note, section 5 | open; needs the host |
+| G65 | A website job that never received a grant has no deadline: the WebApp sweep reads the grant's window | E1 | WebApp `websiteJobWindowSweep.ts` | open |
 
 | ID | Decision or action | Recommendation | Unblocks |
 |---|---|---|---|
 | O-21 | Upgrade the installed door after the Pipeline pull request merges (`install.sh --upgrade` as root, `docs/OPERATOR_DOOR.md`). | Do it with the next deploy. Until then the door holds a deploy only for an activation, and the hand check in `AGENTS.md` still applies. | E6 e |
 | O-22 | The rule for an unanswered paid call in preparation (Gemini, as SAM got on 2026-11-07: count it as spent and send once more inside the cap). | Decide it; an automatic preparation re-drive depends on it. | G63 |
-| O-23 | The WebApp pull request sends one new email, "Your Blueprint job has ended", to a site whose job passes its deadline unfinished. Jobs whose deadline passed more than 48 hours before the first sweep get none. | Read the sentence in the pull request before merging. | E1 d |
 
 ## 7. How a resumed session continues
 
