@@ -1196,8 +1196,9 @@ def test_large_container_runtime_store_warns_by_name() -> None:
     assert projection["container_runtime_complete"] is False  # a lower bound, not a measurement
 
 
-def test_a_storage_class_over_its_byte_budget_pages(monkeypatch):
-    """2026-11-02: work and unclassified grew with no cap; a budget makes that a page."""
+def test_a_storage_class_over_its_byte_budget_warns(monkeypatch):
+    """2026-11-02: work and unclassified grew with no cap; a budget names it. It warns:
+    on a healthy disk it needs no action today, and reclaim_ineffective cites it (WP-19)."""
     monkeypatch.delenv(cap.CLASS_BUDGETS_ENV, raising=False)
     # Today's backlog sits below the defaults (16.4 and 24.4 GiB); new growth past them pages.
     by_class = [{"storage_class": "work", "allocated_bytes": 27_595_211_776},
@@ -1210,7 +1211,7 @@ def test_a_storage_class_over_its_byte_budget_pages(monkeypatch):
                        "allocated_bytes": 27_595_211_776, "budget_bytes": 25 * GIB,
                        "byte_accounting": "current_snapshot_lower_bound"}]
     cap._annotate_alerts(alerts)
-    assert alerts[0]["severity"] == "page"
+    assert alerts[0]["severity"] == "warn"
     summary = cap.capacity_summary({"alerts": alerts, "level": "warning"})
     assert summary["alerts"][0]["storage_class"] == "work"
     assert summary["alerts"][0]["budget_bytes"] == 25 * GIB
@@ -1239,7 +1240,7 @@ def test_an_invalid_budget_setting_warns_and_keeps_the_defaults(monkeypatch):
 @pytest.mark.parametrize(("total", "largest"), [
     (5 * GIB + 1, GIB), (3 * GIB, 2 * GIB + 1),
 ])
-def test_orphan_scratch_pages_once_without_folder_names(total, largest):
+def test_orphan_scratch_warns_once_without_folder_names(total, largest):
     survey = _survey_result(orphan_scratch_bytes=total, orphan_scratch_count=4,
                             orphan_scratch_largest_bytes=largest,
                             unclassified_roots=[{"root": "/mnt/blueprint-work/private-name",
@@ -1248,25 +1249,26 @@ def test_orphan_scratch_pages_once_without_folder_names(total, largest):
     assert alerts == [{"code": "orphan_scratch_large", "allocated_bytes": total,
                        "count": 4, "largest_bytes": largest}]
     cap._annotate_alerts(alerts)
-    assert alerts[0]["severity"] == "page"
+    assert alerts[0]["severity"] == "warn"
     assert "private-name" not in json.dumps(alerts)
 
 
-def test_orphan_scratch_page_reaches_the_controller_poster(tmp_path, monkeypatch):
+def test_orphan_scratch_warning_reaches_the_controller_poster(tmp_path, monkeypatch):
     _no_project_spend(monkeypatch)
-    posted = []
+    posted = _capture_payloads(monkeypatch)
     report = cap.run_controller(
         mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
         webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
         disk_usage=_usage(free_gib=100.0), now=1_000.0,
         survey=lambda **_kwargs: _survey_result(orphan_scratch_bytes=6 * GIB, orphan_scratch_count=3,
                                                   orphan_scratch_largest_bytes=3 * GIB),
-        poster=lambda _url, payload: posted.append(payload),
+        poster=cap.post_alert,
     )
     assert len(posted) == 1
     assert report["alert_posted"] is True
-    assert any(row["code"] == "orphan_scratch_large" and row["severity"] == "page"
+    assert any(row["code"] == "orphan_scratch_large" and row["severity"] == "warn"
                for row in posted[0]["alerts"])
+    assert posted[0]["page"] is False
 
 
 def _no_project_spend(monkeypatch, value=None):
@@ -1602,3 +1604,128 @@ def test_capacity_history_rows_leave_the_footprints_to_the_latest_report(tmp_pat
     # The history is never pruned; it keeps the measurement, not a per-role map per tick.
     assert "footprints" in latest["mounts"][0] and "footprints" not in row
     assert row["free_bytes"] == latest["mounts"][0]["free_bytes"]
+
+
+def _capture_payloads(monkeypatch) -> list[dict]:
+    """Run the real post_alert and keep each webhook body it would send."""
+    payloads: list[dict] = []
+
+    class Response:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def urlopen(request, *, timeout):
+        payloads.append(json.loads(request.data))
+        return Response()
+
+    monkeypatch.setattr(cap.urllib.request, "urlopen", urlopen)
+    return payloads
+
+
+def _ineffective_gc_summary(path: Path) -> Path:
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    path.write_text(json.dumps(build_storage_gc_summary({
+        "observed_at_epoch": 900.0, "status": "applied",
+        "opt_in": {"evidence_offload": True, "scene_workspace_retirement": False},
+        "derived_directories": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+                                "retained_by_reason": {"hot": {"count": 1, "bytes": 4 * GIB}}},
+        "content_store": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+                          "retained_by_reason": {"result_registry": {"count": 1, "bytes": 9 * GIB}}},
+        "evidence_offload": {"status": "applied", "candidate_bytes": 0, "offloaded_bytes": 0,
+                             "retained_by_reason": {"protected_settlement": {"count": 1, "bytes": GIB}}},
+    })), encoding="utf-8")
+    return path
+
+
+def _snapshot_survey(**_kwargs):
+    """The usage findings in the 2026-11-10 13:11Z door status snapshot."""
+    return _survey_result(
+        byte_accounting="rolling_partition_composite_lower_bound",
+        by_class=[{"storage_class": "unclassified", "allocated_bytes": 203_551_283_560},
+                  {"storage_class": "work", "allocated_bytes": 33_141_932_032},
+                  {"storage_class": "release", "allocated_bytes": 26_567_518_168}],
+        orphan_scratch_bytes=97_051_342_373, orphan_scratch_count=406,
+        orphan_scratch_largest_bytes=30_673_354_752,
+        unclassified_roots=[{"root": "/opt/blueprint/artisan", "allocated_bytes": 12_645_043_649}])
+
+
+def test_snapshot_critical_mount_that_reclaim_cannot_fix_pages_once(tmp_path, monkeypatch):
+    """WP-19: on 2026-11-10 one critical work volume with reclaim at zero paged five ways."""
+    _no_project_spend(monkeypatch)
+    posted = _capture_payloads(monkeypatch)
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "notes",
+        storage_gc_summary_path=_ineffective_gc_summary(tmp_path / "gc.json"),
+        disk_usage=_usage(free_gib=22.0, total_gib=294.7), now=1_000.0, survey=_snapshot_survey,
+        poster=cap.post_alert,
+    )
+    pages = [row for row in report["alerts"] if row["severity"] == "page"]
+    assert [row["code"] for row in pages] == ["reclaim_ineffective"]
+    page = pages[0]
+    mount = report["mounts"][0]
+    assert page["mount"] == str(tmp_path) and mount["level"] == "critical"
+    assert (page["free_bytes"], page["floor_bytes"]) == (mount["free_bytes"], mount["floor_bytes"])
+    assert page["top_retained_reasons"] == ["result_registry", "hot", "protected_settlement"]
+    warned = {row["code"] for row in report["alerts"] if row["severity"] == "warn"}
+    assert {"storage_class_over_budget", "orphan_scratch_large", "usage_unclassified_root"} <= warned
+    assert len(posted) == 1 and posted[0]["page"] is True
+    summary = posted[0]["summary"]
+    assert summary.startswith(f"{tmp_path}: reclaim frees nothing; 22.0 GiB free, floor ")
+    assert "retained: result_registry, hot, protected_settlement" in summary
+    assert len(summary) <= 200
+    assert posted[0]["cites"] == ["orphan_scratch_large", "storage_class_over_budget",
+                                  "usage_unclassified_root"]
+
+
+def test_healthy_mount_with_a_class_over_budget_does_not_page(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    posted = _capture_payloads(monkeypatch)
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "notes",
+        storage_gc_summary_path=_ineffective_gc_summary(tmp_path / "gc.json"),
+        disk_usage=_usage(free_gib=120.0), now=1_000.0, survey=_snapshot_survey,
+        poster=cap.post_alert,
+    )
+    assert report["mounts"][0]["level"] == "ok"
+    assert not [row for row in report["alerts"] if row["severity"] == "page"]
+    assert any(row["code"] == "storage_class_over_budget" for row in report["alerts"])
+    assert all(payload["page"] is False for payload in posted)
+
+
+def test_money_credit_spend_and_stall_pages_are_unchanged():
+    """WP-19 moved only disk usage findings; every money and stall code keeps its severity."""
+    from blueprint_pipeline import control_plane_stall_alarm as stall_alarm
+    from blueprint_pipeline import provider_spend_alerts as provider_spend
+    from blueprint_pipeline import website_preparation_delivery_index as preparation_delivery
+
+    assert provider_spend.PAGE_CODES == {
+        "account_spend_limit_config_invalid", "account_spend_month_80pct",
+        "account_spend_month_limit_reached", "account_spend_report_stale", "gcp_spend_month_high",
+        "openai_spend_24h_high", "openai_spend_month_high",
+        "world_labs_spend_24h_high", "world_labs_spend_month_high"}
+    assert stall_alarm.PAGE_CODES == {
+        "launch_activation_stuck", "launch_lease_stuck", "scene_progression_stalled",
+        "trigger_inactive_unheld"}
+    assert preparation_delivery.PAGE_CODES == {"preparation_delivery_stalled"}
+    for code in {"provider_credit_insufficient", *provider_spend.PAGE_CODES, *stall_alarm.PAGE_CODES,
+                 *preparation_delivery.PAGE_CODES}:
+        assert cap._severity(code) == "page", code
+    for code in provider_spend.WARN_CODES:
+        assert cap._severity(code) == "warn", code
+    assert cap.PAGE_ALERT_CODES == {
+        "floor_within_three_days", "floor_within_hours", "admission_refused",
+        "critical_admission_refused", "mount_unreadable", "volume_growth_blocked",
+        "operator_alert_route_unconfigured", "reclaim_ineffective", "provider_credit_insufficient",
+        *provider_spend.PAGE_CODES, *stall_alarm.PAGE_CODES, *preparation_delivery.PAGE_CODES}

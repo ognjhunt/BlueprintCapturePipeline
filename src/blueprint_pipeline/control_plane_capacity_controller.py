@@ -973,12 +973,9 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
     )
     if ineffective and ineffective.get("top_retained_reasons"):
         summary += "; retained: " + ", ".join(ineffective["top_retained_reasons"])
-    if ineffective:
-        # The usage warnings the page rests on; their rows are in ``alerts``.
-        cited = sorted({str(a.get("code")) for a in report.get("alerts") or []
-                        if a.get("code") in _RECLAIM_CITED_WARNINGS})
-        if cited:
-            summary += "; see " + ", ".join(cited)
+    # The usage warnings a reclaim page rests on; their rows are in ``alerts``.
+    cited = sorted({str(a.get("code")) for a in report.get("alerts") or []
+                    if a.get("code") in _RECLAIM_CITED_WARNINGS}) if ineffective else []
     if stalls or spends:
         # A stalled job or a provider's spend leads: the disk pages may have been repeating for days.
         summary = "; ".join([*stalls, *spends, *([summary] if page_alerts else [])])
@@ -1012,6 +1009,8 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
                     for a in report.get("alerts") or []
                     if a.get("code") not in described),
     }
+    if cited:
+        payload["cites"] = cited
     if stalls:
         payload["stall_runbook"] = "docs/runbooks/control-plane-capacity.md#stalled-jobs"
     if spends:
