@@ -699,7 +699,7 @@ def usage_projection(
     return projection
 
 
-ORPHAN_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v2"
+ORPHAN_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v3"
 ORPHAN_CENSUS_MAX_AGE_SECONDS = 2 * GC_SUMMARY_INTERVAL_SECONDS
 ORPHAN_CENSUS_ROWS = 25
 ORPHAN_CENSUS_STATEMENT = (
@@ -748,15 +748,18 @@ def orphan_scratch_census_projection(
     for root, allocated in sized:
         row = listed.get(root)
         references = [kind for kind in (row or {}).get("references") or [] if isinstance(kind, str)]
+        reasons = (row or {}).get("not_proven")
         if references:
             disposition = "referenced"
-        elif row is not None and status == "complete":
+        elif row is not None and status == "complete" and reasons == []:
             disposition = "no_reference_found"
         else:
             disposition = "not_proven"
         mtime = (row or {}).get("top_level_mtime_epoch")
         folders.append({
             "root": root, "allocated_bytes": allocated, "disposition": disposition, "references": references,
+            "not_proven": [{key: reason[key] for key in ("reason", "kind", "ancestor") if key in reason}
+                           for reason in reasons or [] if isinstance(reason, Mapping)][:5],
             "lane_family": (row or {}).get("lane_family"), "use_guess": (row or {}).get("use_guess", "unknown"),
             "run_time_only": (row or {}).get("run_time_only") is True,
             "top_level_unchanged_days": (round(max(0.0, now - mtime) / 86400, 1)
@@ -776,6 +779,9 @@ def orphan_scratch_census_projection(
                   if isinstance(kinds, Mapping) else {}),
         "not_checked_sources": list(census.get("not_checked_sources") or [])[:10]
         if isinstance(census, Mapping) else [],
+        # An ancestor named in a record reaches every folder under it: those are not_proven.
+        "ancestor_references": [row for row in (census.get("ancestor_references") or [])
+                                if isinstance(row, Mapping)][:20] if isinstance(census, Mapping) else [],
         "bytes_available": raw_rows is not None,
         "bytes_complete": bool(isinstance(survey, Mapping) and survey.get("orphan_scratch_root_bytes_complete") is True
                                and survey.get("status") == "complete"),

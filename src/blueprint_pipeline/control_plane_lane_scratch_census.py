@@ -588,7 +588,7 @@ def build_census(
 # which already walks these roots in bounded partitions, supplies the bytes. It reads,
 # never writes, and its record has its own schema, so no retirement path accepts it.
 
-REFERENCE_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v2"
+REFERENCE_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v3"
 REFERENCE_CENSUS_MAX_SECONDS = 180.0
 REFERENCE_CENSUS_FILENAME = "orphan-scratch-census.json"
 #: Said in every record and every projection of one.
@@ -626,7 +626,12 @@ NOT_CHECKED_SOURCES = (
     # Documented gaps; none of them makes a kind "checked".
     "podman_or_bare_containerd_containers: no cheap stable record format; docker's are read",
     "processes_in_uninterruptible_sleep: a /proc read that blocks is not interrupted by the deadline",
+    "symlink_aliases: a record naming a symlink to a folder under another leaf name is not matched;"
+    " a live process using it is",
+    "escaped_names: a name a record could escape (quote, backslash, non-ASCII) is not_proven",
 )
+_QUEUE_STATES = ("pending", "processing", "waiting_external", "awaiting_source_preparation",
+                 "awaiting_capacity", "prepared", "blocked")
 _RECORD_BYTES = 256 * 1024 * 1024  # streamed one file at a time, per kind
 _RECORD_FILES = 50_000
 _RECORD_ENTRIES = 400_000
@@ -655,15 +660,94 @@ def use_guess(name: str) -> tuple[str, bool]:
     return "unknown", False
 
 
-def _record_references(names: dict[bytes, set[Path]], roots: Sequence[Path], errors: list[str],
-                       deadline: float, *, suffixes: frozenset[str] | None = None,
+_NAME_BYTES = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+@~-")
+_MAX_NAME_BYTES = 255
+
+
+def _continues_name(byte: bytes) -> bool:
+    return bool(byte) and byte[0] in _NAME_BYTES
+
+
+def _reliably_matchable(name: str) -> bool:
+    """A name a JSON or text record spells byte for byte (no escaping, plain ASCII)."""
+    return all(32 <= ord(character) < 127 and character not in '"\\' for character in name)
+
+
+class _PathMatcher:
+    """Find candidate folders, and their ancestors, named in record text.
+
+    A folder matches when its full path (or the path through a known bind-mount
+    alias of its parent) appears and the next byte does not continue a file
+    name, so ``/a/run`` is not ``/a/run2``; its bare name also matches as a whole
+    token, which can only add references. An ancestor (other than ``/``) named on
+    its own reaches every folder under it, and is reported as such.
+    """
+
+    def __init__(self, paths: Sequence[Path], aliases: dict[str, str]) -> None:
+        self.tokens: dict[bytes, set[Path]] = {}
+        self.children: dict[bytes, list[tuple[bytes, Path]]] = {}
+        self.ancestors: dict[bytes, tuple[str, set[Path]]] = {}
+        self.unmatchable = {path for path in paths if not _reliably_matchable(path.name)}
+
+        def forms(directory: Path) -> set[str]:
+            spelled = {str(directory)}
+            try:
+                spelled.add(os.path.realpath(directory))
+            except OSError:
+                pass
+            for source, target in aliases.items():
+                if str(directory) in (source, target):
+                    spelled.update((source, target))
+            return spelled
+
+        for path in paths:
+            self.tokens.setdefault(os.fsencode(path.name), set()).add(path)
+            for form in forms(path.parent):
+                self.children.setdefault(os.fsencode(form), []).append((os.fsencode(path.name), path))
+            for ancestor in path.parents:
+                if str(ancestor) == "/":
+                    continue
+                for form in forms(ancestor):
+                    self.ancestors.setdefault(os.fsencode(form), (str(ancestor), set()))[1].add(path)
+
+    def scan(self, content: bytes) -> tuple[set[Path], dict[str, set[Path]]]:
+        found: set[Path] = set()
+        for token in self.tokens.keys() & set(_TOKEN.findall(content)):
+            found.update(self.tokens[token])
+        for form, children in self.children.items():
+            start = content.find(form)
+            while start != -1:
+                end = start + len(form)
+                if content[end:end + 1] == b"/":
+                    rest = content[end + 1:end + 2 + _MAX_NAME_BYTES]
+                    for name, path in children:
+                        if rest.startswith(name) and not _continues_name(rest[len(name):len(name) + 1]):
+                            found.add(path)
+                start = content.find(form, start + 1)
+        ancestors: dict[str, set[Path]] = {}
+        for form, (ancestor, beneath) in self.ancestors.items():
+            start = content.find(form)
+            while start != -1:
+                end = start + len(form)
+                after = content[end:end + 1]
+                if after == b"/":
+                    end += 1
+                    after = content[end:end + 1]
+                if after != b"/" and not _continues_name(after):
+                    ancestors.setdefault(ancestor, set()).update(beneath)
+                    break
+                start = content.find(form, start + 1)
+        return found, ancestors
+
+
+def _record_references(matcher: _PathMatcher, roots: Sequence[Path], errors: list[str],
+                       deadline: float, *, ancestors: dict[str, set[Path]], suffixes: frozenset[str] | None = None,
                        file_names: frozenset[str] | None = None, follow_files: bool = False,
                        skip_directories: frozenset[str] = frozenset(),
                        excluded: Sequence[Path] = ()) -> set[Path]:
-    """Candidates whose name appears as a token in any matching file below ``roots``.
+    """Candidates named in any matching file below ``roots``; ancestors named go to ``ancestors``.
 
-    A folder named in a record by full path also matches by name, so this is
-    the wider test. Every cap reached or file unread is an error for the kind.
+    Every cap reached or file unread is an error for the kind.
     """
     found: set[Path] = set()
     remaining, files, entries = _RECORD_BYTES, 0, 0
@@ -720,8 +804,10 @@ def _record_references(names: dict[bytes, set[Path]], roots: Sequence[Path], err
                     errors.append("record_unreadable")
                     continue
                 remaining -= len(content)
-                for token in names.keys() & set(_TOKEN.findall(content)):
-                    found.update(names[token])
+                named, reached = matcher.scan(content)
+                found.update(named)
+                for ancestor, beneath in reached.items():
+                    ancestors.setdefault(ancestor, set()).update(beneath)
     return found
 
 
@@ -881,7 +967,7 @@ def build_reference_census(
     capture_roots: Sequence[Path] = DEFAULT_CAPTURE_ROOTS, handoff_roots: Sequence[Path] = DEFAULT_HANDOFF_ROOTS,
     door_request_roots: Sequence[Path] = DEFAULT_DOOR_REQUEST_ROOTS,
     docker_containers: Path = DEFAULT_DOCKER_CONTAINERS, source_roots: Sequence[Path] = DEFAULT_SOURCE_ROOTS,
-    now: float | None = None, max_seconds: float = REFERENCE_CENSUS_MAX_SECONDS,
+    aliases: Any = DEFAULT_SURVEY_ALIASES, now: float | None = None, max_seconds: float = REFERENCE_CENSUS_MAX_SECONDS,
 ) -> dict[str, Any]:
     """Per orphan scratch folder, which kinds of reference were found; reads only.
 
@@ -897,9 +983,8 @@ def build_reference_census(
     deadline = started + max_seconds
     listing_errors: list[str] = []
     paths = _candidates(work_root, inputs_root, listing_errors, deadline)
-    names: dict[bytes, set[Path]] = {}
-    for path in paths:
-        names.setdefault(os.fsencode(path.name), set()).add(path)
+    matcher = _PathMatcher(paths, dict(aliases))
+    ancestors: dict[str, dict[str, set[Path]]] = {}
     try:
         release_path: Path | None = release_link.resolve(strict=True)
     except OSError:
@@ -917,24 +1002,27 @@ def build_reference_census(
         statuses[kind] = ({"status": "checked"} if not errors
                           else {"status": "failed", "errors": sorted(set(errors))[:10]})
 
-    def records(roots: Sequence[Path], **options: Any) -> Any:
-        return lambda errors: _record_references(names, roots, errors, deadline, **options)
+    def records(roots: Sequence[Path], kind: str, **options: Any) -> Any:
+        return lambda errors: _record_references(matcher, roots, errors, deadline,
+                                                 ancestors=ancestors.setdefault(kind, {}), **options)
 
-    run("queue", lambda errors: _queue_references(paths, queue_roots or (), errors, deadline),
+    queue_states = tuple(root / state for root in queue_roots or () for state in _QUEUE_STATES)
+    run("queue", lambda errors: (_queue_references(paths, queue_roots or (), errors, deadline)
+                                 | records(queue_states, "queue", suffixes=frozenset({".json"}))(errors)),
         None if queue_roots else "queue_roots_not_configured")
-    run("active_run", records(tuple(active_run_roots or ()), suffixes=frozenset({".json"})),
+    run("active_run", records(tuple(active_run_roots or ()), "active_run", suffixes=frozenset({".json"})),
         None if active_run_roots else "active_run_roots_not_configured")
-    run("capture_reconstruction", records(capture_roots, suffixes=frozenset({".json"})))
-    run("pubsub_handoff", records(handoff_roots, suffixes=frozenset({".json"})))
-    run("door_request", records(door_request_roots, suffixes=frozenset({".json"})))
+    run("capture_reconstruction", records(capture_roots, "capture_reconstruction", suffixes=frozenset({".json"})))
+    run("pubsub_handoff", records(handoff_roots, "pubsub_handoff", suffixes=frozenset({".json"})))
+    run("door_request", records(door_request_roots, "door_request", suffixes=frozenset({".json"})))
     run("process", lambda errors: _process_references(paths, process_root, errors, deadline))
     run("container_mount", lambda errors: _namespace_mount_references(paths, process_root, errors, deadline))
-    run("docker_container", records((docker_containers,),
+    run("docker_container", records((docker_containers,), "docker_container",
                                     file_names=frozenset({"config.v2.json", "hostconfig.json"})))
-    run("unit_file", records(unit_directories, follow_files=True))
-    run("env_file", records(env_directories, follow_files=True, excluded=env_excluded))
+    run("unit_file", records(unit_directories, "unit_file", follow_files=True))
+    run("env_file", records(env_directories, "env_file", follow_files=True, excluded=env_excluded))
     run("release_source", records(tuple(([release_path] if release_path else []) + list(source_roots)),
-                                  suffixes=_SOURCE_SUFFIXES, skip_directories=_SKIPPED_SOURCE_DIRECTORIES),
+                                  "release_source", suffixes=_SOURCE_SUFFIXES, skip_directories=_SKIPPED_SOURCE_DIRECTORIES),
         None if release_path is not None else "live_release_unavailable")
     run("sibling_link", lambda errors: _sibling_link_references(paths, errors, deadline))
     pin_errors: list[str] = []
@@ -944,16 +1032,25 @@ def build_reference_census(
                                                                     "errors": sorted(set(pin_errors))[:10]}
     run("live_release", lambda errors: {path for path in paths if _intersects(path, release_path)},
         None if release_path is not None else "live_release_unavailable")
-    _expired(deadline, listing_errors)
     rows = []
     for path in paths:
-        mtime, mtime_complete = _top_level_mtime(path)
+        mtime, mtime_complete = (None, False) if _expired(deadline, listing_errors) else _top_level_mtime(path)
         use, run_time_only = use_guess(path.name)
         family, _guess, _basis = _family(path.name)
+        not_proven = [{"reason": "ancestor_referenced", "kind": kind, "ancestor": ancestor}
+                      for kind, reached in sorted(ancestors.items())
+                      for ancestor, beneath in sorted(reached.items()) if path in beneath]
+        if path in matcher.unmatchable:
+            not_proven.append({"reason": "name_not_reliably_matchable"})
         rows.append({"path": str(path), "lane_family": family, "use_guess": use, "use_basis": "name_pattern",
                      "run_time_only": run_time_only,
                      "references": [kind for kind in REFERENCE_KINDS if path in found.get(kind, ())],
+                     "not_proven": not_proven,
                      "top_level_mtime_epoch": mtime, "top_level_mtime_complete": mtime_complete})
+    # Said once: an ancestor named in a record reaches every folder under it.
+    ancestor_references = [{"kind": kind, "ancestor": ancestor, "folders": len(beneath)}
+                           for kind, reached in sorted(ancestors.items())
+                           for ancestor, beneath in sorted(reached.items())]
     complete = not listing_errors and all(statuses.get(kind, {}).get("status") == "checked"
                                           for kind in REFERENCE_KINDS)
     return {"schema_version": REFERENCE_CENSUS_SCHEMA_VERSION, "statement": EVIDENCE_STATEMENT,
@@ -961,7 +1058,8 @@ def build_reference_census(
             "duration_seconds": round(time.monotonic() - started, 3),
             "candidate_count": len(paths), "candidate_listing_errors": sorted(set(listing_errors)),
             "kinds": {kind: statuses[kind] for kind in REFERENCE_KINDS},
-            "not_checked_sources": list(NOT_CHECKED_SOURCES), "rows": rows, "mutations": 0}
+            "not_checked_sources": list(NOT_CHECKED_SOURCES), "ancestor_references": ancestor_references,
+            "rows": rows, "mutations": 0}
 
 
 def publish_reference_census(directory: Path, *, pins_root: Path, queue_roots: Sequence[str | Path],

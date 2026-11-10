@@ -181,6 +181,67 @@ def test_an_unreadable_record_or_a_deadline_fails_the_kind(tmp_path, monkeypatch
     assert build_reference_census(**_world(tmp_path / "again")["kwargs"])["status"] == "incomplete"
 
 
+@pytest.mark.parametrize("name", ["run+a", "x@y", "sp ace", "torch-2.1+cu118-wheels"])
+def test_a_record_naming_a_folder_by_full_path_finds_it_whatever_its_name(tmp_path, name):
+    world = _world(tmp_path)
+    folder = tmp_path / "work" / name
+    folder.mkdir()
+    (tmp_path / "work" / "run").mkdir()
+    (tmp_path / "door-requests" / "probe.json").write_text(json.dumps({"input": f"{folder}/"}))
+
+    rows = _rows(build_reference_census(**world["kwargs"]))
+
+    assert "door_request" in rows[str(folder)]["references"]
+
+
+def test_a_full_path_match_respects_the_name_boundary(tmp_path):
+    world = _world(tmp_path)
+    for name in ("run", "run2"):
+        (tmp_path / "work" / name).mkdir()
+    (tmp_path / "door-requests" / "probe.json").write_text(json.dumps({"input": str(tmp_path / "work" / "run2")}))
+
+    rows = _rows(build_reference_census(**world["kwargs"]))
+
+    assert "door_request" in rows[str(tmp_path / "work" / "run2")]["references"]
+    assert "door_request" not in rows[str(tmp_path / "work" / "run")]["references"]
+
+
+def test_a_name_a_record_could_escape_is_never_no_reference_found(tmp_path):
+    world = _world(tmp_path)
+    (tmp_path / "work" / 'quo"te').mkdir()
+
+    row = _rows(build_reference_census(**world["kwargs"]))[str(tmp_path / "work" / 'quo"te')]
+
+    assert row["references"] == [] and row["not_proven"] == [{"reason": "name_not_reliably_matchable"}]
+
+
+@pytest.mark.parametrize("kind", ["docker_container", "unit_file"])
+def test_a_record_naming_only_the_parent_makes_every_folder_below_it_not_proven(tmp_path, kind):
+    world = _world(tmp_path)
+    work = tmp_path / "work"
+    if kind == "docker_container":  # stopped, set to restart, the whole scratch parent bound in
+        (tmp_path / "docker" / "def456" / "hostconfig.json").parent.mkdir()
+        (tmp_path / "docker" / "def456" / "hostconfig.json").write_text(json.dumps(
+            {"Binds": [f"{work}:/scratch"], "RestartPolicy": {"Name": "always"}}))
+    else:
+        (tmp_path / "usr-lib-systemd" / "sim.service").write_text(f"[Service]\nReadWritePaths={work}/\n")
+
+    census = build_reference_census(**world["kwargs"])
+
+    assert {"kind": kind, "ancestor": str(work), "folders": len(HELD)} in census["ancestor_references"]
+    rows = _rows(census)
+    for path, row in rows.items():
+        expected = {"reason": "ancestor_referenced", "kind": kind, "ancestor": str(work)}
+        assert (expected in row["not_proven"]) == path.startswith(f"{work}/"), path
+    free = str(world["folders"]["free"])
+    survey = {"orphan_scratch_root_bytes": [[path, 1] for path in rows]}
+    projection = cap.orphan_scratch_census_projection(census, survey, now=NOW + 60)
+    by_root = {row["root"]: row["disposition"] for row in projection["roots"]}
+    assert by_root[free] == "no_reference_found"
+    assert {by_root[path] for path in rows if path.startswith(f"{work}/")} <= {"referenced", "not_proven"}
+    assert projection["ancestor_references"]
+
+
 def _census(rows, *, observed=NOW, status="complete"):
     return {"schema_version": cap.ORPHAN_CENSUS_SCHEMA_VERSION, "status": status, "observed_at_epoch": observed,
             "kinds": dict.fromkeys(REFERENCE_KINDS, {"status": "checked"}), "candidate_listing_errors": [],
@@ -189,7 +250,7 @@ def _census(rows, *, observed=NOW, status="complete"):
 
 def _row(path, references=(), use="unknown", run_time_only=False, mtime=NOW - 10 * 86400):
     return {"path": path, "references": list(references), "lane_family": "other", "use_guess": use,
-            "run_time_only": run_time_only, "top_level_mtime_epoch": mtime}
+            "run_time_only": run_time_only, "top_level_mtime_epoch": mtime, "not_proven": []}
 
 
 def test_the_report_carries_family_use_age_and_the_evidence_statement():
@@ -207,7 +268,8 @@ def test_the_report_carries_family_use_age_and_the_evidence_statement():
     assert projection["retirement_authorized"] is False
     first = projection["roots"][0]
     assert first == {"root": "/w/sdk-inputs", "allocated_bytes": 30, "disposition": "no_reference_found",
-                     "references": [], "lane_family": "other", "use_guess": "rebuildable_run_input_cache",
+                     "references": [], "not_proven": [], "lane_family": "other",
+                     "use_guess": "rebuildable_run_input_cache",
                      "run_time_only": True, "top_level_unchanged_days": 10.0}
     by_root = {row["root"]: row["disposition"] for row in projection["roots"]}
     assert by_root == {"/w/sdk-inputs": "no_reference_found", "/w/held": "referenced", "/w/unlisted": "not_proven"}
