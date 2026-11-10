@@ -286,7 +286,7 @@ new capture download is refused. Deploys use the separate critical floor on
 their target device. At zero physical free bytes, no local state write can be
 guaranteed. See
 [Admission gate](#admission-gate-blueprint_pipelinecontrol_plane_disk_budget)
-(design: [phase 2](CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md#phase-2-volume-split-a-week)).
+(design: [phase 2](archive/CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md#phase-2-volume-split-a-week)).
 The capacity unit measures `/`, `/var/lib/blueprint` and `/mnt/blueprint-work`.
 A configured mount that is not present is reported as absent; an existing
 unreadable mount remains critical. The intake, scene progression and capacity

@@ -13,6 +13,174 @@ Confidence levels:
 
 "Grep found nothing" never counts as proof. Units, `--worker` targets, door scripts, GPU bundle file lists and docs read as data were all treated as callers.
 
+## Status of every plan (reconciled 2026-11-10)
+
+This section is the ledger for the 60 plans in the inventory's `plans` section. The rest of this document is the 2026-11-05 audit as written and is not updated; where the two disagree, this section is current.
+
+- Checked against Pipeline `main` at `4f2c74c84` and WebApp `main` at `772800816`, and against the host through `scripts/operator_door.py units`, `show` and `journal` on 2026-11-10 03:10 UTC.
+- "#3407" is Pipeline PR #3407 (merged 2026-11-06). "#1224" is WebApp PR #1224 (merged 2026-11-06). Both were approved by the owner on 2026-11-05.
+- **Status** is one of: `done`, `partly done`, `still open`, `no longer valid`. Rows that begin "Merged 2026-11-10" give the status after the cleanup PRs listed below the tables, and keep the evidence read before the merge.
+- **Needs owner** repeats the inventory's `owner_decision_needed`, or says which host or GitHub step only the owner can take.
+- The last column names the PR that advances each plan. The cleanup PRs of 2026-11-10, the reasons for plans without a PR, what was found past the inventory, and the decision list follow the three tables.
+
+Three things the reconciliation found that the audit could not know:
+
+1. **The legacy control-plane loop still runs on the host.** #3407 removed `blueprint-pipeline-control-plane.{service,timer}` from the repo and from the deploy list, but the host timer is still `enabled` and `active`: it last fired 2026-11-10 03:08:30 UTC and used 12.5 CPU-seconds (`door show`, `door journal`). Removing a unit file from the repo does not stop it on the host. Until an operator disables the timer, `live_pipeline_control_plane.py` must stay in the repo, or the unit fails every 5 minutes.
+2. **The three capture-reconstruction dispatcher units are still loaded on the host** (`inactive`, `dead`). Their module is gone from the repo, so starting one would fail. The host step (P-RT-01 step a) is still to do.
+3. **`AGENTS.md` still states $15 in the spend table** (line 53); the code and the WebApp are at $30. Line 24 no longer names a figure. This is P-DT-14 and stays with the owner.
+
+### Phase 1
+
+| Plan | What | Status | Evidence (2026-11-10) | Needs owner | PR |
+|---|---|---|---|---|---|
+| P1-01 | System map, audit, inventory | done | The three files are on `main` (#3407) | no | #3407 |
+| P-DT-06 | Incident runbook rollback → `beta-operations.md` §5 | done | Merged 2026-11-10 (PR in the last column). Before the merge: `docs/runbooks/beta-ops-incident-response.md:54-66` still gives the WebApp rollback command and "restore the last known good image tag" for a Cloud Run job; buyer, checkout and payout wording remains (lines 23-32) | no | #3530 (merged; completes it) |
+| P-DT-04 | One control-plane storage doc | done | Merged 2026-11-10 (PR in the last column). Before the merge: `docs/superpowers/plans/2026-09-26-control-plane-disk/` is archived (#3407). `docs/CONTROL_PLANE_CAPACITY_PLAN.md` and `docs/CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md` are still top-level | no | #3529 (merged; completes it) |
+| P-DT-01 | Archive `docs/verification` | done | `docs/verification` is gone; the files are under `docs/archive/verification` (#3407) | moving the 20 MB HTML out of git is still an owner call | #3407 |
+| P-DT-03 | Archive dated history docs | partly done | `docs/superpowers` and 14 dated docs are archived (#3407). `audit/policy-comparison-20260907/` and 38 dated top-level docs remain; several of those are read by tests or at runtime and stay | no | none; reason below |
+| P-W06 | WebApp deployment doc and Stack line | done | Merged 2026-11-10 (PR in the last column). Before the merge: #1224 rewrote 124 lines of `DEPLOYMENT.md` (scheduler topology). The storage-provider paragraph still documents `VITE_BLUEPRINT_STORAGE_PROVIDER`, which no file under `client/src` or `server` reads; no Node policy is written down | no | WebApp #1248 (merged; completes it) |
+| P-INFRA-01 | Delete the orphaned `unitree_groot_sonic_vast` Dockerfile | done | Merged 2026-11-10 (PR in the last column). Before the merge: `deploy/docker/robot_eval_worker/unitree_groot_sonic_vast/Dockerfile` exists; its only references are `.github/dependabot.yml`, `docs/CHANGELOG.md` and this audit | no | #3526 (merged; completes it) |
+| P-W03a | Remove two unused WebApp packages | done | Neither `@heroicons/react` nor `@google/generative-ai` is in `package.json` or `vite.config.ts` (#1224) | no | #1224 |
+| P-INFRA-02 | Disable two fileless workflow registrations | still open | GitHub setting; not changed by any PR | yes (GitHub settings) | |
+| P-RT-01 | Retire the capture reconstruction dispatcher | partly done | Step b is done: the module, the three unit files and the listener branch are gone (#3407). Step a is not: the host still has the three units loaded (`door units`: `inactive`, `dead`) | host step: disable and remove the three units | #3407 |
+| P-DT-02 | Archive three unreferenced experiment directories | partly done | `argus_video_explanation_default_20261001` and `measurement_isaac_vast_20260802_attempt_1` are under `docs/archive/experiments` (#3407). `policy_ranking_thesis_experiment_2_20260727` waits for P-A02 | no | none; reason below |
+| P-DT-14 | `AGENTS.md` states the old $15 site limit | partly done | Line 24 no longer names a figure. The spend table (line 53) still says $15; `SITE_LIMIT` is `Decimal("30")`, `SITE_BUDGET_USD` is `Decimal("30.00")`, WebApp `SCREENING_SITE_LIMIT_USD` is 30 | yes (money figure in an owner-owned section) | |
+
+### Phase 2
+
+| Plan | What | Status | Evidence (2026-11-10) | Needs owner | PR |
+|---|---|---|---|---|---|
+| P-A06 | Splat, semantic and reconstruction research | partly done | 20 of the 25 listed modules are gone (#3407). Still present: `frames_layout` (imported by `materialization.py`, live), `gaussian_object_partition` (imported by `simready_asset_lane.py`), `artifixer_heldout_evaluation` (imported by `nvidia_siggraph_completion.py`, a P-A11 operator tool), `particlefield_upstream_parity` and `capture_reconstruction_publication` (imported only by their own tests) | no | none; reason below |
+| P-A08 | One-off task-evaluation lanes | partly done | 18 of the 24 listed modules are gone (#3407). Still present: `external_scene_task_evaluation`, `external_scene_robot_placement_evidence`, `provider_nurec_task_evaluation`, `provider_robot_placement_evidence` (import only each other and their tests), `task_evaluation_sam31_service_provisioning` (imported only by its test), and `task_evaluation_downstream_replay` (kept on purpose, tracker B-01) | no | none; reason below |
+| P-A02 | Archive policy-ranking research | partly done | Merged 2026-11-10 (PR in the last column). Before the merge: All 36 listed modules exist | no | #3533 (merged; 22 of the 36 modules) |
+| P-A10 | Compat shims and retired entrypoints | done | All 7 modules are gone (#3407) | no | #3407 |
+| P-W01 | Unreachable WebApp client files | done | The 5 pages and the listed components and libs are gone; the 3 Radix packages are gone (#1224) | no | #1224 |
+| P-W02 | Unreferenced WebApp server files | done | All 8 files are gone (#1224) | no | #1224 |
+| P-W03b | WebApp dependency hygiene | partly done | Merged 2026-11-10 (PR in the last column). Before the merge: `bcryptjs`, `node-fetch`, `remotion`, `@remotion/bundler`, `@remotion/renderer` and the Replit plugin are all still in `dependencies` | no | WebApp #1251 (merged; part) |
+| P-W04 | 9 legacy WebApp endpoints | still open | 8 of the 9 handlers exist; `admin-creative.ts` went with the growth lane (#1224). The plan's condition (30 days of Render request logs) cannot be met from the repo | Render logs are not readable from a session | none; decision list |
+| P-W05 | Playwright configs no CI job runs | partly done | Merged 2026-11-10 (PR in the last column). Before the merge: 14 `playwright*.config.ts` files; `ci.yml` runs 3 by name (`invited-beta`, `reliability-intake`, `privacy`) plus the default | no for the 5 deletions; the 3 intake configs are an owner call | WebApp #1250 (merged; 4 configs) |
+| P-DT-11 | Scripts with no caller | done | Merged 2026-11-10 (PR in the last column). Before the merge: All 6 scripts exist | no | #3527 (merged; completes it) |
+| P-RT-02 | Idle fast path for the remote compile poll | still open | No fast path in `task_evaluation_episode_compilation_collector.py` | no | none; reason below |
+| P-RT-05 | No receipts for a no-op replay-cache GC tick | partly done | Merged 2026-11-10 (PR in the last column). Before the merge: `completed_replay_cache_retention.py` `main()` still writes `-plan.json` and `-result.json` on every tick; the unit still has `Wants=blueprint-scene-project-spend-refresh.service` | the `Wants=` line is a money-freshness question | #3528 (merged; the receipts) |
+| P-RT-09 | A `-m` entry for the scene spend refresh | still open | The unit still starts `python -c "from … import refresh_configured_scene_project_spend; …"` | no | none; reason below |
+| P-B01 | One meaning for gripper separation | still open | `finger_separation_m` is in 10 source files; neither `pad_center_separation_m` nor `finger_body_origin_separation_m` exists | no | none; reason below |
+| P-B02 | Normalising quaternion helpers | still open | Not changed since the audit | no | none; reason below |
+| P-B03 | Delegate identical digest copies | still open | Not changed since the audit | no | none; reason below |
+| P-B04 | One atomic JSON writer | still open | 175 source files call `os.replace`; 67 of them never call `fsync` | no | none; reason below |
+| P-B05 | One file-lock mechanism | still open | 124 source files call `flock` or `lockf` | no | none; reason below |
+| P-B06 | Read retries through `transport_retry_policy` | still open | The shared module still has 2 importers (`vast_inventory_read_retry`, `provider_transport`) | no | none; reason below |
+| P-B07 | One OpenGL/OpenCV camera flip | still open | 8 source files define `diag(1, -1, -1)` | no | none; reason below |
+| P-C | Split modules at their line cap | still open | Line counts are unchanged: 2295, 1986, 10420, 7456 | no | none; reason below |
+| P-E | Retire version-skew shims | still open | Waits for R1 (host and worker image aligned). `toml_compat.py` has one importer, `runpod_provider_adapter.py` | R1 first | none; reason below |
+| P-F | Python dependency declarations | still open | `requests` is declared only in the `cloud` extra and `httpx` only in the `dev` extra; `pydantic` and `starlette` are not named in `pyproject.toml` | no for the declarations; the `langgraph*` and `groot-libero-cpu` extras are an owner call | none; reason below |
+| P-FLAGS-A | Flags read only by removed modules | partly done | 3 of the 15 flag names are gone with their readers; 12 still have a reader and go with that reader's plan | no | |
+| P-DT-08 | Tests go only with their module | partly done | A rule, not a change. #3407 followed it; each later PR does the same | no | |
+| P-DT-10 | WebApp e2e specs that never run in CI | still open | The 6 specs exist | yes | |
+| P-W08 | Shared fixture copies | still open | `screen-admission-snapshot.json` still differs between the repos (`cmp`: first difference at byte 21) | no | none; reason below |
+| P-A11 | Document operator diagnostics as tools | done | Merged 2026-11-10 (PR in the last column). Before the merge: Of 4 sampled tools, only `website_atlas_operator` is named in a runbook | no | #3535 (merged; completes it) |
+| R1 | Host venv from `uv.lock`; rebuild the remote-CPU image | still open | `production-control-plane-requirements.txt` still pins a handful of packages | yes (deploy window, Cloud Run spend) | |
+| R2 | Fix RunPod billing reconciliation | no longer valid | RunPod was retired on 2026-11-05 (`RUNPOD_PROVIDER_RETIRED = True`); the reconciler no longer makes the request. What is left is the owner's account closure (`AGENTS.md`, RunPod row) | account closure | #3407 |
+| R3 | Billing evidence for B2, Gemini, hosted SAM | still open | `PROVIDERS` in `provider_billing_reconciler.py` is unchanged | yes | |
+| R4 | Pin Node | done | Merged 2026-11-10 (PR in the last column). Before the merge: No `.nvmrc`, no `engines`, no `NODE_VERSION` in `render.yaml`; `ci.yml` uses Node 20 in 6 jobs | no | WebApp #1248 (merged; completes it) |
+
+### Phase 3 (owner decisions)
+
+| Plan | What | Status | Evidence (2026-11-10) | Needs owner | PR |
+|---|---|---|---|---|---|
+| P-DT-12 | Website campaigns plan only runnable candidates | done | #3407 changed `beta_policy_screening_plan.py`; #1224 added the WebApp rendering tests | approved 2026-11-05 | #3407, #1224 |
+| P-RT-06 | Retire the legacy control-plane loop | partly done | The unit files and the deploy entry are gone (#3407). The host timer is still enabled and firing (see above). `live_pipeline_control_plane.py`, `live_pipeline_proof_audit.py` and `live_pipeline_manifest_alert.py` remain | host step: disable the timer, then the module can go | #3407 |
+| P-RT-07+P-A09 | Retire the GCP warm pool and staging intake | done | Merged 2026-11-10 (PR in the last column). Before the merge: The 4 units, the env examples, the install script, the workflow and 5 of the 6 modules are gone (#3407); none of the units is on the host. `production_gpu_runpod_autoscaler.py` and its test remain | approved 2026-11-05 | #3407; #3531 (merged; completes the repo side) |
+| P-RT-03 | Retire scene object discovery | still open | Both unit files exist; on the host the path unit is `active` | yes | |
+| P-A01 | Retire the measurement lane | partly done | The 31 modules and the workflow are gone (#3407). `scripts/measurement_research_monitor.py`, `measurement_research_monitor.py` and `measurement_research_monitoring.py` remain | approved 2026-11-05 | #3407; none; reason below |
+| P-A05 | Retire the articulated door lane | done | 15 of the 18 modules are gone (#3407). The other 3 stay: `articulated_simready_replacement` is ADP-cited and imports `articulated_dynamics_profiles` and `articulated_dynamics_realism` | approved 2026-11-05 | #3407 |
+| P-A07 | Retention and reclamation tools | still open | All 11 modules exist | yes (they delete retained data) | |
+| P-W07 | Firestore index manifest | still open | Not changed | yes | |
+| P-DT-07 | Archive the July SC3 launch-evidence program | still open | The SC3 ledger and its tests exist | yes | |
+| P-DT-09 | Never-run external suites | still open | Not changed | yes (a GPU lane costs money) | |
+| P-DT-13 | Archive WebApp design binaries | partly done | `docs/design` is under `docs/archive/design` (#1224), apart from one JSON file. `docs/visuals` (9.1 MB) is still in place | yes | #1224 |
+| P-D01 | Vast credit guard on by default | done | `credit_guard_setting()` reads `os.getenv(ENABLED_ENV, "true")` (#3407) | approved 2026-11-05 | #3407 |
+| P-D02 | Non-guard `ALLOW_*` switches | still open | 54 of the 55 flag names in the plan still have a reader | yes | |
+| P-DT-05 | Docs index lists the beta's operating docs | still open | `docs/README.md` still limits "active execution documents" to the ten ADP files | yes | |
+| P-RT-08 | Existing-policy canary continuation and watchdog | still open | The 3 unit files exist; the continuation units are not on the host | yes | |
+| P-B08 | Spend-cap arithmetic | still open | Not changed (money guard) | yes | |
+
+### Cleanup PRs opened on 2026-11-10
+
+The PR column above says which plan each PR advances. The owner asked for all thirteen to be merged on 2026-11-10, and they were; this ledger PR merged last. Pipeline merges reach the host with the next daily deploy; the three WebApp merges deploy to Render by themselves.
+
+| PR | What it does |
+|---|---|
+| #3525 | This ledger |
+| #3526 | Deletes the orphaned `unitree_groot_sonic_vast` Dockerfile and its dependabot entry (P-INFRA-01) |
+| #3527 | Deletes six uncalled scripts and the three modules only they used, with their tests (P-DT-11) |
+| #3528 | Replay-cache GC writes no receipt for a tick with nothing to reclaim (P-RT-05) |
+| #3529 | Archives the two superseded control-plane capacity plans (P-DT-04) |
+| #3530 | Incident runbook sends host rollbacks to the operator door (P-DT-06) |
+| #3531 | Removes five leftover GCP warm-pool modules, their four console scripts and tests (P-RT-07+P-A09) |
+| #3532 | Deletes two stray screenshots from the repo root (past the inventory) |
+| #3533 | Archives 22 policy-ranking research modules and 20 test files (P-A02, part 1) |
+| #3535 | Adds `docs/OPERATOR_TOOLS.md` for the 19 operator tools (P-A11) |
+| WebApp #1248 | Pins Node to 22.x in one place; corrects the storage-provider paragraph (R4, P-W06) |
+| WebApp #1250 | Deletes four Playwright configs that nothing runs (P-W05) |
+| WebApp #1251 | Drops `bcryptjs` and its unused helper; declares `gaxios` and `google-auth-library` (P-W03b) |
+
+All ten Pipeline branches merge into one tree without conflict. Measured with the same commands on main and on that merged tree: source files 2,534 → 2,504, source lines 1,334,234 → 1,323,054, test files 2,734 → 2,706, test lines 1,064,152 → 1,059,558, scripts 299 → 293, console scripts 175 → 171, Dockerfiles 22 → 21.
+
+### Open plans with no PR, and why
+
+| Plan | Why there is no PR |
+|---|---|
+| P-DT-03 | `audit/policy-comparison-20260907/` cannot move under `docs/`: `scripts/verify_source_governance.py` then fails on personal absolute paths in `evidence/identity.json:8` and `evidence/worktrees.txt:1`. Of the 38 dated top-level docs, most are read by a script, a test or runtime code; the 2026-09-21 authorization notes and the two G1 rights reviews may be cited by stored records and stay |
+| P-DT-02 | `docs/experiments/policy_ranking_thesis_experiment_2_20260727/` is cited by path in four sealed evidence files in other experiment directories |
+| P-A06 | The five remaining modules are live (`frames_layout`, `gaussian_object_partition`), imported by an operator tool (`artifixer_heldout_evaluation`), tied to an Arm Decision Proof scene audit (`particlefield_upstream_parity`), or the writer of a record shape that `capture_reconstruction_downstream` reads (`capture_reconstruction_publication`) |
+| P-A08 | `external_scene_task_evaluation` is file 16 in `docs/arm_decision_proof_v1/ADP_009D_FRANKA_PUBLIC_SCENE_SIM_GOAL_PROMPT.md`, and the other three modules of that island exist only for it. `task_evaluation_sam31_service_provisioning` is the documented provisioning step in `docs/operations/sam31_preparation_services.md` |
+| P-A01 | `measurement_research_monitor` and `measurement_research_monitoring` are imported by `task_evaluation_supervisor/agents_sdk.py` and `capabilities.py` |
+| P-RT-02 | The collector also cancels orphaned Cloud Run executions (a teardown path). An idle exit must know every place a live execution can be recorded. The cheaper fix depends on decision R1: if the remote lane is switched off, the unit is simply disabled |
+| P-RT-09 | With a `-m` entry the chain preflight stops skipping this unit and runs its sandbox probe on it for the first time; a probe failure is a `blocker` finding. That can only be tried on the host, as root |
+| P-B01 | Not attempted. The rename touches the construction worker, the pose servo, the readback and the live screening adapter, and needs the calibration test the plan describes written first |
+| P-B02, P-B04, P-B05, P-B06 | Not attempted. Each changes behaviour if done wrong (normalisation, durability, lock paths, retries) and needs its own proof per lane |
+| P-B03 | A scan for single-statement helpers found 25 local sha256-of-JSON helpers and none byte-identical to `canonical_digest` (none passes exactly `canonical_json`'s arguments to `json.dumps`, and 22 of them return no `sha256:` prefix). The audit's list of 15 was not committed, so it has to be rebuilt before anything is delegated |
+| P-B07 | Of the 8 definitions, 2 are in Arm Decision Proof modules, 1 (`robot_arm_chains.py:310`) is not a camera flip, 1 is deleted by #3527, and the other 4 are one-line constants of different shape. No longer worth a PR |
+| P-C | Not attempted. Three of the four modules are guards or ship in the GPU bundle; a move-only split still needs the bundle lists changed in step |
+| P-E | Waits for R1. `tomli` must stay in `uv.lock` in any case: `scripts/install_scene_retirement_runtime.py:1511-1537` loads a verified `tomli` wheel from the lock |
+| P-F | Not attempted. Declaring `pydantic` and `starlette` changes `uv.lock`, both generated `requirements*.txt` files and the supply-chain evidence; do it with the next dependency refresh |
+| P-W08 | Not attempted |
+
+### Found past the inventory
+
+1. **Console scripts keep switched-off lanes installed.** 61 of the 175 console scripts in `pyproject.toml` are the only thing outside tests that references their target module. If those 61 entries went, 67 more modules (51,076 lines) would be reachable from nothing. #3531 removes the 4 that belong to the already-retired GCP warm pool; the other 57 need a lane-by-lane owner decision. The 61: `blueprint-adapt-polycam-developer-raw`, `blueprint-agent-review`, `blueprint-audit-first-gpu-candidates`, `blueprint-audit-first-gpu-cross-repo-readiness`, `blueprint-audit-first-gpu-e2e-readiness`, `blueprint-audit-first-gpu-sample-video`, `blueprint-audit-provider-closure`, `blueprint-audit-unitree-groot-sonic-provider-readiness`, `blueprint-autogen-scene-eval-tasks`, `blueprint-backfill-site-reference-db`, `blueprint-bootstrap-wam-model-runtime`, `blueprint-build-benchmark-uncertainty-report`, `blueprint-build-capture-batch-registry`, `blueprint-build-exact-workcell-variation-matrix`, `blueprint-build-first-gpu-run-packet`, `blueprint-build-lightwheel-kitchen-isaac-scenarios`, `blueprint-build-manipulation-task-stack`, `blueprint-build-mujoco-scene-scenario-packet`, `blueprint-build-production-gpu-launch-qualification`, `blueprint-build-production-handoff-readiness`, `blueprint-build-public-scene-simready-control`, `blueprint-build-unitree-unifolm-gpu-image`, `blueprint-build-wam-perception-harness-gpu-image`, `blueprint-check-cpu-env`, `blueprint-compile-articulated-public-scene`, `blueprint-compile-site-task-testbed`, `blueprint-create-team-policy-endpoint-token`, `blueprint-deliver-arena-package-local`, `blueprint-g1-endpoint-reference-adapter`, `blueprint-import-scaniverse-assets`, `blueprint-launch-unitree-unifolm-runpod-server`, `blueprint-materialize-public-scene-suite`, `blueprint-openvla-policy-command-adapter`, `blueprint-prepare-unitree-groot-sonic-wam-remote-build`, `blueprint-qualify-capture-reconstruction`, `blueprint-review-g1-field-run-evidence`, `blueprint-route-task-evaluation`, `blueprint-run-gpu-provider-launcher`, `blueprint-run-kitchen-task-scaling-preflight`, `blueprint-run-lucky-g1-reference-adapter`, `blueprint-run-major-capability-scenarios`, `blueprint-run-manipulation-physics-sim`, `blueprint-run-openvla-policy-provider-smoke`, `blueprint-run-oscar-visual-augmentation-generation`, `blueprint-run-policy-autoresearch-local-evaluator`, `blueprint-run-policy-autoresearch-wam-fixture-evaluator`, `blueprint-run-production-gpu-replenishment-probe`, `blueprint-run-production-gpu-rollback-drill`, `blueprint-run-production-gpu-worker-pool`, `blueprint-run-provider-worker-session`, `blueprint-run-robot-eval-provider-race`, `blueprint-run-unitree-groot-n17-sonic-policy-server-preflight`, `blueprint-run-unitree-unifolm-policy-provider-smoke`, `blueprint-run-wam-sim-provider-e2e`, `blueprint-serve-wam-vla-policy-endpoint`, `blueprint-setup-wam-vla-policy-endpoint`, `blueprint-smoke-arena-package-local`, `blueprint-stage-first-gpu-sample-video`, `blueprint-task-candidate-control`, `blueprint-unitree-lerobot-policy-command-adapter`, `blueprint-write-owner-gpu-default-smoke-artifacts`.
+2. **34 unreachable modules the inventory does not list** (13,649 lines): `policy_ranking_successor_cosmos_provider_runtime`, `policy_improvement_run`, `public_scene_inpaint360_adapter`, `articulated_excision_join`, `gaussian_source_removal_qualification`, `public_reference_admission`, `public_scene_simready_replacement`, `gaussian_suppression_volume`, `paired_target_native_render_request`, `cosmos_edge_closed_loop_provider_bundle`, `task_evaluation_task_parameter_proposal`, `paired_target_native_preflight`, `fresh_scene_paired_target_preparation`, `policy_ranking_successor_cosmos_bundle`, `task_evaluation_planar_push_readiness_candidate`, `public_scene_artifixer3d_final_composite`, `task_evaluation_preparation_claim_recovery`, `semantic_teacher_pending_spend`, `public_scene_infusion_compose`, `public_scene_hybrid_replacement_seal`, `public_scene_task_selection`, `openai_unattributable_spend`, `task_evaluation_passive_destination_simready`, `task_object_artisan_replay`, `capture_reconstruction_checkpoints`, `capture_reconstruction_downstream`, `capture_reconstruction_postshot_allocator`, `company_policy_conformance`, `openpi_checkpoint_inventory`, `skypilot_promotion_gate`, `native_g1_packet_choice_handoff`, `optional_dependencies`, `stage_outcome`, `lane_resume`. Several look like Arm Decision Proof code (`public_scene_*`, `paired_target_*`) and two are spend records (`semantic_teacher_pending_spend`, `openai_unattributable_spend`); none was touched.
+3. **RunPod code outlives RunPod.** 26 modules with `runpod` in the name hold 25,045 lines. RunPod is retired for new spend; the spend guard still needs its inventory read while a key exists.
+4. **Three more compatibility shims**, imported only by tests that pin them: `optional_dependencies.py`, `stage_outcome.py`, `lane_resume.py` (16 lines).
+5. **ruff `target-version = "py310"`** while the package requires Python 3.11 or later. Changing it to `py311` adds no finding with the locked ruff 0.15.21. Not sent as its own PR because any `pyproject.toml` change runs the full suite; it can ride with the next one.
+6. **Three tests fail when the suite runs as root** (`tests/test_task_evaluation_result_artifact_store.py`: `test_root_eviction_lease_needs_no_fowner`, `test_existing_lock_owned_by_registry_owner_is_not_chmodded[0600-left-by-a-failed-tick]`, `test_non_root_reader_takes_the_flock_on_a_lock_someone_else_owns`). Seen on unchanged main in a cloud session with uid 0.
+7. **WebApp:** `ops/paperclip/reports/` has 949 tracked files (8.25 MB) although `.gitignore:64` ignores the directory; the audit's row "city-launch utils read it at runtime" is out of date, since #1224 deleted those utils. Its one remaining reader is an optional input root of `scripts/paperclip/agent-improvement-observer.ts`. The 27 files under `scripts/` dated 20261006 and 20261007 form one incident-evidence set that pins its own file hashes. `@replit/vite-plugin-shadcn-theme-json` cannot move to devDependencies as P-W03b proposed: production boot imports it through `server/vite.ts`.
+
+How the reachability figures were measured: a static import graph over `src/blueprint_pipeline`, with string module names counted as edges, and with every module named in `deploy/`, `scripts/`, `functions/`, `.github/`, `config/`, `configs/`, the root `Dockerfile`, `main.py`, `Makefile`, `docs/runbooks/`, `docs/OPERATOR_DOOR.md` and `AGENTS.md` as a root; once with `pyproject.toml` as a root too (153 unreachable modules, 63,456 lines) and once without (220 modules, 114,532 lines). It is a lead, not proof: each module still needs the caller checks this audit lists.
+
+### Decision list (2026-11-10)
+
+Ordered by payoff. Items 14 to 16 repeat audit decisions that have not moved.
+
+| # | Decision | Evidence | Recommendation | If approved |
+|---|---|---|---|---|
+| 1 | Host step: disable `blueprint-pipeline-control-plane.timer`; remove it, its service and the three `blueprint-capture-reconstruction-dispatcher` units | The timer is `enabled` and fired at 2026-11-10 03:08:30 UTC, 12.5 CPU-seconds a run; the repo retired it in #3407. The dispatcher units are loaded and their module is gone | Do it in the next deploy window | Then delete `live_pipeline_control_plane.py` and what only it uses, with tests |
+| 2 | Which lanes behind the 57 remaining single-use console scripts are retired | Finding 1 above | Name the retired lanes (first-GPU July lane, OpenVLA, Unitree UnifoLM, the WAM VLA endpoint, policy autoresearch, kitchen task scaling and the rest of the list) | One PR per lane: console scripts, modules, tests, docs |
+| 3 | RunPod: close the account and delete the key | `AGENTS.md` spend table, RunPod row; finding 3 | Close it | Remove the RunPod launchers and, once no key exists, the guard's RunPod read |
+| 4 | The other 14 policy-ranking modules | #3533 lists each with its reason | Remove the four OpenAI judge modules with their entries in `scripts/paid_api_call_sites.json`; decide the six contract-doc modules with those docs | One PR that also edits the paid-call-site list and the verifier's expected rows |
+| 5 | Arm Decision Proof leftovers | `external_scene_task_evaluation` and its three helpers, `particlefield_upstream_parity`, the 34 modules in finding 2 | Ask the ADP owner | Delete what ADP no longer cites |
+| 6 | The 23 non-guard `ALLOW_*` switches (P-D02) | 54 of the 55 flag names in the plan still have a reader | Delete them once the host env shows them unset | One PR per reader |
+| 7 | Scene object discovery (P-RT-03) | Both unit files exist; on the host the path unit is `active`; the audit found no record was ever written | Retire | Units, worker, intake routes, the WebApp panel |
+| 8 | WebApp: 8 legacy endpoints (P-W04) | No caller in either repo; Render request logs not readable | Read 30 days of Render logs, then remove | Routes, their rate-limiter lines, tests |
+| 9 | WebApp: `ops/paperclip/reports/` | Finding 7 | Delete from the tree (git history keeps it), or decide it is a record to keep | One deletion PR; fix the links in `knowledge/` |
+| 10 | WebApp: the dated incident scripts | Finding 7 | Keep as evidence, or archive the set as one unit | Move scripts, tests and docs together |
+| 11 | `AGENTS.md` line 53 states 15 dollars; the limit in code is 30 (P-DT-14) | Code constants in both repos | Owner edits the figure | Nothing else |
+| 12 | `audit/policy-comparison-20260907/` | Reason under P-DT-03 | Delete it (60 files, history is in git) | One deletion PR |
+| 13 | `Wants=blueprint-scene-project-spend-refresh.service` on the replay-cache GC unit (P-RT-05) | Starts the spend refresh every 5 minutes; the capacity unit also pulls it | Drop the line if a 10-minute refresh is fresh enough | One-line unit change, deployed in the window |
+| 14 | R1: host venv from `uv.lock`, rebuild or switch off the remote-CPU image | Unchanged since the audit | Rebuild | Unblocks P-RT-02 and P-E |
+| 15 | Docs index (P-DT-05) | `docs/README.md` still lists only ADP files as active | Add the beta's operating docs, `SYSTEM_MAP.md` and `OPERATOR_TOOLS.md` | About 30 lines |
+| 16 | Unchanged audit owner calls | P-A07, P-W07, P-DT-07, P-DT-09, P-DT-10, P-DT-13, P-RT-08, P-B08, R3, P-INFRA-02 | As the audit recommends | As each plan says |
+
 ## Executive summary (for the owner)
 
 Blueprint's running system is much smaller than its codebase.

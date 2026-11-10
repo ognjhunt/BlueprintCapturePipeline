@@ -3,7 +3,7 @@
 Status: design, 2026-09-26. Owner: control-plane storage.
 
 Extends [CONTROL_PLANE_CAPACITY_PLAN.md](CONTROL_PLANE_CAPACITY_PLAN.md) (2026-09-05) and
-[CONTROL_PLANE_STORAGE.md](CONTROL_PLANE_STORAGE.md). Those documents landed pins, a reclaim
+[CONTROL_PLANE_STORAGE.md](../CONTROL_PLANE_STORAGE.md). Those documents landed pins, a reclaim
 timer, streaming evidence offload to Backblaze B2, a work volume and a capacity controller. This
 document records why the host still ran out of space on 2026-09-26, what is missing, and a phased
 plan. Quick wins come first, then the volume split and ephemeral workers.
