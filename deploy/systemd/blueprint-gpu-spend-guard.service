@@ -1,5 +1,7 @@
 [Unit]
 Description=Blueprint GPU spend guard and orphan reaper
+# A failed or killed run is recorded and reported (blueprint-unit-failure@.service).
+OnFailure=blueprint-unit-failure@%n.service
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 Wants=network-online.target blueprint-provider-billing-reconciler.service
 After=network-online.target blueprint-provider-billing-reconciler.service
@@ -38,6 +40,10 @@ SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint
 TasksMax=512
 LimitNOFILE=65536
+# 8G is above the host's RAM (8.3 GB is 7.76 GiB): this cap never acts. It is
+# kept because the unit's peak is not measured on the host and a guessed cap
+# must not kill a money-safety unit. The batch units' sum is bounded by
+# system-blueprintbatch.slice, which this unit is outside.
 MemoryMax=8G
 # Host safety net (money safety): when the host runs out, the kernel's OOM
 # killer counts this unit half the host smaller (-500) and passes it over
@@ -45,6 +51,16 @@ MemoryMax=8G
 OOMScoreAdjust=-500
 CPUQuota=200%
 Type=oneshot
+# A run that never returned used to stop the guard for good: its timer waits
+# for this unit to go inactive (OnUnitInactiveSec), and eight units order
+# themselves after it. Paid admission then failed closed (a lock over five
+# minutes old), but orphan reaping stopped too. A run takes about 2 min of
+# CPU and took 5.5 min under load 9 (2026-10-31, comment below); the timer's
+# contract test models a slow run at 208 s and the slowest at 600 s; each
+# provider request times out at 30 s. 20 min is twice that slowest case.
+# systemd then stops the run, which starts no child that must outlive it,
+# and the timer's wait starts again (a failed run re-arms it: systemd 255).
+TimeoutStartSec=20min
 # The guard is an admission input for the Task Evaluation allocator. It must
 # run the atomically promoted source tree, not the mutable build checkout.
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane

@@ -104,6 +104,7 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.native_g1_team_campaign_dispatcher",
     "blueprint_pipeline.native_g1_team_campaign_settlement",
     "blueprint_pipeline.team_candidate_quick10_launch",
+    "blueprint_pipeline.unit_failure_notifier",
     "blueprint_pipeline.website_atlas_preview",
 )
 

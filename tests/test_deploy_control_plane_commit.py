@@ -484,6 +484,53 @@ def test_restart_reloads_drop_ins_before_restarting_the_intake(monkeypatch) -> N
     ]
 
 
+def test_deploy_installs_the_batch_slice_and_notifier_on_a_host_that_never_had_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The slice and the notifier are only referenced (Slice=, OnFailure=), never enabled or started:
+    their bytes must be on disk before the daemon-reload that precedes every restart."""
+
+    release = tmp_path / "release"
+    unit_dir = release / "deploy" / "systemd"
+    unit_dir.mkdir(parents=True)
+    for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS:
+        (unit_dir / unit).write_bytes((REPO_ROOT / "deploy" / "systemd" / unit).read_bytes())
+    installed_root = tmp_path / "never-had-the-slice"
+
+    receipts = deploy._install_release_systemd_units(release_path=release, systemd_dir=installed_root)
+
+    names = [row["unit"] for row in receipts]
+    assert names[:2] == ["system-blueprintbatch.slice", "blueprint-unit-failure@.service"]
+    for name in names[:2]:
+        installed = installed_root / name
+        assert installed.read_bytes() == (REPO_ROOT / "deploy" / "systemd" / name).read_bytes()
+        assert installed.stat().st_mode & 0o777 == 0o644
+    # Every installed unit that names the slice or the notifier finds its file beside it.
+    for name in names:
+        for line in (installed_root / name).read_text(encoding="utf-8").splitlines():
+            if line.startswith("Slice="):
+                assert (installed_root / line.split("=", 1)[1]).is_file(), name
+            if line.startswith("OnFailure="):
+                assert line == "OnFailure=blueprint-unit-failure@%n.service"
+    # Neither is a trigger: a deploy never enables, starts, stops or restores it by name.
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(argv, **_kwargs):
+        calls.append(tuple(argv))
+        state = "disabled" if argv[1] == "is-enabled" else "inactive"
+        return SimpleNamespace(returncode=0, stdout=state + "\n", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    states = deploy._installed_path_unit_states(receipts)
+    assert not {"system-blueprintbatch.slice", "blueprint-unit-failure@.service"} & set(states)
+    assert all(call[-1].endswith((".timer", ".path")) for call in calls)
+    # Anything that is not a service, trigger or slice is still refused.
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_systemd_unit_name_invalid"):
+        deploy._install_release_systemd_units(
+            release_path=release, systemd_dir=installed_root, units=("blueprint-x.socket",)
+        )
+
+
 def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> None:
     release = tmp_path / "release"
     unit_dir = release / "deploy/systemd"
@@ -721,6 +768,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         provider_poll_units.append(source)
     additional_sources = []
     for name in (
+        "system-blueprintbatch.slice", "blueprint-unit-failure@.service",
         "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
         "blueprint-agent-execution.service", "blueprint-agent-run-dispatcher.service",
         "blueprint-agent-run-dispatcher.timer", "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
@@ -754,7 +802,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
 
     expected = []
     for source in (
-        *additional_sources[:8],
+        *additional_sources[:10],
         service,
         path_unit,
         preparation_service,
@@ -792,7 +840,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         progression_service,
         progression_timer,
         progression_path,
-        *additional_sources[8:],
+        *additional_sources[10:],
         storage_gc_service,
         storage_gc_timer,
         *release_lifecycle_units,
@@ -831,6 +879,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     """
 
     assert deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS == (
+        "system-blueprintbatch.slice",
+        "blueprint-unit-failure@.service",
         "blueprint-pubsub-handoff-listener.service",
         "blueprint-pubsub-handoff-listener.timer",
         "blueprint-agent-execution.service",

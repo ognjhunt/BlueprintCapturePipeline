@@ -59,7 +59,8 @@ def test_both_routes_hand_the_compile_the_intent_scopes_and_the_hosts_movable_fu
     with pytest.raises(Stop):
         packet.prepare_team_scene(run_root=tmp_path / "run", capture_root=tmp_path / "capture",
                                   scenario_id=worker.SCENARIO_ID, output_root=attempt,
-                                  configured_scene_bundle_path=bundle, **inputs, **worker._intent_scopes(scope))
+                                  configured_scene_bundle_path=bundle, **inputs, **worker._intent_scopes(scope),
+                                  **worker.WEBSITE_COMPILE)
 
     def plan(**kwargs):
         planned.append(kwargs["arguments"])
@@ -77,6 +78,8 @@ def test_both_routes_hand_the_compile_the_intent_scopes_and_the_hosts_movable_fu
     host, routed = compiled
     assert host == routed == planned[0]
     assert host["robot_access_scope"] == host["owner_success_confirmation_scope"] == scope
+    # Both carry the website worker's own switch: unconfirmed standard thresholds are assumed, and said so.
+    assert host["assume_unconfirmed_standard_thresholds"] is True
     assert host["movable_furniture"] == {key: value for key, value in KNOWN.items() if key != "offer"}
     assert reads == [(scope, REVISION["revision_digest"])] * 2
     # An unbound request compiles exactly as before: no scope, so nothing about furniture is read.

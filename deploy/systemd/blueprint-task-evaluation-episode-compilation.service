@@ -35,6 +35,8 @@ LimitNOFILE=4096
 # is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
 # before the always-on services, paid work and the money-safety units.
 # Measured: up to 60M on the host.
+# One of the batch units system-blueprintbatch.slice bounds together.
+Slice=system-blueprintbatch.slice
 MemoryHigh=3G
 MemoryMax=4G
 OOMScoreAdjust=200

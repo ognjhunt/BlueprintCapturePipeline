@@ -48,6 +48,8 @@ LimitNOFILE=4096
 # is killed in this unit, not host-wide. It holds paid work, a money ledger or
 # the WebApp's intake: -200, after batch jobs, before the money-safety units.
 # Measured: up to 424M on the host.
+# One of the batch units system-blueprintbatch.slice bounds together.
+Slice=system-blueprintbatch.slice
 MemoryHigh=1G
 MemoryMax=2G
 OOMScoreAdjust=-200

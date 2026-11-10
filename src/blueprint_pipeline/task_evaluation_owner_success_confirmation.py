@@ -3,8 +3,10 @@
 A website job's task template carries Blueprint's fixed development controls
 as its success thresholds, marked ``proposal_only``
 (``website_native_submission``): nothing translated or confirmed the owner's
-own bar, so every owner-scored step (the team packet, screening) refuses the
-job with ``configured_owner_success_contract_authority_missing``. The owner can
+own bar. The website team packet compiles the job on them all the same, at
+once, marked as assumed and not confirmed by the site
+(``website_owner_success_assumption``); an operator's compile still refuses
+with ``configured_owner_success_contract_authority_missing``. The owner can
 accept those exact thresholds through the operator door
 (``task_evaluation_owner_success_confirmation_door``, kind
 ``confirm-owner-success-contract``): a preview names the published job, the
@@ -19,7 +21,7 @@ task (``configured_success_criteria``, with a copy kept in the record) and the
 back for the team packet, which recomputes every binding from what it already
 reads and only then compiles the owner contract as the owner's. A changed
 revision, document, threshold or proposal, another owner or a revoked intent
-finds no confirmation, and the job refuses exactly as before.
+finds no confirmation, and the job is compiled, or stays, as unconfirmed.
 
 The job's owner can also confirm on the website job page
 (``website_owner_success_confirmation``). That writes this same record through

@@ -38,8 +38,8 @@ exists for cannot compile on the host at all, so shadows could never earn passes
 marker: the paid unit compiles it remotely at the same paths, records byte parity and lands nothing.
 
 Inside the worker, ``run_team_scene_packet_in_worker`` calls the host's own ``materialize_team_scene`` with
-the same arguments (the request's ``owner_success_confirmation_scope`` and ``robot_access_scope`` included)
-at the host's paths. This
+the same arguments (the request's ``owner_success_confirmation_scope`` and ``robot_access_scope`` included,
+and the website worker's ``FLAG_ARGUMENTS``) at the host's paths. This
 module imports no allocation or staging authority: the worker's stage child imports it from the release.
 """
 
@@ -105,6 +105,8 @@ PATH_ARGUMENTS = ("configured_scene_bundle_path", "droid_profile_path", "runtime
 SCOPE_ARGUMENTS = ("owner_success_confirmation_scope", "robot_access_scope")
 # Read on the host and carried as data: ``movable_furniture`` by the host worker, ``robot_access_offer`` here.
 DATA_ARGUMENTS = ("movable_furniture", "robot_access_offer")
+# The website worker's own switches, carried only when set (``team_scene_packet_worker.WEBSITE_COMPILE``).
+FLAG_ARGUMENTS = ("assume_unconfirmed_standard_thresholds", "keep_assumed_thresholds")
 
 
 class TeamScenePacketRemoteError(RuntimeError):
@@ -449,6 +451,7 @@ def _worker_arguments(arguments: Mapping[str, Any], filesystem_root: Path) -> di
     for name in DATA_ARGUMENTS:
         if arguments.get(name) is not None:
             converted[name] = json.loads(json.dumps(arguments[name], allow_nan=False))
+    converted.update({name: True for name in FLAG_ARGUMENTS if arguments.get(name) is True})
     paths = [converted[name] for name in PATH_ARGUMENTS] + list(converted["documents"].values()) + list(
         (converted.get("embodiment_models") or {}).values()) + [converted[name]["directory"] for name in scopes]
     return None if any(path is None for path in paths) else converted
@@ -747,6 +750,7 @@ def _local_arguments(arguments: Mapping[str, Any], roots: Any) -> dict[str, Any]
     for name in DATA_ARGUMENTS:
         if arguments.get(name) is not None:
             local[name] = arguments[name]
+    local.update({name: True for name in FLAG_ARGUMENTS if arguments.get(name) is True})
     return local
 
 
@@ -766,6 +770,7 @@ def run_team_scene_packet_in_worker(descriptor: Mapping[str, Any], roots: Any) -
             or envelope.get("source_commit") != descriptor["code"]["source_commit"]):
         raise TeamScenePacketRemoteError("team_scene_packet_remote_envelope_invalid")
     from .team_scene_packet import materialize_team_scene
+    from .website_owner_success_assumption import FIELD as ASSUMPTION_FIELD
 
     compiled, blockers, error_type = None, [], None
     try:
@@ -774,6 +779,7 @@ def run_team_scene_packet_in_worker(descriptor: Mapping[str, Any], roots: Any) -
                     "scene_id": made["scene_id"], "task_id": made["task_id"],
                     **({"owner_success_confirmation": made["owner_success_confirmation"]}
                        if made.get("owner_success_confirmation") else {}),
+                    **({ASSUMPTION_FIELD: made[ASSUMPTION_FIELD]} if made.get(ASSUMPTION_FIELD) else {}),
                     **({"robot_access_removal": made["robot_access_removal"]}
                        if made.get("robot_access_removal") else {})}
     except Exception as exc:  # noqa: BLE001 - every refusal is a typed result, as the host worker types it

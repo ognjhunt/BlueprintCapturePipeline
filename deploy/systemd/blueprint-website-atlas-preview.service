@@ -1,5 +1,7 @@
 [Unit]
 Description=Advance consented website Atlas previews beside preparation
+# A failed or killed run is recorded and reported (blueprint-unit-failure@.service).
+OnFailure=blueprint-unit-failure@%n.service
 After=network-online.target
 Wants=network-online.target
 
@@ -43,10 +45,13 @@ ReadWritePaths=/var/lib/blueprint
 TasksMax=512
 # Host memory (8.3 GB, no swap): a full Atlas run at a real room is not
 # measured on the host (mesh registration alone: 1.5 GB at capture-447 scale,
-# 3.0 GB at twice it), so MemoryMax stays at main's, with no throttle, until
-# it is. It holds paid work: -200, after batch jobs, before the money-safety
-# units.
-MemoryMax=8G
+# 3.0 GB at twice it).
+# It runs in system-blueprintbatch.slice, which bounds the batch units
+# together, and its own cap is the slice's (8G was above the host and never
+# acted).
+# It holds paid work: -200, after batch jobs, before the money-safety units.
+Slice=system-blueprintbatch.slice
+MemoryMax=5.5G
 OOMScoreAdjust=-200
 CPUQuota=200%
 Nice=10

@@ -426,6 +426,14 @@ DEFAULT_PAID_LAUNCH_LOCKS = (
 DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
 DEFAULT_DOOR_HOLDS_DIR = "/var/lib/blueprint-operator-door/requests/holds"
 DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
+    # First, before any unit that names them: the batch units' memory slice
+    # (Slice=) and the failure notifier (OnFailure=). Both are only referenced,
+    # never enabled or started here: systemd starts the slice with its first
+    # member and a notifier instance when a unit fails, and both are read by the
+    # daemon-reload that precedes every restart below. A host that has never
+    # had them needs nothing else.
+    "system-blueprintbatch.slice",
+    "blueprint-unit-failure@.service",
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-pubsub-handoff-listener.timer",
     "blueprint-agent-execution.service",
@@ -646,8 +654,9 @@ DEFAULT_RELEASE_RETIREMENT_KEEP_LAST = 3
 #: The only unit kinds a release may install.  Services and their queue-watching
 #: paths stay paired, while the one fixed progression timer (and its
 #: compilation-result path watcher) stays paired with its oneshot service.
+#: A slice only bounds the resources of the services that name it.
 #: Sockets, mounts, and anything else remain refused.
-DEPLOYED_SYSTEMD_UNIT_SUFFIXES = (".service", ".path", ".timer")
+DEPLOYED_SYSTEMD_UNIT_SUFFIXES = (".service", ".path", ".timer", ".slice")
 DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
 DEFAULT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT = (
     "/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries"
