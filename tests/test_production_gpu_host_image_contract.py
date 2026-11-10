@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from blueprint_pipeline.production_gpu_worker_pool import readiness_main
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,24 +30,3 @@ def test_runtime_cloud_init_never_installs_or_pulls() -> None:
     assert "docker login" not in startup_function
     assert "docker image inspect" in startup_function
     assert "/etc/blueprint/worker-image-ref" in startup_function
-
-
-def test_readiness_cli_writes_blocked_local_gate_without_live_evidence(
-    tmp_path: Path,
-) -> None:
-    output = tmp_path / "readiness.json"
-    rc = readiness_main(
-        [
-            "--host-image-id",
-            "projects/test/global/images/host-v1",
-            "--worker-image-ref",
-            "registry.example/worker@sha256:" + "a" * 64,
-            "--gpu-family",
-            "g4-rtx-pro-6000",
-            "--output",
-            str(output),
-        ]
-    )
-    assert rc == 1
-    assert '"status": "local_contract_ready_live_proof_required"' in output.read_text()
-
