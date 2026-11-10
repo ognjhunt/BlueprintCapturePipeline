@@ -491,7 +491,8 @@ def _dropped_harness_retries(ledger: Mapping[str, Any], state: Mapping[str, Any]
     (never a result) and the site's retry bound now allows it.
 
     A re-plan at the same commit also leaves behind the unspent rows that wait for a
-    deploy (``_held_for_deploy``); the last such row the chain holds rejoins here too.
+    deploy (``_held_for_deploy``) and a row out of GPU offers or with an expired quote
+    that was not due again by itself; the last such row the chain holds rejoins here too.
     """
     listed = {candidate["candidate_id"] for candidate in plan["candidates"]}
     latest: dict[str, Mapping[str, Any]] = {}
@@ -504,8 +505,9 @@ def _dropped_harness_retries(ledger: Mapping[str, Any], state: Mapping[str, Any]
             latest.setdefault(candidate_id, row)
         previous = earlier.get("supersedes")
     return sorted(candidate_id for candidate_id, row in latest.items()
-                  if candidate_id not in listed and (_held_for_deploy(row) or _harness_failed(row)
-                  and _harness_retry_allowed(ledger, state["site_id"], candidate_id)))
+                  if candidate_id not in listed and (
+                      _held_for_deploy(row) or _offer_exhausted(row) or _quote_expired(row)
+                      or _harness_failed(row) and _harness_retry_allowed(ledger, state["site_id"], candidate_id)))
 
 
 def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any], candidate_id: str) -> bool:
@@ -700,7 +702,8 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
         # cannot read is not known to differ, so it never re-plans on its own.
         stale = planned_half(plan) not in (None, scene_half)
     # No deploy and no machine fault: a row that ran out of GPU offers or whose quote expired.
-    again = (self_replan and not stale and not state.get(SELF_REPLAN_CLOSED_FIELD)
+    self_open = self_replan and not state.get(SELF_REPLAN_CLOSED_FIELD)
+    again = (self_open and not stale
              and any(_self_replan_due(ledger, state, candidate["candidate_id"]) for candidate in plan["candidates"]))
     if not stale and not machine and not again:
         return None
@@ -708,9 +711,15 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
     def planned_again(candidate: Mapping[str, Any]) -> bool:
         row = rows[candidate["candidate_id"]]
         if not _spent(row):
-            # At the same commit a row held behind a sibling's failure would fail the same way, and a
-            # reached account limit is a money stop: both stay for the next deploy's re-plan.
-            return stale or not _held_for_deploy(row)
+            if stale:
+                return True
+            if _offer_exhausted(row) or _quote_expired(row):
+                # At the same commit, only for its own reason: its own bound and cool-off decide,
+                # never a sibling that is due. Left behind, the next deploy's re-plan takes it up.
+                return self_open and _self_replan_due(ledger, state, candidate["candidate_id"])
+            # A row held behind a sibling's failure would fail the same way, and a reached account
+            # limit is a money stop: both stay for the next deploy's re-plan.
+            return not _held_for_deploy(row)
         # A machine fault alone changed nothing of ours, so a harness failure beside it waits for its
         # fix: it is planned again only when the commit (or the scene half) changed.
         return (stale and _harness_failed(row)

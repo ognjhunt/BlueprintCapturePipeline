@@ -133,6 +133,43 @@ def test_a_row_whose_quote_expired_is_planned_again_at_the_same_commit_bounded(t
     assert publication(tmp_path, "campaign-1b")["budget"]["committed_upper_bound_usd"] == "0"
 
 
+def _shortage_beside_an_expired_quote(root, monkeypatch):
+    """candidate-000 ran out of GPU offers just now; candidate-001's quote then expired."""
+    expired = {"now": False}
+    monkeypatch.setattr(coordinator, "_quote_current",
+                        lambda candidate: candidate["candidate_id"] != "candidate-001" or not expired["now"])
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=root)
+    _exhaust_offers(root, monkeypatch)
+    expired["now"] = True
+    _pass(root, {"status": "running"})
+    assert [(row["status"], row["blockers"]) for row in publication(root)["candidates"]] == [
+        ("blocked", [coordinator.OFFER_SHORTAGE_EXHAUSTED_BLOCKER]), ("deferred", [coordinator.QUOTE_EXPIRED_BLOCKER])]
+
+
+def test_a_due_sibling_never_pulls_a_row_past_its_own_cool_off(tmp_path, monkeypatch):
+    _shortage_beside_an_expired_quote(tmp_path, monkeypatch)
+    # The expired quote is due; the shortage row's two hours have not passed.
+    assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) == ["candidate-001"]
+    _search_ended(tmp_path, "campaign-1", hours=coordinator.OFFER_SHORTAGE_REPLAN_COOLOFF_SECONDS / 3600 + 1)
+    assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) == [
+        "candidate-000", "candidate-001"]
+
+
+def test_a_due_sibling_never_pulls_a_row_past_its_own_bound_and_a_deploy_takes_it_up(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator, "OFFER_SHORTAGE_REPLAN_LIMIT", 0)  # its self re-plans are used up
+    monkeypatch.setattr(coordinator, "OFFER_SHORTAGE_REPLAN_COOLOFF_SECONDS", 0)
+    _shortage_beside_an_expired_quote(tmp_path, monkeypatch)
+    assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) == ["candidate-001"]
+    with pytest.raises(coordinator.ScreeningCoordinatorError, match="replan_not_admitted"):
+        coordinator.supersede_campaign("campaign-1", successor(plan(count=2), commit=OLD), implementation_commit=OLD,
+                                       queue_root=tmp_path)
+    coordinator.supersede_campaign("campaign-1", successor(plan(count=2), keep={"candidate-001"}, commit=OLD),
+                                   implementation_commit=OLD, queue_root=tmp_path)
+    # A machine fault beside it is no reason either, and the row is not lost: the next deploy plans it again.
+    assert coordinator.replan_scope("campaign-1b", implementation_commit=NEW, queue_root=tmp_path) == [
+        "candidate-001", "candidate-000"]
+
+
 # --- the account's monthly limit: unreadable evidence waits, a reached limit is a money stop ------
 
 
