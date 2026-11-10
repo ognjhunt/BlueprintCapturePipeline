@@ -37,7 +37,10 @@ from typing import Any
 
 MANIFEST_SCHEMA = "blueprint_replay_set_manifest.v1"
 MANIFEST_FILENAME = "manifest.json"
-DEFAULT_MATERIALIZE_ROOT = "/tmp/blueprint-replay-set-v1"
+# The synthetic records carry this root in their absolute paths (the manifest's
+# materialize_root), so it is fixed rather than a fresh temporary directory. It
+# holds committed test fixtures only.
+DEFAULT_MATERIALIZE_ROOT = "/tmp/blueprint-replay-set-v1"  # nosec B108 - fixed root of committed synthetic fixtures
 GZIP_SUFFIX = ".gz"
 STOP_FIELDS = ("kind", "stage", "code")
 
