@@ -278,8 +278,8 @@ by default, a deploy is the retry mechanism and destroys work, and no job has a
 deadline. One pull request in each repo answers them; neither is merged yet.
 The rules and what they leave open are in
 [`../architecture/job-retry-and-deadlines.md`](../architecture/job-retry-and-deadlines.md).
-Pull requests: [#3549](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3549) and the WebApp
-branch `claude/quirky-tesla-63lwug` (its pull request is opened after this one).
+Pull requests: [#3549](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3549) and
+[WebApp #1256](https://github.com/ognjhunt/Blueprint-WebApp/pull/1256).
 
 | What | Serves | Effect on this plan |
 |---|---|---|
