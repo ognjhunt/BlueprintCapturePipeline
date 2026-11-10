@@ -1736,7 +1736,10 @@ def test_a_direct_deploy_during_a_live_activation_parks_itself_before_fetching(e
     log = (Path(values["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
     assert "staying parked: scene_configuration_activation_live:pending:act-1" in log
     hold_file = json.loads((Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]) / ".activation-hold").read_text(encoding="utf-8"))
-    assert hold_file["live"] == [{"activation_id": "act-1", "state": "pending"}]
+    # The old row fields stay; WP-17 adds which stage it is and its id.
+    assert hold_file["live"] == [{"activation_id": "act-1", "state": "pending",
+                                  "stage": "scene_configuration_activation", "id": "act-1"}]
+    assert hold_file["stages"] == ["scene_configuration_activation"]
 
 
 def test_an_override_deploys_during_a_live_activation(env: dict[str, str]) -> None:

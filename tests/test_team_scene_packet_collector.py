@@ -195,3 +195,36 @@ def test_without_a_provider_every_undispatched_hand_off_still_goes_back(tmp_path
     assert (status["status"], status["blockers"]) == ("blocked", ["team_scene_remote_compile_deferred"])
     assert status["remote_compile"]["mode"] == "fallback_deferred" and status["automatic_retry"]["not_before"]
     assert world.compiles == [] and host.state() == "processed" and lane.markers(host.jobs, "fallback") == []
+
+
+def test_a_remote_refusal_is_never_retried_by_the_clock_so_no_paid_compile_is_bought_again(
+        tmp_path: Path, monkeypatch) -> None:
+    from datetime import timedelta
+
+    from blueprint_pipeline import team_scene_packet
+    from blueprint_pipeline import team_scene_packet_worker as worker
+    from blueprint_pipeline.team_scene_packet import TeamScenePacketError
+
+    world = TeamCollectorWorld(tmp_path, monkeypatch)
+    host = world.host
+    host.process()
+    original = team_scene_packet.materialize_team_scene
+
+    def refuses(**kwargs):
+        if world.in_worker:
+            world.compiles.append("worker")
+            raise TeamScenePacketError("native_task_appearance_layer_transform_spurious")
+        return original(**kwargs)
+
+    monkeypatch.setattr(team_scene_packet, "materialize_team_scene", refuses)
+    world.drive(until=lambda: world.terminal())
+    [status] = _settled(host.process())
+    assert (status["status"], status["blockers"]) == ("blocked", ["native_task_appearance_layer_transform_spurious"])
+    # The landing names the paid attempt behind it, so the shared schedule leaves it to a new release.
+    assert status["remote_compile"]["mode"] == "remote"
+    assert worker.refusal_retry_cause(status) is None and worker.REFUSAL_RETRY_FIELD not in status
+    queue = host.world["queue"]
+    later = worker._utc_now() + timedelta(days=30)
+    assert worker._requeue_due(queue, later, None) == []
+    assert (queue / "processed" / f"{host.world['key']}.json").is_file()
+    assert world.compiles == ["worker"] and len(world.executions()) == 1

@@ -12,8 +12,9 @@ evaluation ended before the screening queue could plan a campaign kept reading
     recorded it.
 ``robot_free_probe_not_completed``
     The probe could not be completed and nothing retries it under the running
-    release: a staging refusal this release already tried
-    (``rigid_robot_free_probe_runner``, retried once per new release), a spent
+    release: a staging refusal this release already tried and whose timed retries
+    are spent (``rigid_robot_free_probe_runner``, retried once per new release and
+    on the shared schedule), a spent
     attempt budget, a trace conflict with the request's own trace (one beside a
     superseded request's trace is re-ingested once per new release), an unbound
     revision, or a decided receipt the gate refuses. A receipt bound to another
@@ -119,7 +120,7 @@ def probe_hold(code: str, capture_root: str | Path, *, queue_root: str | Path | 
 
     ``code`` is the planning refusal (``robot_free_probe_gate``). A refusal the
     probe lane can still clear (a run queued, waiting or due a retry by a new
-    release) is no hold: the job is still being evaluated.
+    release or the clock) is no hold: the job is still being evaluated.
     """
     if not code.startswith(PROBE_GATE_PREFIX):
         return None

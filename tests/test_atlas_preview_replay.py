@@ -146,7 +146,9 @@ def test_a_purchase_over_the_snapshot_allowance_is_refused_as_webapp_refuses_it(
         "kind": "refusal", "stage": "independent_review", "code": "website_scene_preparation_budget_exhausted",
         "exception": "ValueError: website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"}
     assert report["would_buy"] == [] and report["refused_spend"][0]["maximum_cost_usd"] == .5
-    assert report["final_job"]["state"] == "failed" and report["snapshot_sources"]["configuration"] == str(snapshot)
+    # A money refusal waits as needs_input with its own code, re-checked on the timer.
+    assert report["final_job"]["state"] == "needs_input" and report["snapshot_sources"]["configuration"] == str(snapshot)
+    assert report["final_job"]["reason"] == "website_scene_preparation_budget_exhausted"
 
 
 def test_the_real_controller_reaches_its_first_purchase_the_scene_review(site):
@@ -169,7 +171,8 @@ def test_the_real_controller_refuses_an_allowance_too_small_for_the_next_stage(s
     assert report["first_stop"]["kind"] == "refusal"
     assert report["first_stop"]["code"] == "atlas_runtime_budget_insufficient"
     assert report["first_stop"]["raised_at"].split(" > ")[-1].startswith("website_atlas_pipeline._run_atlas_pipeline:")
-    assert report["would_buy"] == [] and report["steps"][-1]["state"] == "failed"
+    assert report["would_buy"] == [] and report["steps"][-1]["state"] == "needs_input"
+    assert report["steps"][-1]["reason"] == "atlas_runtime_budget_insufficient"
 
 
 def test_a_failed_job_is_retried_in_the_overlay_and_a_missing_input_names_its_path(site):

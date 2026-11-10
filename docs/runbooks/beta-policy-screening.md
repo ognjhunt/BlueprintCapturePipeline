@@ -243,6 +243,15 @@ The rules live in `beta_policy_screening_failure_scope` and the coordinator.
   two-hour cool-off, at most three times per site and candidate.
 - **An expired quote** (`beta_screening_cost_quote_expired`) is planned again
   with a fresh quote, at most three times per site and candidate.
+- **Any other refusal before allocation** that no rule above owns (for
+  example `beta_screening_transport_retry_cap_exhausted`,
+  `beta_screening_capacity_preflight_failed`, a typed preparation or allocator
+  refusal) is planned again at the same commit on the shared refusal schedule
+  (`job_retry_policy`: 15 minutes, then 1, 3, 6, 12 and 24 hours from the row's
+  close), at most six times per site and candidate. It never applies to a
+  refusal that protects privacy, rights or money, or to an answer about the
+  candidate (the site stopped it, the WebApp refused its execution, measured
+  geometry).
 - **Money evidence too old to read** (a stale spend lock,
   `account_monthly_spend_report_stale`, `account_monthly_spend_report_missing_or_invalid`)
   waits and is read again, at most six times per row. A reached limit
@@ -258,7 +267,10 @@ The rules live in `beta_policy_screening_failure_scope` and the coordinator.
   an unproven reservation stays open and is still reconciled. The WebApp reads
   a hold only while no campaign was published for the scene.
 
-A self re-plan ends once the job's window has closed.
+The three self re-plans (no GPU offer, an expired quote, any other refusal)
+each take a row only for its own reason: a row whose own wait or bound has not
+come is never carried by a sibling that is due, and the next deploy's re-plan
+takes it up. A self re-plan ends once the job's window has closed.
 
 ## Candidate configuration and intentional retries
 

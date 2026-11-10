@@ -61,11 +61,13 @@ fi
 export TMPDIR="$deploy_tmp"
 door_phase staging_guard_done
 
-# A deploy retires an in-flight scene-configuration activation and every stage after
-# it refuses the old release, so its pre-paid work would be rebuilt from scratch.
-# Hold the deploy (never the job) while one is live on the running release, up to
-# the activation's own time limit; an override for a money, privacy or rights fix
-# goes now. Checked before the fetch, and before parked_settle.py marks a record as
+# A deploy retires an in-flight attempt and every stage after it refuses the old
+# release, so its paid work would be rebuilt from scratch. Hold the deploy (never
+# the job) while a paid stage is live on the running release (a scene-configuration
+# activation or launch, a held paid-launch slot, a beta-screening candidate
+# launching or running; activation_hold.py), up to one cap; an override for a money,
+# privacy or rights fix goes now. The refusal code below keeps its old name.
+# Checked before the fetch, and before parked_settle.py marks a record as
 # deploying, so staying parked here leaves every record as it was.
 door_phase activation_hold_start
 hold_rc=0

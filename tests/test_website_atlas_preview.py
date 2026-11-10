@@ -298,7 +298,6 @@ def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypa
 
 
 @pytest.mark.parametrize("error,state,reason", [
-    (ValueError("atlas_runtime_budget_insufficient"), "failed", "atlas_runtime_budget_insufficient"),
     (ValueError("atlas_scene_planner_abstained:people move through every frame"), "needs_input",
      "atlas_scene_planner_abstained"),
     (ValueError("atlas_scene_subject_origin_uncertain"), "needs_input", "atlas_scene_subject_origin_uncertain"),
@@ -307,8 +306,9 @@ def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypa
      "atlas_synthetic_subject_requires_preserved_capture"),
     (ValueError("atlas_scene_requires_preserved_capture"), "needs_input", "atlas_scene_requires_preserved_capture"),
     (ValueError("website_control_task-context_http_409:source_revoked"), "withdrawn", "website_capture_withdrawn"),
-    (type("AtlasHttpError", (RuntimeError,), {"status": 403})("website_atlas_api_403:forbidden"), "failed",
-     "website_atlas_api_403"),
+    (ValueError("atlas_task_and_scene_coverage_gap"), "needs_input", "atlas_task_and_scene_coverage_gap"),
+    # Privacy and rights refusals outside the explicit sets also end the job at once.
+    (ValueError("atlas_source_rights_unverified"), "failed", "atlas_source_rights_unverified"),
 ])
 def test_typed_refusals_end_in_one_plain_final_state(monkeypatch, site, error, state, reason):
     _enqueue(site)
@@ -320,9 +320,9 @@ def test_typed_refusals_end_in_one_plain_final_state(monkeypatch, site, error, s
     assert world.advance() == state and len(world.runs) == 1
 
 
-def test_transport_failures_back_off_and_end_failed_once_retries_are_exhausted(monkeypatch, site):
+def test_transport_failures_back_off_and_record_why(monkeypatch, site):
     _enqueue(site)
-    world = World(monkeypatch, site, [OSError("connection reset")] * preview.MAXIMUM_TRANSIENT_FAILURES)
+    world = World(monkeypatch, site, [OSError("connection reset")] * 8)
     world.advance()
     job = _job(site)
     assert job["state"] == "processing" and job["transient_failures"] == 1 and job["next_attempt_at_epoch"] > world.clock
@@ -333,19 +333,23 @@ def test_transport_failures_back_off_and_end_failed_once_retries_are_exhausted(m
     world.clock += 30
     world.advance()
     assert len(world.runs) == 1  # not before the backoff ends
-    for _ in range(preview.MAXIMUM_TRANSIENT_FAILURES - 1):
+    for _ in range(7):
         world.clock = _job(site)["next_attempt_at_epoch"]
         world.advance()
-    job = _job(site)
-    assert (job["state"], job["reason"]) == ("failed", "atlas_preview_retries_exhausted")
+    job = _job(site)  # eight failures no longer end the job
+    assert (job["state"], job["transient_failures"]) == ("processing", 8)
     assert job["last_error"] == {"type": "builtins.OSError", "message": "connection reset"}
-    assert len(world.runs) == preview.MAXIMUM_TRANSIENT_FAILURES
+    assert len(world.runs) == 8
 
 
 def test_a_non_code_value_error_fails_with_its_bounded_cause_retained(monkeypatch, site):
     _enqueue(site)
-    world = World(monkeypatch, site, [ValueError("Expecting value: line 1 column 1 (char 0) key=sk-live-abcdefgh123")])
-    assert world.advance() == "failed"
+    world = World(monkeypatch, site, [ValueError("Expecting value: line 1 column 1 (char 0) key=sk-live-abcdefgh123")] * 7)
+    assert world.advance() == "processing"
+    assert _job(site)["last_refusal_reason"] == "atlas_preview_valueerror"
+    for _ in range(6):
+        world.clock = _job(site)["next_attempt_at_epoch"]
+        world.advance()
     job = _job(site)
     assert job["reason"] == "atlas_preview_valueerror"
     assert job["last_error"] == {"type": "builtins.ValueError",
@@ -628,17 +632,22 @@ def test_a_task_confirmed_mid_run_is_picked_up_by_the_next_tick_not_failed(monke
 def test_a_failed_job_resumes_once_an_operator_retries_it_after_a_fix(monkeypatch, site):
     """2026-10-23: a fixed planner check could not reach a job its old check had failed."""
     _enqueue(site)
-    world = World(monkeypatch, site, [ValueError("atlas_scene_planner_transients_invalid"), _completed])
-    assert world.advance() == "failed"
+    world = World(monkeypatch, site, [ValueError("atlas_scene_planner_transients_invalid")] * 7 + [_completed])
+    assert world.advance() == "processing"
+    for _ in range(6):  # the automatic schedule runs out first
+        world.clock = _job(site)["next_attempt_at_epoch"]
+        world.advance()
     failed = _job(site)
+    assert failed["state"] == "failed" and len(world.runs) == 7
     assert failed["provider_cleanup"]["state"] == "complete" and world.deleted == []  # nothing made yet
-    assert world.advance() == "failed" and len(world.runs) == 1  # a failure is final until retried
+    world.clock += preview.REFUSAL_RETRY_DELAYS_SECONDS[-1]
+    assert world.advance() == "failed" and len(world.runs) == 7  # an ended job stays ended until reopened
     world.clock += 60
     job = preview.retry_failed_job(site.job, now=world.now)
     assert (job["state"], job["reason"], job["revision"]) == ("processing", None, failed["revision"] + 1)
     assert job["retries"] == [{"reason": "atlas_scene_planner_transients_invalid", "at_epoch": world.clock}]
     assert job["provider_cleanup"]["state"] == "pending"
-    assert world.advance() == "ready" and len(world.runs) == 2
+    assert world.advance() == "ready" and len(world.runs) == 8
     # The resumed run's assets are deleted at World Labs, not left behind.
     assert sorted(world.deleted) == ["gone1", "mesh1", "splat1", "upload1", "view1"]
     assert _job(site)["provider_cleanup"]["state"] == "complete"
@@ -1074,4 +1083,279 @@ def test_the_digest_cache_is_invisible_to_the_job_and_still_catches_a_changed_fi
     source.write_bytes(b"VIDEO")  # same size, mtime put back: only ctime tells
     os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
     world.clock += 60
-    assert world.advance() == "failed" and _job(site)["reason"] == "atlas_runtime_source_changed"
+    assert world.advance() == "processing" and _job(site)["last_refusal_reason"] == "atlas_runtime_source_changed"
+
+
+# Retries are automatic and timed until the job ends (job_retry_policy).
+
+
+def _deadline(job):
+    return job["enqueued_at_epoch"] + store.MAXIMUM_JOB_SECONDS
+
+
+def _rerun_when_due(world, site):
+    job = _job(site)
+    world.clock = max(world.clock, job["next_attempt_at_epoch"], job.get("retry_at_epoch") or 0)
+    return world.advance()
+
+
+def _set(site, **fields):
+    site.job.write_text(json.dumps({**_job(site), **fields}))
+
+
+@pytest.mark.parametrize("failures_before", [8, 19, 199])
+def test_an_outage_never_ends_the_job_by_its_attempt_count(monkeypatch, site, failures_before):
+    _enqueue(site)
+    world = World(monkeypatch, site, [OSError("connection reset")])
+    _set(site, transient_failures=failures_before)
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["transient_failures"] == failures_before + 1 and job["reason"] is None
+    assert job["next_attempt_at_epoch"] - world.clock == 3600  # capped
+    assert world.pushed == [] or all(row["state"] == "processing" for row in world.pushed)
+
+
+def test_an_outage_ends_as_expired_at_the_deadline_and_not_after(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError("website_control_atlas-reservation_http_503:unclassified")] * 3)
+    deadline = _deadline(_job(site))
+    world.clock = deadline - 100
+    _set(site, transient_failures=30)
+    assert world.advance() == "processing"
+    assert _job(site)["next_attempt_at_epoch"] == deadline  # not deadline - 100 + 3600
+    assert _job(site)["provider_cleanup"] is None
+    world.clock = deadline + 1
+    assert world.advance() == "failed" and len(world.runs) == 1
+    assert _job(site)["reason"] == "atlas_preview_expired"
+    assert world.pushed[-1]["state"] == "failed"
+
+
+def test_a_defect_follows_the_bounded_refusal_schedule_then_fails_with_its_code(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [KeyError("stage")] * 8)
+    delays = []
+    for _ in range(6):
+        assert _rerun_when_due(world, site) == "processing"
+        delays.append(_job(site)["next_attempt_at_epoch"] - world.clock)
+    assert delays == [900, 3600, 10800, 21600, 43200, 86400]
+    assert _job(site)["refusal_retries"] == 6 and _job(site)["transient_failures"] == 0
+    assert _rerun_when_due(world, site) == "failed" and len(world.runs) == 7
+    job = _job(site)
+    assert job["reason"] == "atlas_preview_keyerror" and job["last_error"]["type"] == "builtins.KeyError"
+
+
+def test_an_unclassified_refusal_retries_six_times_then_fails_with_its_own_code(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError("atlas_scene_planner_transients_invalid")] * 8)
+    delays = []
+    for retries in range(1, 7):
+        assert _rerun_when_due(world, site) == "processing"
+        job = _job(site)
+        assert (job["refusal_retries"], job["last_refusal_reason"]) == (retries, "atlas_scene_planner_transients_invalid")
+        delays.append(job["next_attempt_at_epoch"] - world.clock)
+        # Waiting is not ending: no teardown and no failed state reaches the WebApp.
+        assert job["provider_cleanup"] is None and world.deleted == []
+        assert all(row["state"] == "processing" for row in world.pushed)
+        world.clock += 60
+        assert world.advance() == "processing" and len(world.runs) == retries  # not before the delay ends
+    assert delays == list(preview.REFUSAL_RETRY_DELAYS_SECONDS)
+    assert _rerun_when_due(world, site) == "failed"
+    job = _job(site)
+    assert job["reason"] == "atlas_scene_planner_transients_invalid"
+    assert job["last_error"] == {"type": "builtins.ValueError", "message": "atlas_scene_planner_transients_invalid"}
+    assert job["provider_cleanup"]["state"] == "complete" and world.pushed[-1]["state"] == "failed"
+
+
+def test_forward_progress_resets_the_refusal_streak_but_a_same_stage_poll_does_not(monkeypatch, site):
+    _enqueue(site)
+    refusal = ValueError("atlas_scene_planner_transients_invalid")
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"}, refusal, refusal,
+                                      {"status": "processing", "stage": "plan"}, refusal,
+                                      {"status": "processing", "stage": "pose"}, refusal])
+    for _ in range(4):
+        _rerun_when_due(world, site)
+    assert _job(site)["refusal_retries"] == 2  # the same stage again is not progress
+    _rerun_when_due(world, site)
+    assert _job(site)["refusal_retries"] == 3
+    _rerun_when_due(world, site)
+    assert (_job(site)["stage"], _job(site)["refusal_retries"]) == ("pose", 0)
+    _rerun_when_due(world, site)
+    assert _job(site)["refusal_retries"] == 1 and _job(site)["refusal_retries_total"] == 4
+
+
+def test_two_alternating_refusals_cannot_retry_without_bound(monkeypatch, site):
+    _enqueue(site)
+    first, second = ValueError("atlas_first_refusal"), ValueError("atlas_second_refusal")
+    world = World(monkeypatch, site, [first, second] * 4)
+    states = [_rerun_when_due(world, site) for _ in range(7)]
+    assert states == ["processing"] * 6 + ["failed"] and _job(site)["reason"] == "atlas_first_refusal"
+    # Alternating with progress between them: the job's lifetime allowance ends it.
+    site.job.unlink()
+    _enqueue(site)
+    steps = []
+    for index in range(preview.MAXIMUM_REFUSAL_RETRIES + 1):
+        steps += [first if index % 2 else second, {"status": "processing", "stage": ("plan", "pose")[index % 2]}]
+    world = World(monkeypatch, site, steps)
+    while _rerun_when_due(world, site) == "processing":
+        pass
+    job = _job(site)
+    assert job["state"] == "failed" and job["refusal_retries_total"] == preview.MAXIMUM_REFUSAL_RETRIES
+    assert len(world.runs) == 2 * preview.MAXIMUM_REFUSAL_RETRIES + 1
+
+
+@pytest.mark.parametrize("refusal", [
+    ValueError("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"),
+    ValueError("account_monthly_spend_limit_reached"),
+])
+def test_a_money_refusal_waits_as_needs_input_shown_to_the_owner_and_re_asked_until_expiry(monkeypatch, site, refusal):
+    _enqueue(site)
+    world = World(monkeypatch, site, [refusal] * 3 + [{"status": "processing", "stage": "plan"}] + [refusal] * 2)
+    ended = []
+    clean, retract = preview._clean_provider, preview._retract_archive
+    monkeypatch.setattr(preview, "_clean_provider", lambda job, **kw: ended.append("cleanup") or clean(job, **kw))
+    monkeypatch.setattr(preview, "_retract_archive", lambda job: ended.append("retraction") or retract(job))
+    code = preview._reason(refusal)
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["reason"], job["retry_at_epoch"]) == (code, world.clock + preview.AUTHORITY_RECHECK_SECONDS)
+    assert job["last_error"]["type"] == "builtins.ValueError" and "refusal_retries" not in job
+    # The owner is told, with the reason; nothing is torn down while it waits.
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("needs_input", code)
+    world.clock += 60
+    assert world.advance() == "needs_input" and len(world.runs) == 1
+    pushed = len(world.pushed)
+    for asked in (2, 3):  # each recheck re-runs the step, which re-asks its own admission
+        assert _rerun_when_due(world, site) == "needs_input" and len(world.runs) == asked
+        assert _job(site)["retry_at_epoch"] == world.clock + preview.AUTHORITY_RECHECK_SECONDS
+    assert len(world.pushed) == pushed  # the same refusal is not a new revision
+    assert "refusal_retries" not in _job(site) and ended == [] and _job(site)["provider_cleanup"] is None
+    # The gate lets the step through: the job is processing again.
+    assert _rerun_when_due(world, site) == "processing"
+    job = _job(site)
+    assert (job["stage"], job["reason"], job["retry_at_epoch"]) == ("plan", None, None)
+    assert world.pushed[-1]["state"] == "processing"
+    assert _rerun_when_due(world, site) == "needs_input"
+    # Only expiry ends the wait, at the deadline.
+    deadline = _deadline(_job(site))
+    world.clock = deadline - 60
+    assert world.advance() == "needs_input" and _job(site)["retry_at_epoch"] == deadline
+    assert ended == [] and "refusal_retries" not in _job(site)
+    world.clock = deadline + 1
+    runs = len(world.runs)
+    assert world.advance() == "failed" and _job(site)["reason"] == "atlas_preview_expired"
+    assert len(world.runs) == runs and "cleanup" in ended
+
+
+def _mark(site, since, stage="queued"):
+    _set(site, step_in_flight={"since_epoch": since, "stage": stage})
+
+
+class _Killed(BaseException):
+    """Stands for the process dying inside a step: nothing in the worker handles it."""
+
+
+def _killed_then_found(world, site):
+    """A step is killed; the next tick, a minute later, finds its mark."""
+    world.clock = max(world.clock, _job(site)["next_attempt_at_epoch"])
+    with pytest.raises(_Killed):
+        world.advance()
+    assert _job(site)["step_in_flight"] == {"since_epoch": world.clock, "stage": _job(site)["stage"]}
+    world.clock += 60
+    return world.advance()
+
+
+def test_a_step_killed_every_time_follows_the_refusal_schedule_then_fails(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [_Killed()] * 7)
+    delays = []
+    for retries in range(1, 7):
+        runs = len(world.runs)
+        assert _killed_then_found(world, site) == "processing" and len(world.runs) == runs + 1  # not re-run at once
+        job = _job(site)
+        assert "step_in_flight" not in job and job["refusal_retries"] == retries and job["transient_failures"] == 0
+        assert job["last_refusal_reason"] == "atlas_preview_step_interrupted"
+        assert job["last_error"]["type"] == "step_interrupted"
+        delays.append(job["next_attempt_at_epoch"] - world.clock)
+    assert delays == list(preview.REFUSAL_RETRY_DELAYS_SECONDS)
+    assert _killed_then_found(world, site) == "failed" and len(world.runs) == 7
+    assert _job(site)["reason"] == "atlas_preview_step_interrupted" and "step_in_flight" not in _job(site)
+
+
+def test_forward_progress_resets_the_killed_step_streak(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [_Killed(), _Killed(), {"status": "processing", "stage": "plan"}, _Killed()])
+    _killed_then_found(world, site)
+    _killed_then_found(world, site)
+    assert _job(site)["refusal_retries"] == 2
+    assert _rerun_when_due(world, site) == "processing" and _job(site)["refusal_retries"] == 0
+    _killed_then_found(world, site)
+    job = _job(site)
+    assert job["refusal_retries"] == 1 and job["refusal_retries_total"] == 3
+    assert job["next_attempt_at_epoch"] == world.clock + preview.REFUSAL_RETRY_DELAYS_SECONDS[0]
+
+
+def test_a_waiting_tick_writes_no_in_flight_mark(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [OSError("reset"), {"status": "processing", "stage": "plan"}])
+    world.advance()
+    writes = []
+    real = preview.write_json
+    monkeypatch.setattr(preview, "write_json", lambda path, value: writes.append(dict(value)) or real(path, value))
+    world.clock += 30
+    assert world.advance() == "processing" and len(world.runs) == 1
+    # One write, as every tick made before: its last_tick_epoch. No mark.
+    assert len(writes) == 1 and "step_in_flight" not in writes[0]
+    world.clock = _job(site)["next_attempt_at_epoch"]
+    world.advance()
+    assert [("step_in_flight" in row) for row in writes[1:]] == [True, False]
+
+
+def test_withdrawal_wins_over_an_in_flight_mark(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [])
+    _mark(site, world.clock - 30)
+    _withdraw(site)
+    assert world.advance() == "withdrawn" and world.runs == []
+    assert "step_in_flight" not in _job(site)
+
+
+def test_the_provider_poll_and_an_operator_retry_work_with_an_in_flight_mark(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [])
+    _mark(site, world.clock)
+    before = site.job.read_bytes()
+    assert preview.poll(site.storage, now=world.now) == {"idle": 1} and site.job.read_bytes() == before
+    _set(site, state="failed", reason="atlas_preview_retries_exhausted", refusal_retries=6, refusal_retries_total=6)
+    job = preview.retry_failed_job(site.job, now=world.now)
+    assert job["state"] == "processing" and job["retries"][0]["reason"] == "atlas_preview_retries_exhausted"
+    assert not {"step_in_flight", "refusal_retries", "refusal_retries_total"} & set(job)
+
+
+def test_an_old_job_file_without_the_new_fields_advances_as_before(monkeypatch, site):
+    _enqueue(site)
+    legacy = {key: value for key, value in _job(site).items() if key not in {"last_tick_epoch"}}
+    assert not {"step_in_flight", "refusal_retries"} & set(legacy)
+    site.job.write_text(json.dumps(legacy))
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"}, _completed])
+    assert world.advance() == "processing"
+    assert not {"step_in_flight", "refusal_retries", "refusal_retries_total", "last_refusal_reason"} & set(_job(site))
+    assert world.advance() == "ready"
+
+
+def test_a_retried_authority_check_does_not_retract_the_bundle_it_then_publishes(monkeypatch, site):
+    """An archive_complete check that failed retryably left a retraction pending; success clears it."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed, _completed])
+    calls = []
+
+    def withdrawn(_root):
+        calls.append(1)
+        if len(calls) == 3:  # the first tick's archive_complete checkpoint
+            raise OSError("consent store unreadable")
+        return False
+    monkeypatch.setattr(preview, "_withdrawn", withdrawn)
+    assert world.advance() == "processing"
+    assert _job(site)["archive_retraction"] == "pending" and _job(site)["transient_failures"] == 1
+    assert _rerun_when_due(world, site) == "ready"
+    job = _job(site)
+    assert job["archive_retraction"] is None and "archive_retraction_error" not in job

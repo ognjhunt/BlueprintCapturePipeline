@@ -62,12 +62,19 @@ def test_a_task_with_no_probe_is_held_as_a_capability_limit_without_reading_the_
     assert holds.probe_hold("beta_screening_scene_profile_unavailable", tmp_path) is None
 
 
+SPENT = {"refusal_retry": {"attempts": 6, "exhausted": True}}
+
+
 @pytest.mark.parametrize("status,expected", [
-    ({"status": "blocked", "blockers": ["team_scene_packet_bundle_invalid"], "release_commit": RELEASE},
+    ({"status": "blocked", "blockers": ["team_scene_packet_bundle_invalid"], "release_commit": RELEASE, **SPENT},
      ("team_scene_packet_blocked", "team_scene_packet_bundle_invalid")),
     # Retried by this release already.
     ({"status": "blocked", "blockers": ["team_scene_packet_bundle_invalid"], "release_commit": NEXT_RELEASE,
-      "release_requeued": [RELEASE]}, ("team_scene_packet_blocked", "team_scene_packet_bundle_invalid")),
+      "release_requeued": [RELEASE], **SPENT}, ("team_scene_packet_blocked", "team_scene_packet_bundle_invalid")),
+    # Its timed retries on the shared schedule are not spent (or have not started): still returned to the queue.
+    ({"status": "blocked", "blockers": ["team_scene_packet_bundle_invalid"], "release_commit": RELEASE,
+      "refusal_retry": {"attempts": 5}}, None),
+    ({"status": "blocked", "blockers": ["team_scene_packet_bundle_invalid"], "release_commit": RELEASE}, None),
     # Automatic retries spent.
     ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"], "release_commit": RELEASE,
       "automatic_retry": {"attempts": len(packets.AUTOMATIC_RETRY_BACKOFF_SECONDS)}},
@@ -142,7 +149,7 @@ def test_worker_holds_a_team_half_no_pass_will_retry_and_lets_a_new_release_try_
     world = prepared_source_queue(tmp_path, monkeypatch)
     key = packets.request_key(world["requests"][0])
     (world["packet_queue"] / "status" / f"{key}.json").write_text(json.dumps(
-        {"status": "blocked", "blockers": ["team_scene_packet_bundle_invalid"], "release_commit": RELEASE}))
+        {"status": "blocked", "blockers": ["team_scene_packet_bundle_invalid"], "release_commit": RELEASE, **SPENT}))
     monkeypatch.setattr(packets, "current_release_commit", lambda: RELEASE)
     kwargs = {"queue_root": world["screening_queue"], "packet_queue_root": world["packet_queue"]}
     [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]

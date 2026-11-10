@@ -243,7 +243,8 @@ After reviewing that result against the run's authorized cumulative ceiling,
 use `--atlas-retry --atlas-status-digest sha256:... --wait` with the same selector.
 The existing preview job lock protects a fresh source/rights/grant/accounting
 check and refuses any snapshot drift. Only `website_atlas_preview.retry_failed_job`
-may requeue that failed job. It preserves its original seven-day expiry, source,
+may requeue that failed job. A job that has not ended needs no retry: the timer
+retries it by itself until it ends (`docs/runbooks/atlas-beta.md`, Automatic retries). It preserves its original seven-day expiry, source,
 grant and bought receipts; the later timer can make paid calls through existing
 admission. Status/retry never advance the job or alter timer holds. Native resume
 options, paths, commands, profiles and spending overrides are refused. Both run
@@ -440,6 +441,28 @@ intake restart and the re-arm. The receipt's `trigger_pause_seconds` says how
 long drained triggers, all other watchers and new paid launches were held;
 `stage_timings_seconds` splits the whole deploy by stage.
 
+**A deploy waits while a paid stage is live.** Before the fetch,
+`door-deploy.sh` runs `operator_door/activation_hold.py`, which only reads. It
+holds the deploy, never the job, while any of these is bound to the running
+release: a scene-configuration activation (pending, claimed by a live worker, or
+finished and waiting for its launch submission); a scene-configuration launch
+that progression submitted for this release and that is pending in
+`task-evaluation-launches` or claimed by a dispatcher holding its
+`.dispatcher.lock`; a `provider-locks/*.lock` slot (not the `.gate.lock`)
+flocked by a process whose working directory is this release's tree; or a
+beta-screening candidate `launching` or `running` in `screening_ledger.v1.json`
+whose plan froze this release's commit. A held deploy parks (an iteration
+deploy) or is refused with `scene_configuration_activation_live`, `retry_after`
+and `deploys_by` (a production deploy, which never parks; the code keeps its
+old name whichever stage holds it). It goes out when nothing is live, after
+`CAP_SECONDS` (285 min) in all for one hold however the stages hand over, or at
+once with `--activation-hold-override <reason>` (money, privacy, rights or a fix
+to the stuck stage). Anything unreadable counts as not live. `status`
+`deploy_activation_hold` shows the last check: `stages` and each `live` row's
+`stage` and `state` say what holds it. A normal deploy does not update the door:
+the installed door gets a change here only after `upgrade-door` or
+`install.sh --upgrade` as root (below).
+
 **Request a deploy right after merging.** Run `deploy <merge sha> --wait` at once;
 the build overlaps main's CI. Before anything pauses, the tool waits for that CI
 to list the commit's source attestation (`--attestation-wait-seconds`, default one
@@ -493,6 +516,21 @@ the way of the deploy that repairs it. To replace a parked commit, merge the fix
 request that: the newer commit wins. `status` counts them under `door_requests.parked`,
 including the one running. The runner parks and starts them with no network or git, as
 sandboxed as before.
+
+**A deploy that changes nothing a running job can see is not sent.** Before it
+submits an iteration deploy, the client reads `status` (`active_release.commit`)
+and runs `git diff --name-only` between that commit and the target in its own
+checkout. If every differing file is under `NON_RUNTIME_PATHS` in
+`scripts/operator_door.py` (today only `docs/launch-readiness/`), it prints one
+sentence saying so and exits 0 without a request: the active release already
+runs that code, and the deploy would only retire in-flight attempts. A rollback
+is compared the same way. `--even-if-no-runtime-change` deploys anyway. Anything
+it cannot compare (status unreadable, a commit missing from the local clone, a
+git error), the active commit itself, and a production deploy (it also changes
+the release's provenance) deploy as before.
+`tests/test_operator_door_non_runtime_paths.py` fails if code under `src/`,
+`scripts/`, `deploy/` or `config/` names an allowlisted path, so the list stays
+sound; add a directory only when that test passes for it.
 
 `deploy --latest-attested --wait` resolves the newest `origin/main` commit whose
 "SBOM, license, and provenance contract" job succeeded, from GitHub's public API.
@@ -778,11 +816,19 @@ deterministic refusal (neither transient nor owner-contract) returns to
 `pending/` once per newly deployed release, on the same two passes, so a deploy
 that fixes its cause re-drives it with no operator step; a status without
 `release_commit` counts as an older release. The status keeps the releases
-already tried under `release_requeued` (written before the move), so a refusal
-the new release does not fix stays blocked until the next deploy. The pass
+already tried under `release_requeued` (written before the move). The pass
 reports it as `{"reason": "new_release", ...}`. When the running release cannot
-be read, nothing is requeued on that basis. Completed and skipped requests never
-move, except as follows.
+be read, nothing is requeued on that basis. A deploy is not required: the same
+refusal also returns to `pending/` on the shared schedule
+(`job_retry_policy.refusal_retry_delay`: 15 min, 1 h, 3 h, 6 h, 12 h and 24 h
+after each block, six in all), on the same two passes, reported as
+`{"reason": "refusal_retry", ...}`. The status keeps the count under
+`refusal_retry` (written before the move); no release or run resets it, and an
+unreadable count is spent. The clock never returns a blocker that names
+privacy, rights or money, an owner-contract refusal, a held furniture
+measurement, or a block from an attempt that reached the remote CPU lane. Once
+the six are spent, a refusal stays blocked until the next deploy. Completed and
+skipped requests never move, except as follows.
 
 A completed rigid half whose recorded carry search found no stance the Franka
 carries from (`robot_station_search.cleared` false, or `reach_shortfall`

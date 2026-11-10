@@ -317,7 +317,11 @@ def test_explicit_owned_retry_reuses_prefix_is_idempotent_and_does_not_renew_all
     def refuse(**_):
         raise ValueError("owned_fixture_replay_boundary")
     monkeypatch.setattr(controller, "run_atlas_pipeline", refuse)
-    assert _advance(owned) == "failed"
+    clock = [initial["enqueued_at_epoch"]]
+    for _ in range(6):  # the automatic schedule first
+        assert _advance(owned, now=lambda: clock[0]) == "processing"
+        clock[0] = json.loads(owned.path.read_text())["next_attempt_at_epoch"]
+    assert _advance(owned, now=lambda: clock[0]) == "failed"
     args = {**_arguments(owned), "idempotency_key": "owned-retry-1"}
     retried = worker.retry_owned_atlas(**args)
     assert retried["state"] == "processing"
@@ -353,3 +357,28 @@ def test_owned_retry_refuses_changed_binding_and_expired_clock(owned, configurat
     with pytest.raises(ValueError, match="job_authority_changed" if change == "authority" else ".*"):
         worker.retry_owned_atlas(**args)
     assert json.loads(owned.path.read_text()) == job
+
+
+def test_owned_jobs_get_the_same_automatic_retries_and_crash_backoff(owned, configuration, monkeypatch):
+    """The shared failure path and in-flight mark: an outage backs off; a refusal or a killed step takes the schedule."""
+    _enqueue(owned, configuration, monkeypatch)
+    clock = [json.loads(owned.path.read_text())["enqueued_at_epoch"]]
+    errors = [OSError("connection reset"), ValueError("owned_fixture_refusal")]
+
+    def fail(**_):
+        raise errors.pop(0)
+    monkeypatch.setattr(controller, "run_atlas_pipeline", fail)
+    assert _advance(owned, now=lambda: clock[0]) == "processing"
+    job = json.loads(owned.path.read_text())
+    assert job["transient_failures"] == 1 and job["next_attempt_at_epoch"] == clock[0] + 120
+    clock[0] = job["next_attempt_at_epoch"]
+    assert _advance(owned, now=lambda: clock[0]) == "processing"
+    job = json.loads(owned.path.read_text())
+    assert job["refusal_retries"] == 1 and job["next_attempt_at_epoch"] == clock[0] + 900
+    # A step whose process died leaves its mark; the next tick counts it and backs off.
+    owned.path.write_text(json.dumps({**job, "step_in_flight": {"since_epoch": clock[0], "stage": "queued"}}))
+    clock[0] += 60
+    assert _advance(owned, now=lambda: clock[0]) == "processing" and errors == []
+    job = json.loads(owned.path.read_text())
+    assert "step_in_flight" not in job and job["last_refusal_reason"] == "atlas_preview_step_interrupted"
+    assert job["refusal_retries"] == 2 and job["next_attempt_at_epoch"] == clock[0] + 3600

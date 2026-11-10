@@ -346,14 +346,23 @@ def _door_requests(config: DoorConfig) -> dict[str, int]:
 
 
 def _deploy_activation_hold(config: DoorConfig) -> dict[str, Any] | None:
-    """Why parked deploys wait, as door-deploy.sh last saw it; None when nothing holds them."""
+    """Why parked deploys wait, as door-deploy.sh last saw it; None when nothing holds them.
+
+    ``stages`` names the paid stages live at that check (each ``live`` row has its
+    ``stage``); a record an older door wrote has none, so it reads as the activation.
+    """
 
     try:
         document = json.loads((Path(config.spool_root) / "parked" / ".activation-hold").read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+    if not isinstance(document, dict):
+        return None
     keys = ("active_release", "first_held_at_epoch", "cap_at_epoch", "recheck_after_epoch", "live")
-    return {key: document.get(key) for key in keys} if isinstance(document, dict) else None
+    stages = document.get("stages")
+    if not isinstance(stages, list) or not all(isinstance(stage, str) for stage in stages):
+        stages = ["scene_configuration_activation"] if document.get("live") else []
+    return {**{key: document.get(key) for key in keys}, "stages": stages}
 
 
 def _holds(config: DoorConfig) -> list[dict[str, Any]]:

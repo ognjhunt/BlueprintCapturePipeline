@@ -28,7 +28,8 @@ at the same commit under the machine-fault bound, a candidate's own policy
 failure holds only that candidate, and a failure in a stage the backend shares
 holds the pending candidates on that backend until the next deploy. A row that
 ran out of GPU-offer retries or whose quote expired is planned again by itself,
-bounded (``_self_replan_due``). Money evidence too old to read waits and is read
+bounded (``_self_replan_due``), and so is any other refusal before allocation
+that no rule owns, on the shared refusal schedule (``job_retry_policy``). Money evidence too old to read waits and is read
 again; a reached account limit is a money hold. A campaign that cannot move
 says so through the hold protocol (``campaign_hold_detail``) without touching
 its reservation.
@@ -54,10 +55,12 @@ from .beta_policy_screening_result import (
 from .account_monthly_spend import LIMIT_REACHED as ACCOUNT_LIMIT_REACHED_BLOCKER
 from .account_monthly_spend import REPORT_INVALID, REPORT_STALE
 from .beta_policy_screening_failure_scope import (
-    POLICY_PROVISIONING_BLOCKER, candidate_specific_failure, transient_provisioning_failed, transient_void_run,
+    CANDIDATE_SPECIFIC_BLOCKERS, POLICY_PROVISIONING_BLOCKER, TRANSIENT_PROVISIONING_BLOCKERS,
+    candidate_specific_failure, transient_provisioning_failed, transient_void_run,
 )
 from .beta_policy_screening_settlement import settled_cost
 from .decision_evidence_contracts import canonical_digest
+from .job_retry_policy import hard_stop_kind, refusal_retry_delay
 from .policy_execution_evidence import SCRIPTED
 from .policy_canary_cell_setup_failure import MACHINE_FAULT_BLOCKERS, SETUP_FAILURE_BLOCKERS
 from .website_candidate_feasibility import is_measured_refusal
@@ -491,8 +494,9 @@ def _dropped_harness_retries(ledger: Mapping[str, Any], state: Mapping[str, Any]
     (never a result) and the site's retry bound now allows it.
 
     A re-plan at the same commit also leaves behind the unspent rows that wait for a
-    deploy (``_held_for_deploy``) and a row out of GPU offers or with an expired quote
-    that was not due again by itself; the last such row the chain holds rejoins here too.
+    deploy (``_held_for_deploy``) and a row out of GPU offers, with an expired quote or
+    refused for no reason another rule owns (``_unowned_refusal``) that was not due again
+    by itself; the last such row the chain holds rejoins here too.
     """
     listed = {candidate["candidate_id"] for candidate in plan["candidates"]}
     latest: dict[str, Mapping[str, Any]] = {}
@@ -507,7 +511,7 @@ def _dropped_harness_retries(ledger: Mapping[str, Any], state: Mapping[str, Any]
     return sorted(candidate_id for candidate_id, row in latest.items()
                   if candidate_id not in listed and (
                       _held_for_deploy(row) or _offer_exhausted(row) or _quote_expired(row)
-                      or _harness_failed(row) and _harness_retry_allowed(ledger, state["site_id"], candidate_id)))
+                      or _unowned_refusal(row) or _harness_failed(row) and _harness_retry_allowed(ledger, state["site_id"], candidate_id)))
 
 
 def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any], candidate_id: str) -> bool:
@@ -608,6 +612,43 @@ def _quote_expired(row: Mapping[str, Any]) -> bool:
     return row.get("status") == "deferred" and row.get("blockers") == [QUOTE_EXPIRED_BLOCKER] and not _spent(row)
 
 
+#: Codes another rule owns, so the refusal default below never touches them: the commit path, a
+#: harness hold or failure (a deploy), a rented machine's fault, the GPU-offer and quote re-plans, the
+#: money-evidence waits and the account limit.
+_TIMED_REPLAN_OWNED = frozenset({
+    REPLANNED_BLOCKER, COMMIT_CHANGED_BLOCKER, "g1_beta_implementation_commit_changed", HARNESS_HOLD_BLOCKER,
+    *HARNESS_FAILURE_BLOCKERS, *CANDIDATE_SPECIFIC_BLOCKERS, *MACHINE_FAULT_BLOCKERS, *TRANSIENT_PROVISIONING_BLOCKERS,
+    OFFER_SHORTAGE_EXHAUSTED_BLOCKER, QUOTE_EXPIRED_BLOCKER, ACCOUNT_LIMIT_REACHED_BLOCKER,
+    *SPEND_LOCK_STALE_CODES, *ACCOUNT_REPORT_WAIT_CODES, G1_ADMISSION_WRAPPER,
+})
+_TIMED_REPLAN_OWNED_PREFIXES = (BILLING_MISSING_PREFIX,)
+#: Answers about the candidate, not failures to try: the site stopped it, the WebApp refused its
+#: execution, its geometry was measured infeasible, or it is switched off.
+_TIMED_REPLAN_ANSWERS = frozenset({"beta_screening_current_source_stopped", "beta_screening_execution_control_refused",
+                                   INFEASIBLE_BLOCKER, "candidate_disabled"})
+_REFUSAL_PREFIXES = ("beta_screening_prelaunch_refused:", "spend_admission:")
+
+
+def _timed_retry_may_touch(code: str) -> bool:
+    """Whether the refusal default may retry a code: never privacy, rights or money, an answer about
+    the candidate, or a code another rule owns."""
+    inner = code
+    for prefix in _REFUSAL_PREFIXES:
+        inner = inner.removeprefix(prefix)
+    return not (hard_stop_kind(code) is not None or code in _TIMED_REPLAN_OWNED or inner in _TIMED_REPLAN_OWNED
+                or inner.startswith(_TIMED_REPLAN_OWNED_PREFIXES)
+                or inner in _TIMED_REPLAN_ANSWERS or is_measured_refusal(inner))
+
+
+def _unowned_refusal(row: Mapping[str, Any]) -> bool:
+    """A blocked row that spent nothing, refused for a reason no other rule owns."""
+    blockers = row.get("blockers") or []
+    return (row.get("status") == "blocked" and not _spent(row) and bool(blockers)
+            and not (_harness_failed(row) or _machine_faulted(row) or _offer_exhausted(row)
+                     or _quote_expired(row) or _held_for_deploy(row))
+            and all(isinstance(code, str) and _timed_retry_may_touch(code) for code in blockers))
+
+
 def _site_rows(ledger: Mapping[str, Any], site_id: str, candidate_id: str,
                matches: Callable[[Mapping[str, Any]], bool]) -> int:
     """How many of the site's campaigns hold this candidate in the given end state."""
@@ -633,18 +674,37 @@ def _offer_shortage_cooled_off(state: Mapping[str, Any], row: Mapping[str, Any])
     return elapsed is not None and elapsed >= OFFER_SHORTAGE_REPLAN_COOLOFF_SECONDS
 
 
+def _refusal_retry_waited(ledger: Mapping[str, Any], state: Mapping[str, Any], candidate_id: str,
+                          row: Mapping[str, Any]) -> bool:
+    """Whether an unowned refusal's next timed retry is due (unreadable reads as not yet).
+
+    The ``n``-th campaign of the site ending this way waits ``refusal_retry_delay(n - 1)``; past the
+    schedule's six steps it is not planned again by itself. The wait runs from the row's own close
+    when its attempt recorded one, else from its campaign's last change, never before the refusal.
+    """
+    delay = refusal_retry_delay(_site_rows(ledger, state["site_id"], candidate_id, _unowned_refusal) - 1)
+    closed = (row.get("attempt") or {}).get("closed_at") or state.get("updated_at")
+    elapsed = _seconds_since(closed)
+    return delay is not None and elapsed is not None and elapsed >= delay
+
+
 def _self_replan_due(ledger: Mapping[str, Any], state: Mapping[str, Any], candidate_id: str) -> bool:
     """An unspent row that is planned again by itself, at the same commit, with no deploy.
 
-    Two ends spent nothing and say nothing about the candidate: the GPU market had no
-    qualifying offer through every search (planned again after a cool-off), and the plan's
-    quote expired before the row could launch (planned again with a fresh quote). Each is
-    bounded per site and candidate by counting the campaigns that ended the same way.
+    Three ends spent nothing and say nothing about the candidate: the GPU market had no
+    qualifying offer through every search (planned again after a cool-off), the plan's quote
+    expired before the row could launch (planned again with a fresh quote), and any other
+    refusal before allocation that no rule owns (``_unowned_refusal``: planned again on
+    ``job_retry_policy``'s refusal schedule, at most ``len(REFUSAL_RETRY_DELAYS_SECONDS)``
+    times). Each is bounded per site and candidate by counting the campaigns that ended the
+    same way.
     """
     row = state["candidates"].get(candidate_id) or {}
     if _offer_exhausted(row):
         return (_site_rows(ledger, state["site_id"], candidate_id, _offer_exhausted) <= OFFER_SHORTAGE_REPLAN_LIMIT
                 and _offer_shortage_cooled_off(state, row))
+    if _unowned_refusal(row):
+        return _refusal_retry_waited(ledger, state, candidate_id, row)
     return (_quote_expired(row)
             and _site_rows(ledger, state["site_id"], candidate_id, _quote_expired) <= QUOTE_EXPIRED_REPLAN_LIMIT)
 
@@ -701,7 +761,8 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
         # The scene's team half was compiled again since this plan froze it: a half the plan
         # cannot read is not known to differ, so it never re-plans on its own.
         stale = planned_half(plan) not in (None, scene_half)
-    # No deploy and no machine fault: a row that ran out of GPU offers or whose quote expired.
+    # No deploy and no machine fault: a row that ran out of GPU offers, whose quote expired, or that was
+    # refused before allocation for a reason no rule owns.
     self_open = self_replan and not state.get(SELF_REPLAN_CLOSED_FIELD)
     again = (self_open and not stale
              and any(_self_replan_due(ledger, state, candidate["candidate_id"]) for candidate in plan["candidates"]))
@@ -713,7 +774,7 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
         if not _spent(row):
             if stale:
                 return True
-            if _offer_exhausted(row) or _quote_expired(row):
+            if _offer_exhausted(row) or _quote_expired(row) or _unowned_refusal(row):
                 # At the same commit, only for its own reason: its own bound and cool-off decide,
                 # never a sibling that is due. Left behind, the next deploy's re-plan takes it up.
                 return self_open and _self_replan_due(ledger, state, candidate["candidate_id"])
@@ -749,11 +810,15 @@ def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: st
     that never ran or allocated is planned again, finished campaign or not.
 
     With no deploy at all, a row blocked because the GPU market had no offer
-    through every search is planned again after a cool-off, and a row deferred
-    because its quote expired is planned again with a fresh quote; each a bounded
-    number of times, and never once the campaign's job window closed
-    (``close_self_replan``). ``self_replan=False`` leaves those two out, so a
-    caller can tell whether anything else asks for the re-plan.
+    through every search is planned again after a cool-off, a row deferred
+    because its quote expired is planned again with a fresh quote, and a row
+    refused before allocation for a reason no other rule owns (not privacy,
+    rights or money, not an answer about the candidate) is planned again on the
+    shared refusal schedule (15 minutes to 24 hours, at most six times); each a
+    bounded number of times, each only for its own reason, and never once the
+    campaign's job window closed (``close_self_replan``). ``self_replan=False``
+    leaves those three out, so a caller can tell whether anything else asks for
+    the re-plan.
     """
     if not re.fullmatch(r"[0-9a-f]{40}", implementation_commit):
         raise ScreeningCoordinatorError("beta_screening_implementation_commit_invalid")
@@ -771,7 +836,8 @@ def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: st
 def close_self_replan(campaign_id: str, *, queue_root: str | Path | None = None) -> bool:
     """Stop planning this campaign again by itself: its job's window closed.
 
-    Only the self re-plans end (no GPU offer, an expired quote). A deploy's
+    Only the self re-plans end (no GPU offer, an expired quote, an unowned
+    refusal on the shared schedule). A deploy's
     re-plan is unchanged, and no row, reservation or publication changes.
     Returns whether the campaign was open until now.
     """

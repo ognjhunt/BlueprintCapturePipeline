@@ -56,7 +56,13 @@ release sets it aside once, before the pass: the retired entry goes back to
 pending, the terminal moves under ``superseded_terminals/`` beside a marker
 naming the release that retried it (history is kept, never deleted), and the
 next terminal lists the releases already tried, the ones that sealed it
-included (``release_requeued``), so a refusal never loops. An ``attempts_exhausted``
+included (``release_requeued``), so a refusal never loops. A deploy is not
+required: a ``staging_refused`` terminal whose recorded reason names no privacy,
+rights or money stop is also set aside the same way on the shared schedule
+(``job_retry_policy``: six timed retries, 15 min to 24 h after each is sealed),
+its marker naming ``refusal_retry``; those markers are the job's count, so
+nothing resets it. A retried staging that succeeds meets the same funded-attempt
+limits and allocator as any other. An ``attempts_exhausted``
 terminal whose every funded attempt failed inside Blueprint's own runtime (the
 worker's typed ``rigid_robot_free_probe_failed_at_*`` crash, or a result the
 transport could not find in the output zip) is set aside the same way: each newly
@@ -72,7 +78,7 @@ allocated, funded or run (capture-447ae4f4: request 9319f26e's completed run,
 the running release stays final, as does every other terminal: a decided receipt,
 a conflict with another trace of the attempt's own request, or an attempt budget
 spent on a scene or scorer outcome, a provider or a money refusal. Without a known
-running release nothing is retried.
+running release nothing is retried, by a release or by the clock.
 
 Ingest happens only once the allocator result is ``completed``, which proves
 teardown, provider zero and staged-object absence. It checks the result
@@ -121,6 +127,7 @@ from typing import Any
 
 from .common import utc_now_iso
 from .decision_evidence_contracts import canonical_digest
+from .job_retry_policy import REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, refusal_retry_delay
 from .rigid_robot_free_probe_bundle import (
     BUNDLE_RECEIPT_FILENAME,
     PROBE_KIND,
@@ -190,7 +197,8 @@ GRANT_REFUSAL_BLOCKERS = ("rigid_robot_free_probe_website_grant_exhausted",
                           "rigid_robot_free_probe_website_grant_missing")
 GRANT_REFUSAL_RETRY_SECONDS = 3 * 3600
 # Refused while staging, before any argv existed: nothing was launched, funded or allocated, so the
-# attempt counts toward neither limit. Its refusal seals the job, so it cannot loop.
+# attempt counts toward neither limit. Its refusal seals the job; a release or the bounded timed retry
+# (``REFUSAL_RETRY_TRIGGER``) sets it aside, so it cannot loop.
 NOT_STAGED_STATE = "not_staged"
 TERMINAL_STATES = frozenset({"decided", "trace_conflict", "staging_refused"})
 # A deterministic refusal a new release may have fixed: each terminal names the release that sealed it,
@@ -199,6 +207,11 @@ TERMINAL_STATES = frozenset({"decided", "trace_conflict", "staging_refused"})
 RELEASE_COMMIT_FIELD = "release_commit"
 RELEASE_REQUEUE_FIELD = "release_requeued"
 RELEASE_RETRIED_STATES = frozenset({"staging_refused"})
+# A staging refusal is also set aside the same way on the shared schedule (``job_retry_policy``: six timed
+# retries, 15 min to 24 h after each is sealed), so a passing cause never waits for a deploy, unless its recorded
+# reason names privacy, rights or money (``hard_stop_kind``). Each such marker names this trigger; the job's
+# markers are its count, kept and never deleted, so nothing resets it, and an unreadable one counts as spent.
+REFUSAL_RETRY_TRIGGER = "refusal_retry"
 # A completed run whose trace was refused beside another (superseded) request's: each newly deployed
 # release re-ingests it once from its retained result, moving its refused ingest record beside the marker.
 TRACE_CONFLICT_STATE = "trace_conflict"
@@ -684,6 +697,35 @@ def _superseded_trace_conflict(job: Path, terminal: Mapping[str, Any]) -> Path |
     return None
 
 
+def _refusal_retries(job: Path) -> int:
+    """The timed set-asides this job already had (its ``REFUSAL_RETRY_TRIGGER`` markers); unreadable: spent."""
+
+    try:
+        return sum(1 for row in _supersessions(job) if row.get("trigger") == REFUSAL_RETRY_TRIGGER)
+    except (OSError, ValueError):
+        return len(REFUSAL_RETRY_DELAYS_SECONDS)
+
+
+def _refusal_retry_left(job: Path, terminal: Mapping[str, Any], release: str | None) -> bool:
+    """A staging refusal, under a known release, whose recorded reason is no hard stop, with a timed retry left."""
+
+    detail = terminal.get("detail")
+    reason = detail.get("reason") if isinstance(detail, Mapping) else None
+    return (release is not None and terminal.get("status") in RELEASE_RETRIED_STATES
+            and isinstance(reason, str) and bool(reason) and hard_stop_kind(reason) is None
+            and refusal_retry_delay(_refusal_retries(job)) is not None)
+
+
+def _refusal_retry_due(job: Path, terminal: Mapping[str, Any], release: str | None, now: float | None) -> bool:
+    """``_refusal_retry_left``, and its wait since the terminal was sealed has passed (an unreadable time never)."""
+
+    if now is None or not _refusal_retry_left(job, terminal, release):
+        return False
+    sealed = _when(terminal.get("sealed_at_iso"))
+    delay = refusal_retry_delay(_refusal_retries(job))
+    return sealed is not None and delay is not None and sealed + delay <= float(now)
+
+
 def _new_release_untried(terminal: Mapping[str, Any], release: str | None, job: Path | None = None) -> bool:
     """A terminal sealed by another release, or by none recorded, that ``release`` has not yet retried:
     a staging refusal, or (given its ``job``) an attempt budget our own runtime spent, or a completed
@@ -697,8 +739,9 @@ def _new_release_untried(terminal: Mapping[str, Any], release: str | None, job: 
         job is not None and (_runtime_redrive_due(job, terminal) or _superseded_trace_conflict(job, terminal) is not None))
 
 
-def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | None:
-    """Set the job's retried terminal aside for a newly deployed release, once; return the marker.
+def _supersede_for_release(job: Path, release: str | None, now: float | None = None) -> dict[str, Any] | None:
+    """Set the job's retried terminal aside for a newly deployed release, or once its timed retry is due
+    (``_refusal_retry_due``, given ``now``), once; return the marker.
 
     The marker naming the release is written before the terminal moves beside it, so each release
     sets a terminal aside at most once and a pass interrupted between the two finishes the move.
@@ -721,10 +764,14 @@ def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | N
     marker_path = history / f"{name}.supersession.json"
     marker = _read_optional(marker_path)
     if marker is None:
+        timed = None
         if not _new_release_untried(terminal, release, job):
-            return None
+            if not _refusal_retry_due(job, terminal, release, now):
+                return None
+            timed = _refusal_retries(job) + 1
         reingest = _superseded_trace_conflict(job, terminal)
         marker = {"schema_version": SUPERSESSION_SCHEMA, RELEASE_COMMIT_FIELD: release,
+                  **({"trigger": REFUSAL_RETRY_TRIGGER, "refusal_retry": timed} if timed is not None else {}),
                   "superseded_terminal_digest": digest, "superseded_status": terminal.get("status"),
                   "superseded_release_commit": terminal.get(RELEASE_COMMIT_FIELD),
                   "superseded_detail": terminal.get("detail"),
@@ -753,8 +800,9 @@ def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | N
 
 
 def requeue_new_release(queue_root: str | Path | None, release: str | None, *,
-                        names: set[str] | None = None) -> list[dict[str, Any]]:
-    """Return each retired entry whose retried terminal ``release`` has not yet retried to pending.
+                        names: set[str] | None = None, now: float | None = None) -> list[dict[str, Any]]:
+    """Return each retired entry whose retried terminal ``release`` has not yet retried, or whose timed retry
+    is due at ``now`` (``_refusal_retry_due``), to pending. Without a known ``release`` nothing is returned.
 
     The pass that follows sets the terminal aside under the job lock (``_supersede_for_release``).
     An entry already pending is left as it is; it is processed the same way.
@@ -774,11 +822,15 @@ def requeue_new_release(queue_root: str | Path | None, release: str | None, *,
             terminal = _read_optional(job / TERMINAL_FILENAME)
         except (OSError, KeyError, TypeError, ValueError):
             continue
-        if terminal is None or not _new_release_untried(terminal, release, job):
+        if terminal is None:
+            continue
+        reason = "new_release" if _new_release_untried(terminal, release, job) else (
+            REFUSAL_RETRY_TRIGGER if _refusal_retry_due(job, terminal, release, now) else None)
+        if reason is None:
             continue
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         os.replace(path, target)
-        requeued.append({"entry": path.name, "reason": "new_release", RELEASE_COMMIT_FIELD: release,
+        requeued.append({"entry": path.name, "reason": reason, RELEASE_COMMIT_FIELD: release,
                          "terminal_status": terminal.get("status"),
                          "terminal_release_commit": terminal.get(RELEASE_COMMIT_FIELD)})
     return requeued
@@ -790,13 +842,14 @@ def final_terminal(state: Mapping[str, Any], *, queue_root: str | Path | None = 
 
     Read only. A staging refusal, or an attempt budget our own runtime spent (``_runtime_redrive_due``), that a
     newly deployed release has not yet tried is not final: that release's pass sets it aside and stages again
-    (``requeue_new_release``). Every other terminal is final, as it is without a
-    known release. The screening pass names a final one to the website job (``beta_policy_screening_holds``).
+    (``requeue_new_release``); nor is a staging refusal with a timed retry left (``_refusal_retry_left``).
+    Every other terminal is final, as it is without a known release. The screening pass names a final one to the website job (``beta_policy_screening_holds``).
     """
 
     job = _job_dir(_queue_root(queue_root), state)
     terminal = _read_optional(job / TERMINAL_FILENAME)
-    if terminal is None or _new_release_untried(terminal, _release(release), job):
+    if (terminal is None or _new_release_untried(terminal, _release(release), job)
+            or _refusal_retry_left(job, terminal, _release(release))):
         return None
     return terminal
 
@@ -1126,7 +1179,7 @@ def _process_entry(root: Path, item: Path, hooks: Mapping[str, Callable[..., Any
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"status": "locked", "capture_root": state["capture_root"]}
-        superseded = _supersede_for_release(job, release)
+        superseded = _supersede_for_release(job, release, hooks.get("now", time.time)())
         row = _advance(root, item, entry, job, state, hooks, max_attempts, release)
         return {**row, "superseded_terminal": superseded} if superseded is not None else row
 
@@ -1154,8 +1207,9 @@ def run_queue(queue_root: str | Path | None = None, *, capture_root: str | Path 
     if settled:
         print(json.dumps({"rigid_robot_free_probe_spend_settlement": settled}, sort_keys=True, default=str),
               file=sys.stderr)
-    # A staging refusal this release has not yet retried returns to pending before the pass reads it.
-    requeue_new_release(root, release, names=names)
+    # A staging refusal this release has not yet retried, or whose timed retry is due, returns to pending
+    # before the pass reads it.
+    requeue_new_release(root, release, names=names, now=bound.get("now", time.time)())
     pending = [item for item in sorted((root / "pending").glob("*.json")) if names is None or item.name in names]
     rows = []
     for item in pending:

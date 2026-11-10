@@ -771,3 +771,23 @@ def test_status_carries_the_oom_reports(host_tree: dict[str, Path]) -> None:
                     mounts_path=str(paths["mounts"]))
     status = build_status(_config(host_tree), host, caller={})
     assert status["memory"]["oom_reports"]["events"][0]["killed"]["name"] == "python3"
+
+
+def test_status_says_which_paid_stage_holds_the_deploy(host_tree: dict[str, Path]) -> None:
+    parked = host_tree["base"] / "door" / "requests" / "parked"
+    parked.mkdir(exist_ok=True)
+    live = [{"stage": "beta_screening", "state": "screening_running", "id": "camp-1/cand-1"}]
+    (parked / ".activation-hold").write_text(json.dumps({
+        "schema": "blueprint_operator_door_activation_hold.v1", "active_release": "a" * 40,
+        "first_held_at_epoch": 1.0, "cap_at_epoch": 2.0, "recheck_after_epoch": 3.0, "live": live,
+        "stages": ["beta_screening"], "requests": {}}), encoding="utf-8")
+    hold = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})["deploy_activation_hold"]
+    assert hold == {"active_release": "a" * 40, "first_held_at_epoch": 1.0, "cap_at_epoch": 2.0,
+                    "recheck_after_epoch": 3.0, "live": live, "stages": ["beta_screening"]}
+    # A record an older door wrote names no stage: it was an activation.
+    (parked / ".activation-hold").write_text(json.dumps({
+        "active_release": "a" * 40, "live": [{"activation_id": "act-1", "state": "pending"}]}), encoding="utf-8")
+    hold = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})["deploy_activation_hold"]
+    assert hold["stages"] == ["scene_configuration_activation"] and hold["live"][0]["activation_id"] == "act-1"
+    (parked / ".activation-hold").unlink()
+    assert build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})["deploy_activation_hold"] is None

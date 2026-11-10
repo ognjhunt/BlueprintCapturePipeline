@@ -54,10 +54,26 @@ per-upload cap the WebApp grant enforces. It is development-only and unscaled.
   tick moves each job one bounded step (one poll per provider stage) and keeps
   it in one plain state: `processing`, `ready`, `needs_input`, `failed` or
   `withdrawn`. A missing grant or terms waits as `needs_input` and is re-checked
-  every 30 minutes; transport errors back off and fail after 8 tries; jobs end
-  after 7 days. With routing off no job exists and the tick does nothing.
-- **Retry.** `failed` is final for the worker. Once a release fixes the cause,
-  an operator resumes the job as `blueprint`:
+  every 30 minutes. Jobs end after 7 days. With routing off no job exists and
+  the tick does nothing.
+- **Automatic retries** (`job_retry_policy`). A failed step is retried on a
+  timer; no operator command or deploy is needed, and a deploy only changes
+  what the next retry finds. An outage (provider 429 or 5xx, a transport or OS
+  error) backs off from 2 minutes to hourly until the 7-day deadline
+  (`transient_failures`) while the job stays `processing`. A money refusal (a
+  spend, budget or credit code) shows as `needs_input` with its own code, so
+  the owner sees which limit to raise, and is re-checked every 30 minutes until
+  the job expires, like a missing grant. Any other refusal, a code defect, or a
+  step killed before it returned (memory limit, restart: it leaves
+  `step_in_flight` in the job) gets six retries over about 46 hours while the job
+  stays `processing` (`refusal_retries`; a move to a new stage starts the count
+  again; at most 12 in a job's life), then the job fails with that code
+  (`atlas_preview_step_interrupted` for a killed step). A privacy or rights
+  refusal fails at once. `atlas_preview_retries_exhausted` in an older job is no
+  longer produced.
+- **Retry.** `failed`, and `needs_input` without a pending re-check, are where a
+  job ends. Once a release
+  fixes the cause, an operator reopens such a job as `blueprint`:
   `python -m blueprint_pipeline.website_atlas_preview retry --job <capture>/pipeline/atlas/preview_job.json`.
   The next tick starts at the first unfinished stage, reusing every retained
   receipt (survey, plans); the job records each retry under `retries`. Expired

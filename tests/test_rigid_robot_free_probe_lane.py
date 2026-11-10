@@ -1719,3 +1719,151 @@ def test_the_runner_units_are_automatic_under_capture_grants_and_allow_opt_out(m
     assert runner.main(["condition"]) == 0
     monkeypatch.setenv(lane.ENABLE_ENV, "off")
     assert runner.main(["condition"]) == 1
+
+
+# --- a staging refusal is also set aside on the shared schedule, without a deploy ---------------------
+
+
+def test_a_staging_refusal_is_retried_on_the_shared_schedule_without_a_deploy_and_then_waits_for_one(
+        tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline.job_retry_policy import REFUSAL_RETRY_DELAYS_SECONDS
+
+    world = build_world(tmp_path, monkeypatch)
+    admitted = physics.require_scene_physics_admission
+
+    def overlap(packet_dir: Path, **_options: Any) -> dict[str, Any]:
+        raise physics.ScenePhysicsAdmissionBlocked(["task_object:scene_physics_rest_overlap:1.3cm"])
+
+    monkeypatch.setattr(physics, "require_scene_physics_admission", overlap)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    clock = [time.time()]
+    hooks = {**_under(world, monkeypatch, COMMIT), "now": lambda: clock[0]}
+    (row,) = runner.run_queue(world["queue"], hooks=hooks)
+    assert row["status"] == "staging_refused" and row[runner.RELEASE_COMMIT_FIELD] == COMMIT, row
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    state = current_probe_state(world["capture"])
+    history = job / runner.SUPERSEDED_DIRNAME
+    for retry, wait in enumerate(REFUSAL_RETRY_DELAYS_SECONDS, start=1):
+        sealed = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+        # Not final while a timed retry is left; nothing moves before its wait since the terminal was sealed.
+        assert runner.final_terminal(state, queue_root=world["queue"], release=COMMIT) is None
+        clock[0] = runner._when(sealed["sealed_at_iso"]) + wait - 5
+        assert runner.run_queue(world["queue"], hooks=hooks) == []
+        clock[0] += 10
+        (row,) = runner.run_queue(world["queue"], hooks=hooks)
+        # Set aside through the same supersession as a release's, its marker naming the clock and its count.
+        marker = row["superseded_terminal"]
+        assert (marker["trigger"], marker["refusal_retry"]) == (runner.REFUSAL_RETRY_TRIGGER, retry)
+        assert (marker["superseded_status"], marker[runner.RELEASE_COMMIT_FIELD]) == ("staging_refused", COMMIT)
+        assert json.loads((history / f"{sealed['terminal_digest'][7:23]}.terminal.json").read_text()) == sealed
+        assert row["status"] == "staging_refused" and row["detail"]["attempt"] == f"{retry:02d}", row
+    # Six timed set-asides, each attempt recorded not staged: nothing launched, funded or allocated.
+    assert len(list(history.glob("*.supersession.json"))) == 6 and runner._refusal_retries(job) == 6
+    assert [json.loads((attempt / runner.INGEST_FILENAME).read_text())["state"]
+            for attempt in runner._attempts(job)] == [runner.NOT_STAGED_STATE] * 7
+    assert runner._counts(job) == (0, 0) and world["allocator_calls"] == [] and world["webapp_calls"] == []
+    # Spent: final under this release, however long it waits, even once its cause is gone.
+    terminal = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    assert runner.final_terminal(state, queue_root=world["queue"], release=COMMIT) == terminal
+    monkeypatch.setattr(physics, "require_scene_physics_admission", admitted)
+    clock[0] += 10 ** 7
+    assert runner.run_queue(world["queue"], hooks=hooks) == []
+    # A newly deployed release still gets its own try (the count is not reset), and the probe runs once,
+    # through the same funded-attempt limits and allocator.
+    later = "d" * 40
+    (row,) = runner.run_queue(world["queue"], hooks={**_under(world, monkeypatch, later), "now": lambda: clock[0]})
+    assert row["status"] == "decided" and _receipt(world)["status"] == "passed", row
+    assert "trigger" not in row["superseded_terminal"] and runner._refusal_retries(job) == 6
+    assert runner._counts(job) == (1, 0) and len(world["allocator_calls"]) == 1
+
+
+def _staging_refusal_sealed(world: dict[str, Any], *, status: str = "staging_refused",
+                            reason: str = PHYSICS_REFUSAL, release: str | None = COMMIT) -> tuple[Path, dict]:
+    """A sealed terminal, retired to ``done/``, a day after it was sealed (any timed wait has passed)."""
+
+    job, legacy = _legacy_staging_refusal(world)
+    terminal = _sealed({**{key: value for key, value in legacy.items() if key != "terminal_digest"},
+                        "status": status, "detail": {"reason": reason},
+                        **({runner.RELEASE_COMMIT_FIELD: release} if release else {})}, "terminal_digest")
+    (job / runner.TERMINAL_FILENAME).unlink()
+    runner._write_exclusive(job / runner.TERMINAL_FILENAME, terminal)
+    return job, terminal
+
+
+DAY_AFTER = runner._when("2026-11-04T17:54:40Z")
+
+
+@pytest.mark.parametrize(("status", "reason"), [
+    # Privacy, rights or money in the recorded reason: never the clock's.
+    ("staging_refused", "rigid_robot_free_probe_dataset_license_unverified"),
+    ("staging_refused", "rigid_robot_free_probe_site_consent_withdrawn"),
+    ("staging_refused", "rigid_robot_free_probe_upstream_budget_exhausted"),
+    ("staging_refused", "rigid_robot_free_probe_hard_cap_usd_exceeded"),
+    ("staging_refused", ""),
+    # Every other terminal keeps today's rules.
+    ("attempts_exhausted", PHYSICS_REFUSAL),
+    ("trace_conflict", PHYSICS_REFUSAL),
+    ("decided", PHYSICS_REFUSAL),
+    (runner.NO_START_REPEATED_STATUS, PHYSICS_REFUSAL),
+])
+def test_the_clock_sets_aside_only_a_staging_refusal_that_is_no_hard_stop(tmp_path, monkeypatch, status,
+                                                                           reason) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    job, terminal = _staging_refusal_sealed(world, status=status, reason=reason)
+    assert runner.requeue_new_release(world["queue"], COMMIT, now=DAY_AFTER) == []
+    assert runner._supersede_for_release(job, COMMIT, DAY_AFTER) is None
+    assert json.loads((job / runner.TERMINAL_FILENAME).read_text()) == terminal
+    assert runner.final_terminal(current_probe_state(world["capture"]), queue_root=world["queue"],
+                                 release=COMMIT) == terminal
+
+
+def test_a_due_staging_refusal_is_set_aside_by_the_clock_only_under_a_known_release(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    job, terminal = _staging_refusal_sealed(world)
+    state = current_probe_state(world["capture"])
+    # Without a known running release nothing is retried, by a release or by the clock: it is final.
+    assert runner.requeue_new_release(world["queue"], None, now=DAY_AFTER) == []
+    assert runner._supersede_for_release(job, None, DAY_AFTER) is None
+    assert runner.final_terminal(state, queue_root=world["queue"], release=None) == terminal
+    # Not yet due: sealed 2026-11-03T17:54:40Z, its first wait is 15 minutes.
+    assert runner.requeue_new_release(world["queue"], COMMIT, now=runner._when("2026-11-03T18:09:39Z")) == []
+    (moved,) = runner.requeue_new_release(world["queue"], COMMIT, now=runner._when("2026-11-03T18:09:40Z"))
+    assert (moved["reason"], moved["terminal_status"]) == (runner.REFUSAL_RETRY_TRIGGER, "staging_refused")
+    marker = runner._supersede_for_release(job, COMMIT, DAY_AFTER)
+    assert (marker["trigger"], marker["refusal_retry"], marker["superseded_terminal_digest"]) == (
+        runner.REFUSAL_RETRY_TRIGGER, 1, terminal["terminal_digest"])
+    assert not (job / runner.TERMINAL_FILENAME).exists()
+
+
+def _marker(job: Path, name: str, **fields: Any) -> None:
+    history = job / runner.SUPERSEDED_DIRNAME
+    history.mkdir(exist_ok=True)
+    (history / f"{name}.supersession.json").write_text(json.dumps(
+        {"schema_version": runner.SUPERSESSION_SCHEMA, "superseded_at_iso": "2026-11-03T00:00:00Z", **fields}))
+
+
+@pytest.mark.parametrize("history", ["spent", "unreadable", "not_an_object"])
+def test_a_spent_or_unreadable_timed_count_never_sets_aside_and_a_new_release_does_not_reset_it(
+        tmp_path, monkeypatch, history) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    job, terminal = _staging_refusal_sealed(world)
+    # A release's own marker is no timed retry: it leaves the count as it is.
+    _marker(job, "0" * 16, superseded_status="staging_refused", **{runner.RELEASE_COMMIT_FIELD: "c" * 40})
+    assert runner._refusal_retries(job) == 0
+    if history == "spent":
+        for index in range(6):
+            _marker(job, f"{index + 1:016x}", trigger=runner.REFUSAL_RETRY_TRIGGER, refusal_retry=index + 1)
+    else:
+        (job / runner.SUPERSEDED_DIRNAME / ("f" * 16 + ".supersession.json")).write_text(
+            "{not json" if history == "unreadable" else "[]")
+    assert runner._refusal_retries(job) == 6
+    assert runner.requeue_new_release(world["queue"], COMMIT, now=DAY_AFTER + 10 ** 7) == []
+    assert runner._supersede_for_release(job, COMMIT, DAY_AFTER + 10 ** 7) is None
+    state = current_probe_state(world["capture"])
+    assert runner.final_terminal(state, queue_root=world["queue"], release=COMMIT) == terminal
+    if history == "spent":
+        # A new release gets its once-per-release try; the timed count stays spent after it.
+        (moved,) = runner.requeue_new_release(world["queue"], "b" * 40, now=DAY_AFTER)
+        assert moved["reason"] == "new_release"
+        assert "trigger" not in runner._supersede_for_release(job, "b" * 40, DAY_AFTER)
+        assert runner._refusal_retries(job) == 6

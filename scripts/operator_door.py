@@ -57,6 +57,7 @@ import re
 import secrets
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -91,6 +92,16 @@ SCENE_WINDOW_ACK = "extend-scene-execution-window"
 SCENE_BUDGET_ACK = "extend-scene-execution-budget"
 OWNER_SUCCESS_ACK = "confirm-owner-success-contract"
 MAX_SCENE_WINDOW_SECONDS = 7 * 86400
+
+
+#: Paths no code that runs on the host reads: a deploy that changes only these changes
+#: nothing a running job can see, but would still retire every in-flight attempt.
+#: tests/test_operator_door_non_runtime_paths.py fails if code under src/, scripts/,
+#: deploy/ or config/ names one. Each entry is a directory and ends in "/".
+NON_RUNTIME_PATHS = ("docs/launch-readiness/",)
+#: The clone the client compares commits in: its own checkout.
+CLIENT_REPO = Path(__file__).resolve().parents[1]
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 class DoorError(Exception):
@@ -539,6 +550,51 @@ def _deploy_commit(args: argparse.Namespace) -> str:
     return commit
 
 
+def _non_runtime_difference(commit: str, active: str, repo: Path) -> int | None:
+    """How many files the two commits differ in, when every one is under NON_RUNTIME_PATHS.
+
+    None means deploy as asked: the commits are the same, a differing file may be read
+    by running code, or they cannot be compared here (not in this clone, git failed).
+    Older or newer makes no difference: a rollback is compared the same way.
+    """
+    if not (_FULL_SHA.fullmatch(commit) and _FULL_SHA.fullmatch(active)) or commit == active:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--no-renames", "--name-only", "-z", active, commit, "--"],
+            capture_output=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    paths = [path for path in result.stdout.decode("utf-8", "surrogateescape").split("\0") if path]
+    if not paths or not all(path.startswith(NON_RUNTIME_PATHS) for path in paths):
+        return None
+    return len(paths)
+
+
+def _no_runtime_change(commit: str, args: argparse.Namespace) -> bool:
+    """True, after saying so, when the active release already runs this commit's code.
+
+    An iteration deploy only: a production deploy also changes the release's provenance.
+    """
+    if args.even_if_no_runtime_change or args.release_provenance or args.release_provenance_sha256:
+        return False
+    try:
+        status = _json("GET", "/status")
+    except (DoorError, OSError, ValueError, http.client.HTTPException):
+        return False
+    release = status.get("active_release") if isinstance(status, dict) else None
+    active = release.get("commit") if isinstance(release, dict) else None
+    count = _non_runtime_difference(commit, active if isinstance(active, str) else "", CLIENT_REPO)
+    if count is None:
+        return False
+    print(f"Not deployed: {commit} differs from the active release {active} only in {count} non-runtime "
+          f"file(s) under {', '.join(NON_RUNTIME_PATHS)}, so the active release already runs this code; "
+          f"add --even-if-no-runtime-change to deploy it anyway.")
+    return True
+
+
 def _deploy_provenance(args: argparse.Namespace) -> dict[str, str]:
     """Transport exact locally verified official bytes, without claiming issuer verification."""
     path = args.release_provenance
@@ -866,8 +922,12 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
                         help="the newest origin/main commit whose CI attested it; refuses unless it is newer than what runs")
     deploy.add_argument("--no-wait-for-idle", action="store_true")
     deploy.add_argument("--activation-hold-override", metavar="REASON",
-                        help="deploy now although a scene-configuration activation is live; a short logged reason "
+                        help="deploy now although a paid stage (activation, launch, paid slot, screening) is live; a short logged reason "
                              "such as fixes_live_activation, money, privacy or rights ([a-z0-9][a-z0-9_:.-]{0,63})")
+    deploy.add_argument("--even-if-no-runtime-change", action="store_true",
+                        help="deploy although the commit differs from the active release only in files no running "
+                             "code reads (NON_RUNTIME_PATHS); without it such a deploy is not sent, since it would "
+                             "only retire in-flight attempts")
     deploy.add_argument("--release-provenance", help="official locally verified UTF-8 receipt; absent means iteration deploy")
     deploy.add_argument("--release-provenance-sha256", help="expected exact receipt SHA-256 (64 lowercase hex)")
     # A deploy's 3 h limit, plus waiting behind another deploy.
@@ -1069,7 +1129,10 @@ def run(args: argparse.Namespace) -> int:
     elif command == "release-hold":
         return _submit({"kind": "release-hold", "unit": args.unit}, args)
     elif command == "deploy":
-        return _submit({"kind": "deploy", "commit": _deploy_commit(args),
+        commit = _deploy_commit(args)
+        if _no_runtime_change(commit, args):
+            return 0
+        return _submit({"kind": "deploy", "commit": commit,
                         "wait_for_idle": not args.no_wait_for_idle,
                         **({"activation_hold_override": args.activation_hold_override}
                            if args.activation_hold_override else {}),
