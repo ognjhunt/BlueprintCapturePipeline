@@ -452,12 +452,16 @@ Before you deploy:
 3. Do not redeploy an older commit before you read that list. If it removes
    work of another session, ask the owner first.
 4. A revert merged on `main` is a newer commit. It removes only what it names.
-5. Read `door status` (`deploy_activation_hold`). While a scene-configuration
-   activation is live, the door holds the deploy. The hold ends when the
-   activation ends, or after at most 285 min (`CAP_SECONDS` in
+5. Read `door status` (`deploy_activation_hold`). While a paid stage of a
+   website job is live on the running release, the door holds the deploy (it
+   parks; the job is never touched). `deploy_activation_hold.stages` and each
+   `live` row's `stage` say which: `scene_configuration_activation`,
+   `scene_configuration_launch`, `paid_launch_lock` or `beta_screening`
+   (section 6). The hold ends when the stage ends, or after at most 285 min in
+   all, however the stages hand over (`CAP_SECONDS` in
    `deploy/operator-door/operator_door/activation_hold.py`).
 6. `--activation-hold-override <reason>` deploys at once. Use it only for
-   money, privacy, rights or a fix to that activation.
+   money, privacy, rights or a fix to the stuck paid stage itself.
 7. Request the rollback when no other deploy runs. A rollback that waits behind
    another deploy ends `parked_rollback_refused`
    ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md#what-a-door-deploy-does)).
@@ -484,12 +488,31 @@ The window opens at 15:00 UTC (09:00 CST). Deploy what `main` holds then.
 
 Before you deploy:
 
-1. Read `door status`. Do not deploy while any of these hold:
-   - a `paid_launch_locks` entry with `held: true`;
-   - `deploy_activation_hold` is not null (the door holds the deploy itself
-     while a scene-configuration activation is live, section 5);
-   - `beta_screening.candidate_counts.launching` or `.running` is above 0.
-   Wait for them to clear, then deploy.
+1. Request the deploy (step 4); you do not need to check for paid stages first.
+   The door holds it itself (it parks, or a production deploy is refused with a
+   `retry_after` and `deploys_by`) while any of these is live on the running
+   release
+   ([`activation_hold.py`](../../deploy/operator-door/operator_door/activation_hold.py)):
+   - a scene-configuration activation (pending, claimed by a live worker, or
+     finished and awaiting its launch submission);
+   - a scene-configuration launch submitted for this release that is pending in
+     the launch queue or claimed by a live dispatcher;
+   - a paid-launch slot lock (`paid_launch_locks`, not the `.gate.lock`) held by
+     a process running from this release;
+   - a beta-screening candidate `launching` or `running` whose plan froze this
+     release's commit.
+
+   It goes out when they end, or after 285 min in all, or at once with
+   `--activation-hold-override <reason>`. Anything it cannot read counts as not
+   live. While it waits, `door status` `deploy_activation_hold` (its `stages` and
+   `live` rows) says why; that read replaces the old hand check of
+   `paid_launch_locks` and `beta_screening.candidate_counts`.
+   Until the owner upgrades the installed door (`install.sh --upgrade` as root,
+   or `upgrade-door`, [`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md#install-tokens-upgrade-removal)),
+   the door holds only for an activation: a normal deploy does not update the
+   door. Until then, keep the hand check: do not deploy while a
+   `paid_launch_locks` entry has `held: true` or
+   `beta_screening.candidate_counts.launching` or `.running` is above 0.
 2. Read `door requests` and `deploys.recent_receipts`. If another operator has a
    deploy pending, processing, or finished in the last hour, do not stack a
    second one: use theirs, or wait for it.

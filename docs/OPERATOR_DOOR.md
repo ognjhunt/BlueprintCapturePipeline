@@ -440,6 +440,28 @@ intake restart and the re-arm. The receipt's `trigger_pause_seconds` says how
 long drained triggers, all other watchers and new paid launches were held;
 `stage_timings_seconds` splits the whole deploy by stage.
 
+**A deploy waits while a paid stage is live.** Before the fetch,
+`door-deploy.sh` runs `operator_door/activation_hold.py`, which only reads. It
+holds the deploy, never the job, while any of these is bound to the running
+release: a scene-configuration activation (pending, claimed by a live worker, or
+finished and waiting for its launch submission); a scene-configuration launch
+that progression submitted for this release and that is pending in
+`task-evaluation-launches` or claimed by a dispatcher holding its
+`.dispatcher.lock`; a `provider-locks/*.lock` slot (not the `.gate.lock`)
+flocked by a process whose working directory is this release's tree; or a
+beta-screening candidate `launching` or `running` in `screening_ledger.v1.json`
+whose plan froze this release's commit. A held deploy parks (an iteration
+deploy) or is refused with `scene_configuration_activation_live`, `retry_after`
+and `deploys_by` (a production deploy, which never parks; the code keeps its
+old name whichever stage holds it). It goes out when nothing is live, after
+`CAP_SECONDS` (285 min) in all for one hold however the stages hand over, or at
+once with `--activation-hold-override <reason>` (money, privacy, rights or a fix
+to the stuck stage). Anything unreadable counts as not live. `status`
+`deploy_activation_hold` shows the last check: `stages` and each `live` row's
+`stage` and `state` say what holds it. A normal deploy does not update the door:
+the installed door gets a change here only after `upgrade-door` or
+`install.sh --upgrade` as root (below).
+
 **Request a deploy right after merging.** Run `deploy <merge sha> --wait` at once;
 the build overlaps main's CI. Before anything pauses, the tool waits for that CI
 to list the commit's source attestation (`--attestation-wait-seconds`, default one
