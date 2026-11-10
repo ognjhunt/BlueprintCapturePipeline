@@ -516,6 +516,21 @@ request that: the newer commit wins. `status` counts them under `door_requests.p
 including the one running. The runner parks and starts them with no network or git, as
 sandboxed as before.
 
+**A deploy that changes nothing a running job can see is not sent.** Before it
+submits an iteration deploy, the client reads `status` (`active_release.commit`)
+and runs `git diff --name-only` between that commit and the target in its own
+checkout. If every differing file is under `NON_RUNTIME_PATHS` in
+`scripts/operator_door.py` (today only `docs/launch-readiness/`), it prints one
+sentence saying so and exits 0 without a request: the active release already
+runs that code, and the deploy would only retire in-flight attempts. A rollback
+is compared the same way. `--even-if-no-runtime-change` deploys anyway. Anything
+it cannot compare (status unreadable, a commit missing from the local clone, a
+git error), the active commit itself, and a production deploy (it also changes
+the release's provenance) deploy as before.
+`tests/test_operator_door_non_runtime_paths.py` fails if code under `src/`,
+`scripts/`, `deploy/` or `config/` names an allowlisted path, so the list stays
+sound; add a directory only when that test passes for it.
+
 `deploy --latest-attested --wait` resolves the newest `origin/main` commit whose
 "SBOM, license, and provenance contract" job succeeded, from GitHub's public API.
 It refuses unless that commit is ahead of the active release, or is the active

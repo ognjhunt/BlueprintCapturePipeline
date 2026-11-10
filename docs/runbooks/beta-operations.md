@@ -530,6 +530,14 @@ Before you deploy:
    the attestation is listed
    ([`../CI_REQUIRED_CHECKS.md`](../CI_REQUIRED_CHECKS.md), "Deploy gates").
 
+   If the commit differs from the active release only in files no running code
+   reads (today `docs/launch-readiness/`), the client sends nothing, says so in
+   one sentence and exits 0: such a deploy would only retire in-flight attempts.
+   Add `--even-if-no-runtime-change` to deploy it anyway. This needs your
+   checkout to have both commits (`git fetch origin`); when it cannot compare, it
+   deploys as before
+   ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md#what-a-door-deploy-does)).
+
 5. Record the deploy in
    [`../launch-readiness/2026-11-beta-launch-tracker.md`](../launch-readiness/2026-11-beta-launch-tracker.md):
    the commit, the time, and what it carried.
