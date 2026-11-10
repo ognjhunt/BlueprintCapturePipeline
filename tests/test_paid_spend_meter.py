@@ -223,3 +223,131 @@ def test_job_key_reads_the_website_request_id():
 def test_unobserved_atlas_attempts_are_a_gap(tmp_path):
     view = sources.collect_meter_view(now=NOW, world_labs=None, environ={meter.METER_ROOT_ENV: str(tmp_path / "m")})
     assert view["gaps"] == ["paid_spend_meter_atlas_attempts_unobserved"] and view["complete"] is False
+
+
+# ----------------------------- a hold counts only while its attempt could be billed (audit 2026-11-10) -----------------------------
+
+
+def _utc(*parts: int) -> float:
+    return datetime(*parts, tzinfo=timezone.utc).timestamp()
+
+
+def _held_for_good(attempt_id: str, *, launched: str | None, held_at: str | None, cap: str = "4.00") -> dict:
+    """A committed attempt whose settlement could not be proven: the coordinator keeps its whole cap."""
+    attempt = {"attempt_id": attempt_id, "maximum_cost_usd": cap, "reservation_status": "committed",
+               "provider_allocation_observed": True}
+    if launched is not None:
+        attempt["launch_intent_at"] = launched
+    if held_at is not None:
+        attempt["settlement_held"] = {"reason": "beta_screening_settlement_unproven", "held_at": held_at}
+    return attempt
+
+
+def _ledger(queue: Path, attempts: dict[str, dict]) -> Path:
+    queue.mkdir(parents=True, exist_ok=True)
+    ledger = {"schema_version": LEDGER_SCHEMA, "campaigns": {"campaign-a": {"site_id": "site-req-1", "candidates": {
+        f"cand-{index}": {"attempt": attempt} for index, attempt in enumerate(attempts.values())}}}}
+    ledger["ledger_digest"] = canonical_digest(ledger, digest_field="ledger_digest")
+    (queue / LEDGER_FILENAME).write_text(json.dumps(ledger))
+    return queue
+
+
+def _screening_view(queue: Path, *, now: float) -> dict:
+    rows, gaps = sources.screening_rows(queue)
+    assert gaps == []
+    return meter.meter_view(rows, now=now)
+
+
+def test_a_hold_whose_attempt_ended_last_month_is_reported_and_not_counted(tmp_path):
+    queue = _ledger(tmp_path / "queue", {
+        "october": _held_for_good("screen-oct", launched="2026-10-14T09:00:00+00:00",
+                                  held_at="2026-10-14T11:30:00+00:00"),
+        "november": _held_for_good("screen-nov", launched="2026-11-05T09:00:00+00:00",
+                                   held_at="2026-11-05T10:00:00+00:00"),
+        "reserved": {"attempt_id": "screen-live", "maximum_cost_usd": "4.00", "reservation_status": "reserved"},
+    })
+    view = _screening_view(queue, now=NOW)
+    # This month's unsettled attempt and the open reservation count; October's does not.
+    assert view["totals"]["held_usd"] == 8.0
+    assert view["_exact"]["held_outside_provider_readings_usd"] == Decimal("8.00")
+    assert view["jobs"][0] == {**view["jobs"][0], "job_id": "req-1", "held_usd": 8.0, "metered_usd": 8.0}
+    # It is still shown, so someone settles it.
+    assert view["old_unsettled_held_usd"] == 4.0 and view["_exact"]["old_unsettled_held_usd"] == Decimal("4.00")
+    assert view["old_unsettled_holds"] == [{
+        "job_id": "req-1", "source": "beta_policy_screening", "meter_key": "screen-oct", "provider": "vast",
+        "held_usd": 4.0, "billable_until": "2026-10-14T11:30:00+00:00", "reason": "beta_screening_settlement_unproven"}]
+    assert meter.public_view(view)["old_unsettled_holds"] == view["old_unsettled_holds"]
+    # In October, while the attempt could still be billed, the same hold counted.
+    october = _screening_view(queue, now=_utc(2026, 10, 20, 12))
+    assert october["old_unsettled_holds"] == [] and october["old_unsettled_held_usd"] == 0.0
+    assert october["totals"]["held_usd"] == 12.0  # October's own, and the two rows that end later or never
+
+
+def test_an_attempt_live_across_midnight_on_the_first_counts_in_both_months(tmp_path):
+    queue = _ledger(tmp_path / "queue", {
+        "spanning": _held_for_good("screen-span", launched="2026-10-31T23:30:00+00:00",
+                                   held_at="2026-11-01T00:20:00+00:00"),
+    })
+    for now, counted in ((_utc(2026, 10, 31, 23, 45), 4.0), (_utc(2026, 11, 1, 0, 30), 4.0),
+                         (_utc(2026, 11, 30, 23, 59), 4.0), (_utc(2026, 12, 1, 0, 0), 0.0)):
+        view = _screening_view(queue, now=now)
+        assert view["totals"]["held_usd"] == counted, now
+        assert view["old_unsettled_held_usd"] == 4.0 - counted, now
+
+
+@pytest.mark.parametrize("held_at, counted_in_november", [
+    ("2026-10-31T23:59:59+00:00", False),  # ended a second before the month began
+    ("2026-11-01T00:00:00+00:00", True),   # ended as it began: conservative, it counts
+])
+def test_the_month_boundary_is_conservative_to_the_second(tmp_path, held_at, counted_in_november):
+    queue = _ledger(tmp_path / "queue", {"edge": _held_for_good("screen-edge", launched="2026-10-31T22:00:00+00:00",
+                                                                held_at=held_at)})
+    view = _screening_view(queue, now=_utc(2026, 11, 1, 0, 5))
+    assert (view["totals"]["held_usd"] == 4.0) is counted_in_november
+    assert (view["old_unsettled_held_usd"] == 0.0) is counted_in_november
+
+
+@pytest.mark.parametrize("attempt", [
+    _held_for_good("screen-undecided", launched="2026-10-14T09:00:00+00:00", held_at=None),
+    _held_for_good("screen-no-time", launched="2026-10-14T09:00:00+00:00", held_at="not a time"),
+    _held_for_good("screen-naive", launched="2026-10-14T09:00:00+00:00", held_at="2026-10-14T11:30:00"),
+    # A close recorded before the attempt's own launch intent proves nothing.
+    _held_for_good("screen-backwards", launched="2026-10-14T09:00:00+00:00", held_at="2026-10-13T09:00:00+00:00"),
+    _held_for_good("screen-bad-launch", launched="garbage", held_at="2026-10-14T11:30:00+00:00"),
+    {"attempt_id": "screen-reserved", "maximum_cost_usd": "4.00", "reservation_status": "reserved",
+     "launch_intent_at": "2026-10-14T09:00:00+00:00"},
+], ids=lambda attempt: attempt["attempt_id"])
+def test_a_hold_with_no_trustworthy_recorded_end_keeps_counting(tmp_path, attempt):
+    """Unknown stays counted: only the attempt's own recorded close takes a hold out of a month."""
+    view = _screening_view(_ledger(tmp_path / "queue", {"only": attempt}), now=NOW)
+    assert view["totals"]["held_usd"] == 4.0
+    assert view["old_unsettled_holds"] == [] and view["old_unsettled_held_usd"] == 0.0
+
+
+def test_a_journal_hold_follows_the_same_rule_from_its_recorded_end(tmp_path):
+    root = tmp_path / "meter"
+    meter.record_admission(job_id="req-7", meter_key="ended", resource_class="vast_provider_adapter",
+                           held_usd="3.00", root=root, now=LAST_MONTH, billable_until_epoch=LAST_MONTH + 3600)
+    meter.record_admission(job_id="req-7", meter_key="spans", resource_class="vast_provider_adapter",
+                           held_usd="2.00", root=root, now=LAST_MONTH, billable_until_epoch=_utc(2026, 11, 1, 1))
+    meter.record_admission(job_id="req-7", meter_key="open", resource_class="vast_provider_adapter",
+                           held_usd="1.00", root=root, now=LAST_MONTH)
+    meter.record_admission(job_id="req-7", meter_key="not-a-number", resource_class="vast_provider_adapter",
+                           held_usd="0.50", root=root, now=LAST_MONTH, billable_until_epoch="2026-10-30")
+    view = meter.meter_view(meter.journal_rows(_events(root)), now=NOW)
+    assert view["totals"]["held_usd"] == 3.5  # the spanning one, the open one and the unreadable end
+    assert [(row["meter_key"], row["held_usd"]) for row in view["old_unsettled_holds"]] == [("ended", 3.0)]
+    assert view["old_unsettled_holds"][0]["source"] == "paid_resource_admission"
+    assert "reason" not in view["old_unsettled_holds"][0]
+
+
+def test_many_old_holds_are_capped_in_the_public_view_and_summed_in_full():
+    rows = [{"source": "beta_policy_screening", "job_id": f"req-{index}", "meter_key": f"a{index}", "status": "held",
+             "held_usd": Decimal(index + 1), "provider": "vast", "billable_until_epoch": LAST_MONTH}
+            for index in range(5)]
+    view = meter.meter_view(rows, now=NOW)
+    assert view["totals"]["held_usd"] == 0.0 and view["jobs"] == []
+    assert view["old_unsettled_held_usd"] == 15.0
+    public = meter.public_view(view, max_jobs=2)
+    assert [row["held_usd"] for row in public["old_unsettled_holds"]] == [5.0, 4.0]
+    assert public["old_unsettled_holds_omitted"] == 3 and public["old_unsettled_held_usd"] == 15.0

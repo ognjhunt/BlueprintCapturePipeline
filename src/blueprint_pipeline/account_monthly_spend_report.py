@@ -30,6 +30,7 @@ from .account_monthly_spend import (
     BILLING_MAX_AGE_SECONDS,
     BILLING_RECEIPT_SCHEMA,
     CONFIG_INVALID,
+    LIMIT_NOT_CONFIGURED,
     LIMIT_REACHED,
     MAX_BASELINE_RECEIPTS,
     MAX_EXPORT_BYTES,
@@ -45,8 +46,10 @@ from .account_monthly_spend import (
     _regular_bytes,
     _utc,
     _write_public,
+    cap_status,
     configured_policy,
     effective_limit,
+    limit_required,
     read_provider_observation,
     report_path,
 )
@@ -96,6 +99,30 @@ def _directory_time(name: str) -> float:
     return datetime.strptime(name, _AUDIT_NAME_FORMAT).replace(tzinfo=timezone.utc).timestamp()
 
 
+def _carried_totals(export: Mapping[str, Any], fresh: Mapping[str, Any], *, now: float) -> dict[str, dict[str, Any]]:
+    """The export's carried readings, each with the time it was really read.
+
+    The billing reconciler keeps the last good total of a provider whose call
+    failed in ``carried_forward``, for as long as billing evidence is accepted.
+    A row for a provider read afresh, an unusable row, or one older than that
+    age is ignored; the provider then has no reading, as before.
+    """
+
+    carried = export.get("carried_forward")
+    rows: dict[str, dict[str, Any]] = {}
+    for name, row in (carried.items() if isinstance(carried, Mapping) else ()):
+        if str(name) in fresh or not isinstance(row, Mapping):
+            continue
+        total, observed = money(row.get("total_usd")), _epoch(row.get("observed_at"))
+        if total is None or observed is None or not 0 <= now - observed <= BILLING_MAX_AGE_SECONDS:
+            continue
+        rows[str(name)] = {"total": total, "read_at": observed,
+                           "detail": {"observed_at": str(row.get("observed_at")),
+                                      "failure": str(row.get("failure") or "")[:200],
+                                      "failed_at": str(row.get("failed_at") or "")[:64]}}
+    return rows
+
+
 def billing_month_readings(export_path: Path | None, audit_root: Path | None, *, now: float) -> dict[str, dict[str, Any]]:
     """This month's spend for each provider in the reconciled billing export.
 
@@ -104,6 +131,10 @@ def billing_month_readings(export_path: Path | None, audit_root: Path | None, *,
     reconciliation receipt written before the month began. Without one, the
     first receipt of the month stands in and the reading says so: the spend
     between the month's start and that receipt is not counted.
+
+    A carried reading (``_carried_totals``) is counted the same way from the
+    time it was really read, and is marked ``carried_forward`` with the failure
+    of the newer call: it is never reported as observed.
     """
 
     if export_path is None:
@@ -120,43 +151,56 @@ def billing_month_readings(export_path: Path | None, audit_root: Path | None, *,
         return {"vast": _reading("invalid", reason="billing_export_invalid"),
                 "digitalocean": _reading("invalid", reason="billing_export_invalid")}
     current = {str(name): money(value) for name, value in totals.items()}
+    carried = _carried_totals(export, current, now=now)
+    current.update({name: row["total"] for name, row in carried.items()})
+    #: When each total was read: the export's own time, or a carried reading's.
+    read_at = {name: carried[name]["read_at"] if name in carried else generated for name in current}
     month_start = _month_start(now)
-    if generated < month_start:
-        return {name: _reading("other_month", reason="billing_export_from_previous_month") for name in current}
-    stale = not 0 <= now - generated <= BILLING_MAX_AGE_SECONDS + 300
     baselines: dict[str, tuple[Decimal, float, bool]] = {}
     names = _audit_directories(Path(audit_root)) if audit_root is not None else []
     split = bisect.bisect_left(names, _utc(month_start).strftime(_AUDIT_NAME_FORMAT))
     before = names[max(0, split - MAX_BASELINE_RECEIPTS):split][::-1]
-    after = [name for name in names[split:split + MAX_BASELINE_RECEIPTS] if _directory_time(name) <= generated]
+    latest = max(read_at.values(), default=generated)
+    after = [name for name in names[split:split + MAX_BASELINE_RECEIPTS] if _directory_time(name) <= latest]
+    wanted = {name for name in current if read_at[name] >= month_start}
     for candidates, late in ((before, False), (after, True)):
         for directory in candidates:
-            if all(name in baselines for name in current):
+            if all(name in baselines for name in wanted):
                 break
             receipt = _receipt_totals(Path(audit_root) / directory)
+            written = _directory_time(directory)
             for name, value in (receipt or {}).items():
-                baselines.setdefault(name, (value, _directory_time(directory), late))
+                # A baseline written after the month began must not be newer than the reading it is taken from.
+                if not late or written <= read_at.get(name, generated):
+                    baselines.setdefault(name, (value, written, late))
     readings = {}
     for name, total in sorted(current.items()):
+        marker = {"carried_forward": carried[name]["detail"]} if name in carried else {}
+        if read_at[name] < month_start:
+            readings[name] = _reading("other_month", reason="billing_export_from_previous_month", **marker)
+            continue
         if total is None:
             readings[name] = _reading("invalid", reason="billing_export_total_invalid")
             continue
         baseline = baselines.get(name)
         if baseline is None:
-            readings[name] = _reading("baseline_unavailable", reason="billing_month_baseline_unavailable")
+            readings[name] = _reading("baseline_unavailable", reason="billing_month_baseline_unavailable", **marker)
             continue
         value, moment, late = baseline
         delta = total - value
-        extra: dict[str, Any] = {"baseline_at": _utc(moment).isoformat(), "observed_at": export.get("generated_at")}
+        observed_at = carried[name]["detail"]["observed_at"] if name in carried else export.get("generated_at")
+        extra: dict[str, Any] = {"baseline_at": _utc(moment).isoformat(), "observed_at": observed_at}
         reason = None
         if delta < 0:
             delta, reason = Decimal(0), "billing_total_below_month_baseline"
         elif late:
             reason = "billing_month_baseline_after_month_start"
-        elif stale:
+        elif not 0 <= now - read_at[name] <= BILLING_MAX_AGE_SECONDS + 300:
             reason = "billing_export_stale"
         status = "observed" if reason is None else "partial"
-        readings[name] = _reading(status, delta, **({"reason": reason} if reason else {}), **extra)
+        if name in carried:
+            status, reason = "carried_forward", reason or "billing_reading_carried_forward"
+        readings[name] = _reading(status, delta, **({"reason": reason} if reason else {}), **extra, **marker)
     return readings
 
 
@@ -268,7 +312,7 @@ def _previous_holds(previous: Mapping[str, Any]) -> dict[str, Decimal]:
 
 def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: str | None, config: Path,
                  readings: Mapping[str, Mapping[str, Any]], meter: Mapping[str, Any],
-                 previous: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                 previous: Mapping[str, Any] | None = None, limit_is_required: bool = False) -> dict[str, Any]:
     """The account's month: what counts, against which limit, and whether admission is open.
 
     ``previous`` is the last report written. Within one month a monitoring
@@ -276,6 +320,10 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
     in the previous report, and a source of holds that cannot be read keeps the
     holds it last had. A held figure is marked ``stale`` (its reading failed)
     or ``partial`` (its reading came back lower), with the time it was observed.
+
+    ``limit_is_required`` is ``account_monthly_spend.limit_required`` for the
+    process writing the report. With no limit file there, the report says
+    ``cap_status: missing`` and names the refusal every new paid admission gets.
     """
 
     from .paid_spend_meter import SOURCE_ATLAS, public_view
@@ -299,7 +347,8 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
         observed_at = reading.get("observed_at") if reconciled is not None and counted == reconciled else None
         row = {"reconciled_month_usd": None if reconciled is None else usd(reconciled),
                "metered_settled_usd": usd(metered),
-               **{key: reading[key] for key in ("reason", "baseline_at", "source") if reading.get(key)}}
+               **{key: reading[key] for key in ("reason", "baseline_at", "source", "carried_forward")
+                  if reading.get(key)}}
         before = prior_providers.get(name) if isinstance(prior_providers.get(name), Mapping) else {}
         floor = money(before.get("counted_usd"))
         if floor is not None and floor > counted:
@@ -330,10 +379,12 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
     fraction = float(counted_total / limit) if limit else None
     reached = [percent for percent in ALERT_PERCENTS if limit is not None and counted_total * 100 >= limit * percent]
     limit_reached = limit is not None and counted_total >= limit
-    blockers = [CONFIG_INVALID] if policy_error else ([LIMIT_REACHED] if limit_reached else [])
+    cap = cap_status(policy, policy_error, required=limit_is_required)
+    blockers = {"config_invalid": [CONFIG_INVALID], "missing": [LIMIT_NOT_CONFIGURED]}.get(
+        cap, [LIMIT_REACHED] if limit_reached else [])
     return {
         "schema_version": REPORT_SCHEMA, "generated_at": _utc(now).isoformat(), "period": period,
-        "cap_status": "config_invalid" if policy_error else ("set" if policy is not None else "not_set"),
+        "cap_status": cap,
         "config_path": str(config),
         "policy_sha256": policy.get("policy_sha256") if policy is not None else None,
         "limit_usd": None if limit is None else str(limit),
@@ -341,6 +392,8 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
         "spend_usd": usd(spend), "held_usd": usd(held), "counted_usd": usd(counted_total),
         "held_by_source_usd": {name: usd(amount) for name, amount in sorted(by_source.items()) if name != SOURCE_ATLAS},
         **({"held_sources_kept": held_sources} if held_sources else {}),
+        # Holds whose attempt ended in an earlier month: listed under ``meter``, counted nowhere above.
+        "old_unsettled_held_usd": usd(exact.get("old_unsettled_held_usd", Decimal(0))),
         "fraction": None if fraction is None else round(fraction, 6),
         "alert_threshold_percent": reached[-1] if reached else None,
         "limit_reached": limit_reached, "admission_allowed": not blockers, "blockers": blockers,
@@ -373,7 +426,7 @@ def refresh_report(*, now: float | None = None, environ: Mapping[str, str] | Non
         except (OSError, ValueError, UnicodeDecodeError):
             previous = None
     report = build_report(now=moment, policy=policy, policy_error=error, config=config, readings=readings,
-                          meter=meter, previous=previous)
+                          meter=meter, previous=previous, limit_is_required=limit_required(env))
     report["report_path"] = str(destination) if destination is not None else None
     if destination is not None:
         _write_public(destination, report)
