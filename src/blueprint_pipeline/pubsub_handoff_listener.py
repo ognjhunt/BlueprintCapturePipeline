@@ -642,11 +642,15 @@ def _claim_job_lease(
     expected_target_choice_correction: Mapping[str, Any] | None = None,
     expected_robot_fit_recheck: Mapping[str, Any] | None = None,
     expected_held_replay: Mapping[str, Any] | None = None,
+    expected_revision: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if producer_delivery_key is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", producer_delivery_key) is None:
         raise PipelineError('capture_delivery_key_invalid')
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     with _locked_job_ledger(capture_root, create=create_capture_root) as ledger:
+        # A caller that decided from an earlier read claims only that revision.
+        if expected_revision is not None and ledger.get("revision") != expected_revision:
+            return "revision_changed", dict(ledger)
         ledger_path = capture_root / JOB_LEDGER_FILENAME
         if require_unattempted_delivery and (
             ledger or ledger_path.exists() or ledger_path.is_symlink()

@@ -5,10 +5,17 @@ particular message. Silence records an overdue observation only. The existing
 v1/v2 status vocabulary stays compatible, and a later current claim supersedes
 the observation while its immutable attempt-history entry remains available.
 No observation authorizes retry, provider effects or authority renewal.
+
+One silent case is not a delay: a preparation whose retained grant has expired
+can never run again: every delivery would end it on the WebApp's
+``consent_expired``. ``end_expired_preparation`` asks the WebApp the same
+question without effect and, only on that refusal, writes the same ending through
+the listener's own terminal function, so the job ends without a redelivery.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections.abc import Mapping
@@ -17,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .common import write_json
+from .decision_evidence_contracts import canonical_digest
 from .handoff_job_state import (
     JOB_LEDGER_FILENAME,
     JOB_LEDGER_SCHEMA_VERSION,
@@ -36,6 +44,9 @@ _RETRYABLE_STATUSES = frozenset({"failed_retryable", "retryable_blocked"})
 SILENCE_SECONDS_ENV = "BLUEPRINT_WEBSITE_PREPARATION_SILENCE_SECONDS"
 DEFAULT_SILENCE_SECONDS = 2 * 60 * 60
 _MINIMUM_SILENCE_SECONDS = 30 * 60
+# The grant the job's latest delivery ran under (website_task_evidence).
+GRANT_FILE = "pipeline/website_scene_sponsorship.json"
+EXPIRY_STAGE = "website_preparation_grant_expiry"
 # Listener ticks run about a minute apart; a longer gap (an outage, or one tick
 # busy processing) means this listener could not have received a redelivery.
 LIVENESS_GAP_SECONDS = 15 * 60
@@ -226,3 +237,109 @@ def record_unretried_preparation(capture_root: Path, *, alive_since: datetime,
                   "retry_exhaustion_proven": False,
                   "recorded_at": _iso(current)}
         return _commit(Path(capture_root), ledger, record)
+
+
+def _grant_may_have_ended(capture_root: Path, ledger: Mapping[str, Any], now_epoch: float) -> bool:
+    """Trigger only: the retained grant is sealed, binds this capture, and its own expiry has passed.
+
+    A grant's ``valid_until`` (an owner-approved window extension,
+    ``validate_preparation_authority``; the WebApp's ``sponsorshipValidUntil``)
+    is never earlier than ``expires_at_epoch``, so a raw expiry still ahead means
+    the grant is valid. The extension lives on the scene intent, which a capture
+    root does not name, so whether the grant has ended is asked of the WebApp.
+    """
+    path = Path(capture_root) / GRANT_FILE
+    if path.is_symlink() or not path.is_file():
+        return False
+    try:
+        grant = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(grant, dict):
+        return False
+    expiry = grant.get("expires_at_epoch")
+    return not (grant.get("schema_version") != "website_scene_sponsorship.v1"
+                or grant.get("authority_digest") != canonical_digest(grant, digest_field="authority_digest")
+                or grant.get("scene_id") != ledger.get("scene_id")
+                or grant.get("capture_id") != ledger.get("capture_id")
+                or isinstance(expiry, bool) or not isinstance(expiry, (int, float))
+                or not math.isfinite(expiry) or expiry > now_epoch)
+
+
+def _webapp_ended(capture_root: Path, ledger: Mapping[str, Any]) -> ValueError | None:
+    """The WebApp's own ``consent_expired`` refusal of this job's grant, or None.
+
+    One non-creating, window-honouring ``scene-sponsorship`` read; any other
+    answer, an error or a missing retained context is None.
+    """
+    from .website_task_context import read_scene_sponsorship_ending
+    try:
+        # The context the job's delivery retained (website_task_evidence), never a fresh one.
+        path = Path(capture_root) / "pipeline" / "website_task_context.json"
+        if path.is_symlink() or not path.is_file():
+            return None
+        context = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(context, dict) or type(context.get("request_id")) is not str
+                or context.get("context_digest") != canonical_digest(context, digest_field="context_digest")
+                or any(context.get(key) != ledger.get(key) for key in ("scene_id", "capture_id"))):
+            return None
+        return read_scene_sponsorship_ending(task_context=context)
+    except Exception:  # noqa: BLE001 - nothing but the typed refusal may end a job
+        return None
+
+
+def end_expired_preparation(capture_root: Path, *, alive_since: datetime, listener: Any,
+                            now: datetime | None = None) -> dict[str, Any] | None:
+    """End a silent preparation once the WebApp refuses its grant as expired, as a delivery would.
+
+    Applies only where ``record_unretried_preparation`` could record an overdue
+    observation (a retryable attempt, or a dead worker's expired lease, silent
+    for a full window of continuous listening) and the retained grant's own
+    expiry has passed. Then the sweep asks the WebApp, once per tick, and ends
+    the job only on its ``consent_expired`` refusal; a still-valid, extended or
+    renewed grant, or any other answer, leaves the job as it is. A live lease,
+    a completed or ended job and the assessment wait are never asked about. The
+    ending is the listener's ``_finish_terminal_authority_ending`` on a claim of
+    the revision read here, so it is written once. Nothing is retried, bought,
+    renewed or released here. Returns the committed terminal ledger, or None.
+
+    ``listener`` is the running ``pubsub_handoff_listener`` module, passed in as
+    ``reconcile_waiting_assessments`` receives it, so this lane never imports it.
+    """
+    root = Path(capture_root)
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    with _existing_job_ledger_lock(root) as state:
+        if state != "ledger_present":
+            return None
+        ledger = _read_job_ledger(root)
+        silent = _silent_since(ledger, current)
+        if (silent is None or type(ledger.get("revision")) is not int
+                or any(type(ledger.get(key)) is not str or not ledger[key] for key in
+                       ("scene_id", "capture_id", "producer_delivery_key", "source_payload_sha256"))
+                or max(silent, alive_since) + timedelta(seconds=silence_seconds()) > current
+                or not _grant_may_have_ended(root, ledger, current.timestamp())):
+            return None
+    refusal = _webapp_ended(root, ledger)  # No network under the ledger lock.
+    ending = listener.authority_ending(refusal) if refusal is not None else None
+    if ending is None or ending[1] != "consent_expired":
+        return None
+    claim, claimed = listener._claim_job_lease(
+        root, scene_id=ledger["scene_id"], capture_id=ledger["capture_id"], owner=listener._lease_owner(),
+        lease_seconds=listener.DEFAULT_JOB_LEASE_SECONDS, payload_sha256=ledger["source_payload_sha256"],
+        producer_delivery_key=ledger["producer_delivery_key"], create_capture_root=False,
+        expected_revision=ledger["revision"])
+    if claim != "claimed":
+        return None
+    handoff = listener.HandoffMessage(
+        bucket=root.parents[3].name, scene_id=ledger["scene_id"], capture_id=ledger["capture_id"],
+        raw_prefix_uri=f"gs://{root.parents[3].name}/scenes/{ledger['scene_id']}"
+                       f"/captures/{ledger['capture_id']}/raw/",
+        pipeline_handoff_uri=None)
+    result = listener._finish_terminal_authority_ending(
+        root, handoff=handoff, owner=claimed["lease_owner"], token=claimed["lease_token"],
+        operation=ending[0], code=ending[1], error=refusal,
+        stage=EXPIRY_STAGE, attempt_count=claimed["attempt_count"],
+        attempt_started_at=claimed["last_attempt_started_at"],
+        previous_history=listener._attempt_history(claimed),
+        payload_digest=ledger["source_payload_sha256"], producer_delivery_key=ledger["producer_delivery_key"])
+    return result["job_ledger"]
