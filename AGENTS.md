@@ -33,6 +33,12 @@ failure means fixing its cause; do not add a gate, approval step, review stage
 or readiness check unless it protects privacy, rights or money. Delete checks
 that protect none of the three.
 
+After a failed step a job retries by itself: `job_retry_policy` decides when,
+and the job's window is its deadline. A new stage controller uses that module
+instead of its own retry rule; never make a deploy or an operator command the
+only way to retry
+([`docs/architecture/job-retry-and-deadlines.md`](docs/architecture/job-retry-and-deadlines.md)).
+
 Ask the owner first before contacting outside companies, sending email, or
 deleting retained data.
 
