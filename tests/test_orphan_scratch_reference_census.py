@@ -1,4 +1,4 @@
-"""The orphan scratch reference census: conservative, read-only, and reported per folder."""
+"""The orphan scratch reference census: per-kind evidence, read-only, never optimistic."""
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_lane_scratch_census.py
@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from collections import namedtuple
 from pathlib import Path
 
 import pytest
@@ -15,181 +16,217 @@ import pytest
 from blueprint_pipeline import control_plane_capacity_controller as cap
 from blueprint_pipeline.control_plane_lane_scratch_census import (
     REFERENCE_CENSUS_FILENAME,
+    REFERENCE_KINDS,
     build_reference_census,
     publish_reference_census,
 )
 from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
 
 NOW = 1_800_000_000.0
-KINDS = ("queue", "process", "container_mount", "unit_file", "pin",
-         "live_release", "active_run")
-
-
-def _proc(root: Path, tmp_path: Path) -> Path:
-    """A /proc with only ``self``: its own mount namespace maps the whole test tree."""
-    me = root / "self"
-    (me / "ns").mkdir(parents=True)
-    (me / "ns" / "mnt").symlink_to("mnt:[1]")
-    (me / "mountinfo").write_text(f"1 0 8:1 / {tmp_path} rw - ext4 /dev/x rw\n")
-    return root
+# Kinds a synthetic folder can be held by, and the folder each one holds.
+HELD = ("queue", "active_run", "capture_reconstruction", "pubsub_handoff", "door_request", "process",
+        "container_mount", "docker_container", "unit_file", "env_file", "release_source", "pin",
+        "live_release")
 
 
 def _world(tmp_path: Path) -> dict:
     work, inputs = tmp_path / "work", tmp_path / "inputs"
-    folders = {kind: work / f"held-by-{kind.replace('_', '-')}" for kind in KINDS}
+    folders = {kind: work / f"held-by-{kind.replace('_', '-')}" for kind in HELD}
     folders["free"] = inputs / "nothing-refers-to-me"
     for folder in folders.values():
         folder.mkdir(parents=True)
         (folder / "data.bin").write_bytes(b"x" * 64)
-    queue = tmp_path / "queue"
-    (queue / "pending").mkdir(parents=True)
-    (queue / "pending" / "m.json").write_text(json.dumps({"input": str(folders["queue"])}))
-    proc = _proc(tmp_path / "proc", tmp_path)
-    worker = proc / "4242"
-    (worker / "fd").mkdir(parents=True)
-    (worker / "cmdline").write_bytes(b"python\0")
-    (worker / "environ").write_bytes(b"")
-    (worker / "cwd").symlink_to(folders["process"])
-    (worker / "ns").mkdir()
-    (worker / "ns" / "mnt").symlink_to("mnt:[1]")
-    container = proc / "5151"
-    (container / "fd").mkdir(parents=True)
-    (container / "cmdline").write_bytes(b"sim\0")
-    (container / "environ").write_bytes(b"")
-    (container / "cwd").symlink_to("/")
-    (container / "ns").mkdir()
-    (container / "ns" / "mnt").symlink_to("mnt:[2]")
+    etc = tmp_path / "etc"
+
+    def record(root: Path, relative: str, kind: str, text: str | None = None) -> Path:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text or json.dumps({"path": str(folders[kind])}))
+        return root
+
+    queue = record(tmp_path / "queue", "pending/m.json", "queue")
+    # Finding 1: a run record names the folder while no process holds it.
+    runs = record(tmp_path / "launch-runs", "run-7/attempt-2/run.json", "active_run")
+    capture = record(tmp_path / "capture-queue", "pending/c.json", "capture_reconstruction")
+    handoff = record(tmp_path / "handoffs", "bucket/scenes/s1/handoff.json", "pubsub_handoff")
+    door = record(tmp_path / "door-requests", "r1.json", "door_request")
+    docker = record(tmp_path / "docker", "abc123/hostconfig.json", "docker_container",
+                    json.dumps({"Binds": [f"{folders['docker_container']}:/inputs:ro"]}))
+    # A unit under /usr/lib/systemd/system, beside the /etc one.
+    usr_units = record(tmp_path / "usr-lib-systemd", "job.service", "unit_file",
+                       f"[Service]\nWorkingDirectory={folders['unit_file']}\n")
+    env = record(etc / "blueprint", "pipeline.env", "env_file", f"SDK_ROOT={folders['env_file']}\n")
+    record(etc / "blueprint" / "provider-secrets", "key.env", "free")  # never read
+    release = folders["live_release"] / "release"
+    record(release, "src/paths.py", "release_source", f"ROOT = '{folders['release_source']}'\n")
+    link = tmp_path / "release-link"
+    link.symlink_to(release)
+    proc = tmp_path / "proc"
+    me = proc / "self"
+    (me / "ns").mkdir(parents=True)
+    (me / "ns" / "mnt").symlink_to("mnt:[1]")
+    (me / "mountinfo").write_text(f"1 0 8:1 / {tmp_path} rw - ext4 /dev/x rw\n")
+    for pid, namespace, cwd in (("4242", "mnt:[1]", folders["process"]), ("5151", "mnt:[2]", "/")):
+        (proc / pid / "fd").mkdir(parents=True)
+        (proc / pid / "cmdline").write_bytes(b"python\0")
+        (proc / pid / "environ").write_bytes(b"")
+        (proc / pid / "cwd").symlink_to(cwd)
+        (proc / pid / "ns").mkdir()
+        (proc / pid / "ns" / "mnt").symlink_to(namespace)
     relative = folders["container_mount"].relative_to(tmp_path)
-    (container / "mountinfo").write_text(f"7 1 8:1 /{relative} /inputs rw - ext4 /dev/x rw\n")
-    units = tmp_path / "units"
-    units.mkdir()
-    (units / "job.service").write_text(f"[Service]\nWorkingDirectory=/x/{folders['unit_file'].name}\n")
+    (proc / "5151" / "mountinfo").write_text(f"7 1 8:1 /{relative} /inputs rw - ext4 /dev/x rw\n")
     pins = tmp_path / "pins"
     write_storage_pin(pins_root=pins, kind="preparation", owner_id="prep-1", paths=[folders["pin"]],
                       now=lambda: NOW)
-    release = folders["live_release"] / "release"
-    release.mkdir()
-    link = tmp_path / "release-link"
-    link.symlink_to(release)
-    return {"folders": folders, "kwargs": {
-        "work_root": work, "inputs_root": inputs, "process_root": proc, "pins_root": pins, "queue_roots": [queue],
-        "release_link": link, "active_run_roots": [folders["active_run"] / "run-1"], "unit_directories": [units],
-        "now": NOW}}
+    kwargs = {
+        "work_root": work, "inputs_root": inputs, "process_root": proc, "pins_root": pins,
+        "queue_roots": [queue], "release_link": link, "active_run_roots": [runs],
+        "unit_directories": [tmp_path / "etc-systemd", usr_units], "env_directories": [env],
+        "env_excluded": [etc / "blueprint" / "provider-secrets"], "capture_roots": [capture],
+        "handoff_roots": [handoff], "door_request_roots": [door], "docker_containers": docker,
+        "source_roots": [], "now": NOW,
+    }
+    return {"folders": folders, "kwargs": kwargs}
 
 
-def test_each_kind_of_reference_holds_its_folder_and_only_the_free_one_is_unreferenced(tmp_path):
+def _rows(census: dict) -> dict:
+    return {row["path"]: row for row in census["rows"]}
+
+
+def test_every_kind_is_checked_and_holds_its_folder_only_the_free_one_has_no_reference(tmp_path):
     world = _world(tmp_path)
     before = sorted(str(path) for path in tmp_path.rglob("*"))
 
     census = build_reference_census(**world["kwargs"])
 
-    assert census["status"] == "complete", census["scan_errors"]
+    assert {kind: row["status"] for kind, row in census["kinds"].items()} == dict.fromkeys(REFERENCE_KINDS,
+                                                                                          "checked")
+    assert census["status"] == "complete"
+    assert "not a statement that deletion is safe" in census["statement"]
+    rows = _rows(census)
+    for kind in HELD:
+        assert kind in rows[str(world["folders"][kind])]["references"], kind
+    assert rows[str(world["folders"]["free"])]["references"] == []  # the secrets file was not read
     assert census["mutations"] == 0
-    rows = {row["path"]: row["references"] for row in census["rows"]}
-    for kind in KINDS:
-        assert kind in rows[str(world["folders"][kind])], kind
-    assert rows[str(world["folders"]["free"])] == []
-    assert sorted(str(path) for path in tmp_path.rglob("*")) == before  # read-only
+    assert sorted(str(path) for path in tmp_path.rglob("*")) == before
 
 
-def test_a_symlink_beside_a_folder_holds_it_and_leaves_the_census_incomplete(tmp_path):
+def test_a_run_record_holds_its_folder_between_processes(tmp_path):
     world = _world(tmp_path)
-    held = tmp_path / "work" / "held-by-queue"
-    (tmp_path / "work" / "current").symlink_to(held / "data.bin")
+    kwargs = {**world["kwargs"], "active_run_roots": [tmp_path / "empty-runs"]}
+    (tmp_path / "empty-runs").mkdir()
+    held = str(world["folders"]["active_run"])
 
-    census = build_reference_census(**world["kwargs"])
+    assert build_reference_census(**kwargs)["rows"] and "active_run" not in _rows(
+        build_reference_census(**kwargs))[held]["references"]
+    assert "active_run" in _rows(build_reference_census(**world["kwargs"]))[held]["references"]
 
-    assert census["status"] == "incomplete" and "work_child_unsafe" in census["scan_errors"]
-    assert "sibling_link" in {row["path"]: row["references"] for row in census["rows"]}[str(held)]
 
-
-def test_a_container_mounting_the_whole_volume_holds_only_what_it_uses(tmp_path):
+def test_a_container_mounting_a_parent_folder_holds_everything_below_it(tmp_path):
     world = _world(tmp_path)
-    container = tmp_path / "proc" / "5151"
-    (container / "mountinfo").write_text("7 1 8:1 / /host rw - ext4 /dev/x rw\n")
+    (tmp_path / "proc" / "5151" / "mountinfo").write_text("7 1 8:1 /work /data rw - ext4 /dev/x rw\n")
+
+    rows = _rows(build_reference_census(**world["kwargs"]))
+
+    assert all("container_mount" in row["references"] for path, row in rows.items() if "/work/" in path)
+    assert "container_mount" not in rows[str(world["folders"]["free"])]["references"]
+
+
+def test_a_sandboxed_unit_seeing_the_host_volume_holds_only_what_it_uses(tmp_path):
+    world = _world(tmp_path)
+    proc = tmp_path / "proc" / "5151"
+    (proc / "mountinfo").write_text(f"7 1 8:1 / {tmp_path} rw - ext4 /dev/x rw\n")
     used = world["folders"]["free"]
-    (container / "fd" / "3").symlink_to(f"/host/{used.relative_to(tmp_path)}/data.bin")
+    (proc / "fd" / "3").symlink_to(used / "data.bin")
 
-    census = build_reference_census(**world["kwargs"])
+    rows = _rows(build_reference_census(**world["kwargs"]))
 
-    rows = {row["path"]: row["references"] for row in census["rows"]}
-    assert census["status"] == "complete", census["scan_errors"]
-    assert rows[str(used)] == ["container_mount"]
-    assert "container_mount" not in rows[str(world["folders"]["queue"])]
+    assert "container_mount" in rows[str(used)]["references"]
+    assert "container_mount" not in rows[str(world["folders"]["queue"])]["references"]
 
 
-@pytest.mark.parametrize("breakage", ["queue_root", "unit_file", "foreign_mountinfo", "inputs_root",
-                                      "no_queue_inventory", "deadline"])
-def test_an_unreadable_or_partial_inventory_makes_the_census_incomplete(tmp_path, breakage, monkeypatch):
+@pytest.mark.parametrize(("change", "kind", "status"), [
+    ({"queue_roots": None}, "queue", "not_checked"),
+    ({"active_run_roots": None}, "active_run", "not_checked"),
+    ({"release_link": Path("/nonexistent/release")}, "release_source", "not_checked"),
+    ({"pins_root": Path("/nonexistent/pins")}, "pin", "failed"),
+    ({"queue_roots": [Path("/nonexistent/queue")]}, "queue", "failed"),
+])
+def test_a_kind_not_checked_or_failed_makes_the_census_incomplete_and_totals_unknown(
+        tmp_path, change, kind, status):
     world = _world(tmp_path)
-    kwargs = dict(world["kwargs"])
-    if breakage == "queue_root":
-        kwargs["queue_roots"] = [tmp_path / "missing-queue"]
-    elif breakage == "unit_file":
-        (tmp_path / "units" / "huge.service").write_bytes(b"x" * (1024 * 1024 + 1))
-    elif breakage == "foreign_mountinfo":
-        (tmp_path / "proc" / "5151" / "mountinfo").unlink()
-        (tmp_path / "proc" / "5151" / "mountinfo").mkdir()
-    elif breakage == "inputs_root":
-        kwargs["inputs_root"] = tmp_path / "not-there"
-    elif breakage == "no_queue_inventory":
-        kwargs["queue_roots"] = None
-    else:
-        ticks = iter([0.0] + [10_000.0] * 10_000)
-        monkeypatch.setattr("blueprint_pipeline.control_plane_lane_scratch_census.time.monotonic",
-                            lambda: next(ticks))
 
-    census = build_reference_census(**kwargs)
+    census = build_reference_census(**{**world["kwargs"], **change})
 
+    assert census["kinds"][kind]["status"] == status
     assert census["status"] == "incomplete"
-    assert census["scan_errors"]
+    free = str(world["folders"]["free"])
     projection = cap.orphan_scratch_census_projection(
-        census, {"orphan_scratch_root_bytes": [[str(world["folders"]["free"]), 9]]}, now=NOW + 60)
+        census, {"orphan_scratch_root_bytes": [[free, 9]]}, now=NOW + 60)
     assert projection["status"] == "incomplete"
-    assert projection["unreferenced_bytes"] == 0
-    assert projection["referenced_bytes"] == 9
+    assert projection["no_reference_found_bytes"] is None
+    assert projection["roots"][0]["disposition"] == "not_proven"
 
 
-def _census(rows, *, observed=NOW, status="complete", errors=()):
-    return {"schema_version": cap.ORPHAN_CENSUS_SCHEMA_VERSION, "status": status,
-            "observed_at_epoch": observed, "rows": rows, "scan_errors": list(errors), "mutations": 0}
+def test_an_unreadable_record_or_a_deadline_fails_the_kind(tmp_path, monkeypatch):
+    world = _world(tmp_path)
+    (tmp_path / "door-requests" / "big.json").write_bytes(b" " * (4 * 1024 * 1024 + 1))
+    census = build_reference_census(**world["kwargs"])
+    assert census["kinds"]["door_request"]["status"] == "failed"
+    assert census["status"] == "incomplete"
+
+    ticks = iter([0.0] + [10_000.0] * 100_000)
+    monkeypatch.setattr("blueprint_pipeline.control_plane_lane_scratch_census.time.monotonic",
+                        lambda: next(ticks))
+    assert build_reference_census(**_world(tmp_path / "again")["kwargs"])["status"] == "incomplete"
 
 
-def test_projection_counts_only_listed_unreferenced_folders_of_a_fresh_census():
-    survey = {"status": "complete", "observed_at_epoch": NOW - 100, "orphan_scratch_root_bytes_complete": True,
-              "orphan_scratch_root_bytes": [["/w/free", 30], ["/w/held", 20], ["/w/unlisted", 10],
-                                            ["<redacted>", 5]]}  # the survey publishes names sanitized
-    census = _census([{"path": "/w/free", "references": []},
-                      {"path": "/w/held", "references": ["process"]},
-                      {"path": "/w/a?token=x", "references": []}])
+def _census(rows, *, observed=NOW, status="complete"):
+    return {"schema_version": cap.ORPHAN_CENSUS_SCHEMA_VERSION, "status": status, "observed_at_epoch": observed,
+            "kinds": dict.fromkeys(REFERENCE_KINDS, {"status": "checked"}), "candidate_listing_errors": [],
+            "rows": rows, "mutations": 0}
+
+
+def _row(path, references=(), use="unknown", run_time_only=False, mtime=NOW - 10 * 86400):
+    return {"path": path, "references": list(references), "lane_family": "other", "use_guess": use,
+            "run_time_only": run_time_only, "top_level_mtime_epoch": mtime}
+
+
+def test_the_report_carries_family_use_age_and_the_evidence_statement():
+    survey = {"status": "complete", "orphan_scratch_root_bytes_complete": True,
+              "orphan_scratch_root_bytes": [["/w/sdk-inputs", 30], ["/w/held", 20], ["/w/unlisted", 10]]}
+    census = _census([_row("/w/sdk-inputs", use="rebuildable_run_input_cache", run_time_only=True),
+                      _row("/w/held", ["active_run"])])
 
     projection = cap.orphan_scratch_census_projection(census, survey, now=NOW + 600)
 
-    assert projection["status"] == "complete"
-    assert projection["age_seconds"] == 600.0
-    assert projection["unreferenced_bytes"] == projection["retirement_would_free_bytes"] == 30
-    assert projection["referenced_bytes"] == 35
+    assert "not a statement that deletion is safe" in projection["statement"]
+    assert projection["status"] == "complete" and projection["age_seconds"] == 600.0
+    assert projection["no_reference_found_bytes"] == 30
+    assert projection["no_reference_found_run_time_only_bytes"] == 30
     assert projection["retirement_authorized"] is False
-    by_root = {row["root"]: row for row in projection["roots"]}
-    assert by_root["/w/free"]["disposition"] == "unreferenced"
-    assert by_root["/w/held"]["references"] == ["process"]
-    assert by_root["/w/unlisted"]["references"] == ["not_in_census"]
-    assert by_root["<redacted>"]["disposition"] == "referenced_or_unproven"  # a redacted name proves nothing
+    first = projection["roots"][0]
+    assert first == {"root": "/w/sdk-inputs", "allocated_bytes": 30, "disposition": "no_reference_found",
+                     "references": [], "lane_family": "other", "use_guess": "rebuildable_run_input_cache",
+                     "run_time_only": True, "top_level_unchanged_days": 10.0}
+    by_root = {row["root"]: row["disposition"] for row in projection["roots"]}
+    assert by_root == {"/w/sdk-inputs": "no_reference_found", "/w/held": "referenced", "/w/unlisted": "not_proven"}
+    assert "unreferenced" not in json.dumps(projection) and "safe_to" not in json.dumps(projection)
 
 
 @pytest.mark.parametrize("census", [
     None,
-    _census([{"path": "/w/free", "references": []}], observed=NOW - 3 * 3600),
-    _census([{"path": "/w/free", "references": []}], status="incomplete", errors=["tree_unreadable"]),
-    {**_census([{"path": "/w/free", "references": []}]),
-     "schema_version": "control_plane_lane_scratch_census.v1"},
+    _census([_row("/w/free")], observed=NOW - 3 * 3600),
+    _census([_row("/w/free")], status="incomplete"),
+    {**_census([_row("/w/free")]), "kinds": {**dict.fromkeys(REFERENCE_KINDS, {"status": "checked"}),
+                                             "env_file": {"status": "not_checked", "reason": "x"}}},
+    {**_census([_row("/w/free")]), "schema_version": "control_plane_lane_scratch_census.v1"},
 ])
-def test_a_missing_stale_incomplete_or_foreign_census_frees_nothing(census):
+def test_a_missing_stale_incomplete_or_foreign_census_proves_nothing(census):
     projection = cap.orphan_scratch_census_projection(
         census, {"orphan_scratch_root_bytes": [["/w/free", 30]]}, now=NOW)
-    assert projection["unreferenced_bytes"] == 0
-    assert projection["referenced_bytes"] == 30
-    assert projection["status"] in {"missing", "stale", "incomplete"}
+    assert projection["no_reference_found_bytes"] is None
+    assert projection["roots"][0]["disposition"] == "not_proven"
 
 
 def test_the_capacity_summary_reports_the_census(tmp_path, monkeypatch):
@@ -197,30 +234,25 @@ def test_the_capacity_summary_reports_the_census(tmp_path, monkeypatch):
                         lambda **_kwargs: None)
     gc_root = tmp_path / "storage-gc"
     gc_root.mkdir()
-    (gc_root / "orphan-scratch-census.json").write_text(json.dumps(
-        _census([{"path": "/mnt/blueprint-work/sdk-inputs", "references": []}], observed=NOW - 120)))
+    (gc_root / REFERENCE_CENSUS_FILENAME).write_text(json.dumps(
+        _census([_row("/mnt/blueprint-work/sdk-inputs", use="rebuildable_run_input_cache", run_time_only=True)],
+                observed=NOW - 120)))
     survey = {"schema_version": "control_plane_disk_usage_survey.v1", "status": "complete",
               "observed_at_epoch": NOW, "mounts": [], "by_class": [], "top_roots": [], "top_owners": [],
               "unclassified_roots": [], "orphan_scratch_root_bytes_complete": True,
               "orphan_scratch_root_bytes": [["/mnt/blueprint-work/sdk-inputs", 30 * 1024**3]]}
+    usage = namedtuple("usage", "total used free")
 
     cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
                        reservation_root=tmp_path / "ledger", webhook_url="", volume=None, ack="", token="",
-                       disk_usage=_disk_usage(), now=NOW, survey=lambda **_k: survey,
-                       storage_gc_summary_path=gc_root / "summary.json")
+                       disk_usage=lambda _path: usage(154 * 1024**3, 54 * 1024**3, 100 * 1024**3),
+                       now=NOW, survey=lambda **_k: survey, storage_gc_summary_path=gc_root / "summary.json")
 
-    summary = json.loads((tmp_path / "capacity" / "summary.json").read_text())
-    census = summary["usage"]["orphan_scratch_census"]
+    census = json.loads((tmp_path / "capacity" / "summary.json").read_text())["usage"]["orphan_scratch_census"]
     assert census["status"] == "complete" and census["age_seconds"] == 120.0
-    assert census["unreferenced_bytes"] == 30 * 1024**3
-    assert census["roots"][0] == {"root": "/mnt/blueprint-work/sdk-inputs", "allocated_bytes": 30 * 1024**3,
-                                  "disposition": "unreferenced", "references": []}
-
-
-def _disk_usage():
-    from collections import namedtuple
-    usage = namedtuple("usage", "total used free")
-    return lambda _path: usage(154 * 1024**3, 54 * 1024**3, 100 * 1024**3)
+    assert census["no_reference_found_bytes"] == 30 * 1024**3
+    assert census["roots"][0]["run_time_only"] is True
+    assert census["kinds"]["active_run"] == {"status": "checked"}
 
 
 def test_gc_census_failure_withdraws_the_record_and_never_raises(tmp_path):
@@ -231,7 +263,7 @@ def test_gc_census_failure_withdraws_the_record_and_never_raises(tmp_path):
         raise OSError("proc gone")
 
     assert publish_reference_census(tmp_path, pins_root=tmp_path, queue_roots=[], active_run_roots=[],
-                                           build=broken) is False
+                                    build=broken) is False
     assert not record.exists()
     assert publish_reference_census(
         tmp_path, pins_root=tmp_path, queue_roots=[], active_run_roots=[],

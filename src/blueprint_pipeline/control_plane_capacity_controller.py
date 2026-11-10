@@ -703,8 +703,8 @@ ORPHAN_CENSUS_SCHEMA_VERSION = "control_plane_orphan_scratch_reference_census.v2
 ORPHAN_CENSUS_MAX_AGE_SECONDS = 2 * GC_SUMMARY_INTERVAL_SECONDS
 ORPHAN_CENSUS_ROWS = 25
 ORPHAN_CENSUS_STATEMENT = (
-    "No reference found means none was found among the kinds checked, at the census time: "
-    "it is evidence for an owner's decision, not a statement that deletion is safe, and a "
+    "No reference found means none was found among the kinds checked, at the census time. "
+    "It is evidence for an owner's decision, not a statement that deletion is safe, and a "
     "reference can appear after the census.")
 
 

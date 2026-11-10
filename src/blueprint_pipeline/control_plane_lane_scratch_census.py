@@ -593,8 +593,8 @@ REFERENCE_CENSUS_MAX_SECONDS = 180.0
 REFERENCE_CENSUS_FILENAME = "orphan-scratch-census.json"
 #: Said in every record and every projection of one.
 EVIDENCE_STATEMENT = (
-    "No reference found means none was found among the kinds checked, at the census time: "
-    "it is evidence for an owner's decision, not a statement that deletion is safe, and a "
+    "No reference found means none was found among the kinds checked, at the census time. "
+    "It is evidence for an owner's decision, not a statement that deletion is safe, and a "
     "reference can appear after the census.")
 DEFAULT_UNIT_DIRECTORIES = tuple(Path(path) for path in (
     "/etc/systemd/system", "/run/systemd/system", "/run/systemd/transient", "/run/systemd/generator",
