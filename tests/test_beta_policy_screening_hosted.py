@@ -35,7 +35,8 @@ def hosted_plan(tmp_path, monkeypatch):
         row = deepcopy(template)
         row.update(candidate_id=key, display_name=key)
         row["interface"]["policy_interface_id"] = "openpi_droid_https.v1"
-        row["policy"].update(kind="hosted", source="https://policy.example.com", revision="release-1",
+        # Two policies: each its own release (one release under two ids would be one policy).
+        row["policy"].update(kind="hosted", source="https://policy.example.com", revision=f"release-1-{key}",
                              digest_kind="provider_metadata")
         row["eligibility"]["requires_credentials"] = ["HOSTED_DROID_CREDENTIAL"]
         rows.append(row)

@@ -158,6 +158,16 @@ def test_a_retained_control_row_cannot_be_altered(mutation):
 
 # ---- the queue ----------------------------------------------------------------------------------
 
+def another_policy(value):
+    """The same scene's plan for another learned policy: a policy finished or in flight in one campaign is
+    never planned in a second (``beta_policy_screening_tested_pairs.require_new_pairs``)."""
+    value = deepcopy(value)
+    value["candidates"] = [row for row in value["candidates"] if row["candidate_id"] != "candidate-000"]
+    value["maximum_planned_cost_usd"] = f"{sum(Decimal(row['max_cost_usd']) for row in value['candidates']):.2f}"
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    return value
+
+
 def with_control(value, *, cost="3.00", campaign_id=None, scene_digest=None):
     """A coordinator test plan with a selected control row appended, as the website planner makes it."""
     value = deepcopy(value)
@@ -333,9 +343,10 @@ def test_a_control_whose_cap_no_longer_fits_ends_at_once_for_budget(tmp_path, su
 def test_a_pass_or_fail_is_reused_for_the_same_check_and_never_paid_twice(tmp_path, summaries):
     first = with_control(queue_plan(count=1))
     coordinator.enqueue_screening_campaign(first, queue_root=tmp_path)
-    backend = PerRow(done("candidate-000", control_result=closed(_summary(3, 0, scripted=True, planned=3))))
+    backend = PerRow(done("candidate-000", "candidate-001",
+                          control_result=closed(_summary(3, 0, scripted=True, planned=3))))
     run(tmp_path, backend, passes=6)
-    second = with_control(queue_plan(count=1), campaign_id="campaign-2")
+    second = with_control(another_policy(queue_plan(count=2)), campaign_id="campaign-2")
     coordinator.enqueue_screening_campaign(second, queue_root=tmp_path)
     publications = {row["campaign_id"]: row for row in run(tmp_path, backend, passes=6)}
     assert backend.order.count(CONTROL) == 1
@@ -350,9 +361,9 @@ def test_a_pass_or_fail_is_reused_for_the_same_check_and_never_paid_twice(tmp_pa
 
 def test_the_same_check_active_elsewhere_closes_this_one_without_waiting(tmp_path, summaries):
     coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1)), queue_root=tmp_path)
-    coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1), campaign_id="campaign-2"),
+    coordinator.enqueue_screening_campaign(with_control(another_policy(queue_plan(count=2)), campaign_id="campaign-2"),
                                            queue_root=tmp_path)
-    backend = PerRow(done("candidate-000"))  # the first control keeps running (or never reconciles)
+    backend = PerRow(done("candidate-000", "candidate-001"))  # the first control keeps running (or never reconciles)
     run(tmp_path, backend, passes=8, max_launches=3)
     assert backend.order.count(CONTROL) == 1
     ledger = json.loads((tmp_path / coordinator.LEDGER_FILENAME).read_text())
