@@ -273,8 +273,13 @@ def test_actual_family_capture_to_native_screening_publication(
     plan = json.loads(plans[0].read_text())
     assert plan["catalog_digest"] == catalog["catalog_digest"]
     assert plan["pre_policy_site_qualification_required"] is True and plan["scenario_scope"] == "native_frozen_reset_seeds"
-    assert len(plan["candidates"]) == 1 and plan["candidates"][0]["status"] == "selected", plan["candidates"]
-    candidate = plan["candidates"][0]
+    # A new website campaign also plans one scripted reference row (owner, 2026-11-10). It is never a
+    # candidate, so the campaign still has exactly one.
+    from blueprint_pipeline.beta_policy_screening_known_good_control import is_control
+    candidates = [row for row in plan["candidates"] if not is_control(row)]
+    assert len(candidates) == 1 and candidates[0]["status"] == "selected", plan["candidates"]
+    assert len(plan["candidates"]) - len(candidates) == 1, plan["candidates"]
+    candidate = candidates[0]
     assert len(candidate["scenario_cells"]) == candidate["episode_count"] == 10
     assert all(cell["resolved_scenario"]["parameters"] == {} for cell in candidate["scenario_cells"])
     prepared = launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=tmp_path / "attempt")
@@ -428,13 +433,21 @@ def test_actual_family_capture_to_native_screening_publication(
     assert summary["episodes_scored"] == 10 and summary["episodes_void"] == 0
     assert summary["episodes_succeeded"] == (10 if expected_success else 0)
     assert summary["episodes_failed"] == (0 if expected_success else 10)
-    state = {"revision": 2, "updated_at": "2026-10-27T12:00:00Z", "candidates": {
-        candidate["candidate_id"]: {"status": "completed", "summary": summary, "blockers": []}}}
+    # State as the coordinator creates it: one row for every planned row, the reference row included.
+    from blueprint_pipeline.beta_policy_screening_coordinator import _initial_state
+    rows = {row["candidate_id"]: _initial_state(row) for row in plan["candidates"]}
+    rows[candidate["candidate_id"]] = {"status": "completed", "summary": summary, "blockers": []}
+    state = {"revision": 2, "updated_at": "2026-10-27T12:00:00Z", "candidates": rows}
     publication = screening_publication(plan=plan, state=state,
         budget={"currency": "USD", "limit_usd": "15", "committed_upper_bound_usd": "4",
             "spent_upper_bound_usd": "4", "reserved_usd": "0"})
-    assert publication["candidates"][0]["episodes_scored"] == 10
-    assert publication["candidates"][0]["success_rate"] == (1.0 if expected_success else 0.0)
+    published = {row["candidate_id"]: row for row in publication["candidates"]}
+    assert len(published) == 2
+    assert published[candidate["candidate_id"]]["episodes_scored"] == 10
+    assert published[candidate["candidate_id"]]["success_rate"] == (1.0 if expected_success else 0.0)
+    # The reference row is published as itself and adds nothing to the candidate's estimate.
+    reference = next(row for key, row in published.items() if key != candidate["candidate_id"])
+    assert reference["episodes_scored"] == 0 and reference["success_rate"] is None
     assert publication["source"] == plan["source"] and "recommendation_eligible" not in publication
     assert publication["claim_ceiling"] == "simulation_estimate" and publication["purpose"] == "job_evaluation"
     from jsonschema import Draft202012Validator
