@@ -8,8 +8,12 @@ per-instance charges reach the host's spend snapshot
 ends. A charge is final for settlement (owner decision 2026-11-10) when
 
 - the run's teardown proves every instance it created destroyed;
-- the snapshot was generated at least ``FINAL_AFTER_DESTROY_SECONDS`` after
-  the teardown was recorded (a destroy happens before its manifest);
+- the snapshot's billing collection (``source_collected_at``, the receipt of
+  the read that asked Vast) happened at least ``FINAL_AFTER_DESTROY_SECONDS``
+  after the teardown was recorded (a destroy happens before its manifest).
+  The snapshot's own ``generated_at`` proves nothing here: a snapshot is
+  projected again from a retained collection whenever a later read fails;
+- the snapshot names no missing or partly paged Vast source;
 - the snapshot's charge rows for each instance cover every UTC day from the
   run's start (``launch_started.json``, written before the allocator could
   create anything) to the teardown, each with a USD amount and an interval.
@@ -34,6 +38,8 @@ SNAPSHOT_FILENAME = "daily_spend_snapshot.json"
 #: Where the GPU spend guard and the billing reconciler keep the export the snapshot sits beside.
 HOST_BILLING_EXPORT = Path("/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/provider_billing_export.json")
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
+#: Snapshot coverage gaps under which an instance's charge rows may be missing.
+INCOMPLETE_VAST_GAPS = frozenset({"vast_source_missing", "vast_pagination_partial_or_unknown"})
 
 
 def _time(value: Any) -> datetime | None:
@@ -134,10 +140,14 @@ def final_billed_charge(*, launch_receipt_path: Path, launch: Mapping[str, Any],
     snapshot = None if path is None else _read_snapshot(path)
     if destroyed is None or begun is None or begun > destroyed or snapshot is None:
         return None
-    generated = _time(snapshot.get("generated_at"))
-    rows = snapshot.get("rows")
-    if (generated is None or not isinstance(rows, list)
-            or (generated - destroyed).total_seconds() < FINAL_AFTER_DESTROY_SECONDS):
+    generated, collected = _time(snapshot.get("generated_at")), _time(snapshot.get("source_collected_at"))
+    rows, coverage = snapshot.get("rows"), snapshot.get("coverage")
+    gaps = coverage.get("gaps") if isinstance(coverage, Mapping) else None
+    if (generated is None or collected is None or collected > generated
+            or not isinstance(rows, list) or not isinstance(gaps, list)
+            # When Vast was asked, not when the snapshot was last projected from what it answered.
+            or (collected - destroyed).total_seconds() < FINAL_AFTER_DESTROY_SECONDS
+            or INCOMPLETE_VAST_GAPS & {str(gap) for gap in gaps}):
         return None
     total = Decimal(0)
     for instance in ids:
@@ -146,6 +156,7 @@ def final_billed_charge(*, launch_receipt_path: Path, launch: Mapping[str, Any],
             return None
         total += charge
     return {"billed_usd": total, "vast_instance_ids": list(ids), "snapshot_generated_at": snapshot["generated_at"],
+            "snapshot_source_collected_at": snapshot["source_collected_at"],
             "snapshot_digest": snapshot.get("snapshot_digest"), "run_started_at": started["started_at"],
             "teardown_generated_at": teardown["generated_at"],
             "final_after_destroy_seconds": FINAL_AFTER_DESTROY_SECONDS}

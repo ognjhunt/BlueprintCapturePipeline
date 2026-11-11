@@ -1,9 +1,10 @@
 """Owner decision 2026-11-10: a settled GPU run keeps its final Vast bill, not its whole allowance.
 
-A charge is final when the teardown proves every instance destroyed, the
-spend snapshot was generated at least 48 h after the teardown, and the
-instance's charge rows cover every day of the run. Anything short of that
-keeps the hold as it was. Every figure and identifier here is synthetic.
+A charge is final when the teardown proves every instance destroyed, Vast's
+charges were collected at least 48 h after the teardown with no page
+missing, and the instance's charge rows cover every day of the run. Anything
+short of that keeps the hold as it was. Every figure and identifier here is
+synthetic; the row and gap shapes are the ones the host's snapshot carries.
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -45,17 +46,28 @@ def _row(day, amount, *, currency="USD", resource="instance-7"):
             "interval_end": _iso(start + timedelta(days=1)), "partial": True}
 
 
+# The gaps every snapshot on the host names today; none says a Vast charge page is missing.
+LIVE_GAPS = ("all_provider_all_day_coverage_unknown", "vast_invalid_amount_currency_or_interval",
+             "vast_provider_freshness_unknown", "vast_stable_charge_id_missing_corrections_unknown")
+
+
 @pytest.fixture
 def snapshot(tmp_path, monkeypatch):
     billing = tmp_path / "billing"
     billing.mkdir()
     monkeypatch.setenv("BLUEPRINT_GPU_BILLING_EXPORT", str(billing / "provider_billing_export.json"))
 
-    def write(rows, *, after_destroy=timedelta(hours=48)):
+    def write(rows, *, after_destroy=timedelta(hours=48), collected_after_destroy=None, gaps=LIVE_GAPS,
+              drop=()):
         measured._CACHE.clear()
-        (billing / measured.SNAPSHOT_FILENAME).write_text(json.dumps({
-            "generated_at": _iso(DESTROYED + after_destroy), "snapshot_digest": "sha256:" + "5" * 64,
-            "rows": rows}))
+        collected = after_destroy if collected_after_destroy is None else collected_after_destroy
+        value = {"generated_at": _iso(DESTROYED + after_destroy),
+                 "source_collected_at": _iso(DESTROYED + collected),
+                 "coverage": {"partial": True, "gaps": list(gaps)},
+                 "snapshot_digest": "sha256:" + "5" * 64, "rows": rows}
+        for key in drop:
+            del value[key]
+        (billing / measured.SNAPSHOT_FILENAME).write_text(json.dumps(value))
     return write
 
 
@@ -84,6 +96,7 @@ def test_final_bills_replace_only_the_gpu_allowance(site, snapshot):  # noqa: F8
     evidence = holds["parent"]["evidence"]
     assert evidence["billed_usd"] == 0.41 and evidence["vast_instance_ids"] == [7]
     assert evidence["final_after_destroy_seconds"] == 48 * 3600 and evidence["compute_allowance_kept"] is False
+    assert evidence["snapshot_source_collected_at"] == _iso(DESTROYED + timedelta(hours=48))
 
 
 def test_a_bill_above_the_allowance_is_kept_up_to_the_reservation(site, snapshot):  # noqa: F811 - the imported fixture
@@ -96,7 +109,8 @@ def test_a_bill_above_the_allowance_is_kept_up_to_the_reservation(site, snapshot
 
 
 @pytest.mark.parametrize("case", ["47h", "missing_day", "no_currency", "no_rows", "no_snapshot", "teardown_open",
-                                  "no_start_record"])
+                                  "no_start_record", "early_collection_projected_again", "vast_page_missing",
+                                  "vast_source_missing", "no_collection_time", "no_coverage"])
 def test_a_charge_that_is_not_final_keeps_the_hold(site, snapshot, monkeypatch, case):  # noqa: F811 - the imported fixture
     def run_records(run):
         _closed_run(run)
@@ -110,7 +124,16 @@ def test_a_charge_that_is_not_final_keeps_the_hold(site, snapshot, monkeypatch, 
                             after=run_records)
     rows = {"missing_day": [_row(2, 0.16)], "no_currency": [_row(1, 0.25), _row(2, 0.16, currency=None)],
             "no_rows": []}.get(case, FINAL)
-    snapshot(rows, after_destroy=timedelta(hours=47) if case == "47h" else timedelta(hours=48))
+    snapshot(rows, **{
+        "47h": {"after_destroy": timedelta(hours=47)},
+        # Vast was asked one hour after the destroy; a failed later read projected that answer again at 72 h.
+        "early_collection_projected_again": {"after_destroy": timedelta(hours=72),
+                                             "collected_after_destroy": timedelta(hours=1)},
+        "vast_page_missing": {"gaps": LIVE_GAPS + ("vast_pagination_partial_or_unknown",)},
+        "vast_source_missing": {"gaps": LIVE_GAPS + ("vast_source_missing",)},
+        "no_collection_time": {"drop": ("source_collected_at",)},
+        "no_coverage": {"drop": ("coverage",)},
+    }.get(case, {}))
     if case == "no_snapshot":
         monkeypatch.delenv("BLUEPRINT_GPU_BILLING_EXPORT")
         monkeypatch.setattr(measured, "HOST_BILLING_EXPORT", site["tmp"] / "absent" / "export.json")

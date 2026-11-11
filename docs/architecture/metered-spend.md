@@ -394,8 +394,10 @@ budget. The account monthly limit is the one hard money stop.
 - **Settling at the bill.** A settled GPU run keeps its final Vast charge
   instead of its whole GPU allowance, capped at the reservation
   (`scene_attempt_measured_compute`). A charge is final when the teardown is
-  complete, the spend snapshot is at least 48 h newer than the teardown, and
-  the instance's rows cover every day of the run.
+  complete, Vast's charges were collected at least 48 h after the teardown
+  (the snapshot's `source_collected_at`, not the time it was last projected),
+  the snapshot names no missing or partly paged Vast source, and the
+  instance's rows cover every day of the run.
 - **Early warning.** `scene_budget_doubled` pages once per job per whole
   multiple of the grant's original figure (`scene_budget_alert`, in the stall
   tick). It gates nothing.
