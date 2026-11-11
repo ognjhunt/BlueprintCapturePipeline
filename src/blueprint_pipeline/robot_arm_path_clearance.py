@@ -814,34 +814,36 @@ def _box_gap(point: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> float:
     return float(np.linalg.norm(point - np.clip(point, lower, upper)))
 
 
-def _place_nearest_distance(shoulder: np.ndarray, target: np.ndarray, held: np.ndarray, lower: np.ndarray,
-                            upper: np.ndarray, region: tuple[np.ndarray, np.ndarray] | None,
-                            yaw_free_rad: float) -> float:
-    """The least distance from ``shoulder`` to any point of the object resting anywhere the task accepts it.
+def _place_nearest_distance(shoulder: np.ndarray, target: np.ndarray, reference: np.ndarray | None,
+                            lower: np.ndarray, upper: np.ndarray, region: tuple[np.ndarray, np.ndarray] | None,
+                            angle_rad: float) -> float | None:
+    """A lower bound on the distance from ``shoulder`` to any point of the object anywhere the task accepts it.
 
-    Without a region or a free yaw it is the object's box held at the start's orientation, at ``target``.
-    Otherwise every place is covered: the box's world bounds with the origin anywhere in ``region``, grown
-    by how far a turn of up to ``yaw_free_rad`` about the vertical moves any corner, and the same region
-    swept by the box's horizontal circle (any turn at all). Each covers every accepted place, so the larger
-    of the two distances is still a lower bound: a place beyond it is beyond every accepted place.
+    The object's box (``lower``-``upper``, its scoring frame) rests with its origin anywhere in ``region``
+    (with ``target``), turned by ``reference`` (the destination orientation) and then by at most
+    ``angle_rad`` about any axis. Every point of the box lies within ``radius`` (its farthest corner) of the
+    origin, and such a turn moves a point by at most ``2 radius sin(angle / 2)`` in any direction, so the
+    box's bounds at ``reference``, grown by that on every axis, hold every accepted pose; so does the cube
+    of half-side ``radius`` about the origin, at any orientation. Both are lower bounds: the larger is
+    returned. With neither a region nor a turn it is the exact distance to the box at ``reference``. Without
+    a ``reference`` and with less than any turn accepted the box cannot be placed: ``None``, no proof.
     """
-    if region is None and yaw_free_rad <= 0.0:
-        return float(np.linalg.norm(_nearest_box_point(shoulder, target, held, lower, upper) - shoulder))
     corners = np.array([[x, y, z] for x in (lower[0], upper[0]) for y in (lower[1], upper[1])
-                        for z in (lower[2], upper[2])]) @ held.T
-    low, high = corners.min(axis=0), corners.max(axis=0)
+                        for z in (lower[2], upper[2])])
+    radius = float(np.linalg.norm(corners, axis=1).max())
     origin_low, origin_high = (target, target) if region is None else (
         np.minimum(region[0], target), np.maximum(region[1], target))
-    distance = _box_gap(shoulder, origin_low + low, origin_high + high)
-    if yaw_free_rad > 0.0:
-        radius = float(np.hypot(corners[:, 0], corners[:, 1]).max())
-        grow = 2.0 * radius * math.sin(min(yaw_free_rad, math.pi) / 2.0)
-        swing = np.array([grow, grow, 0.0])
-        plan = _box_gap(shoulder[:2], origin_low[:2], origin_high[:2])
-        rise = _box_gap(shoulder[2:], origin_low[2:] + low[2:], origin_high[2:] + high[2:])
-        distance = max(_box_gap(shoulder, origin_low + low - swing, origin_high + high + swing),
-                       math.hypot(max(0.0, plan - radius), rise))
-    return distance
+    sphere = _box_gap(shoulder, origin_low - radius, origin_high + radius)
+    if angle_rad >= math.pi:
+        return sphere
+    if reference is None:
+        return None
+    if region is None and angle_rad <= 0.0:
+        return float(np.linalg.norm(_nearest_box_point(shoulder, target, reference, lower, upper) - shoulder))
+    turned = corners @ reference.T
+    grow = 2.0 * radius * math.sin(angle_rad / 2.0)
+    return max(sphere, _box_gap(shoulder, origin_low + turned.min(axis=0) - grow,
+                                origin_high + turned.max(axis=0) + grow))
 
 
 def _place_contact_distance(shoulder: np.ndarray, target: np.ndarray, offset: np.ndarray, grow: float,
@@ -961,6 +963,9 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
     if not math.isfinite(yaw) or yaw < 0.0:
         raise RobotArmPathClearanceError("robot_rigid_reach_place_yaw_invalid")
     limit = bound + IK_POSITION_TOLERANCE_M
+    destination = None if destination_orientation_xyzw is None else _pose_matrix(
+        {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [float(v) for v in destination_orientation_xyzw]}
+    )[:3, :3]
     phases = []
     for phase, centre in centres.items():
         row: dict[str, Any] = {"phase": phase, "point_world_m": (centre + contact).tolist(),
@@ -968,10 +973,15 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
         if subject_bounds_m is not None:
             lower = np.asarray(subject_bounds_m["minimum"], dtype=float)
             upper = np.asarray(subject_bounds_m["maximum"], dtype=float)
+            # At the pick the box is where it starts: exact. At the put-down, a lower bound (rounded down).
             nearest = (float(np.linalg.norm(_nearest_box_point(shoulder, centre, held, lower, upper) - shoulder))
                        if phase == "pick" else
-                       _place_nearest_distance(shoulder, centre, held, lower, upper, region, yaw))
-            row["object_nearest_distance_m"] = round(nearest, 4)
+                       _place_nearest_distance(shoulder, centre, destination, lower, upper, region, yaw))
+            if nearest is None:
+                row["place_nearest_unlocated"] = True
+            else:
+                row["object_nearest_distance_m"] = (round(nearest, 4) if phase == "pick"
+                                                    else math.floor(nearest * 1e4) / 1e4)
         # The least distance to the task's contact wherever the task accepts the object (a lower bound, so a
         # contact beyond it is beyond at every accepted place); none when any place is accepted.
         # Rounded down, so the recorded figure stays a lower bound.
@@ -988,7 +998,7 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
         phases.append(row)
     measured = subject_bounds_m is not None
     beyond = sorted((row for row in phases if measured and not row.get("place_unbounded")
-                     and row["object_nearest_distance_m"] > limit),
+                     and row.get("object_nearest_distance_m", 0.0) > limit),
                     key=lambda row: -row["object_nearest_distance_m"])
     contact_beyond = [row["phase"] for row in sorted(phases, key=lambda row: -row["distance_m"])
                       if row["distance_m"] > limit]

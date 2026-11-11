@@ -73,7 +73,8 @@ def test_the_franka_reach_bound_holds_at_every_joint_value_and_is_attained():
 
 def test_a_task_contact_beyond_the_chain_bound_is_evidence_and_the_objects_nearest_point_decides():
     reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=STATION, start_pose_world=START,
-                                  target_position_world=TARGET, contact_point_m=CONTACT, subject_bounds_m=TRAY)
+                                  target_position_world=TARGET, contact_point_m=CONTACT, subject_bounds_m=TRAY,
+                                  destination_orientation_xyzw=START[3:])
     distances = {row["phase"]: row["distance_m"] for row in reach["phases"]}
     # The task's contact (the tray's centre) is beyond the bound at both ends: the scripted carry's contact.
     assert reach["task_contact_beyond"] == ["place", "pick"]
@@ -85,7 +86,8 @@ def test_a_task_contact_beyond_the_chain_bound_is_evidence_and_the_objects_neare
     assert reach["claim_ceiling"] == "cpu_bounded_estimate" and reach["simulator_executed"] is False
     # From across the room the whole tray is out of reach: a proof for any grasp, named by its farthest phase.
     far = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=FAR, start_pose_world=START,
-                                target_position_world=TARGET, contact_point_m=CONTACT, subject_bounds_m=TRAY)
+                                target_position_world=TARGET, contact_point_m=CONTACT, subject_bounds_m=TRAY,
+                                destination_orientation_xyzw=START[3:])
     nearest = {row["phase"]: row["object_nearest_distance_m"] for row in far["phases"]}
     assert far["status"] == "out_of_reach" and far["beyond"] == ["pick", "place"] and far["grasp_independent"] is True
     assert nearest["pick"] > nearest["place"] > far["reach_bound_m"]
@@ -104,6 +106,7 @@ def test_the_place_is_measured_wherever_the_task_accepts_the_object():
     box = {"minimum": [-0.05, -0.3, -0.02], "maximum": [0.05, 0.3, 0.02]}
     base = {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
     common = {"robot_id": "franka_panda", "base_pose_world": base, "start_pose_world": [0.5, 0.0, 0.02, 0, 0, 0, 1],
+              "destination_orientation_xyzw": [0, 0, 0, 1],
               "target_position_world": [1.05, 0.0, 0.02], "contact_point_m": [0.0, 0.0, 0.0], "subject_bounds_m": box}
     held = rigid_reach_shortfall(**common)
     assert held["beyond"] == ["place"]
@@ -245,7 +248,7 @@ def test_a_station_search_that_carries_from_nowhere_keeps_its_best_attempt_and_t
     monkeypatch.setattr(clearance, "first_carrying_stance", nothing_carries)
     stances = [{**STATION, "stance_digest": "sha256:" + str(i) * 64} for i in range(2)]
     task_spec = {"start_pose_world": START, "target_position_world_m": TARGET,
-                 "subject_collision_bounds_scoring_frame_m": TRAY,
+                 "subject_collision_bounds_scoring_frame_m": TRAY, "destination_orientation_xyzw": START[3:],
                  "interaction_affordance": {"contact_point_scoring_frame_m": CONTACT,
                                             "approach_unit_scoring_frame": [0.0, 0.0, 1.0],
                                             "gripper_orientation_scoring_frame_xyzw": [0.0, 1.0, 0.0, 0.0],
@@ -287,7 +290,7 @@ def test_the_station_is_the_in_reach_stance_whose_contact_is_nearest_when_no_scr
             {**STATION, "position_world_m": [0.1, -0.5, 0.8166]}]
     stances = [{**row, "stance_digest": "sha256:" + str(i) * 64} for i, row in enumerate(rows)]
     task_spec = {"start_pose_world": START, "target_position_world_m": TARGET,
-                 "subject_collision_bounds_scoring_frame_m": TRAY,
+                 "subject_collision_bounds_scoring_frame_m": TRAY, "destination_orientation_xyzw": START[3:],
                  "interaction_affordance": {"contact_point_scoring_frame_m": CONTACT,
                                             "approach_unit_scoring_frame": [0.0, 0.0, 1.0],
                                             "gripper_orientation_scoring_frame_xyzw": [0.0, 1.0, 0.0, 0.0],
@@ -721,3 +724,56 @@ def test_capture_447_with_the_websites_planar_tolerance_is_held_at_its_least_acc
     # The nearest accepted put-down, 5 cm nearer on each planar axis: sqrt(0.05^2 + 1.0314^2) = 1.0326 m.
     assert reach_refused(reach)
     assert reach_refusal_code(reach) == "robot_reach_insufficient:place:1.032m_vs_0.990m"
+
+
+def test_the_put_down_nearest_point_bound_never_exceeds_the_true_distance_for_any_accepted_pose():
+    from scipy.spatial.transform import Rotation
+
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        _nearest_box_point,
+        _place_nearest_distance,
+    )
+
+    rng = np.random.default_rng(4470)
+    shoulder = np.array([0.0, 0.0, 0.333])
+    for _ in range(300):
+        target = rng.uniform([-1.2, -1.2, 0.0], [1.2, 1.2, 1.0])
+        half = rng.uniform(0.0, 0.15, 3) * (rng.random() < 0.7)
+        region = (target - half, target + half) if half.any() else None
+        lower = -rng.uniform(0.01, 0.4, 3) + rng.uniform(-0.1, 0.1, 3)
+        upper = lower + rng.uniform(0.02, 0.6, 3)
+        reference = Rotation.random(random_state=rng)
+        angle = float(rng.choice([0.0, rng.uniform(0.0, math.pi), math.pi]))
+        bound = _place_nearest_distance(shoulder, target, reference.as_matrix(), lower, upper, region, angle)
+        axes = rng.normal(size=(100, 3))
+        turns = Rotation.from_rotvec(axes / np.linalg.norm(axes, axis=1, keepdims=True)
+                                     * rng.uniform(0.0, angle, (100, 1)))
+        lo, hi = (target, target) if region is None else region
+        origins = rng.uniform(lo, hi, (100, 3))
+        for order in ((reference * turns), (turns * reference)):
+            for origin, rotation in zip(origins, order.as_matrix()):
+                true = np.linalg.norm(_nearest_box_point(shoulder, origin, rotation, lower, upper) - shoulder)
+                assert bound <= true + 1e-9
+    # Without a destination orientation and less than any turn accepted, the put-down proves nothing.
+    assert _place_nearest_distance(shoulder, target, None, lower, upper, None, 0.2) is None
+
+
+def test_a_put_down_nearest_point_a_tilt_or_the_destination_orientation_brings_into_reach_is_not_held():
+    from blueprint_pipeline.robot_arm_path_clearance import object_reach_inputs, reach_refused
+
+    # A 0.6 m bar pointing away from the arm, its origin at its near end 1.00 m from the shoulder (beyond the
+    # bound). Picked up pointing away; put down turned half a turn, it points back toward the arm.
+    bar = {"minimum": [0.0, -0.02, -0.02], "maximum": [0.6, 0.02, 0.02]}
+    spec = _wide_spec(start=[0.3, 0.0, SHOULDER_Z, 0.0, 0.0, 0.0, 1.0], target=[1.0, 0.0, SHOULDER_Z],
+                      contact=[0.3, 0.0, 0.0], bounds=bar)
+    held = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(spec))
+    assert held["beyond"] == ["place"] and reach_refused(held)
+    turned = {**spec, "destination_orientation_xyzw": [0.0, 0.0, 1.0, 0.0]}
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(turned))
+    place = next(row for row in reach["phases"] if row["phase"] == "place")
+    assert place["object_nearest_distance_m"] == pytest.approx(0.40, abs=1e-3) and reach["beyond"] == []
+    # Unknown destination orientation: the put-down proves nothing; the pick, where the bar is, still measures.
+    unknown = {key: value for key, value in spec.items() if key != "destination_orientation_xyzw"}
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(unknown))
+    place = next(row for row in reach["phases"] if row["phase"] == "place")
+    assert place["place_nearest_unlocated"] is True and reach["beyond"] == [] and not reach_refused(reach)
