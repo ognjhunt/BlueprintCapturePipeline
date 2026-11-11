@@ -309,9 +309,11 @@ def test_a_catalog_change_plans_only_new_pairs_and_leaves_earlier_results_untouc
     assert second["status"] == "enqueued" and second["campaign_id"] != first["campaign_id"]
     new_plan = plan_of(world, second["campaign_id"])
     planned = {row["candidate_id"] for row in new_plan["candidates"]}
-    # The finished pairs are not planned again; every other row is, as before.
-    assert not planned & set(funded)
-    assert planned | set(funded) >= {row["candidate_id"] for row in before_plan["candidates"]}
+    # The finished pairs are not planned again, nor the earlier campaign's rows still waiting to run (review
+    # finding 1: a pair in flight is never paid for twice); every other row is planned, as before.
+    waiting = {key for key, row in earlier["candidates"].items() if tested.in_flight(row)}
+    assert not planned & set(funded) and not planned & waiting
+    assert planned | set(funded) | waiting >= {row["candidate_id"] for row in before_plan["candidates"]}
     assert ledger(world)["campaigns"][first["campaign_id"]] == earlier
     assert coordinator._budget(ledger(world), SITE) == site_before
 
@@ -428,3 +430,186 @@ def test_a_standing_launch_is_stopped_like_any_run(tmp_path, monkeypatch, change
     result, _seen = _standing_launch(tmp_path, monkeypatch, **change)
     assert result["status"] == "blocked" and result["blockers"] == [code]
     assert result["provider_allocation_performed"] is False
+
+
+# Review findings on the job-test side (1, 5, 6, 7).
+
+def _with_catalog(monkeypatch, change):
+    """The job's effective catalog, changed by ``change(rows)`` (a new catalog revision)."""
+    from blueprint_pipeline import beta_policy_screening_team as team
+    from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
+
+    original = team.catalog_for_profile
+
+    def changed(profile, base):
+        value = original(profile, base)
+        rows = [dict(row) for row in value["candidates"]]
+        return seal_catalog({**value, "revision": value["revision"] + "-next", "candidates": change(rows)})
+    monkeypatch.setattr(team, "catalog_for_profile", changed)
+
+
+def _copy(rows, source, new_id, **fields):
+    row = deepcopy(next(item for item in rows if item["candidate_id"] == source))
+    row.pop("configuration_digest", None)
+    return [*rows, {**row, "candidate_id": new_id, **fields}]
+
+
+def test_a_pair_queued_by_a_job_test_is_not_planned_again_by_the_worker(world):
+    """Finding 1: a catalog change's new worker campaign leaves out a pair still queued elsewhere."""
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+
+    queued = run(world, request(), "req-1")
+    assert queued["status"] == "enqueued"
+    [source] = worker.enqueue_prepared_scenes(queue_root=world["screening_queue"],
+                                               packet_queue_root=world["packet_queue"])["sources"]
+    assert source["status"] == "enqueued" and source["campaign_id"] != queued["campaign_id"]
+    planned = {row["candidate_id"] for row in plan_of(world, source["campaign_id"])["candidates"]}
+    assert "pi05_droid" not in planned and planned
+
+
+def test_both_planners_use_one_exclusion_rule(world, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+
+    run(world, request(), "req-1")
+    seen = []
+    original = tested.planning_exclusions
+
+    def spy(pairs):
+        seen.append(original(pairs))
+        return seen[-1]
+    monkeypatch.setattr(tested, "planning_exclusions", spy)
+    run(world, request(ids=("groot_n17_droid",)), "req-2")
+    worker.enqueue_prepared_scenes(queue_root=world["screening_queue"], packet_queue_root=world["packet_queue"])
+    assert len(seen) == 2 and all(keys for keys in seen)
+
+
+def test_every_pair_tested_is_not_recomputed_until_an_input_changes(world, monkeypatch):
+    """Finding 5: kept against what could change it; a withdrawal still stops the job every pass."""
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
+    from blueprint_pipeline import beta_policy_screening_team as team
+
+    kwargs = {"queue_root": world["screening_queue"], "packet_queue_root": world["packet_queue"]}
+    only = [lambda rows: [row for row in rows if row["candidate_id"] == "pi05_droid"]]
+    monkeypatch.setattr(team, "catalog_for_profile", lambda profile, base: seal_catalog(
+        {**base, "candidates": only[0](base["candidates"])}))
+    [first] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    _complete_every_selected_row(world, first["campaign_id"])
+    _with_catalog(monkeypatch, only[0])
+    [second] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    assert second["status"] == "already_tested"
+    calls = len(world["planning_calls"])
+    [third] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    assert third["status"] == "already_tested" and len(world["planning_calls"]) == calls  # nothing recomputed
+    # A real change (a new release) plans again.
+    monkeypatch.setattr(worker, "implementation_commit", lambda: "b" * 40)
+    [fourth] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    assert fourth["status"] == "already_tested" and len(world["planning_calls"]) == calls + 1
+    # Consent withdrawn: the job is stopped as before, never reported as already tested.
+    world["context"]["capture_rights"]["consent_revoked"] = True
+    [fifth] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    assert fifth["status"] == "blocked" and fifth["blockers"] == ["beta_screening_current_capture_consent_required"]
+    assert len(world["planning_calls"]) == calls + 1
+
+
+def test_a_cosmetic_catalog_edit_is_the_same_pair(world, monkeypatch):
+    """Finding 7: a new display name is not a new policy, so a finished pair is not run or paid for again."""
+    first = run(world, request(), "req-1")
+    finish(world, first["campaign_id"])
+    _with_catalog(monkeypatch, lambda rows: [{**row, "display_name": row["display_name"] + " (renamed)"}
+                                             if row["candidate_id"] == "pi05_droid" else row for row in rows])
+    again = run(world, request(), "req-2")
+    assert again["reason"] == on_job.ALREADY_TESTED and again["skipped"] == {"already_tested": ["pi05_droid"]}
+
+
+def test_the_same_checkpoint_under_a_new_id_is_the_same_pair(world, monkeypatch):
+    first = run(world, request(), "req-1")
+    _with_catalog(monkeypatch, lambda rows: _copy(rows, "pi05_droid", "pi05_droid_again", display_name="Again"))
+    queued = run(world, request(ids=("pi05_droid_again",)), "req-2")
+    assert queued["reason"] == on_job.ALREADY_TESTED and queued["skipped"] == {"in_progress": ["pi05_droid_again"]}
+    finish(world, first["campaign_id"])
+    done = run(world, request(ids=("pi05_droid_again",)), "req-3")
+    assert done["skipped"] == {"already_tested": ["pi05_droid_again"]}
+
+
+def test_a_pair_recorded_under_the_old_key_still_counts(world):
+    """A campaign whose catalog was not kept is read by its old key: still tested, never re-run."""
+    from blueprint_pipeline.website_candidate_selection import CATALOG_FILENAME
+
+    first = run(world, request(), "req-1")
+    finish(world, first["campaign_id"])
+    (world["screening_queue"] / "inputs" / first["campaign_id"] / CATALOG_FILENAME).unlink()
+    [entry] = tested.site_pairs(world["screening_queue"], SITE)["finished"].values()
+    assert entry["identity_basis"] == tested.LEGACY_BASIS and entry["pair_key"] == entry["legacy_pair_key"]
+    assert run(world, request(), "req-2")["reason"] == on_job.ALREADY_TESTED
+
+
+def test_a_row_without_a_stable_checkpoint_falls_back_to_its_candidate_id():
+    row = {"candidate_id": "a", "policy": {"kind": "hosted", "source": "https://x", "revision": None,
+                                           "digest": None, "digest_kind": "unverified"},
+           "interface": None, "runtime": None, "display_name": "A"}
+    first, other = tested.policy_identity(row), tested.policy_identity({**row, "candidate_id": "b"})
+    assert first["identity_basis"] == tested.CANDIDATE_ID_BASIS and first != other
+    pinned = {**row, "policy": {**row["policy"], "digest": "sha256:" + "1" * 64}, "interface": {"robot": "x"}}
+    assert tested.policy_identity(pinned)["identity_basis"] == tested.CHECKPOINT_BASIS
+    assert tested.policy_identity(pinned) == tested.policy_identity({**pinned, "candidate_id": "b",
+                                                                     "display_name": "B", "deployment": {}})
+
+
+def test_the_two_dollar_cap_is_per_policy_identity(world, monkeypatch):
+    """Finding 7: the same checkpoint entered under a new id never gets a second $2."""
+    allow_standing(world, monkeypatch)
+    first = run(world, request("standing_test"), "req-1")
+    assert first["status"] == "enqueued"
+    usage = standing.standing_usage(world["screening_queue"], month=standing.month_of())
+    [(site, candidate, identity, used)] = usage["rows"]
+    from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
+
+    native = next(row for row in load_default_catalog()["candidates"] if row["candidate_id"] == "pi05_droid")
+    assert identity == tested.policy_identity(native)["policy_identity"] and used == Decimal("2.00")
+    assert standing.policy_used(usage, site_id=SITE, candidate_id="pi05_droid_again", identity=identity) == used
+    assert standing.policy_used(usage, site_id=SITE, candidate_id="other", identity="sha256:" + "0" * 64) == 0
+
+
+def _waitlist(world, campaign_id, candidate_id):
+    from tests.test_beta_policy_screening_settlement import reseal
+
+    def change(value):
+        value["campaigns"][campaign_id]["candidates"][candidate_id].update(
+            status="waitlisted", blockers=["site_screening_budget_insufficient"])
+    reseal(world["screening_queue"], change)
+
+
+def test_a_pending_standing_row_never_holds_the_site_s_money(world, monkeypatch):
+    """Finding 6: an ordinary waitlisted row is funded from the site's money while a standing row waits."""
+    allow_standing(world, monkeypatch)
+    standing_run = run(world, request("standing_test"), "req-1")
+    ordinary = run(world, request(ids=("groot_n17_droid",)), "req-2")
+    cap = Decimal(ordinary["candidates"]["groot_n17_droid"]["max_cost_usd"])
+    _waitlist(world, ordinary["campaign_id"], "groot_n17_droid")
+    assert ledger(world)["campaigns"][standing_run["campaign_id"]]["candidates"]["pi05_droid"]["status"] == "pending"
+    monkeypatch.setattr(coordinator, "SITE_LIMIT", cap)  # room for exactly the ordinary row
+    coordinator._refill_waitlist(world["screening_queue"])
+    row = ledger(world)["campaigns"][ordinary["campaign_id"]]["candidates"]["groot_n17_droid"]
+    assert row["status"] == "pending"
+    assert coordinator._budget(ledger(world), SITE)["committed_upper_bound_usd"] == "0"
+
+
+def test_standing_and_site_money_never_pay_for_each_other(world, monkeypatch):
+    allow_standing(world, monkeypatch)
+    standing_run = run(world, request("standing_test"), "req-1")
+    ordinary = run(world, request(ids=("groot_n17_droid",)), "req-2")
+    _waitlist(world, standing_run["campaign_id"], "pi05_droid")
+    _waitlist(world, ordinary["campaign_id"], "groot_n17_droid")
+    monkeypatch.setattr(coordinator, "SITE_LIMIT", Decimal(0))  # the site has nothing left
+    coordinator._refill_waitlist(world["screening_queue"])
+    after = ledger(world)
+    # The standing row is funded from its own allowance alone; the ordinary row never from it.
+    assert after["campaigns"][standing_run["campaign_id"]]["candidates"]["pi05_droid"]["status"] == "pending"
+    assert after["campaigns"][ordinary["campaign_id"]]["candidates"]["groot_n17_droid"]["status"] in {
+        "waitlisted", "deferred"}
+    usage = standing.standing_usage(world["screening_queue"], month=standing.month_of())
+    assert {candidate for _site, candidate, _identity, _used in usage["rows"]} == {"pi05_droid"}
+    # Reserving: the standing row never reaches the site's figures; the ordinary row is refused by them.
+    finish(world, standing_run["campaign_id"])
+    assert coordinator._budget(ledger(world), SITE)["committed_upper_bound_usd"] == "0"

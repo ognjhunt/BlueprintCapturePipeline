@@ -9,7 +9,8 @@ Beta journey step: site withdrawal. What a website job leaves at each provider, 
 - Meta (the hosted SAM 3.1 API): the walkthrough video uploaded for segmentation
   (``meta_sam31._upload_video``). Its ``file_id`` is recorded in ``uploaded-video.json``, and
   the job's cleanup in ``video-cleanup.json``. ``DELETE /v1/files/<id>`` exists: called here.
-  An upload with an intent but no recorded id (``video-upload-intent.json`` alone) is unknown.
+  An upload with an intent but no recorded id (``video-upload-intent.json`` alone) is unknown,
+  unless the provider answered it with a refusal (``video-upload-failure.json``): then no copy exists.
 - World Labs (Atlas previews): the job's assets, named by ``website_atlas_preview.atlas_asset_ids``
   in its retained records; the job deletes them itself (``provider_cleanup``) and
   ``DELETE /assets/<id>`` is called here for any it did not. Operation records stay at
@@ -108,7 +109,12 @@ def _discover(site: Path) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any
             done = cleanup.get("file_id") == file_id and cleanup.get("deleted") is True
             copies[f"meta:{file_id}"] = {"provider": "meta", "kind": "file", "id": file_id, "source": str(path),
                                          "status": "deleted_by_job" if done else "pending"}
+    from .meta_sam31 import REFUSAL_STATUSES
     for path in sorted(site.rglob("video-upload-intent.json")):
+        # An upload the provider refused (``video-upload-failure.json``, a refusal status) left no copy there.
+        refusal = (_read(path.parent / "video-upload-failure.json") or {}).get("http_status")
+        if refusal in REFUSAL_STATUSES and not isinstance(refusal, bool):
+            continue
         if journal not in path.parents and not (path.parent / "uploaded-video.json").exists():
             unknown.append({"provider": "meta", "kind": "file", "source": str(path),
                             "reason": "an upload was started but no file id was recorded, so it cannot be deleted"})

@@ -248,3 +248,61 @@ def test_a_native_candidate_s_entrypoint_is_byte_identical_to_before_the_standar
     from blueprint_pipeline.native_task_arena_policy_canary_bundle import _entrypoint
 
     assert hashlib.sha256(_entrypoint(**arguments).encode()).hexdigest() == sha256
+
+
+def _crashed_result(value, candidate, tmp_path, *, in_flight, later):
+    """A run whose policy server died serving its first try: each try's evidence as the worker writes it."""
+    from blueprint_pipeline.policy_canary_worker_evidence import _write_episode_failure_gap
+
+    result = native_result(value, candidate)
+    episodes = []
+    for index, row in enumerate(result["episodes"]):
+        failure, progress = (in_flight, {"first_observation_retained": True, "candidate_policy_query_attempted": True,
+                                         "policy_inference_failed": True}) if index == 0 else (later, {})
+        path = _write_episode_failure_gap(output_root=tmp_path / "episodes-out", run_id="run", failure=failure,
+            context={"cell_id": row["cell_id"], "seed": row["seed"], "candidate_id": candidate["candidate_id"]},
+            progress=progress)
+        evidence = json.loads(path.read_text())
+        episodes.append({**row, **{key: item for key, item in evidence.items() if key != "cell_id"}})
+    return {**result, "episodes": episodes}
+
+
+@pytest.mark.parametrize("path", ["session_served", "native"])
+def test_a_server_that_dies_on_one_try_ends_its_row_as_on_the_native_path(tmp_path, monkeypatch, path):
+    """Review finding 8. On the native path a policy process that crashes during a try leaves: that try a
+    scored failure (the policy's), each later try void (nothing answers the readiness check), the row
+    completed with one scored try, published, a finished pair that is never run or paid for again. The
+    session-served row ends the same way, and its published row also says why the nine were not counted."""
+    from blueprint_pipeline import native_task_arena_policy_canary_session as session
+    from blueprint_pipeline import beta_policy_screening_tested_pairs as tested
+    from tests.test_beta_policy_screening_coordinator import plan
+
+    value = plan()
+    candidate = value["candidates"][0]
+    if path == "session_served":
+        failures = (ValueError("droid_https_policy_response_connection_lost:RemoteDisconnected"),
+                    ValueError("session_policy_server_unavailable:ConnectionRefusedError"))
+    else:  # the native websocket client's own errors: a dropped connection, then nothing listening
+        failures = (RuntimeError("no close frame received or sent"), ConnectionRefusedError("Connect call failed"))
+    result = _crashed_result(value, candidate, tmp_path, in_flight=failures[0], later=failures[1])
+    # The session-level validator is exercised elsewhere; here every row is the worker's own evidence.
+    monkeypatch.setattr(session, "validate_session_result", lambda payload, **kwargs: payload)
+    queue = tmp_path / "queue"
+    coordinator.enqueue_screening_campaign(value, queue_root=queue)
+    backend = Backend({"status": "completed", "provider_allocation_performed": True,
+                       "provider_zero_verified": True, "result": result})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    row = publication(queue, value["campaign_id"])["candidates"][0]
+    assert (row["status"], row["episodes_scored"], row["episodes_failed"], row["episodes_void"]) == ("completed", 1, 1, 9)
+    ledger = json.loads((queue / coordinator.LEDGER_FILENAME).read_text())
+    state = ledger["campaigns"][value["campaign_id"]]["candidates"][candidate["candidate_id"]]
+    reasons = {outcome["reason"] for outcome in state["summary"]["episode_outcomes"][1:]}
+    if path == "session_served":
+        assert row["setup_quality_flags"] == ["session_policy_server_lost"]
+        assert reasons == {"policy_server_unavailable"}
+    else:
+        assert "setup_quality_flags" not in row and reasons == {"simulator_failed_before_policy"}
+    # A finished result: never re-run, so a crashed server never leads to a paid re-run.
+    assert tested.finished(state)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    assert backend.launches == 1

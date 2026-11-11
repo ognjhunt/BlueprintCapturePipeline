@@ -245,17 +245,18 @@ def _served_spec():
 def _start(tmp_path, *, process, client_factory, clock, bound=True):
     from blueprint_pipeline.session_policy_server_start import start
 
-    if bound:  # what the started server writes once it holds its port (``serve``)
-        (tmp_path / "out").mkdir(exist_ok=True)
-        (tmp_path / "out" / "session_policy_server_identity.pi05_droid_contract.json").write_text(json.dumps(
-            {"pid": process.pid, "port": 8765, "host": "127.0.0.1", "status": "loading"}))
+    def popen(*args, **kwargs):
+        if bound:  # what the started server writes once it holds its port (``serve``)
+            (tmp_path / "out" / "session_policy_server_identity.pi05_droid_contract.json").write_text(json.dumps(
+                {"pid": process.pid, "port": 8765, "host": "127.0.0.1", "status": "loading"}))
+        return process
     token = tmp_path / "token"
     token.write_text(TOKEN)
     token.chmod(0o600)
     spec = _served_spec()
     return start(spec=spec, spec_path=tmp_path / "spec.json", python="/opt/venv/bin/python", runtime=tmp_path,
                  output=tmp_path / "out", checkpoint_dir="/opt/ckpt", inventory="/opt/inv.json",
-                 env={"BLUEPRINT_SESSION_POLICY_TOKEN_FILE": str(token)}, popen=lambda *a, **k: process,
+                 env={"BLUEPRINT_SESSION_POLICY_TOKEN_FILE": str(token)}, popen=popen,
                  client_factory=client_factory, monotonic=clock, sleep=lambda seconds: None)
 
 
@@ -487,3 +488,22 @@ def test_teardown_signals_only_the_exact_started_process(tmp_path):
                                                 signal_process=lambda pid, sig: signalled.append(pid),
                                                 monotonic=iter(range(100)).__next__, sleep=lambda s: None)
     assert signalled == [4242] and exact["policy_server_process_terminated"] is True
+
+
+def test_a_stale_identity_record_never_passes_the_readiness_check(tmp_path):
+    """Review finding 9: a record an earlier server left (here naming the same pid, as a reused pid would)
+    is deleted before the new server starts, so no token is sent until the new server writes its own."""
+    calls = []
+
+    class Client:
+        def preflight_readiness(self):
+            calls.append("token sent")
+            return {"server_metadata": {}}
+    process = FakeProcess()
+    (tmp_path / "out").mkdir()
+    stale = tmp_path / "out" / "session_policy_server_identity.pi05_droid_contract.json"
+    stale.write_text(json.dumps({"pid": process.pid, "port": 8765, "host": "127.0.0.1", "status": "serving"}))
+    with pytest.raises(RuntimeError, match="session_policy_server_not_ready_within_bound:session_policy_server_not_bound"):
+        _start(tmp_path, process=process, client_factory=lambda spec, token: Client(),
+               clock=iter(range(0, 100_000, 7)).__next__, bound=False)
+    assert calls == [] and not stale.exists()

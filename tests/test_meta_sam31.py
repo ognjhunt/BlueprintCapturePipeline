@@ -241,14 +241,22 @@ def test_video_uses_video_payload_and_blocks_usage_beyond_reserved_frames(tmp_pa
     args["admission"]["allocation_binding_digest"] = digest
     args["admission_grant"] = require_paid_resource_admission(args["admission"], resource_class="evaluator_api",
         expected_schema_version="paid_lane_admission.v1")
+    calls = []
     def opener(request, **kwargs):
+        calls.append((request.get_method(), request.full_url))
+        if request.full_url == sam.FILES_ENDPOINT:
+            return BytesIO(b'{"id":"file-frames"}')
+        if request.get_method() == "DELETE":
+            return BytesIO(b'{"deleted":true}')
         media = json.loads(request.data)["input"][0]["content"][1]
-        assert media["type"] == "input_video"
+        assert media == {"type": "input_video", "file_id": "file-frames"}
         result = response()
         result["usage"]["video_frames_processed"] = 51
         return BytesIO(json.dumps(result).encode())
     with pytest.raises(ValueError, match="usage_exceeds_reservation"):
         sam.run_meta_sam31(**args, opener=opener)
+    # Even a run that fails after the dispatch deletes its upload.
+    assert calls[-1] == ("DELETE", sam.FILES_ENDPOINT + "/file-frames")
 
 
 def test_continuous_video_keeps_original_frames_and_timestamps(tmp_path, monkeypatch):

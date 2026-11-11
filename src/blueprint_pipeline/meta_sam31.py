@@ -250,30 +250,120 @@ def request_binding(*, frame_registry: Sequence[Mapping[str, Any]],
     return binding
 
 
+UPLOAD_RECEIPT = "uploaded-video.json"
+UPLOAD_INTENT = "video-upload-intent.json"
+UPLOAD_FAILURE = "video-upload-failure.json"
+UPLOAD_CLEANUP = "video-cleanup.json"
+#: Earlier uploads of this binding that are finished with: deleted at the provider, or refused by it.
+UPLOAD_ARCHIVE = "uploads"
+FILES_ENDPOINT = "https://api.meta.ai/v1/files"
+
+
+def _cleanup_done(root: Path, file_id: Any) -> bool:
+    cleanup = root / UPLOAD_CLEANUP
+    if not cleanup.is_file():
+        return False
+    try:
+        value = json.loads(cleanup.read_text())
+    except ValueError:
+        return False
+    return value.get("file_id") == file_id and value.get("deleted") is True
+
+
+def _archive_upload(root: Path) -> None:
+    """Move a finished upload's records aside, so the next upload of this binding starts clean."""
+    archive = root / UPLOAD_ARCHIVE
+    count = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
+    target = archive / f"attempt-{count + 1}"
+    target.mkdir(parents=True)
+    for name in (UPLOAD_RECEIPT, UPLOAD_INTENT, UPLOAD_FAILURE, UPLOAD_CLEANUP):
+        if (root / name).is_file():
+            os.replace(root / name, target / name)
+
+
+def delete_uploaded_video(*, root: Path, opener: Any, token: str | None = None) -> None:
+    """Delete this binding's uploaded clip at the provider unless that is already recorded as done.
+
+    Runs at the end of every run, whatever the ending, and again on every later run until the
+    provider confirms it, so a crash between the upload and its deletion is cleaned up by the
+    next run. A provider answer that the file is not there (404) is recorded as such. Never
+    raises: a failed delete is recorded and retried, and the withdrawal sweep
+    (``website_capture_withdrawal_provider_copies``) also lists any copy not recorded deleted.
+    """
+    receipt_path = Path(root) / UPLOAD_RECEIPT
+    try:
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            return
+        file_id = json.loads(receipt_path.read_text()).get("file_id")
+        if not isinstance(file_id, str) or not file_id or _cleanup_done(Path(root), file_id):
+            return
+    except (OSError, ValueError):
+        return
+    try:
+        request = Request(FILES_ENDPOINT + "/" + file_id, method="DELETE",
+                          headers={"Authorization": "Bearer " + (token or meta_api_key())})
+        try:
+            with opener(request, timeout=30) as response:
+                value = json.loads(response.read(100_000))
+            record = {"file_id": file_id, "deleted": value.get("deleted") is True}
+        except HTTPError as exc:
+            # The provider holds no such file: nothing is left there to delete.
+            record = ({"file_id": file_id, "deleted": True, "provider_answer": "not_found"} if exc.code == 404
+                      else {"file_id": file_id, "deleted": False, "http_status": exc.code})
+        write_json(Path(root) / UPLOAD_CLEANUP, record)
+    except Exception:  # noqa: BLE001 - recorded as not deleted; the next run tries again
+        try:
+            write_json(Path(root) / UPLOAD_CLEANUP, {"file_id": file_id, "deleted": False})
+        except OSError:
+            pass
+
+
+def _require_known_upload(root: Path) -> None:
+    """Refuse when an upload was started and neither its file id nor a provider refusal was recorded."""
+    if not (root / UPLOAD_INTENT).exists() or (root / UPLOAD_RECEIPT).exists():
+        return
+    try:
+        refused = json.loads((root / UPLOAD_FAILURE).read_text()).get("http_status")
+    except (OSError, ValueError):
+        refused = None
+    if isinstance(refused, bool) or refused not in REFUSAL_STATUSES:
+        raise ValueError("meta_sam_video_upload_requires_reconciliation")
+
+
 def _upload_video(*, clip: Path, root: Path, token: str, opener: Any) -> str:
-    receipt_path = root / "uploaded-video.json"
+    receipt_path = root / UPLOAD_RECEIPT
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text())
         if receipt.get("clip_digest") != _sha256_file(clip):
             raise ValueError("meta_sam_uploaded_video_changed")
-        return receipt["file_id"]
+        if not _cleanup_done(root, receipt.get("file_id")):
+            return receipt["file_id"]
+        # An earlier run deleted its upload when it ended: this run uploads its own.
+        _archive_upload(root)
     # Uploads do not purchase segmentation, but an uncertain upload must not
     # silently accumulate copies of private footage on the provider. Its file id
     # is unknown, so that copy could never be deleted: unlike a SAM request, an
     # unanswered upload is never resent (privacy, not money, stops it).
-    intent = root / "video-upload-intent.json"
+    intent = root / UPLOAD_INTENT
     if intent.exists():
-        raise ValueError("meta_sam_video_upload_requires_reconciliation")
+        _require_known_upload(root)
+        # The provider answered that upload with a refusal, so it holds no copy: upload again.
+        _archive_upload(root)
     boundary = "blueprint-" + _sha256_file(clip)[7:39]
     body = (f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nuser_data\r\n'
             f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="walkthrough.mp4"\r\n'
             'Content-Type: video/mp4\r\n\r\n').encode() + clip.read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
     with intent.open("x") as file:
         json.dump({"clip_digest": _sha256_file(clip)}, file)
-    request = Request("https://api.meta.ai/v1/files", data=body, method="POST", headers={
+    request = Request(FILES_ENDPOINT, data=body, method="POST", headers={
         "Authorization": "Bearer " + token, "Content-Type": "multipart/form-data; boundary=" + boundary})
-    with opener(request, timeout=120) as response:
-        value = json.loads(response.read(100_000))
+    try:
+        with opener(request, timeout=120) as response:
+            value = json.loads(response.read(100_000))
+    except HTTPError as exc:
+        # Never include the request, key or a provider-echoed body in logs.
+        write_json(root / UPLOAD_FAILURE, {"http_status": exc.code, "clip_digest": _sha256_file(clip)})
+        raise ValueError(f"meta_sam_upload_http_{exc.code}") from None
     file_id = value.get("id")
     if not isinstance(file_id, str) or not re.fullmatch(r"file-[A-Za-z0-9_-]{1,200}", file_id):
         raise ValueError("meta_sam_uploaded_file_id_invalid")
@@ -512,6 +602,56 @@ def encode_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequence[Ma
     return clip
 
 
+#: Each reservation this binding was granted, kept so a run that stopped before dispatching
+#: anything under it is paid by the same hold, not a second one.
+ADMISSION_ARCHIVE = "admissions"
+
+
+def _admission_path(root: Path, admission_digest: str) -> Path:
+    return root / ADMISSION_ARCHIVE / f"{admission_digest[7:]}.json"
+
+
+def _retain_admission(root: Path, admission: Mapping[str, Any]) -> None:
+    path = _admission_path(root, str(admission.get("allocation_binding_digest")))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    write_json(temporary, dict(admission))
+    os.replace(temporary, path)
+
+
+def _dispatched_under(root: Path, admission_digest: str) -> bool:
+    """Whether any prompt was ever sent under this reservation: every dispatch writes its intent first,
+    and an intent is only ever moved into an archive under ``root``, never deleted."""
+    for path in root.rglob("intent-*.json"):
+        try:
+            if json.loads(path.read_text()).get("allocation_binding_digest") == admission_digest:
+                return True
+        except (OSError, ValueError):
+            return True  # unreadable: never assume nothing was sent
+    return False
+
+
+def _held_admission(root: Path, admission_digest: str) -> dict[str, Any] | None:
+    """The reservation this run's binding already holds, when nothing was dispatched under it."""
+    path = _admission_path(root, admission_digest)
+    if not path.is_file() or path.is_symlink() or _dispatched_under(root, admission_digest):
+        return None
+    value = json.loads(path.read_text())
+    return value if value.get("allocation_binding_digest") == admission_digest else None
+
+
+def _request_root(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifacts: Sequence[Mapping[str, Any]],
+                  prompts: Sequence[Mapping[str, Any]], output_root: Path, video_artifact: Mapping[str, Any] | None,
+                  source_video_digest: str | None) -> tuple[dict[str, Any], str, Path]:
+    """The request's binding, its digest and the directory that keeps everything bought under it."""
+    binding = request_binding(frame_registry=frame_registry, frame_artifacts=frame_artifacts, prompts=prompts,
+                              video_artifact=video_artifact)
+    if source_video_digest is not None:
+        binding["atlas_source_video_digest"] = source_video_digest
+    digest = canonical_digest(binding)
+    return binding, digest, Path(output_root) / digest[7:]
+
+
 def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifacts: Sequence[Mapping[str, Any]],
                    prompts: Sequence[Mapping[str, Any]], output_root: Path, admission: Mapping[str, Any],
                    admission_grant: PaidResourceAdmissionGrant | None = None,
@@ -532,13 +672,33 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     ``write_json`` and ``canonical_digest`` give for the list form). The returned tracks carry
     those compact ``RunLengths`` when ``compact_runs``; otherwise each observation's ``runs`` is
     the plain list of dicts, as before.
+
+    Every request with more than one frame sends its clip as one uploaded file that each prompt
+    names, never inline: an inline clip of about 16.5 MiB was refused with 413 (capture-39ecdc97,
+    2026-11-11). However the run ends (completed, refused, failed, or a crash a later run
+    resumes), the uploaded copy is deleted at the provider before this returns
+    (``delete_uploaded_video``); a pure replay (``require_retained_video``) makes no call.
     """
-    binding = request_binding(frame_registry=frame_registry, frame_artifacts=frame_artifacts, prompts=prompts,
-                              video_artifact=video_artifact)
-    if source_video_digest is not None:
-        binding["atlas_source_video_digest"] = source_video_digest
-    digest = canonical_digest(binding)
-    root = output_root / digest[7:]
+    arguments = dict(locals())
+    try:
+        return _run_meta_sam31(**arguments)
+    finally:
+        if not require_retained_video:
+            _, _, root = _request_root(frame_registry=frame_registry, frame_artifacts=frame_artifacts,
+                                       prompts=prompts, output_root=output_root, video_artifact=video_artifact,
+                                       source_video_digest=source_video_digest)
+            delete_uploaded_video(root=root, opener=opener)
+
+
+def _run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifacts: Sequence[Mapping[str, Any]],
+                    prompts: Sequence[Mapping[str, Any]], output_root: Path, admission: Mapping[str, Any],
+                    admission_grant: PaidResourceAdmissionGrant | None, task_context: Mapping[str, Any] | None,
+                    video_artifact: Mapping[str, Any] | None, opener: Any, source_video_digest: str | None,
+                    require_retained_video: bool, maximum_cost_usd: float | None,
+                    compact_runs: bool) -> dict[str, Any]:
+    binding, digest, root = _request_root(frame_registry=frame_registry, frame_artifacts=frame_artifacts,
+                                          prompts=prompts, output_root=output_root, video_artifact=video_artifact,
+                                          source_video_digest=source_video_digest)
     pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
     retained = bool(prompts) and not pending
     refused = retire_refused_dispatches(root, pending) if pending and not require_retained_video else 0
@@ -600,12 +760,23 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
         receipt = json.loads((root / f"response-{index}.json").read_text())
         if receipt.get("binding_digest") != digest or receipt.get("clip_digest") != clip_digest:
             raise ValueError("meta_sam_retained_response_changed")
+    if not retained and not image_request:
+        # An upload whose outcome is unknown stops the run before anything is reserved.
+        _require_known_upload(root)
     if not retained:
         if admission_grant is None and task_context is not None:
-            from .website_task_context import reserve_website_sam_spend
-            admission, admission_grant = reserve_website_sam_spend(task_context=task_context,
-                binding_digest=admission_digest, maximum_cost_usd=unit_cost * len(pending),
-                request_count=len(pending), source_video_digest=source_video_digest)
+            from .website_task_context import reserve_website_sam_spend, reuse_website_sam_spend
+            held = _held_admission(root, admission_digest)
+            if held is not None:
+                # This run's reservation was made, but the run stopped before any prompt was
+                # dispatched under it (a refused upload, a crash): the same hold pays this run.
+                admission, admission_grant = held, reuse_website_sam_spend(
+                    task_context=task_context, admission=held, binding_digest=admission_digest)
+            else:
+                admission, admission_grant = reserve_website_sam_spend(task_context=task_context,
+                    binding_digest=admission_digest, maximum_cost_usd=unit_cost * len(pending),
+                    request_count=len(pending), source_video_digest=source_video_digest)
+                _retain_admission(root, admission)
         require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
                                               allocation_binding_digest=admission_digest, require_allocation_binding=True)
         budget = admission.get("maximum_cost_usd")
@@ -620,94 +791,83 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
 
     media = None
     if not retained:
-        media = ({"type": "input_video", "file_id": _upload_video(clip=clip, root=root, token=token, opener=dispatch)}
-                 if video_artifact else
-                 {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode((root / "frame-000000.png").read_bytes()).decode()}
-                 if image_request else {"type": "input_video", "video_url": "data:video/mp4;base64," + base64.b64encode(clip.read_bytes()).decode()})
-    try:
-        tracks, receipts = [], []
-        for index, prompt in enumerate(prompts):
-            result_path, intent_path = root / f"response-{index}.json", root / f"intent-{index}.json"
-            if result_path.is_file():
-                receipt = json.loads(result_path.read_text())
-                if receipt["binding_digest"] != digest or receipt["clip_digest"] != _sha256_file(clip):
-                    raise ValueError("meta_sam_retained_response_changed")
-                response = receipt["response"]
-            else:
-                if retained:
-                    raise ValueError("meta_sam_retained_response_missing")
-                if intent_path.exists():
-                    raise ValueError("meta_sam_submission_requires_reconciliation")
-                payload = {"model": MODEL, "stream": False, "metadata": {"mask_encoding": "one_bit"}, "input": [
-                    {"type": "message", "role": "user", "content": [
-                        {"type": "input_text", "text": prompt["text"]},
-                        media]}]}
-                request = Request(ENDPOINT, data=json.dumps(payload).encode(), method="POST",
-                                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
-                require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
-                    allocation_binding_digest=admission_digest, require_allocation_binding=True)
-                with intent_path.open("x") as file:
-                    json.dump({"binding_digest": digest, "clip_digest": _sha256_file(clip),
-                               "allocation_binding_digest": admission_digest, **resends.get(index, {})}, file)
-                    file.flush()
-                    os.fsync(file.fileno())
-                try:
-                    with dispatch(request, timeout=300) as result:
-                        raw = result.read(64 * 1024**2 + 1)
-                    if len(raw) > 64 * 1024**2:
-                        raise ValueError("meta_sam_response_too_large")
-                    response = json.loads(raw)
-                except HTTPError as exc:
-                    # Never include the request, key or a provider-echoed body in logs.
-                    write_json(root / f"failure-{index}.json", {"http_status": exc.code, "binding_digest": digest})
-                    raise ValueError(f"meta_sam_http_{exc.code}") from None
-                receipt = {"binding_digest": digest, "clip_digest": _sha256_file(clip),
-                           "allocation_binding_digest": admission_digest, "response": response,
-                           "reserved_cost_usd": unit_cost, **resends.get(index, {})}
-                temporary = result_path.with_suffix(".tmp")
-                write_json(temporary, receipt)
-                os.replace(temporary, result_path)
-            processed = (response.get("usage") or {}).get("video_frames_processed")
-            if not image_request and (isinstance(processed, bool) or not isinstance(processed, int) or processed < 0):
-                raise ValueError("meta_sam_usage_missing")
-            if not image_request and processed > max(50, len(frame_registry)):
-                raise ValueError("meta_sam_usage_exceeds_reservation")
-            parsed_path = root / f"parsed-response-{index}.json"
-            parsed_binding = {"response_digest": _sha256_file(result_path), "request_digest": digest,
-                              "parser_revision": 1, "profile": PROFILE}
-            if parsed_path.is_file():
-                parsed = load_track_json(parsed_path)
-                if (parsed.get("binding") != parsed_binding
-                        or parsed.get("digest") != canonical_track_digest(parsed, digest_field="digest")):
-                    raise ValueError("meta_sam_retained_tracks_changed")
-                decoded = parsed["tracks"]
-            else:
-                if require_retained_video:
-                    raise ValueError("meta_sam_retained_tracks_changed")
-                backend: list[str] = []
-                decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend)
-                parsed = {"binding": parsed_binding, "tracks": decoded, "parser_runtime": backend[0]}
-                parsed["digest"] = canonical_track_digest(parsed, digest_field="digest")
-                temporary = parsed_path.with_suffix(".tmp")
-                write_track_json(temporary, parsed)
-                os.replace(temporary, parsed_path)
-            tracks.extend(decoded)
-            receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
-        result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
-                  "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
-        if require_retained_video:
-            if load_track_json(root / "tracks.json") != result:
-                raise ValueError("meta_sam_retained_tracks_changed")
+        # One upload per run, named by every prompt; ``run_meta_sam31`` deletes it however the run ends.
+        media = ({"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode((root / "frame-000000.png").read_bytes()).decode()}
+                 if image_request else
+                 {"type": "input_video", "file_id": _upload_video(clip=clip, root=root, token=token, opener=dispatch)})
+    tracks, receipts = [], []
+    for index, prompt in enumerate(prompts):
+        result_path, intent_path = root / f"response-{index}.json", root / f"intent-{index}.json"
+        if result_path.is_file():
+            receipt = json.loads(result_path.read_text())
+            if receipt["binding_digest"] != digest or receipt["clip_digest"] != _sha256_file(clip):
+                raise ValueError("meta_sam_retained_response_changed")
+            response = receipt["response"]
         else:
-            write_track_json(root / "tracks.json", result)
-        return result if compact_runs else plain_runs(result)
-    finally:
-        if video_artifact and not retained:
+            if retained:
+                raise ValueError("meta_sam_retained_response_missing")
+            if intent_path.exists():
+                raise ValueError("meta_sam_submission_requires_reconciliation")
+            payload = {"model": MODEL, "stream": False, "metadata": {"mask_encoding": "one_bit"}, "input": [
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": prompt["text"]},
+                    media]}]}
+            request = Request(ENDPOINT, data=json.dumps(payload).encode(), method="POST",
+                              headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+            require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
+                allocation_binding_digest=admission_digest, require_allocation_binding=True)
+            with intent_path.open("x") as file:
+                json.dump({"binding_digest": digest, "clip_digest": _sha256_file(clip),
+                           "allocation_binding_digest": admission_digest, **resends.get(index, {})}, file)
+                file.flush()
+                os.fsync(file.fileno())
             try:
-                request = Request("https://api.meta.ai/v1/files/" + media["file_id"], method="DELETE",
-                                  headers={"Authorization": "Bearer " + token})
-                with opener(request, timeout=30) as response:
-                    value = json.loads(response.read(100_000))
-                write_json(root / "video-cleanup.json", {"file_id": media["file_id"], "deleted": value.get("deleted") is True})
-            except Exception:
-                write_json(root / "video-cleanup.json", {"file_id": media["file_id"], "deleted": False})
+                with dispatch(request, timeout=300) as result:
+                    raw = result.read(64 * 1024**2 + 1)
+                if len(raw) > 64 * 1024**2:
+                    raise ValueError("meta_sam_response_too_large")
+                response = json.loads(raw)
+            except HTTPError as exc:
+                # Never include the request, key or a provider-echoed body in logs.
+                write_json(root / f"failure-{index}.json", {"http_status": exc.code, "binding_digest": digest})
+                raise ValueError(f"meta_sam_http_{exc.code}") from None
+            receipt = {"binding_digest": digest, "clip_digest": _sha256_file(clip),
+                       "allocation_binding_digest": admission_digest, "response": response,
+                       "reserved_cost_usd": unit_cost, **resends.get(index, {})}
+            temporary = result_path.with_suffix(".tmp")
+            write_json(temporary, receipt)
+            os.replace(temporary, result_path)
+        processed = (response.get("usage") or {}).get("video_frames_processed")
+        if not image_request and (isinstance(processed, bool) or not isinstance(processed, int) or processed < 0):
+            raise ValueError("meta_sam_usage_missing")
+        if not image_request and processed > max(50, len(frame_registry)):
+            raise ValueError("meta_sam_usage_exceeds_reservation")
+        parsed_path = root / f"parsed-response-{index}.json"
+        parsed_binding = {"response_digest": _sha256_file(result_path), "request_digest": digest,
+                          "parser_revision": 1, "profile": PROFILE}
+        if parsed_path.is_file():
+            parsed = load_track_json(parsed_path)
+            if (parsed.get("binding") != parsed_binding
+                    or parsed.get("digest") != canonical_track_digest(parsed, digest_field="digest")):
+                raise ValueError("meta_sam_retained_tracks_changed")
+            decoded = parsed["tracks"]
+        else:
+            if require_retained_video:
+                raise ValueError("meta_sam_retained_tracks_changed")
+            backend: list[str] = []
+            decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend)
+            parsed = {"binding": parsed_binding, "tracks": decoded, "parser_runtime": backend[0]}
+            parsed["digest"] = canonical_track_digest(parsed, digest_field="digest")
+            temporary = parsed_path.with_suffix(".tmp")
+            write_track_json(temporary, parsed)
+            os.replace(temporary, parsed_path)
+        tracks.extend(decoded)
+        receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
+    result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
+              "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
+    if require_retained_video:
+        if load_track_json(root / "tracks.json") != result:
+            raise ValueError("meta_sam_retained_tracks_changed")
+    else:
+        write_track_json(root / "tracks.json", result)
+    return result if compact_runs else plain_runs(result)

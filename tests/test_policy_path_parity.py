@@ -14,6 +14,8 @@ from tests.test_beta_policy_screening_progress import session_result
 CONTRACT = "pi05_droid_contract"
 DEPTHS = [7, 7, 7, 7, 7, 7, 7, 3, 2, 1]
 COMMIT = "a" * 40
+#: The identity the session's own contract server answers with (``run_identity`` derives it from the spec).
+SERVED = "sha256:" + "5" * 64
 
 
 def _identities(**contract_changes):
@@ -23,7 +25,7 @@ def _identities(**contract_changes):
               "session_served": False}
     contract = {**native, "runtime_identity_digest": canonical_digest({"value": "served"}),
                 "native_runtime_identity_digest": native["runtime_identity_digest"], "session_served": True,
-                **contract_changes}
+                "served_identity_sha256": SERVED, **contract_changes}
     return native, contract
 
 
@@ -32,14 +34,21 @@ def _runs():
     value = plan()
     native = session_result(value, value["candidates"][0], DEPTHS)
     native_identity, contract_identity = _identities()
+    actions = [[0.1 * index for index in range(8)]]
     for row in native["episodes"]:
         row["runtime_identity_digest"] = native_identity["runtime_identity_digest"]
-        row["episode"].update(commanded_actions=[[0.1 * index for index in range(8)]], max_policy_queries=45,
-                              open_loop_horizon=8)
+        row["episode"].update(commanded_actions=actions, max_policy_queries=45, open_loop_horizon=8,
+                              queries=[{"query_index": 0, "policy_inference_evidence": {
+                                  "transport": "openpi_websocket_msgpack_numpy", "server_response_received": True}}])
+        row["returned_action_sequence_digest"] = canonical_digest({"value": actions})  # the trace it covers
     contract = deepcopy(native)
     for row in contract["episodes"]:
         row["candidate_id"] = CONTRACT
         row["runtime_identity_digest"] = contract_identity["runtime_identity_digest"]
+        # Each request answered by the session's own server, as its transport evidence records.
+        row["episode"]["queries"] = [{"query_index": 0, "policy_inference_evidence": {
+            "transport": "droid_https_json_bearer", "server_response_received": True,
+            "server_identity_sha256": SERVED}}]
     return native, contract
 
 
@@ -184,3 +193,83 @@ def test_run_identity_reads_the_bound_policy_spec(tmp_path):
     path.write_text(json.dumps({**spec, SPEC_FIELD: {}}))
     with pytest.raises(ValueError, match="policy_spec_unbound"):
         run_identity(value, "candidate-000")
+
+
+@pytest.mark.parametrize("change", ["empty", "edited"])
+def test_an_action_digest_is_taken_again_from_its_trace(change):
+    """Review finding 10: equal digests over empty traces, or a trace edited under its old digest, are
+    never 'same'."""
+    native, contract = _runs()
+    for row in (native["episodes"][1], contract["episodes"][1]) if change == "empty" else (contract["episodes"][1],):
+        if change == "empty":
+            row["episode"]["commanded_actions"] = []
+            row["returned_action_sequence_digest"] = canonical_digest({"value": []})
+        else:
+            row["episode"]["commanded_actions"] = [[9.0] * 8]  # the digest still names the old trace
+    report = _compare(native, contract)
+    cell = native["episodes"][1]["cell_id"]
+    assert report["verdict"] == "not_comparable"
+    expected = ({f"action_trace_empty:{cell}:native", f"action_trace_empty:{cell}:contract"} if change == "empty"
+                else {f"action_trace_digest_mismatch:{cell}:contract"})
+    assert expected <= set(report["not_comparable_reasons"])
+
+
+@pytest.mark.parametrize("change", ["other_server", "other_transport", "no_evidence", "no_identity"])
+def test_the_contract_run_must_show_its_requests_reached_the_session_server(change):
+    native, contract = _runs()
+    identities = _identities()
+    row = contract["episodes"][2]
+    evidence = row["episode"]["queries"][0]["policy_inference_evidence"]
+    if change == "other_server":
+        evidence["server_identity_sha256"] = "sha256:" + "6" * 64
+    elif change == "other_transport":
+        evidence["transport"] = "openpi_websocket_msgpack_numpy"
+    elif change == "no_evidence":
+        row["episode"]["queries"] = [{"query_index": 0}]
+    else:
+        identities = (identities[0], {key: value for key, value in identities[1].items()
+                                      if key != "served_identity_sha256"})
+    report = _compare(native, contract, identities)
+    assert report["verdict"] == "not_comparable"
+    reasons = set(report["not_comparable_reasons"])
+    if change == "no_identity":
+        assert "contract_server_identity_missing" in reasons
+    else:
+        assert f"contract_requests_not_from_session_server:{row['cell_id']}" in reasons
+
+
+def test_a_contract_try_that_queried_without_transport_evidence_is_not_comparable():
+    native, contract = _runs()
+    row = contract["episodes"][3]
+    row["episode"].pop("queries")
+    row["candidate_policy_queried"] = True
+    report = _compare(native, contract)
+    assert f"contract_transport_evidence_missing:{row['cell_id']}" in report["not_comparable_reasons"]
+
+
+def test_run_identity_names_the_identity_the_session_server_answers_with(tmp_path):
+    import hashlib
+
+    from blueprint_pipeline.droid_https_policy_client import DroidHttpsTeamPolicyClient
+    from blueprint_pipeline.session_policy_client import LoopbackDroidPolicySpec
+    from blueprint_pipeline.session_served_policy import SPEC_FIELD
+
+    origin = "http://127.0.0.1:8765"
+    spec = {SPEC_FIELD: {"native_runtime_identity_digest": "sha256:" + "1" * 64},
+            "runtime_identity_digest": "sha256:" + "3" * 64, "checkpoint_digest": "sha256:" + "2" * 64,
+            "open_loop_horizon": 8,
+            "policy_spec": {"policy_id": CONTRACT, "endpoint_url": origin + "/v1/infer",
+                            "metadata_url": origin + "/v1/metadata", "allowed_origin": origin,
+                            "model_identity_digest": "sha256:" + "4" * 64, "action_chunk_rows": 15,
+                            "open_loop_horizon": 8}}
+    value = deepcopy(plan())
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec))
+    value["candidates"][0]["execution_spec"]["policy_execution_spec"] = {
+        "path": str(path), "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(), "size_bytes": 1}
+    identity = run_identity(value, "candidate-000")
+    policy = LoopbackDroidPolicySpec(**spec["policy_spec"])
+    client = DroidHttpsTeamPolicyClient(spec=policy, bearer_token="t",
+                                        transport=lambda **kw: json.dumps(policy.expected_metadata()).encode())
+    assert identity["session_served"] is True
+    assert identity["served_identity_sha256"] == client.server_metadata["identity_sha256"]

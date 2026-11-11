@@ -26,6 +26,7 @@ __all__ = [
     "REFUSAL_RETRY_DELAYS_SECONDS",
     "hard_stop_kind",
     "outage_retry_delay",
+    "provider_answer",
     "refusal_retry_delay",
 ]
 
@@ -103,3 +104,20 @@ def hard_stop_kind(code: object) -> str | None:
     if words & _MONEY_WORDS:
         return MONEY
     return None
+
+
+# An outside service's HTTP answer, as typed refusal codes name it ("meta_sam_http_413").
+_PROVIDER_ANSWER = re.compile(r"[a-z0-9_-]+_http_([0-9]{3})")
+
+
+def provider_answer(code: object) -> int | None:
+    """The HTTP status an outside service answered, when ``code`` names one; else None.
+
+    Only the code before any ``:`` detail counts. Such an answer is the service's
+    outcome for one request, never a fact only a person can supply: a controller
+    retries it on this module's schedules rather than waiting for input.
+    """
+    if not isinstance(code, str):
+        return None
+    match = _PROVIDER_ANSWER.fullmatch(code.partition(":")[0].strip().lower())
+    return int(match.group(1)) if match else None

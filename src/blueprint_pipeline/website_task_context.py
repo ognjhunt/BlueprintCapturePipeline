@@ -210,13 +210,34 @@ class RetainedAdmissionUnusable(ValueError):
     """The retained reservation itself can no longer pay a dispatch: expired, or not this binding's."""
 
 
-def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_digest: str,
-                                    now: float | None = None) -> Any:
-    """The in-process grant of a retained Gemini reservation whose last dispatch provably bought nothing.
+def reuse_website_sam_spend(*, task_context: Mapping[str, Any], admission: Mapping[str, Any],
+                            binding_digest: str) -> Any:
+    """The grant of a SAM run's own retained reservation, when that run stopped before dispatching anything.
 
-    Only ``website_gemini_receipts`` calls this, for an intent the provider refused before any work
-    (429/503) or one never dispatched: the same WebApp hold, never released, pays the next dispatch
-    under the same binding. No new reservation is made. The admission's own validity (its binding,
+    ``meta_sam31`` calls this only for a binding none of whose prompts was sent under the
+    reservation (its upload was refused, or the run stopped first): the same WebApp hold pays the
+    next run, so a failed upload leaves no second hold. The same source, paid-work stop and budget
+    checks run as before a new reservation.
+    """
+    from .atlas_preparation_runtime import preparation_source_checkpoint
+    from .paid_resource_admission import require_paid_resource_budget
+    from .website_paid_work_stop import refuse_paid_work_when_held
+    source_checkpoint = preparation_source_checkpoint(task_context)
+    if source_checkpoint is not None:
+        source_checkpoint("owned_atlas_spend_reservation")
+    refuse_paid_work_when_held()
+    require_paid_resource_budget(resource_class="evaluator_api")
+    return reuse_website_preparation_spend(admission=admission, binding_digest=binding_digest, provider="meta")
+
+
+def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_digest: str,
+                                    now: float | None = None, provider: str = "google") -> Any:
+    """The in-process grant of a retained reservation whose last dispatch provably bought nothing.
+
+    ``website_gemini_receipts`` calls this for an intent the provider refused before any work
+    (429/503) or one never dispatched, and ``reuse_website_sam_spend`` for a SAM run that stopped
+    before dispatching: the same WebApp hold, never released, pays the next dispatch under the
+    same binding. No new reservation is made. The admission's own validity (its binding,
     shape and ``expires_at_epoch``, which the WebApp sets to the grant's window) raises
     ``RetainedAdmissionUnusable``; the account and budget checks that run again raise as they
     always do (a money wait).
@@ -225,7 +246,8 @@ def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_dig
 
     from .paid_resource_admission import require_paid_resource_admission
     expires = admission.get("expires_at_epoch")
-    if (admission.get("allocation_binding_digest") != binding_digest or admission.get("provider") != "google"
+    if (admission.get("allocation_binding_digest") != binding_digest or provider not in {"google", "meta"}
+            or admission.get("provider") != provider
             or admission.get("resource_class") != "evaluator_api" or admission.get("status") != "admitted"
             or admission.get("schema_version") != "paid_lane_admission.v1" or admission.get("blockers") not in ([], None)
             or isinstance(expires, bool) or not isinstance(expires, (int, float))

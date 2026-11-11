@@ -271,11 +271,14 @@ def cold_job(tmp_path, monkeypatch):
     pointer["pointer_digest"] = canonical_digest(pointer, digest_field="pointer_digest")
     (launch.parent / f"{launch.name}{POINTER_SUFFIX}").write_text(json.dumps(pointer))
     monkeypatch.setattr(on_job, "job_source", lambda root, site: ({"source_launch_root": str(launch)}, tmp_path))
+    consent = []  # The privacy read every restore makes first; this job's site has not withdrawn.
+    monkeypatch.setattr(on_job, "current_consent", lambda site, request, capture: consent.append(site) or ({}, {}))
 
     def materialize(*, reference, destination, maximum_size_bytes):
         destination.write_bytes(archive.read_bytes())
         return {}
-    return {"launch": launch, "materializer": materialize, "queue": tmp_path / "queue", "packets": tmp_path}
+    return {"launch": launch, "materializer": materialize, "queue": tmp_path / "queue", "packets": tmp_path,
+            "consent": consent, "archive": archive}
 
 
 def test_a_cold_launch_run_is_restored_after_its_disk_peak_is_reserved(cold_job):
@@ -313,6 +316,157 @@ def test_no_disk_room_refuses_and_restores_nothing(cold_job):
     assert receipt["status"] == "refused" and receipt["reason"] == NO_ROOM
     assert receipt["disk_refusal"] == "control_plane_disk_budget_insufficient"
     assert not cold_job["launch"].exists()
+
+
+def _reserve_ok(reserved):
+    class Reservation:
+        def release(self):
+            reserved.append("released")
+
+    def reserve(role, **kwargs):
+        reserved.append(role)
+        return Reservation()
+    return reserve
+
+
+@pytest.mark.parametrize(("state", "reason"), [("withdrawn", "job_test_site_withdrawn"),
+                                               ("unknown", "job_test_site_withdrawal_unknown")])
+def test_a_withdrawn_site_s_launch_run_is_never_restored(cold_job, monkeypatch, state, reason):
+    """Review finding 2 (privacy): refused as a job test is, before any byte is fetched, with its receipt."""
+    from blueprint_pipeline import beta_policy_screening_on_job as on_job
+    from blueprint_pipeline import screening_site_withdrawal
+    from blueprint_pipeline.screening_launch_run_restore import restore_launch_run
+
+    monkeypatch.undo()  # the real consent read, so the real withdrawal check decides
+    launch = cold_job["launch"]
+    monkeypatch.setattr(on_job, "job_source", lambda root, site: ({"source_launch_root": str(launch)}, launch.parent))
+    monkeypatch.setattr(screening_site_withdrawal, "site_withdrawal_state", lambda site_id: state)
+    fetched, reserved = [], []
+
+    def materialize(**kwargs):
+        fetched.append(kwargs)
+    receipt = restore_launch_run(site_id="site-job1", request_id="req-w", packet_queue_root=cold_job["packets"],
+                                 queue_root=cold_job["queue"], materializer=materialize,
+                                 reserve=_reserve_ok(reserved))
+    assert receipt["status"] == "refused" and receipt["reason"] == reason
+    assert fetched == [] and reserved == [] and not launch.exists()
+    assert json.loads((cold_job["queue"] / "launch_run_restores" / "req-w.json").read_text()) == receipt
+
+
+def test_a_revoked_consent_refuses_the_restore(cold_job, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_on_job as on_job
+    from blueprint_pipeline.screening_launch_run_restore import restore_launch_run
+
+    def revoked(site, request, capture):
+        raise ValueError("beta_screening_current_capture_consent_required")
+    monkeypatch.setattr(on_job, "current_consent", revoked)
+    receipt = restore_launch_run(site_id="site-job1", request_id="req-c", packet_queue_root=cold_job["packets"],
+                                 queue_root=cold_job["queue"], materializer=cold_job["materializer"],
+                                 reserve=_reserve_ok([]))
+    assert receipt["status"] == "refused" and receipt["reason"] == "beta_screening_current_capture_consent_required"
+    assert not cold_job["launch"].exists()
+
+
+@pytest.mark.parametrize("fault", ["pointer_not_json", "pointer_members", "download", "digest", "unsealed"])
+def test_every_restore_failure_has_a_typed_reason_and_a_receipt(cold_job, fault):
+    """Review finding 4: a bad pointer, a download error or a digest mismatch each name their reason;
+    the reservation is released and nothing is left half written."""
+    from blueprint_pipeline.control_plane_evidence_offload import POINTER_SUFFIX
+    from blueprint_pipeline.screening_launch_run_restore import (
+        DOWNLOAD_FAILED, POINTER_INVALID, restore_launch_run,
+    )
+
+    launch = cold_job["launch"]
+    pointer_path = launch.parent / f"{launch.name}{POINTER_SUFFIX}"
+    materializer = cold_job["materializer"]
+    if fault == "pointer_not_json":
+        pointer_path.write_text("{not json")
+    elif fault == "pointer_members":
+        pointer = json.loads(pointer_path.read_text())
+        pointer_path.write_text(json.dumps({**pointer, "members": [{"relative_path": "x", "size_bytes": "big"}]}))
+    elif fault == "unsealed":
+        pointer = json.loads(pointer_path.read_text())
+        pointer_path.write_text(json.dumps({**pointer, "uri": "s3://bucket/other.tar"}))
+    elif fault == "download":
+        def materializer(**kwargs):
+            raise ConnectionResetError("object store dropped the read")
+    else:
+        def materializer(*, reference, destination, maximum_size_bytes):
+            destination.write_bytes(cold_job["archive"].read_bytes()[:-1] + b"\x01")
+    reserved = []
+    receipt = restore_launch_run(site_id="site-job1", request_id="req-f", packet_queue_root=cold_job["packets"],
+                                 queue_root=cold_job["queue"], materializer=materializer,
+                                 reserve=_reserve_ok(reserved))
+    expected = {"pointer_not_json": POINTER_INVALID, "pointer_members": POINTER_INVALID,
+                "download": DOWNLOAD_FAILED, "digest": "control_plane_evidence_restore_digest_mismatch",
+                "unsealed": "control_plane_evidence_restore_pointer_invalid"}[fault]
+    assert receipt["status"] == "refused" and receipt["reason"] == expected
+    assert json.loads((cold_job["queue"] / "launch_run_restores" / "req-f.json").read_text()) == receipt
+    assert not launch.exists() and not list(launch.parent.glob(".restore-*"))
+    assert reserved == ([] if fault.startswith("pointer_") else ["evidence_offload", "released"])
+
+
+def test_a_restored_run_is_a_live_tree_again_and_goes_cold_again_after_its_window(cold_job):
+    """Review finding 3: a restored run is counted where every live run is and, once its hot window has
+    passed since the restore, the offloader removes the local copy again without a second upload."""
+    import time
+
+    from blueprint_pipeline.control_plane_evidence_offload import (
+        EXECUTE_ACK, POINTER_SUFFIX, apply_evidence_offload, build_evidence_offload_manifest,
+    )
+    from blueprint_pipeline.screening_launch_run_restore import restore_launch_run
+
+    launch = cold_job["launch"]
+    receipt = restore_launch_run(site_id="site-job1", request_id="req-1", packet_queue_root=cold_job["packets"],
+                                 materializer=cold_job["materializer"], reserve=_reserve_ok([]))
+    assert receipt["status"] == "restored"
+    restored_at = time.time()
+    window = 2 * 86400
+
+    def manifest(now):
+        return build_evidence_offload_manifest(evidence_roots=[launch.parent], hot_window_seconds=window,
+                                               now=lambda: now, classifier=lambda *a, **k: None)
+    # Inside the window from the restore: a hot live tree, its bytes counted with the others.
+    hot = manifest(restored_at + 60)
+    assert hot["candidate_count"] == 0 and hot["retained_by_reason"]["hot"]["count"] == 1
+    assert "already_offloaded" not in hot["retained_by_reason"]
+    # After it: a candidate again, removed with no upload, the pointer kept.
+    cold = manifest(restored_at + window + 60)
+    assert [row["name"] for row in cold["candidates"]] == [launch.name]
+
+    def never(**kwargs):
+        raise AssertionError("a restored run is never uploaded again")
+    applied = apply_evidence_offload(cold, ack=EXECUTE_ACK, stream_publisher=never, publisher=never,
+                                     now=lambda: restored_at + window + 60)
+    assert applied["offloaded_count"] == 1 and applied["offloaded"][0]["transfer_mode"] == "already_archived"
+    assert not launch.exists() and (launch.parent / f"{launch.name}{POINTER_SUFFIX}").is_file()
+    # And it can be restored again from the same pointer.
+    again = restore_launch_run(site_id="site-job1", request_id="req-2", packet_queue_root=cold_job["packets"],
+                               materializer=cold_job["materializer"], reserve=_reserve_ok([]))
+    assert again["status"] == "restored"
+
+
+def test_a_restored_run_that_changed_is_kept(cold_job):
+    import time
+
+    from blueprint_pipeline.control_plane_evidence_offload import (
+        EXECUTE_ACK, apply_evidence_offload, build_evidence_offload_manifest,
+    )
+    from blueprint_pipeline.screening_launch_run_restore import restore_launch_run
+
+    launch = cold_job["launch"]
+    restore_launch_run(site_id="site-job1", request_id="req-1", packet_queue_root=cold_job["packets"],
+                       materializer=cold_job["materializer"], reserve=_reserve_ok([]))
+    later = time.time() + 3 * 86400
+    manifest = build_evidence_offload_manifest(evidence_roots=[launch.parent], hot_window_seconds=86400,
+                                               now=lambda: later, classifier=lambda *a, **k: None)
+    assert manifest["candidate_count"] == 1
+    receipt = launch / "launch_receipt.json"
+    receipt.write_bytes(receipt.read_bytes().replace(b"aa", b"bb"))  # same size, other bytes
+    applied = apply_evidence_offload(manifest, ack=EXECUTE_ACK, now=lambda: later)
+    assert applied["offloaded_count"] == 0 and applied["skipped"] == [
+        {"name": launch.name, "reason": "restored_tree_changed"}]
+    assert receipt.is_file()
 
 
 def test_a_job_whose_scene_workspace_is_retired_names_that_restore_first(tmp_path, monkeypatch):
