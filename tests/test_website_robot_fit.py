@@ -347,6 +347,22 @@ def test_mobile_bases_and_humanoids_are_never_cleared_for_access(tmp_path):
     assert _check(rows["humanoid"], "reach")["result"] == "unknown"
 
 
+def test_a_wheeled_humanoid_is_judged_like_a_mobile_base(tmp_path):
+    # No logic of its own: the same figures give the same checks as a mobile manipulator, with the
+    # published reach from a station, its own hand (no tool weight) and access not checked.
+    figures = {"max_reach_m": _reach(1.0), "max_base_speed_m_s": _figure(1.0, "m/s", "Base speed 1 m/s"),
+               "rated_payload_kg": _payload(2.05), "base_footprint_diameter_m": _figure(
+                   0.25, "m", "Footprint 250 mm", "250 mm = 0.25 m")}
+    catalog = sealed(_model("mobile", "mobile_manipulator", **figures), _model("wheeled", "wheeled_humanoid", **figures))
+    rows = _rows(_table(tmp_path, catalog, job=_job(weight="2 kg")))
+    assert rows["wheeled"]["body_type"] == "wheeled_humanoid"
+    assert rows["wheeled"]["checks"] == rows["mobile"]["checks"]
+    assert rows["wheeled"]["verdict"] == rows["mobile"]["verdict"] == "unknown"
+    assert [_check(rows["wheeled"], name)["result"] for name in ("stance", "reach", "access")] == [
+        "pass", "pass", "unknown"]
+    assert _check(rows["wheeled"], "payload")["values"]["end_effector"] == "own_hand"
+
+
 def test_a_fixed_arm_passes_stance_only_when_its_published_base_fits_the_station(tmp_path):
     rows = _rows(_table(tmp_path, validate_robot_spec_catalog(_catalog(
         _model("cobot"),

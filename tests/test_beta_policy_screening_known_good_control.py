@@ -649,3 +649,75 @@ def test_a_preferred_flag_is_validated(change):
     with pytest.raises(BetaPolicyScreeningPlanError):
         validate_screening_plan(value)
     assert not Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).is_valid(value)
+
+
+# ---- the scripted reference row's own $3.00 cap (owner approval 2026-11-11) --------------------------------
+
+def rerated(capabilities, candidate_id, *, rate, ttl):
+    """The binding of ``candidate_id`` at another hourly rate and hard TTL, re-sealed as planning seals it."""
+    capabilities = deepcopy(capabilities)
+    binding = capabilities["candidate_bindings"][candidate_id]
+    binding["execution_spec"].update(max_hourly_rate_usd=rate, hard_ttl_seconds=ttl)
+    binding["admission_digest"] = canonical_digest(binding["execution_spec"])
+    return capabilities
+
+
+def test_a_typical_job_now_plans_the_reference_row_at_three_dollars():
+    # Seven learned rows at $4.00: three fill $12 of the $15 plan, the rest are waitlisted, $3.00 is left.
+    catalog, capabilities, quotes = catalog_with_scripted(7, maximum="4.00", scripted_maximum="4.00")
+    capabilities = rerated(capabilities, "blueprint_scripted_test_arm", rate="0.80", ttl=14_400)
+    value = website_plan(catalog, capabilities, quotes)
+    *candidates, row = value["candidates"]
+    assert [item["status"] for item in candidates] == ["selected"] * 3 + ["waitlisted"] * 4
+    assert all(item["max_cost_usd"] == "4.00" for item in candidates)
+    assert row["status"] == "selected" and row["max_cost_usd"] == row["cost_quote"]["maximum_cost_usd"] == "3.00"
+    assert control.REFERENCE_CAP_USD == Decimal("3.00")
+    # $0.80/h x 4 h = $3.20 would not fit: the row's TTL is 3.75 h, so $0.80 x 3.75 h = $3.00.
+    assert row["execution_spec"]["hard_ttl_seconds"] == 13_500
+    assert row["admission_digest"] == canonical_digest(row["execution_spec"])
+    assert row["cost_quote"]["quote_digest"] == canonical_digest(row["cost_quote"], digest_field="quote_digest")
+    assert value["maximum_planned_cost_usd"] == "15.00"
+    # The learned rows keep their own $4.00 cap and TTL.
+    assert capabilities["candidate_bindings"][candidates[0]["candidate_id"]]["execution_spec"]["hard_ttl_seconds"] == 600
+    assert validate_screening_plan(value) == value
+    Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(value)
+
+
+def test_the_launch_check_accepts_the_capped_row(monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+
+    catalog, capabilities, quotes = catalog_with_scripted(7, maximum="4.00", scripted_maximum="4.00")
+    capabilities = rerated(capabilities, "blueprint_scripted_test_arm", rate="0.80", ttl=14_400)
+    value = website_plan(catalog, capabilities, quotes)
+    row = value["candidates"][-1]
+    row = deepcopy(row)
+    row["cost_quote"]["valid_until"] = "2999-01-01T00:00:00Z"
+    row["cost_quote"]["quote_digest"] = canonical_digest(row["cost_quote"], digest_field="quote_digest")
+    launch._check_quote(value, row)
+
+
+@pytest.mark.parametrize("case", ["leftover_short", "waiting_row_fundable", "ttl_too_short"])
+def test_the_capped_row_is_still_refused_when_the_money_or_the_ttl_does_not_hold(case):
+    catalog, capabilities, quotes = catalog_with_scripted(7, maximum="4.00", scripted_maximum="4.00")
+    capabilities = rerated(capabilities, "blueprint_scripted_test_arm", rate="0.80", ttl=14_400)
+    learned = [row["candidate_id"] for row in catalog["candidates"] if row["policy"]["kind"] != "scripted"]
+    if case == "leftover_short":
+        # The site has $14.50 left: $2.50 after the three selected rows, under the $3.00 cap.
+        value = website_plan(catalog, capabilities, quotes, site_remaining_usd="14.50")
+        row = value["candidates"][-1]
+    elif case == "waiting_row_fundable":
+        plan_value = {"budget_usd": "15.00", "candidates": [
+            {"candidate_id": learned[0], "status": "selected", "blockers": [], "max_cost_usd": "4.00"},
+            {"candidate_id": learned[1], "status": "waitlisted", "blockers": [WAITLIST_BLOCKER], "max_cost_usd": "2.00"}]}
+        row = control.plan_control_row(plan_value, catalog, scene(), capabilities=capabilities, cost_quotes=quotes,
+                                       site_remaining_usd=None, now=NOW)
+    else:
+        # At $10/h the $3.00 cap holds only 18 minutes, under the 30-minute shortest TTL.
+        capabilities = rerated(capabilities, "blueprint_scripted_test_arm", rate="10.00", ttl=14_400)
+        row = website_plan(catalog, capabilities, quotes)["candidates"][-1]
+    assert row["status"] == "unavailable" and row["known_good_control"]["unavailable"] == "budget"
+
+
+def test_a_four_dollar_row_planned_before_the_cap_still_validates():
+    older = with_control(queue_plan(count=2), cost="4.00")
+    assert older["candidates"][-1]["max_cost_usd"] == "4.00" and validate_screening_plan(deepcopy(older)) == older

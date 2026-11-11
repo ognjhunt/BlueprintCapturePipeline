@@ -272,7 +272,8 @@ station of its own in the scene and stands at the scene's robot station,
 the code `scene_packet_station`. Its money rule is now the one its docstring
 promised: it runs only when its cap fits in what the selected rows leave of the
 plan budget and the site's allowance, and that leftover could not pay for any
-row still waiting for money. No cap, limit or budget value changed. The site
+row still waiting for money. Its own cap is $3.00 (step 4); no other cap,
+limit or budget value changed. The site
 sees "N of M tries" as `episodes_succeeded` of `episodes_scored` on the row
 `blueprint_scripted_<body>`.
 
@@ -286,21 +287,28 @@ present. So the first new rigid job after a deploy can plan this row.
 
 1. *Host operation:* merge, then deploy in the daily window (D-08). Nothing to
    prepare for the UR10e: it was imported by batch `public-robot-imports-20261031-11`.
-2. *Owner instruction, if the UR10e itself is wanted:* the row takes the first
-   fitting model in the fit table's order, and the table lists the UR5e before
-   the UR10e. When both fit equally, the UR5e runs. The robot the WebApp names
-   is not passed to the screening planner today, so this change cannot prefer it.
+2. *WebApp change:* the row prefers the robots the website names. The WebApp's
+   non-creating Atlas configuration read (the one that already returns
+   `job_ceiling` to screening planning) may add `preferred_robot_model_ids`: up
+   to 3 distinct spec-catalog model ids, the answer's pick first, then its
+   runner-up. Among fitting models (`fits` and `fits_spec` together) a
+   preferred one goes first; it never beats a fitting model with an `unknown`
+   one and never picks `doesnt_fit`. The marker records `preferred: true|false`.
+   An unusable value is ignored and logged. Until the WebApp sends the field,
+   the fit table's order applies, and the table lists the UR5e before the UR10e.
 3. *Host operation (none to start):* a new rigid pick-and-place website job.
    Its scene handoff must carry a robot fit table bound to the job; capture-447's
    handoff has none, so a re-plan of that job gets no fallback body.
-4. *Money:* the row is quoted at the per-candidate cap, $4.00
-   (`DEFAULT_CANDIDATE_CAP_USD`; resource bound $0.80/h for 4 h), and is
-   bounded by the $15 plan budget, the $30 site limit, the job's ceiling and the
-   $200 account limit. With today's catalog a rigid job selects three learned
-   policies at $4.00 each, leaving $3.00, so the row is listed
-   `unavailable:budget`. Running it needs an owner money decision: fewer learned
-   policies on that job, or a different cap or budget. On 2026-11-11 the month
-   stood at $147.16 of $200, forecast to reach the limit on 2026-11-15.
+4. *Money:* the scripted body is quoted at the per-candidate cap, $4.00
+   (`DEFAULT_CANDIDATE_CAP_USD`; $0.80/h for 4 h). The reference row lowers that
+   to its own cap, $3.00 (`REFERENCE_CAP_USD`, owner approval 2026-11-11), and
+   shortens its hard TTL to 3.75 h so $0.80/h x 3.75 h = $3.00 still fits. That
+   is the $3.00 a typical rigid job leaves after three learned policies at
+   $4.00 of the $15 plan, so the row is planned there. It is still refused when
+   less is left or the leftover could pay for a waiting row. No other cap,
+   budget or limit changed. Whether 3.75 h is enough for three scripted tries
+   has never been measured. On 2026-11-11 the month stood at $147.16 of $200,
+   forecast to reach the limit on 2026-11-15.
 5. What one scripted run costs and how long it takes has never been measured.
 
 Not needed for the UR10e, but for any new body: an import needs 24 GiB free on

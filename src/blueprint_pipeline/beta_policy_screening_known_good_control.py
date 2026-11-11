@@ -18,6 +18,8 @@ What the row is, and is not:
 - It never gates. Pass, fail, unavailable or interrupted, the candidates run and are reported as
   before; the outcome is a typed flag on the control row's own ``setup_quality_flags``
   (``control_flags``). A failed control alerts the owner once (``alert_failed_controls``).
+- Its cap is its body's quoted hard cap, lowered to ``REFERENCE_CAP_USD`` ($3.00, owner,
+  2026-11-11) when higher, with the row's hard TTL shortened so hourly rate x TTL still fits.
 - It never displaces a candidate. It is planned after every candidate row, and funded only when
   its quoted cap fits in what the selected rows leave of the plan budget and of the site's
   remaining allowance, and that leftover could not fund the cheapest waitlisted or money-deferred
@@ -68,6 +70,12 @@ CONTROL_FIELD = "known_good_control"
 SCHEMA = "beta_screening_known_good_control.v1"
 EPISODES = 3
 PASS_AT_SUCCESSES = 1
+#: The scripted reference row's cap (owner approval, 2026-11-11): its quote is lowered to this when
+#: higher, so it fits the $3.00 a typical rigid job leaves after three learned policies at $4.00.
+#: Only this row; no learned-policy cap, plan budget, site limit, job ceiling or account limit.
+REFERENCE_CAP_USD = Decimal("3.00")
+#: The shortest hard TTL a screening run takes (``beta_policy_screening_launch._check_quote``).
+MIN_HARD_TTL_SECONDS = 1800
 DISPLAY_NAME = "Blueprint scripted reference check"
 #: The row's id when no scripted profile could be matched: no catalog row stands behind it.
 UNAVAILABLE_ID = "blueprint_known_good_control"
@@ -207,7 +215,8 @@ def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene:
                      site_remaining_usd: str | None, now: Any) -> dict[str, Any]:
     """The control row a new website campaign's plan appends after every candidate row."""
     from .beta_policy_screening_plan import (
-        WAITLIST_BLOCKER, WAITLISTED, BetaPolicyScreeningPlanError, JOB_CEILING_DEFERRED, _candidate_blockers,
+        _HOSTED_COST_FIELDS, WAITLIST_BLOCKER, WAITLISTED, BetaPolicyScreeningPlanError, JOB_CEILING_DEFERRED,
+        _candidate_blockers,
         _scene, execution_cost_floor, money, validate_cost_quote,
     )
     from .task_family_policy_execution import FAMILY_BACKEND
@@ -260,8 +269,20 @@ def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene:
                                     now=now)
     except BetaPolicyScreeningPlanError:
         return _unavailable("budget", match)
-    # The quote is the run's hard cap (hourly rate x hard TTL), whatever its episode count: the same
-    # cap re-sealed for this row's episodes, never lowered or raised.
+    # The quote is the run's hard cap (hourly rate x hard TTL), whatever its episode count, re-sealed
+    # for this row's episodes. Above REFERENCE_CAP_USD it is lowered to that cap, and the row's hard TTL
+    # shortened (whole seconds, rounded down) so the rate times the TTL still fits under it; never raised.
+    admission = binding["admission_digest"]
+    if money(quote["maximum_cost_usd"]) > REFERENCE_CAP_USD:
+        ttl = min(spec["hard_ttl_seconds"],
+                  int(REFERENCE_CAP_USD * 3600 / money(spec["max_hourly_rate_usd"])))
+        if ttl < MIN_HARD_TTL_SECONDS or _HOSTED_COST_FIELDS & set(spec):
+            return _unavailable("budget", match)
+        spec = {**spec, "hard_ttl_seconds": ttl}
+        admission = canonical_digest(spec)
+        quote = {**quote, "quote_id": str(quote["quote_id"]) + "-reference-cap",
+                 "price_source": str(quote["price_source"]) + ";capped_for_scripted_reference_row",
+                 "maximum_cost_usd": f"{REFERENCE_CAP_USD:.2f}"}
     quote = {**quote, "episode_count": EPISODES, "quote_digest": ""}
     quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
     cap = money(quote["maximum_cost_usd"])
@@ -278,7 +299,7 @@ def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene:
         return _unavailable("budget", match)
     return {"candidate_id": match["candidate_id"], "display_name": DISPLAY_NAME,
             "configuration_digest": match["configuration_digest"], "status": "selected", "blockers": [],
-            "admission_digest": binding["admission_digest"], "execution_spec": deepcopy(spec),
+            "admission_digest": admission, "execution_spec": deepcopy(spec),
             "cost_quote": quote, "max_cost_usd": quote["maximum_cost_usd"], "episode_count": EPISODES,
             "scenario_cells": control_cells(scene), "execution_evidence_kind": SCRIPTED,
             CONTROL_FIELD: {**_MARKER, **stands_for}}
@@ -497,6 +518,6 @@ def alert_failed_controls(root: Path, failed: Iterable[str], *, webhook_url: str
 
 __all__ = ["ALERT_CODE", "CONTROL_FIELD", "DISPLAY_NAME", "EPISODES", "FAILED", "FIT_CAPABILITY", "INTERRUPTED",
            "PACKET_STATION_FLAG", "PASSED", "PREFERENCE_CAPABILITY", "PREFERENCE_INVALID", "STATION_CAPABILITY",
-           "PASS_AT_SUCCESSES", "PENDING", "REASONS", "REUSED_BLOCKER", "UNAVAILABLE", "alert_failed_controls",
+           "PASS_AT_SUCCESSES", "PENDING", "REFERENCE_CAP_USD", "REASONS", "REUSED_BLOCKER", "UNAVAILABLE", "alert_failed_controls",
            "append_control_row", "control_cells", "control_flags", "control_gate", "control_outcome",
            "failed_controls", "is_control", "plan_control_row", "preferred_model_ids", "reuse_key", "validate_control_row"]
