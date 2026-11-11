@@ -61,14 +61,17 @@ def parser_timeout_seconds(text: str) -> int:
 
 #: HTTP statuses the provider answers when it refused a request without processing it.
 #: A refusal it answered is a definite outcome, unlike a timeout or a dropped connection.
-#: 408 (request timeout), 425 (too early), 429 (rate limited) and 503 (unavailable) refuse
-#: before any work; the job retries them later. Any other answered error (a 500, 502, 504...)
-#: may have been processed: it is counted like an unanswered dispatch
-#: (``count_unanswered_dispatches``), and its one resend gets its own reservation.
-REFUSAL_STATUSES = frozenset({400, 401, 403, 404, 408, 409, 413, 415, 422, 425, 429, 503})
+#: 429 (rate limited) and 503 (unavailable) refuse before any work; the job retries them later.
+REFUSAL_STATUSES = frozenset({400, 401, 403, 404, 409, 413, 415, 422, 429, 503})
+#: For an inline request only (nothing stored at the provider), 408 (request timeout) and 425 (too
+#: early) also refuse before any work, and any other answered error (a 500, 502, 504...) may have
+#: been processed: it is counted like an unanswered dispatch (``count_unanswered_dispatches``),
+#: and its one resend gets its own reservation. A request naming an uploaded file keeps the rules
+#: above exactly, since resending it would name a file its run has already deleted.
+INLINE_REFUSAL_STATUSES = REFUSAL_STATUSES | {408, 425}
 
 
-def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
+def retire_refused_dispatches(root: Path, pending: Sequence[int], *, inline: bool = False) -> int:
     """Archive pending prompts whose last dispatch the provider refused; return this binding's refusal count.
 
     The provider answered each with a refusal status (``failure-<i>.json``, written only from its
@@ -89,7 +92,7 @@ def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
             status = json.loads(failure.read_text()).get("http_status")
         except ValueError:
             continue
-        if isinstance(status, bool) or status not in REFUSAL_STATUSES:
+        if isinstance(status, bool) or status not in (INLINE_REFUSAL_STATUSES if inline else REFUSAL_STATUSES):
             continue
         count += 1
         target = archive / f"attempt-{count}"
@@ -127,7 +130,7 @@ def _counted_as_spent(root: Path) -> dict[int, tuple[Path, dict[str, Any]]]:
 
 
 def count_unanswered_dispatches(root: Path, pending: Sequence[int], *, binding_digest: str,
-                                limit: int | None = None) -> dict[int, dict[str, Any]]:
+                                limit: int | None = None, inline: bool = False) -> dict[int, dict[str, Any]]:
     """Count each pending prompt's unanswered dispatch as spent, once per prompt; return the resend marks.
 
     An intent with no response and no recorded answer is what a crashed attempt leaves (or a
@@ -150,6 +153,8 @@ def count_unanswered_dispatches(root: Path, pending: Sequence[int], *, binding_d
         if not intent.is_file() or intent.is_symlink() or failure.is_symlink():
             continue
         answered_status = None
+        if failure.exists() and not inline:
+            continue  # a request naming an uploaded file: any answered error waits, as it always has
         if failure.exists():
             # An answered error the provider may have processed (a 500, 502, 504...) is counted like
             # no answer. A refusal that did no work was retired before this (``retire_refused_dispatches``).
@@ -158,7 +163,7 @@ def count_unanswered_dispatches(root: Path, pending: Sequence[int], *, binding_d
             except ValueError:
                 continue
             if isinstance(answered_status, bool) or not isinstance(answered_status, int) \
-                    or answered_status in REFUSAL_STATUSES:
+                    or answered_status in INLINE_REFUSAL_STATUSES:
                 continue
         raw = intent.read_bytes()
         digest = "sha256:" + hashlib.sha256(raw).hexdigest()
@@ -627,21 +632,59 @@ def _clip_encoding_name(root: Path, clip_digest: str, current: Mapping[str, Any]
     return str(record["encoding"]) if record.get("clip_digest") == clip_digest else LEGACY_LOSSLESS_ENCODING
 
 
+SET_ASIDE_RECORD = "superseded.json"
+
+
+def _recorded_rebuys(root: Path) -> list[dict[str, Any]]:
+    """Each re-buy this binding recorded, oldest first (a record is written before any answer moves)."""
+    archive = root / SUPERSEDED_CLIP_ARCHIVE
+    rows = []
+    for path in archive.glob(f"attempt-*/{SET_ASIDE_RECORD}") if archive.is_dir() else ():
+        record = json.loads(path.read_text())
+        rows.append((int(path.parent.name.removeprefix("attempt-")), {**record, "directory": str(path.parent)}))
+    return [record for _, record in sorted(rows, key=lambda row: row[0])]
+
+
+def _move_set_aside(root: Path, record: Mapping[str, Any]) -> None:
+    target = Path(record["directory"])
+    earlier = set(record["earlier_clip_digests"])
+    for index in record["prompt_indices"]:
+        response = root / f"response-{index}.json"
+        if response.is_file() and json.loads(response.read_text()).get("clip_digest") not in earlier:
+            continue  # bought again with the new clip since: it stays
+        for name in (f"response-{index}.json", f"parsed-response-{index}.json", f"intent-{index}.json"):
+            if (root / name).is_file() and not (target / name).exists():
+                os.replace(root / name, target / name)
+    if (root / "tracks.json").is_file() and not (target / "tracks.json").exists():
+        os.replace(root / "tracks.json", target / "tracks.json")
+
+
+def _finish_interrupted_set_asides(root: Path) -> None:
+    """A run stopped between the record and its last move left answers in place: move them now."""
+    for record in _recorded_rebuys(root):
+        _move_set_aside(root, record)
+
+
 def _set_aside_answers_for_another_clip(root: Path, answered: Sequence[int], *, clip_digest: str) -> int:
-    """Move answers bought with an earlier clip aside (with their intents and parsed tracks); their count."""
+    """Set aside answers bought with an earlier clip (with their intents and parsed tracks); their count.
+
+    The record goes first, fsynced, so every later run derives the re-buy from it, then each file
+    moves. A run stopped anywhere in between is finished by the next (``_finish_interrupted_set_asides``).
+    """
     archive = root / SUPERSEDED_CLIP_ARCHIVE
     count = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
     target = archive / f"attempt-{count + 1}"
     target.mkdir(parents=True)
     old = {json.loads((root / f"response-{index}.json").read_text()).get("clip_digest") for index in answered}
-    for index in answered:
-        for name in (f"response-{index}.json", f"parsed-response-{index}.json", f"intent-{index}.json"):
-            if (root / name).is_file():
-                os.replace(root / name, target / name)
-    if (root / "tracks.json").is_file():
-        os.replace(root / "tracks.json", target / "tracks.json")
-    write_json(target / "superseded.json", {"reason": "clip_changed", "earlier_clip_digests": sorted(map(str, old)),
-                                            "clip_digest": clip_digest, "prompt_indices": list(answered)})
+    record = {"reason": "clip_changed", "earlier_clip_digests": sorted(map(str, old)), "clip_digest": clip_digest,
+              "prompt_indices": list(answered)}
+    temporary = target / (SET_ASIDE_RECORD + ".tmp")
+    with temporary.open("w") as stream:
+        json.dump(record, stream, indent=2, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, target / SET_ASIDE_RECORD)
+    _move_set_aside(root, {**record, "directory": str(target)})
     return count + 1
 
 
@@ -674,7 +717,16 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     root = output_root / digest[7:]
     pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
     retained = bool(prompts) and not pending
-    refused = retire_refused_dispatches(root, pending) if pending and not require_retained_video else 0
+    inline = video_artifact is None and len(frame_registry) > 1
+    # Finish a set-aside a stopped run began, before anything else reads which prompts are answered.
+    if inline and not require_retained_video:
+        _finish_interrupted_set_asides(root)
+        pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
+        retained = bool(prompts) and not pending
+    # The newer answer rules (``INLINE_REFUSAL_STATUSES``) cover every request that names no upload.
+    sent_inline = video_artifact is None
+    refused = (retire_refused_dispatches(root, pending, inline=sent_inline)
+               if pending and not require_retained_video else 0)
     image_request = len(frame_registry) == 1
     unit_cost = 0.0025 if image_request else max(50, len(frame_registry)) * PRICE_PER_FRAME_USD
     room = (None if maximum_cost_usd is None
@@ -682,7 +734,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     # The resend marks of every pending prompt whose first dispatch got no answer: that one is
     # counted as spent (its reservation stays held), and this dispatch is its single resend.
     resends = ({index: mark for index, mark in count_unanswered_dispatches(
-                    root, pending, binding_digest=digest, limit=room).items() if index in pending}
+                    root, pending, binding_digest=digest, limit=room, inline=sent_inline).items() if index in pending}
                if pending and not require_retained_video else {})
     if require_retained_video:
         required = [root / name for name in ("binding.json", "tracks.json")]
@@ -698,11 +750,21 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     # prompts rather than redispatching the already reserved parent binding.
     # A resend is never the original grant: the binding names each intent it resends, so the
     # website reserves it afresh beside the held first reservation, never "already_reserved".
-    admission_digest = (digest if len(pending) == len(prompts) and not refused and not resends else canonical_digest({
-        "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
-        "pending_prompt_indices": pending, **({"refused_dispatches": refused} if refused else {}),
-        **({"unanswered_resends": [{"prompt_index": index, **resends[index]} for index in sorted(resends)]}
-           if resends else {})}))
+    def admission_for(pending: Sequence[int]) -> str:
+        # Every re-buy this binding recorded (``superseded-clip``) is part of the digest on every later
+        # run, so a re-buy whose reservation was refused, or whose worker died, is never reserved
+        # under the original binding again ("already_reserved"), nor bought twice under one hold.
+        rebuys = _recorded_rebuys(root) if inline else []
+        if len(pending) == len(prompts) and not refused and not resends and not rebuys:
+            return digest
+        return canonical_digest({
+            "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
+            "pending_prompt_indices": list(pending), **({"refused_dispatches": refused} if refused else {}),
+            **({"unanswered_resends": [{"prompt_index": index, **resends[index]} for index in sorted(resends)]}
+               if resends else {}),
+            **({"clip_rebuy": len(rebuys), "clip_digest": rebuys[-1]["clip_digest"]} if rebuys else {})})
+
+    admission_digest = admission_for(pending)
     if not prompts or len({p["prompt_id"] for p in prompts}) != len(prompts):
         raise ValueError("meta_sam_prompts_invalid")
     for prompt in prompts:
@@ -713,7 +775,6 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
         root.mkdir(parents=True, exist_ok=True)
         write_json(root / "binding.json", binding)
     clip_encoding, clip_digest = None, None
-    inline = video_artifact is None and not image_request
     answered_digests = {str(json.loads((root / f"response-{index}.json").read_text()).get("clip_digest"))
                         for index in range(len(prompts)) if index not in pending} if inline else set()
     if inline and retained and len(answered_digests) == 1:
@@ -748,15 +809,10 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
         if admission_grant is not None:
             # A caller's own grant names the request it was given for, not this new one.
             raise ValueError("meta_sam_caller_grant_covers_another_clip")
-        rebuy = _set_aside_answers_for_another_clip(root, answered, clip_digest=clip_digest)
+        _set_aside_answers_for_another_clip(root, answered, clip_digest=clip_digest)
         pending, retained = list(range(len(prompts))), False
         token = token or meta_api_key()
-        admission_digest = canonical_digest({
-            "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
-            "pending_prompt_indices": pending, "clip_rebuy": rebuy, "clip_digest": clip_digest,
-            **({"refused_dispatches": refused} if refused else {}),
-            **({"unanswered_resends": [{"prompt_index": index, **resends[index]} for index in sorted(resends)]}
-               if resends else {})})
+        admission_digest = admission_for(pending)
     if any((root / f"intent-{i}.json").exists() for i in pending):
         raise ValueError("meta_sam_submission_requires_reconciliation")
     for index in range(len(prompts)):
