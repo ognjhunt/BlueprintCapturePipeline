@@ -92,6 +92,8 @@ def validate_entry(entry: Any, *, candidate_id: str) -> dict[str, Any]:
 
 def registry_entries(profile: Mapping[str, Any]) -> dict[str, Any]:
     rows = profile.get("screening_candidates") or {}
+    if not isinstance(rows, Mapping):
+        return {}
     return {key: row[FIELD] for key, row in rows.items() if isinstance(row, Mapping) and FIELD in row}
 
 

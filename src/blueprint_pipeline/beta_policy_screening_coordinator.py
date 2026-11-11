@@ -60,6 +60,7 @@ from .beta_policy_screening_failure_scope import (
 )
 from .beta_policy_screening_settlement import settled_cost
 from .beta_policy_screening_known_good_control import CONTROL_FIELD, control_gate, is_control
+from .beta_policy_screening_standing_test import funding_fields, is_standing
 from .decision_evidence_contracts import canonical_digest
 from .job_retry_policy import hard_stop_kind, refusal_retry_delay
 from .policy_execution_evidence import SCRIPTED
@@ -239,12 +240,11 @@ def _read(path: Path) -> dict[str, Any]:
 def _budget(ledger: Mapping[str, Any], site_id: str, *, campaign_id: str | None = None) -> dict[str, Any]:
     """What the site (or one campaign) holds, as funding counts it.
 
-    A committed attempt counts at its recorded settlement, else at its whole
-    maximum; a reserved one at its maximum.
-    """
+    A committed attempt counts at its recorded settlement, else at its whole maximum; a reserved one at
+    its maximum. A site's figure leaves out standing tests (``beta_policy_screening_standing_test``)."""
     reserved, spent = Decimal(0), Decimal(0)
     for key, campaign in ledger["campaigns"].items():
-        if campaign["site_id"] != site_id or campaign_id is not None and key != campaign_id:
+        if campaign["site_id"] != site_id or (key != campaign_id if campaign_id is not None else is_standing(campaign)):
             continue
         for row in campaign["candidates"].values():
             attempts = [*row.get("attempt_history", []), *([row["attempt"]] if row.get("attempt") else [])]
@@ -375,7 +375,7 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
         ledger["campaigns"][campaign_id] = {
             "plan_digest": value["plan_digest"], "site_id": value["site_id"],
             "revision": 1, "created_at": timestamp, "updated_at": timestamp,
-            "published_revision": 0, "published_digest": None,
+            "published_revision": 0, "published_digest": None, **funding_fields(value),
             "candidates": {candidate["candidate_id"]: _initial_state(candidate) for candidate in value["candidates"]},
         }
         _save(root, ledger)
@@ -1207,7 +1207,7 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
             blocker = QUOTE_EXPIRED_BLOCKER
         elif cap <= 0:
             blocker = "beta_screening_cost_bound_invalid"
-        elif (_amount(site["committed_upper_bound_usd"]) + cap > SITE_LIMIT
+        elif (not is_standing(state) and _amount(site["committed_upper_bound_usd"]) + cap > SITE_LIMIT
               or _amount(campaign["committed_upper_bound_usd"]) + cap > _amount(plan["budget_usd"])):
             # Another attempt holds the money it needs. That attempt may still
             # release it before spend, so wait for the refill to decide. The

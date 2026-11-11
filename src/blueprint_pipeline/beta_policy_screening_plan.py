@@ -17,7 +17,7 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from copy import deepcopy
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import PurePosixPath
@@ -25,7 +25,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .beta_policy_candidate_catalog import CANDIDATE_ID_PATTERN, DIGEST_PATTERN, ID_PATTERN, validate_catalog
-from .beta_policy_screening_known_good_control import CONTROL_FIELD, append_control_row, validate_control_row
+from .beta_policy_screening_known_good_control import (
+    CONTROL_FIELD, MIN_HARD_TTL_SECONDS, append_control_row, validate_control_row,
+)
 from .decision_evidence_contracts import canonical_digest
 from .team_evaluation_plan import scored_cells
 from .website_candidate_feasibility import REACH_RANK_FIELDS, REACH_TIERS, reach_rank
@@ -49,6 +51,8 @@ PLAN_SCHEMA_VERSION = "beta_policy_screening_plan.v1"
 #: (``beta_policy_screening_g1.FELL_THROUGH_REASON``), so G1 results made before are not counted.
 SCREENING_HARNESS_REVISION = 2
 HARNESS_REVISION_FIELD = "screening_harness_revision"
+#: A plan funded from the standing-test allowance (``beta_policy_screening_standing_test``), never the site's.
+STANDING_TEST_FIELD = "standing_test"
 #: Results on each backend made under a lower harness revision are not counted (see above).
 RESULTS_NOT_COUNTED_BELOW = {"robolab.v1": 1, "native_g1.v1": 2}
 EXECUTION_SCHEMA_VERSION = "blueprint.beta_policy_screening_execution.v1"
@@ -567,6 +571,31 @@ def _site_fitted_quote(quote: Mapping[str, Any], available: Decimal, *, floor: D
     return value
 
 
+def fit_run_to_cap(spec: Mapping[str, Any], quote: Mapping[str, Any], cap: Decimal, *, reason: str,
+                   suffix: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """A local run whose quote is above ``cap``, shortened to fit it: ``(spec, quote)``, or ``None``.
+
+    The rule the scripted reference row uses for its $3.00 (``REFERENCE_CAP_USD``): the hard TTL is
+    shortened (whole seconds, rounded down) to the longest that keeps half the original quote's headroom
+    above hourly rate x TTL inside ``cap``, and the quote is re-sealed at ``cap`` (``_site_fitted_quote``).
+    Never raised; a hosted run (its fee is not time-bound) or one that would run under
+    ``MIN_HARD_TTL_SECONDS`` does not fit. A quote already within ``cap`` is returned unchanged.
+    """
+    if money(quote["maximum_cost_usd"]) <= cap:
+        return dict(spec), dict(quote)
+    if _HOSTED_COST_FIELDS & set(spec):
+        return None
+    original_floor = execution_cost_floor(spec)
+    bound = cap - fitted_headroom_usd(quote, floor=original_floor)
+    ttl = min(spec["hard_ttl_seconds"], int(bound * 3600 / money(spec["max_hourly_rate_usd"]))) if bound > 0 else 0
+    if ttl < MIN_HARD_TTL_SECONDS:
+        return None
+    fitted_spec = {**dict(spec), "hard_ttl_seconds": ttl}
+    fitted = _site_fitted_quote(quote, cap, floor=execution_cost_floor(fitted_spec), original_floor=original_floor,
+                                reason=reason, suffix=suffix)
+    return None if fitted is None else (fitted_spec, fitted)
+
+
 def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *, campaign_id: str,
                          candidate_ids: Sequence[str] | None = None, budget_usd: str = str(CAMPAIGN_BUDGET_USD),
                          episodes_per_candidate: int = DEFAULT_EPISODES,
@@ -574,8 +603,15 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                          cost_quotes: Mapping[str, Any] | None = None,
                          now: dt.datetime | None = None,
                          priority: Sequence[str] | None = None, intake_ranking: bool = False,
-                         website: bool = False, site_remaining_usd: str | None = None) -> dict[str, Any]:
+                         website: bool = False, site_remaining_usd: str | None = None,
+                         finished_pairs: Collection[str] | None = None) -> dict[str, Any]:
     """Every requested candidate gets a status and reason; the budget decides how many run.
+
+    ``finished_pairs``: the job's pairs that already hold a finished scored result
+    (``beta_policy_screening_tested_pairs``). A runnable row whose pair is among them is left out
+    of the plan, so it is never quoted or paid for again; every other row is planned exactly as
+    without it, so a job with no earlier result gets the same bytes. When every requested row is
+    left out that way, nothing is new and the plan is refused with ``EVERY_PAIR_TESTED``.
 
     ``site_remaining_usd``: what the site's screening allowance has left after every
     earlier campaign's commitments. A local candidate whose quote no longer fits it
@@ -666,6 +702,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     remaining = budget
     site_left = None if site_remaining_usd is None else max(Decimal(0), money(site_remaining_usd))
     candidates = []
+    already_tested = 0
     unranked = sorted(set(requested) - set(ranked),
                       key=lambda row: (by_id[row]["policy"]["kind"] == "scripted", row))
     order = ranked + unranked
@@ -717,6 +754,15 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             row.update(status="deferred", blockers=[str(exc)])
             candidates.append(row)
             continue
+        if finished_pairs:
+            from .beta_policy_screening_tested_pairs import pair_key
+
+            if pair_key(candidate_id=candidate_id, configuration_digest=candidate["configuration_digest"],
+                        scene_revision_digest=scene["scene_revision_digest"],
+                        harness_revision=SCREENING_HARNESS_REVISION,
+                        cells=g1_cells(cells, dropped) if g1_row else cells) in finished_pairs:
+                already_tested += 1
+                continue
         maximum = money(quote["maximum_cost_usd"])
         spec = binding["execution_spec"]
         if (site_left is not None and maximum > site_left and not _HOSTED_COST_FIELDS & set(spec)
@@ -749,6 +795,10 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         if site_left is not None:
             site_left = max(Decimal(0), site_left - maximum)
         candidates.append(row)
+    if already_tested and not candidates:
+        from .beta_policy_screening_tested_pairs import EVERY_PAIR_TESTED
+
+        raise BetaPolicyScreeningPlanError(EVERY_PAIR_TESTED)
     plan = {
         "schema_version": PLAN_SCHEMA_VERSION, "campaign_id": campaign_id, "site_id": scene["site_id"],
         "scene_id": scene["scene_id"], "capture_id": scene["capture_id"], "task_id": scene["task_id"],
@@ -801,8 +851,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         from .beta_policy_screening_publication_flags import flags_valid
         if not flags_valid(estimate_flags):
             raise BetaPolicyScreeningPlanError("beta_screening_plan_schema_invalid")
-    if (set(plan) - {"recommendation_eligible", HARNESS_REVISION_FIELD, SCENE_ESTIMATE_FLAGS_FIELD}
-            - _JOB_CEILING_FIELDS != required
+    if (set(plan) - {"recommendation_eligible", HARNESS_REVISION_FIELD, SCENE_ESTIMATE_FLAGS_FIELD,
+                     STANDING_TEST_FIELD} - _JOB_CEILING_FIELDS != required
             or plan["schema_version"] != PLAN_SCHEMA_VERSION
             or plan["purpose"] != "screening" or plan["claim_ceiling"] != CLAIM_CEILING
             or plan.get("recommendation_eligible", False) is not False
@@ -950,6 +1000,10 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         raise BetaPolicyScreeningPlanError("beta_screening_plan_budget_invalid")
     if plan["plan_digest"] != canonical_digest(plan, digest_field="plan_digest"):
         raise BetaPolicyScreeningPlanError("beta_screening_plan_digest_mismatch")
+    if STANDING_TEST_FIELD in plan:
+        from .beta_policy_screening_standing_test import validate_standing_plan
+
+        validate_standing_plan(plan)
     return plan
 
 
@@ -1066,7 +1120,7 @@ __all__ = ["PLAN_SCHEMA_VERSION", "QUOTE_SCHEMA_VERSION", "EXECUTION_SCHEMA_VERS
            "DISABLED_BLOCKER", "ROUTE_TEMPLATE_BLOCKER", "SITE_BUDGET_USD", "CAMPAIGN_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
            "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "TASK_KIND_BLOCKERS", "WAITLISTED",
            "WAITLIST_BLOCKER", "BetaPolicyScreeningPlanError", "build_job_ceiling_screening_plan",
-           "build_screening_plan", "catalog_blockers",
+           "build_screening_plan", "catalog_blockers", "fit_run_to_cap", "STANDING_TEST_FIELD",
            "execution_cost_floor", "job_ceiling_record", "money", "screening_cells", "validate_cost_quote",
            "validate_execution_descriptor",
            "validate_screening_plan", "website_never_planned", "website_route_template", "website_switched_off"]

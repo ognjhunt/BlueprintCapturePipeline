@@ -85,6 +85,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     )
     from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
     from .beta_policy_screening_scene_half import current_half
+    from .beta_policy_screening_tested_pairs import EVERY_PAIR_TESTED, finished_pair_keys
     from .beta_policy_screening_team import catalog_for_profile
     from .rigid_robot_free_probe_runner import _running_release, source_commit
     from .task_evaluation_configured_controls_progression_worker import _validate_source
@@ -228,16 +229,26 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                         priority = default_screening_priority()
                     inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
                         source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
-                    # The job's one dollar ceiling sizes the plan; unreadable, it holds and retries.
-                    plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id,
-                        queue_root=root, context=context, capture_root=capture,
-                        capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
-                        priority=inputs.get("candidate_priority"), candidate_ids=replan, superseding=superseded,
-                        intake_ranking=outcome["candidate_order"] == "intake_ranking")
-                    retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
-                    if superseded is None:
+                    # A new campaign (a catalog or registry change) plans only pairs the job has no finished
+                    # result for; with none, nothing is new and no campaign is made (plan 1.2).
+                    finished = finished_pair_keys(root, retained["scene_id"]) if superseded is None else None
+                    try:
+                        # The job's one dollar ceiling sizes the plan; unreadable, it holds and retries.
+                        plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id,
+                            queue_root=root, context=context, capture_root=capture,
+                            capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
+                            priority=inputs.get("candidate_priority"), candidate_ids=replan, superseding=superseded,
+                            intake_ranking=outcome["candidate_order"] == "intake_ranking", finished_pairs=finished)
+                    except ValueError as exc:
+                        if str(exc) != EVERY_PAIR_TESTED:
+                            raise
+                        plan = None
+                        outcome["status"] = "already_tested"
+                    if plan is not None:
+                        retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
+                    if plan is not None and superseded is None:
                         outcome.update(enqueue_screening_campaign(plan, queue_root=root))
-                    else:
+                    elif plan is not None:
                         outcome.update(supersede_campaign(superseded, plan, implementation_commit=commit,
                                                           queue_root=root))
                 # A campaign is planned (now or before): the evaluation started.

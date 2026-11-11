@@ -272,6 +272,13 @@ def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
     terminal = current_terminal(ledger) if status != "terminal_authority_ended" else None
     if terminal is not None:
         return "failed_terminal", terminal["reason"]
+    from .website_reconstruction_resume import armed
+    if armed(ledger) and current_overdue(ledger) is None:
+        # The attempt waits only on its capture's Atlas job and resumes by itself when the job is final
+        # (``website_reconstruction_resume``): the normal reconstruction wait, not a failure to report.
+        # A wait past the Atlas job's window (overdue) still reports as before, and so does the v1
+        # projection, which that resume reads.
+        return "preparing", None
     if status in {"failed_retryable", "retryable_blocked"} and capacity_only(ledger):
         return "capacity_delayed", None
     if status == "processing" and current_overdue(ledger) is not None:

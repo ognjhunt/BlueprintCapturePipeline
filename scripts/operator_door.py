@@ -80,7 +80,8 @@ MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
                 "legacy_owner_census_observed", "repaired", "extended", "already_covered", "superseded",
-                "confirmed", "already_confirmed", "already_restored", "already_retired"}
+                "confirmed", "already_confirmed", "already_restored", "already_retired", "enqueued",
+                "already_on_disk"}
 GITHUB_API = "https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline"
 # The only job that attests a main commit. Its success is what a deploy's verification needs.
 ATTESTING_JOB = "SBOM, license, and provenance contract"
@@ -417,6 +418,7 @@ def _terminal(state: dict[str, Any]) -> bool | None:
             "install-public-trlc-policy": "public_policy_registered",
             "install-scripted-robot-baselines": "public_policy_registered",
             "install-native-g1-policies": "public_policy_registered",
+            "register-session-served-policy": "session_served_policy_registered",
         }.get(kind)
         if public_disposition is not None:
             # Only the bounded enqueue/registration completed, not a simulation.
@@ -943,6 +945,25 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     retire.add_argument("--bucket")
     retire.add_argument("--apply", action="store_true")
     _add_wait(retire, 2 * 3600 + 600)
+    job_test = commands.add_parser("test-policy-on-job",
+                                   help="plan and enqueue the named policies on one stored job (it only enqueues)")
+    job_test.add_argument("site_id")
+    job_test.add_argument("--candidate", dest="candidate_ids", action="append", required=True)
+    job_test.add_argument("--funding", choices=("site_allowance", "standing_test"), required=True)
+    job_test.add_argument("--authorization-reference", required=True)
+    _add_wait(job_test, 20 * 60)
+    launch_restore = commands.add_parser("restore-launch-run",
+                                         help="restore one stored job's offloaded launch run (checks disk first)")
+    launch_restore.add_argument("site_id")
+    _add_wait(launch_restore, 2 * 3600 + 600)
+    served = commands.add_parser("register-session-served-policy",
+                                 help="add or remove one session-served policy entry in the root registry")
+    served.add_argument("action", choices=("add", "remove"))
+    served.add_argument("candidate_id")
+    served.add_argument("--entry-json", help="the session_served_policy entry (add only)")
+    served.add_argument("--expected-registry-digest", required=True)
+    served.add_argument("--authorization-reference", required=True)
+    _add_wait(served, 10 * 60)
     restore = commands.add_parser("restore-scene-workspace", help="restore a retired scene at its canonical path")
     restore.add_argument("scene_id")
     restore.add_argument("--bucket", required=True)
@@ -1144,6 +1165,20 @@ def run(args: argparse.Namespace) -> int:
         if args.bucket:
             body["bucket"] = args.bucket
         return _submit(body, args)
+    elif command == "test-policy-on-job":
+        return _submit({"kind": "test-policy-on-job", "site_id": args.site_id, "candidate_ids": args.candidate_ids,
+                        "funding": args.funding, "authorization_reference": args.authorization_reference}, args)
+    elif command == "restore-launch-run":
+        return _submit({"kind": "restore-launch-run", "site_id": args.site_id}, args)
+    elif command == "register-session-served-policy":
+        registration = {"schema_version": "blueprint.session_served_policy_registration_request.v1",
+                        "action": args.action, "candidate_id": args.candidate_id,
+                        "entry": json.loads(args.entry_json) if args.entry_json else None,
+                        "expected_registry_digest": args.expected_registry_digest,
+                        "authorization_reference": args.authorization_reference}
+        canonical = json.dumps(registration, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        registration["request_digest"] = "sha256:" + hashlib.sha256(canonical).hexdigest()
+        return _submit({"kind": "register-session-served-policy", "request": registration}, args)
     elif command == "restore-scene-workspace":
         return _submit({"kind": "restore-scene-workspace", "scene_id": args.scene_id,
                         "bucket": args.bucket}, args)

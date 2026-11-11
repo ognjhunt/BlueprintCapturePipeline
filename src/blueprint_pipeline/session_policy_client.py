@@ -10,11 +10,18 @@ transport differs, because a loopback listener needs neither TLS nor a public
 origin. The URLs must name ``http://127.0.0.1:<port>`` exactly; anything else
 is refused before a request is made.
 
-Failure attribution. A server that cannot be reached (refused, reset, closed
-mid-response) is the session's infrastructure, never the policy:
-``session_policy_server_unavailable``. An answer the server gave (an error
-status or a bad envelope) and an answer that took longer than the native
-OpenPI inference bound stay the policy's, as they are on the native path.
+Failure attribution, as on the native path. A server that cannot be reached
+(nothing listening: it never became ready, or it is already gone before this
+request) is the session's infrastructure, never the policy:
+``session_policy_server_unavailable``. A connection lost while an inference
+request was in flight (reset or closed before the answer) means the server
+died serving that request: on the native path the same crash is the policy's
+failure for that try, so here it is ``droid_https_policy_response_connection_lost``.
+The tries after it find nothing listening and are void as infrastructure. An
+answer the server gave (an error status or a bad envelope) and an answer that
+took longer than the native OpenPI inference bound stay the policy's too. A
+lost identity read (the metadata request) stays infrastructure: no inference
+was in flight.
 """
 from __future__ import annotations
 
@@ -37,7 +44,13 @@ LOOPBACK_HOST = "127.0.0.1"
 UNAVAILABLE = "session_policy_server_unavailable"
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 # ``core.security_controls`` wraps a refused connect and a connection closed mid-response in these.
-_UNREACHABLE = frozenset({"all validated remote IP connections failed", "remote connection closed before completion"})
+_REFUSED = "all validated remote IP connections failed"
+_CLOSED = "remote connection closed before completion"
+_UNREACHABLE = frozenset({_REFUSED, _CLOSED})
+#: A connection the server dropped after accepting the request (it died while serving it).
+_LOST = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, http.client.RemoteDisconnected,
+         http.client.IncompleteRead)
+LOST = "droid_https_policy_response_connection_lost"
 
 
 def loopback_origin(port: int) -> str:
@@ -81,6 +94,7 @@ def loopback_transport(spec: LoopbackDroidPolicySpec, *, fetch: Any = fetch_boun
     def send(*, url: str, method: str, body: bytes | None, headers: Mapping[str, str]) -> bytes:
         if f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" != spec.allowed_origin:
             raise ValueError("session_policy_endpoint_not_loopback")
+        inference = url == spec.endpoint_url and method == "POST"
         try:
             return fetch(url, method=method, data=body, headers=dict(headers),
                          timeout_seconds=int(OPENPI_INFERENCE_TIMEOUT_SECONDS), max_bytes=MAX_RESPONSE_BYTES,
@@ -95,10 +109,15 @@ def loopback_transport(spec: LoopbackDroidPolicySpec, *, fetch: Any = fetch_boun
             message = str(exc)
             if "time limit" in message:
                 raise ValueError("droid_https_policy_response_timeout") from None
-            if message in _UNREACHABLE:  # Nothing listening, or the connection dropped mid-answer.
-                raise ValueError(f"{UNAVAILABLE}:{type(exc.__cause__ or exc).__name__}") from None
+            cause = exc.__cause__ or exc
+            if inference and (message == _CLOSED or isinstance(cause, _LOST)):
+                raise ValueError(f"{LOST}:{type(cause).__name__}") from None  # died serving this request
+            if message in _UNREACHABLE:  # Nothing listening, or an identity read dropped.
+                raise ValueError(f"{UNAVAILABLE}:{type(cause).__name__}") from None
             raise ValueError("droid_https_policy_response_transport_invalid") from None
         except (ConnectionError, http.client.HTTPException, OSError) as exc:
+            if inference and isinstance(exc, _LOST):
+                raise ValueError(f"{LOST}:{type(exc).__name__}") from None
             raise ValueError(f"{UNAVAILABLE}:{type(exc).__name__}") from None
 
     return send
@@ -113,5 +132,5 @@ def session_policy_client(spec: Mapping[str, Any], bearer_token: str | None, *,
                                       transport=loopback_transport(policy, fetch=fetch))
 
 
-__all__ = ["LOOPBACK_HOST", "LoopbackDroidPolicySpec", "UNAVAILABLE", "loopback_origin", "loopback_transport",
+__all__ = ["LOOPBACK_HOST", "LOST", "LoopbackDroidPolicySpec", "UNAVAILABLE", "loopback_origin", "loopback_transport",
            "session_policy_client"]

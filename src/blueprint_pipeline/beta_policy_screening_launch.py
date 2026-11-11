@@ -375,6 +375,14 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         # Money: the job's ceiling in force now, not the one the plan was sized under.
         from .beta_policy_screening_job_ceiling import require_current_job_ceiling
         require_current_job_ceiling(plan, context=current_source, queue_root=queue_root)
+        from .beta_policy_screening_control import _deadline
+        if plan.get("standing_test"):
+            # Paid from the standing allowance after the job's window: the allowance must still be set and
+            # the site must still agree (the WebApp's ``standing_tests_allowed``); its own end is the consent's.
+            from .beta_policy_screening_standing_test import require_launch_authority
+            window = require_launch_authority(plan, context=current_source)
+        else:
+            window = _deadline(current_source)
         authority = _read(_bound_path(prepared["authority"]))
         bundle = _read(_bound_path(prepared["bundle_receipt"]))
         invocation_binding = {
@@ -387,10 +395,8 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
             "resource_name", "attempt_id")}
         source_control_binding.update(campaign_id=plan["campaign_id"], site_id=plan["site_id"],
             source=dict(plan["source"]), invocation_id=canonical_digest(invocation_binding))
-        from .beta_policy_screening_control import _deadline
         from .beta_policy_screening_control_transport import request_control
-        preflight_control = request_control(binding=source_control_binding,
-                                            execution_deadline_epoch=_deadline(current_source))
+        preflight_control = request_control(binding=source_control_binding, execution_deadline_epoch=window)
         _write(root / "control_preflight" / (preflight_control["control_digest"][7:] + ".json"), preflight_control)
         if preflight_control["status"] != "current":
             raise ValueError("beta_screening_current_source_revoked_before_spawn")

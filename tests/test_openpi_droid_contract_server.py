@@ -344,3 +344,52 @@ def test_serve_loads_with_the_native_loader_and_records_its_identity_without_the
     token.chmod(0o644)
     with pytest.raises(ValueError, match="contract_server_token_file_not_private"):
         server_module.read_token(token)
+
+
+def test_a_server_that_dies_while_serving_an_inference_is_the_policy_s_failure_for_that_try(served, tmp_path):
+    """Review of aefc7d09a, finding 4: on the native path the same crash scores as the policy failing.
+
+    The next try finds nothing listening: void as infrastructure (``test_a_server_that_died_...``).
+    """
+    from blueprint_pipeline.policy_canary_worker_evidence import _write_episode_failure_gap
+    from blueprint_pipeline.session_policy_client import LOST
+    from blueprint_pipeline.team_policy_episode_outcome import episode_outcome
+
+    policy, server, spec = served
+    client = session_policy_client(spec, TOKEN)
+    client.preflight_readiness()
+
+    def dies(observation):
+        raise SystemExit(137)  # the serving thread ends without answering, as a killed process would
+    policy.infer = dies
+    with pytest.raises(ValueError) as raised:
+        client.infer(_observation())
+    assert str(raised.value).startswith(LOST + ":")
+    path = _write_episode_failure_gap(output_root=tmp_path, run_id="run",
+        context={"cell_id": "cell", "candidate_id": "pi05_droid_contract"}, failure=raised.value,
+        progress={"first_observation_retained": True, "candidate_policy_query_attempted": True,
+                  "policy_inference_failed": True})
+    evidence = json.loads(path.read_text())
+    assert evidence["episode_failure_cause"] == "policy"
+    assert episode_outcome(evidence)[0] == "failure"
+
+
+def test_a_lost_identity_read_stays_infrastructure():
+    import http.client as client_errors
+
+    from blueprint_pipeline.session_policy_client import UNAVAILABLE, LoopbackDroidPolicySpec, loopback_transport
+
+    spec = LoopbackDroidPolicySpec(**_spec(8765)["policy_spec"])
+
+    def lost(url, **kwargs):
+        raise client_errors.RemoteDisconnected("closed")
+    send = loopback_transport(spec, fetch=lost)
+    with pytest.raises(ValueError, match="^" + UNAVAILABLE):
+        send(url=spec.metadata_url, method="GET", body=None, headers={})
+    with pytest.raises(ValueError, match="^droid_https_policy_response_connection_lost"):
+        send(url=spec.endpoint_url, method="POST", body=b"{}", headers={})
+
+    def refused(url, **kwargs):
+        raise ConnectionRefusedError("nothing listening")
+    with pytest.raises(ValueError, match="^" + UNAVAILABLE):
+        loopback_transport(spec, fetch=refused)(url=spec.endpoint_url, method="POST", body=b"{}", headers={})

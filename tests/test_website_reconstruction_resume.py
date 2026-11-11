@@ -357,3 +357,41 @@ def test_a_resumed_dead_attempt_that_fails_again_stays_reviewable(waiting):
         run_evaluation_prep=False, expected_reconstruction_resume=_review(again, raw),
         run_e2e=lambda **_: {"status": "completed"})
     assert result["status"] == "processed" and listener._read_job_ledger(root)["attempt_count"] == 4
+
+
+def _status(root, owner, record, schema_version):
+    from blueprint_pipeline.website_preparation_status import read_preparation_status
+
+    context = json.loads((root / "pipeline" / "website_task_context.json").read_text())
+    payload = json.loads(base64.b64decode(record["payload_base64"]))
+    return read_preparation_status(capture_root=root, schema_version=schema_version, selectors={
+        "request_id": owner["request_id"], "scene_id": owner["scene_id"], "capture_id": owner["capture_id"],
+        "completion_marker_generation": payload["source_finalize"]["generation"],
+        "producer_delivery_key": record["producer_delivery_key"],
+        "source_payload_sha256": record["source_payload_sha256"], "task_context_digest": context["context_digest"]})
+
+
+def test_an_armed_reconstruction_wait_reports_preparing_to_the_website(waiting):
+    """2026-11-11 (capture-447 nine times on 10-30): the normal Atlas wait was told to the site as a failure."""
+    from blueprint_pipeline.website_preparation_status import STATUS_V1, STATUS_V7
+
+    root, owner, _, _, record = waiting
+    status = _status(root, owner, record, STATUS_V7)
+    assert status["state"] == "preparing"
+    assert status.get("terminal_reason") is None
+    # The v1 projection the resume itself reads is unchanged, so the replay still happens.
+    assert _status(root, owner, record, STATUS_V1)["state"] == "failed_retryable"
+
+
+def test_a_real_retryable_failure_or_an_overdue_wait_reports_as_before(waiting):
+    from blueprint_pipeline.website_preparation_status import _v2_state
+
+    ledger = listener._read_job_ledger(waiting[0])
+    assert _v2_state(ledger) == ("preparing", None)
+    failure = {key: value for key, value in ledger.items() if key != resume.FIELD}
+    failure["last_error"] = "website_scene_preparation: some_real_failure"
+    assert not resume.armed(failure) and _v2_state(failure) == ("failed_retryable", None)
+    stopped = terminal._parse_utc(ledger["updated_at"])
+    late = stopped + timedelta(seconds=MAXIMUM_JOB_SECONDS + terminal.silence_seconds() + 60)
+    overdue = terminal.record_unretried_preparation(waiting[0], alive_since=stopped, now=late)
+    assert resume.armed(overdue) and _v2_state(overdue)[0] != "preparing"

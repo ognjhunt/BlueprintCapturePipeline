@@ -21,11 +21,21 @@ each try:
 The verdict is plain: ``same`` (every try agrees, actions included), ``same_
 outcomes`` (outcome, stage and approach agree on every try, some action trace
 differs), ``differs`` (with each difference listed), or ``not_comparable``
-(different scene, contract, cells or policy). It reads retained files only:
+(different scene, contract, cells or policy, or evidence missing). A verdict
+speaks only from evidence present on both sides: every try needs both graded
+reports and both action-trace digests, or the report is ``not_comparable`` and
+names what was missing. The two runs must also be the same measurement apart
+from the path: the same implementation commit, harness revision, checkpoint,
+open-loop horizon and query limit, and the contract run's served runtime must
+wrap the native run's runtime identity (``run_identity``, read from each run's
+retained plan and its digest-bound policy spec). The native run must not have
+been served over the contract, and the contract run must have been; each try's
+runtime identity is checked against its run's. It reads retained files only:
 nothing is launched and nothing is spent.
 
 ``python -m blueprint_pipeline.policy_path_parity --native <result.json> --contract <result.json>
---native-candidate pi05_droid --contract-candidate pi05_droid_contract [--output report.json]``
+--native-plan <plan.json> --contract-plan <plan.json> --native-candidate pi05_droid
+--contract-candidate pi05_droid_contract [--output report.json]``
 """
 from __future__ import annotations
 
@@ -105,6 +115,69 @@ def _actions(native: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str
     return result
 
 
+def run_identity(plan: Mapping[str, Any], candidate_id: str) -> dict[str, Any]:
+    """What makes a run the measurement it is, apart from the path: from its plan and bound policy spec."""
+    import hashlib
+
+    from .beta_policy_screening_plan import plan_harness_revision
+    from .session_served_policy import is_session_served
+
+    row = next((item for item in plan.get("candidates") or [] if item.get("candidate_id") == candidate_id), None)
+    execution = (row or {}).get("execution_spec") or {}
+    reference = execution.get("policy_execution_spec") or {}
+    raw = Path(str(reference.get("path"))).read_bytes() if reference.get("path") else b""
+    if not raw or "sha256:" + hashlib.sha256(raw).hexdigest() != reference.get("sha256"):
+        raise ValueError("policy_path_parity_policy_spec_unbound")
+    spec = json.loads(raw)
+    served = spec.get("session_policy_server") if is_session_served(spec) else None
+    return {"implementation_commit": execution.get("implementation_commit"),
+            "screening_harness_revision": plan_harness_revision(plan),
+            "runtime_identity_digest": spec.get("runtime_identity_digest"),
+            "native_runtime_identity_digest": (served or {}).get("native_runtime_identity_digest"),
+            "checkpoint_digest": spec.get("checkpoint_digest"), "open_loop_horizon": spec.get("open_loop_horizon"),
+            "session_served": served is not None}
+
+
+def _identity_reasons(native: Mapping[str, Any] | None, contract: Mapping[str, Any] | None) -> list[str]:
+    if native is None or contract is None:
+        return ["run_identity_missing"]
+    reasons = [field + ("_missing" if native.get(field) is None else "_differs")
+               for field in ("implementation_commit", "screening_harness_revision", "checkpoint_digest",
+                             "open_loop_horizon")
+               if native.get(field) is None or native.get(field) != contract.get(field)]
+    if native.get("session_served") is not False:
+        reasons.append("native_run_was_served_over_the_contract")
+    if contract.get("session_served") is not True:
+        reasons.append("contract_run_was_not_served_over_the_contract")
+    if (native.get("runtime_identity_digest") is None
+            or contract.get("native_runtime_identity_digest") != native["runtime_identity_digest"]):
+        reasons.append("runtime_identity_differs")
+    return reasons
+
+
+def _evidence_reasons(cell: str, native: Mapping[str, Any], contract: Mapping[str, Any],
+                      row: Mapping[str, Any], identities: Sequence[Mapping[str, Any] | None]) -> list[str]:
+    """What this try lacks for a verdict to speak about it, or where its run's settings differ."""
+    reasons = []
+    if not row["actions"].get("compared"):
+        reasons.append("action_trace_missing:" + cell)
+    for side in ("native", "contract"):
+        if row[side].get("not_graded"):
+            reasons.append(f"not_graded:{cell}:{side}:{row[side]['not_graded']}")
+    for field, label in (("max_policy_queries", "query_limit"), ("open_loop_horizon", "horizon")):
+        left, right = ((episode.get("episode") or {}).get(field) for episode in (native, contract))
+        if left is None or right is None:
+            reasons.append(f"{label}_missing:{cell}")
+        elif left != right:
+            reasons.append(f"{label}_differs:{cell}")
+    if native.get("checkpoint_digest") is None or native.get("checkpoint_digest") != contract.get("checkpoint_digest"):
+        reasons.append("checkpoint_differs:" + cell)
+    for side, episode, identity in (("native", native, identities[0]), ("contract", contract, identities[1])):
+        if identity is not None and episode.get("runtime_identity_digest") != identity.get("runtime_identity_digest"):
+            reasons.append(f"episode_runtime_not_its_run:{cell}:{side}")
+    return reasons
+
+
 def _try(cell_id: str, native: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
     from .team_policy_episode_outcome import episode_outcome
 
@@ -136,10 +209,11 @@ def _rows(result: Mapping[str, Any], candidate: str) -> dict[str, Mapping[str, A
 
 
 def compare_runs(*, native: Mapping[str, Any], contract: Mapping[str, Any], native_candidate: str,
-                 contract_candidate: str) -> dict[str, Any]:
-    """The per-try comparison and its verdict."""
+                 contract_candidate: str, native_identity: Mapping[str, Any] | None = None,
+                 contract_identity: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The per-try comparison and its verdict (``run_identity`` gives each run's identity)."""
 
-    reasons = []
+    reasons = _identity_reasons(native_identity, contract_identity)
     for field in ("scene_revision_digest", "task_success_contract_digest"):
         if native.get(field) is None or native.get(field) != contract.get(field):
             reasons.append(field + "_differs")
@@ -151,9 +225,10 @@ def compare_runs(*, native: Mapping[str, Any], contract: Mapping[str, Any], nati
     for cell in sorted(set(left) & set(right)):
         if any(left[cell].get(field) != right[cell].get(field) for field in _CELL_FIELDS):
             reasons.append("cell_seed_or_scenario_differs:" + cell)
-        if left[cell].get("checkpoint_digest") != right[cell].get("checkpoint_digest"):
-            reasons.append("checkpoint_differs:" + cell)
     tries = [_try(cell, left[cell], right[cell]) for cell in sorted(set(left) & set(right))]
+    for row in tries:
+        reasons.extend(_evidence_reasons(row["cell_id"], left[row["cell_id"]], right[row["cell_id"]], row,
+                                         (native_identity, contract_identity)))
     if reasons:
         verdict = "not_comparable"
     elif all(not row["differences"] for row in tries):
@@ -192,13 +267,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--native", required=True)
     parser.add_argument("--contract", required=True)
+    parser.add_argument("--native-plan", required=True, help="the native run's retained screening plan")
+    parser.add_argument("--contract-plan", required=True, help="the contract run's retained screening plan")
     parser.add_argument("--native-candidate", required=True)
     parser.add_argument("--contract-candidate", required=True)
     parser.add_argument("--output")
     args = parser.parse_args(argv)
+    identities = []
+    for path, candidate in ((args.native_plan, args.native_candidate), (args.contract_plan, args.contract_candidate)):
+        try:
+            identities.append(run_identity(json.loads(Path(path).read_text(encoding="utf-8")), candidate))
+        except (OSError, ValueError, KeyError, TypeError):
+            identities.append(None)  # reported as run_identity_missing
     report = compare_runs(native=json.loads(Path(args.native).read_text(encoding="utf-8")),
                           contract=json.loads(Path(args.contract).read_text(encoding="utf-8")),
-                          native_candidate=args.native_candidate, contract_candidate=args.contract_candidate)
+                          native_candidate=args.native_candidate, contract_candidate=args.contract_candidate,
+                          native_identity=identities[0], contract_identity=identities[1])
     report["plain_verdict"] = plain_verdict(report)
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output:
@@ -211,4 +295,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["REPORT_SCHEMA", "compare_runs", "plain_verdict"]
+__all__ = ["REPORT_SCHEMA", "compare_runs", "plain_verdict", "run_identity"]

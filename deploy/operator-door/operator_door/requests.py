@@ -52,6 +52,15 @@ delivery (``website_preparation_delivery_retirement``): one capture-relative pat
 of the shape the delivery index keys, and the owner's approval text. It moves
 that delivery's record to its terminal ``retired`` state, keeping every field;
 it changes nothing else, deletes nothing, starts no compute and moves no money.
+``test-policy-on-job`` (``operate``) asks the active release to plan and enqueue one limited
+screening campaign: the named candidates on one stored job, from the job's allowance while its
+window is open or from the standing-test allowance (``beta_policy_screening_on_job``). It only
+enqueues; every money check stays where it is, and it reserves and launches nothing itself.
+``restore-launch-run`` (``operate``) restores one job's offloaded configured-scene launch run
+with the active release's module, after reserving its disk peak; it deletes nothing.
+``register-session-served-policy`` (``operate``) adds or removes one ``session_served_policy``
+entry in the root registry with stdlib-only installed code: a compare-and-swap against the
+request's expected registry digest, with an authorization reference and a kept receipt.
 """
 
 from __future__ import annotations
@@ -73,6 +82,7 @@ from .embodiment_preparation import validate_request as validate_embodiment_prep
 from .public_policy_registration_contract import validate_request as validate_public_policy_registration
 from .native_g1_registration_contract import validate_request as validate_native_g1_registration
 from .admitted_controls import DISPATCHER_HOLD_ONLY
+from .session_served_registration import validate_request as validate_session_served_registration
 from .hostinfo import UNIT_NAME
 from .secrets_guard import redact_lines
 
@@ -118,6 +128,12 @@ _SCOPES = {
     "restore-g1-pi-language-assets": "operate",
     # Retires one parked website preparation delivery on the owner's recorded approval.
     "retire-parked-delivery": "operate",
+    # Plans and enqueues one limited screening campaign on one stored job; it only enqueues.
+    "test-policy-on-job": "operate",
+    # Restores one stored job's offloaded launch run after reserving its disk peak.
+    "restore-launch-run": "operate",
+    # Adds or removes one session-served policy entry in the root registry (CAS, receipt).
+    "register-session-served-policy": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -169,6 +185,9 @@ ACTIVATION_HOLD_OVERRIDE = re.compile(r"[a-z0-9][a-z0-9_:.-]{0,63}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]")
+# A website job's site id and a screening candidate id, as the pipeline validates them.
+_JOB_SITE = re.compile(r"site-[A-Za-z0-9][A-Za-z0-9._-]{0,122}\Z")
+_CANDIDATE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 # A capture's path under the handoff storage root, the shape the preparation delivery index keys
 # (website_preparation_delivery_retirement.CAPTURE_PATH): it reaches a unit's writable paths.
 _DELIVERY_CAPTURE = re.compile(
@@ -619,6 +638,35 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if type(apply) is not bool:
             raise RequestRefused("parked_delivery_apply_invalid")
         return {"kind": kind, "capture": capture, "approval_evidence": evidence, "apply": apply}
+    if kind == "test-policy-on-job":
+        _only(body, ("kind", "site_id", "candidate_ids", "funding", "authorization_reference"))
+        site, ids, funding = body.get("site_id"), body.get("candidate_ids"), body.get("funding")
+        reference = body.get("authorization_reference")
+        if not isinstance(site, str) or not _JOB_SITE.fullmatch(site):
+            raise RequestRefused("job_test_site_id_invalid")
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= 8 or len(set(map(str, ids))) != len(ids)
+                or any(not isinstance(row, str) or not _CANDIDATE_ID.fullmatch(row) for row in ids)):
+            raise RequestRefused("job_test_candidate_ids_invalid")
+        if funding not in ("site_allowance", "standing_test"):
+            raise RequestRefused("job_test_funding_invalid")
+        if (not isinstance(reference, str) or reference != reference.strip()
+                or not 1 <= len(reference) <= 300 or not reference.isprintable()):
+            raise RequestRefused("job_test_authorization_reference_invalid")
+        return {"kind": kind, "site_id": site, "candidate_ids": list(ids), "funding": funding,
+                "authorization_reference": reference}
+    if kind == "restore-launch-run":
+        _only(body, ("kind", "site_id"))
+        site = body.get("site_id")
+        if not isinstance(site, str) or not _JOB_SITE.fullmatch(site):
+            raise RequestRefused("launch_run_site_id_invalid")
+        return {"kind": kind, "site_id": site}
+    if kind == "register-session-served-policy":
+        _only(body, ("kind", "request"))
+        try:
+            registration = validate_session_served_registration(body.get("request"))
+        except ValueError as exc:
+            raise RequestRefused(str(exc)) from None
+        return {"kind": kind, "request": registration}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")

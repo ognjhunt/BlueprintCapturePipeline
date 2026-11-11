@@ -368,8 +368,7 @@ fi
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:completed"
 
 {credential_check}
-{session_policy_setup}
-{control_check}
+{session_policy_setup}{control_check}
 /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \
   --source-receipt "$SOURCE_RECEIPT" --source-packet "$SOURCE_PACKET" \
   --extraction-dir "$RUNTIME_DIR/provisioned_runtime_sources" \
@@ -749,7 +748,7 @@ def build_policy_canary_session_bundle(
                                          credential_env=credential_env,
                                          family_runtime_catalog_staged=operator_inputs is not None,
                                          openwam_local=openwam_contract is not None,
-                                         session_policy_setup=entrypoint_setup() if served_specs else ""), encoding="utf-8")
+                                         session_policy_setup=entrypoint_setup() + "\n" if served_specs else ""), encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         manifest_path = runtime / "adp_arena_provider_manifest.json"
         manifest = _read(manifest_path)

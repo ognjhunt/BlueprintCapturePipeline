@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 import zipfile
 
+import re
+
 import pytest
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
@@ -183,3 +185,66 @@ def test_existing_native_candidates_are_unchanged_by_a_registry_entry(tmp_path, 
     assert all(rows[row["candidate_id"]] == row for row in load_default_catalog()["candidates"])
     # Without an entry the effective catalog is the packaged one, so existing campaign ids are unchanged.
     assert catalog_for_profile(profile_for_capture(str(tmp_path / "capture")))["catalog_digest"] == plan["catalog_digest"]
+
+
+def _planned_with(tmp_path, monkeypatch, candidates):
+    base_plan, facts = _plan(tmp_path, monkeypatch, scene_half="team_scene")
+    profile = profile_for_capture(str(tmp_path / "capture"))
+    profile["screening_candidates"] = candidates
+    catalog = catalog_for_profile(profile)
+    planning = build_planning_inputs(catalog=catalog, profile=profile, capture_root=tmp_path / "capture",
+                                     source=base_plan["source"], inputs_dir=tmp_path / "again")
+    return facts, planning
+
+
+@pytest.mark.parametrize("entry", ["x", [1], 5, {"schema_version": "blueprint.session_served_policy.v1"},
+                                   {**ENTRY, "native_candidate_id": ["x"]}, {**ENTRY, "server": "nope"},
+                                   {**ENTRY, "startup_timeout_seconds": True}])
+def test_a_malformed_entry_blocks_only_its_own_candidate(tmp_path, monkeypatch, entry):
+    """Review of aefc7d09a, finding 1: one bad registry value stopped planning for every candidate."""
+    facts, planning = _planned_with(tmp_path, monkeypatch, {"x_contract": {"session_served_policy": entry}})
+    capabilities = planning["capabilities"]
+    assert "x_contract" not in capabilities["candidate_bindings"]
+    assert set(facts["capabilities"]["candidate_bindings"]) <= set(capabilities["candidate_bindings"])
+    blockers = capabilities["candidate_blockers"].get("x_contract")
+    assert blockers is None or all(re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code) for code in blockers)
+
+
+@pytest.mark.parametrize("value", ["x", [1]])
+def test_a_malformed_override_row_blocks_only_its_own_candidate(tmp_path, monkeypatch, value):
+    facts, planning = _planned_with(tmp_path, monkeypatch, {"x_contract": value})
+    assert set(facts["capabilities"]["candidate_bindings"]) <= set(planning["capabilities"]["candidate_bindings"])
+
+
+def test_an_entry_never_shadows_a_packaged_row(tmp_path, monkeypatch):
+    """Finding 2: an entry under ``pi05_droid`` switched the native row off."""
+    facts, planning = _planned_with(tmp_path, monkeypatch, {"pi05_droid": {"session_served_policy": {
+        **ENTRY, "native_candidate_id": "pi0_droid_jointpos_polaris"}}})
+    before = facts["capabilities"]["candidate_bindings"]["pi05_droid"]
+    after = planning["capabilities"]["candidate_bindings"]["pi05_droid"]
+    assert "pi05_droid" not in planning["capabilities"]["candidate_blockers"]
+    assert after["configuration_digest"] == before["configuration_digest"]
+    assert (after["execution_spec"]["policy_execution_spec"]["sha256"]
+            == before["execution_spec"]["policy_execution_spec"]["sha256"])
+    assert after["runtime_digest"] == before["runtime_digest"]
+    catalog = catalog_for_profile({"screening_candidates": {"pi05_droid": {"session_served_policy": ENTRY}}})
+    native = next(row for row in catalog["candidates"] if row["candidate_id"] == "pi05_droid")
+    assert native["interface"]["policy_interface_id"] == "openpi_droid.v1"
+
+
+@pytest.mark.parametrize(("arguments", "sha256"), [
+    ({}, "0156e2d69833721220b7555ff34e826a7cc30fe4e49501ef7c54f9724788c6da"),
+    ({"local_candidates": ("pi05_droid",)}, "635bf7b4e68c2085ff0c1b85cb50bd26f427d63ba34ee4edfbfe28f72be4f7c8"),
+    ({"run_kind": "blueprint_beta_screening"}, "f5eaf8425965014248c64db99649dcb49b9b7ed4710fe175b6fc6936f3894156"),
+    ({"openwam_local": True}, "136fef5a8ce54026217b489978fe901d8204678182e71c56c78dbb597dc052f7"),
+    ({"family_runtime_catalog_staged": True}, "ea5ef002e1d97a6591e8af7971f62eefb38d9a5e5dbdad166f0c428ec1d1ba1d"),
+    ({"local_candidates": ("groot_n17_droid",), "run_kind": "blueprint_beta_screening"},
+     "89775d1f51d10fe79373a50dc96a246bbd0df48f2d7b9fcd9cbe8c0f4b2c4e85"),
+])
+def test_a_native_candidate_s_entrypoint_is_byte_identical_to_before_the_standard_connection(arguments, sha256):
+    """Finding 5: the empty session setup left one blank line. Digests are c7a4803a8's own entrypoints."""
+    import hashlib
+
+    from blueprint_pipeline.native_task_arena_policy_canary_bundle import _entrypoint
+
+    assert hashlib.sha256(_entrypoint(**arguments).encode()).hexdigest() == sha256
