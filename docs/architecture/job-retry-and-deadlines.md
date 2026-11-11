@@ -7,7 +7,7 @@ lives, and what is still not covered. It describes code, not a plan.
 | Root cause | Rule | Status |
 |---|---|---|
 | The code stops by default | One retry policy. Only privacy, rights and money stop a job. | Built for the controllers in section 2. |
-| A deploy is the retry mechanism, and it destroys work | Every retry is timed. A deploy waits for paid work. | Timed retries: built for the controllers in section 2. Waiting for paid work: section 3 (needs a door upgrade). Attempts are still bound to a commit: section 5. |
+| A deploy is the retry mechanism, and it destroys work | Every retry is timed. A deploy waits for work in flight. | Timed retries: built for the controllers in section 2. Waiting for work in flight, paid or not: section 3 (needs a door upgrade). Attempts are still bound to a commit: section 5. |
 | No job has a deadline | The job's window is its deadline, and the job ends there by itself. | Built in the WebApp (section 4). Pipeline gaps: section 5. |
 
 ## 1. One retry policy
@@ -58,20 +58,31 @@ What stays as it was, on purpose:
 - Every cap, limit, grant and reservation. A timed retry changes when money
   can be spent, never how much.
 
-## 3. A deploy waits for paid work
+## 3. A deploy waits for work in flight
 
 Each scene attempt is bound to the commit of the release that created it, and
 later stages refuse work bound to another release. So a deploy retires the
 in-flight attempt.
 
+A deploy kills no worker: every run in flight finishes on the old release.
+What is lost is whatever the new release then refuses and rebuilds.
+
 - The operator door holds a deploy while a paid stage is live on the running
   release: a scene-configuration activation (as before), a submitted
   scene-configuration launch, a held paid-launch slot, or a screening candidate
   `launching` or `running`
-  (`deploy/operator-door/operator_door/activation_hold.py`). One cap of 285
-  minutes bounds the hold. `--activation-hold-override <reason>` deploys at
-  once for a fix to money, privacy, rights or the stuck stage. It reads only,
-  and anything it cannot read means "deploy now".
+  (`deploy/operator-door/operator_door/activation_hold.py`).
+- It also holds for work that is not paid yet and that the new release would
+  refuse: a scene attempt in its factory, publication or submission, a
+  scene-configuration preparation (pending, claimed, or finished and not yet
+  activated), and a screening candidate `preparing` with no blocker.
+- Two bounds. Paid work holds for 285 minutes, counted from the first moment a
+  paid stage was live, so a hold that began during the preparation still
+  outlives the activation. Work that is not paid yet holds for 60 minutes in
+  all. No hold lasts longer than the two together.
+- `--activation-hold-override <reason>` deploys at once for a fix to money,
+  privacy, rights or the stuck stage. The hold reads only, and anything it
+  cannot read means "deploy now".
 - The installed door gets this only after the owner's door upgrade
   (`docs/OPERATOR_DOOR.md`). A normal deploy does not update the door.
 - `scripts/operator_door.py deploy` does not send a deploy whose only
@@ -99,9 +110,13 @@ extension. The WebApp half landed as WebApp #1257.
 
 ## 5. Not covered
 
-1. **Attempts are bound to a commit.** A deploy that changes runtime code
-   still retires in-flight attempts once nothing paid is live or the hold's cap
-   passes; the CPU preparation is rebuilt. The complete fix is that the old
+1. **Attempts are bound to a commit.** A deploy now waits for work in flight
+   (section 3), so an attempt is retired only when the hold's bound passes or
+   the override is used. Three kinds of in-flight work are not held for: a
+   preparation waiting on its SAM child job (that child's work, which may be
+   paid, is lost); a preparation waiting for disk; and the robot-team episode
+   compilation and scene object discovery requests. New attempts can also keep
+   starting while a deploy is parked. The complete fix is that the old
    release drains its own attempts. The pieces exist: each release is its own
    tree, kept at least 24 hours and longer under a lease; every queue document
    names its commit; workers act only on documents of their own commit. What

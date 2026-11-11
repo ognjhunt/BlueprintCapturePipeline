@@ -348,8 +348,10 @@ def _door_requests(config: DoorConfig) -> dict[str, int]:
 def _deploy_activation_hold(config: DoorConfig) -> dict[str, Any] | None:
     """Why parked deploys wait, as door-deploy.sh last saw it; None when nothing holds them.
 
-    ``stages`` names the paid stages live at that check (each ``live`` row has its
-    ``stage``); a record an older door wrote has none, so it reads as the activation.
+    ``stages`` names the stages live at that check (each ``live`` row has its
+    ``stage``), split into ``paid_stages`` and ``unpaid_stages``; a record an older
+    door wrote has no stages, so it reads as the activation, and held only paid ones.
+    ``bound`` says which bound ends at ``cap_at_epoch`` (paid, unpaid, ceiling, single).
     """
 
     try:
@@ -358,11 +360,14 @@ def _deploy_activation_hold(config: DoorConfig) -> dict[str, Any] | None:
         return None
     if not isinstance(document, dict):
         return None
-    keys = ("active_release", "first_held_at_epoch", "cap_at_epoch", "recheck_after_epoch", "live")
+    keys = ("active_release", "first_held_at_epoch", "cap_at_epoch", "bound", "recheck_after_epoch", "live")
     stages = document.get("stages")
     if not isinstance(stages, list) or not all(isinstance(stage, str) for stage in stages):
         stages = ["scene_configuration_activation"] if document.get("live") else []
-    return {**{key: document.get(key) for key in keys}, "stages": stages}
+    unpaid = document.get("unpaid_stages")
+    unpaid = [stage for stage in stages if isinstance(unpaid, list) and stage in unpaid]
+    return {**{key: document.get(key) for key in keys}, "stages": stages,
+            "paid_stages": [stage for stage in stages if stage not in unpaid], "unpaid_stages": unpaid}
 
 
 def _holds(config: DoorConfig) -> list[dict[str, Any]]:
