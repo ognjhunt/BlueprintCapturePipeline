@@ -256,7 +256,24 @@ def _resend_layout(answer_text, *, other_text=None, own_completed=False):
     return call
 
 
-def test_ranking_names_the_resent_receipt_that_holds_the_result(tmp_path, monkeypatch):
+def test_ranking_names_the_resent_receipt_after_an_unanswered_call(tmp_path, monkeypatch):
+    """The real retained_gemini_call: the first dispatch gets no answer, the resend holds the result."""
+    calls = []
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", admitted(calls))
+    rank(tmp_path, calls, answer=TimeoutError("provider may have charged"))
+    value = rank(tmp_path, calls, answer=partial_answer)
+    directory = tmp_path / "pipeline" / "website_candidate_ranking" / "receipts"
+    resent = json.loads((directory / value["receipt_path"].rsplit("/", 1)[1]).read_text())
+    assert value["status"] == "ranked" and value["receipt_path"].endswith(".resend-1.json")
+    assert resent["status"] == "completed" and value["request_digest"] == resent["request_digest"]
+    assert json.loads(resent["result"]["text"]) == partial_answer("")
+    # The request's own receipt is the unanswered dispatch, never named.
+    stem = resent["original_request_digest"][7:]
+    assert json.loads((directory / f"{stem}.json").read_text())["status"] == "submitting"
+    assert value["request_digest"] != resent["original_request_digest"]
+
+
+def test_ranking_skips_a_completed_receipt_with_another_result(tmp_path, monkeypatch):
     calls = []
     text = json.dumps(partial_answer(""))
     monkeypatch.setattr(ranking, "retained_gemini_call", _resend_layout(text, other_text='{"rankings": []}'))

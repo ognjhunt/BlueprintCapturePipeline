@@ -43,6 +43,13 @@ MISSING = "website_control_scene-sponsorship_http_409:website_scene_sponsorship_
 EXPIRED = "website_control_scene-sponsorship_http_409:consent_expired"
 
 
+@pytest.fixture
+def grantless(failed):  # noqa: F811 - imported pytest fixture
+    """The retry fixture's failed delivery, for a capture that never received a grant (none retained)."""
+    (failed[0] / terminal.GRANT_FILE).unlink()
+    return failed
+
+
 class WebApp:
     """The signed transport: the non-creating read answers ``answer``; the creating request is counted."""
 
@@ -99,8 +106,8 @@ def _ended_as_no_grant(root, stage="website_assessment_preparation"):
     return ledger
 
 
-def test_the_typed_answer_ends_the_job_and_no_first_grant_is_asked_for(failed, monkeypatch):  # noqa: F811
-    root, raw, context = failed
+def test_the_typed_answer_ends_the_job_and_no_first_grant_is_asked_for(grantless, monkeypatch):  # noqa: F811
+    root, raw, context = grantless
     webapp = _install(monkeypatch, ValueError(NO_GRANT))
     result = _process(root, raw, lambda **_: pytest.fail("an ended job ran"))
     assert result["status"] == listener.TERMINAL_AUTHORITY_STATUS
@@ -129,8 +136,8 @@ def test_the_typed_answer_ends_the_job_and_no_first_grant_is_asked_for(failed, m
     {"schema_version": "website_scene_sponsorship.v1"},  # The job has a grant on the WebApp.
 ], ids=["missing", "http_503", "other_refusal", "wrong_status", "not_the_whole_token", "malformed", "not_object",
         "timeout", "unreachable", "reset", "grant_returned"])
-def test_any_other_answer_sends_the_creating_request_as_today(failed, monkeypatch, answer):  # noqa: F811
-    root, raw, _ = failed
+def test_any_other_answer_sends_the_creating_request_as_today(grantless, monkeypatch, answer):  # noqa: F811
+    root, raw, _ = grantless
     webapp = _install(monkeypatch, answer)
     calls = []
     result = _process(root, raw, _ran(calls))
@@ -139,17 +146,19 @@ def test_any_other_answer_sends_the_creating_request_as_today(failed, monkeypatc
     assert listener._read_job_ledger(root)["status"] == "completed"
 
 
-def test_consent_expired_keeps_its_own_ending(failed, monkeypatch):  # noqa: F811
+def test_consent_expired_keeps_its_own_ending(grantless, monkeypatch):  # noqa: F811
     """The pre-grant read acts on the no-grant code only; the creating request meets consent_expired as before."""
-    root, raw, _ = failed
+    root, raw, _ = grantless
     webapp = _install(monkeypatch, ValueError(EXPIRED), grant=ValueError(EXPIRED))
     result = _process(root, raw, lambda **_: pytest.fail("ran"))
-    assert result["status"] == listener.TERMINAL_AUTHORITY_STATUS and len(webapp.creates) == 1
+    assert result["status"] == listener.TERMINAL_AUTHORITY_STATUS
+    assert len(webapp.reads) == 1 and len(webapp.creates) == 1
     assert listener._read_job_ledger(root)["terminal_code"] == "consent_expired"
 
 
 def test_a_capture_that_retains_a_grant_is_never_asked(failed, monkeypatch):  # noqa: F811
     root, raw, _ = failed
+    assert (root / terminal.GRANT_FILE).is_file()  # The fixture's delivery retained its grant.
     write_json(root / "pipeline/website_scene_sponsorship.json", {"schema_version": "website_scene_sponsorship.v1"})
     webapp = _install(monkeypatch, ValueError(NO_GRANT))
     calls = []
@@ -157,24 +166,24 @@ def test_a_capture_that_retains_a_grant_is_never_asked(failed, monkeypatch):  # 
     assert webapp.reads == [] and len(webapp.creates) == 1 and len(calls) == 1
 
 
-def test_a_withdrawn_capture_is_never_asked(failed, monkeypatch):  # noqa: F811
-    root, raw, context = failed
+def test_a_withdrawn_capture_is_never_asked(grantless, monkeypatch):  # noqa: F811
+    root, raw, context = grantless
     webapp = _install(monkeypatch, ValueError(NO_GRANT))
     monkeypatch.setattr(preview_store, "capture_withdrawn", lambda _root: True)
     assert context_reader.no_grant_ending(capture_root=root, task_context=context) is None
     assert webapp.reads == []
 
 
-def test_the_host_retry_goes_through_the_same_check(failed, monkeypatch):  # noqa: F811
-    root, _, _ = failed
+def test_the_host_retry_goes_through_the_same_check(grantless, monkeypatch):  # noqa: F811
+    root, _, _ = grantless
     webapp = _install(monkeypatch, ValueError(NO_GRANT))
     assert _tick(root, lambda **_: pytest.fail("an ended job ran"), _due(root))["redriven"] == 1
     _ended_as_no_grant(root)
     assert len(webapp.reads) == 1 and webapp.creates == []
 
 
-def test_the_unclaimed_redrive_goes_through_the_same_check(failed, monkeypatch):  # noqa: F811
-    root, raw, _ = failed
+def test_the_unclaimed_redrive_goes_through_the_same_check(grantless, monkeypatch):  # noqa: F811
+    root, raw, _ = grantless
     storage_root = root.parents[4]
     (root / listener.JOB_LEDGER_FILENAME).unlink()  # A delivery refused before any claim: no ledger.
     retry.spool_unclaimed(listener, storage_root=storage_root, payload=raw, payload_digest=listener.payload_sha256(raw),
@@ -189,8 +198,8 @@ def test_the_unclaimed_redrive_goes_through_the_same_check(failed, monkeypatch):
     assert list((storage_root / retry.UNCLAIMED_DIR).glob("*.json")) == []
 
 
-def test_a_later_payload_for_the_same_capture_follows_the_existing_reopen_rule(failed, monkeypatch):  # noqa: F811
-    root, raw, _ = failed
+def test_a_later_payload_for_the_same_capture_follows_the_existing_reopen_rule(grantless, monkeypatch):  # noqa: F811
+    root, raw, _ = grantless
     _install(monkeypatch, ValueError(NO_GRANT))
     _process(root, raw, lambda **_: pytest.fail("ran"))
     ended = listener._read_job_ledger(root)
