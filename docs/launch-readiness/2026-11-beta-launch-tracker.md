@@ -115,14 +115,16 @@ An end-to-end audit of both repos on 2026-11-10 asked one question of every step
 
 ## Segmentation upload path: open faults (2026-11-11)
 
-**not started.** The clean-plate and robot-access steps send a whole video to the hosted segmentation provider by upload (`meta_sam31._upload_video`); that stores a copy at the provider. Two independent reviews on 2026-11-11 established these faults of the path as it is on `main`:
+**not started.** Steps that give the hosted segmentation provider a whole source video (`video_artifact`: the clean-plate task masks, the robot-access measurement) upload it with `meta_sam31._upload_video`, which leaves a copy at the provider until it is deleted by its file id. Two reviews on 2026-11-11 established these faults of that path on `main`:
 
-- A delete that fails at the end of a run is not tried again unless a later run of the same request happens.
-- An upload with no clear answer (no answer, a server error, an unusable file id) stops every later run for reconciliation by a person, and the reservation made before it stays held.
-- A 404 is read as "the uploaded file is gone", whether or not that is what the provider meant.
-- Nothing sweeps a copy left by a process that was killed between its upload and its delete.
+- At the end of a run the copy is deleted only by a run that had prompts to send. A delete that fails is recorded as not deleted. The job tries it again only if a later run of the same request still has prompts to send. Otherwise only a site withdrawal deletes it: that path deletes every recorded file id and retries a failed delete.
+- An upload with no clear outcome (no answer, a server error, or an answer without a usable file id) leaves an intent with no file id. Every later run then stops with `meta_sam_video_upload_requires_reconciliation` until a person resolves it. The reservation made before the upload stays held. A withdrawal lists such an intent as a copy whose id is unknown.
+- A 404 on a prompt is always taken to mean that the uploaded file is gone, and the next run uploads again; the code does not check that this is what the provider meant.
+- Outside a withdrawal, nothing deletes a copy whose run was killed between the upload and the delete.
 
-Intended design: every upload is written to one record before it is sent and stays there until the provider confirms its delete. One periodic sweep empties that record, skipping runs that still hold their lock. The Atlas background step does not upload: it sends its frames inline, in an encoding that keeps each request under 8 MB (`meta_sam31.INLINE_CLIP_LADDER`).
+The reviews did not check how long the provider keeps an uploaded file, or whether it deletes files by itself.
+
+Intended design: every upload is written to one record before it is sent, and stays there until the provider confirms its delete. One periodic sweep empties that record, skipping runs that still hold their lock.
 
 ## Deploy on 2026-11-11 (15:00 UTC window, D-08)
 

@@ -199,6 +199,7 @@ def test_a_partial_binding_with_a_fitting_retained_clip_buys_only_the_missing_pr
     assert sam.run_meta_sam31(**args, opener=provider)["status"] == "completed"
     assert provider.sent == ["object 1", "object 2"] and (root / "response-0.json").read_bytes() == kept
     assert not (root / sam.SUPERSEDED_CLIP_ARCHIVE).exists()
+    assert len(holds) == 2 and holds[1]["request_count"] == 2  # only the missing prompts are reserved
 
 
 def test_a_retained_clip_too_large_is_re_encoded_and_re_bought_once(tmp_path, monkeypatch):

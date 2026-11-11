@@ -1436,3 +1436,14 @@ def test_a_kept_result_with_a_provider_answer_among_its_blockers_is_never_needs_
     assert job["reason"] == (blockers[-1] if state == "failed" else None)
     if state == "processing":
         assert job["transient_failures"] == 1 and job["next_attempt_at_epoch"] > world.clock
+
+
+@pytest.mark.parametrize("code", ["meta_sam_http_408", "meta_sam_http_409", "meta_sam_http_425", "meta_sam_http_502"])
+def test_a_try_again_answer_takes_the_outage_schedule(monkeypatch, site, code):
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError(code), {"status": "processing", "stage": "plan"}])
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["transient_failures"] == 1 and job["last_transient_reason"] == code
+    world.clock = job["next_attempt_at_epoch"]
+    assert world.advance() == "processing" and len(world.runs) == 2  # the next run really runs

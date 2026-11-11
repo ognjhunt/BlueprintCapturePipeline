@@ -469,7 +469,9 @@ def test_a_refusal_the_provider_answered_is_dispatched_again_under_a_fresh_reser
     assert "resend_of" not in json.loads((archived.parents[1] / "response-1.json").read_text())
 
 
-def test_a_server_error_answer_still_requires_reconciliation(tmp_path, monkeypatch):
+def test_a_server_error_answer_whose_intent_names_no_reservation_is_never_resent(tmp_path, monkeypatch):
+    # A 500 that names its reservation is resent once under a new one (test_meta_sam31_inline_clip);
+    # an intent naming none cannot be counted as spent, so it is never resent, and the step ends.
     monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
     args = inputs(tmp_path)
     digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
