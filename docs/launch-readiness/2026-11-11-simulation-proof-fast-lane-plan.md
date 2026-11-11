@@ -64,23 +64,34 @@ Two more facts shape the plan.
 Each step is useful by itself and is proved before the next one starts.
 
 1. **Place the robot where it can do the job, or hold before spending.**
-   A stance counts as in reach only when the grasp point is within reach at
-   both the pick-up and the put-down. When no stance qualifies, the existing
-   admission stop holds the job before any paid run. Built on the branch
-   `claude/fervent-noether-5qvel0` with unit tests that reproduce the recorded
-   distances (0.729 m nearest point, 1.086 m grasp contact, 0.990 m bound).
-   Not merged or deployed. Before it merges:
-   - Replay capture-447 on the branch, as `AGENTS.md` requires. The stage
-     replay does not reach this code; the downstream replay does:
+   Built on the branch `claude/fervent-noether-5qvel0`. Not merged or deployed.
+   - The rule: a stance counts as in reach only when the grasp contact is
+     within the arm's bound at both the pick-up and the put-down. Stances that
+     reach the nominal put-down rank first.
+   - It holds only on proof. The job is held before any paid run only when no
+     stance can reach the nearest put-down the success contract accepts, using
+     a distance that can only under-estimate, for any turn the contract allows.
+     An assumed contact, a missing object box or an unknown destination
+     orientation is flagged and the job continues.
+   - Intake, candidate feasibility, the furniture proposal and the robot-fit
+     reports follow the same rule, so none says "fits" for a job the admission
+     stop would refuse.
+   - `STANCE_SEARCH_VERSION` is 4. A job prepared earlier whose station passes
+     is left alone; one whose station fails is searched again once, on CPU.
+   - An independent review found five faults in the first version and one in
+     the second, and passed the third: no over-estimate in 205,000 sampled
+     poses, 710 related tests passing.
+   - Before it merges, replay capture-447 on the branch, as `AGENTS.md`
+     requires. The stage replay does not reach this code; the downstream
+     replay does:
      `python -m blueprint_pipeline.task_evaluation_downstream_replay --launch-run "$L" --intent-dir "$I" --capture-dir "$C" --registry "$R" --webapp-snapshots ./webapp --mirror ./mirror --until screening_plan --replay-root ./replays`,
      with the inputs pulled as `docs/OPERATOR_DOOR.md` describes. Check the
      chosen stance and its contact distances in `robot_station_search`.
-   - Decide whether to raise `STANCE_SEARCH_VERSION`. Its comment says to raise
-     it whenever station choice changes; raising it recompiles completed team
-     halves, so it was left as it is on the branch.
-   - The intake check judges reach from the object's centre, because no grasp
-     contact is sealed that early. It can disagree with the later check on a
-     large object.
+   - Two things to know. The recorded job is held because its nearest accepted
+     put-down is 1.024 m from the shoulder against 0.990 m, with the website's
+     5 cm tolerance; a tolerance of about 9 cm or more would turn that hold
+     into a flag. And the proof rests on the task's sealed grasp contact: a
+     policy that holds the object somewhere else is not modelled.
 2. **Score progress, not only success.** Add a 0-to-1 progress score per
    episode: reached, touched, grasped, lifted, carried, placed. Compute it
    first offline from retained traces with
