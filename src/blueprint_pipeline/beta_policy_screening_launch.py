@@ -193,7 +193,10 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
         from .beta_policy_screening_family import validate_family_candidate_catalog
         validate_family_candidate_catalog(plan, candidate, native_spec, static, scene=scene)
     from .policy_interface_binding import TEAM_HTTPS_INTERFACES, TEAM_ROBOT_INTERFACES, TEAM_LOCAL_INTERFACES
-    if native_spec.get("policy_interface_id") in TEAM_HTTPS_INTERFACES:
+    from .session_served_policy import is_session_served, validate_session_served_spec
+    if is_session_served(native_spec):
+        validate_session_served_spec(native_spec)  # Served on the session's machine: no hosted delivery.
+    elif native_spec.get("policy_interface_id") in TEAM_HTTPS_INTERFACES:
         from .beta_policy_screening_hosted import validate_hosted_delivery
         validate_hosted_delivery(native_spec, execution, episodes=candidate["episode_count"])
     elif native_spec.get("policy_interface_id") in TEAM_LOCAL_INTERFACES:

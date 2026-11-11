@@ -311,6 +311,14 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                     scene_plan=scene_plan, base_packet=inputs["base_native_packet"], source=source,
                     contract=contract, site_id=scene["site_id"])
                 inventory = repo / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
+            elif override and override.get("session_served_policy") is not None:
+                # A native checkpoint re-served over the standard contract on the session's machine.
+                from .session_served_policy import session_served_spec
+                native_key = (override["session_served_policy"] or {}).get("native_candidate_id")
+                if native_key not in templates:
+                    raise ValueError(template_failures.get(native_key, "runtime_candidate_binding_missing"))
+                spec = session_served_spec(templates[native_key][0], candidate_id=key, entry=override["session_served_policy"])
+                inventory = templates[native_key][1]
             elif override:
                 if override.get("robot_policy") is not None:
                     from .beta_policy_screening_team import build_registered_team_spec
@@ -340,9 +348,15 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                         load_catalog(repo / "config" / "beta_policy_candidates.v1.json")["candidates"]
                         if row["candidate_id"] == key)):
                 raise ValueError("beta_screening_policy_identity_changed")
+            from .session_served_policy import interface_matches as served_matches, is_session_served
+            served = is_session_served(spec)
             if family:
                 from .beta_policy_screening_family import family_interface_matches
                 interface_matches = family_interface_matches(configured, spec, static)
+            elif served:
+                interface_matches = served_matches(configured, spec, next(
+                    row for row in catalog["candidates"] if row["candidate_id"] == spec[
+                        "session_policy_server"]["native_candidate_id"]))
             else:
                 interface_matches = _interface_matches(configured, spec)
             if (spec["checkpoint_digest"] != configured["policy"]["digest"]
@@ -362,7 +376,8 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             ttl = profile.get("screening_hard_ttl_seconds", DEFAULT_HARD_TTL_SECONDS)
             cap = Decimal(str(profile.get("screening_candidate_cap_usd", DEFAULT_CANDIDATE_CAP_USD)))
             from .policy_interface_binding import TEAM_HTTPS_INTERFACES
-            hosted = spec["policy_interface_id"] in TEAM_HTTPS_INTERFACES
+            # A session-served policy has no API fee: its only money is the GPU cap, like a native row.
+            hosted = spec["policy_interface_id"] in TEAM_HTTPS_INTERFACES and not served
             hosted_settings = {}
             if hosted:
                 from .beta_policy_screening_hosted import HOSTED_FIELDS, request_limit, validate_hosted_delivery
