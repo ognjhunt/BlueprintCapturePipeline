@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import io
 import json
 import math
@@ -54,6 +55,17 @@ class RegistrationRefusal(ValueError):
         self.evidence = dict(evidence)
 
 SCHEMA_VERSION = "website_scene_preparation.v1"
+#: The revision of how an object's front normal is found (``deterministic_refusal``). With the camera above the
+#: object's centre, no horizontal direction is observed; the same video repeats that, so it is not retried on a
+#: timer, and no direction is guessed: the site is asked to film the object's front.
+FRONT_NORMAL_REVISION = "website_front_normal.r1"
+
+
+def _front_normal_undetermined(*values: Any) -> ValueError:
+    from .deterministic_refusal import DeterministicRefusal
+    body = json.dumps([np.round(np.asarray(value, dtype=float), 9).tolist() for value in values])
+    return DeterministicRefusal("website_front_normal_undetermined", step="website_front_normal",
+                                inputs={"geometry_sha256": "sha256:" + hashlib.sha256(body.encode()).hexdigest()})
 CLAIM_CEILING = "development_only"
 _UP_INDEX = {"Y": 1, "-Y": 1, "Z": 2}
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -885,7 +897,7 @@ def estimate_front_normal(track: Mapping[str, Any], frames_by_id: Mapping[str, M
     direction[up] = 0.0
     norm = float(np.linalg.norm(direction))
     if norm < 1e-9:
-        raise ValueError("website_front_normal_undetermined")
+        raise _front_normal_undetermined(camera_runtime, center_runtime)
     direction = direction / norm
     rotation = np.asarray(runtime_to_sim, dtype=float)[:3, :3]
     sim = rotation @ direction
@@ -908,7 +920,7 @@ def levelled_body_bounds(body: Mapping[str, Any], source_to_runtime: np.ndarray,
     normal = linear @ np.asarray(body["front_normal"], dtype=float)
     normal[up] = 0.0
     if float(np.linalg.norm(normal)) < 1e-9:
-        raise ValueError("website_front_normal_undetermined")
+        raise _front_normal_undetermined(body["front_normal"], source_to_runtime)
     normal = np.abs(normal / np.linalg.norm(normal))
     a, b = [axis for axis in range(3) if axis != up]
     depth, width, height = (float(body[key]) * scale for key in ("depth_m", "width_m", "height_m"))
@@ -954,7 +966,7 @@ def body_front_normal(body: Mapping[str, Any], source_to_sim_linear: np.ndarray)
     sim[2] = 0.0
     norm = float(np.linalg.norm(sim))
     if norm < 1e-9:
-        raise ValueError("website_front_normal_undetermined")
+        raise _front_normal_undetermined(body["front_normal"], source_to_sim_linear)
     return {"estimated_front_normal_world": [float(v) for v in sim / norm],
             "basis": "closed_front_plane_of_whole_object_coverage", "physical_orientation_measured": False}
 

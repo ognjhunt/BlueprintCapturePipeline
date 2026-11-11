@@ -551,6 +551,9 @@ locals {
 
   # Google-managed identity that moves exhausted handoffs to the dead-letter topic.
   pubsub_service_agent = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+
+  # The off-host GPU reaper's job, named once for its schedule and its alert.
+  off_host_gpu_reaper_job_name = "blueprint-off-host-gpu-reaper"
 }
 
 # =============================================================================
@@ -2772,6 +2775,311 @@ resource "google_billing_budget" "remote_cpu_workers" {
 }
 
 # =============================================================================
+# Off-host GPU reaper (docs/runbooks/off-host-gpu-reaper.md)
+# =============================================================================
+#
+# Everything else that stops a rented Vast machine runs on the control-plane
+# host. This job runs in Cloud Run on a ten-minute Cloud Scheduler tick and
+# destroys Blueprint-labelled machines past the deadline the host last
+# published to the bucket below (blueprint_pipeline.off_host_gpu_reaper). Off
+# by default: with the flag off, the plan is unchanged. The Vast key is an
+# existing Secret Manager secret the owner creates; Terraform stores only its
+# reference. The host's heartbeat identity gets no key here: the owner makes
+# one and installs it on the host.
+
+variable "off_host_gpu_reaper_enabled" {
+  description = "Create the off-host GPU reaper job, its schedule, bucket, identities and alert."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "off_host_gpu_reaper_vast_api_key_secret_name" {
+  description = "Existing Secret Manager secret holding the Vast API key the reaper lists and destroys with."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = var.off_host_gpu_reaper_vast_api_key_secret_name == "" || can(regex("^[A-Za-z0-9_-]{1,255}$", var.off_host_gpu_reaper_vast_api_key_secret_name))
+    error_message = "off_host_gpu_reaper_vast_api_key_secret_name must name an existing Secret Manager secret."
+  }
+}
+
+resource "google_project_service" "off_host_gpu_reaper_scheduler_api" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  service            = "cloudscheduler.googleapis.com"
+  disable_on_destroy = false
+}
+
+# The host rewrites host-state/latest.json; each pass writes one object under
+# reports/, kept for 30 days.
+resource "google_storage_bucket" "off_host_gpu_reaper" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  name     = "${var.project_id}-off-host-gpu-reaper"
+  location = var.primary_region
+  labels   = merge(local.common_labels, { cost-center = "off-host-gpu-reaper" })
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  versioning {
+    enabled = false
+  }
+
+  lifecycle_rule {
+    condition {
+      age            = 30
+      matches_prefix = ["reports/"]
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
+resource "google_service_account" "off_host_gpu_reaper" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  account_id   = "off-host-gpu-reaper"
+  display_name = "Blueprint Off-Host GPU Reaper"
+  description  = "Runs the off-host GPU reaper job: reads the host's published deadlines, writes pass reports"
+}
+
+resource "google_service_account" "off_host_gpu_reaper_heartbeat" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  account_id   = "off-host-reaper-heartbeat"
+  display_name = "Blueprint Off-Host Reaper Heartbeat"
+  description  = "The control-plane host's identity for publishing its heartbeat and Vast deadlines"
+}
+
+resource "google_service_account" "off_host_gpu_reaper_scheduler" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  account_id   = "off-host-reaper-scheduler"
+  display_name = "Blueprint Off-Host Reaper Scheduler"
+  description  = "Cloud Scheduler's identity for starting the off-host GPU reaper job"
+}
+
+resource "google_storage_bucket_iam_member" "off_host_gpu_reaper_reader" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  bucket = google_storage_bucket.off_host_gpu_reaper[0].name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.off_host_gpu_reaper[0].email}"
+}
+
+resource "google_storage_bucket_iam_member" "off_host_gpu_reaper_report_writer" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  bucket = google_storage_bucket.off_host_gpu_reaper[0].name
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:${google_service_account.off_host_gpu_reaper[0].email}"
+}
+
+# Rewriting one object needs create, get and delete on it.
+resource "google_storage_bucket_iam_member" "off_host_gpu_reaper_heartbeat_writer" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  bucket = google_storage_bucket.off_host_gpu_reaper[0].name
+  role   = "roles/storage.objectUser"
+  member = "serviceAccount:${google_service_account.off_host_gpu_reaper_heartbeat[0].email}"
+}
+
+data "google_secret_manager_secret" "off_host_gpu_reaper_vast_api_key" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  project   = var.project_id
+  secret_id = var.off_host_gpu_reaper_vast_api_key_secret_name
+
+  depends_on = [google_project_service.required_apis]
+}
+
+resource "google_secret_manager_secret_iam_member" "off_host_gpu_reaper_vast_api_key" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  project   = var.project_id
+  secret_id = data.google_secret_manager_secret.off_host_gpu_reaper_vast_api_key[0].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.off_host_gpu_reaper[0].email}"
+}
+
+resource "google_cloud_run_v2_job" "off_host_gpu_reaper" {
+  provider = google-beta
+  count    = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  name     = local.off_host_gpu_reaper_job_name
+  location = var.primary_region
+  labels   = merge(local.common_labels, { cost-center = "off-host-gpu-reaper" })
+
+  template {
+    parallelism = 1
+    task_count  = 1
+
+    template {
+      # No retry: the next tick runs a fresh pass, and each failure alerts
+      # (off_host_gpu_reaper_failures).
+      execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
+      max_retries           = 0
+      timeout               = "300s"
+      service_account       = google_service_account.off_host_gpu_reaper[0].email
+
+      containers {
+        image   = var.docker_image
+        command = ["python", "-m", "blueprint_pipeline.off_host_gpu_reaper"]
+
+        resources {
+          limits = {
+            cpu    = "1"
+            memory = "512Mi"
+          }
+        }
+
+        env {
+          name  = "BLUEPRINT_OFF_HOST_GPU_REAPER_BUCKET"
+          value = google_storage_bucket.off_host_gpu_reaper[0].name
+        }
+
+        env {
+          name  = "VAST_API_KEY_FILE"
+          value = "/secrets/vast/vast_api_key"
+        }
+
+        volume_mounts {
+          name       = "vast-api-key"
+          mount_path = "/secrets/vast"
+        }
+      }
+
+      volumes {
+        name = "vast-api-key"
+
+        secret {
+          secret = data.google_secret_manager_secret.off_host_gpu_reaper_vast_api_key[0].secret_id
+
+          items {
+            version = "latest"
+            path    = "vast_api_key"
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.off_host_gpu_reaper_vast_api_key_secret_name != ""
+      error_message = "off_host_gpu_reaper_vast_api_key_secret_name must name the Vast key secret when off_host_gpu_reaper_enabled is true."
+    }
+  }
+
+  depends_on = [
+    google_project_service.required_apis,
+    google_secret_manager_secret_iam_member.off_host_gpu_reaper_vast_api_key,
+    google_storage_bucket_iam_member.off_host_gpu_reaper_reader,
+    google_storage_bucket_iam_member.off_host_gpu_reaper_report_writer,
+  ]
+}
+
+resource "google_cloud_run_v2_job_iam_member" "off_host_gpu_reaper_scheduler" {
+  provider = google-beta
+  count    = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  name     = google_cloud_run_v2_job.off_host_gpu_reaper[0].name
+  location = var.primary_region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.off_host_gpu_reaper_scheduler[0].email}"
+}
+
+resource "google_cloud_scheduler_job" "off_host_gpu_reaper" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  name             = local.off_host_gpu_reaper_job_name
+  description      = "Start one off-host GPU reaper pass every ten minutes."
+  region           = var.primary_region
+  schedule         = "*/10 * * * *"
+  time_zone        = "Etc/UTC"
+  attempt_deadline = "320s"
+
+  retry_config {
+    retry_count = 0
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "https://run.googleapis.com/v2/projects/${var.project_id}/locations/${var.primary_region}/jobs/${google_cloud_run_v2_job.off_host_gpu_reaper[0].name}:run"
+
+    oauth_token {
+      service_account_email = google_service_account.off_host_gpu_reaper_scheduler[0].email
+      scope                 = "https://www.googleapis.com/auth/cloud-platform"
+    }
+  }
+
+  depends_on = [
+    google_project_service.off_host_gpu_reaper_scheduler_api,
+    google_cloud_run_v2_job_iam_member.off_host_gpu_reaper_scheduler,
+  ]
+}
+
+# The existing alert route: a failed pass (unknown or failed, the job exits
+# non-zero) pages, and so does no pass at all for 30 minutes.
+resource "google_monitoring_alert_policy" "off_host_gpu_reaper_failures" {
+  count = var.off_host_gpu_reaper_enabled ? 1 : 0
+
+  display_name = "Blueprint Off-Host GPU Reaper"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Reaper pass failed or unknown"
+
+    condition_threshold {
+      filter          = "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND metric.labels.result=\"failed\" AND resource.labels.job_name=\"${local.off_host_gpu_reaper_job_name}\""
+      duration        = "0s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+
+      aggregations {
+        alignment_period     = "600s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+
+  conditions {
+    display_name = "No reaper pass for 30 minutes"
+
+    condition_absent {
+      filter   = "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND resource.labels.job_name=\"${local.off_host_gpu_reaper_job_name}\""
+      duration = "1800s"
+
+      aggregations {
+        alignment_period     = "600s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+
+  notification_channels = var.monitoring_notification_channels
+
+  lifecycle {
+    precondition {
+      condition     = var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0
+      error_message = "monitoring_notification_channels must include at least one channel for production alert policies. Set allow_empty_monitoring_notification_channels=true only for dry-run plans."
+    }
+  }
+
+  documentation {
+    content   = "The off-host GPU reaper's pass was unknown or failed, or did not run. Read the latest object under reports/ in the reaper bucket, or the execution's log; the runbook is docs/runbooks/off-host-gpu-reaper.md."
+    mime_type = "text/markdown"
+  }
+}
+
+# =============================================================================
 # Outputs
 # =============================================================================
 
@@ -2870,4 +3178,17 @@ output "storage_trigger_function" {
 output "swap_dispatch_worker_function" {
   description = "Swap dispatch worker Cloud Function name"
   value       = google_cloudfunctions2_function.swap_dispatch_worker.name
+}
+
+output "off_host_gpu_reaper" {
+  description = "The off-host GPU reaper's bucket, job and identities, or null while it is off."
+  value = var.off_host_gpu_reaper_enabled ? {
+    bucket                = google_storage_bucket.off_host_gpu_reaper[0].name
+    job                   = google_cloud_run_v2_job.off_host_gpu_reaper[0].name
+    reaper                = google_service_account.off_host_gpu_reaper[0].email
+    heartbeat_publisher   = google_service_account.off_host_gpu_reaper_heartbeat[0].email
+    scheduler             = google_service_account.off_host_gpu_reaper_scheduler[0].email
+    state_object          = "host-state/latest.json"
+    reports_object_prefix = "reports/"
+  } : null
 }

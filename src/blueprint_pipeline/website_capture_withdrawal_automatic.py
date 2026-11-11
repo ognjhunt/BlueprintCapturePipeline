@@ -69,7 +69,9 @@ APPROVAL_PATH = Path("/etc/blueprint/website-withdrawal-deletion-approval.json")
 APPROVAL_SCHEMA = "website_withdrawal_deletion_standing_approval.v1"
 POLICY_CLASS = "website_withdrawal_deletion.acknowledged_unheld_resolved_settled_cooled.v1"
 _APPROVAL_REQUIRED = frozenset({"schema_version", "approved_by", "approved_at", "policy_class", "cool_off_hours"})
-_APPROVAL_OPTIONAL = frozenset({"expires_at", "note"})
+# ``garbage_collection_policy_class``: the owner's separate, explicit approval for deleting content blobs
+# nobody refers to (website_withdrawal_content_blobs.plan_gc); without it that plan only plans.
+_APPROVAL_OPTIONAL = frozenset({"expires_at", "note", "garbage_collection_policy_class"})
 MAX_APPROVAL_BYTES = 16 * 1024
 MAX_COOL_OFF_HOURS = 720
 CLOCK_SKEW_SECONDS = 300
@@ -182,9 +184,14 @@ def load_approval(path: Path = APPROVAL_PATH, *, now: float, owner_uid: int = 0)
         return _invalid("approval_cool_off_hours_invalid", digest)
     if "note" in value and (not isinstance(value["note"], str) or len(value["note"]) > 1000):
         return _invalid("approval_note_invalid", digest)
+    from .website_withdrawal_content_blobs import GC_POLICY_CLASS
+    gc_class = value.get("garbage_collection_policy_class")
+    if gc_class is not None and gc_class != GC_POLICY_CLASS:
+        return _invalid("approval_garbage_collection_policy_class_mismatch", digest)
     approval = {"approved_by": approved_by, "approved_at": approved_at.isoformat(),
                 "expires_at": expires_at.isoformat() if expires_at else None,
-                "policy_class": POLICY_CLASS, "cool_off_hours": hours}
+                "policy_class": POLICY_CLASS, "cool_off_hours": hours,
+                "garbage_collection_approved": gc_class == GC_POLICY_CLASS}
     if expires_at is not None and now >= expires_at.timestamp():
         return {"status": "expired", "reason": "approval_expired", "digest": digest, "approval": approval}
     return {"status": "valid", "reason": None, "digest": digest, "approval": approval}
@@ -264,7 +271,10 @@ def _read_json(path: Path, max_bytes: int = 1024 * 1024) -> dict[str, Any] | Non
 def discover_withdrawals(site_roots: Sequence[Path]) -> tuple[list[Path], list[dict[str, str]]]:
     """Every site directory with a tombstone under ``<root>/scenes/`` or ``<root>/*/scenes/``, and what could not be listed.
 
-    A root, bucket or ``scenes`` directory that cannot be listed (or a missing root) is reported, never read as empty.
+    A root, bucket, ``scenes`` or site directory that cannot be read (or a missing root) is reported, never read as
+    empty, and the scan goes on. A hidden folder is never a bucket: a bucket is named after its GCS bucket, which
+    never starts with a dot, and the hidden folders beside them are spools, evidence and caches (the storage GC's
+    root-only ``.scene-workspace-inventory`` among them).
     """
 
     sites: list[Path] = []
@@ -285,16 +295,26 @@ def discover_withdrawals(site_roots: Sequence[Path]) -> tuple[list[Path], list[d
             problems.append({"path": str(root), "reason": "site_root_missing"})
             continue
         bases = [root, *(Path(entry.path) for entry in children(root)
-                         if entry.name != "scenes" and entry.is_dir(follow_symlinks=False))]
+                         if entry.name != "scenes" and not entry.name.startswith(".")
+                         and entry.is_dir(follow_symlinks=False))]
         for base in bases:
             scenes = base / "scenes"
-            if scenes.is_symlink() or not scenes.is_dir():
+            try:
+                if scenes.is_symlink() or not scenes.is_dir():
+                    continue
+            except OSError as error:
+                problems.append({"path": str(base), "reason": "unlistable:" + type(error).__name__})
                 continue
             for entry in children(scenes):
                 if not (_SITE.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False)):
                     continue
                 tombstone = Path(entry.path) / "website_withdrawal" / "tombstone.json"
-                if tombstone.is_file() and not tombstone.is_symlink():
+                try:
+                    withdrawn = tombstone.is_file() and not tombstone.is_symlink()
+                except OSError as error:
+                    problems.append({"path": entry.path, "reason": "site_unreadable:" + _error_code(error)})
+                    continue
+                if withdrawn:
                     sites.append(Path(entry.path))
     return sites, problems
 
@@ -340,7 +360,32 @@ def _write_state(site: Path, state: Mapping[str, Any]) -> None:
     write_json(path, state)
 
 
-def _site_row(site: Path, now: float) -> dict[str, Any]:
+def _receipt_view(site: Path, tombstone_digest: str | None, backup_ledger: Path) -> dict[str, Any] | None:
+    """The finished receipt, with whether any backup can still hold what it deleted (read fresh each pass).
+
+    The sealed receipt is never rewritten. A backup generation taken before the deletion can still hold the
+    site's deleted records until the backup unit purges it (``control_plane_state_backup``); until then the
+    withdrawal is not finished, whatever the receipt says, and is reported ``backup_copies_not_purged``.
+    """
+
+    receipt = _sealed_receipt(site, tombstone_digest)
+    if receipt is None:
+        return None
+    from .control_plane_state_backup import backup_copies_status
+
+    receipt["backup_copies"] = backup_copies_status(site, receipt["digest"], receipt.get("applied_at_iso"),
+                                                    ledger=backup_ledger)
+    return receipt
+
+
+def _finished(row: Mapping[str, Any]) -> bool:
+    from .control_plane_state_backup import BACKUP_CLEARED_STATUSES
+
+    receipt = row["receipt"]
+    return receipt is not None and receipt["backup_copies"]["status"] in BACKUP_CLEARED_STATUSES
+
+
+def _site_row(site: Path, now: float, backup_ledger: Path) -> dict[str, Any]:
     """What the pass knows about one withdrawn site without planning: tombstone, receipt and state."""
 
     tombstone_path = site / "website_withdrawal" / "tombstone.json"
@@ -365,7 +410,7 @@ def _site_row(site: Path, now: float) -> dict[str, Any]:
     request_id = site.name[5:]
     return {"site": site, "capture_root": site / "captures" / f"walkthrough-{request_id}", "scene_id": site.name,
             "tombstone_digest": digest, "acknowledged_at_epoch": acknowledged,
-            "receipt": _sealed_receipt(site, digest), "state": state}
+            "receipt": _receipt_view(site, digest, backup_ledger), "state": state}
 
 
 def _failed(state: Mapping[str, Any], error: str, now: float) -> dict[str, Any]:
@@ -503,7 +548,7 @@ def _alerts(rows: Sequence[Mapping[str, Any]], approval: Mapping[str, Any], prob
         alerts.append({"code": "website_withdrawal_scan_incomplete", "target": "site_roots",
                        "count": len(problems), "reason": problems[0]["reason"]})
     for row in rows:
-        if row["receipt"] is not None:
+        if _finished(row):
             continue
         state = row["state"] or {}
         held = state.get("status") == "legal_hold"
@@ -566,10 +611,21 @@ def _summary(rows: Sequence[Mapping[str, Any]], *, approval: Mapping[str, Any], 
     overdue = {alert["target"] for alert in alerts if alert["code"] == "website_withdrawal_deletion_overdue"}
     for row in rows:
         counts["total"] += 1
+        if row["receipt"] is not None and not _finished(row):
+            # Deleted on the host; an older backup generation still has to be purged.
+            counts["waiting"] += 1
+            counts["incomplete"] += 1
+            sites.append({"scene_id": row["scene_id"], "status": "incomplete",
+                          "waiting_on": ["backup_copies_not_purged"],
+                          "deletion_status": row["receipt"]["deletion_status"],
+                          "backup_copies": row["receipt"]["backup_copies"],
+                          "acknowledged_at_epoch": row["acknowledged_at_epoch"]})
+            continue
         if row["receipt"] is not None:
             counts["completed"] += 1
             counts[row["receipt"]["deletion_status"]] += 1
             sites.append({"scene_id": row["scene_id"], "status": row["receipt"]["deletion_status"],
+                          "backup_copies": row["receipt"]["backup_copies"]["status"],
                           "provider_retention_remains": row["receipt"]["provider_retention_remains"],
                           "acknowledged_at_epoch": row["acknowledged_at_epoch"]})
             continue
@@ -620,8 +676,11 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
              planner: Callable[..., dict[str, Any]] | None = None,
              applier: Callable[..., dict[str, Any]] | None = None,
              site_index_root: Path | None = None, indexed_roots: Sequence[Path] = (),
-             index_budget: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """One timer pass: at most one site planned (and applied when approved), every state recorded, alerts posted."""
+             index_budget: Mapping[str, Any] | None = None, backup_ledger: Path | None = None) -> dict[str, Any]:
+    """One timer pass: at most one site planned (and applied when approved), every state recorded, alerts posted.
+
+    ``backup_ledger`` is the state backup's ledger (default: ``control_plane_state_backup`` under its report
+    root); a site is finished only once no backup generation older than its deletion survives."""
 
     if planner is None or applier is None:
         from . import website_capture_withdrawal_deletion as deletion
@@ -629,6 +688,10 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
         planner = planner or deletion.plan_withdrawal_deletion
         applier = applier or deletion.apply_withdrawal_deletion
     observed = time.time() if now is None else float(now)
+    if backup_ledger is None:
+        from .control_plane_state_backup import ledger_path, report_root_from_env
+
+        backup_ledger = ledger_path(report_root_from_env())
     report_root = Path(report_root)
     report_root.mkdir(parents=True, exist_ok=True, mode=0o750)
     with _host_lock(report_root) as held:
@@ -639,7 +702,7 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
         rows = []
         for site in sites:
             try:
-                rows.append(_site_row(site, observed))
+                rows.append(_site_row(site, observed, backup_ledger))
             except OSError as error:
                 # One site's unreadable journal must not stop the others; the scan reports it.
                 problems.append({"path": str(site), "reason": "site_unreadable:" + _error_code(error)})
@@ -658,7 +721,7 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
             row = due[0]
             state = _handle(row, approval=approval, approval_path=Path(approval_path), now=observed,
                             resolution=resolution, quiet=quiet, planner=planner, applier=applier)
-            row.update(state=state, receipt=_sealed_receipt(row["site"], row["tombstone_digest"]))
+            row.update(state=state, receipt=_receipt_view(row["site"], row["tombstone_digest"], backup_ledger))
             action = {"scene_id": row["scene_id"], "status": state["status"],
                       "waiting_on": state.get("waiting_on") or [], "last_error": state.get("last_error"),
                       "deletion_status": state.get("deletion_status")}
@@ -666,9 +729,41 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
         summary = _summary(rows, approval=approval, busy=busy, problems=problems, alerts=alerts, action=action,
                            now=observed)
         summary["site_index"] = index_report
+        if site_index_root is not None and indexed_roots:
+            summary["content_gc"] = _content_gc(site_index_root, indexed_roots, report_root=report_root,
+                                                approval=approval, busy=busy, now=observed)
         summary["alert_delivery"] = _post(report_root, alerts, now=observed, webhook_url=webhook_url, poster=poster)
         write_json(report_root / SUMMARY_FILENAME, summary)
         return summary
+
+
+def _content_gc(index_root: Path, roots: Sequence[Path], *, report_root: Path, approval: Mapping[str, Any],
+                busy: Sequence[str], now: float) -> dict[str, Any]:
+    """Count the content blobs nobody refers to, plan their garbage collection, and apply it only when the
+    approval file names its own policy class (with every store fully read and a fresh check per blob)."""
+
+    from . import website_withdrawal_content_blobs as content_blobs
+    from .website_withdrawal_site_index import read_index
+
+    unreferenced = {"count": 0, "bytes": 0}
+    for root in map(Path, roots):
+        store = ((read_index(index_root, root) or {}).get("entries") or {}).get(content_blobs.STORE_ENTRY) or {}
+        for blob in (store.get("blobs") or {}).values():
+            if blob["nlink"] <= 1:
+                unreferenced["count"] += 1
+                unreferenced["bytes"] += blob["size"]
+    plan = content_blobs.plan_gc(index_root, roots, now=now)
+    approved = approval["status"] == "valid" and (approval["approval"] or {}).get("garbage_collection_approved")
+    result: dict[str, Any] = {"unreferenced_blobs": unreferenced, "plan_complete": plan["complete"],
+                              "candidates": len(plan["candidates"]), "candidate_bytes": plan["bytes"],
+                              "approved": bool(approved), "applied": None}
+    if approved and plan["candidates"] and not busy:
+        applied = content_blobs.apply_gc(plan, now=now)
+        write_json(report_root / "content-gc" / f"{int(now)}.json", {**applied, "policy_class": plan["policy_class"],
+                                                                      "approval_digest": approval["digest"]})
+        result["applied"] = {"deleted": len(applied["deleted"]), "kept": len(applied["kept"]),
+                             "bytes_deleted": applied["bytes_deleted"]}
+    return result
 
 
 _PROJECTED_COUNTS = ("total", "completed", "waiting", "not_yet_planned", "awaiting_owner_approval", "cool_off",
@@ -696,6 +791,9 @@ def capacity_projection(summary: Mapping[str, Any] | None) -> dict[str, Any] | N
         "scan_complete": summary.get("scan_complete") if isinstance(summary.get("scan_complete"), bool) else None,
         "withdrawals": {key: counts[key] for key in _PROJECTED_COUNTS
                         if type(counts.get(key)) is int and counts[key] >= 0},
+        "unreferenced_content_blobs": {key: value for key, value in (
+            (summary.get("content_gc") or {}).get("unreferenced_blobs") or {}).items()
+            if key in {"count", "bytes"} and type(value) is int},
         "alert_codes": sorted({str(alert.get("code")) for alert in summary.get("alerts") or []
                                if isinstance(alert, Mapping) and _CODE.fullmatch(str(alert.get("code")))}),
     }

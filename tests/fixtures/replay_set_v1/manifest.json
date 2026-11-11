@@ -3,7 +3,7 @@
  "set_id": "replay_set_v1",
  "synthetic": true,
  "materialize_root": "/tmp/blueprint-replay-set-v1",
- "replay_clock_epoch": 1794250430,
+ "replay_clock_epoch": 1794348447,
  "built_by": "PYTHONPATH=src python -m tests.replay_set_v1_build --out tests/fixtures/replay_set_v1",
  "records": [
   {
@@ -163,6 +163,153 @@
       "kind": "refusal",
       "stage": "completion",
       "code": "preparation_completion_not_adopted"
+     }
+    }
+   ]
+  },
+  {
+   "record_id": "atlas-coverage-gap-site-ask",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "website_scene_preparation",
+   "description": "An Atlas preview job whose reviewed task region no filmed view connects to the task object. Frame selection refuses before any upload and the job ends at once as needs_input with the coverage code the website turns into its ask for a new video: no timed retry.",
+   "input_variety": {
+    "video_resolution": "not_applicable",
+    "clip_length": "not_applicable",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [],
+   "file_count": 10,
+   "tools": [
+    {
+     "tool": "atlas_preview_replay",
+     "until": "first_stop",
+     "inputs": {
+      "job": "storage/scenes/site-req-coverage/captures/walkthrough-req-coverage/pipeline/atlas/preview_job.json"
+     },
+     "expected_stop": {
+      "kind": "refusal",
+      "stage": "queued",
+      "code": "atlas_task_and_scene_coverage_gap",
+      "final_state": "needs_input"
+     }
+    }
+   ]
+  },
+  {
+   "record_id": "atlas-deterministic-refusal-waits",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "website_scene_preparation",
+   "description": "An Atlas preview job whose mesh registration refused on its retained inputs, recorded as a deterministic refusal under this release's revision. The controller does not run the step again: the job keeps waiting on its key, and nothing is bought.",
+   "input_variety": {
+    "video_resolution": "not_applicable",
+    "clip_length": "not_applicable",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [],
+   "file_count": 5,
+   "tools": [
+    {
+     "tool": "atlas_preview_replay",
+     "until": "first_stop",
+     "inputs": {
+      "job": "storage/scenes/site-req-refused/captures/walkthrough-req-refused/pipeline/atlas/preview_job.json"
+     },
+     "expected_stop": {
+      "kind": "refusal",
+      "stage": "mesh",
+      "code": "atlas_mesh_not_registered_to_splat",
+      "final_state": "needs_input"
+     }
+    }
+   ]
+  },
+  {
+   "record_id": "levelling-provider-up-estimate",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "website_scene_preparation",
+   "description": "Rolling open ground with no level surface: levelling continues on the provider's +Y, unverified, and names the estimate.",
+   "input_variety": {
+    "video_resolution": "not_applicable",
+    "clip_length": "not_applicable",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [],
+   "file_count": 3,
+   "tools": [
+    {
+     "tool": "atlas_reconstruction_stage_replay",
+     "until": "levelling",
+     "inputs": {
+      "splat": "world/splat.ply",
+      "mesh": "world/mesh.glb",
+      "cameras": "world/cameras.json"
+     },
+     "expected_stop": {
+      "kind": "estimate",
+      "stage": "levelling",
+      "code": "scene_estimate:level"
+     }
+    }
+   ]
+  },
+  {
+   "record_id": "levelling-view-dependent-splat",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "website_scene_preparation",
+   "description": "A floor and two walls whose splat carries view-dependent colour: levelled on the observed floor with its base colour only, and the floor filled under the filmed path, both named.",
+   "input_variety": {
+    "video_resolution": "not_applicable",
+    "clip_length": "not_applicable",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [],
+   "file_count": 3,
+   "tools": [
+    {
+     "tool": "atlas_reconstruction_stage_replay",
+     "until": "levelling",
+     "inputs": {
+      "splat": "world/splat.ply",
+      "mesh": "world/mesh.glb",
+      "cameras": "world/cameras.json"
+     },
+     "expected_stop": {
+      "kind": "estimate",
+      "stage": "levelling",
+      "code": "scene_estimate:floor,scene_estimate:splat_view_dependence_dropped"
+     }
+    }
+   ]
+  },
+  {
+   "record_id": "mesh-registration-closest-frame-estimate",
+   "synthetic": true,
+   "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
+   "job_kind": "website_scene_preparation",
+   "description": "A mesh that registers to no declared frame of its splat: the frame of smallest median residual is taken, only faces near the splat are kept, and the collider is named an estimate.",
+   "input_variety": {
+    "video_resolution": "not_applicable",
+    "clip_length": "not_applicable",
+    "read_by_replayed_code": false
+   },
+   "empty_dirs": [],
+   "file_count": 3,
+   "tools": [
+    {
+     "tool": "atlas_reconstruction_stage_replay",
+     "until": "mesh_registration",
+     "inputs": {
+      "splat_root": "registration/splat",
+      "mesh": "registration/mesh.glb"
+     },
+     "expected_stop": {
+      "kind": "estimate",
+      "stage": "mesh_registration",
+      "code": "scene_estimate:collider_registration"
      }
     }
    ]

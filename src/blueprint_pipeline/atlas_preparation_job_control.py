@@ -20,7 +20,8 @@ _NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video
 #: Read under the job lock, it can only be left by a step whose process died before returning.
 STEP_IN_FLIGHT = "step_in_flight"
 #: Automatic-retry state an operator's reopen starts afresh, with ``transient_failures``.
-_AUTOMATIC_RETRY_FIELDS = frozenset({STEP_IN_FLIGHT, "refusal_retries", "refusal_retries_total"})
+_AUTOMATIC_RETRY_FIELDS = frozenset({STEP_IN_FLIGHT, "refusal_retries", "refusal_retries_total",
+                                     "deterministic_refusal"})
 
 class _Withdrawn(Exception):
     pass

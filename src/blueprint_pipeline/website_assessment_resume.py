@@ -182,6 +182,11 @@ def admit_browser_preparation(listener, *, payload, handoff, capture_root, obser
             write_json(path, context)
     else:
         write_json(path, context)
+    # A job the WebApp ended with no grant is ended here too, never issued a first grant (a delivery,
+    # the host's retry and the unclaimed redrive all pass this point).
+    ended = context_reader.no_grant_ending(capture_root=capture_root, task_context=context)
+    if ended is not None:
+        raise ended
     try:
         authority = context_reader.load_website_scene_sponsorship(task_context=context, now=time.time())
     except ValueError as exc:
@@ -242,6 +247,17 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
                 and before.get("source_payload_sha256") == record["source_payload_sha256"]
                 and before.get("producer_delivery_key") == record["producer_delivery_key"])
             _require(handoff.source_finalize is not None and handoff.source_membership_selector is not None)
+            # A job the WebApp ended with no grant is never issued its first grant: the same claim
+            # runs it once more, and admit_browser_preparation asks again and ends it.
+            if context_reader.no_grant_ending(capture_root=root, task_context=_read(
+                    root / "pipeline" / "website_task_context.json")) is not None:
+                born = capture_birth_source_projection(root, expected_purpose="scene_preparation") or {}
+                listener.process_handoff_payload(raw, storage_root=storage_root,
+                    payload_digest=record["source_payload_sha256"],
+                    expected_assessment_resume={"revision": before["revision"], "record": record},
+                    **({"expected_preparation_purpose": "scene_preparation"}
+                       if born.get("capture_observation_purpose") == "scene_preparation" else {}), **process_args)
+                continue
             request_id = handoff.scene_id.removeprefix("site-")
             # Reuse the actual status reader's complete active birth/membership,
             # fresh owner/video/rights, local consent, immutable current context

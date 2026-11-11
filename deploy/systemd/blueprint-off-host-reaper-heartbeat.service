@@ -1,0 +1,56 @@
+[Unit]
+Description=Publish the host's heartbeat and every live Vast watchdog's deadline for the off-host GPU reaper
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline/blob/main/docs/runbooks/off-host-gpu-reaper.md
+# A failed or killed run is recorded and reported (blueprint-unit-failure@.service).
+# A publish that fails is not a unit failure: the run records it and pages once
+# when publishing has failed for over ten minutes (off_host_gpu_reaper_heartbeat).
+OnFailure=blueprint-unit-failure@%n.service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Cloud Storage for the one published object, and the alert webhook.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Its own status record. It reads /proc and the watchdogs' out dirs and writes nothing else.
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/off-host-gpu-reaper
+TasksMax=32
+# Host memory (8.3 GB, no swap): a run imports the lanes' deadline ceilings and peaked
+# at 122 MB locally. Money safety: -200, after batch jobs.
+MemoryMax=256M
+OOMScoreAdjust=-200
+CPUQuota=100%
+# One /proc scan, one object write and at most one webhook post with a 10 s timeout.
+TimeoutStartSec=2min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_OFF_HOST_GPU_REAPER_HEARTBEAT_ROOT=/var/lib/blueprint/pipeline-control-plane/off-host-gpu-reaper
+# A service-account key the owner installs root:blueprint 0640. Without the bucket
+# below the run publishes nothing and pages nothing.
+Environment=BLUEPRINT_OFF_HOST_GPU_REAPER_CREDENTIAL_FILE=/etc/blueprint/credentials/off-host-gpu-reaper-heartbeat.json
+# BLUEPRINT_OFF_HOST_GPU_REAPER_BUCKET (Terraform's off_host_gpu_reaper output) and
+# BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL, the capacity controller's alert route.
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.off_host_gpu_reaper_heartbeat'

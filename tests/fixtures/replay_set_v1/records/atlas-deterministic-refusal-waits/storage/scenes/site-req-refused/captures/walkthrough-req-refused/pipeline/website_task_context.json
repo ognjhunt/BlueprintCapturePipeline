@@ -1,0 +1,1 @@
+{"schema_version": "website_site_task_context.v1", "request_id": "req-refused", "scene_id": "site-req-refused", "capture_id": "walkthrough-req-refused", "purpose": "scene_preparation", "confirmed": false, "confirmed_at": null, "description": "Move the blue box to the tray", "context_digest": "sha256:a710cdaddaffc75e9d963be65c7c18be91035ffdba4d2a1c99abb5f4383d5b92"}

@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from blueprint_pipeline.impacted_pinned_sets import pinned_tests
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -468,6 +470,15 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
         for sentinel in SENTINEL_TESTS
         if sentinel.split("::", 1)[0] not in impacted
     )
+    # A test that asserts a complete set (every unit in a directory, every code in a
+    # constant, or what it declares with @pytest.mark.pins) runs whenever a member can
+    # change, in this bounded lane, even when its file went to the wide or full lane.
+    for node, reached in pinned_tests(
+        root, changed=changed, test_sources=test_sources, import_roots=IMPORT_ROOTS
+    ).items():
+        if node.split("::", 1)[0] not in impacted:
+            selected_set.add(node)
+            reasons.append(f"pinned_set:{node}:{len(reached)}")
     selected = sorted(selected_set)
     return {
         "schema_version": "blueprint_impacted_test_plan.v1",

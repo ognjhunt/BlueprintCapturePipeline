@@ -926,6 +926,9 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
     if moved is not None:
         return moved
     if not (task_context or {}).get("capture_id"):
+        # No website job to reserve under (a diagnostic run): the account-wide monthly limit still applies.
+        from .paid_resource_admission import require_paid_resource_budget
+        require_paid_resource_budget(resource_class="evaluator_api")
         return _verify_completed_background(frames=frames, original_frames=original_frames,
                                             plan=plan, output_root=output_root)
     from .website_gemini_receipts import gemini_quote, retained_gemini_call

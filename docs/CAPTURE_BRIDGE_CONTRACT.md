@@ -177,3 +177,96 @@ Shared validation/versioning logic lives in `BlueprintContracts`:
 - `site_world_contract`
 - `runtime_layer_contract`
 - `canonical_package`
+
+## Upload hand-off: what the repositories say and what production does (2026-11-11)
+
+Every website upload's completion marker
+(`scenes/<scene_id>/captures/<capture_id>/raw/capture_upload_complete.json`) is finalized
+in the shared bucket, and two storage triggers fire on it.
+
+- **BlueprintCapture `extractFrames`** (`cloud/extract-frames/src/index.ts`, recorded at
+  commit `870ad89d1eade7db0a1b98e86c1051728dd16b82` in
+  `tests/fixtures/capture_bridge_contract_v1.json`). For a browser delivery it writes the
+  frames, descriptor, QA report and `deliveries/<key>/capture_delivery_membership.json`. It also
+  writes the immutable `deliveries/<key>/pipeline_handoff.json`. It then publishes the full message,
+  which is the only message that carries `source_membership_selector`. By default it publishes to
+  `blueprint-capture-pipeline-handoff` (`BLUEPRINT_CAPTURE_PIPELINE_TOPIC` overrides this).
+- **This Pipeline's `storage-trigger`** (`functions/storage_trigger.py`). It publishes a short
+  message to `blueprint-capture-bridge-handoff`. That message has `source_finalize` but no
+  selector, and it names `captures/<id>/pipeline_handoff.json`. For a browser delivery,
+  extractFrames does not write that path.
+
+The host listener's subscription (`blueprint-pipeline-handoff-listener`) reads only the bridge
+topic. A website delivery stages only through its selector (`capture_delivery_staging.py`).
+The short message therefore ends `capture_original_birth_unavailable_retryable` and reaches the
+dead-letter queue after five deliveries. The swap dispatch worker (`on_swap_dispatch`) reads the
+other topic.
+
+**Repository defaults.** Under the Terraform and `deploy.sh` defaults, a website job never reaches
+the listener with its selector. A rebuild from those defaults alone would start no website job,
+unless extractFrames publishes its full message to the topic that the listener's subscription reads.
+
+**Production.** The host's delivery evidence
+(`/var/lib/blueprint/pubsub-handoffs/.pubsub_delivery_evidence`, read 2026-11-11) shows that the
+listener receives extractFrames' full message (9-11 KB payloads). None of those records has a
+short-message blocker. How the message gets there is not recorded in any of the three repositories
+and has not been verified. Possible routes are a topic override on extractFrames, a second
+subscription, or something else. Treat it as unknown.
+
+**Read-only checks for the owner** (none has been run from here):
+
+1. `gcloud functions describe extractFrames --region us-central1 --format='value(serviceConfig.environmentVariables)'`:
+   the values of `BLUEPRINT_CAPTURE_PIPELINE_TOPIC` and `BLUEPRINT_LARGE_VIDEO_INGEST_TOPIC`.
+2. `gcloud pubsub topics list-subscriptions` for each of `blueprint-capture-pipeline-handoff`,
+   `blueprint-capture-bridge-handoff` and `blueprint-large-video-ingest`.
+3. `gcloud functions describe swap-dispatch-worker` and `gcloud functions describe storage-trigger`:
+   whether they are deployed, and their environment.
+4. `gcloud run jobs executions list --job blueprint-pipeline --region us-central1`: whether any
+   recent execution ran for a `walkthrough-` or `supplement-` capture.
+5. `gcloud run jobs describe blueprint-pipeline`: which provider keys its environment holds.
+6. The message count in `pipeline-trigger-dlq-retained`.
+7. Objects under `gs://<bucket>/_pipeline_failures/`. A failed job run writes there outside any
+   site's prefix, and withdrawal cleanup does not cover it.
+
+### The capture app's path is closed
+
+The capture app is not in use (owner, 2026-11-11). Its path still exists: the swap dispatch worker
+(`on_swap_dispatch`, the HTTP form, the Cloud Tasks and inline modes) and the `blueprint-pipeline`
+Cloud Run job (`capture_orchestrator.main`). That path holds six paid call sites that cannot see
+the account's monthly limit (`scripts/paid_api_call_sites.json`, class `unadmitted`). Two rules
+now apply:
+
+- **No website capture on that path, ever.** Every dispatch branch acknowledges and drops a
+  capture named in the WebApp's website namespace. That means a scene starting `site-`, a capture
+  starting `walkthrough-` or `supplement-`, a website capture source, or a URI that names one.
+  The job entry refuses one too. The publish to the bridge topic is unchanged.
+- **Closed unless `BLUEPRINT_DEVICE_CAPTURE_PIPELINE=enabled`.** When the switch is off (the
+  default), the dispatch worker launches nothing and runs nothing. The job exits 0 and writes one
+  record (`device_capture_pipeline_closed.v1`) saying why. A delivery is acknowledged, so nothing
+  is retried and nothing waits on an operator.
+
+The six rows record this as `closed_on`. `scripts/verify_paid_resource_allocator.py` checks the
+claim on the call graph: from each entry function, every path to the site passes the switch's
+guard. The rows stay `unadmitted`, because the host listener's path still reaches them on the
+static graph; at run time, a website capture returns before them.
+
+**Turning the switch on requires admitting those six call sites first**, through the account limit
+and the paid-resource admission.
+
+### Large videos
+
+The WebApp accepts an upload up to `SELF_CAPTURE_MAX_UPLOAD_BYTES` (2 GiB by default).
+extractFrames extracts frames inline only up to 1,000,000,000 bytes by default
+(`BLUEPRINT_EXTRACT_FRAMES_MAX_INLINE_VIDEO_BYTES`). The value deployed in production is not known.
+For a larger video, extractFrames writes `large_video_ingest_blocked.json` beside the capture and
+publishes only to `blueprint-large-video-ingest`, which has no subscription. No message reaches
+the listener for such a job.
+
+The WebApp's no-grant sweep reads that marker on every pass. It ends the job at once, with the ask
+to film a shorter clip or record at 1080p (`websiteLargeVideoBlock.ts`). The marker is the
+authority; no second limit is configured on either side.
+
+### Supplements
+
+A supplement (`supplement-<40 hex>`) is uploaded through the same WebApp upload route. Its marker
+goes under its own capture prefix, so it takes the same route and the same guards described above.

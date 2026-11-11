@@ -22,7 +22,10 @@ an outage until the job's seven-day deadline; any other refusal, a defect or a
 step killed before it returned on the bounded refusal schedule. A money refusal
 waits as ``needs_input`` with its own code, re-asked every
 ``AUTHORITY_RECHECK_SECONDS`` until the job expires, as a missing grant does.
-Only a privacy or rights refusal fails at once. A
+Only a privacy or rights refusal fails at once. A deterministic refusal
+(``deterministic_refusal``: the same inputs and code repeat it) gets no timed
+schedule: it waits as ``needs_input`` and its step runs again only once a
+release decides that step differently. A
 retry re-asks every gate; it never bypasses one. No operator command is needed
 for a retry; ``retry_failed_job`` reopens a job that has already ended.
 """
@@ -45,6 +48,7 @@ from .atlas_preparation_job_control import (
 )
 from .common import write_json
 from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .deterministic_refusal import find as find_deterministic_refusal, unchanged as deterministic_unchanged
 from .file_digest_cache import SIDECAR as DIGEST_CACHE_FILE, file_digest_cache
 from .job_retry_policy import (
     MONEY, PRIVACY_RIGHTS, REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, outage_retry_delay, refusal_retry_delay)
@@ -256,6 +260,12 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
         # Shown to the owner, who can raise the limit; the step's own admission is re-asked on each recheck.
         return _transition(job, current, "needs_input", code, **detail,
                            retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
+    deterministic = find_deterministic_refusal(error)
+    if deterministic is not None:
+        # The same inputs and code repeat it: no timed schedule. It waits, rechecked without running,
+        # until a release decides the step differently (``advance_preparation_step``) or the job expires.
+        return _transition(job, current, "needs_input", code, **detail, deterministic_refusal=deterministic.record(),
+                           retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
     return _refusal_retry(job, current, code, detail)
 
 
@@ -326,6 +336,12 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
     """
     from .website_atlas_pipeline import run_atlas_pipeline
     current = int(now())
+    if job["state"] == "needs_input" and "deterministic_refusal" in job:
+        if deterministic_unchanged(job["deterministic_refusal"]):
+            # Nothing it decided on has changed: the step is not run, so nothing is bought or redone.
+            return {**job, "retry_at_epoch": _by_deadline(job, current + AUTHORITY_RECHECK_SECONDS)}
+        # This release decides the step differently: run it once more.
+        job = {key: value for key, value in job.items() if key != "deterministic_refusal"}
     try:
         result = (run_step() if run_step is not None else run_atlas_pipeline(source_video=source_video,
             output_root=job_dir, task_context=task_context, max_polls=1, checkpoint=checkpoint))

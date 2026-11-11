@@ -24,7 +24,7 @@ from blueprint_pipeline.beta_policy_screening_plan import (
     job_ceiling_record, validate_screening_plan, website_never_planned,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from tests.test_beta_policy_screening_plan import NOW, inputs, plan, reseal, scene
+from tests.test_beta_policy_screening_plan import NOW, candidate_rows, inputs, plan, reseal, scene
 
 READ_AT = "2026-10-26T00:00:00+00:00"
 READ_JOB_CEILING = job_ceiling.read_job_ceiling_summary
@@ -48,8 +48,9 @@ def ceiling_plan(remaining, *, count=40, holds=Decimal(0), campaign_id="campaign
 
 
 def _unbased(value):
-    return {key: item for key, item in value.items()
-            if key not in {"budget_basis", "website_job_ceiling", "plan_digest"}}
+    """The plan without its ceiling record and digest, and without a new campaign's known-good control row."""
+    return {**{key: item for key, item in value.items()
+               if key not in {"budget_basis", "website_job_ceiling", "plan_digest"}}, "candidates": candidate_rows(value)}
 
 
 @pytest.mark.parametrize("remaining", [15, 15.009, 40])
@@ -70,7 +71,7 @@ def test_nine_dollars_left_funds_fewer_and_defers_the_rest_for_the_job_ceiling(t
     assert value["website_job_ceiling"]["available_usd"] == "9.00"
     selected = [row for row in value["candidates"] if row["status"] == "selected"]
     assert len(selected) == 4
-    rest = [row for row in value["candidates"] if row["status"] != "selected"]
+    rest = [row for row in candidate_rows(value) if row["status"] != "selected"]
     assert len(rest) == 36
     # Each could still be funded within the $9 from money a selected candidate
     # releases before spend, so it waits; the ceiling is named as the reason.
@@ -122,7 +123,7 @@ def test_a_campaigns_waitlist_counts_against_the_ceiling_for_later_plans(tmp_pat
     later = ceiling_plan(3, count=4, campaign_id="campaign1",
                          holds=job_ceiling.local_screening_holds(tmp_path, site_id=SITE, published_usd=Decimal(0)))
     assert later["budget_usd"] == "0.00"
-    assert all(row["status"] == "deferred" for row in later["candidates"])
+    assert all(row["status"] == "deferred" for row in candidate_rows(later))
 
 
 def test_a_replan_does_not_count_the_rows_it_replaces_against_the_ceiling(tmp_path):
@@ -142,12 +143,12 @@ def test_less_than_the_cheapest_quote_defers_every_candidate_and_still_publishes
     assert value["budget_usd"] == budget and value["maximum_planned_cost_usd"] == "0.00"
     assert all(row["status"] == "deferred" and row["blockers"] == [JOB_CEILING_DEFERRED]
                and set(row) == {"candidate_id", "display_name", "configuration_digest", "status", "blockers"}
-               for row in value["candidates"])
+               for row in candidate_rows(value))
     assert coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)["status"] == "enqueued"
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
-    assert publication["status"] == "blocked" and len(publication["candidates"]) == 40
+    assert publication["status"] == "blocked" and len(candidate_rows(publication)) == 40
     assert all(row["status"] == "deferred" and row["blockers"] == [JOB_CEILING_DEFERRED]
-               for row in publication["candidates"])
+               for row in candidate_rows(publication))
 
 
 def test_ceiling_only_relabels_budget_deferrals_and_keeps_other_reasons():
@@ -314,7 +315,7 @@ def test_a_website_plan_never_funds_a_scripted_baseline():
                                              candidate_ids=sorted(row["candidate_id"] for row in catalog["candidates"]))
     rows = {row["candidate_id"]: row for row in value["candidates"]}
     # Every row the new campaign plans is the re-plan's row, byte for byte, and the money is the same.
-    assert fresh["candidates"] == [row for row in value["candidates"] if row["candidate_id"] not in scripted]
+    assert candidate_rows(fresh) == [row for row in value["candidates"] if row["candidate_id"] not in scripted]
     assert (fresh["budget_usd"], fresh["maximum_planned_cost_usd"]) == (value["budget_usd"], value["maximum_planned_cost_usd"])
     for key in scripted:
         assert rows[key] == {"candidate_id": key, "display_name": rows[key]["display_name"],
@@ -348,8 +349,8 @@ def test_only_scripted_baselines_left_plans_nothing_and_still_publishes(tmp_path
                                              capabilities=capabilities, cost_quotes=quotes, now=NOW,
                                              **({"candidate_ids": learned + scripted} if replan else {}))
     assert value["maximum_planned_cost_usd"] == "0.00"
-    assert {row["status"] for row in value["candidates"]} == ({"infeasible", "unavailable"} if replan else {"infeasible"})
-    assert [row["candidate_id"] for row in value["candidates"]] == learned + (scripted if replan else [])
+    assert {row["status"] for row in candidate_rows(value)} == ({"infeasible", "unavailable"} if replan else {"infeasible"})
+    assert [row["candidate_id"] for row in candidate_rows(value)] == learned + (scripted if replan else [])
     coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
     assert publication["status"] == "blocked" and publication["budget"]["committed_upper_bound_usd"] == "0"
@@ -373,14 +374,14 @@ def test_a_frozen_website_plan_closes_its_queued_scripted_baselines_before_spend
         coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
         coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
-    rows = {row["candidate_id"]: row for row in publication["candidates"]}
+    rows = {row["candidate_id"]: row for row in candidate_rows(publication)}
     assert rows[scripted[0]]["status"] == "running" and backend.launches == 1
     assert [rows[key]["status"] for key in scripted[1:]] == ["pending", "pending", "waitlisted"]
 
     coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False,
                                         max_launches=10)
     [after] = coordinator.pending_publications(queue_root=tmp_path)
-    rows = {row["candidate_id"]: row for row in after["candidates"]}
+    rows = {row["candidate_id"]: row for row in candidate_rows(after)}
     assert rows[scripted[0]]["status"] == "running"
     for key in scripted[1:]:
         assert rows[key]["status"] == "unavailable" and rows[key]["blockers"] == ["candidate_disabled"]

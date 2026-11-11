@@ -185,7 +185,13 @@ def select_views(*, frames: Sequence[Mapping[str, Any]], features: Sequence[Any]
 #: recorded as an uncaptured region, unless no surrounding frame connects.
 WORKING_AREA_ROLES = frozenset({"task_object", "task_region", "support_surface", "approach_space"})
 SURROUNDING_GAP_DECISIONS = {"surrounding_scene_below_quality": "below the reviewed sharpness or clipping policy",
-                             "surrounding_scene_unconnected": "not connected by overlapping views"}
+                             "surrounding_scene_unconnected": "not connected by overlapping views",
+                             "surrounding_scene_over_frame_budget": "left out to keep the views within the frame budget"}
+#: A surrounding frame whose overlap path would take the selection past its frame budget is left out and
+#: reported as uncaptured, like an unconnected one (``atlas_scene_estimates`` flags it). Before 2026-11-10
+#: it ended the selection with ``atlas_coverage_exceeds_frame_budget``, which the same video repeats. A
+#: working-area frame past the budget still refuses: that budget is what the job's money buys.
+OVER_FRAME_BUDGET = "surrounding_scene_over_frame_budget"
 
 
 def select_coverage_views(*, frames, features, maximum_frames, requirements, anchor_id, policy=None,
@@ -267,6 +273,13 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
                 drop(target, "surrounding_scene_unconnected")
                 continue
             raise ValueError("atlas_task_and_scene_coverage_gap:" + frames[target]["frame_id"])
+        chain, cursor = [], target
+        while cursor not in selected:
+            chain.append(cursor)
+            cursor = parent[cursor]
+        if target in context and len(selected) + len(chain) > maximum_frames:
+            drop(target, OVER_FRAME_BUDGET)
+            continue
         cursor = target
         while cursor not in selected:
             selected.add(cursor)
@@ -279,6 +292,11 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
             cursor = previous
         if len(selected) > maximum_frames:
             raise ValueError("atlas_coverage_exceeds_frame_budget")
+    over_budget = {row["frame_id"] for row in diagnostics if row.get("decision") == OVER_FRAME_BUDGET}
+    if context and context <= set(dropped) and over_budget:
+        # Every surrounding frame was left out, and some only for the budget: the video shows the
+        # room, but the budget the job's money sets cannot hold it.
+        raise ValueError("atlas_coverage_exceeds_frame_budget")
     if context and context <= set(dropped):
         # No surrounding frame connects at all: the room around the task is unseen.
         unconnected = [i for i in dropped if i in eligible]

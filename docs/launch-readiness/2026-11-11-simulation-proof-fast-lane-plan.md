@@ -152,8 +152,9 @@ These counts are by name and are an upper bound.
 
 - A paid run to try steps 1–3 on capture-447 again (about $6 for four policies
   at today's prices), and any change to a spend value.
-- Whether to ask sites for a scale reference in the video, or to rely on the
-  phone app's depth.
+- Whether to ask sites for a scale reference in the video. The phone capture
+  app is no longer in use (owner, 2026-11-11), so its depth data is not
+  available; the site films on its own phone in the browser.
 - A real arm for paired trials, or a partner who has one.
 - Stopping the humanoid and navigation work while this lane is built. Two
   other sessions are driving those jobs today.

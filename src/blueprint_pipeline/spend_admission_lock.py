@@ -401,8 +401,14 @@ def build_spend_admission_lock(
     inventory_results: Sequence[Mapping[str, Any]],
     override_path: Path | None,
     now: datetime,
+    restore_hold: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the one artifact every production paid-lane admission must pass."""
+    """Build the one artifact every production paid-lane admission must pass.
+
+    ``restore_hold`` is the spend guard's reading of a restore-from-backup hold
+    (``control_plane_restore_money_hold.evaluate``): while it is blocking, no paid
+    work is admitted against money records restored from an older copy.
+    """
 
     current = now.astimezone(timezone.utc)
     fleet = _mapping(fleet_budget)
@@ -496,6 +502,9 @@ def build_spend_admission_lock(
         blockers.extend(f"override:{item}" for item in override.get("blockers") or [])
     if threshold_crossed and not override_valid:
         blockers.append("cohort_hard_stop_reached")
+    if restore_hold is not None and restore_hold.get("blocking") is not False:
+        # An override never covers this: it reopens a crossed ceiling, not a ledger that may be missing spend.
+        blockers.append("restored_from_backup_reconciliation_pending")
 
     blockers = sorted(set(blockers))
     admission_allowed = not blockers
@@ -591,6 +600,7 @@ def build_spend_admission_lock(
             "delivery_status": "external_pending" if page_required else "not_required",
         },
         "blockers": blockers,
+        **({"restore_hold": dict(restore_hold)} if restore_hold is not None else {}),
         "claim_boundary": {
             "billing_export_is_external_input_not_live_api_proof": True,
             "page_event_is_not_notification_delivery_proof": True,

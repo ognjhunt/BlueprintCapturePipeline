@@ -259,6 +259,7 @@ def test_capture_orchestrator_cli_edges(
     descriptor_uri = _descriptor_uri(root)
     original_for_capture = co.run_capture_pipeline_for_capture
     monkeypatch.setenv("GCS_ROOT", str(root))
+    monkeypatch.setenv("BLUEPRINT_DEVICE_CAPTURE_PIPELINE", "enabled")  # the job's path, switched on
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(co, "run_capture_pipeline", lambda **kwargs: calls.append(("descriptor", kwargs)))
     monkeypatch.setattr(co, "run_capture_pipeline_for_capture", lambda **kwargs: calls.append(("capture", kwargs)))

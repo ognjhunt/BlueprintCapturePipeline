@@ -160,6 +160,10 @@ def current_admission(selection, observation):
         capture_id=selection["capture_id"],
         purpose="scene_preparation",
     )
+    # Only a capture with no local state gets here: a job the WebApp ended with no grant is not issued one.
+    ended = reader.no_grant_ending(capture_root=None, task_context=context)
+    if ended is not None:
+        raise ended
     authority = reader.load_website_scene_sponsorship(task_context=context, now=time.time())
     _proposal_admitted(authority, context)
 

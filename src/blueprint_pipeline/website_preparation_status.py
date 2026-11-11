@@ -44,6 +44,9 @@ STATUS_V5 = "website_preparation_status.v5"
 # v6 adds the job's robot fit precheck: whether a robot the screening catalog runs can do the task in
 # this room, decided before any spend, and the hold it names when none can (website_robot_fit_precheck).
 STATUS_V6 = "website_preparation_status.v6"
+# v7 adds one outcome: the preparation ended on a stop only a new video can clear, named by its code
+# (website_recapture_required); the site is asked to film again. v3 to v6 readers never see it.
+STATUS_V7 = "website_preparation_status.v7"
 # The WebApp opts in per read; an absent or unknown value is answered with v1.
 VERSION_HEADER = "x-blueprint-preparation-status-version"
 _STATES_V1 = frozenset({"preparing", "awaiting_inputs", "failed_retryable", "authority_ended", "handed_off"})
@@ -53,7 +56,8 @@ _ACCEPTANCE = {"website_preparation_status_acceptance.v1": (STATUS_V1, _STATES_V
                "website_preparation_status_acceptance.v3": (STATUS_V3, _STATES_V2),
                "website_preparation_status_acceptance.v4": (STATUS_V4, _STATES_V2),
                "website_preparation_status_acceptance.v5": (STATUS_V5, _STATES_V2),
-               "website_preparation_status_acceptance.v6": (STATUS_V6, _STATES_V2)}
+               "website_preparation_status_acceptance.v6": (STATUS_V6, _STATES_V2),
+               "website_preparation_status_acceptance.v7": (STATUS_V7, _STATES_V2)}
 _CODES = {"preparing": "preparation_in_progress", "awaiting_inputs": "preparation_inputs_pending",
           "capacity_delayed": "preparation_capacity_delayed", "failed_retryable": "preparation_retryable_failure",
           "failed_terminal": "preparation_failed_terminal", "authority_ended": "preparation_authority_ended",
@@ -70,7 +74,7 @@ def requested_status_version(value: Any) -> str:
     text = value.strip() if type(value) is str else ""
     if re.fullmatch(r"[1-9][0-9]{0,2}", text):
         number = int(text)
-        return (STATUS_V6 if number >= 6 else STATUS_V5 if number == 5 else STATUS_V4 if number == 4
+        return (STATUS_V7 if number >= 7 else STATUS_V6 if number == 6 else STATUS_V5 if number == 5 else STATUS_V4 if number == 4
                 else STATUS_V3 if number == 3 else STATUS_V2 if number == 2 else STATUS_V1)
     return STATUS_V1
 
@@ -143,6 +147,13 @@ def _read(path: Path) -> dict[str, Any]:
 #: its revision, never due, retried or counted; a newer producer revision starts a new delivery.
 RETIRED_STATE = "retired"
 RETIRED_REASON = "owner_retired_parked_delivery"
+#: A job the WebApp ended itself because its grant never arrived (``website_scene_job_no_grant_ended``):
+#: the WebApp recorded and shows that ending, so no status report is owed for it. Its delivery record
+#: is written retired at the ending's revision, superseding any earlier undelivered report, and is
+#: never due, retried or counted. Every other ending and status is reported as before.
+NOT_OWED_REASON = "webapp_recorded_this_ending"
+NOT_OWED_EXPLANATION = ("no preparation status report is owed: the WebApp recorded this job's "
+                        "no-grant ending itself (website_scene_job_no_grant_ended) and already shows it")
 MAX_RETIREMENT_EVIDENCE = 500
 
 
@@ -154,9 +165,12 @@ def _read_delivery(path: Path) -> dict[str, Any]:
              and type(value.get("revision")) is int and value["revision"] > 0)
     if value["state"] == RETIRED_STATE:
         retired_at, evidence = value.get("retired_at_epoch"), value.get("retirement_approval_evidence")
-        _require(type(retired_at) in (int, float) and math.isfinite(retired_at) and retired_at >= 0
-                 and value.get("retired_reason") == RETIRED_REASON
-                 and isinstance(evidence, str) and 1 <= len(evidence) <= MAX_RETIREMENT_EVIDENCE)
+        _require(type(retired_at) in (int, float) and math.isfinite(retired_at) and retired_at >= 0)
+        if value.get("retired_reason") == NOT_OWED_REASON:
+            _require(value.get("report_not_owed") == NOT_OWED_EXPLANATION)
+        else:
+            _require(value.get("retired_reason") == RETIRED_REASON
+                     and isinstance(evidence, str) and 1 <= len(evidence) <= MAX_RETIREMENT_EVIDENCE)
     validate_selectors(value.get("selectors"))
     for field in ("delivery_attempt_count", "delivery_failure_count"):
         counter = value.get(field, 0)
@@ -276,7 +290,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
     from .website_task_context import validate_website_task_context
 
     try:
-        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6})
+        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6, STATUS_V7})
         selected = validate_selectors(dict(selectors))
         root = _root(capture_root)
         _require(root.name == selected["capture_id"] and root.parent.name == "captures"
@@ -355,6 +369,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
             from .website_target_background_correction import retains_rejected_selection
             from .observed_room_contracts import retains_observed_room_limit
+            from .website_recapture_required import retains_recapture_required
             from .website_task_context_lineage import binding_contexts
             # A handoff decided before the brief was confirmed stays bound to the retained context's verified
             # parent until a run rewrites it; the context itself is tried first.
@@ -363,7 +378,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                                        or retains_rejected_selection(handoff, held_context)
                                        or retains_observed_room_limit(handoff, held_context)
                                        or retains_geometry_only_fit(handoff, held_context)
-                                       or retains_robot_fit_hold(handoff, held_context))
+                                       or retains_robot_fit_hold(handoff, held_context)
+                                       or retains_recapture_required(handoff, held_context))
                 family_prepared = retains_task_family_preparation(handoff, held_context)
                 # A navigation job handed to the G1 screening lane reads as handed off; it claims no result.
                 navigation_prepared = retains_navigation_preparation(handoff, held_context)
@@ -378,25 +394,25 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             _require(bool(_output_commit(root, scene_id=selected["scene_id"], capture_id=selected["capture_id"])))
             state = ("awaiting_inputs" if native_profile_held or (family_prepared and handoff["status"] == "needs_input")
                      else "handed_off")
-        elif schema_version in {STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6}:
+        elif schema_version in {STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6, STATUS_V7}:
             state, terminal_reason = _v2_state(before)
         else:
             _require(before.get("status") in _LEDGER_STATES)
             state = _LEDGER_STATES[before["status"]]
         outcome = question = robot_fit = precheck = None
-        if schema_version in {STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6}:
+        if schema_version in {STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6, STATUS_V7}:
             from .website_preparation_outcome import read_preparation_outcome
             outcome = read_preparation_outcome(capture_root=root,
                 task_context_digest=selected["task_context_digest"], state=state,
-                robot_fit_hold=schema_version == STATUS_V6)
-        if schema_version in {STATUS_V4, STATUS_V5, STATUS_V6} and state != "authority_ended":
+                robot_fit_hold=schema_version in {STATUS_V6, STATUS_V7}, recapture=schema_version == STATUS_V7)
+        if schema_version in {STATUS_V4, STATUS_V5, STATUS_V6, STATUS_V7} and state != "authority_ended":
             # Optional: the job continues on its guess whether or not this is answered.
             from .website_task_target_choice import public_question
             question = public_question(root)
-        if schema_version in {STATUS_V5, STATUS_V6}:
+        if schema_version in {STATUS_V5, STATUS_V6, STATUS_V7}:
             from .website_robot_fit_projection import read_robot_fit
             robot_fit = read_robot_fit(capture_root=root, task_context_digest=selected["task_context_digest"])
-        if schema_version == STATUS_V6:
+        if schema_version in {STATUS_V6, STATUS_V7}:
             from .website_robot_fit_precheck_projection import read_robot_fit_precheck
             precheck = read_robot_fit_precheck(capture_root=root, task_context_digest=selected["task_context_digest"])
         after = _read_job_ledger(root)
@@ -406,10 +422,10 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                   "attempt_count": before["attempt_count"], "revision": before["revision"],
                   "state": state, "code": _CODES[state],
                   **({"terminal_reason": terminal_reason} if schema_version != STATUS_V1 else {}),
-                  **({"outcome": outcome} if schema_version in {STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6} else {}),
-                  **({"question": question} if schema_version in {STATUS_V4, STATUS_V5, STATUS_V6} else {}),
-                  **({"robot_fit": robot_fit} if schema_version in {STATUS_V5, STATUS_V6} else {}),
-                  **({"robot_fit_precheck": precheck} if schema_version == STATUS_V6 else {}),
+                  **({"outcome": outcome} if schema_version in {STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6, STATUS_V7} else {}),
+                  **({"question": question} if schema_version in {STATUS_V4, STATUS_V5, STATUS_V6, STATUS_V7} else {}),
+                  **({"robot_fit": robot_fit} if schema_version in {STATUS_V5, STATUS_V6, STATUS_V7} else {}),
+                  **({"robot_fit_precheck": precheck} if schema_version in {STATUS_V6, STATUS_V7} else {}),
                   "correlation_id": cross_runtime_canonical_digest({**selected,
                       "attempt_count": before["attempt_count"], "revision": before["revision"]})}
         result["status_digest"] = cross_runtime_canonical_digest(result)
@@ -462,6 +478,17 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
             # The owner retired this revision's delivery: it stays retired, and its hint stays gone.
             update_index(root, old)
             return
+        from .website_task_context import NO_GRANT_ENDED_CODE
+        if ledger.get("status") == "terminal_authority_ended" and ledger.get("terminal_code") == NO_GRANT_ENDED_CODE:
+            # Owed nothing: the WebApp declared this ending. Supersede any earlier report, retired at once.
+            retired = {"schema_version": "website_preparation_status_delivery.v1", "state": RETIRED_STATE,
+                       "selectors": selected, "revision": revision, "retired_at_epoch": time.time(),
+                       "retired_reason": NOT_OWED_REASON, "report_not_owed": NOT_OWED_EXPLANATION,
+                       **({"superseded_delivery": {key: old.get(key) for key in ("state", "revision")}}
+                          if old else {})}
+            write_json(path, retired)
+            update_index(root, retired)
+            return
         if old.get("selectors") == selected and old.get("revision") == revision:
             if old.get("state") == "pending" and "pending_since_epoch" not in old:
                 old = {**old, "pending_since_epoch": time.time(), "next_attempt_at_epoch": 0.0}
@@ -502,11 +529,12 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
     """Existing listener tick retries delivery independently of provider work.
 
     With the running listener module, a silent job the WebApp refuses as expired
-    is also ended (``end_expired_preparation``).
+    is also ended (``end_expired_preparation``), and so is a silent job with no
+    retained grant that the WebApp ended without one (``end_no_grant_preparation``).
     """
     from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .website_preparation_terminal import (
-        end_expired_preparation, note_sweep_liveness, record_unretried_preparation,
+        end_expired_preparation, end_no_grant_preparation, note_sweep_liveness, record_unretried_preparation,
     )
     from .website_preparation_delivery_index import due, defer_unavailable, update as update_index, METRICS_FILE
     from .website_task_context import website_webapp_request
@@ -537,7 +565,9 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
             if alive_since is not None:
                 # An expired grant ends the job; anything else silent is only overdue.
                 if listener is not None:
-                    end_expired_preparation(root, alive_since=alive_since, listener=listener)
+                    # Exclusive: one needs a retained grant, the other none. At most one read per visit.
+                    if end_expired_preparation(root, alive_since=alive_since, listener=listener) is None:
+                        end_no_grant_preparation(root, alive_since=alive_since, listener=listener)
                 record_unretried_preparation(root, alive_since=alive_since)
             retain_preparation_wakeup(root)
         except Exception:

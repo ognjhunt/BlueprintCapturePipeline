@@ -101,7 +101,9 @@ raise it — do not quietly re-derive strategy from the commit log.
 
 `PLATFORM_CONTEXT.md`, `WORLD_MODEL_STRATEGY_CONTEXT.md`, and the shared block
 of `VISION.md` are generated from `doctrine/` and byte-identical across
-`BlueprintCapture`, `BlueprintCapturePipeline`, and `Blueprint-WebApp`. Edit only
+`BlueprintCapture`, `BlueprintCapturePipeline`, and `Blueprint-WebApp` (the
+`BlueprintCapture` phone apps are not in use; the repository is kept for its
+`extractFrames` upload hand-off). Edit only
 the canonical fragments, then run `scripts/sync_shared_doctrine.py --write`
 with all three checkouts present and commit generated blocks and locks together
 in each repo. Never hand-edit a generated block or update a local lock to hide

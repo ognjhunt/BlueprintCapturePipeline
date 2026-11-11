@@ -252,11 +252,16 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             except (ValueError, OSError, KeyError, TypeError):
                 raise SceneIntakeError("scene_intake_preparation_authority_invalid") from None
         execution = intent["request"]["execution"]
-        budget = effective_execution_budget(directory, intent)
+        from . import scene_budget_standing_extension as standing
+        # The owner's ceiling, raised by any standing-policy extension (never lowered).
+        budget = standing.effective_scene_budget(directory, intent)
         _require(not (directory / "revoked.json").exists(), "authority_revoked")
         _require(moment < effective_execution_expiry(directory, intent), "authority_expired")
         _require(provider in execution["allowed_providers"], "provider_not_authorized")
-        _require(maximum_spend_usd <= budget["max_total_spend_usd"], "attempt_spend_exceeds_authorized_limit")
+        # A flagged grant may extend to fit this attempt; the spend check below decides.
+        _require(maximum_spend_usd <= budget["max_total_spend_usd"]
+                 or standing.granted_authority(intent["request"], root, moment) is not None,
+                 "attempt_spend_exceeds_authorized_limit")
         attempts = directory / "attempts"
         _require(not attempts.is_symlink(), "record_unsafe")
         attempts.mkdir(mode=0o750, exist_ok=True)
@@ -375,11 +380,17 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                          'dependent_source_attempt_required')
             _require(len(ordinary) + settled_attempts + (0 if dependent else 1)
                      <= budget["max_paid_attempts"], "attempt_cap_exhausted")
-        exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), settled_exposure)
-        _require(exposure + Decimal(str(maximum_spend_usd))
-                 <= Decimal(str(budget["max_total_spend_usd"])), "spend_cap_exhausted")
         for row in rows:
             validate_attempt_execution_budget(directory, intent, row)
+        exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), settled_exposure)
+        required = exposure + Decimal(str(maximum_spend_usd))
+        if required > Decimal(str(budget["max_total_spend_usd"])):
+            # Every attempt check above passed: a flagged job may extend by the shortfall
+            # when the account would admit it; otherwise it waits exactly as before.
+            budget = standing.extend_for_shortfall(root=root, directory=directory, intent=intent, budget=budget,
+                                                   required_usd=required, attempt_id=attempt_id,
+                                                   now=moment) or budget
+        _require(required <= Decimal(str(budget["max_total_spend_usd"])), "spend_cap_exhausted")
         if budget["extension_digest"] is not None:
             body[ATTEMPT_GRANT_FIELD] = budget["extension_digest"]
         result = _seal({**body, "reserved_at_epoch": moment}, "attempt_digest")

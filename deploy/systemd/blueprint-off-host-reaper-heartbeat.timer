@@ -1,0 +1,14 @@
+[Unit]
+Description=Publish the off-host GPU reaper's heartbeat every two minutes
+# Not holdable (the door refuses a hold on a reaper unit): a held heartbeat goes
+# stale, and after 30 minutes the off-host reaper treats the host as gone.
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=15s
+Persistent=true
+Unit=blueprint-off-host-reaper-heartbeat.service
+
+[Install]
+WantedBy=timers.target

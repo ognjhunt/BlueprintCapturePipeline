@@ -11,6 +11,8 @@ can never run again: every delivery would end it on the WebApp's
 ``consent_expired``. ``end_expired_preparation`` asks the WebApp the same
 question without effect and, only on that refusal, writes the same ending through
 the listener's own terminal function, so the job ends without a redelivery.
+``end_no_grant_preparation`` does the same for a silent preparation that never
+retained a grant, on the WebApp's ``website_scene_job_no_grant_ended``.
 """
 from __future__ import annotations
 
@@ -47,6 +49,10 @@ _MINIMUM_SILENCE_SECONDS = 30 * 60
 # The grant the job's latest delivery ran under (website_task_evidence).
 GRANT_FILE = "pipeline/website_scene_sponsorship.json"
 EXPIRY_STAGE = "website_preparation_grant_expiry"
+# A capture that never retained a grant, ended by the WebApp's no-grant ending (end_no_grant_preparation).
+NO_GRANT_STAGE = "website_preparation_no_grant_ending"
+NO_GRANT_ASK_FILE = ".website_preparation_no_grant_read.json"
+NO_GRANT_ASK_SCHEMA_VERSION = "website_preparation_no_grant_read.v1"
 # Listener ticks run about a minute apart; a longer gap (an outage, or one tick
 # busy processing) means this listener could not have received a redelivery.
 LIVENESS_GAP_SECONDS = 15 * 60
@@ -267,10 +273,11 @@ def _grant_may_have_ended(capture_root: Path, ledger: Mapping[str, Any], now_epo
 
 
 def _webapp_ended(capture_root: Path, ledger: Mapping[str, Any]) -> ValueError | None:
-    """The WebApp's own ``consent_expired`` refusal of this job's grant, or None.
+    """The WebApp's own ``consent_expired`` or ``website_scene_job_no_grant_ended`` refusal, or None.
 
     One non-creating, window-honouring ``scene-sponsorship`` read; any other
-    answer, an error or a missing retained context is None.
+    answer, an error or a missing retained context is None. The caller acts
+    only on the one code it asked about.
     """
     from .website_task_context import read_scene_sponsorship_ending
     try:
@@ -306,7 +313,53 @@ def end_expired_preparation(capture_root: Path, *, alive_since: datetime, listen
     ``listener`` is the running ``pubsub_handoff_listener`` module, passed in as
     ``reconcile_waiting_assessments`` receives it, so this lane never imports it.
     """
-    root = Path(capture_root)
+    return _end_silent_preparation(
+        Path(capture_root), alive_since=alive_since, listener=listener, now=now, code="consent_expired",
+        stage=EXPIRY_STAGE, trigger=lambda root, ledger, current: _grant_may_have_ended(
+            root, ledger, current.timestamp()))
+
+
+def _no_grant_ask_due(capture_root: Path, ledger: Mapping[str, Any], current: datetime) -> bool:
+    """Trigger only: no grant retained, not withdrawn, and not asked within the last silence window."""
+    from .website_atlas_preview_store import capture_withdrawn
+    grant = capture_root / GRANT_FILE
+    if grant.exists() or grant.is_symlink() or capture_withdrawn(capture_root):
+        return False
+    path = capture_root / NO_GRANT_ASK_FILE
+    try:
+        asked = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
+        last = _parse_utc(asked.get("asked_at")) if isinstance(asked, dict) else None
+    except (OSError, ValueError):
+        last = None
+    if last is not None and last <= current and current - last < timedelta(seconds=silence_seconds()):
+        return False
+    try:
+        write_json(path, {"schema_version": NO_GRANT_ASK_SCHEMA_VERSION, "asked_at": _iso(current),
+                          "revision": ledger.get("revision")})
+    except OSError:
+        return False  # Unrecorded, the bound would not hold: ask on a later tick.
+    return True
+
+
+def end_no_grant_preparation(capture_root: Path, *, alive_since: datetime, listener: Any,
+                             now: datetime | None = None) -> dict[str, Any] | None:
+    """End a silent preparation that never retained a grant once the WebApp says its job ended without one.
+
+    The sibling of ``end_expired_preparation`` for a capture with no retained grant: the same silent
+    ledgers (a retryable attempt, or a dead worker's expired lease, silent for a full window of
+    continuous listening), the same non-creating read, the same claim of the revision read and the
+    same terminal function, ended only on the WebApp's exact ``website_scene_job_no_grant_ended``.
+    Such a ledger is asked about at most once per silence window (``NO_GRANT_ASK_FILE``). A withdrawn
+    capture keeps its withdrawal's own ending and is never asked. Nothing is retried, bought, granted,
+    renewed or released here. Returns the committed terminal ledger, or None.
+    """
+    from .website_task_context import NO_GRANT_ENDED_CODE
+    return _end_silent_preparation(Path(capture_root), alive_since=alive_since, listener=listener, now=now,
+                                   code=NO_GRANT_ENDED_CODE, stage=NO_GRANT_STAGE, trigger=_no_grant_ask_due)
+
+
+def _end_silent_preparation(root: Path, *, alive_since: datetime, listener: Any, now: datetime | None,
+                            code: str, stage: str, trigger: Any) -> dict[str, Any] | None:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     with _existing_job_ledger_lock(root) as state:
         if state != "ledger_present":
@@ -317,11 +370,11 @@ def end_expired_preparation(capture_root: Path, *, alive_since: datetime, listen
                 or any(type(ledger.get(key)) is not str or not ledger[key] for key in
                        ("scene_id", "capture_id", "producer_delivery_key", "source_payload_sha256"))
                 or max(silent, alive_since) + timedelta(seconds=silence_seconds()) > current
-                or not _grant_may_have_ended(root, ledger, current.timestamp())):
+                or not trigger(root, ledger, current)):
             return None
     refusal = _webapp_ended(root, ledger)  # No network under the ledger lock.
     ending = listener.authority_ending(refusal) if refusal is not None else None
-    if ending is None or ending[1] != "consent_expired":
+    if ending is None or ending[1] != code:
         return None
     claim, claimed = listener._claim_job_lease(
         root, scene_id=ledger["scene_id"], capture_id=ledger["capture_id"], owner=listener._lease_owner(),
@@ -338,7 +391,7 @@ def end_expired_preparation(capture_root: Path, *, alive_since: datetime, listen
     result = listener._finish_terminal_authority_ending(
         root, handoff=handoff, owner=claimed["lease_owner"], token=claimed["lease_token"],
         operation=ending[0], code=ending[1], error=refusal,
-        stage=EXPIRY_STAGE, attempt_count=claimed["attempt_count"],
+        stage=stage, attempt_count=claimed["attempt_count"],
         attempt_started_at=claimed["last_attempt_started_at"],
         previous_history=listener._attempt_history(claimed),
         payload_digest=ledger["source_payload_sha256"], producer_delivery_key=ledger["producer_delivery_key"])

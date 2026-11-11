@@ -1,22 +1,26 @@
 # Blueprint Capture
 
-Use when work touches the iOS capture app, raw evidence bundle, upload contract, or operator capture workflow.
+Use when work touches how site video is captured, the upload contract, or the delivery records the Pipeline starts from.
+
+How capture works today (owner, 2026-11-11; see "How Capture Works" in `PLATFORM_CONTEXT.md`):
+- A person who works at the site films the job with their own smartphone camera and uploads it in the browser, through the WebApp's onboarding and site-task flow.
+- No capture app is in use. Nobody else films for a site: no outside capturers, no Blueprint filming visits, no capturer marketplace and no capturer payouts.
+- The `BlueprintCapture` repository is kept only because its cloud function `extractFrames` still receives every website upload and writes the delivery records the Pipeline starts from. Its phone apps are not in use.
 
 Primary references:
-- `BlueprintCapture/PLATFORM_CONTEXT.md`
-- `BlueprintCapture/README.md`
-- `BlueprintCapture/docs/CAPTURE_BRIDGE_CONTRACT.md`
-- `BlueprintCapture/docs/GPU_PIPELINE_COMPATIBILITY.md`
+- `Blueprint-WebApp/PLATFORM_CONTEXT.md`
+- `BlueprintCapturePipeline/docs/SYSTEM_MAP.md` (the upload row)
+- `BlueprintCapture/cloud/extract-frames` (the upload hand-off)
 
 Required behavior:
-- Treat this system as the evidence-capture entry point for site-world assembly.
-- Preserve the raw capture contract and downstream site-world handoff expectations.
-- Keep the capture workflow grounded in a scoped request and evidence package.
+- Treat the WebApp browser upload as the one capture entry point.
+- Preserve the upload layout and the delivery records the Pipeline reads.
+- Keep the capture workflow grounded in a scoped site job and its evidence.
 
 Do not:
-- Collapse capture responsibilities into pipeline or webapp responsibilities.
+- Describe the iOS, App Clip or Android apps, capturers or payouts as current.
 - Treat raw video alone as the business output.
-- Ignore the upload layout, manifest requirements, or bridge artifacts.
+- Ignore the upload layout, manifest requirements, or delivery records.
 
 Output:
-- Guidance or implementation notes grounded in the capture app's actual role and contracts.
+- Guidance or implementation notes grounded in the browser capture path and its contracts.

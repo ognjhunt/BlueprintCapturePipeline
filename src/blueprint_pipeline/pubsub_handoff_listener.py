@@ -527,8 +527,10 @@ _PROVIDER_STATUS_FIELD_NAMES = {
 # website_task_context raises as ValueError("website_control_<op>_http_409:<code>").
 # Retrying the same handoff cannot revive an expired consent or a revoked
 # source. Other 409 codes (task_brief_missing, idempotency_conflict, ...) can be
-# fixed by a person, so they stay retryable.
-AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked"})
+# fixed by a person, so they stay retryable. website_scene_job_no_grant_ended is
+# the WebApp's own ending of a job whose grant never arrived (websiteJobWindowSweep):
+# the site was told the job ended, so the host never asks for its first grant again.
+AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked", "website_scene_job_no_grant_ended"})
 # The same token boundary on both sides: no identifier character or hyphen may
 # touch the typed refusal, so "...:source_revokedX" is not "source_revoked".
 # Group 1 is the refusing operation (e.g. scene-sponsorship), group 2 the code.
@@ -1460,6 +1462,9 @@ def _write_terminal_receipt(
         "ended_at": ledger.get("terminal_at"),
         "error": str(ledger.get("last_error") or "")[:500],
     }
+    if ledger.get("terminal_code") == "website_scene_job_no_grant_ended":
+        # The WebApp declared this ending itself: no preparation status report is owed for it.
+        receipt["preparation_status_report"] = "not_owed_webapp_recorded_this_ending"
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     write_json(capture_root / JOB_TERMINAL_RECEIPT_FILENAME, receipt)
     return receipt

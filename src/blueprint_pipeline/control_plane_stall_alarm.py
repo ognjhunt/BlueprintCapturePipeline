@@ -106,7 +106,15 @@ from .task_evaluation_launch_dispatcher_ownership import DISPATCHER_LOCK_NAME, u
 SCHEMA_VERSION = "control_plane_stall_check.v1"
 PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trigger_inactive_unheld",
                         "launch_activation_stuck", "atlas_preview_stalled", "team_scene_packet_stalled",
-                        "rigid_probe_stalled", "screening_campaign_stalled", "screening_publication_stalled"})
+                        "rigid_probe_stalled", "screening_campaign_stalled", "screening_publication_stalled",
+                        # Not a stall: a scene's ceiling passed a whole multiple of its grant (gates nothing).
+                        "scene_budget_doubled",
+                        # Not a stall: a preparation stopped on Blueprint's own records, paged once
+                        # (preparation_fault_alert).
+                        "website_preparation_blueprint_fault",
+                        # Not a stall: the state backup's newest complete generation is over two hours old
+                        # (control_plane_state_backup.backup_freshness); a host never set up stays quiet.
+                        "control_plane_backup_stale"})
 INCOMPLETE_CODE = "stall_check_incomplete"
 
 DISABLE_ENV = "BLUEPRINT_STALL_ALARM"
@@ -1575,6 +1583,41 @@ def check_screening(
 # --------------------------------------------------------------------------- #
 
 
+def _check_scene_budgets(config: StallConfig, *, now: float, remembered: Any,
+                         memory_out: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    from .scene_budget_alert import check_scene_budgets
+    root = config.scene_intent_root
+    if root is None:
+        return {"status": "not_configured"}, []
+    try:
+        entries, _truncated = _scene_intent_entries(root)
+    except FileNotFoundError:
+        return {"status": "absent"}, []
+    return check_scene_budgets(root, [name for _mtime, name in entries[:MAX_INTENTS]], now=now,
+                               remembered=remembered, memory_out=memory_out)
+
+
+def _check_preparation_faults(config: StallConfig, *, now: float, remembered: Any,
+                              memory_out: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    # Preparation ledgers sit beside the Atlas jobs, under the same capture roots.
+    from .preparation_fault_alert import check_preparation_faults
+    return check_preparation_faults(config.atlas_storage_root, now=now, remembered=remembered, memory_out=memory_out)
+
+
+def _check_state_backup(*, now: float) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    from .control_plane_state_backup import STALE_CODE, backup_freshness, ledger_path, report_root_from_env
+
+    ledger = ledger_path(report_root_from_env())
+    section = backup_freshness(ledger, now=now)
+    if section["status"] == "unreadable":
+        return section, [_incomplete("state_backup_ledger_unreadable")]
+    if section["status"] != "stale":
+        return section, []
+    return section, [_page(STALE_CODE, [{"target": str(ledger), "age_seconds": section["age_seconds"],
+                                         "status": "never_completed" if not section["complete_generation_seen"]
+                                         else "stale"}])]
+
+
 def observe_stalls(
     config: StallConfig,
     *,
@@ -1595,6 +1638,8 @@ def observe_stalls(
     remembered = prior_memory.get("scene_progression")
     progression_memory: dict[str, Any] = {}
     publication_memory: dict[str, Any] = {}
+    scene_budget_memory: dict[str, Any] = {}
+    preparation_fault_memory: dict[str, Any] = {}
     budget = _Budget(deadline=monotonic() + DEADLINE_SECONDS, events=MAX_EVENT_READS, clock=monotonic)
     alerts: list[dict[str, Any]] = [_incomplete(error) for error in config.config_errors]
     # The deploy tool's lists and the door's holds directory, read once for every check that asks
@@ -1628,6 +1673,12 @@ def observe_stalls(
         ("screening", lambda: check_screening(
             config, now=observed, budget=budget, holds=holds, windows=windows,
             remembered=prior_memory.get("screening_publication"), memory_out=publication_memory)),
+        ("scene_budget", lambda: _check_scene_budgets(
+            config, now=observed, remembered=prior_memory.get("scene_budget"), memory_out=scene_budget_memory)),
+        ("preparation_faults", lambda: _check_preparation_faults(
+            config, now=observed, remembered=prior_memory.get("preparation_fault"),
+            memory_out=preparation_fault_memory)),
+        ("state_backup", lambda: _check_state_backup(now=observed)),
     ):
         try:
             section, rows = run()
@@ -1654,7 +1705,8 @@ def observe_stalls(
             "publication": config.publication_seconds,
         },
         "checks": checks,
-        "memory": {"scene_progression": progression_memory, "screening_publication": publication_memory},
+        "memory": {"scene_progression": progression_memory, "screening_publication": publication_memory,
+                   "scene_budget": scene_budget_memory, "preparation_fault": preparation_fault_memory},
         "alerts": alerts,
     }
 
@@ -1679,6 +1731,15 @@ def describe(alert: Mapping[str, Any]) -> str | None:
         why = f" [{blockers[0]}]" if blockers else ""
         return (f"scene progression unchanged {age} at {alert.get('status')}/{alert.get('phase')}{why}: "
                 f"{name}{tail}")
+    if code == "scene_budget_doubled":
+        from .scene_budget_alert import describe as describe_budget
+        return describe_budget(alert)
+    if code == "website_preparation_blueprint_fault":
+        from .preparation_fault_alert import describe as describe_fault
+        return describe_fault(alert)
+    if code == "control_plane_backup_stale":
+        what = "no backup has ever completed" if alert.get("status") == "never_completed" else "last complete backup"
+        return f"control-plane state backup stale: {what}, {age} old (timer held, stopped or failing?)"
     if code == "launch_lease_stuck":
         return f"launch lease in processing/ {age} with no dispatcher: {target}{tail}"
     if code == "launch_activation_stuck":

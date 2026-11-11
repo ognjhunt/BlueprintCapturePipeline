@@ -47,6 +47,12 @@ def prepare_website_task_descriptor(*, descriptor: CaptureDescriptor, capture_ro
     publish_website_item_evidence(task_context=context, evidence=evidence)
     # An Atlas preview is a separate side lane (website_atlas_preview); it never
     # replaces or skips this sponsorship.
+    # A capture admit_browser_preparation did not admit (a link bundle) asks for its first grant here:
+    # a job the WebApp ended with no grant is ended, never issued one.
+    from .website_task_context import no_grant_ending
+    ended = no_grant_ending(capture_root=capture_root, task_context=context)
+    if ended is not None:
+        raise ended
     sponsorship = load_sponsorship(task_context=context, now=time.time())
     write_json(pipeline_dir / "website_scene_sponsorship.json", sponsorship)
     return CaptureDescriptor.from_dict({

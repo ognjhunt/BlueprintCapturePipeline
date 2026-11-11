@@ -43,6 +43,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from . import website_withdrawal_content_blobs as content_blobs
 from .core.common import write_json
 
 INDEX_SCHEMA = "website_withdrawal_site_index.v1"
@@ -136,9 +137,15 @@ def _scan_entry(entry: Path, budget: _Budget) -> dict[str, Any]:
                 return {"status": "shared", "reason": "too_many_identifiers", "tokens": []}
     except OSError as error:
         return {"status": "unreadable", "reason": "unreadable:" + type(error).__name__, "tokens": []}
+    try:
+        # The hard links it holds: how the shared content stores' blobs are referred to.
+        links = content_blobs.linked_inodes(entry)
+    except OSError:
+        links = None
+    extra = {"fingerprint": stamp, "links": links or {}, "links_complete": links is not None}
     if not tokens:
-        return {"status": "owner_unknown", "reason": "no_site_named", "tokens": [], "fingerprint": stamp}
-    return {"status": "named", "reason": None, "tokens": sorted(tokens), "fingerprint": stamp}
+        return {"status": "owner_unknown", "reason": "no_site_named", "tokens": [], **extra}
+    return {"status": "named", "reason": None, "tokens": sorted(tokens), **extra}
 
 
 def confirm_owned(entry: Path, *, seeds: Iterable[str], site_tokens: Iterable[str],
@@ -273,6 +280,20 @@ def _advance_root(index_root: Path, root: Path, *, now: float, budget: _Budget) 
         if budget.spent():
             write_json(_index_path(index_root, root), index)
             return "in_progress"
+        if entry.name == content_blobs.STORE_ENTRY and entry.is_dir(follow_symlinks=False):
+            # A shared store: one stat per blob, in chunks; the sweep moves on only once it is read whole.
+            record = index["entries"].get(entry.name)
+            if sweep.get("store_started_at_epoch") != sweep.get("started_at_epoch"):
+                record = {**(record or {}), "store_cursor": None, "scanning": {}, "in_progress": False}
+                sweep["store_started_at_epoch"] = sweep.get("started_at_epoch")
+            record = content_blobs.scan_store(Path(entry.path), record, budget=budget, now=now)
+            index["entries"][entry.name] = record
+            if record.get("in_progress"):
+                write_json(_index_path(index_root, root), index)
+                return "in_progress"
+            sweep["cursor"] = entry.name
+            write_json(_index_path(index_root, root), index)
+            continue
         budget.entries -= 1
         try:
             mtime = os.lstat(entry.path).st_mtime_ns
@@ -288,8 +309,8 @@ def _advance_root(index_root: Path, root: Path, *, now: float, budget: _Budget) 
     return "complete"
 
 
-def lookup(index_root: Path, roots: Iterable[Path], *, seeds: Iterable[str], site_tokens: Iterable[str]
-           ) -> list[dict[str, Any]]:
+def lookup(index_root: Path, roots: Iterable[Path], *, seeds: Iterable[str], site_tokens: Iterable[str],
+           acknowledged_at_epoch: float | None = None) -> list[dict[str, Any]]:
     """For each root, what the index says about one site: its entries, shared ones, and what is unknown.
 
     ``seeds`` are every identifier of the site (scene, capture, its scene intents);
@@ -317,8 +338,13 @@ def lookup(index_root: Path, roots: Iterable[Path], *, seeds: Iterable[str], sit
         except OSError:
             row["reason"] = "root_unlistable"
             continue
+        verdicts: dict[str, str] = {}
+        store_present = False
         for entry in listing:
             record = index["entries"].get(entry.name)
+            if entry.name == content_blobs.STORE_ENTRY and entry.is_dir(follow_symlinks=False):
+                store_present = True
+                continue
             try:
                 mtime = os.lstat(entry.path).st_mtime_ns
                 stamp = fingerprint(Path(entry.path))
@@ -329,17 +355,28 @@ def lookup(index_root: Path, roots: Iterable[Path], *, seeds: Iterable[str], sit
             # written before fingerprints existed is read again.
             if record is None or record.get("fingerprint") != stamp or entry.name in (index.get("pending") or ()):
                 row["unscanned"].append(entry.name)
+                verdicts[entry.name] = "unknown"
                 continue
             tokens = set(record.get("tokens") or ())
+            verdicts[entry.name] = "unknown" if not record.get("links_complete", False) else "other"
             if record.get("status") == "shared" and not tokens:
                 row["shared"].append(entry.name)
             elif record.get("status") != "named":
                 row["owner_unknown"].append({"name": entry.name, "reason": record.get("reason")})
+                verdicts[entry.name] = "unknown"
             elif tokens & seeds:
                 # Any identifier that is not this site's (another site, or a scene intent of another site).
                 others = tokens - seeds - mine
                 (row["shared"] if others else row["owned"]).append(
                     entry.name if others else {"name": entry.name, "path": entry.path, "mtime_ns": mtime})
+                if not others and record.get("links_complete", False):
+                    verdicts[entry.name] = "site"
+        if store_present:
+            row["content_store"] = content_blobs.attribute(
+                index["entries"].get(content_blobs.STORE_ENTRY), index["entries"], verdicts=verdicts,
+                store_path=root / content_blobs.STORE_ENTRY, acknowledged_at_epoch=acknowledged_at_epoch)
+            if not row["content_store"]["complete"]:
+                row["unscanned"].append(content_blobs.STORE_ENTRY)
         row["status"] = "unknown" if row["unscanned"] else "indexed"
         if row["unscanned"]:
             row["reason"] = "entries_not_yet_read"
@@ -357,6 +394,14 @@ def blocking(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         if row["shared"]:
             found.append({"holder": "pipeline_root_shared_entries", "path": row["root"], "entries": row["shared"],
                           "reason": "these entries also name another site; they are never deleted for one site"})
+        unreferenced = (row.get("content_store") or {}).get("unreferenced") or {}
+        if unreferenced.get("possible_leftover_count"):
+            found.append({"holder": "unreferenced_content_blobs", "path": row["content_store"]["store"],
+                          "count": unreferenced["possible_leftover_count"],
+                          "bytes": unreferenced["possible_leftover_bytes"],
+                          "reason": "no entry refers to these blobs and they predate the withdrawal, so they may be "
+                                    "this site's leftovers; a withdrawal never deletes them on a guess, and only "
+                                    "garbage collection under its own approved policy class does"})
         if row["owner_unknown"]:
             found.append({"holder": "pipeline_root_owner_unknown", "path": row["root"],
                           "count": len(row["owner_unknown"]), "examples": row["owner_unknown"][:10],

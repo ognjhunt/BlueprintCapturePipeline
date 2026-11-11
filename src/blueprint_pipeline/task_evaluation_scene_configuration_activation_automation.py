@@ -817,7 +817,18 @@ def advance_scene_configuration_activation(
             "preparation_id": preparation_id,
             "preparation_status": result.get("status"),
         }
+    adoption = None
     if running_commit is not None and result.get("source_commit") != running_commit:
+        # Dark launch (off by default): a $0 preparation of a retained earlier
+        # release that this release adopted stages under its own commit.
+        from .release_preparation_adoption import adoption_for, request_digest_from_queue_name
+        adoption = adoption_for(
+            queue_root=queue_root,
+            request_digest=request_digest_from_queue_name(result_path.name) or "",
+            prepared_commit=str(result.get("source_commit")),
+            running_commit=running_commit,
+        )
+    if adoption is None and running_commit is not None and result.get("source_commit") != running_commit:
         return {
             "status": "preparation_bound_to_superseded_release",
             "preparation_id": preparation_id,
@@ -1048,6 +1059,7 @@ def advance_scene_configuration_activation(
             "release_window_digest": window["window_digest"],
             "activation_request_digest": canonical_digest(activation_request),
             "activation_intake_receipt_digest": intake.get("receipt_digest"),
+            **({"release_adoption": _adoption_provenance(adoption, running_commit)} if adoption else {}),
             "provider_mutation_performed": False,
             "paid_execution_requested": False,
         },
@@ -1060,6 +1072,11 @@ def advance_scene_configuration_activation(
 # ---------------------------------------------------------------- launch
 
 
+
+
+def _adoption_provenance(adoption: Mapping[str, Any], running_commit: str) -> dict[str, Any]:
+    from .release_preparation_adoption import provenance
+    return provenance(adoption, worker_commit=running_commit)
 
 
 def _materialized_activation(
@@ -1233,6 +1250,13 @@ def advance_scene_configuration_launch(
         activation_queue_root=Path(activation_queue_root).expanduser(),
         activation_id=activation_id,
     )
+    if activation is None and state.get("release_adoption"):
+        from .release_preparation_adoption import blocked_activation
+        refusal = blocked_activation(Path(activation_queue_root).expanduser(), activation_id)
+        if refusal is not None:
+            # Refused before any provider call; progression rebuilds once on its release.
+            return {"status": "adopted_activation_refused", "preparation_id": preparation_id,
+                    "activation_id": activation_id, "blockers": refusal}
     if activation is None:
         return {
             "status": "awaiting_scene_configuration_authority",
@@ -1353,6 +1377,8 @@ def advance_scene_configuration_launch(
             "submitted_through_webapp": True,
             "provider_mutation_performed_inside_progression": False,
             "paid_execution_requested": True,
+            # Who prepared and who launched, when this release adopted the preparation.
+            **({"release_adoption": state["release_adoption"]} if state.get("release_adoption") else {}),
         },
         field="progression_digest",
     )

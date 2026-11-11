@@ -1142,16 +1142,33 @@ def process_launch_preparation_queue(
                     disk_reservations=disk_reservations,
                     preparation_id=str(envelope["request"]["preparation_id"]),
                 )
+            # Dark launch (off by default): a $0 preparation an earlier retained
+            # release made is processed under its own commit when progression
+            # recorded its adoption. Every other check below is unchanged.
+            from .release_preparation_adoption import adoption_for, provenance
+            adoption = adoption_for(
+                queue_root=root, request_digest=str(envelope.get("request_digest")),
+                prepared_commit=str(envelope["request"].get("expected_production_commit")),
+                running_commit=observed_source_commit,
+            )
             result = materialize_preparation_references(
                 request=envelope["request"],
                 input_root=Path(input_root) / str(envelope["request"]["preparation_id"]),
                 content_store_root=content_store_root,
                 allowed_uri_prefixes=allowed_uri_prefixes,
                 service_account=service_account,
-                source_commit=observed_source_commit,
+                source_commit=(adoption["prepared_commit"] if adoption is not None
+                               else observed_source_commit),
                 fetcher=fetcher,
                 installed_source_environment=installed_source_environment,
             )
+            if adoption is not None:
+                result["release_adoption"] = provenance(
+                    adoption, worker_commit=observed_source_commit
+                )
+                result["result_digest"] = canonical_digest(
+                    result, digest_field="result_digest"
+                )
             references_by_path = {
                 row["contract_path"]: row for row in result["references"]
             }

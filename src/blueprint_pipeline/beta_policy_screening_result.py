@@ -250,6 +250,7 @@ def screening_publication(
     """
     from .beta_policy_screening_publication_flags import as_v2, goes_out_as_v2, row_flags, scene_feasibility
     from .beta_screening_review_videos import publication_entry
+    from .beta_policy_screening_known_good_control import control_flags
 
     candidates, review_videos = [], []
     for configured in plan["candidates"]:
@@ -269,6 +270,8 @@ def screening_publication(
             "session_result_digest": summary.get("session_result_digest"),
             **_publication_execution_evidence(configured, summary),
             **row_flags(configured, summary),
+            # The known-good control's outcome, as its own one flag (never part of the estimate).
+            **control_flags(configured, row),
         })
         entry = publication_entry(candidates[-1], summary) if row["status"] == "completed" else None
         if entry is not None:
@@ -283,7 +286,7 @@ def screening_publication(
         "purpose": "job_evaluation", "execution_operator": {"kind": "blueprint"},
         "claim_ceiling": CLAIM_CEILING,
         "candidates": candidates, **({"review_videos": review_videos} if review_videos else {}),
-        "scene_feasibility": scene_feasibility(plan["candidates"]),
+        "scene_feasibility": scene_feasibility(plan["candidates"], estimates=plan.get("scene_estimate_flags")),
         "budget": dict(budget),
         "generated_at": state["updated_at"], "publication_digest": "",
     }

@@ -78,3 +78,19 @@ def is_website_entry_source(value: Any) -> bool:
 
 def is_website_capture_manifest(manifest: Mapping[str, Any] | None) -> bool:
     return website_entry_source(manifest) is not None
+
+
+# The WebApp names every website capture this way (``websiteCaptureIdentity.ts``): scene
+# ``site-<request>``, capture ``walkthrough-<request>`` or ``supplement-<40 hex>``.
+WEBSITE_CAPTURE_ID_PREFIXES = ("walkthrough-", "supplement-")
+WEBSITE_SCENE_ID_PREFIX = "site-"
+
+
+def is_website_capture_identity(scene_id: Any, capture_id: Any) -> bool:
+    """Whether the ids are in the WebApp's website namespace.
+
+    Broader than the WebApp's exact rule on purpose: it guards the capture app's
+    path, which must never take a website capture, so a near miss is refused too.
+    """
+    return ((isinstance(capture_id, str) and capture_id.startswith(WEBSITE_CAPTURE_ID_PREFIXES))
+            or (isinstance(scene_id, str) and scene_id.startswith(WEBSITE_SCENE_ID_PREFIX)))

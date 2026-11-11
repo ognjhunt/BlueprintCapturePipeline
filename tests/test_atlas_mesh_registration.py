@@ -71,11 +71,21 @@ def test_rotated_export_is_registered_and_unseen_closing_sheets_are_trimmed(tmp_
     assert np.allclose(vertices[:, 2], -2.0, atol=1e-6)
 
 
-def test_mesh_that_fits_no_declared_frame_fails_closed(tmp_path):
+def test_mesh_that_fits_no_declared_frame_keeps_its_supported_faces_in_the_closest_frame_flagged(tmp_path):
+    # capture-5b067498 (2026-11-07) ended on this refusal; the job now continues on an estimate.
     root = splat_root(tmp_path / "splat")
     glb = exported_glb(tmp_path / "mesh.glb", grid(-2.0, x0=0.6), sign=(1.0, 1.0, 1.0))
-    with pytest.raises(ValueError, match="atlas_mesh_not_registered_to_splat"):
-        registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+    record = registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+    estimate = record["registration_estimate"]
+    assert record["glb_frame"] == estimate["glb_frame"] == "atlas_world"
+    assert estimate["code"] == registration.COLLIDER_ESTIMATE_FLAG
+    assert estimate["reason"] == "atlas_mesh_not_registered_to_splat" and estimate["candidate_frames"] == []
+    assert estimate["median_residual"] > estimate["registration_distance_limit"]
+    # Only faces near what the cameras saw stay: the overlap of the two grids, none beyond the splat.
+    vertices, _ = registration.read_glb_triangles(tmp_path / "registered" / "atlas_mesh_supported.glb")
+    assert 0 < record["faces_kept"] < record["faces_in"] and vertices[:, 0].max() <= 0.5 + 4 * VOXEL
+    failure = json.loads((tmp_path / "registered" / registration.FAILURE_RECORD).read_text())
+    assert estimate["failure_record_digest"] == failure["digest"]
 
 
 def test_closing_sheets_can_outnumber_observed_vertices_without_hiding_source_overlap(tmp_path):
@@ -102,11 +112,25 @@ def test_triangle_with_supported_centroid_but_unseen_vertices_is_removed(tmp_pat
     assert record["faces_kept"] == len(observed[1])
 
 
-def test_two_supported_declared_frames_are_ambiguous(tmp_path):
+def test_two_supported_declared_frames_take_the_closer_one_flagged_as_ambiguous(tmp_path):
     root = splat_root(tmp_path / "splat", np.concatenate([grid(-2.0)[0], grid(2.0)[0]]))
     glb = exported_glb(tmp_path / "mesh.glb", grid(-2.0))
-    with pytest.raises(ValueError, match="atlas_mesh_frame_ambiguous"):
+    record = registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+    estimate = record["registration_estimate"]
+    assert estimate["reason"] == "atlas_mesh_frame_ambiguous"
+    assert estimate["candidate_frames"] == sorted(registration.GLB_FRAMES) and record["glb_frame"] in registration.GLB_FRAMES
+    assert record["faces_kept"] == record["faces_in"]
+
+
+def test_a_mesh_beside_the_splat_in_every_frame_refuses_once_as_a_deterministic_refusal(tmp_path):
+    from blueprint_pipeline.deterministic_refusal import DeterministicRefusal, unchanged
+    root = splat_root(tmp_path / "splat")
+    glb = exported_glb(tmp_path / "mesh.glb", grid(-2.0, x0=5.0))
+    with pytest.raises(DeterministicRefusal, match="atlas_mesh_not_registered_to_splat") as raised:
         registration.register_atlas_mesh(glb=glb, splat_root=root, output_root=tmp_path / "registered")
+    record = raised.value.record()
+    assert record["step"] == "atlas_mesh_registration" and record["inputs"]["source_glb_sha256"] == _sha256_file(glb)
+    assert unchanged(record)
 
 
 def test_depth_filter_removes_splat_supported_phantom_and_binds_pose(tmp_path):

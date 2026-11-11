@@ -1229,7 +1229,12 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/provider-locks" \
   "${STATE_DIR}/storage-pins" \
   "${STATE_DIR}/unit-failures" \
-  "${STATE_DIR}/website-withdrawal-deletion"
+  "${STATE_DIR}/website-withdrawal-deletion" \
+  "${STATE_DIR}/off-host-gpu-reaper"
+# The state backup runs as root; its ledger is read by the withdrawal unit, and names no path.
+run install -d -m 0755 -o root -g root "${STATE_DIR}/control-plane-backup"
+# The owner's backup key and bucket files (docs/runbooks/beta-operations.md); never installed here.
+run install -d -m 0700 -o root -g root "${ENV_DIR}/control-plane-backup"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launches/pending" \
   "${STATE_DIR}/task-evaluation-launches/processing" \
@@ -1577,6 +1582,18 @@ install -m 0644 \
 install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-website-withdrawal-deletion.timer" \
   "${SYSTEMD_DIR}/blueprint-website-withdrawal-deletion.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-state-backup.service" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-state-backup.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-state-backup.timer" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-state-backup.timer"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-off-host-reaper-heartbeat.service" \
+  "${SYSTEMD_DIR}/blueprint-off-host-reaper-heartbeat.service"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-off-host-reaper-heartbeat.timer" \
+  "${SYSTEMD_DIR}/blueprint-off-host-reaper-heartbeat.timer"
 install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-capacity.service" \
   "${SYSTEMD_DIR}/blueprint-control-plane-capacity.service"
@@ -1772,6 +1789,8 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path
   systemctl enable --now blueprint-control-plane-storage-gc.timer
   systemctl enable --now blueprint-website-withdrawal-deletion.timer
+  systemctl enable --now blueprint-control-plane-state-backup.timer
+  systemctl enable --now blueprint-off-host-reaper-heartbeat.timer
   systemctl enable --now blueprint-control-plane-capacity.timer
   systemctl enable --now blueprint-control-plane-preflight.timer
   systemctl enable --now blueprint-website-atlas-preview.timer

@@ -1,0 +1,15 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-control-plane-state-backup.timer.json
+Description=Back up the control plane's state every 15 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=15min
+RandomizedDelaySec=1min
+Persistent=true
+Unit=blueprint-control-plane-state-backup.service
+
+[Install]
+WantedBy=timers.target

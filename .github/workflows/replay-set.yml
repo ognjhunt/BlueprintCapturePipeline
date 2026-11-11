@@ -2,8 +2,9 @@ name: Replay Set
 
 # Replays the committed job records (tests/fixtures/replay_set_v1) through the $0 replay tools and
 # fails if any record's first stop moved. Offline: the replays refuse network, paid calls and WebApp
-# writes themselves. Nightly, and on pull requests that touch preparation, levelling, screening, the
-# post-completion chain or the replay modules.
+# writes themselves. Nightly, and on pull requests that touch preparation, levelling, mesh
+# registration, the Atlas preview controller and its frame selection, deterministic refusals,
+# screening, the post-completion chain or the replay modules.
 
 on:
   schedule:
@@ -24,6 +25,13 @@ on:
       - "src/blueprint_pipeline/rigid_robot_free_probe*"
       - "src/blueprint_pipeline/robot_free_readiness*"
       - "src/blueprint_pipeline/website_navigation_*"
+      - "src/blueprint_pipeline/atlas_*"
+      - "src/blueprint_pipeline/website_atlas_*"
+      - "src/blueprint_pipeline/deterministic_refusal.py"
+      - "src/blueprint_pipeline/job_retry_policy.py"
+      - "src/blueprint_pipeline/website_task_context.py"
+      - "src/blueprint_pipeline/gaussian_splat_decode.py"
+      - "tests/test_atlas_reconstruction_stage_replay.py"
       - "tests/fixtures/replay_set_v1/**"
       - "tests/replay_set_v1_build.py"
       - "tests/test_replay_set_v1.py"
@@ -81,4 +89,4 @@ jobs:
 
       - name: Replay set tests
         timeout-minutes: 15
-        run: uv run python -m pytest -q -p no:cacheprovider tests/test_replay_set_v1.py
+        run: uv run python -m pytest -q -p no:cacheprovider tests/test_replay_set_v1.py tests/test_atlas_reconstruction_stage_replay.py

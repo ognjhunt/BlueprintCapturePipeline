@@ -32,6 +32,7 @@ Before you act:
 | [6. Deploy policy (D-08)](#6-deploy-policy-d-08) | You are about to deploy the Pipeline. |
 | [7. Triggers that are off on purpose (D-06)](#7-triggers-that-are-off-on-purpose-d-06) | `door units` shows an enabled timer or path watcher as `inactive`. |
 | [8. Consent withdrawal](#8-consent-withdrawal) | A site owner withdraws consent, or you run the withdrawal drill (G-02). |
+| [9. After a deploy: what happened to preparations in flight](#9-after-a-deploy-what-happened-to-preparations-in-flight) | A deploy landed while a scene intent was preparing or launching. |
 
 ## 1. A job stops moving
 
@@ -624,7 +625,9 @@ Only the owner, with SSH from the owner's Mac, can do these (WebApp
 - Record a break-glass note for each change ([`break-glass.md`](break-glass.md)).
 
 If SSH also fails, the host itself is down. Host recovery is the owner's
-action. This repo has no runbook to restart or rebuild the host (unknown).
+action. To rebuild the host from the repository, the state backup and the owner's secrets, see
+[Control-plane state backup and host rebuild](#control-plane-state-backup-and-host-rebuild).
+That rebuild has never been run on a fresh host (unproven).
 
 ## 5. Roll back a bad deploy
 
@@ -646,14 +649,18 @@ Before you deploy:
 3. Do not redeploy an older commit before you read that list. If it removes
    work of another session, ask the owner first.
 4. A revert merged on `main` is a newer commit. It removes only what it names.
-5. Read `door status` (`deploy_activation_hold`). While a paid stage of a
-   website job is live on the running release, the door holds the deploy (it
+5. Read `door status` (`deploy_activation_hold`). While a website or screening
+   job has work in flight on the running release, the door holds the deploy (it
    parks; the job is never touched). `deploy_activation_hold.stages` and each
-   `live` row's `stage` say which: `scene_configuration_activation`,
-   `scene_configuration_launch`, `paid_launch_lock` or `beta_screening`
-   (section 6). The hold ends when the stage ends, or after at most 285 min in
-   all, however the stages hand over (`CAP_SECONDS` in
-   `deploy/operator-door/operator_door/activation_hold.py`).
+   `live` row's `stage` say which. Paid: `scene_configuration_activation`,
+   `scene_configuration_launch`, `paid_launch_lock` or `beta_screening`. Not
+   paid yet: `scene_attempt_preparation`, `scene_configuration_preparation` or
+   `beta_screening_preparation` (section 6). The hold ends when the work ends,
+   or at its bound: 285 min for paid work, counted from when a paid stage was
+   first live; 60 min in all for work that is not paid yet (`CAP_SECONDS` and
+   `UNPAID_CAP_SECONDS` in
+   `deploy/operator-door/operator_door/activation_hold.py`; `bound` says which
+   applies).
 6. `--activation-hold-override <reason>` deploys at once. Use it only for
    money, privacy, rights or a fix to the stuck paid stage itself.
 7. Request the rollback when no other deploy runs. A rollback that waits behind
@@ -694,9 +701,15 @@ Before you deploy:
    - a paid-launch slot lock (`paid_launch_locks`, not the `.gate.lock`) held by
      a process running from this release;
    - a beta-screening candidate `launching` or `running` whose plan froze this
-     release's commit.
+     release's commit;
+   - work that is not paid yet and that the new release would refuse and
+     rebuild: a scene attempt in its factory, publication or submission; a
+     scene-configuration preparation pending, claimed by a live worker, or
+     finished and not yet named by an activation; a beta-screening candidate
+     `preparing` with no blocker.
 
-   It goes out when they end, or after 285 min in all, or at once with
+   It goes out when they end, at its bound (285 min for paid work from when it
+   was first live, 60 min in all for work not paid yet), or at once with
    `--activation-hold-override <reason>`. Anything it cannot read counts as not
    live. While it waits, `door status` `deploy_activation_hold` (its `stages` and
    `live` rows) says why; that read replaces the old hand check of
@@ -964,6 +977,36 @@ For a withdrawn site:
 
 Entries naming only this site are deleted, checked unchanged first.
 
+### Shared content stores
+
+`prepared-references`, `completed-scene-preparation-inputs` and
+`compiled-episodes` keep digest-named blobs under `content-addressed/`. A blob
+names no site; the owner-scoped directories beside the store refer to it by a
+hard link. The ownership index records each entry's links and each blob's
+inode and link count (`website_withdrawal_content_blobs.py`), in the same
+bounded, resumable pass.
+
+- A blob whose every link is in the withdrawing site's entries is deleted,
+  after a fresh check that its link count is still exactly that. It is written
+  to `<site>/website_withdrawal/content_blobs.json` first, and deleted before
+  the site's entries, so an interrupted pass finishes it next time.
+- A blob another site, an entry of unknown owner, or a link outside the root
+  also refers to is kept and named under `remaining` as
+  `content_blobs_shared`. Once the site's entries are gone it is not the
+  site's, so it does not keep the deletion from finishing.
+- A blob nobody refers to is never deleted by a withdrawal. Every receipt
+  (`content_stores`) and every pass summary (`content_gc`) counts them, with
+  bytes. If any predates the withdrawal, the receipt is `incomplete`
+  (`unreferenced_content_blobs`) until it is gone.
+
+Garbage collection of blobs nobody refers to only plans, unless the approval
+file also has `"garbage_collection_policy_class":
+"website_withdrawal_unreferenced_content_blob_gc.v1"`. It then deletes a blob
+older than 72 hours, once every store is fully read, after a fresh check
+(one link, the same inode, bytes match its name), at most 1 GiB a pass.
+The storage reaper already removes one-link blobs in two of these stores after
+its own grace period (`BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS`).
+
 ### Provider copies
 
 The pass reads the ids each job recorded when it created a copy and keeps them
@@ -1073,3 +1116,125 @@ A drill on a fresh synthetic job on the host:
 6. Only with the owner's standing approval installed does a pass apply it.
    Then read the receipt with `door cat`, and record its `authorization`,
    `remaining` and `policy_copy_classes` in G-02.
+
+## 9. After a deploy: what happened to preparations in flight
+
+Read-only. Run it after a deploy for each scene intent that was in flight
+(`<intent>` is its `scene-...` directory). Paths are under
+`/var/lib/blueprint/pipeline-control-plane/`.
+
+1. `door status`. `active_release` names the new commit.
+2. `door cat .../task-evaluation-scene-intents/<intent>/progression.json`.
+   - Launch submitted before the deploy: `status` `running`, `phase`
+     `previous_release`, and `state.attempt_commit` is still the old commit.
+     Nothing is rebuilt; the job closes from that launch.
+   - Launch not yet submitted: on the first tick, `state.release_predecessors`
+     gains one entry. Its `new_source_commit` is the new commit and its
+     `basis` says why it could be retired. `state.attempt_commit` is the new
+     commit.
+3. `door ls .../task-evaluation-scene-intents/<intent>/preparation-attempts --sort mtime`.
+   One new `source-*.json` per deploy means the preparation was rebuilt. None
+   means it was held or adopted.
+4. `door journal blueprint-task-evaluation-scene-progression.service -n 200 --since -1h`.
+   The row for `<intent>` shows the same status and phase.
+5. With adoption on (below): `progression.json` shows `state.release_adoption`
+   with `prepared_commit` (old) and `adopting_commit` (new), and no `refused`.
+   `door ls .../task-evaluation-owned-scene-preparations/release-adoptions`
+   (the owned queue, `preparation_queue_root` in the scene progression config)
+   holds one record for the intent's request and the new commit. The worker result in
+   `results/` keeps the old `source_commit` and adds `release_adoption`.
+
+Adoption across a deploy is off by default (`docs/architecture/release-binding.md`,
+"Adoption across a deploy"). Run steps 1 to 4 once on the host after a
+deploy before you turn it on.
+
+- Turn it on: add `BLUEPRINT_RELEASE_PREPARATION_ADOPTION=enabled` to
+  `/etc/blueprint/pipeline-control-plane.env`. Only SSH from the owner's Mac
+  can edit this file (section 3, "Automatic growth"); record a break-glass note. Each service run
+  reads it when it starts, so the next deploy is the first to adopt.
+- Turn it off: delete that line, or set any other value. A job adopted earlier
+  then follows today's rule on its next tick: it is held if its launch was
+  submitted, otherwise it is rebuilt on the live release. The new release's
+  workers refuse its old request by commit again, before any provider call.
+
+## Control-plane state backup and host rebuild
+
+What is backed up, every 15 minutes (`blueprint-control-plane-state-backup.timer`,
+`control_plane_state_backup.ALLOWLIST`): ledgers, money records, receipts, consents,
+standing approvals, job queues (their JSON records), `/etc/blueprint` without
+`provider-secrets/`, `credentials/` and `control-plane-backup/`, and each site's
+withdrawal journal. Site data is never backed up: capture video, scene workspaces,
+reconstructions, run evidence and the site-derived stores. Caches, scratch and
+releases are skipped too. Each run's report (`control-plane-backup/latest.json`)
+names every skipped root and why, and counts what a size bound left out.
+
+- Encryption: AES-GCM under the owner's key. Only the host and the holder of the key
+  can read a backup. The bucket sees only part digests and times.
+- Kept: seven days. The newest complete generation is always kept.
+- Until the owner installs the key and bucket files (owner steps below), the unit is
+  skipped and nothing is backed up. Once a backup has completed, the stall alarm pages
+  `control_plane_backup_stale` when none completes for two hours, even if the unit
+  never runs (a forgotten door hold, a dead timer).
+- A run is bounded in bytes and time. A run that cannot finish is `incomplete`,
+  uploads no seal and fails the unit, so the failure notifier reports it.
+- Env files under `/etc/blueprint` are in the backup, encrypted. If one holds a
+  secret inline, the backup holds that secret too.
+
+**Withdrawal.** After a site's deletion receipt is sealed, the next backup run:
+
+1. takes a fresh generation;
+2. lists every object version in the bucket;
+3. deletes every version of every older generation;
+4. lists again to prove they are gone;
+5. writes `website_withdrawal/backup_purge_receipts/<digest>.json`.
+
+Until that receipt says `purged`, the withdrawal pass reports the site
+`incomplete` and waiting on `backup_copies_not_purged`. A bucket that cannot be
+listed leaves it `unknown`, never purged.
+
+**Money after a restore.** A restore onto `/` writes
+`gpu_spend_guard/restore_hold.v1.json`. The spend guard keeps paid admission closed
+(`restored_from_backup_reconciliation_pending`) until two things have both happened
+after the restore: one of its own `--reap` runs with complete inventory and every
+orphan terminated, and a reconciled billing feed. The guard run that sees both
+retires the hold. No operator step clears it.
+
+**Rebuild.** Run `scripts/rebuild_control_plane_host.sh --secrets-from DIR
+--work-volume-device DEV`. Run it with `--dry-run` first; it needs no root.
+
+- It refuses and names every owner secret missing from
+  `deploy/host/rebuild-owner-secrets.txt`, unless the owner waives one by name.
+- Before it binds the work volume, it creates each missing bulk root empty
+  (`mount_work_volume.sh --list-roots`; owner from `control_plane_storage_roots`, mode
+  0750, group `blueprint`). `mount_work_volume.sh` skips a root that does not exist,
+  so without this the volume would be mounted and nothing bound to it.
+- It then checks that every bulk root is a mount point on the work volume, and
+  refuses to restore or install anything until each one is
+  (`--verify-volume` runs that check alone).
+- It restores the standing approvals exactly as they were backed up.
+- It publishes the active release (`/opt/blueprint/task-evaluation-control-plane`)
+  by running the normal deploy tool, `scripts/deploy_control_plane_commit.py`, for
+  this checkout's commit, with the operator door's arguments (`--iteration
+  --preserve-configured-controls-state`). That tool also installs and arms the
+  deployed units.
+- Only after the release exists does it enable the units recorded in the backup.
+- None of this has been run on a fresh host (unproven): not the empty-root bind,
+  not the deploy tool on a host with no earlier release, and not
+  `mount_work_volume.sh` itself on a fresh, empty host. The volume step needs
+  `rsync` on the host; without it, the step refuses.
+
+**Owner steps** (none done; the repository states no price for the bucket):
+
+1. Create a dedicated private B2 bucket, versioning on, with no object lock (the
+   withdrawal purge must be able to delete versions).
+2. Create an application key that can reach only that bucket.
+3. Put these files under `/etc/blueprint/control-plane-backup/` (0600 root):
+   - `b2_key_id`, `b2_application_key`, `b2_bucket`, `b2_s3_endpoint_url`, `b2_region`;
+   - `encryption_key`: 64 hex characters, for example from `openssl rand -hex 32`.
+
+   Keep an offline copy of the key and the bucket credentials. Without them no
+   backup can be restored.
+4. Keep the secrets that `deploy/host/rebuild-owner-secrets.txt` lists, outside the host.
+5. Run the first restore drill on the real host, into a temporary root:
+   `python -m blueprint_pipeline.control_plane_state_backup restore --fs-root /tmp/drill`
+   with the unit's environment. Then compare files, and delete the temporary root.

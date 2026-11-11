@@ -26,7 +26,7 @@ from blueprint_pipeline.beta_policy_screening_plan import (
     job_ceiling_record, website_never_planned, website_route_template, website_switched_off,
 )
 from tests.test_beta_policy_screening_job_ceiling import READ_AT, ceiling_summary
-from tests.test_beta_policy_screening_plan import NOW, admitted, scene
+from tests.test_beta_policy_screening_plan import NOW, admitted, candidate_rows, scene
 
 SITE = "site-request1"
 #: A row a plan lists without any money field: never quoted, reserved or funded.
@@ -87,7 +87,7 @@ def test_the_rows_a_website_campaign_leaves_out_are_the_templates_and_scripted_b
         "groot_custom_checkpoint": 1, "act_custom_checkpoint": 1, "runway_praxis1": 1}
     # Every other row, licence-blocked, vendor and hosted ones included, is still planned.
     fresh, everything = website_plans(catalog)
-    planned = {row["candidate_id"] for row in fresh["candidates"]}
+    planned = {row["candidate_id"] for row in candidate_rows(fresh)}
     assert planned == set(every_id(catalog)) - {row["candidate_id"] for row in left_out} and len(planned) == 54
     assert {"dreamzero_droid", "flux3_action_droid", "trlc_dk1_lerobot_controller", "pi05_trlc_rabc_10466a13",
             "openwam_alpha_franka", "molmoact2_bimanual_yam", "dream1_i2rt_yam_bimanual"} <= planned
@@ -111,7 +111,7 @@ def test_leaving_the_rows_out_changes_no_money(host, remaining, site_remaining):
                   "scenario_cells", "screening_harness_revision"):
         assert fresh[field] == everything[field], field
     # Every planned row is the pre-change plan's row, byte for byte, in the same order.
-    assert fresh["candidates"] == [row for row in everything["candidates"] if row["candidate_id"] not in left_out]
+    assert candidate_rows(fresh) == [row for row in everything["candidates"] if row["candidate_id"] not in left_out]
     # Every left-out row was listed there without a quote, a reservation or a cap.
     dropped = [row for row in everything["candidates"] if row["candidate_id"] in left_out]
     assert len(dropped) == 82
@@ -157,7 +157,7 @@ def test_the_coordinator_reserves_spends_and_publishes_the_same_money(tmp_path, 
                          "site": coordinator._budget(ledger, SITE),
                          "remaining": job_ceiling.site_screening_remaining(root, site_id=SITE),
                          "status": publication["status"],
-                         "rows": {row["candidate_id"]: row for row in publication["candidates"]}}
+                         "rows": {row["candidate_id"]: row for row in candidate_rows(publication)}}
     new, old = results["new"], results["old"]
     assert new["launched"] == old["launched"] and len(new["launched"]) == 4
     assert new["holds"] == old["holds"] and new["budget"] == old["budget"] and new["site"] == old["site"]
@@ -189,11 +189,11 @@ def test_a_template_is_planned_again_once_a_partner_artifact_is_registered():
                                   if row["candidate_id"] not in {template["candidate_id"], other["candidate_id"]}]]
     resealed = seal_catalog({**catalog, "candidates": rows})
     fresh, _ = website_plans(resealed)
-    planned = {row["candidate_id"]: row for row in fresh["candidates"]}
+    planned = {row["candidate_id"]: row for row in candidate_rows(fresh)}
     # Both are listed with their own reasons (this fixture binds no runtime for them); 80 rows stay out.
     assert planned[template["candidate_id"]]["status"] == planned[other["candidate_id"]]["status"] == "unavailable"
     assert "beta_screening_team_binding_invalid" in planned[other["candidate_id"]]["blockers"]
-    assert len(fresh["candidates"]) == 56
+    assert len(candidate_rows(fresh)) == 56
 
 
 def test_a_catalog_with_only_left_out_rows_still_plans_and_publishes(tmp_path):
@@ -201,7 +201,8 @@ def test_a_catalog_with_only_left_out_rows_still_plans_and_publishes(tmp_path):
     rows = [row for row in catalog["candidates"] if website_never_planned(row)]
     only = seal_catalog({**catalog, "candidates": rows})
     fresh, everything = website_plans(only)
-    assert fresh == everything and len(fresh["candidates"]) == 82
+    assert {**fresh, "candidates": candidate_rows(fresh), "plan_digest": ""} == {**everything, "plan_digest": ""}
+    assert len(candidate_rows(fresh)) == 82
     coordinator.enqueue_screening_campaign(fresh, queue_root=tmp_path)
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
     assert publication["status"] == "blocked" and publication["budget"]["committed_upper_bound_usd"] == "0"
@@ -238,6 +239,7 @@ def test_a_campaign_planned_before_the_change_keeps_its_rows_through_the_deploy_
     root = world["screening_queue"]
     with monkeypatch.context() as before:
         before.setattr(planner, "website_never_planned", lambda candidate: False)
+        before.setattr(planner, "append_control_row", lambda value, *_args: value)
         first = _adopt(world)["campaign_id"]
     plan_path = root / "plans" / f"{first}.json"
     plan_bytes = plan_path.read_bytes()
@@ -278,9 +280,9 @@ def test_a_new_campaign_and_its_replan_list_only_rows_that_can_run(tmp_path, mon
     left_out = {row["candidate_id"] for row in load_default_catalog()["candidates"] if website_never_planned(row)}
     first = _adopt(world)["campaign_id"]
     plan = json.loads((root / "plans" / f"{first}.json").read_text())
-    assert len(plan["candidates"]) == 54 and not left_out & {row["candidate_id"] for row in plan["candidates"]}
+    assert len(candidate_rows(plan)) == 54 and not left_out & {row["candidate_id"] for row in plan["candidates"]}
     [publication] = coordinator.pending_publications(queue_root=root)
-    assert len(publication["candidates"]) == 54
+    assert len(candidate_rows(publication)) == 54
     coordinator.process_screening_queue(queue_root=root, executor=OneAllocates(), require_publication_ack=False)
     world["deployed"]["commit"] = "b" * 40
     replanned = _adopt(world)
