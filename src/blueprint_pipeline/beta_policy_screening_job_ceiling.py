@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import math
 import re
 from collections.abc import Mapping
@@ -26,14 +27,21 @@ from pathlib import Path
 from typing import Any
 
 UNAVAILABLE = "website_job_ceiling_unavailable"
+#: The website's picks for the job, read beside its ceiling (``beta_policy_screening_known_good_control``).
+PREFERENCE_FIELD = "preferred_robot_model_ids"
+LOGGER = logging.getLogger(__name__)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
-def read_job_ceiling_summary(*, context: Mapping[str, Any], capture_root: str | Path) -> dict[str, Any]:
+def read_job_ceiling_summary(*, context: Mapping[str, Any], capture_root: str | Path,
+                             extras: dict[str, Any] | None = None) -> dict[str, Any]:
     """The WebApp's ``job_ceiling`` from its non-creating Atlas configuration read.
 
     That read is bound to the job's Atlas source video, whose digest the
     preview retained with its own configuration. Every failure holds alike.
+    ``extras``, when given, receives the same read's ``preferred_robot_model_ids``
+    (the website's picks for the job, when it sends them). It is kept out of the
+    summary, so no ceiling, plan or task digest changes with it.
     """
     from .beta_policy_screening_plan import JOB_CEILING_SUMMARY_SCHEMA
     from .website_task_context import load_atlas_configuration
@@ -43,7 +51,10 @@ def read_job_ceiling_summary(*, context: Mapping[str, Any], capture_root: str | 
         source = retained["source_video_digest"]
         if not isinstance(source, str) or not _DIGEST.fullmatch(source):
             raise ValueError(UNAVAILABLE)
-        summary = load_atlas_configuration(context, source, create=False).get("job_ceiling")
+        configuration = load_atlas_configuration(context, source, create=False)
+        summary = configuration.get("job_ceiling")
+        if extras is not None and PREFERENCE_FIELD in configuration:
+            extras[PREFERENCE_FIELD] = configuration[PREFERENCE_FIELD]
     except Exception:  # noqa: BLE001 - a missing file, an old WebApp, a refusal or the network hold planning alike
         raise ValueError(UNAVAILABLE) from None
     if not isinstance(summary, Mapping) or summary.get("schema_version") != JOB_CEILING_SUMMARY_SCHEMA:
@@ -102,8 +113,13 @@ def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any]
 
     if scene.get("site_id") != context.get("scene_id"):
         raise ValueError(UNAVAILABLE)
-    summary = read_job_ceiling_summary(context=context, capture_root=capture_root)
+    extras: dict[str, Any] = {}
+    summary = read_job_ceiling_summary(context=context, capture_root=capture_root, extras=extras)
     read_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    preferred = _preferred_robot_model_ids(extras.get(PREFERENCE_FIELD), options.get("capabilities"))
+    if preferred:
+        # Orders only the known-good control's body; outside every digest (``robot_fit_rows`` too).
+        options["capabilities"] = {**(options.get("capabilities") or {}), PREFERENCE_FIELD: preferred}
     # Without the WebApp's screening figure, count every local reservation again: less, never more.
     published = summary.get("screening_cost_usd")
     published = (Decimal(str(published)) if isinstance(published, (int, float)) and not isinstance(published, bool)
@@ -116,6 +132,24 @@ def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any]
         raise ValueError(UNAVAILABLE) from None
     options.setdefault("site_remaining_usd", site_screening_remaining(queue_root, site_id=scene["site_id"]))
     return build_job_ceiling_screening_plan(catalog, scene, job_ceiling=record, **options)
+
+
+def _preferred_robot_model_ids(value: Any, capabilities: Any) -> list[str]:
+    """The website's picks when usable; an unusable value is logged by its typed code and ignored.
+
+    Known ids are the job's own robot fit table's models (one row per spec-catalog model), the
+    only models the preference can order. Without a table there is nothing to order.
+    """
+    from .beta_policy_screening_known_good_control import FIT_CAPABILITY, preferred_model_ids
+
+    rows = (capabilities or {}).get(FIT_CAPABILITY) if isinstance(capabilities, Mapping) else None
+    if value is None or not isinstance(rows, list):
+        return []
+    known = [row["model_id"] for row in rows if isinstance(row, Mapping) and isinstance(row.get("model_id"), str)]
+    preferred, code = preferred_model_ids(value, known)
+    if code:
+        LOGGER.warning("%s", code)
+    return preferred
 
 
 EXCEEDED = "beta_screening_job_ceiling_exceeded"

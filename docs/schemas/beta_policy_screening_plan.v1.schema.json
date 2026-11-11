@@ -956,6 +956,10 @@
                     "maxItems": 1,
                     "minItems": 1,
                     "type": "array"
+                  },
+                  "preferred": {
+                    "description": "Only with for_model_id, and only when the website sent preferred_robot_model_ids: whether this body's model was one of them.",
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -979,6 +983,11 @@
                         {
                           "required": [
                             "flags"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "preferred"
                           ]
                         }
                       ]

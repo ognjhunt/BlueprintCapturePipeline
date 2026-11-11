@@ -32,7 +32,12 @@ What the row is, and is not:
   profile (the marker's ``for_candidate_id``). Otherwise it is the body of a model the job's own
   robot fit table (``website_robot_fit``, passed as the ``robot_fit_rows`` capability) says fits
   this scene: ``fits`` before ``fits_spec``, ``unknown`` only when neither has a registered body,
-  never ``doesnt_fit``, ties in the table's order; a model's body is ``<recipe>_robotiq_2f85_sim``
+  never ``doesnt_fit``, ties in the table's order. The website's own picks
+  (``preferred_robot_model_ids``, read with the job's ceiling and passed as the
+  ``preferred_robot_model_ids`` capability) come first, in their order, among the fitting models
+  (``fits`` and ``fits_spec`` together) and among the ``unknown`` ones, never ahead of a fitting
+  model; the marker then says whether the body was a preferred one (``preferred``). A model's
+  body is ``<recipe>_robotiq_2f85_sim``
   (or its recipe, when that is itself a body). The marker then names the spec-catalog model
   (``for_model_id``) and no candidate. When that body's run is not bound to its own station on this
   scene it stands at the scene packet's (another robot's) station; it still runs, and the marker
@@ -93,6 +98,11 @@ STATION_CAPABILITY = "candidate_station_basis"
 #: A fitting model's verdicts in the order a body is chosen; ``doesnt_fit`` never is.
 FALLBACK_VERDICTS = ("fits", "fits_spec", "unknown")
 SCRIPTED_BODY_SUFFIX = "_robotiq_2f85_sim"
+#: The website's picks for the job, best first (its answer's pick, then its runner-up).
+PREFERENCE_CAPABILITY = "preferred_robot_model_ids"
+PREFERENCE_LIMIT = 3
+#: Logged, never raised, when the website sent a preference this planner cannot use.
+PREFERENCE_INVALID = "known_good_control_preference_invalid"
 #: The feasibility check's own station code for a body bound to the scene packet's station, not its own.
 PACKET_STATION_FLAG = PACKET_STATION
 
@@ -149,24 +159,46 @@ def _unavailable(reason: str, candidate: Mapping[str, Any] | None = None) -> dic
             CONTROL_FIELD: marker}
 
 
-def _fallback_body(scripted: list[Mapping[str, Any]], fit: Any) -> tuple[str, Mapping[str, Any]] | None:
-    """The one registered scripted row for a model the job's fit table says fits; its model id with it."""
+def preferred_model_ids(value: Any, known: Iterable[str]) -> tuple[list[str], str | None]:
+    """The website's preference as the planner uses it, and a typed code when it was sent but unusable.
+
+    Absent (``None``) is no preference. Anything but a list of 1 to ``PREFERENCE_LIMIT`` distinct
+    spec-catalog model ids is ignored whole, with ``PREFERENCE_INVALID``: it never stops a plan.
+    """
+    if value is None:
+        return [], None
+    known = set(known)
+    if (not isinstance(value, list) or not 1 <= len(value) <= PREFERENCE_LIMIT
+            or any(not isinstance(item, str) or item not in known for item in value) or len(set(value)) != len(value)):
+        return [], PREFERENCE_INVALID
+    return list(value), None
+
+
+def _fallback_body(scripted: list[Mapping[str, Any]], fit: Any,
+                   preferred: Any = None) -> tuple[str, Mapping[str, Any], bool] | None:
+    """The one registered scripted row for a model the job's fit table says fits; its model id with it,
+    and whether that model was one the website preferred."""
     if not isinstance(fit, list):
         return None
     bodies: dict[str, Mapping[str, Any]] = {}
     for row in scripted:
         bodies.setdefault(row["interface"].get("robot_profile_id"), row)
-    for verdict in FALLBACK_VERDICTS:
-        for entry in fit:
-            if not isinstance(entry, Mapping) or entry.get("verdict") != verdict:
-                continue
+    ranked = [entry for entry in fit if isinstance(entry, Mapping)]
+    order = list(preferred) if isinstance(preferred, list) else []
+    # fits and fits_spec both fit on what was checked: one tier, where the website's pick goes first.
+    for tier in (("fits", "fits_spec"), ("unknown",)):
+        rows = sorted((entry for entry in ranked if entry.get("verdict") in tier),
+                      key=lambda entry: FALLBACK_VERDICTS.index(entry["verdict"]))  # stable: table order within
+        rows = ([entry for model in order for entry in rows if entry.get("model_id") == model]
+                + [entry for entry in rows if entry.get("model_id") not in order])
+        for entry in rows:
             model, recipe = entry.get("model_id"), entry.get("recipe_id")
             if not isinstance(model, str) or not isinstance(recipe, str) or not recipe:
                 continue
             for body in dict.fromkeys((recipe if recipe.endswith(SCRIPTED_BODY_SUFFIX) else recipe + SCRIPTED_BODY_SUFFIX,
                                        recipe)):
                 if body in bodies:
-                    return model, bodies[body]
+                    return model, bodies[body], model in order
     return None
 
 
@@ -202,11 +234,15 @@ def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene:
             break
     if match is None:
         # No selected candidate's robot has a scripted row: a body the site's fit table says fits.
-        chosen = _fallback_body(scripted, capabilities.get(FIT_CAPABILITY))
+        preference = capabilities.get(PREFERENCE_CAPABILITY)
+        chosen = _fallback_body(scripted, capabilities.get(FIT_CAPABILITY), preference)
         if chosen is None:
             return _unavailable("embodiment")
-        model, match = chosen
+        model, match, preferred = chosen
         stands_for = {"for_model_id": model}
+        if isinstance(preference, list) and preference:
+            # Only a job the website sent a preference for says whether it was followed.
+            stands_for["preferred"] = preferred
         if (capabilities.get(STATION_CAPABILITY) or {}).get(match["candidate_id"]) != OWN_STATION:
             stands_for["flags"] = [PACKET_STATION_FLAG]
     binding = (capabilities.get("candidate_bindings") or {}).get(match["candidate_id"])
@@ -291,9 +327,10 @@ def validate_control_row(row: Mapping[str, Any], plan: Mapping[str, Any]) -> Dec
                 and any(item["candidate_id"] == marker["for_candidate_id"] and item["status"] == "selected"
                         for item in plan["candidates"] if not is_control(item)))
     else:
-        require(stands_for in ({"for_model_id"}, {"for_model_id", "flags"})
+        require("for_model_id" in stands_for and stands_for <= {"for_model_id", "flags", "preferred"}
                 and isinstance(marker["for_model_id"], str) and _CANDIDATE_ID.fullmatch(marker["for_model_id"]) is not None
-                and marker.get("flags", [PACKET_STATION_FLAG]) == [PACKET_STATION_FLAG])
+                and marker.get("flags", [PACKET_STATION_FLAG]) == [PACKET_STATION_FLAG]
+                and type(marker.get("preferred", False)) is bool)
     require(row["episode_count"] == EPISODES and isinstance(row["scenario_cells"], list)
             and len(row["scenario_cells"]) == EPISODES)
     ids, seeds = set(), set()
@@ -459,7 +496,7 @@ def alert_failed_controls(root: Path, failed: Iterable[str], *, webhook_url: str
 
 
 __all__ = ["ALERT_CODE", "CONTROL_FIELD", "DISPLAY_NAME", "EPISODES", "FAILED", "FIT_CAPABILITY", "INTERRUPTED",
-           "PACKET_STATION_FLAG", "PASSED", "STATION_CAPABILITY",
+           "PACKET_STATION_FLAG", "PASSED", "PREFERENCE_CAPABILITY", "PREFERENCE_INVALID", "STATION_CAPABILITY",
            "PASS_AT_SUCCESSES", "PENDING", "REASONS", "REUSED_BLOCKER", "UNAVAILABLE", "alert_failed_controls",
            "append_control_row", "control_cells", "control_flags", "control_gate", "control_outcome",
-           "failed_controls", "is_control", "plan_control_row", "reuse_key", "validate_control_row"]
+           "failed_controls", "is_control", "plan_control_row", "preferred_model_ids", "reuse_key", "validate_control_row"]

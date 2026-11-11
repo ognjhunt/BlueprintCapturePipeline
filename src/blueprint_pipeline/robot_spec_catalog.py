@@ -11,8 +11,20 @@ not give is ``null`` with its reason in ``unknown_figures``; nothing is inferred
 base speed and may leave it ``null`` without a reason. The figures describe the product, not a unit
 measured on a site, so a fit built on them is a bounded estimate.
 
-Units: ``m`` (``max_reach_m``, ``base_footprint_diameter_m``, ``base_footprint_l_w_m`` as
-``[length, width]``, and the tool's ``stroke_m`` and ``length_m``), ``kg`` (``rated_payload_kg``,
+Body types: ``fixed_arm``, ``mobile_manipulator`` (an arm on a wheeled or legged base),
+``humanoid`` (legs) and ``wheeled_humanoid`` (a humanoid upper body on a wheeled base).
+
+A robot that moves is judged by how high and how low its hand goes, not by the distance between the
+spots: ``max_hand_height_m`` and ``min_hand_height_m`` are the highest and lowest heights above the
+floor that the maker states the hand (or wrist) reaches. Only a height the maker states as one above
+the floor counts ("Floor" or a workspace that starts at 0 is ``0``); a lift's travel or a "vertical
+reach" with no reference point is not a hand height. The lowest may be ``0``, every other figure is
+above zero, and the highest must be above the lowest. A fixed arm stands on its mount, so it may leave
+both out, as it may its base speed.
+
+Units: ``m`` (``max_reach_m``, ``max_hand_height_m``, ``min_hand_height_m``,
+``base_footprint_diameter_m``, ``base_footprint_l_w_m`` as ``[length, width]``, and the tool's
+``stroke_m`` and ``length_m``), ``kg`` (``rated_payload_kg``,
 ``robot_mass_kg``, the tool's ``mass_kg``), ``m/s`` (``max_tcp_speed_m_s``, ``max_base_speed_m_s``),
 ``mm`` (``repeatability_mm``) and ``count`` (``degrees_of_freedom``, a whole number).
 
@@ -34,10 +46,17 @@ from .decision_evidence_contracts import DecisionEvidenceContractError, canonica
 SCHEMA_VERSION = "robot_spec_catalog.v1"
 CATALOG_PATH = Path(__file__).parent / "_catalog_data" / "robot_spec_catalog.v1.json"
 RECIPE_CATALOG_PATH = Path(__file__).parent / "_catalog_data" / "embodiment_asset_recipes.v1.json"
-BODY_TYPES = ("fixed_arm", "mobile_manipulator", "humanoid")
+BODY_TYPES = ("fixed_arm", "mobile_manipulator", "humanoid", "wheeled_humanoid")
 MODEL_FIGURE_UNITS = {"max_reach_m": "m", "rated_payload_kg": "kg", "max_tcp_speed_m_s": "m/s",
                       "base_footprint_diameter_m": "m", "base_footprint_l_w_m": "m", "robot_mass_kg": "kg",
-                      "repeatability_mm": "mm", "degrees_of_freedom": "count", "max_base_speed_m_s": "m/s"}
+                      "repeatability_mm": "mm", "degrees_of_freedom": "count", "max_base_speed_m_s": "m/s",
+                      "max_hand_height_m": "m", "min_hand_height_m": "m"}
+#: Heights above the floor that the hand reaches; a fixed arm may leave them out.
+HAND_HEIGHT_FIGURES = ("max_hand_height_m", "min_hand_height_m")
+#: A fixed arm may leave these ``null`` (or out) without a reason: it has no base and stands on its mount.
+FIXED_ARM_MAY_OMIT = ("max_base_speed_m_s", *HAND_HEIGHT_FIGURES)
+#: The floor itself: the only figure that may be zero.
+ZERO_ALLOWED_FIGURES = frozenset({"min_hand_height_m"})
 TOOL_FIGURE_UNITS = {"stroke_m": "m", "mass_kg": "kg", "length_m": "m"}
 #: The default tool must state these; its length may be unknown, with a reason.
 REQUIRED_TOOL_FIGURES = ("stroke_m", "mass_kg")
@@ -71,6 +90,11 @@ def _positive(value: Any) -> bool:
             and value > 0)
 
 
+def _non_negative(value: Any) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            and value >= 0)
+
+
 def _figure_errors(owner: str, row: Mapping[str, Any], units: Mapping[str, str],
                    may_omit: Iterable[str] = ()) -> list[str]:
     figures, unknown = row.get("figures"), row.get("unknown_figures", {})
@@ -95,7 +119,8 @@ def _figure_errors(owner: str, row: Mapping[str, Any], units: Mapping[str, str],
         if name in PAIR_FIGURES:
             valid = isinstance(value, list) and len(value) == 2 and all(_positive(v) for v in value)
         else:
-            valid = _positive(value) and (unit != "count" or float(value).is_integer())
+            number = _non_negative if name in ZERO_ALLOWED_FIGURES else _positive
+            valid = number(value) and (unit != "count" or float(value).is_integer())
         if not valid:
             errors.append(f"robot_spec_catalog_value_invalid:{where}")
         if figure.get("unit") != unit:
@@ -174,7 +199,12 @@ def validate_robot_spec_catalog(value: Mapping[str, Any], *,
         if "notes" in model and not isinstance(model["notes"], str):
             errors.append(f"robot_spec_catalog_notes_invalid:{key}")
         errors += _figure_errors(key, model, MODEL_FIGURE_UNITS,
-                                 ("max_base_speed_m_s",) if model.get("body_type") == "fixed_arm" else ())
+                                 FIXED_ARM_MAY_OMIT if model.get("body_type") == "fixed_arm" else ())
+        figures = model.get("figures") if isinstance(model.get("figures"), Mapping) else {}
+        top, bottom = (figures.get(name).get("value") if isinstance(figures.get(name), Mapping) else None
+                       for name in HAND_HEIGHT_FIGURES)
+        if _positive(top) and _non_negative(bottom) and top <= bottom:
+            errors.append(f"robot_spec_catalog_hand_heights_inverted:{key}")
     if errors:
         raise RobotSpecCatalogError(errors)
     catalog["catalog_digest"] = canonical_digest(catalog, digest_field="catalog_digest")
@@ -210,5 +240,6 @@ def figure_value(row: Mapping[str, Any], name: str) -> Any:
     return None if figure is None else figure["value"]
 
 
-__all__ = ["CATALOG_PATH", "SCHEMA_VERSION", "RobotSpecCatalogError", "figure_value", "known_recipe_ids",
-           "load_robot_spec_catalog", "validate_robot_spec_catalog"]
+__all__ = ["BODY_TYPES", "CATALOG_PATH", "HAND_HEIGHT_FIGURES", "MODEL_FIGURE_UNITS", "SCHEMA_VERSION",
+           "RobotSpecCatalogError", "figure_value", "known_recipe_ids", "load_robot_spec_catalog",
+           "validate_robot_spec_catalog"]

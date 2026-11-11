@@ -554,3 +554,98 @@ def test_a_marker_that_stands_for_both_neither_or_anything_else_is_refused(chang
     with pytest.raises(BetaPolicyScreeningPlanError):
         validate_screening_plan(value)
     assert not Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).is_valid(value)
+
+
+# ---- the website's own pick, when it fits -------------------------------------------------------------------
+
+UR5E_FIT = ("universal_robots_ur5e", "universal_robots_ur5e")
+UR10E_FIT = ("universal_robots_ur10e", "universal_robots_ur10e")
+KUKA_FIT = ("kuka_lbr_iiwa_14", "kuka_lbr_iiwa_14")
+
+
+@pytest.mark.parametrize("verdicts, preferred, expected", [
+    # Same tier: the website's pick beats the table's order.
+    (("fits_spec", "fits_spec", None), ["universal_robots_ur10e"], ("universal_robots_ur10e", True)),
+    # fits and fits_spec are one tier for the preference: a preferred fits_spec beats a non-preferred fits.
+    (("fits", "fits_spec", None), ["universal_robots_ur10e"], ("universal_robots_ur10e", True)),
+    # The preference order holds: the pick, then its runner-up.
+    (("fits_spec", "fits_spec", "fits"), ["kuka_lbr_iiwa_14", "universal_robots_ur10e"], ("kuka_lbr_iiwa_14", True)),
+    (("fits_spec", "doesnt_fit", "fits"), ["universal_robots_ur10e", "kuka_lbr_iiwa_14"], ("kuka_lbr_iiwa_14", True)),
+    # Never an unknown over a fitting model, preferred or not.
+    (("fits_spec", "unknown", None), ["universal_robots_ur10e"], ("universal_robots_ur5e", False)),
+    # Never doesnt_fit, preferred or not.
+    (("fits_spec", "doesnt_fit", None), ["universal_robots_ur10e"], ("universal_robots_ur5e", False)),
+    # Among unknowns only, the preference orders them too.
+    (("unknown", "unknown", None), ["universal_robots_ur10e"], ("universal_robots_ur10e", True)),
+    # A preferred model with no registered body is passed over.
+    (("fits", "fits", None), ["fanuc_crx_10ia", "universal_robots_ur10e"], ("universal_robots_ur10e", True)),
+])
+def test_the_websites_pick_comes_first_among_models_of_its_tier(verdicts, preferred, expected):
+    catalog, capabilities, quotes = catalog_with_bodies([UR5E, UR10E, KUKA])
+    table = [(*model, verdict) for model, verdict in zip((UR5E_FIT, UR10E_FIT, KUKA_FIT), verdicts) if verdict]
+    value = website_plan(catalog, {**capabilities, control.FIT_CAPABILITY: fit(*table),
+                                   control.PREFERENCE_CAPABILITY: preferred}, quotes)
+    marker = value["candidates"][-1]["known_good_control"]
+    assert (marker["for_model_id"], marker["preferred"]) == expected
+    assert validate_screening_plan(value) == value
+    Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(value)
+
+
+def test_no_preference_is_todays_choice_and_marker():
+    catalog, capabilities, quotes = catalog_with_bodies([UR5E, UR10E])
+    table = fit((*UR5E_FIT, "fits_spec"), (*UR10E_FIT, "fits_spec"))
+    value = website_plan(catalog, {**capabilities, control.FIT_CAPABILITY: table}, quotes)
+    marker = value["candidates"][-1]["known_good_control"]
+    assert marker["for_model_id"] == "universal_robots_ur5e" and "preferred" not in marker
+
+
+@pytest.mark.parametrize("value", [["unknown_model"], "universal_robots_ur10e", [], ["universal_robots_ur10e"] * 2,
+                                   ["universal_robots_ur5e", "universal_robots_ur10e", "kuka_lbr_iiwa_14",
+                                    "fanuc_crx_10ia"], [7]])
+def test_an_unusable_preference_is_ignored_with_a_typed_code(value):
+    known = ["universal_robots_ur5e", "universal_robots_ur10e", "kuka_lbr_iiwa_14", "fanuc_crx_10ia"]
+    assert control.preferred_model_ids(value, known) == ([], control.PREFERENCE_INVALID)
+    assert control.preferred_model_ids(None, known) == ([], None)
+    assert control.preferred_model_ids(["universal_robots_ur10e", "kuka_lbr_iiwa_14"], known) == (
+        ["universal_robots_ur10e", "kuka_lbr_iiwa_14"], None)
+
+
+def test_the_planner_reads_the_preference_beside_the_ceiling_and_ignores_a_bad_one(monkeypatch, caplog):
+    from blueprint_pipeline import beta_policy_screening_job_ceiling as job_ceiling
+
+    seen = []
+
+    def build(catalog, scene_value, **options):
+        seen.append(options.get("capabilities"))
+        return {}
+
+    import blueprint_pipeline.beta_policy_screening_plan as plan_module
+    monkeypatch.setattr(plan_module, "build_job_ceiling_screening_plan", build)
+    monkeypatch.setattr(job_ceiling, "local_screening_holds", lambda *_a, **_k: Decimal(0))
+    monkeypatch.setattr(job_ceiling, "site_screening_remaining", lambda *_a, **_k: None)
+    for sent, expected in ((["universal_robots_ur10e"], ["universal_robots_ur10e"]), (["nope"], None), (None, None)):
+        def read(*, context, capture_root, extras=None, sent=sent):
+            if sent is not None and extras is not None:
+                extras["preferred_robot_model_ids"] = sent
+            return ceiling_summary(40)
+        monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", read)
+        job_ceiling.plan_within_job_ceiling({}, {"site_id": "s"}, queue_root="/tmp", context={"scene_id": "s"},
+                                            capture_root="/tmp", capabilities={
+            "candidate_bindings": {}, control.FIT_CAPABILITY: fit((*UR10E_FIT, "fits"))})
+        assert (seen[-1] or {}).get("preferred_robot_model_ids") == expected
+    assert control.PREFERENCE_INVALID in caplog.text
+
+
+@pytest.mark.parametrize("change", ["preferred_with_candidate", "preferred_not_bool"])
+def test_a_preferred_flag_is_validated(change):
+    value = with_control(queue_plan(count=2))
+    marker = value["candidates"][-1]["known_good_control"]
+    if change == "preferred_with_candidate":
+        marker["preferred"] = True
+    else:
+        del marker["for_candidate_id"]
+        marker.update(for_model_id="universal_robots_ur10e", preferred="yes")
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    with pytest.raises(BetaPolicyScreeningPlanError):
+        validate_screening_plan(value)
+    assert not Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).is_valid(value)
