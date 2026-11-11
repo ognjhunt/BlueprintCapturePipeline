@@ -63,6 +63,8 @@ def test_live_vast_watchdogs_are_published_with_their_scope_id_and_deadline(tmp_
     assert scan_problems == [] and parse_problems == []
     assert entries == [{"deadline_epoch": NOW + 3600, "instance_id": 4242, "label": EXACT},
                        {"deadline_epoch": NOW + 7200, "instance_id": None, "label_prefix": PREFIX}]
+    # /proc lists in no fixed order: the same watchdogs in another order publish the same list.
+    assert heartbeat.watchdog_entries(list(reversed(found))) == (entries, [])
     store = Store()
     record = _publish(store, tmp_path, argvs=argvs)
     assert record["status"] == "published" and record["published_deadline_count"] == 2

@@ -88,9 +88,8 @@ def process_argvs(proc_root: Path = Path("/proc")) -> tuple[list[list[str]], lis
 
     argvs: list[list[str]] = []
     problems: list[str] = []
-    for entry in proc_root.iterdir():
-        if not entry.name.isdigit():
-            continue
+    # A directory lists in no fixed order; read processes by number so the result does not depend on it.
+    for entry in sorted((item for item in proc_root.iterdir() if item.name.isdigit()), key=lambda item: int(item.name)):
         try:
             raw = (entry / "cmdline").read_bytes()
         except (FileNotFoundError, ProcessLookupError):
@@ -144,7 +143,11 @@ def watchdog_entries(argvs: Iterable[Sequence[str]], *,
             continue
         if entry is not None:
             entries.append(entry)
-    return entries, problems
+    # One order whatever order the processes were listed in: the published object must not change
+    # between two heartbeats that saw the same watchdogs.
+    entries.sort(key=lambda row: (row["deadline_epoch"], str(row.get("label") or row.get("label_prefix") or ""),
+                                  row.get("instance_id") or 0))
+    return entries, sorted(problems)
 
 
 def _watchdog_entry(argv: Sequence[str], started_instance_id: Callable[[str], int | None]) -> dict[str, Any] | None:
