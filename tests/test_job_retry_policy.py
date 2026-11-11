@@ -117,3 +117,15 @@ def test_request_cannot_succeed_names_refusals_of_the_request_itself():
     assert not request_cannot_succeed("meta_sam_http_429") and not request_cannot_succeed("meta_sam_http_503")
     assert not request_cannot_succeed("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
     assert not request_cannot_succeed("atlas_background_visual_review_rejected") and not request_cannot_succeed(None)
+
+
+def test_try_again_answers_are_outages_and_never_end_a_step_at_once():
+    from blueprint_pipeline.job_retry_policy import provider_says_retry_later, request_cannot_succeed
+
+    for status in (408, 409, 425, 429, 500, 502, 503, 504):
+        assert provider_says_retry_later(f"meta_sam_http_{status}")
+        assert not request_cannot_succeed(f"meta_sam_http_{status}")
+    for status in (400, 401, 403, 404, 413, 422):
+        assert not provider_says_retry_later(f"meta_sam_http_{status}")
+        assert request_cannot_succeed(f"meta_sam_http_{status}")
+    assert request_cannot_succeed("meta_sam_submission_requires_reconciliation")
