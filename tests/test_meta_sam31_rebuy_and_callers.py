@@ -259,8 +259,12 @@ class UploadProvider:
         return BytesIO(json.dumps(answer).encode())
 
 
-#: What ``origin/main`` (49759e2e0) does with each status on a run that uploads, observed by running
-#: this same scenario against main's ``meta_sam31``: the second run's outcome and its provider calls.
+#: What ``origin/main`` does with each status on a run that uploads: the second run's outcome and its
+#: provider calls. Derived on 2026-11-11 against commit 49759e2e09a5594a50f6c45250de40c06b527b64 by
+#: loading that commit's ``src/blueprint_pipeline/meta_sam31.py`` (``git show 49759e2e0:...``) into a
+#: scratch copy of this package and running this exact scenario for each status with both modules;
+#: the two outputs were identical for all 15 statuses. Not run inside the suite: a CI checkout need not
+#: hold that commit, so the observed outcomes are kept here as a table.
 MAIN_SECOND_RUN = {
     # Resent naming the run's first upload, as main does (main's own fault: that file was deleted
     # when the first run ended; the tracker lists it).
