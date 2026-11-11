@@ -3,37 +3,46 @@
 Owner direction, 2026-10-28: simplify. This short block replaces the earlier
 long doctrine; git history keeps the old text for reference only.
 
-Owner direction, 2026-11-11: the site gets one answer, simulation is its proof,
-and the answer becomes a deployment opportunity. The 2026-10-28 direction
-stands except where this changes it.
+Owner direction, 2026-11-11: the site gets one answer, and the answer becomes a
+deployment opportunity. Later the same day the owner settled what the answer
+is: the result of Blueprint's own simulation test of AI robots on the site's
+job. The 2026-10-28 direction stands except where this changes it.
 
 ### What Blueprint Does
 
-A site sends a video of one recurring job. Blueprint reads the video, checks
-real robot models against the job by their published specifications, and shows
-the site one answer: the robot that most likely fits, a runner-up, what was
+A site sends a video of one recurring job. Blueprint reads the video, turns it
+into a simulation of that site, and runs the top AI robots on the job in it
+itself. An AI robot here is a robot together with the learned, camera-driven
+software that controls it. Each gets about ten tries, with the set-up varied
+between tries. The site's answer is which did best and how far that result can
+be trusted. A pre-programmed (scripted) motion is never one of the contenders;
+Blueprint uses one only to check its own simulation.
+
+Before a test result exists, and when no test can run, the answer is the first
+look on paper: real robot models checked against the job by their published
+specifications, with the robot that most likely fits, a runner-up, what was
 ruled out and why, who already uses those robots for work like it, and how sure
-Blueprint is. Blueprint then proves the answer as far as current practice
-allows: it turns the video into a simulation of that site, runs the candidate
-robot policies and embodiments in it itself, and shows which did best and how
-far that result can be trusted. The site can then share an anonymised job card,
-with the answer and the proof, with deployment companies Blueprint has
-approved. Blueprint works alongside the company that takes the job on; the site
-and that company agree any pilot directly. Blueprint does not rely on robot
-teams to run evaluations; a technology provider supplies access or an
-integration only when Blueprint cannot run a policy itself.
+Blueprint is. The paper check also decides what is worth entering in the test.
+
+The site can then share an anonymised job card, with the answer, with
+deployment companies Blueprint has approved. Blueprint works alongside the
+company that takes the job on; the site and that company agree any pilot
+directly. Blueprint does not rely on robot teams to run evaluations; a
+technology provider supplies access or an integration only when Blueprint
+cannot run a policy itself.
 
 The journey is four steps:
 
 1. Email and video of the job. Blueprint drafts the brief from the video; the
    site corrects it if needed.
-2. The answer, as soon as the video is read: a fit check against published
-   specifications and a cited track record. It never waits on the simulation.
-3. Proof in simulation: Blueprint prepares the site simulation and evaluates
-   the candidates. The site sees the ranking with the published accuracy of the
-   method and its conditions, or a plain statement that the simulation could
-   not rank them, or "held — we can't simulate this kind of job yet", which is
-   counted as demand for what to build next.
+2. A first look on paper, as soon as the video is read: a fit check against
+   published specifications and a cited track record. It never waits on the
+   simulation.
+3. The simulation test: Blueprint prepares the site simulation and runs the AI
+   robots in it. The site sees which did best, with the published accuracy of
+   the method and its conditions, or a plain statement that none finished or
+   that there is no clear winner, or "held — we can't simulate this kind of
+   job yet", which is counted as demand for what to build next.
 4. A deployment company: the site chooses whether to share its job card.
 
 The beta is free. Blueprint pays for preparation and evaluation inside a fixed
@@ -74,7 +83,8 @@ readiness check unless it protects privacy, rights or money.
 
 - Don't make things up: no invented results, figures, customers, readiness or
   approvals. Unknown stays unknown.
-- The answer and its simulation proof are bounded estimates.
+- The simulation test's result and the first look on paper are bounded
+  estimates.
   They never certify physical performance or safety. A stated accuracy carries
   its source and its conditions.
 

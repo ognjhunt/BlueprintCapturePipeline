@@ -286,7 +286,9 @@ through harness failures, settlements, a deploy's re-plan, a successor, an
 owner-closed run and a binding site limit, and compare every learned row's end
 and money, the re-plan and the successor's money). It is reserved only when
 its campaign, read as if the row did not exist, has finished `completed` for
-good: nothing would be retried, held for a deploy or planned again, the job's
+good: nothing would be retried, held for a deploy or planned again (learned
+policies closed because the plan budget, the site's allowance or the job's
+ceiling could not pay for them count as finished, owner decision 2026-11-11), the job's
 source is still current (the owner did not close the run, consent holds), and
 its own harness has not just failed there. Otherwise it closes at once without
 running or holding money, as "did not finish"
@@ -296,10 +298,11 @@ campaign. Then it goes through the ordinary reservation, so the plan budget,
 the site limit, the job ceiling and the account limit bound it; if its cap
 does not fit, it ends as `known_good_control_unavailable:budget`. Once
 reserved, its money counts against the site limit like any row's. What this
-costs: a re-plan or a successor campaign carries no reference row, so a job
-whose first campaign did not finish cleanly gets no check. That includes a job
-whose plan closed learned policies for the plan budget while the site still
-had money, because a later deploy would plan those again.
+costs: if a later deploy plans the policies that were closed for money again in
+a new campaign, the site has less left for them by what the check actually
+spent, at most $3.00. A re-plan or a successor campaign carries no reference
+row, so a job whose first campaign did not finish cleanly for any other reason
+gets no check.
 The publication carries the check's outcome flag and its
 `episodes_succeeded` of `episodes_scored` on the row `blueprint_scripted_<body>`.
 

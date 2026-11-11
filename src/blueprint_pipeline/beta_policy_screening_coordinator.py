@@ -1809,12 +1809,18 @@ def _final_without_control(ledger: Mapping[str, Any], plan: Mapping[str, Any],
                            plans: Callable[[str, str], Mapping[str, Any]]) -> bool:
     """Whether the campaign without its known-good control ended ``completed`` for good: ``campaign_status`` of
     its learned rows, not superseded, and ``_replan_scope`` would plan nothing again by itself or after any deploy."""
+    from .beta_policy_screening_known_good_control import _budget_blockers
+
     state = ledger["campaigns"][plan["campaign_id"]]
     rows = {key: row for key, row in state["candidates"].items() if not is_control(row)}
     if state.get("superseded_by") or campaign_status(rows) != "completed":
         return False
+    # A row closed for plan, site or ceiling money is final (owner, 2026-11-11); an account limit is held for a deploy.
+    money = _budget_blockers() - {ACCOUNT_LIMIT_REACHED_BLOCKER}
+    rows = {key: row for key, row in rows.items() if row["status"] in ACTIVE_STATUSES | QUEUED_STATUSES
+            or not row.get("blockers") or not set(row["blockers"]) <= money}
     shadow = {**ledger, "campaigns": {**ledger["campaigns"], plan["campaign_id"]: {**state, "candidates": rows}}}
-    learned = {**plan, "candidates": [row for row in plan["candidates"] if not is_control(row)]}
+    learned = {**plan, "candidates": [row for row in plan["candidates"] if row["candidate_id"] in rows]}
     return _replan_scope(shadow, learned, _ANY_LATER_COMMIT, plans=plans) is None
 
 

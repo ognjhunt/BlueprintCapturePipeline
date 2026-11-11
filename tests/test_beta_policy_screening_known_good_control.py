@@ -439,8 +439,8 @@ def test_no_state_leaves_the_control_pending_while_nothing_else_can_move(tmp_pat
     configured = next(row for row in shaped(control_row=True, **settings)["candidates"] if control.is_control(row))
     outcome = control.control_outcome(configured, state["candidates"][CONTROL])
     assert outcome in {control.PASSED, control.INTERRUPTED, f"{control.UNAVAILABLE}:budget"}
-    # It ran only when the campaign without it ended completed for good.
-    assert (outcome == control.PASSED) is (shape == "all_selected")
+    # It ran only when the campaign without it ended completed for good, rows closed for money included.
+    assert (outcome == control.PASSED) is (shape in {"all_selected", "waitlisted_never_fundable"})
 
 
 def test_the_reviewers_deadlock_shape_now_completes_and_funds_the_waiting_row(tmp_path, summaries):
@@ -983,15 +983,41 @@ ROUND4 = {
     # Another campaign at the site keeps $15 of a $21 limit: one $6 learned row fits, the other waits on it.
     "site_limit_binding": dict(count=2, observations=done("candidate-000", "candidate-001"),
                                setup=_other_campaign_holds("5.00"), cost="6.00", site_limit="21"),
-    # Everything completes and settles: the only shape where the row runs.
+    # Everything completes and settles: the row runs.
     "all_completed_and_settled": dict(count=2, observations=done("candidate-000", "candidate-001")),
+    # The typical rigid job: three $4 rows run and settle, two more close for the plan budget. A money close is
+    # final for the row (owner, 2026-11-11), so it runs on the $3 left; a deploy still plans the closed two again.
+    "typical_budget_closed": dict(count=3, waitlisted=2,
+                                  observations=done(*(f"candidate-{index:03}" for index in range(5)))),
+    # A budget close beside a harness failure: the failure is retried after a deploy, so the row never runs.
+    "budget_closed_and_harness_failure": dict(count=3, waitlisted=2, observations={
+        **done("candidate-000", "candidate-001", "candidate-003", "candidate-004"), "candidate-002": HARNESS_FAIL}),
 }
 
 
 def _round4_plan(settings, *, control_row):
     count, cost = settings["count"], settings.get("cost", "4.00")
     value = queue_plan(count=count, cost=cost)
-    return with_control(value, cost="3.00") if control_row else value
+    value = with_control(value, cost="3.00") if control_row else value
+    return _with_waitlisted(value, settings.get("waitlisted", 0))
+
+
+def _with_waitlisted(value, count):
+    """``count`` more $4.00 rows the plan budget waitlisted, before the control row (the typical rigid job)."""
+    if not count:
+        return value
+    value = deepcopy(value)
+    learned = sum(not control.is_control(row) for row in value["candidates"])
+    extra = deepcopy(queue_plan(count=learned + count, cost="1.00"))["candidates"][learned:]
+    for row in extra:
+        row.update(status="waitlisted", blockers=[WAITLIST_BLOCKER], max_cost_usd="4.00")
+        row["cost_quote"]["maximum_cost_usd"] = "4.00"
+        row["cost_quote"]["quote_digest"] = canonical_digest(row["cost_quote"], digest_field="quote_digest")
+    rows = value["candidates"]
+    position = next((index for index, row in enumerate(rows) if control.is_control(row)), len(rows))
+    value["candidates"] = rows[:position] + extra + rows[position:]
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    return validate_screening_plan(value)
 
 
 @pytest.mark.parametrize("shape", sorted(ROUND4))
@@ -1009,17 +1035,21 @@ def test_with_and_without_the_row_every_learned_row_replan_and_successor_are_ide
     with_row, backend, state = _observe(tmp_path / "with", _round4_plan(settings, control_row=True),
                                         {**settings["observations"], CONTROL: control_result}, **options)
     ran = CONTROL in backend.order
-    # The row runs only when the campaign without it ended completed with nothing planned again.
-    assert ran is (without["status"] == "completed" and without["scope"] is None and without["self_scope"] is None
-                   and settings.get("source_current", True))
-    assert ran is (shape == "all_completed_and_settled")
-    money_keys = {"site_left", "holds"} if ran else set()  # the one difference: what the row really spent
+    # The row runs only when the campaign without it ended completed, with nothing planned again but rows
+    # closed for money.
+    assert ran is (shape in {"all_completed_and_settled", "typical_budget_closed"})
+    if ran:
+        assert without["status"] == "completed" and without["self_scope"] is None
+    # The one difference: what the row really spent, in the site's money (and the successor's, when there is one).
+    money_keys = {"site_left", "holds", "site_left_for_successor", "site_left_after_successor"} if ran else set()
     assert {key: value for key, value in with_row.items() if key not in money_keys} == {
         key: value for key, value in without.items() if key not in money_keys}
     assert [key for key in backend.order if key != CONTROL] == plain.order
     if ran:
-        # Settled at $1 of its $3.00 cap: only that is less for the site afterwards.
-        assert Decimal(without["site_left"]) - Decimal(with_row["site_left"]) == Decimal("1")
+        # Settled at $1 of its $3.00 cap: only that is less for the site afterwards, for a successor too.
+        for key in money_keys - {"holds"}:
+            if key in without:
+                assert Decimal(without[key]) - Decimal(with_row[key]) == Decimal("1"), key
     else:
         assert state["candidates"][CONTROL]["status"] != "pending"
         # Never held a reservation, so the re-plan and the successor saw exactly what they would without it.
@@ -1067,3 +1097,23 @@ def test_the_row_takes_the_sibling_harness_hold(tmp_path, summaries):
     assert coordinator._reserve(tmp_path, value, value["candidates"][-1]) is None
     row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"][CONTROL]
     assert row["status"] == "blocked" and row["blockers"] == [coordinator.HARNESS_HOLD_BLOCKER]
+
+
+def test_the_typical_job_closes_the_row_for_budget_when_three_dollars_no_longer_fit(tmp_path, summaries, monkeypatch):
+    # No settlement here: another job's finished $5 run and the three $4 rows hold $17 of a $19 site limit,
+    # so the $3.00 row cannot fit and ends at once for budget.
+    monkeypatch.setattr(coordinator, "SITE_LIMIT", Decimal("19"))
+    other = queue_plan(campaign_id="campaign-0", cost="5.00", count=1)
+    coordinator.enqueue_screening_campaign(other, queue_root=tmp_path)
+    assert coordinator._reserve(tmp_path, other, other["candidates"][0]) is not None
+    value = _with_waitlisted(with_control(queue_plan(count=3, cost="4.00"), cost="3.00"), 2)
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+    backend = PerRow(done(*(f"candidate-{index:03}" for index in range(5)),
+                          control_result=closed(_summary(3, 1, scripted=True, planned=3))))
+    run(tmp_path, backend, passes=12, max_launches=2)
+    publication = next(value for value in coordinator.pending_publications(queue_root=tmp_path)
+                       if value["campaign_id"] == "campaign-1")
+    row = _rows(publication)[CONTROL]
+    assert [key for campaign, key in backend.launched if campaign == "campaign-1"] == [
+        "candidate-000", "candidate-001", "candidate-002"]
+    assert CONTROL not in backend.order and row["setup_quality_flags"] == ["known_good_control_unavailable:budget"]

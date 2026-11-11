@@ -32,7 +32,8 @@ What the row is, and is not:
   only when its campaign, read as if the row did not exist, has ended ``completed`` for good
   (``beta_policy_screening_coordinator._final_without_control``: ``campaign_status`` of the learned
   rows, not superseded, and ``_replan_scope`` would plan nothing again by itself or after any
-  deploy), the job's source is still current (the read every paid attempt makes; an owner's closed
+  deploy, apart from rows closed because the plan budget, the site allowance or the job ceiling could
+  not fund them: those count as final, owner decision 2026-11-11), the job's source is still current (the read every paid attempt makes; an owner's closed
   run or ended consent is not), and the sibling-harness hold does not apply. Otherwise it closes at
   once without running or holding money (``known_good_control_interrupted``), so a re-plan and any
   successor see exactly what they would without it. When the same check is active in another
@@ -41,9 +42,11 @@ What the row is, and is not:
   it goes through the coordinator's ordinary reservation, so the plan budget, the site limit, the
   job ceiling and the account limit bound it; if its cap does not fit, it ends at once with
   ``known_good_control_unavailable:budget``. Once reserved its money is real against the site
-  limit, like any row's: the owner approved up to $3.00 per job for it. The cost of this rule: a
-  re-plan and a successor campaign carry no reference row, so a job whose first campaign did not
-  finish cleanly gets no check.
+  limit, like any row's: the owner approved up to $3.00 per job for it. What this costs: if a later
+  deploy plans the rows closed for money again in a new campaign, the site's remaining allowance is
+  lower by what the row actually spent (at most $3.00). A re-plan and a successor campaign carry no
+  reference row, so a job whose first campaign did not finish cleanly for any other reason gets no
+  check.
 - It is planned only for a rigid pick/place task on the rigid lane, with a registered scripted
   profile for its body. The body is the robot of a selected candidate when one has a scripted
   profile (the marker's ``for_candidate_id``). Otherwise it is the body of a model the job's own
