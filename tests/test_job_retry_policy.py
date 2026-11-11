@@ -93,3 +93,17 @@ def test_outage_backoff_invalid_bounds_raise(first: object, cap: object) -> None
 )
 def test_hard_stop_kind(code: object, expected: str | None) -> None:
     assert hard_stop_kind(code) == expected
+
+
+def test_provider_answer_names_an_outside_services_http_status_only():
+    from blueprint_pipeline.job_retry_policy import provider_answer
+
+    assert provider_answer("meta_sam_http_413") == 413
+    assert provider_answer("meta_sam_upload_http_503:detail") == 503
+    assert provider_answer("website_atlas_api_429") is None  # no http_ marker: decided elsewhere
+    assert provider_answer("meta_sam_http_5030") is None
+    assert provider_answer("meta_sam_video_upload_requires_reconciliation") is None
+    # Blueprint's own WebApp answers carry their typed reason after the colon.
+    assert provider_answer("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted") is None
+    assert provider_answer("owned_capture_atlas_control_x_http_503") is None
+    assert provider_answer(None) is None

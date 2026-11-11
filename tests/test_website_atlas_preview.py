@@ -1395,3 +1395,40 @@ def test_a_deterministic_refusal_still_ends_at_the_jobs_deadline(monkeypatch, si
     world.advance()
     world.clock += preview.MAXIMUM_JOB_SECONDS + 1
     assert world.advance() == "failed" and _job(site)["reason"] == "atlas_preview_expired" and len(world.runs) == 1
+
+
+def test_a_provider_refusal_retries_on_the_bounded_schedule_then_fails_with_its_code(monkeypatch, site):
+    # capture-39ecdc97 (2026-11-11): the segmentation provider answered 413; the job sat in
+    # needs_input, which nothing steps again, though no person could supply anything.
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError("meta_sam_http_413")] * 7)
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["last_refusal_reason"] == "meta_sam_http_413" and job["reason"] is None
+    assert job["next_attempt_at_epoch"] == world.clock + preview.REFUSAL_RETRY_DELAYS_SECONDS[0]
+    # While it retries, the WebApp is told the build goes on.
+    assert {row["state"] for row in world.pushed} == {"processing"}
+    for _ in range(len(preview.REFUSAL_RETRY_DELAYS_SECONDS)):
+        world.clock = _job(site)["next_attempt_at_epoch"]
+        world.advance()
+    job = _job(site)
+    assert (job["state"], job["reason"], job["retry_at_epoch"]) == ("failed", "meta_sam_http_413", None)
+    assert len(world.runs) == 1 + len(preview.REFUSAL_RETRY_DELAYS_SECONDS)
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("failed", "meta_sam_http_413")
+
+
+def test_a_provider_rate_limit_or_server_error_is_an_outage(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError("meta_sam_http_503")])
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["transient_failures"] == 1 and job["last_transient_reason"] == "meta_sam_http_503"
+
+
+def test_a_kept_result_whose_blocker_is_a_provider_answer_retries_instead_of_waiting(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "needs_input", "download": None,
+                                       "blockers": ["meta_sam_http_413"], "digest": "sha256:retained"}])
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["last_refusal_reason"] == "meta_sam_http_413" and job["next_attempt_at_epoch"] > world.clock

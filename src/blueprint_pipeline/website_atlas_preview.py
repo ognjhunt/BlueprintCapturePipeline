@@ -179,8 +179,11 @@ def _outage(error: BaseException) -> bool:
     if isinstance(status, int):
         return status == 429 or status >= 500
     if isinstance(error, ValueError):
+        from .job_retry_policy import provider_answer
         return (_reason(error) in _TASK_CONTEXT_CHANGED
-                or re.match(r"(?:website_control_|owned_capture_atlas_control_)[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None)
+                or re.match(r"(?:website_control_|owned_capture_atlas_control_)[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None
+                # Any outside service's rate limit or server error (``meta_sam_http_503``).
+                or provider_answer(str(error)) in {429} | set(range(500, 600)))
     return isinstance(error, OSError)
 
 
@@ -357,6 +360,11 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
                                stage='preserved_scene_completion', result_digest=result.get('digest'))
         if not result.get("download"):
             blockers = result.get('blockers') or []
+            from .job_retry_policy import provider_answer
+            if blockers and provider_answer(blockers[0]) is not None:
+                # A result an older release kept with a provider's answer as its blocker
+                # (capture-39ecdc97: meta_sam_http_413) takes the retry schedule, never needs_input.
+                return _failed_step(job, ValueError(blockers[0]), current)
             reason = (_reason(ValueError(result["reason"]))
                       if result.get("stage") in {"source_pose", "target_correction"} and result.get("reason")
                       else _reason(ValueError(blockers[0])) if blockers

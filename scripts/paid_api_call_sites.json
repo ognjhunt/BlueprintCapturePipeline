@@ -284,7 +284,12 @@
     "src/blueprint_pipeline/meta_sam31.py::<module>::meta_sam_api_url": {
       "provider": "meta_sam",
       "class": "not_paid",
-      "reason": "endpoint constant; requests are made in run_meta_sam31 and _upload_video, classified separately"
+      "reason": "endpoint constant; requests are made in _run_meta_sam31, _upload_video and delete_uploaded_video, classified separately"
+    },
+    "src/blueprint_pipeline/meta_sam31.py::delete_uploaded_video::meta_sam_credentials": {
+      "provider": "meta_sam",
+      "class": "not_paid",
+      "reason": "deletes the run's own uploaded clip (DELETE /v1/files/<id>); a deletion is not billed and buys nothing"
     },
     "src/blueprint_pipeline/meta_sam31.py::_upload_video::meta_sam_api_url": {
       "provider": "meta_sam",
@@ -293,13 +298,13 @@
       "admission": "src/blueprint_pipeline/meta_sam31.py::reserve_website_sam_spend",
       "note": "called only from run_meta_sam31 after the reservation and grant check"
     },
-    "src/blueprint_pipeline/meta_sam31.py::run_meta_sam31::meta_sam_api_url": {
+    "src/blueprint_pipeline/meta_sam31.py::_run_meta_sam31::meta_sam_api_url": {
       "provider": "meta_sam",
       "class": "admitted",
       "via": "src/blueprint_pipeline/meta_sam31.py::require_paid_resource_admission_grant",
       "admission": "src/blueprint_pipeline/meta_sam31.py::reserve_website_sam_spend"
     },
-    "src/blueprint_pipeline/meta_sam31.py::run_meta_sam31::meta_sam_credentials": {
+    "src/blueprint_pipeline/meta_sam31.py::_run_meta_sam31::meta_sam_credentials": {
       "provider": "meta_sam",
       "class": "admitted",
       "via": "src/blueprint_pipeline/meta_sam31.py::require_paid_resource_admission_grant",

@@ -1649,3 +1649,29 @@ def test_a_retained_plan_without_reference_names_keeps_its_measurement_binding()
     assert "segmentation_prompt" not in measurement_plan({"automation": plan()})["scale_references"][0]
     named = {**plan(), "scale_references": [{**plan()["scale_references"][0], "segmentation_prompt": "range"}]}
     assert measurement_plan({"automation": named})["scale_references"][0]["segmentation_prompt"] == "range"
+
+
+@pytest.mark.parametrize('error,raised', [('meta_sam_http_413', True), ('meta_sam_upload_http_429', True),
+                                          ('atlas_background_visual_review_rejected', False)])
+def test_a_provider_answer_in_the_background_step_is_raised_not_held_for_input(tmp_path, monkeypatch, error, raised):
+    from blueprint_pipeline import atlas_scene_automation as worker
+
+    frame = view(tmp_path)
+    pose = {'digest': 'pose', 'binding': {'source_video_digest': 'video'},
+            'operation': {'id': 'already-paid'}, 'depth_unit': 'estimated', 'scale_status': 'estimated'}
+    monkeypatch.setattr(sizes, 'load_views', lambda *args: (pose, [frame]))
+    monkeypatch.setattr(sizes, 'estimate_sizes', lambda **kw: {})
+
+    def refused(**kw):
+        raise ValueError(error)
+    monkeypatch.setattr(edits, 'run_background', refused)
+    arguments = dict(pose_root=tmp_path, inputs={}, review={'automation': plan()}, output_root=tmp_path,
+                     task_context={}, configuration={'policy': {}}, task_runner=None, pose_runner=None,
+                     release_blockers=None)
+    if raised:
+        with pytest.raises(ValueError, match=error):
+            worker.run_automation(**arguments)
+        assert not (tmp_path / 'result.json').exists()
+    else:
+        result = worker.run_automation(**arguments)
+        assert result['status'] == 'needs_input' and result['background']['reason'] == error

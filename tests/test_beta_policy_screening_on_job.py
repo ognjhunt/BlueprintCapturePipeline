@@ -448,6 +448,34 @@ def _with_catalog(monkeypatch, change):
     monkeypatch.setattr(team, "catalog_for_profile", changed)
 
 
+def _rebind(monkeypatch, aliases=()):
+    """Planning inputs bound to the changed catalog's rows, as ``build_planning_inputs`` binds the real one;
+    ``aliases`` (new id, source id) give a copied row its source's runtime binding and quote."""
+    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
+
+    current = capabilities.build_planning_inputs
+
+    def planning(**kwargs):
+        rows = {row["candidate_id"]: row for row in kwargs["catalog"]["candidates"]}
+        out = current(**kwargs)
+        bindings, quotes = out["capabilities"]["candidate_bindings"], out["cost_quotes"]
+        for new, old in aliases:
+            bindings[new], quotes[new] = deepcopy(bindings[old]), deepcopy(quotes[old])
+        for candidate_id, binding in bindings.items():
+            if candidate_id not in rows:
+                continue
+            digest = rows[candidate_id]["configuration_digest"]
+            spec = binding["execution_spec"]
+            binding["configuration_digest"] = digest
+            spec.update({key: value for key, value in (("configuration_digest", digest),
+                                                       ("candidate_id", candidate_id)) if key in spec})
+            binding["admission_digest"] = canonical_digest(spec)
+            quotes[candidate_id]["configuration_digest"] = digest
+            quotes[candidate_id]["quote_digest"] = canonical_digest(quotes[candidate_id], digest_field="quote_digest")
+        return out
+    monkeypatch.setattr(capabilities, "build_planning_inputs", planning)
+
+
 def _copy(rows, source, new_id, **fields):
     row = deepcopy(next(item for item in rows if item["candidate_id"] == source))
     row.pop("configuration_digest", None)
@@ -474,9 +502,11 @@ def test_both_planners_use_one_exclusion_rule(world, monkeypatch):
     seen = []
     original = tested.planning_exclusions
 
-    def spy(pairs):
-        seen.append(original(pairs))
-        return seen[-1]
+    def spy(pairs):  # a planner's call: both kinds of pair (``site_pairs`` also calls it for finished alone)
+        keys = original(pairs)
+        if pairs["in_flight"]:
+            seen.append(keys)
+        return keys
     monkeypatch.setattr(tested, "planning_exclusions", spy)
     run(world, request(ids=("groot_n17_droid",)), "req-2")
     worker.enqueue_prepared_scenes(queue_root=world["screening_queue"], packet_queue_root=world["packet_queue"])
@@ -518,6 +548,7 @@ def test_a_cosmetic_catalog_edit_is_the_same_pair(world, monkeypatch):
     finish(world, first["campaign_id"])
     _with_catalog(monkeypatch, lambda rows: [{**row, "display_name": row["display_name"] + " (renamed)"}
                                              if row["candidate_id"] == "pi05_droid" else row for row in rows])
+    _rebind(monkeypatch)
     again = run(world, request(), "req-2")
     assert again["reason"] == on_job.ALREADY_TESTED and again["skipped"] == {"already_tested": ["pi05_droid"]}
 
@@ -525,6 +556,7 @@ def test_a_cosmetic_catalog_edit_is_the_same_pair(world, monkeypatch):
 def test_the_same_checkpoint_under_a_new_id_is_the_same_pair(world, monkeypatch):
     first = run(world, request(), "req-1")
     _with_catalog(monkeypatch, lambda rows: _copy(rows, "pi05_droid", "pi05_droid_again", display_name="Again"))
+    _rebind(monkeypatch, [("pi05_droid_again", "pi05_droid")])
     queued = run(world, request(ids=("pi05_droid_again",)), "req-2")
     assert queued["reason"] == on_job.ALREADY_TESTED and queued["skipped"] == {"in_progress": ["pi05_droid_again"]}
     finish(world, first["campaign_id"])
