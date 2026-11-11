@@ -12,8 +12,11 @@ which source decided it (``reach_source``):
   ``robot_arm_path_clearance.rigid_reach_shortfall``), no grasp or policy
   reaches it there: the candidate is infeasible with
   ``robot_reach_insufficient:<phase>:<distance>m_vs_<bound>m``, the object's
-  nearest point. The team half chose that station as one with the object in
-  reach whenever any clear stance has it (``team_scene_packet``). Otherwise the
+  nearest point. So it is when the task's grasp contact is beyond the bound at
+  either end (``task_contact_in_reach``), named by the contact's distance, as
+  the bundle's gate refuses it (``rigid_carry_verdict``). The team half chose
+  that station as one with the contact in reach whenever any clear stance has
+  it (``team_scene_packet``). Otherwise the
   candidate is feasible, and the packet's recorded station search
   (``robot_station_search``, the scripted carry) is kept as evidence: a station
   it cleared is ``packet_station_search``; one it could not clear carries the
@@ -82,8 +85,9 @@ def _packet_arm_reach(scene_plan: Mapping[str, Any], search: Mapping[str, Any]) 
         SCRIPTED_CARRY_FLAG,
         RobotArmPathClearanceError,
         object_reach_inputs,
-        reach_shortfall_code,
+        reach_refusal_code,
         rigid_reach_shortfall,
+        task_contact_in_reach,
     )
 
     robot, task = scene_plan.get("robot") or {}, scene_plan.get("task_spec") or {}
@@ -99,10 +103,11 @@ def _packet_arm_reach(scene_plan: Mapping[str, Any], search: Mapping[str, Any]) 
     except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
         return {**row, "status": "unassessed", "blockers": ["packet_arm_reach_inputs_invalid"], "reach_source": None}
     row["reach"] = reach
-    if reach["beyond"]:
-        # No point of the object is in reach at its start or its place: no grasp or policy reaches it.
+    if not task_contact_in_reach(reach):
+        # No point of the object, or not the task's grasp contact, is in reach at its start or its place: the
+        # bundle's gate refuses the packet by the same name (``rigid_carry_verdict``).
         return {**row, "status": "infeasible", "reach_source": "franka_chain_reach_bound",
-                "blockers": [reach_shortfall_code(reach)]}
+                "blockers": [reach_refusal_code(reach)]}
     station = search.get("robot_station") or {}
     recorded = search.get("robot_station_search") or {}
     result = next((item for item in recorded.get("results") or []
@@ -118,7 +123,7 @@ def _packet_arm_reach(scene_plan: Mapping[str, Any], search: Mapping[str, Any]) 
     if result["status"] == "clear":
         return {**row, "status": "feasible", "blockers": [], "reach_source": "packet_station_search"}
     if within:
-        # The object is in reach; the scripted carry found no path. A learned policy chooses its own grasp:
+        # The task's contact is in reach; the scripted carry found no path. A learned policy chooses its own grasp:
         # planned and screened, with the miss recorded as a flag (and funded after unflagged rows, ``reach_rank``).
         return {**row, "status": "feasible", "blockers": [], "reach_source": "franka_chain_reach_bound",
                 "flags": [SCRIPTED_CARRY_FLAG]}
