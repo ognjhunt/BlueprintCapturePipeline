@@ -18,17 +18,28 @@ What the row is, and is not:
 - It never gates. Pass, fail, unavailable or interrupted, the candidates run and are reported as
   before; the outcome is a typed flag on the control row's own ``setup_quality_flags``
   (``control_flags``). A failed control alerts the owner once (``alert_failed_controls``).
-- It never displaces a candidate. It is planned after every candidate row, only when every
-  runnable candidate is already funded and the plan budget and the site's allowance still hold
-  its quoted cap; otherwise it is listed ``unavailable`` with ``known_good_control_unavailable:budget``.
+- It never displaces a candidate. It is planned after every candidate row, and funded only when
+  its quoted cap fits in what the selected rows leave of the plan budget and of the site's
+  remaining allowance, and that leftover could not fund the cheapest waitlisted or money-deferred
+  candidate row (one whose cost the plan cannot state counts as fundable). Otherwise it is listed
+  ``unavailable`` with ``known_good_control_unavailable:budget``. No cap, limit or budget changes.
   At run time it is launched first when a slot is free, but only while its cap fits beside every
   queued candidate's; otherwise it waits for them (``control_gate``). It is reserved through the
   coordinator's unchanged reservation, so the site limit, the plan budget and the account limit
   bound it like any row, with no retry beyond what any row gets.
-- It is planned only for a rigid pick/place task on the rigid lane, with a scripted profile
-  registered for the robot of a selected candidate. Otherwise its row says which of
-  ``task_kind``, ``backend`` or ``embodiment`` was missing. Nothing is invented: no placement, no
-  body and no result.
+- It is planned only for a rigid pick/place task on the rigid lane, with a registered scripted
+  profile for its body. The body is the robot of a selected candidate when one has a scripted
+  profile (the marker's ``for_candidate_id``). Otherwise it is the body of a model the job's own
+  robot fit table (``website_robot_fit``, passed as the ``robot_fit_rows`` capability) says fits
+  this scene: ``fits`` before ``fits_spec``, ``unknown`` only when neither has a registered body,
+  never ``doesnt_fit``, ties in the table's order; a model's body is ``<recipe>_robotiq_2f85_sim``
+  (or its recipe, when that is itself a body). The marker then names the spec-catalog model
+  (``for_model_id``) and no candidate. When that body's run is not bound to its own station on this
+  scene it stands at the scene packet's (another robot's) station; it still runs, and the marker
+  says so with the feasibility check's own station code (``flags``: ``scene_packet_station``).
+  Without a table, or with no registered body for any fitting model, there is no fallback. Otherwise
+  its row says which of ``task_kind``, ``backend`` or ``embodiment`` was missing. Nothing is
+  invented: no placement, no body, no verdict and no result.
 - A pass or a fail is reused, never paid for twice, for the same site, scene revision, task
   contract and harness revision (``reuse_key``); while another such control is running, this one
   waits for it.
@@ -46,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .website_candidate_feasibility import OWN_STATION, PACKET_STATION
 
 CONTROL_FIELD = "known_good_control"
 SCHEMA = "beta_screening_known_good_control.v1"
@@ -74,6 +86,15 @@ REUSED_FIELD = "known_good_control_reused"
 KEY_FIELD = "known_good_control_key"
 ALERT_CODE = "beta_screening_known_good_control_failed"
 ALERT_STATE_FILENAME = "known_good_control_alerts.json"
+
+#: The planning capabilities the fallback body reads (``beta_policy_screening_capabilities``).
+FIT_CAPABILITY = "robot_fit_rows"
+STATION_CAPABILITY = "candidate_station_basis"
+#: A fitting model's verdicts in the order a body is chosen; ``doesnt_fit`` never is.
+FALLBACK_VERDICTS = ("fits", "fits_spec", "unknown")
+SCRIPTED_BODY_SUFFIX = "_robotiq_2f85_sim"
+#: The feasibility check's own station code for a body bound to the scene packet's station, not its own.
+PACKET_STATION_FLAG = PACKET_STATION
 
 _MARKER = {"schema_version": SCHEMA, "role": "reference_only", "episodes": EPISODES,
            "pass_at_successes": PASS_AT_SUCCESSES}
@@ -128,6 +149,27 @@ def _unavailable(reason: str, candidate: Mapping[str, Any] | None = None) -> dic
             CONTROL_FIELD: marker}
 
 
+def _fallback_body(scripted: list[Mapping[str, Any]], fit: Any) -> tuple[str, Mapping[str, Any]] | None:
+    """The one registered scripted row for a model the job's fit table says fits; its model id with it."""
+    if not isinstance(fit, list):
+        return None
+    bodies: dict[str, Mapping[str, Any]] = {}
+    for row in scripted:
+        bodies.setdefault(row["interface"].get("robot_profile_id"), row)
+    for verdict in FALLBACK_VERDICTS:
+        for entry in fit:
+            if not isinstance(entry, Mapping) or entry.get("verdict") != verdict:
+                continue
+            model, recipe = entry.get("model_id"), entry.get("recipe_id")
+            if not isinstance(model, str) or not isinstance(recipe, str) or not recipe:
+                continue
+            for body in dict.fromkeys((recipe if recipe.endswith(SCRIPTED_BODY_SUFFIX) else recipe + SCRIPTED_BODY_SUFFIX,
+                                       recipe)):
+                if body in bodies:
+                    return model, bodies[body]
+    return None
+
+
 def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene: Mapping[str, Any], *,
                      capabilities: Mapping[str, Any] | None, cost_quotes: Mapping[str, Any] | None,
                      site_remaining_usd: str | None, now: Any) -> dict[str, Any]:
@@ -148,18 +190,25 @@ def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene:
     scripted = [row for row in catalog["candidates"] if row["policy"]["kind"] == "scripted"
                 and (row.get("interface") or {}).get("policy_interface_id") == SCRIPTED_INTERFACE
                 and row["candidate_id"] not in planned]
-    match = served = None
+    capabilities = capabilities or {}
+    match, stands_for = None, {}
     for row in plan["candidates"]:
         robot = ((by_id.get(row["candidate_id"]) or {}).get("interface") or {}).get("robot_profile_id")
         if row["status"] != "selected" or not robot:
             continue
         match = next((item for item in scripted if item["interface"].get("robot_profile_id") == robot), None)
         if match is not None:
-            served = row["candidate_id"]
+            stands_for = {"for_candidate_id": row["candidate_id"]}
             break
     if match is None:
-        return _unavailable("embodiment")
-    capabilities = capabilities or {}
+        # No selected candidate's robot has a scripted row: a body the site's fit table says fits.
+        chosen = _fallback_body(scripted, capabilities.get(FIT_CAPABILITY))
+        if chosen is None:
+            return _unavailable("embodiment")
+        model, match = chosen
+        stands_for = {"for_model_id": model}
+        if (capabilities.get(STATION_CAPABILITY) or {}).get(match["candidate_id"]) != OWN_STATION:
+            stands_for["flags"] = [PACKET_STATION_FLAG]
     binding = (capabilities.get("candidate_bindings") or {}).get(match["candidate_id"])
     refused = _candidate_blockers(match, scene, binding, set(capabilities.get("credentials_available") or []))
     refused += list((capabilities.get("candidate_blockers") or {}).get(match["candidate_id"]) or [])
@@ -181,18 +230,33 @@ def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene:
     quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
     cap = money(quote["maximum_cost_usd"])
     selected = sum((money(row["max_cost_usd"]) for row in plan["candidates"] if row["status"] == "selected"), Decimal(0))
-    unfunded = any(row["status"] == WAITLISTED or row["status"] == "deferred"
-                   and row["blockers"] in ([WAITLIST_BLOCKER], [JOB_CEILING_DEFERRED]) for row in plan["candidates"])
-    site_left = None if site_remaining_usd is None else money(site_remaining_usd) - selected
-    if (unfunded or cap < execution_cost_floor(spec) or selected + cap > money(plan["budget_usd"])
-            or site_left is not None and cap > site_left):
+    left = money(plan["budget_usd"]) - selected
+    if site_remaining_usd is not None:
+        left = min(left, money(site_remaining_usd) - selected)
+    # It never displaces a candidate: the leftover must not be able to fund any row still waiting for money.
+    waiting = [row for row in plan["candidates"] if row["status"] == WAITLISTED or row["status"] == "deferred"
+               and row["blockers"] in ([WAITLIST_BLOCKER], [JOB_CEILING_DEFERRED])]
+    costs = [_waiting_cost(row, cost_quotes) for row in waiting]
+    if (cap < execution_cost_floor(spec) or cap > left
+            or any(cost is None or cost <= left for cost in costs)):
         return _unavailable("budget", match)
     return {"candidate_id": match["candidate_id"], "display_name": DISPLAY_NAME,
             "configuration_digest": match["configuration_digest"], "status": "selected", "blockers": [],
             "admission_digest": binding["admission_digest"], "execution_spec": deepcopy(spec),
             "cost_quote": quote, "max_cost_usd": quote["maximum_cost_usd"], "episode_count": EPISODES,
             "scenario_cells": control_cells(scene), "execution_evidence_kind": SCRIPTED,
-            CONTROL_FIELD: {**_MARKER, "for_candidate_id": served}}
+            CONTROL_FIELD: {**_MARKER, **stands_for}}
+
+
+def _waiting_cost(row: Mapping[str, Any], cost_quotes: Mapping[str, Any] | None) -> Decimal | None:
+    """What a waitlisted or money-deferred row would cost: its frozen cap, else its quote; None if unstated."""
+    from .beta_policy_screening_plan import BetaPolicyScreeningPlanError, money
+
+    value = row.get("max_cost_usd") or ((cost_quotes or {}).get(row["candidate_id"]) or {}).get("maximum_cost_usd")
+    try:
+        return money(value)
+    except BetaPolicyScreeningPlanError:  # Unstated or unreadable: counted as fundable, so nothing is displaced.
+        return None
 
 
 def validate_control_row(row: Mapping[str, Any], plan: Mapping[str, Any]) -> Decimal:
@@ -217,12 +281,20 @@ def validate_control_row(row: Mapping[str, Any], plan: Mapping[str, Any]) -> Dec
                 and all(marker[key] == value for key, value in _MARKER.items())
                 and marker["unavailable"] in REASONS and row["blockers"] == [NOT_RUN_BLOCKER])
         return Decimal(0)
+    # What the row stands for: a selected candidate's robot, or (since the fit-table fallback) a
+    # spec-catalog model, with the station flag only then. Never both, never neither.
+    stands_for = set(marker) - set(_MARKER)
     require(row["status"] == "selected" and set(row) == _SELECTED_FIELDS and row["blockers"] == []
-            and set(marker) == {*_MARKER, "for_candidate_id"} and all(marker[key] == value for key, value in _MARKER.items())
-            and isinstance(marker["for_candidate_id"], str)
-            and any(item["candidate_id"] == marker["for_candidate_id"] and item["status"] == "selected"
-                    for item in plan["candidates"] if not is_control(item))
-            and row["episode_count"] == EPISODES and isinstance(row["scenario_cells"], list)
+            and set(_MARKER) <= set(marker) and all(marker[key] == value for key, value in _MARKER.items()))
+    if stands_for == {"for_candidate_id"}:
+        require(isinstance(marker["for_candidate_id"], str)
+                and any(item["candidate_id"] == marker["for_candidate_id"] and item["status"] == "selected"
+                        for item in plan["candidates"] if not is_control(item)))
+    else:
+        require(stands_for in ({"for_model_id"}, {"for_model_id", "flags"})
+                and isinstance(marker["for_model_id"], str) and _CANDIDATE_ID.fullmatch(marker["for_model_id"]) is not None
+                and marker.get("flags", [PACKET_STATION_FLAG]) == [PACKET_STATION_FLAG])
+    require(row["episode_count"] == EPISODES and isinstance(row["scenario_cells"], list)
             and len(row["scenario_cells"]) == EPISODES)
     ids, seeds = set(), set()
     for ordinal, cell in enumerate(row["scenario_cells"]):
@@ -386,7 +458,8 @@ def alert_failed_controls(root: Path, failed: Iterable[str], *, webhook_url: str
     return record
 
 
-__all__ = ["ALERT_CODE", "CONTROL_FIELD", "DISPLAY_NAME", "EPISODES", "FAILED", "INTERRUPTED", "PASSED",
+__all__ = ["ALERT_CODE", "CONTROL_FIELD", "DISPLAY_NAME", "EPISODES", "FAILED", "FIT_CAPABILITY", "INTERRUPTED",
+           "PACKET_STATION_FLAG", "PASSED", "STATION_CAPABILITY",
            "PASS_AT_SUCCESSES", "PENDING", "REASONS", "REUSED_BLOCKER", "UNAVAILABLE", "alert_failed_controls",
            "append_control_row", "control_cells", "control_flags", "control_gate", "control_outcome",
            "failed_controls", "is_control", "plan_control_row", "reuse_key", "validate_control_row"]

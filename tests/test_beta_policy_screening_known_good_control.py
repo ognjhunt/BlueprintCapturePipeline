@@ -20,7 +20,8 @@ from blueprint_pipeline import beta_policy_screening_known_good_control as contr
 from blueprint_pipeline import beta_policy_screening_worker as worker
 from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
 from blueprint_pipeline.beta_policy_screening_plan import (
-    BetaPolicyScreeningPlanError, build_job_ceiling_screening_plan, job_ceiling_record, validate_screening_plan,
+    JOB_CEILING_DEFERRED, WAITLIST_BLOCKER, BetaPolicyScreeningPlanError, build_job_ceiling_screening_plan,
+    job_ceiling_record, validate_screening_plan,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_beta_policy_screening_coordinator import Backend, plan as queue_plan
@@ -357,3 +358,199 @@ def test_a_passed_control_alerts_nobody(tmp_path, summaries, monkeypatch):
     run(tmp_path, PerRow({"blueprint_scripted_test_arm": closed(_summary(3, 2, scripted=True, planned=3))}), passes=2)
     monkeypatch.setenv("BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL", "https://alerts.invalid/hook")
     assert worker.alert_known_good_controls(tmp_path)["posted_now"] == []
+
+
+# ---- the body when no selected candidate's robot has a scripted row, and the funding rule -----------------
+
+UR5E, UR10E, KUKA = ("universal_robots_ur5e_robotiq_2f85_sim", "universal_robots_ur10e_robotiq_2f85_sim",
+                     "kuka_lbr_iiwa_14_robotiq_2f85_sim")
+FRANKA_BODY = "franka_research_3_robotiq_2f85_sim"
+
+
+def catalog_with_bodies(bodies, count=3, *, maximum="2.00", scripted_maximum="1.50"):
+    """``count`` learned (DROID Franka) rows and one registered scripted row per body; none for the DROID arm."""
+    catalog, _, _ = inputs(count, maximum)
+    rows = deepcopy(catalog["candidates"])
+    for body in bodies:
+        script = deepcopy(rows[0])
+        script.update(candidate_id="blueprint_scripted_" + body, display_name="Blueprint scripted pick/place - " + body)
+        script["policy"]["kind"] = "scripted"
+        script["interface"].update(policy_interface_id=control.SCRIPTED_INTERFACE, robot_profile_id=body)
+        rows.append(script)
+    catalog = seal_catalog({**catalog, "candidates": rows})
+    bindings, quotes = {}, {}
+    for row in catalog["candidates"]:
+        price = scripted_maximum if row["policy"]["kind"] == "scripted" else maximum
+        bindings[row["candidate_id"]], quotes[row["candidate_id"]] = admitted(row, maximum=price)
+    return catalog, {"candidate_bindings": bindings}, quotes
+
+
+def fit(*rows):
+    """A robot fit capability: (model_id, recipe_id, verdict) in the table's order."""
+    return [{"model_id": model, "recipe_id": recipe, "verdict": verdict} for model, recipe, verdict in rows]
+
+
+@pytest.mark.parametrize("table, expected", [
+    # ``fits`` before ``fits_spec`` before ``unknown``, whatever the table's order.
+    (fit(("universal_robots_ur5e", "universal_robots_ur5e", "unknown"),
+         ("universal_robots_ur10e", "universal_robots_ur10e", "fits_spec"),
+         ("kuka_lbr_iiwa_14", "kuka_lbr_iiwa_14", "fits")), ("kuka_lbr_iiwa_14", KUKA)),
+    # A tie goes to the table's own order.
+    (fit(("universal_robots_ur10e", "universal_robots_ur10e", "fits_spec"),
+         ("universal_robots_ur5e", "universal_robots_ur5e", "fits_spec")), ("universal_robots_ur10e", UR10E)),
+    # ``doesnt_fit`` never; ``unknown`` only when nothing better has a body.
+    (fit(("universal_robots_ur5e", "universal_robots_ur5e", "doesnt_fit"),
+         ("universal_robots_ur10e", "universal_robots_ur10e", "unknown")), ("universal_robots_ur10e", UR10E)),
+    # A fitting model with no registered body is passed over.
+    (fit(("fanuc_crx_10ia", "fanuc_crx_10ia", "fits"),
+         ("universal_robots_ur5e", "universal_robots_ur5e", "fits_spec")), ("universal_robots_ur5e", UR5E)),
+    # A recipe that is itself a body.
+    (fit(("franka_research_3", FRANKA_BODY, "fits")), ("franka_research_3", FRANKA_BODY)),
+])
+def test_with_no_scripted_row_for_a_selected_robot_the_fit_table_chooses_one_body(table, expected):
+    catalog, capabilities, quotes = catalog_with_bodies([UR5E, UR10E, KUKA, FRANKA_BODY])
+    value = website_plan(catalog, {**capabilities, control.FIT_CAPABILITY: table}, quotes)
+    *candidates, row = value["candidates"]
+    model, body = expected
+    assert [item["status"] for item in candidates] == ["selected"] * 3
+    assert row["status"] == "selected" and row["candidate_id"] == "blueprint_scripted_" + body
+    # It stands for the spec-catalog model, not for any candidate; no own station recorded: the packet's.
+    assert row["known_good_control"] == {"schema_version": control.SCHEMA, "role": "reference_only", "episodes": 3,
+                                         "pass_at_successes": 1, "for_model_id": model,
+                                         "flags": ["scene_packet_station"]}
+    assert row["episode_count"] == control.EPISODES and row["max_cost_usd"] == "1.50"
+    assert validate_screening_plan(value) == value
+    Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(value)
+
+
+def test_a_body_bound_to_its_own_station_carries_no_station_flag():
+    catalog, capabilities, quotes = catalog_with_bodies([UR10E])
+    capabilities = {**capabilities, control.FIT_CAPABILITY: fit(("universal_robots_ur10e", "universal_robots_ur10e", "fits")),
+                    control.STATION_CAPABILITY: {"blueprint_scripted_" + UR10E: "embodiment_own_station"}}
+    value = website_plan(catalog, capabilities, quotes)
+    assert value["candidates"][-1]["known_good_control"] == {
+        "schema_version": control.SCHEMA, "role": "reference_only", "episodes": 3, "pass_at_successes": 1,
+        "for_model_id": "universal_robots_ur10e"}
+    assert validate_screening_plan(value) == value
+    Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(value)
+
+
+def test_a_selected_candidates_own_robot_still_comes_first():
+    catalog, capabilities, quotes = catalog_with_scripted()
+    table = fit(("universal_robots_ur10e", "universal_robots_ur10e", "fits"))
+    value = website_plan(catalog, {**capabilities, control.FIT_CAPABILITY: table}, quotes)
+    marker = value["candidates"][-1]["known_good_control"]
+    assert set(marker) - {"schema_version", "role", "episodes", "pass_at_successes"} == {"for_candidate_id"}
+
+
+@pytest.mark.parametrize("case", ["no_table", "unregistered", "doesnt_fit", "no_recipe"])
+def test_no_fallback_without_a_registered_body_for_a_fitting_model(case):
+    catalog, capabilities, quotes = catalog_with_bodies([UR5E])
+    table = {"no_table": None,
+             "unregistered": fit(("universal_robots_ur10e", "universal_robots_ur10e", "fits")),
+             "doesnt_fit": fit(("universal_robots_ur5e", "universal_robots_ur5e", "doesnt_fit")),
+             "no_recipe": fit(("universal_robots_ur20", None, "fits"))}[case]
+    if table is not None:
+        capabilities = {**capabilities, control.FIT_CAPABILITY: table}
+    value = website_plan(catalog, capabilities, quotes)
+    row = value["candidates"][-1]
+    assert row["status"] == "unavailable" and row["known_good_control"]["unavailable"] == "embodiment"
+    assert validate_screening_plan(value) == value
+
+
+def test_a_measured_refusal_of_the_fallback_body_lists_it_for_its_embodiment():
+    catalog, capabilities, quotes = catalog_with_bodies([UR10E])
+    capabilities = {**capabilities, control.FIT_CAPABILITY: fit(("universal_robots_ur10e", "universal_robots_ur10e", "fits")),
+                    "candidate_infeasible": {"blueprint_scripted_" + UR10E: ["robot_reach_insufficient:lift:1.2m_vs_1.0m"]}}
+    value = website_plan(catalog, capabilities, quotes)
+    row = value["candidates"][-1]
+    assert row["candidate_id"] == "blueprint_scripted_" + UR10E and row["known_good_control"]["unavailable"] == "embodiment"
+
+
+def test_a_leftover_too_small_for_any_waiting_row_funds_the_control():
+    # Seven $2 rows fill $14 of the $15 plan and waitlist the eighth: $1 is left, which can never fund
+    # the $2 row, but holds the $0.50 control. Before this rule any waitlisted row refused the control.
+    catalog, capabilities, quotes = catalog_with_scripted(8, scripted_maximum="0.50")
+    value = website_plan(catalog, capabilities, quotes)
+    statuses = [row["status"] for row in value["candidates"]]
+    assert statuses == ["selected"] * 7 + ["waitlisted", "selected"]
+    assert value["candidates"][-1]["max_cost_usd"] == "0.50" and value["maximum_planned_cost_usd"] == "14.50"
+    assert validate_screening_plan(value) == value
+    Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(value)
+
+
+@pytest.mark.parametrize("status, blocker, cost, quoted, planned", [
+    ("waitlisted", WAITLIST_BLOCKER, "14.50", None, True),
+    ("waitlisted", WAITLIST_BLOCKER, "1.00", None, False),
+    ("waitlisted", JOB_CEILING_DEFERRED, "1.00", None, False),
+    # A money-deferred row keeps no cost of its own: its quote says what it would cost.
+    ("deferred", WAITLIST_BLOCKER, None, "14.50", True),
+    ("deferred", WAITLIST_BLOCKER, None, "1.00", False),
+    ("deferred", JOB_CEILING_DEFERRED, None, "1.00", False),
+    # Nothing states its cost: counted as fundable, so the control never runs ahead of it.
+    ("deferred", WAITLIST_BLOCKER, None, None, False),
+])
+def test_the_control_is_funded_only_when_the_leftover_could_fund_no_waiting_row(status, blocker, cost, quoted,
+                                                                                   planned):
+    catalog, capabilities, quotes = catalog_with_scripted(2)
+    learned = [row["candidate_id"] for row in catalog["candidates"] if row["policy"]["kind"] != "scripted"]
+    waiting = {"candidate_id": learned[1], "status": status, "blockers": [blocker],
+               **({"max_cost_usd": cost} if cost is not None else {})}
+    quotes = {key: value for key, value in quotes.items() if key != learned[1]}
+    if quoted is not None:
+        quotes[learned[1]] = {"maximum_cost_usd": quoted}
+    # $1 selected of $15: $14 is left, which holds the $1.50 control.
+    plan_value = {"budget_usd": "15.00", "candidates": [
+        {"candidate_id": learned[0], "status": "selected", "blockers": [], "max_cost_usd": "1.00"}, waiting]}
+    row = control.plan_control_row(plan_value, catalog, scene(), capabilities=capabilities, cost_quotes=quotes,
+                                   site_remaining_usd=None, now=NOW)
+    assert row["status"] == ("selected" if planned else "unavailable")
+    if not planned:
+        assert row["known_good_control"]["unavailable"] == "budget"
+
+
+def test_the_site_allowance_bounds_the_leftover_too():
+    catalog, capabilities, quotes = catalog_with_scripted(2)
+    learned = [row["candidate_id"] for row in catalog["candidates"] if row["policy"]["kind"] != "scripted"]
+    plan_value = {"budget_usd": "15.00", "candidates": [
+        {"candidate_id": learned[0], "status": "selected", "blockers": [], "max_cost_usd": "1.00"},
+        {"candidate_id": learned[1], "status": "waitlisted", "blockers": [WAITLIST_BLOCKER], "max_cost_usd": "3.00"}]}
+    # The site has $3.50 left: $2.50 after the selected row holds the control and cannot fund the $3 row.
+    row = control.plan_control_row(plan_value, catalog, scene(), capabilities=capabilities, cost_quotes=quotes,
+                                   site_remaining_usd="3.50", now=NOW)
+    assert row["status"] == "selected"
+    # With $5 left, the $4 leftover could fund the waiting row: the control waits its turn.
+    row = control.plan_control_row(plan_value, catalog, scene(), capabilities=capabilities, cost_quotes=quotes,
+                                   site_remaining_usd="5.00", now=NOW)
+    assert row["known_good_control"]["unavailable"] == "budget"
+
+
+def test_a_plan_written_before_the_fallback_validates_unchanged():
+    older = with_control(queue_plan(count=2))
+    assert set(older["candidates"][-1]["known_good_control"]) == {"schema_version", "role", "episodes",
+                                                                    "pass_at_successes", "for_candidate_id"}
+    before = json.dumps(older, sort_keys=True)
+    assert validate_screening_plan(deepcopy(older)) == older and json.dumps(older, sort_keys=True) == before
+    Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(older)
+
+
+@pytest.mark.parametrize("change", ["both", "neither", "flag_with_candidate", "other_flag", "model_pattern"])
+def test_a_marker_that_stands_for_both_neither_or_anything_else_is_refused(change):
+    value = with_control(queue_plan(count=2))
+    marker = value["candidates"][-1]["known_good_control"]
+    if change == "both":
+        marker["for_model_id"] = "universal_robots_ur10e"
+    elif change == "neither":
+        del marker["for_candidate_id"]
+    elif change == "flag_with_candidate":
+        marker["flags"] = ["scene_packet_station"]
+    elif change == "other_flag":
+        del marker["for_candidate_id"]
+        marker.update(for_model_id="universal_robots_ur10e", flags=["embodiment_own_station"])
+    else:
+        del marker["for_candidate_id"]
+        marker["for_model_id"] = "../ur10e"
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    with pytest.raises(BetaPolicyScreeningPlanError):
+        validate_screening_plan(value)
+    assert not Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).is_valid(value)

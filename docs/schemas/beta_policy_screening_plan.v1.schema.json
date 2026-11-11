@@ -942,14 +942,58 @@
                   "for_candidate_id": {
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                     "type": "string"
+                  },
+                  "for_model_id": {
+                    "description": "The spec-catalog model whose body runs when no selected candidate's robot has a scripted profile (the job's robot fit table chose it).",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                    "type": "string"
+                  },
+                  "flags": {
+                    "description": "Only with for_model_id: the body stands at the scene packet's station, not its own.",
+                    "items": {
+                      "const": "scene_packet_station"
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
                   }
                 },
                 "required": [
                   "schema_version",
                   "role",
                   "episodes",
-                  "pass_at_successes",
-                  "for_candidate_id"
+                  "pass_at_successes"
+                ],
+                "oneOf": [
+                  {
+                    "required": [
+                      "for_candidate_id"
+                    ],
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "for_model_id"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "flags"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "required": [
+                      "for_model_id"
+                    ],
+                    "not": {
+                      "required": [
+                        "for_candidate_id"
+                      ]
+                    }
+                  }
                 ],
                 "type": "object"
               }

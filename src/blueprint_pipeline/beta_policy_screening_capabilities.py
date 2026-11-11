@@ -431,10 +431,23 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                                        else "beta_screening_candidate_configuration_invalid"]
     known = {row["candidate_id"] for row in catalog["candidates"]}
     from .website_candidate_feasibility import reach_ranks
+    # The known-good control's body when no selected candidate's robot has a scripted row
+    # (``beta_policy_screening_known_good_control``): the job's own robot fit verdicts, and the station
+    # each scripted body's run is bound to. Informational: neither funds, refuses or orders a candidate.
+    from .beta_policy_screening_known_good_control import FIT_CAPABILITY, STATION_CAPABILITY
+    from .website_robot_fit_projection import robot_fit_rows
+    context_digest = source.get("task_context_digest")
+    fit = robot_fit_rows(capture_root=Path(capture_root), task_context_digest=context_digest) \
+        if isinstance(context_digest, str) else None
+    scripted = {row["candidate_id"] for row in catalog["candidates"] if row["policy"]["kind"] == "scripted"}
+    stations = {key: row["station_basis"] for key, row in feasibility["candidates"].items()
+                if key in scripted and isinstance(row.get("station_basis"), str)}
     return {"scene": scene,
             "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials,
                              "candidate_blockers": candidate_blockers, "candidate_infeasible": infeasible,
                              # Orders the budget: a flagged own-arm solve after every unflagged one.
-                             "candidate_reach_rank": reach_ranks(feasibility)},
+                             "candidate_reach_rank": reach_ranks(feasibility),
+                             **({FIT_CAPABILITY: fit} if fit else {}),
+                             **({STATION_CAPABILITY: stations} if stations else {})},
             "cost_quotes": quotes, "candidate_feasibility": feasibility,
             "candidate_priority": [key for key in dict.fromkeys(priority) if key in known]}

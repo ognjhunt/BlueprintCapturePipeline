@@ -183,3 +183,21 @@ def test_every_projection_matches_the_published_schema(tmp_path):
                     handoff={"fit_check": {"status": "not_run", "reason": "task_family_not_modelled"}})
     for root in (completed, not_run):
         jsonschema.validate(projection.read_robot_fit(capture_root=root, task_context_digest=CONTEXT), schema)
+
+
+def test_the_screening_planner_reads_each_models_verdict_in_the_tables_own_order(tmp_path):
+    root = capture_root(tmp_path)
+    write_fit_table(root, rows=[{**row, "recipe_id": row["model_id"] if row["verdict"] == "fits" else None}
+                                for row in ROWS])
+    assert projection.robot_fit_rows(capture_root=root, task_context_digest=CONTEXT) == [
+        {"model_id": "arm_unknown", "recipe_id": None, "verdict": "unknown"},
+        {"model_id": "arm_short", "recipe_id": None, "verdict": "doesnt_fit"},
+        {"model_id": "arm_spec", "recipe_id": None, "verdict": "fits_spec"},
+        {"model_id": "arm_path", "recipe_id": "arm_path", "verdict": "fits"}]
+    # Bound to another task context, or a check that did not run: nothing, never a guess.
+    assert projection.robot_fit_rows(capture_root=root, task_context_digest="sha256:" + "d" * 64) is None
+    other = capture_root(tmp_path, capture_id="walkthrough-req2")
+    write_fit_table(other, route="geometry_only", handoff={"fit_check": {"status": "not_run",
+                                                                         "reason": "preparation_blocked"}})
+    assert projection.robot_fit_rows(capture_root=other, task_context_digest=CONTEXT) is None
+    assert projection.read_robot_fit(capture_root=other, task_context_digest=CONTEXT)["reason"] == "preparation_blocked"
