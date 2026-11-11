@@ -510,15 +510,19 @@ def test_both_planners_use_one_exclusion_rule(world, monkeypatch):
     monkeypatch.setattr(tested, "planning_exclusions", spy)
     run(world, request(ids=("groot_n17_droid",)), "req-2")
     worker.enqueue_prepared_scenes(queue_root=world["screening_queue"], packet_queue_root=world["packet_queue"])
-    assert len(seen) == 2 and all(keys for keys in seen)
+    # Both planners and the enqueue each other caller passes read the one rule.
+    assert len(seen) >= 2 and all(keys for keys in seen)
 
 
-def test_every_pair_tested_is_not_recomputed_until_an_input_changes(world, monkeypatch):
-    """Finding 5: kept against what could change it; a withdrawal still stops the job every pass."""
+def test_every_pair_tested_is_looked_at_again_at_most_once_an_hour(world, monkeypatch):
+    """Finding 5, as rebuilt: no digest of inputs; the job is planned again once the hour has passed, and a
+    withdrawal still stops it on every pass."""
     from blueprint_pipeline import beta_policy_screening_worker as worker
     from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
     from blueprint_pipeline import beta_policy_screening_team as team
 
+    clock = [1_000_000.0]
+    monkeypatch.setattr(tested, "_clock", lambda: clock[0])
     kwargs = {"queue_root": world["screening_queue"], "packet_queue_root": world["packet_queue"]}
     only = [lambda rows: [row for row in rows if row["candidate_id"] == "pi05_droid"]]
     monkeypatch.setattr(team, "catalog_for_profile", lambda profile, base: seal_catalog(
@@ -529,17 +533,15 @@ def test_every_pair_tested_is_not_recomputed_until_an_input_changes(world, monke
     [second] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
     assert second["status"] == "already_tested"
     calls = len(world["planning_calls"])
+    clock[0] += tested.LOOK_AGAIN_SECONDS - 1
     [third] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
-    assert third["status"] == "already_tested" and len(world["planning_calls"]) == calls  # nothing recomputed
-    # A real change (a new release) plans again.
-    monkeypatch.setattr(worker, "implementation_commit", lambda: "b" * 40)
+    assert third["status"] == "already_tested" and len(world["planning_calls"]) == calls  # inside the hour
+    clock[0] += 2
     [fourth] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
-    assert fourth["status"] == "already_tested" and len(world["planning_calls"]) == calls + 1
-    # Consent withdrawn: the job is stopped as before, never reported as already tested.
+    assert fourth["status"] == "already_tested" and len(world["planning_calls"]) == calls + 1  # looked again
     world["context"]["capture_rights"]["consent_revoked"] = True
     [fifth] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
     assert fifth["status"] == "blocked" and fifth["blockers"] == ["beta_screening_current_capture_consent_required"]
-    assert len(world["planning_calls"]) == calls + 1
 
 
 def test_a_cosmetic_catalog_edit_is_the_same_pair(world, monkeypatch):
@@ -747,3 +749,108 @@ def test_no_planner_waits_on_an_earlier_lock_than_one_it_holds(world, monkeypatc
         if rank is None:
             continue
         assert all(_rank(other) is None or _rank(other) < rank for other in held), (held, name)
+
+
+# Round 3 (second review): each test sets up the reviewer's state.
+
+def test_a_superseding_replan_never_plans_a_pair_another_campaign_holds(world):
+    """Finding 1: worker campaign A holds X deferred (quote expired); a job test queues X in B; A's re-plan
+    for its expired quote must not plan X again."""
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from tests.test_beta_policy_screening_settlement import reseal
+
+    kwargs = {"queue_root": world["screening_queue"], "packet_queue_root": world["packet_queue"]}
+    [first] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    campaign_a = first["campaign_id"]
+    assert "pi05_droid" in ledger(world)["campaigns"][campaign_a]["candidates"]
+
+    def expire(value):
+        value["campaigns"][campaign_a]["candidates"]["pi05_droid"].update(
+            status="deferred", blockers=[coordinator.QUOTE_EXPIRED_BLOCKER])
+    reseal(world["screening_queue"], expire)
+    queued = run(world, request(), "req-1")
+    assert queued["status"] == "enqueued"
+    assert "pi05_droid" in coordinator.replan_scope(campaign_a, implementation_commit=world["deployed"]["commit"],
+                                                    queue_root=world["screening_queue"])
+    worker.enqueue_prepared_scenes(**kwargs)
+    holding = [campaign_id for campaign_id, state in ledger(world)["campaigns"].items()
+               if tested.in_flight(state["candidates"].get("pi05_droid") or {}) and not state.get("superseded_by")]
+    assert holding == [queued["campaign_id"]]
+
+
+def test_the_enqueue_refuses_a_pair_in_flight_elsewhere_from_any_caller(world):
+    """The choke point: a plan built without the exclusions is refused at enqueue, before any spend."""
+    first = run(world, request(), "req-1")
+    plan = plan_of(world, first["campaign_id"])
+    plan = {**plan, "campaign_id": "screening-" + "f" * 32}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    with pytest.raises(ValueError, match="^" + tested.PAIR_ALREADY_PLANNED):
+        coordinator.enqueue_screening_campaign(plan, queue_root=world["screening_queue"])
+    assert plan["campaign_id"] not in ledger(world)["campaigns"]
+
+
+def test_one_policy_under_two_ids_in_one_request_is_planned_once(world, monkeypatch):
+    """Finding 2: two candidate ids with one policy identity in one request."""
+    _with_catalog(monkeypatch, lambda rows: _copy(rows, "pi05_droid", "pi05_droid_again", display_name="Again"))
+    _rebind(monkeypatch, [("pi05_droid_again", "pi05_droid")])
+    result = run(world, request(ids=("pi05_droid", "pi05_droid_again")), "req-1")
+    assert result["selected"] == ["pi05_droid"]
+    assert result["candidates"]["pi05_droid_again"] == {"status": "deferred",
+                                                        "blockers": [tested.SAME_POLICY_IN_PLAN]}
+
+
+def test_one_policy_under_two_ids_never_gets_two_standing_caps(world, monkeypatch):
+    allow_standing(world, monkeypatch)
+    _with_catalog(monkeypatch, lambda rows: _copy(rows, "pi05_droid", "pi05_droid_again", display_name="Again"))
+    _rebind(monkeypatch, [("pi05_droid_again", "pi05_droid")])
+    result = run(world, request("standing_test", ("pi05_droid", "pi05_droid_again")), "req-1")
+    assert result["status"] == "enqueued" and Decimal(result["maximum_planned_cost_usd"]) <= standing.POLICY_CAP_USD
+
+
+def test_a_standing_retry_past_the_policy_cap_is_refused_at_reservation(world, monkeypatch):
+    """Finding 8b: a standing campaign with two rows; one already spent $2 and is pending again. The
+    campaign's budget would fund the retry; the $2 per policy refuses it."""
+    from tests.test_beta_policy_screening_settlement import reseal
+
+    allow_standing(world, monkeypatch)
+    result = run(world, request("standing_test", ("pi05_droid", "groot_n17_droid")), "req-1")
+    assert Decimal(result["maximum_planned_cost_usd"]) == Decimal("4.00")
+    campaign = result["campaign_id"]
+
+    def spent(value):
+        row = value["campaigns"][campaign]["candidates"]["pi05_droid"]
+        row["attempt_history"] = [{"reservation_status": "committed", "maximum_cost_usd": "2.00",
+                                   "provider_allocation_observed": True}]
+    reseal(world["screening_queue"], spent)
+    plan = plan_of(world, campaign)
+    candidate = next(row for row in plan["candidates"] if row["candidate_id"] == "pi05_droid")
+    assert coordinator._reserve(world["screening_queue"], plan, candidate) is None
+    row = ledger(world)["campaigns"][campaign]["candidates"]["pi05_droid"]
+    assert row["status"] == "deferred" and row["blockers"] == [standing.POLICY_CAP_INSUFFICIENT]
+
+
+def test_a_recompiled_team_half_s_new_cells_are_planned_within_the_hour(world, monkeypatch):
+    """Finding 7: the same scene revision, new cells (so new pairs); nothing in a memo hides them."""
+    from blueprint_pipeline import beta_policy_screening_plan as planner
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
+    from blueprint_pipeline import beta_policy_screening_team as team
+
+    clock = [1_000_000.0]
+    monkeypatch.setattr(tested, "_clock", lambda: clock[0])
+    kwargs = {"queue_root": world["screening_queue"], "packet_queue_root": world["packet_queue"]}
+    only = [lambda rows: [row for row in rows if row["candidate_id"] == "pi05_droid"]]
+    monkeypatch.setattr(team, "catalog_for_profile", lambda profile, base: seal_catalog(
+        {**base, "candidates": only[0](base["candidates"])}))
+    [first] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    _complete_every_selected_row(world, first["campaign_id"])
+    _with_catalog(monkeypatch, only[0])
+    assert worker.enqueue_prepared_scenes(**kwargs)["sources"][0]["status"] == "already_tested"
+    original = planner.screening_cells
+
+    def recompiled(scene, count=planner.DEFAULT_EPISODES):
+        return [{**cell, "seed": cell["seed"] + 7} for cell in original(scene, count)]
+    monkeypatch.setattr(planner, "screening_cells", recompiled)
+    clock[0] += tested.LOOK_AGAIN_SECONDS
+    [later] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    assert later["status"] == "enqueued" and later["campaign_id"] != first["campaign_id"]

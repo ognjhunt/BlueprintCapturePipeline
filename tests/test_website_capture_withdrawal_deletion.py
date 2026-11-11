@@ -651,3 +651,22 @@ def test_a_restored_run_kept_for_its_archive_leaves_nothing_after_a_withdrawal(w
     assert not [path for path in world["launches"].iterdir() if path.name.startswith((run.name, f".{run.name}"))]
     if remote == "differs":
         assert not world["store"].present(uri)  # the object under the sealed name goes too
+
+
+def test_a_restore_killed_mid_transfer_leaves_nothing_after_a_withdrawal(world):
+    """Second review, finding 3: the killed restore's staging (part of the archive) is the run's."""
+    from tests.test_operator_door_screening_operations import killed_restore
+
+    run = world["launches"] / "launch-req1-controls-0002"
+    archive = world["launches"].parent / "partial.tar"
+    archive.write_bytes(b"x" * 4096)
+    pointer = world["launches"] / f"{run.name}.offloaded.v1.json"
+    value = json.loads(pointer.read_text())
+    value.update(digest="sha256:" + "b" * 64, size_bytes=4096)  # as the offloader seals it
+    _write(pointer, _sealed({key: item for key, item in value.items() if key != "pointer_digest"}, "pointer_digest"))
+    killed_restore(world["launches"] / f"{run.name}.offloaded.v1.json", run, archive)
+    assert [path for path in world["launches"].iterdir() if "restore" in path.name]
+    plan = _plan(world)
+    assert plan["unresolved"] == []
+    _apply(world, plan)
+    assert not [path for path in world["launches"].iterdir() if "restore" in path.name or run.name in path.name]

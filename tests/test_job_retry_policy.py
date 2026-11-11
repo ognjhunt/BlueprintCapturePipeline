@@ -107,3 +107,13 @@ def test_provider_answer_names_an_outside_services_http_status_only():
     assert provider_answer("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted") is None
     assert provider_answer("owned_capture_atlas_control_x_http_503") is None
     assert provider_answer(None) is None
+
+
+def test_request_cannot_succeed_names_refusals_of_the_request_itself():
+    from blueprint_pipeline.job_retry_policy import request_cannot_succeed
+
+    assert request_cannot_succeed("meta_sam_http_413") and request_cannot_succeed("meta_sam_http_400")
+    assert request_cannot_succeed("meta_sam_inline_clip_exceeds_request_ceiling")
+    assert not request_cannot_succeed("meta_sam_http_429") and not request_cannot_succeed("meta_sam_http_503")
+    assert not request_cannot_succeed("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
+    assert not request_cannot_succeed("atlas_background_visual_review_rejected") and not request_cannot_succeed(None)

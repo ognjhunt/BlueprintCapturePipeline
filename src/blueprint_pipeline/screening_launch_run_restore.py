@@ -38,6 +38,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 from typing import Any
 
@@ -50,6 +51,7 @@ NO_ROOM = "launch_run_restore_disk_headroom_insufficient"
 POINTER_MISSING = "launch_run_offload_pointer_missing"
 POINTER_INVALID = "launch_run_offload_pointer_invalid"
 DOWNLOAD_FAILED = "launch_run_restore_download_failed"
+CONSENT_UNREADABLE = "launch_run_restore_consent_unreadable"
 #: A restore refusal whose own message is not a typed code (the offload module's codes are kept as they are).
 RESTORE_REFUSED = "launch_run_restore_refused"
 _TYPED = re.compile(r"[a-z][a-z0-9_]{0,127}")
@@ -82,10 +84,18 @@ def restore_launch_run(*, site_id: str, request_id: str, packet_queue_root: str 
         elif not pointer_path.is_file() or pointer_path.is_symlink():
             outcome.update(status="refused", reason=POINTER_MISSING)
         else:
+            # Consent again once the bytes are down, before the tree is moved into place (a withdrawal
+            # during the download), and once more after the move; withdrawn then, what landed is removed.
+            def consent() -> None:
+                try:
+                    current_consent(site_id, request, capture)
+                except (ValueError, RuntimeError, OSError, KeyError) as exc:
+                    raise _ConsentRefused(exc) from exc
             outcome.update(_restore(launch, pointer_path, reserve=reserve or reserve_control_plane_disk,
                                     reservation_root=reservation_root or DEFAULT_RESERVATION_ROOT,
                                     materializer=materializer, restore=restore_offloaded_evidence,
-                                    no_room=ControlPlaneDiskBudgetError, typed=ControlPlaneEvidenceOffloadError))
+                                    no_room=ControlPlaneDiskBudgetError, typed=ControlPlaneEvidenceOffloadError,
+                                    consent=consent))
     except JobTestRefused as exc:
         outcome.update(status="refused", reason=exc.code, **exc.details)
     except (ValueError, RuntimeError, OSError, KeyError) as exc:
@@ -111,8 +121,13 @@ def restore_launch_run(*, site_id: str, request_id: str, packet_queue_root: str 
     return receipt
 
 
+class _ConsentRefused(Exception):
+    """The privacy read refused (or could not be made) while the restore was under way."""
+
+
 def _restore(launch: Path, pointer_path: Path, *, reserve: Any, reservation_root: Any, materializer: Any,
-             restore: Any, no_room: type[Exception], typed: type[Exception]) -> dict[str, Any]:
+             restore: Any, no_room: type[Exception], typed: type[Exception],
+             consent: Any = None) -> dict[str, Any]:
     """Reserve the peak, restore, release; every failure as a typed outcome (nothing half written)."""
     try:
         pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
@@ -132,7 +147,20 @@ def _restore(launch: Path, pointer_path: Path, *, reserve: Any, reservation_root
         return {**outcome, "status": "refused", "reason": NO_ROOM, "disk_refusal": str(exc).split(" ")[0][:200]}
     try:
         kwargs = {"materializer": materializer} if materializer is not None else {}
+        if consent is not None:
+            kwargs["admit"] = consent
         restored = restore(pointer_path=pointer_path, destination=launch, **kwargs)
+        if consent is not None:
+            try:
+                consent()
+            except BaseException:
+                shutil.rmtree(launch, ignore_errors=True)  # withdrawn while it landed: nothing stays
+                raise
+    except _ConsentRefused as exc:
+        cause = exc.args[0]
+        code = getattr(cause, "code", None) or str(cause)
+        return {**outcome, "status": "refused", "reason": code if _TYPED.fullmatch(code) else CONSENT_UNREADABLE,
+                **getattr(cause, "details", {})}
     except typed as exc:  # the offload module's own codes: pointer, digest, member or destination
         code = str(exc)
         return {**outcome, "status": "refused", "reason": code if _TYPED.fullmatch(code) else RESTORE_REFUSED}

@@ -536,3 +536,72 @@ def test_a_restored_copy_is_removed_only_while_the_store_still_holds_its_archive
     else:
         assert pointer.read_text() == sealed
         assert following["candidates"][0].get("archived_pointer_digest")  # asked again next pass
+
+
+_KILLED_RESTORE = """
+import os, signal, sys
+from pathlib import Path
+from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence
+
+def materializer(*, reference, destination, maximum_size_bytes):
+    Path(destination).write_bytes(Path(sys.argv[3]).read_bytes()[:64])  # part of the archive is down
+    os.kill(os.getpid(), signal.SIGKILL)  # the restore is killed mid-transfer
+
+restore_offloaded_evidence(pointer_path=sys.argv[1], destination=sys.argv[2], materializer=materializer)
+"""
+
+
+def killed_restore(pointer, destination, archive):
+    """Run a restore in its own process and kill it while the archive is coming down."""
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    done = subprocess.run([sys.executable, "-c", _KILLED_RESTORE, str(pointer), str(destination), str(archive)],
+                          env={**os.environ, "PYTHONPATH": str(root / "src")}, capture_output=True, timeout=120)
+    assert done.returncode == -9, done.stderr[-2000:]
+
+
+def test_a_killed_restore_s_staging_is_cleared_by_the_next_restore(cold_job):
+    """Second review, finding 3: a restore killed mid-transfer left its archive beside the run for good."""
+    from blueprint_pipeline.control_plane_evidence_offload import POINTER_SUFFIX
+    from blueprint_pipeline.screening_launch_run_restore import restore_launch_run
+
+    launch = cold_job["launch"]
+    killed_restore(launch.parent / f"{launch.name}{POINTER_SUFFIX}", launch, cold_job["archive"])
+    left = [path for path in launch.parent.iterdir() if "restore" in path.name]
+    assert left and all(path.name.startswith(f".{launch.name}.") for path in left)  # named for its run
+    receipt = restore_launch_run(site_id="site-job1", request_id="req-1", packet_queue_root=cold_job["packets"],
+                                 materializer=cold_job["materializer"], reserve=_reserve_ok([]))
+    assert receipt["status"] == "restored"
+    assert not [path for path in launch.parent.iterdir() if "restore" in path.name]
+
+
+@pytest.mark.parametrize("moment", ["after_download", "after_move"])
+def test_a_withdrawal_during_a_restore_leaves_nothing_restored(cold_job, monkeypatch, moment):
+    """Second review, finding 4: the site withdraws while its run comes down from the store."""
+    from blueprint_pipeline import beta_policy_screening_on_job as on_job
+    from blueprint_pipeline.screening_launch_run_restore import restore_launch_run
+
+    launch, withdrawn = cold_job["launch"], []
+    reads = []
+
+    def consent(site, request, capture):
+        reads.append(len(withdrawn))
+        if withdrawn:
+            raise on_job.JobTestRefused(on_job.SITE_WITHDRAWN)
+        if moment == "after_move" and len(reads) == 3:
+            raise on_job.JobTestRefused(on_job.SITE_WITHDRAWN)  # withdrawn just as the tree landed
+        return {}, {}
+    monkeypatch.setattr(on_job, "current_consent", consent)
+
+    def materializer(**kwargs):
+        cold_job["materializer"](**kwargs)
+        if moment == "after_download":
+            withdrawn.append(True)  # the withdrawal arrives while the bytes are on disk, before the move
+        return {}
+    receipt = restore_launch_run(site_id="site-job1", request_id="req-w", packet_queue_root=cold_job["packets"],
+                                 materializer=materializer, reserve=_reserve_ok([]))
+    assert receipt["status"] == "refused" and receipt["reason"] == on_job.SITE_WITHDRAWN
+    assert not launch.exists()
+    assert sorted(path.name for path in launch.parent.iterdir()) == [f"{launch.name}.offloaded.v1.json"]

@@ -59,7 +59,10 @@ def inputs(count=2, maximum="2.00"):
     catalog = load_default_catalog()
     if count != 2:
         template = catalog_candidate(catalog, "pi05_droid")
-        catalog = seal_catalog({**catalog, "candidates": [{**deepcopy(template), "candidate_id": f"policy_{n:02d}"} for n in range(count)]})
+        # Distinct policies: each its own checkpoint (one checkpoint under many ids is one policy).
+        catalog = seal_catalog({**catalog, "candidates": [{
+            **deepcopy(template), "candidate_id": f"policy_{n:02d}",
+            "policy": {**template["policy"], "digest": canonical_digest({"checkpoint": n})}} for n in range(count)]})
     # This pure-planner fixture requests two admitted runtimes. Runtime tests
     # exercise all enabled default policies against actual scene inputs.
     candidates = [row for row in catalog["candidates"] if row["eligibility"]["enabled"]

@@ -704,6 +704,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     site_left = None if site_remaining_usd is None else max(Decimal(0), money(site_remaining_usd))
     candidates = []
     already_tested = 0
+    planned_policies: set[str] = set()
     unranked = sorted(set(requested) - set(ranked),
                       key=lambda row: (by_id[row]["policy"]["kind"] == "scripted", row))
     order = ranked + unranked
@@ -763,6 +764,14 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                               cells=g1_cells(cells, dropped) if g1_row else cells) & set(finished_pairs):
                 already_tested += 1
                 continue
+        from .beta_policy_screening_tested_pairs import SAME_POLICY_IN_PLAN, policy_identity
+
+        policy = policy_identity(candidate)["policy_identity"]
+        if policy in planned_policies:
+            # One policy under two candidate ids is one test: the first in plan order runs.
+            row.update(status="deferred", blockers=[SAME_POLICY_IN_PLAN])
+            candidates.append(row)
+            continue
         maximum = money(quote["maximum_cost_usd"])
         spec = binding["execution_spec"]
         if (site_left is not None and maximum > site_left and not _HOSTED_COST_FIELDS & set(spec)
@@ -788,9 +797,11 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             # so the coordinator can fund it from money a selected candidate
             # releases before spend, within the same site and plan budget.
             row.update(status=WAITLISTED, blockers=[WAITLIST_BLOCKER], **frozen)
+            planned_policies.add(policy)
             candidates.append(row)
             continue
         row.update(status="selected", **frozen)
+        planned_policies.add(policy)
         remaining -= maximum
         if site_left is not None:
             site_left = max(Decimal(0), site_left - maximum)

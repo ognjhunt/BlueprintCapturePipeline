@@ -306,3 +306,48 @@ def test_a_server_that_dies_on_one_try_ends_its_row_as_on_the_native_path(tmp_pa
     assert tested.finished(state)
     coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
     assert backend.launches == 1
+
+
+def _all_void_lost(value, candidate, tmp_path):
+    """Every try held its first observation, then found the session's server gone (the probe's third case)."""
+    from blueprint_pipeline.policy_canary_worker_evidence import _write_episode_failure_gap
+
+    result = native_result(value, candidate)
+    episodes = []
+    for row in result["episodes"]:
+        path = _write_episode_failure_gap(output_root=tmp_path / "lost-out", run_id="run",
+            failure=ValueError("session_policy_server_unavailable:ConnectionRefusedError"),
+            context={"cell_id": row["cell_id"], "seed": row["seed"], "candidate_id": candidate["candidate_id"]},
+            progress={"first_observation_retained": True, "candidate_policy_query_attempted": True,
+                      "policy_inference_failed": True})
+        evidence = json.loads(path.read_text())
+        episodes.append({**row, **{key: item for key, item in evidence.items() if key != "cell_id"}})
+    return {**result, "episodes": episodes}
+
+
+def test_a_server_lost_after_the_first_observation_is_reported_as_lost_and_run_again_once(tmp_path, monkeypatch):
+    """Second review, finding 5: the cause wins over the stage, and an all-void row of a lost server is run
+    again once, holds no sibling, and then ends."""
+    from blueprint_pipeline import native_task_arena_policy_canary_session as session
+    from tests.test_beta_policy_screening_coordinator import plan
+
+    value = plan()
+    candidate = value["candidates"][0]
+    monkeypatch.setattr(session, "validate_session_result", lambda payload, **kwargs: payload)
+    queue = tmp_path / "queue"
+    coordinator.enqueue_screening_campaign(value, queue_root=queue)
+    backend = Backend({"status": "completed", "provider_allocation_performed": True,
+                       "provider_zero_verified": True, "result": _all_void_lost(value, candidate, tmp_path)})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    published = publication(queue, value["campaign_id"])["candidates"][0]
+    assert published["episodes_scored"] == 0 and published["episodes_void"] == 10
+    assert published["setup_quality_flags"] == ["session_policy_server_lost"]
+    ledger = json.loads((queue / coordinator.LEDGER_FILENAME).read_text())
+    row = ledger["campaigns"][value["campaign_id"]]["candidates"][candidate["candidate_id"]]
+    assert {item["reason"] for item in row["summary"]["episode_outcomes"]} == {"policy_server_unavailable"}
+    assert not coordinator._harness_failed(row) and not coordinator._holds_siblings(row)
+    site = value["site_id"]
+    once = {"campaigns": {"a": {"site_id": site, "candidates": {candidate["candidate_id"]: row}}}}
+    twice = {"campaigns": {**once["campaigns"], "b": {"site_id": site, "candidates": {candidate["candidate_id"]: row}}}}
+    assert coordinator._machine_fault_retry_allowed(once, site, candidate["candidate_id"])  # one paid re-run
+    assert not coordinator._machine_fault_retry_allowed(twice, site, candidate["candidate_id"])  # then it ends

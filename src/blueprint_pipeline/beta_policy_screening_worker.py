@@ -86,8 +86,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
     from .beta_policy_screening_scene_half import current_half
     from .beta_policy_screening_tested_pairs import (
-        EVERY_PAIR_TESTED, every_pair_inputs_digest, every_pair_tested_recorded, excluded_pair_keys,
-        record_every_pair_tested, site_planning_lock,
+        EVERY_PAIR_TESTED, every_pair_tested_recently, excluded_pair_keys, record_every_pair_tested,
+        site_planning_lock,
     )
     from .beta_policy_screening_team import catalog_for_profile
     from .rigid_robot_free_probe_runner import _running_release, source_commit
@@ -230,19 +230,16 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                         from .beta_policy_screening_default_priority import default_screening_priority
 
                         priority = default_screening_priority()
-                    # A new campaign (a catalog or registry change) plans only pairs the job has neither a
-                    # finished result for nor still queued or running (plan 1.2, the rule ``on_job`` uses); with
-                    # none, nothing is new and no campaign is made. That outcome is kept against what could
-                    # change it, so it is not planned again until one of them does. The consent read above
-                    # still runs on every pass first, so a withdrawal stops this job as before.
+                    # Every plan, a re-plan included, leaves out the pairs the job has finished or still has
+                    # queued or running in another campaign (plan 1.2, the rule ``on_job`` uses; a re-plan may
+                    # take up its own campaign's rows). With none new, no campaign is made, and the job is
+                    # looked at again at most once an hour. The consent read above still runs on every pass
+                    # first, so a withdrawal stops this job as before.
                     with site_planning_lock(root, retained["scene_id"]):  # the one lock on_job takes too
-                        finished = excluded_pair_keys(root, retained["scene_id"]) if superseded is None else None
-                        unchanged = None if finished is None else every_pair_inputs_digest(
-                            campaign_id=campaign_id, profile=profile, implementation_commit=implementation_commit(),
-                            excluded=finished)
+                        finished = excluded_pair_keys(root, retained["scene_id"], superseding=superseded)
                         plan = None
-                        if unchanged is not None and every_pair_tested_recorded(root, campaign_id, unchanged):
-                            outcome["status"] = "already_tested"  # nothing it depends on changed since
+                        if every_pair_tested_recently(root, retained["scene_id"]):
+                            outcome["status"] = "already_tested"  # looked at less than an hour ago
                         else:
                             inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
                                 source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
@@ -258,8 +255,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                                 if str(exc) != EVERY_PAIR_TESTED:
                                     raise
                                 outcome["status"] = "already_tested"
-                                if unchanged is not None:
-                                    record_every_pair_tested(root, campaign_id, unchanged)
+                                record_every_pair_tested(root, retained["scene_id"])
                         if plan is not None:
                             retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
                         if plan is not None and superseded is None:

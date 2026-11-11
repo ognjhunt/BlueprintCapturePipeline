@@ -1651,7 +1651,8 @@ def test_a_retained_plan_without_reference_names_keeps_its_measurement_binding()
     assert measurement_plan({"automation": named})["scale_references"][0]["segmentation_prompt"] == "range"
 
 
-@pytest.mark.parametrize('error,raised', [('meta_sam_http_413', True), ('meta_sam_upload_http_429', True),
+@pytest.mark.parametrize('error,raised', [('meta_sam_http_413', True), ('meta_sam_http_503', True),
+                                          ('meta_sam_inline_clip_exceeds_request_ceiling', True),
                                           ('atlas_background_visual_review_rejected', False)])
 def test_a_provider_answer_in_the_background_step_is_raised_not_held_for_input(tmp_path, monkeypatch, error, raised):
     from blueprint_pipeline import atlas_scene_automation as worker

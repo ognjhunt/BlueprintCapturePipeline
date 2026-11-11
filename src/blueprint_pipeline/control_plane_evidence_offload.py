@@ -615,6 +615,9 @@ def apply_evidence_offload(
     offloaded: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     abandoned_after = manifest.get("abandoned_after_seconds")
+    for raw_root in manifest.get("roots") or []:  # a killed restore's staging never stays for good
+        if Path(raw_root).is_dir() and not Path(raw_root).is_symlink():
+            clear_dead_restore_staging(Path(raw_root))
     for row in manifest.get("candidates") or []:
         root = Path(str(row.get("root") or ""))
         name = str(row.get("name") or "")
@@ -734,13 +737,41 @@ def apply_evidence_offload(
     return result
 
 
+RESTORE_STAGING_INFIX = ".restore-"
+
+
+def restore_staging_prefix(run_name: str) -> str:
+    """``.<run>.restore-<pid>-``: named for its run, so withdrawal deletion claims it with the run's
+    leftovers, and for the restoring process, so a later pass can tell a dead one from a live one."""
+    return f".{run_name}{RESTORE_STAGING_INFIX}{os.getpid()}-"
+
+
+def clear_dead_restore_staging(root: Path, run_name: str | None = None) -> list[str]:
+    """Remove restore staging (the archive and half an extracted tree) a killed restore left in ``root``:
+    one whose process is gone. ``run_name`` limits it to that run's. Returns the names removed."""
+    from .control_plane_disk_budget import _pid_alive
+
+    removed = []
+    for child in sorted(root.glob(f".{run_name or '*'}{RESTORE_STAGING_INFIX}*")):
+        pid = child.name.rsplit(RESTORE_STAGING_INFIX, 1)[1].split("-", 1)[0]
+        if child.is_symlink() or not child.is_dir() or not pid.isdigit() or _pid_alive(int(pid)):
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        removed.append(child.name)
+    return removed
+
+
 def restore_offloaded_evidence(
     *,
     pointer_path: str | Path,
     destination: str | Path,
     materializer: Callable[..., Mapping[str, Any]] = materialize_configured_scene_artifact,
+    admit: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """Bring an offloaded run directory back, verifying every member digest."""
+    """Bring an offloaded run directory back, verifying every member digest.
+
+    ``admit`` runs once every byte is down and verified, just before the tree is moved into place; if it
+    raises, nothing is moved and the staging is removed. Staging a killed restore left is cleared first."""
 
     pointer_file = Path(pointer_path).expanduser()
     if pointer_file.is_symlink() or not pointer_file.is_file():
@@ -757,7 +788,8 @@ def restore_offloaded_evidence(
     if target.exists() or target.is_symlink():
         raise ControlPlaneEvidenceOffloadError("control_plane_evidence_restore_destination_exists")
     target.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".restore-", dir=target.parent))
+    clear_dead_restore_staging(target.parent, target.name)
+    staging = Path(tempfile.mkdtemp(prefix=restore_staging_prefix(target.name), dir=target.parent))
     try:
         archive_path = staging / "evidence.tar"
         materializer(
@@ -801,6 +833,8 @@ def restore_offloaded_evidence(
             if restored.is_symlink():
                 raise ControlPlaneEvidenceOffloadError("control_plane_evidence_restore_symlink")
             _adopt_root_owner(restored, target.parent)
+        if admit is not None:
+            admit()
         os.replace(extracted, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -825,6 +859,8 @@ __all__ = [
     "POINTER_SUFFIX",
     "TERMINAL_RECEIPT_NAMES",
     "apply_evidence_offload",
+    "clear_dead_restore_staging",
+    "restore_staging_prefix",
     "build_evidence_offload_manifest",
     "publish_archive",
     "restore_offloaded_evidence",

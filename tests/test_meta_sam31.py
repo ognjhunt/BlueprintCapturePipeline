@@ -95,29 +95,6 @@ def inputs(tmp_path):
                 admission=authority, admission_grant=grant)
 
 
-CONTEXT = {"request_id": "req1", "scene_id": "site-req1", "capture_id": "fixture",
-           "context_digest": "sha256:" + "c" * 64}
-
-
-def _website_admission(task_context, kwargs):
-    """A reservation as the website returns it: provider, task context, request count and a live window."""
-    import time
-
-    value = {**build_paid_lane_admission(resource_class="evaluator_api"), "provider": "meta",
-             "task_context_digest": task_context["context_digest"],
-             "allocation_binding_digest": kwargs["binding_digest"], "request_count": kwargs["request_count"],
-             "maximum_cost_usd": kwargs["maximum_cost_usd"], "external_disclosure_allowed": True,
-             "expires_at_epoch": time.time() + 3600}
-    return value, require_paid_resource_admission(value, resource_class="evaluator_api",
-                                                  expected_schema_version="paid_lane_admission.v1")
-
-
-def _current_source(monkeypatch):
-    from blueprint_pipeline import website_task_context
-
-    monkeypatch.setattr(website_task_context, "load_current_website_task_context", lambda **_: dict(CONTEXT))
-
-
 def test_real_cpu_encoding_preserves_one_frame_per_source(tmp_path):
     args = inputs(tmp_path)
     clip = sam.encode_clip(registry=args["frame_registry"], artifacts=args["frame_artifacts"], root=tmp_path)
@@ -264,22 +241,14 @@ def test_video_uses_video_payload_and_blocks_usage_beyond_reserved_frames(tmp_pa
     args["admission"]["allocation_binding_digest"] = digest
     args["admission_grant"] = require_paid_resource_admission(args["admission"], resource_class="evaluator_api",
         expected_schema_version="paid_lane_admission.v1")
-    calls = []
     def opener(request, **kwargs):
-        calls.append((request.get_method(), request.full_url))
-        if request.full_url == sam.FILES_ENDPOINT:
-            return BytesIO(b'{"id":"file-frames"}')
-        if request.get_method() == "DELETE":
-            return BytesIO(b'{"deleted":true}')
         media = json.loads(request.data)["input"][0]["content"][1]
-        assert media == {"type": "input_video", "file_id": "file-frames"}
+        assert media["type"] == "input_video"
         result = response()
         result["usage"]["video_frames_processed"] = 51
         return BytesIO(json.dumps(result).encode())
     with pytest.raises(ValueError, match="usage_exceeds_reservation"):
         sam.run_meta_sam31(**args, opener=opener)
-    # Even a run that fails after the dispatch deletes its upload.
-    assert calls[-1] == ("DELETE", sam.FILES_ENDPOINT + "/file-frames")
 
 
 def test_continuous_video_keeps_original_frames_and_timestamps(tmp_path, monkeypatch):
@@ -449,14 +418,29 @@ def test_decoded_mask_cache_is_bound_to_retained_provider_bytes(tmp_path, monkey
 
 
 @pytest.mark.parametrize("refusal", [404, 429, 503])
-def test_a_refusal_the_provider_answered_is_dispatched_again_under_the_same_hold(tmp_path, monkeypatch, refusal):
-    # A refusal the provider answered did no work, so it bought nothing: the next pass sends the
-    # prompt again, paid by the requests its hold has not used. No second hold is made beside it.
+def test_a_refusal_the_provider_answered_is_dispatched_again_under_a_fresh_reservation(tmp_path, monkeypatch, refusal):
+    # capture-5b067498 (2026-11-06): the second target's request named a video upload from an
+    # earlier pass that the provider no longer held, and it answered 404. That is an outcome,
+    # not an uncertainty: the next pass uploads again and reserves the prompt afresh.
     from urllib.error import HTTPError
 
+    from blueprint_pipeline import website_task_context
+
     monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
-    reservations = _job_spend(monkeypatch)
-    args, digest, root = _two_prompts(tmp_path)
+    args = inputs(tmp_path)
+    prompts = [{**PROMPT, "prompt_id": f"target-{i}", "text": f"object {i}"} for i in range(2)]
+    args.update(prompts=prompts, admission={}, admission_grant=None, task_context={"capture_id": "fixture"})
+    reservations = []
+
+    def reserve(**kwargs):
+        reservations.append(kwargs)
+        value = {**build_paid_lane_admission(resource_class="evaluator_api"),
+                 "allocation_binding_digest": kwargs["binding_digest"],
+                 "maximum_cost_usd": kwargs["maximum_cost_usd"], "external_disclosure_allowed": True}
+        return value, require_paid_resource_admission(value, resource_class="evaluator_api",
+            expected_schema_version="paid_lane_admission.v1")
+
+    monkeypatch.setattr(website_task_context, "reserve_website_sam_spend", reserve)
     calls = []
 
     def refuses_second(request, **kwargs):
@@ -466,19 +450,23 @@ def test_a_refusal_the_provider_answered_is_dispatched_again_under_the_same_hold
             raise HTTPError(sam.ENDPOINT, refusal, "Refused", {}, None)
         return BytesIO(json.dumps(response()).encode())
 
+    # 429 (rate limited) and 503 (unavailable) are refusals too: retried, never a reconciliation hold.
     with pytest.raises(ValueError, match=f"meta_sam_http_{refusal}"):
         sam.run_meta_sam31(**args, opener=refuses_second)
     result = sam.run_meta_sam31(**args, opener=refuses_second)
     assert result["status"] == "completed"
     assert calls == ["object 0", "object 1", "object 1"]
-    assert len(reservations) == 1 and reservations[0]["binding_digest"] == digest
-    assert json.loads((root / "response-1.json").read_text())["allocation_binding_digest"] == digest
-    archived = root / "refused" / "attempt-1"
+    # The refused dispatch and the new one are separate reservations; neither replays the other.
+    assert len(reservations) == 2 and reservations[0]["binding_digest"] != reservations[1]["binding_digest"]
+    assert reservations[1]["request_count"] == 1
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+        frame_artifacts=args["frame_artifacts"], prompts=prompts))
+    archived = args["output_root"] / digest[7:] / "refused" / "attempt-1"
     assert json.loads((archived / "failure-1.json").read_text())["http_status"] == refusal
     assert (archived / "intent-1.json").is_file()
     # An answered refusal is no unknown outcome: nothing is counted as spent or marked a resend.
-    assert not (root / sam.UNANSWERED_ARCHIVE).exists()
-    assert "resend_of" not in json.loads((root / "response-1.json").read_text())
+    assert not (archived.parents[1] / sam.UNANSWERED_ARCHIVE).exists()
+    assert "resend_of" not in json.loads((archived.parents[1] / "response-1.json").read_text())
 
 
 def test_a_server_error_answer_still_requires_reconciliation(tmp_path, monkeypatch):
@@ -511,10 +499,13 @@ def _job_spend(monkeypatch):
     def reserve(**kwargs):
         assert kwargs["binding_digest"] not in [row["binding_digest"] for row in reservations], "already_reserved"
         reservations.append(kwargs)
-        return _website_admission(kwargs["task_context"], kwargs)
+        value = {**build_paid_lane_admission(resource_class="evaluator_api"),
+                 "allocation_binding_digest": kwargs["binding_digest"],
+                 "maximum_cost_usd": kwargs["maximum_cost_usd"], "external_disclosure_allowed": True}
+        return value, require_paid_resource_admission(value, resource_class="evaluator_api",
+            expected_schema_version="paid_lane_admission.v1")
 
     monkeypatch.setattr(website_task_context, "reserve_website_sam_spend", reserve)
-    _current_source(monkeypatch)
     # Nothing here may release a reservation or settle one, at zero or otherwise.
     monkeypatch.setattr(website_task_context, "preparation_webapp_request",
                         lambda **_: pytest.fail("a SAM reservation was released or settled"))
@@ -524,7 +515,7 @@ def _job_spend(monkeypatch):
 def _two_prompts(tmp_path):
     args = inputs(tmp_path)
     prompts = [{**PROMPT, "prompt_id": f"target-{i}", "text": f"object {i}"} for i in range(2)]
-    args.update(prompts=prompts, admission={}, admission_grant=None, task_context=dict(CONTEXT))
+    args.update(prompts=prompts, admission={}, admission_grant=None, task_context={"capture_id": "fixture"})
     digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
                                                   frame_artifacts=args["frame_artifacts"], prompts=prompts))
     return args, digest, args["output_root"] / digest[7:]
@@ -615,16 +606,14 @@ def test_a_refused_resend_is_dispatched_again_but_never_resent_a_second_time(tmp
         raise HTTPError(sam.ENDPOINT, 409, "Conflict", {}, None)
     with pytest.raises(ValueError, match="meta_sam_http_409"):
         sam.run_meta_sam31(**args, opener=refuses)
-    # The refusal is an answer (#3423): the prompt goes again, paid by the resend's own hold (the
-    # refused dispatch did no work), still marked as this prompt's one resend, so a lost answer to it
-    # stops for review.
+    # The refusal is an answer (#3423): the prompt goes again under a fresh reservation, still marked
+    # as this prompt's one resend, so a lost answer to it stops for review.
     with pytest.raises(ConnectionResetError):
         sam.run_meta_sam31(**args, opener=_provider(calls, drop={"object 1"}))
     assert json.loads((root / "intent-1.json").read_text())["resend_index"] == 1
     with pytest.raises(ValueError, match="meta_sam_submission_requires_reconciliation"):
         sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("a second resend"))
-    # Two holds: the first, used by the unanswered dispatch (counted as spent), and the resend's own.
-    assert len(reservations) == 2 and len({row["binding_digest"] for row in reservations}) == 2
+    assert len(reservations) == 3 and len({row["binding_digest"] for row in reservations}) == 3
     assert calls == ["object 0", "object 1", "object 1", "object 1"]
 
 

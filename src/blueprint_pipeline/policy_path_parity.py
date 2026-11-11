@@ -196,7 +196,10 @@ def _requests(row: Mapping[str, Any]) -> list[Any] | None:
                     for query in queries] if isinstance(queries, list) else []
     else:
         evidence = [row.get("policy_inference_evidence")] if row.get("policy_inference_evidence") is not None else []
-    queried = row.get("candidate_policy_queried") is True or bool(evidence)
+    # A try the simulator scored ran the policy, so it made requests: with none recorded, nothing shows where
+    # they went. The same for a try that says it queried the policy.
+    queried = (row.get("candidate_policy_queried") is True or bool(evidence)
+               or row.get("status") == "completed")
     return None if queried and not evidence else evidence
 
 

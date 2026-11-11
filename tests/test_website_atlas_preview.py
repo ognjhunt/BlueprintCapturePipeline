@@ -1397,31 +1397,18 @@ def test_a_deterministic_refusal_still_ends_at_the_jobs_deadline(monkeypatch, si
     assert world.advance() == "failed" and _job(site)["reason"] == "atlas_preview_expired" and len(world.runs) == 1
 
 
-def test_a_provider_refusal_of_the_request_itself_fails_the_step_at_once(monkeypatch, site):
-    # capture-39ecdc97 (2026-11-11): the segmentation provider answered 413. Sending the same request
-    # again cannot succeed, and each retry would hold another reservation: the step ends with its code.
+@pytest.mark.parametrize("code", ["meta_sam_http_413", "meta_sam_inline_clip_exceeds_request_ceiling"])
+def test_a_request_that_cannot_succeed_fails_the_step_at_once(monkeypatch, site, code):
+    # capture-39ecdc97 (2026-11-11): the segmentation provider answered 413, and the job sat in
+    # needs_input, which nothing steps again. Sending the same request again cannot succeed.
     _enqueue(site)
-    world = World(monkeypatch, site, [ValueError("meta_sam_http_413")])
+    world = World(monkeypatch, site, [ValueError(code)])
     assert world.advance() == "failed"
     job = _job(site)
-    assert (job["state"], job["reason"], job["retry_at_epoch"]) == ("failed", "meta_sam_http_413", None)
-    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("failed", "meta_sam_http_413")
+    assert (job["state"], job["reason"], job["retry_at_epoch"]) == ("failed", code, None)
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("failed", code)
     world.clock += 7 * 86400
     assert world.advance() == "failed" and len(world.runs) == 1
-
-
-def test_an_unusable_provider_answer_takes_the_bounded_schedule_then_fails(monkeypatch, site):
-    _enqueue(site)
-    code = "meta_sam_upload_unusable_answer_http_200"
-    world = World(monkeypatch, site, [ValueError(code)] * 7)
-    assert world.advance() == "processing"
-    assert _job(site)["last_refusal_reason"] == code
-    assert {row["state"] for row in world.pushed} == {"processing"}  # the site is told the build goes on
-    for _ in range(len(preview.REFUSAL_RETRY_DELAYS_SECONDS)):
-        world.clock = _job(site)["next_attempt_at_epoch"]
-        world.advance()
-    assert (_job(site)["state"], _job(site)["reason"]) == ("failed", code)
-    assert len(world.runs) == 1 + len(preview.REFUSAL_RETRY_DELAYS_SECONDS)
 
 
 def test_a_provider_rate_limit_or_server_error_is_an_outage(monkeypatch, site):
@@ -1430,6 +1417,8 @@ def test_a_provider_rate_limit_or_server_error_is_an_outage(monkeypatch, site):
     assert world.advance() == "processing"
     job = _job(site)
     assert job["transient_failures"] == 1 and job["last_transient_reason"] == "meta_sam_http_503"
+    # While it waits, the WebApp is told the build goes on.
+    assert {row["state"] for row in world.pushed} == {"processing"}
 
 
 @pytest.mark.parametrize("blockers,state", [
@@ -1447,85 +1436,3 @@ def test_a_kept_result_with_a_provider_answer_among_its_blockers_is_never_needs_
     assert job["reason"] == (blockers[-1] if state == "failed" else None)
     if state == "processing":
         assert job["transient_failures"] == 1 and job["next_attempt_at_epoch"] > world.clock
-
-
-def test_an_upload_left_undeleted_is_deleted_by_the_ended_jobs_cleanup_until_the_provider_confirms(monkeypatch, site):
-    # The end of a run deletes its own upload; when that delete fails and no later run comes, the
-    # ended job's provider cleanup keeps trying, for the background step's and the clean plate's alike.
-    from io import BytesIO
-    from urllib.error import HTTPError
-
-    from blueprint_pipeline import meta_sam31 as sam
-
-    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
-    _enqueue(site)
-    roots = {"file-background": site.pipeline / "atlas/automation/background/sam/abc",
-             "file-cleanplate": site.pipeline / "clean_plate/task_masks/x/def"}
-    for file_id, root in roots.items():
-        root.mkdir(parents=True)
-        sam.write_json(root / sam.UPLOAD_RECEIPT, {"file_id": file_id, "clip_digest": "sha256:" + "a" * 64})
-        sam.write_json(root / sam.UPLOAD_CLEANUP, {"file_id": file_id, "deleted": False})
-    unknown = site.pipeline / "atlas/automation/background/sam/abc/uploads/attempt-1"
-    unknown.mkdir(parents=True)
-    sam.write_json(unknown / sam.POSSIBLE_COPY, {"status": "possible_copy_at_provider"})
-    answers = {"file-background": [ConnectionResetError("no answer"), b'{"deleted":true}'],
-               "file-cleanplate": [HTTPError("x", 404, "Not Found", {}, None)]}
-    calls = []
-
-    def provider(request, **_kwargs):
-        assert request.get_method() == "DELETE"
-        file_id = request.full_url.rsplit("/", 1)[1]
-        calls.append(file_id)
-        answer = answers[file_id].pop(0)
-        if isinstance(answer, BaseException):
-            raise answer
-        return BytesIO(answer)
-
-    monkeypatch.setattr(sam, "_open_no_redirect", provider)
-    world = World(monkeypatch, site, [{"status": "needs_input", "download": None, "digest": "sha256:rejected"}])
-    assert world.advance() == "needs_input"
-    cleanup = _job(site)["provider_cleanup"]
-    assert cleanup["state"] == "pending" and cleanup["remaining"] == ["meta:file-background"]
-    assert "meta:file-cleanplate" in cleanup["deleted"]  # a 404: the provider holds no such file
-    assert cleanup["unknown_copies"] == ["atlas/automation/background/sam/abc/uploads/attempt-1/" + sam.POSSIBLE_COPY]
-    world.clock = cleanup["next_attempt_at_epoch"]
-    world.advance()
-    cleanup = _job(site)["provider_cleanup"]
-    assert cleanup["state"] == "complete" and cleanup["remaining"] == []
-    assert {"meta:file-background", "meta:file-cleanplate"} <= set(cleanup["deleted"])
-    assert calls == ["file-background", "file-cleanplate", "file-background"]
-
-
-def test_a_request_from_a_later_run_reopens_a_finished_cleanup_until_the_provider_confirms(monkeypatch, site):
-    from io import BytesIO
-
-    from blueprint_pipeline import meta_sam31 as sam
-
-    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
-    _enqueue(site)
-    world = World(monkeypatch, site, [{"status": "needs_input", "download": None, "digest": "sha256:rejected"}])
-    assert world.advance() == "needs_input"
-    assert _job(site)["provider_cleanup"]["state"] == "complete"
-    # Later, a clean-plate run's delete fails; nothing would ever try it again without the request.
-    root = site.pipeline / "clean_plate/task_masks/x/abc"
-    root.mkdir(parents=True)
-    sam.write_json(root / sam.UPLOAD_RECEIPT, {"file_id": "file-late", "clip_digest": "sha256:" + "a" * 64})
-    answers = [ConnectionResetError("no answer"), ConnectionResetError("no answer"), b'{"deleted":true}']
-
-    def provider(request, **_kwargs):
-        answer = answers.pop(0)
-        if isinstance(answer, BaseException):
-            raise answer
-        return BytesIO(answer)
-
-    monkeypatch.setattr(sam, "_open_no_redirect", provider)
-    sam.delete_uploaded_video(root=root, opener=provider)
-    assert (site.job.parent / sam.CLEANUP_REQUEST).is_file()
-    world.clock += 60
-    world.advance()
-    cleanup = _job(site)["provider_cleanup"]
-    assert cleanup["state"] == "pending" and cleanup["remaining"] == ["meta:file-late"]
-    world.clock = cleanup["next_attempt_at_epoch"]
-    world.advance()
-    cleanup = _job(site)["provider_cleanup"]
-    assert cleanup["state"] == "complete" and "meta:file-late" in cleanup["deleted"] and answers == []

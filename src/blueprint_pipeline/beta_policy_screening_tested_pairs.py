@@ -32,6 +32,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
@@ -164,24 +165,34 @@ def in_flight(row: Mapping[str, Any]) -> bool:
     return not is_control(row) and row.get("status") in QUEUED_STATUSES | ACTIVE_STATUSES
 
 
-def site_pairs(queue_root: str | Path | None, site_id: str) -> dict[str, dict[str, dict[str, Any]]]:
+def site_pairs(queue_root: str | Path | None, site_id: str, *,
+               superseding: str | None = None) -> dict[str, dict[str, dict[str, Any]]]:
     """``{"finished": {key: entry}, "in_flight": {key: entry}}`` for one job, from the ledger and its plans.
 
     Each entry is keyed by its policy-identity key when its campaign's catalog was kept, else by its old key;
-    it carries both (``legacy_pair_key``), and ``planning_exclusions`` gives every key a planner must skip."""
-    from .beta_policy_screening_coordinator import _ledger, _lock, _plan, _root
-    from .beta_policy_screening_plan import plan_harness_revision
+    it carries both (``legacy_pair_key``), and ``planning_exclusions`` gives every key a planner must skip.
+    ``superseding``: the campaign a re-plan replaces; its rows still waiting are not in flight for it."""
+    from .beta_policy_screening_coordinator import _ledger, _lock, _root
 
     root = _root(queue_root)
     with _lock(root):
         ledger = _ledger(root)
+    return pairs_from_ledger(root, ledger, site_id, superseding=superseding)
+
+
+def pairs_from_ledger(root: Path, ledger: Mapping[str, Any], site_id: str, *,
+                      superseding: str | None = None) -> dict[str, dict[str, dict[str, Any]]]:
+    """``site_pairs`` from a ledger the caller already holds (the coordinator, under its lock)."""
+    from .beta_policy_screening_coordinator import _plan
+    from .beta_policy_screening_plan import plan_harness_revision
+
     found: dict[str, dict[str, dict[str, Any]]] = {"finished": {}, "in_flight": {}}
     for campaign_id, state in sorted(ledger["campaigns"].items(), key=lambda item: (item[1]["created_at"], item[0])):
         if state["site_id"] != site_id:
             continue
         rows = state["candidates"]
         wanted = {key for key, row in rows.items()
-                  if finished(row) or in_flight(row) and not state.get("superseded_by")}
+                  if finished(row) or in_flight(row) and not state.get("superseded_by") and campaign_id != superseding}
         if not wanted:
             continue
         plan = _plan(root, campaign_id, state["plan_digest"])
@@ -229,56 +240,87 @@ def planning_exclusions(pairs: Mapping[str, Mapping[str, Mapping[str, Any]]]) ->
                      for key in (entry["pair_key"], entry["legacy_pair_key"]))
 
 
-def excluded_pair_keys(queue_root: str | Path | None, site_id: str) -> frozenset[str]:
-    return planning_exclusions(site_pairs(queue_root, site_id))
+def excluded_pair_keys(queue_root: str | Path | None, site_id: str, *,
+                       superseding: str | None = None) -> frozenset[str]:
+    return planning_exclusions(site_pairs(queue_root, site_id, superseding=superseding))
+
+
+PAIR_ALREADY_PLANNED = "beta_screening_pair_already_finished_or_in_flight"
+SAME_POLICY_IN_PLAN = "beta_screening_same_policy_already_in_plan"
+
+
+def require_new_pairs(root: Path, ledger: Mapping[str, Any], plan: Mapping[str, Any], *,
+                      superseding: str | None = None) -> None:
+    """The one place every new campaign passes (``enqueue_screening_campaign`` and ``supersede_campaign``,
+    under the ledger lock): no runnable row is a pair already finished, or queued or running in another
+    campaign, and no two runnable rows are one policy. A re-plan may take up a row of the campaign it
+    replaces (``superseding``: that row never finished). The planners already leave such rows out
+    (``planning_exclusions``, ``build_screening_plan``); this refuses, typed and before anything is spent,
+    a plan from any caller that did not."""
+    from .beta_policy_screening_known_good_control import is_control
+    from .beta_policy_screening_plan import WAITLISTED, plan_harness_revision
+
+    excluded = planning_exclusions(pairs_from_ledger(root, ledger, plan["site_id"], superseding=superseding))
+    catalog_rows = campaign_catalog_rows(root, plan)
+    policies: set[str] = set()
+    for row in plan["candidates"]:
+        legacy = plan_row_key(plan, row)
+        if row["status"] not in {"selected", WAITLISTED} or is_control(row) or legacy is None:
+            continue
+        keys, policy = {legacy}, row["candidate_id"]
+        source = catalog_rows.get(row["candidate_id"])
+        if source is not None and source.get("configuration_digest") == row["configuration_digest"]:
+            policy = policy_identity(source)["policy_identity"]
+            keys.add(identity_pair_key(policy_identity=policy, scene_revision_digest=plan["scene_revision_digest"],
+                                       harness_revision=plan_harness_revision(plan), cells=row["scenario_cells"]))
+        if keys & excluded:
+            raise ValueError(f"{PAIR_ALREADY_PLANNED}:{row['candidate_id']}")
+        if policy in policies:
+            raise ValueError(f"{SAME_POLICY_IN_PLAN}:{row['candidate_id']}")
+        policies.add(policy)
 
 
 def finished_pair_keys(queue_root: str | Path | None, site_id: str) -> frozenset[str]:
     return planning_exclusions({"finished": site_pairs(queue_root, site_id)["finished"], "in_flight": {}})
 
 
-def every_pair_inputs_digest(*, campaign_id: str, profile: Mapping[str, Any], implementation_commit: str | None,
-                             excluded: frozenset[str]) -> str:
-    """What could change an "every pair already tested" outcome for one job.
-
-    ``campaign_id`` already binds the scene request (its scene revision and task) and the effective catalog
-    (registry entries included); the profile, the release, the harness revision and the keys left out are
-    added, so a change to any of them plans again."""
-    from .beta_policy_screening_plan import SCREENING_HARNESS_REVISION
-
-    return canonical_digest({"campaign_id": campaign_id, "profile": dict(profile),
-                             "implementation_commit": implementation_commit,
-                             "screening_harness_revision": SCREENING_HARNESS_REVISION,
-                             "excluded_pair_keys": sorted(excluded)})
+#: When every pair of a job is tested, the job is planned again at most this often (the consent read still
+#: runs on every pass). A fixed look again, not a digest of inputs, so no change can be hidden for longer.
+LOOK_AGAIN_SECONDS = 3600
 
 
-def _every_pair_path(root: Path, campaign_id: str) -> Path:
-    return root / RECORD_DIRNAME / f"{campaign_id}.every-pair-tested.json"
+def _clock() -> float:
+    return time.time()
 
 
-def every_pair_tested_recorded(queue_root: str | Path | None, campaign_id: str, inputs_digest: str) -> bool:
-    """Whether this campaign was already found to have nothing new, for exactly these inputs."""
+def _every_pair_path(root: Path, site_id: str) -> Path:
+    return root / RECORD_DIRNAME / f"{site_id}.every-pair-tested.json"
+
+
+def every_pair_tested_recently(queue_root: str | Path | None, site_id: str) -> bool:
+    """Whether this job was found to have nothing new less than ``LOOK_AGAIN_SECONDS`` ago."""
     from .beta_policy_screening_coordinator import _root
 
     try:
-        value = json.loads(_every_pair_path(_root(queue_root), campaign_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        value = json.loads(_every_pair_path(_root(queue_root), site_id).read_text(encoding="utf-8"))
+        looked = float(value["looked_at_epoch"])
+    except (OSError, ValueError, KeyError, TypeError):
         return False
-    return (isinstance(value, dict) and value.get("schema_version") == EVERY_PAIR_RECORD_SCHEMA
-            and value.get("inputs_digest") == inputs_digest
-            and value.get("record_digest") == canonical_digest(value, digest_field="record_digest"))
+    return (value.get("schema_version") == EVERY_PAIR_RECORD_SCHEMA
+            and value.get("record_digest") == canonical_digest(value, digest_field="record_digest")
+            and 0 <= _clock() - looked < LOOK_AGAIN_SECONDS)
 
 
-def record_every_pair_tested(queue_root: str | Path | None, campaign_id: str, inputs_digest: str) -> None:
-    """Remember that planning this campaign found every pair tested; moves no money."""
+def record_every_pair_tested(queue_root: str | Path | None, site_id: str) -> None:
+    """Remember when planning this job last found every pair tested; moves no money."""
     from .beta_policy_screening_coordinator import _root, _write
 
     root = _root(queue_root)
-    value = {"schema_version": EVERY_PAIR_RECORD_SCHEMA, "campaign_id": campaign_id, "inputs_digest": inputs_digest,
+    value = {"schema_version": EVERY_PAIR_RECORD_SCHEMA, "site_id": site_id, "looked_at_epoch": _clock(),
              "outcome": EVERY_PAIR_TESTED, "record_digest": ""}
     value["record_digest"] = canonical_digest(value, digest_field="record_digest")
     (root / RECORD_DIRNAME).mkdir(exist_ok=True, mode=0o700)
-    _write(_every_pair_path(root, campaign_id), value)
+    _write(_every_pair_path(root, site_id), value)
 
 
 def record_tested_pairs(queue_root: str | Path | None, site_id: str) -> dict[str, Any]:
@@ -298,7 +340,8 @@ def record_tested_pairs(queue_root: str | Path | None, site_id: str) -> dict[str
 
 
 __all__ = ["CANDIDATE_ID_BASIS", "CHECKPOINT_BASIS", "EVERY_PAIR_TESTED", "LEGACY_BASIS", "LOCK_ORDER", "PLANNING_LOCK_PREFIX", "RECORD_SCHEMA",
-           "campaign_catalog_rows", "candidate_keys", "cells_digest", "every_pair_inputs_digest",
-           "every_pair_tested_recorded", "excluded_pair_keys", "finished", "finished_pair_keys", "identity_pair_key",
+           "LOOK_AGAIN_SECONDS", "PAIR_ALREADY_PLANNED", "SAME_POLICY_IN_PLAN",
+           "campaign_catalog_rows", "candidate_keys", "cells_digest", "every_pair_tested_recently",
+           "pairs_from_ledger", "require_new_pairs", "excluded_pair_keys", "finished", "finished_pair_keys", "identity_pair_key",
            "in_flight", "pair_key", "plan_row_key", "planning_exclusions", "planning_lock_name", "policy_identity",
            "record_every_pair_tested", "record_tested_pairs", "site_pairs", "site_planning_lock"]

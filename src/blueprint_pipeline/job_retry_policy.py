@@ -28,6 +28,7 @@ __all__ = [
     "outage_retry_delay",
     "provider_answer",
     "refusal_retry_delay",
+    "request_cannot_succeed",
 ]
 
 PRIVACY_RIGHTS = "privacy_rights"
@@ -127,3 +128,19 @@ def provider_answer(code: object) -> int | None:
         return None
     match = _PROVIDER_ANSWER.fullmatch(head)
     return int(match.group(1)) if match else None
+
+
+#: Requests this release can never send successfully as they stand (``meta_sam31``: a clip whose
+#: last encoding still does not fit an inline request).
+_UNSENDABLE_REQUEST_CODES = frozenset({"meta_sam_inline_clip_exceeds_request_ceiling"})
+
+
+def request_cannot_succeed(code: object) -> bool:
+    """Whether sending this request again unchanged cannot succeed: an outside service refused the
+    request itself (any 4xx but a 429 rate limit), or the request cannot be made to fit at all."""
+    if not isinstance(code, str):
+        return False
+    status = provider_answer(code)
+    if status is not None:
+        return 400 <= status < 500 and status != 429
+    return code.partition(":")[0].strip().lower() in _UNSENDABLE_REQUEST_CODES

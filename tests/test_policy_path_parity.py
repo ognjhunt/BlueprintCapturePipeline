@@ -273,3 +273,15 @@ def test_run_identity_names_the_identity_the_session_server_answers_with(tmp_pat
                                         transport=lambda **kw: json.dumps(policy.expected_metadata()).encode())
     assert identity["session_served"] is True
     assert identity["served_identity_sha256"] == client.server_metadata["identity_sha256"]
+
+
+def test_scored_contract_tries_with_no_requests_recorded_are_not_comparable():
+    """Second review, finding 6: with no request evidence and no query flag on any contract try."""
+    native, contract = _runs()
+    for row in contract["episodes"]:
+        row["episode"].pop("queries")
+        row.pop("candidate_policy_queried", None)
+    report = _compare(native, contract)
+    assert report["verdict"] == "not_comparable"
+    assert all(f"contract_transport_evidence_missing:{row['cell_id']}" in report["not_comparable_reasons"]
+               for row in contract["episodes"])
