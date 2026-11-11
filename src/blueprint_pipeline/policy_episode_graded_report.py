@@ -273,7 +273,8 @@ def _ladder(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 #: The published grader version behind a beta result's ``progress``. Changing a threshold, a stage or the
 #: ladder's order changes this string; nothing is tuned per job.
 PROGRESS_GRADER_VERSION = "policy_episode_progress.v1"
-#: ``approached``: the grasp frame came this close to the object's bounds (the score's own closest approach).
+#: ``approached``: the grasp frame came this close to the object's bounds (the score's own closest approach), or
+#: the episode touched the object (its ``contact`` condition was met).
 APPROACHED_DISTANCE_M = 0.02
 #: The pick-and-place ladder, in order. ``approached`` leads only when every graded episode measured it.
 PROGRESS_STAGE_IDS = ("approached", "contact", "moved", "lifted", "translated", "placed", "released_and_settled")
@@ -330,8 +331,10 @@ def summarize_progress(episodes: Sequence[Mapping[str, Any]]) -> dict[str, Any] 
     for item in episodes:
         stages = [dict(stage) for stage in item["stages"]]
         if approach:
+            # A touch means the gripper reached the object, wherever the grasp frame was: never discard it.
+            touched = next(stage["condition_met"] for stage in stages if stage["id"] == "contact")
             stages.insert(0, {"id": "approached",
-                              "condition_met": item["approach_distance_m"] <= APPROACHED_DISTANCE_M})
+                              "condition_met": item["approach_distance_m"] <= APPROACHED_DISTANCE_M or touched})
         for stage in _ladder(stages):
             counts[stage["id"]] += int(stage["achieved"])
         fractions.append(sum(stage["achieved"] for stage in stages) / len(stages))

@@ -204,13 +204,27 @@ def test_a_stage_counts_only_in_order_and_the_counts_never_increase():
     value = summarize_progress([progress_episode(score=score, samples=samples)])
     assert [row["episodes"] for row in value["stages"]] == [0] * 7 and value["mean_score"] == 0
     item = progress_episode(score=episode(DEPTH["placed"])[0], samples=trace(DEPTH["placed"]))
-    item["approach_distance_m"] = 0.05  # contact and carry met, approach not: nothing counts
-    assert summarize_progress([item])["mean_score"] == 0
+    item["stages"][0]["condition_met"] = False  # carry met but no contact recorded: nothing counts
+    assert summarize_progress([{**item, "approach_distance_m": 0.05}])["mean_score"] == 0
     graded = [progress_episode(score=s, samples=t) for s, t in (episode(d) for d in CAMPAIGN["policy-a"]["depths"])]
     counts = [row["episodes"] for row in summarize_progress(graded)["stages"]]
     assert counts == sorted(counts, reverse=True) == [9, 8, 7, 6, 5, 3, 2]
     assert summarize_progress(graded)["mean_score"] == round(sum(CAMPAIGN["policy-a"]["depths"]) / 70, 4)
     assert summarize_progress([]) is None
+
+
+def test_a_touch_with_the_grasp_frame_beyond_the_threshold_still_counts_as_approached():
+    # A fingertip touch: contact true while the grasp frame stayed 5 cm from the object's bounds.
+    score, samples = episode(DEPTH["contact"])
+    item = {**progress_episode(score=score, samples=samples), "approach_distance_m": 0.05}
+    assert item["stages"][0] == {"id": "contact", "condition_met": True}
+    value = summarize_progress([item])
+    assert value["stages"][:3] == [{"stage": "approached", "episodes": 1}, {"stage": "contact", "episodes": 1},
+                                   {"stage": "moved", "episodes": 0}]
+    assert value["mean_score"] == round(2 / 7, 4) and value["closest_approach_m"] == {"median": 0.05, "min": 0.05}
+    # Without the touch, the same distance earns nothing.
+    item["stages"][0] = {"id": "contact", "condition_met": False}
+    assert summarize_progress([item])["stages"][0] == {"stage": "approached", "episodes": 0}
 
 
 def test_approached_is_left_out_when_any_graded_episode_lacks_the_measurement():

@@ -148,15 +148,32 @@ Each step is useful by itself and is proved before the next one starts.
    authoring run, which cost $4.21 on the recorded job, not $17. A solid box is
    not a tray: an open container needs walls. Needs a GPU run to prove.
 6. **Cut the two hours.** Measured on the four recorded runs (2026-11-11):
-   - One GPU instance per policy. From launch to settled: 101 to 160 minutes.
-   - From instance creation to the first episode: 11 to 19 minutes. No
-     timestamps are recorded inside that span (image pull, model load,
-     environment start).
-   - One 24-second episode takes 4 to 8 minutes of wall time. Of what is
-     instrumented, per episode: reset about 85 s, stepping and rendering about
-     65 s, saving media about 50 s, policy inference about 13 s (one policy:
-     62 s). More than half of each episode's wall time falls between the
+   - One GPU instance per policy. From launch to settled: 101 to 160 minutes
+     (from the provider phase log and the screening ledger, read through the
+     operator door).
+   - From instance creation to the first episode: 11 to 19 minutes (same
+     source). No timestamps are recorded inside that span (image pull, model
+     load, environment start).
+   - 39 timed episodes (the fortieth was blocked and has no timing). One
+     24-second episode (360 control steps at 15 Hz, then 16 settle steps)
+     takes 4.3 to 8.5 minutes of wall time; the median per policy is 258 to
+     489 s.
+   - Instrumented, per episode, as the range of the four policies' means:
+     reset and initial state 47 to 89 s, environment step including render
+     46 to 70 s, saving media 36 to 54 s, policy inference 9 to 14 s (one
+     policy: 62 s), object state sampling 2.7 to 5.5 s, settle steps 2 to 3 s,
+     everything else under 1 s. Together 144 to 281 s.
+   - Those items explain 53 to 58% of a policy's mean episode wall time; the
+     other 42 to 47% (41 to 50% for single episodes) falls between the
      instrumented intervals and is not explained by the record.
+   - The runtime's coarser `env_step_s` reads 87 to 133 s. For every policy it
+     equals, within 0.2 s, the step, settle, media, state-sampling and
+     observation-read buckets added together; the 46 to 70 s above is the step
+     alone.
+   - Source: each episode's `episode.performance_diagnostics.timings_seconds`
+     (`time.monotonic` buckets), `episode.evaluation_backend.timing.env_step_s`
+     and the row's `telemetry.wall_time_ns`, in the four retained
+     `native_task_arena_policy_canary_session_result.v1.json` files.
    - So the first change is to record where the unexplained time goes. Then:
      one GPU session for all policies of a scene, a warm image, and cheaper
      resets and media. `native_task_arena_policy_canary_worker.py` is two lines
@@ -177,8 +194,9 @@ Not built. Each changes what is paid for, so each is the owner's call.
 - **When the scene is flagged as probably out of reach, pay for one policy
   first.** If no stance reaches the task's put-down point and the scripted
   carry finds no path, run one policy, read its progress, and run the others
-  only if it touched the object. That would have saved about three quarters of
-  the screening spend on the recorded job.
+  only if it touched the object. That saves the other runs only when the first
+  policy did not touch the object, and on the recorded job two of the four
+  policies touched it.
 - **When the job's two spots are further apart than the research arm can
   span, test the skill within its reach.** Reach is the robot's question, and
   the fit check and the scene check answer it for the site's pick. What the
