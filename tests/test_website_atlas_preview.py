@@ -1411,16 +1411,6 @@ def test_a_request_that_cannot_succeed_fails_the_step_at_once(monkeypatch, site,
     assert world.advance() == "failed" and len(world.runs) == 1
 
 
-def test_a_provider_rate_limit_or_server_error_is_an_outage(monkeypatch, site):
-    _enqueue(site)
-    world = World(monkeypatch, site, [ValueError("meta_sam_http_503")])
-    assert world.advance() == "processing"
-    job = _job(site)
-    assert job["transient_failures"] == 1 and job["last_transient_reason"] == "meta_sam_http_503"
-    # While it waits, the WebApp is told the build goes on.
-    assert {row["state"] for row in world.pushed} == {"processing"}
-
-
 @pytest.mark.parametrize("blockers,state", [
     (["meta_sam_http_413"], "failed"),
     # A preserved scene lists its registration limit first; the provider's answer behind it still counts.
@@ -1435,15 +1425,21 @@ def test_a_kept_result_with_a_provider_answer_among_its_blockers_is_never_needs_
     job = _job(site)
     assert job["reason"] == (blockers[-1] if state == "failed" else None)
     if state == "processing":
-        assert job["transient_failures"] == 1 and job["next_attempt_at_epoch"] > world.clock
+        assert job["refusal_retries"] == 1 and job["next_attempt_at_epoch"] > world.clock
 
 
-@pytest.mark.parametrize("code", ["meta_sam_http_408", "meta_sam_http_409", "meta_sam_http_425", "meta_sam_http_502"])
-def test_a_try_again_answer_takes_the_outage_schedule(monkeypatch, site, code):
+@pytest.mark.parametrize("code", ["meta_sam_http_408", "meta_sam_http_409", "meta_sam_http_425",
+                                  "meta_sam_http_429", "meta_sam_http_502", "meta_sam_http_503"])
+def test_a_try_again_answer_takes_the_bounded_schedule_then_fails_with_its_code(monkeypatch, site, code):
+    # Each retry of a refused dispatch reserves anew (no call releases a hold), so the retries are
+    # counted: main's refusal schedule, six timed retries, then the step ends with the code.
     _enqueue(site)
-    world = World(monkeypatch, site, [ValueError(code), {"status": "processing", "stage": "plan"}])
+    world = World(monkeypatch, site, [ValueError(code)] * 7)
     assert world.advance() == "processing"
-    job = _job(site)
-    assert job["transient_failures"] == 1 and job["last_transient_reason"] == code
-    world.clock = job["next_attempt_at_epoch"]
-    assert world.advance() == "processing" and len(world.runs) == 2  # the next run really runs
+    assert _job(site)["last_refusal_reason"] == code and _job(site)["transient_failures"] == 0
+    assert {row["state"] for row in world.pushed} == {"processing"}  # the site is told the build goes on
+    for _ in range(len(preview.REFUSAL_RETRY_DELAYS_SECONDS)):
+        world.clock = _job(site)["next_attempt_at_epoch"]
+        world.advance()
+    assert (_job(site)["state"], _job(site)["reason"]) == ("failed", code)
+    assert len(world.runs) == 1 + len(preview.REFUSAL_RETRY_DELAYS_SECONDS)

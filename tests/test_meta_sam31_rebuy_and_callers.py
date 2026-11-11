@@ -18,7 +18,7 @@ import pytest
 from blueprint_pipeline import meta_sam31 as sam
 from blueprint_pipeline import website_task_context
 
-from .test_meta_sam31_inline_clip import CONTEXT, Provider, _frames, _job, _reservations
+from .test_meta_sam31_inline_clip import CONTEXT, Provider, _frames, _job, _mask, _reservations
 
 
 class Stop(Exception):
@@ -240,17 +240,20 @@ class UploadProvider:
             status, self.status = self.status, None
             raise HTTPError(sam.ENDPOINT, status, "Answered", {}, None)
         answer = {"status": "completed", "usage": {"video_frames_processed": 3},
-                  "output": [{"type": "message", "content": [{"type": "output_text", "text": "<2f>"}]}]}
+                  "output": [{"type": "message", "content": [{"type": "output_text",
+                                                               "text": _mask(64).replace("<0f>", "<2f>")}]}]}
         return BytesIO(json.dumps(answer).encode())
 
 
 #: What ``origin/main`` (49759e2e0) does with each status on a run that uploads, observed by running
 #: this same scenario against main's ``meta_sam31``: the second run's outcome and its provider calls.
 MAIN_SECOND_RUN = {
-    **{status: ("completed", ["upload", ("object 1", "file-u2"), ("object 2", "file-u2"), "delete:file-u2"])
-       for status in (400, 401, 403, 404, 409, 413, 415, 422, 429, 503)},
-    **{status: ("meta_sam_submission_requires_reconciliation", [])
-       for status in (408, 425, 500, 502, 504)},
+    # Resent naming the run's first upload, as main does (main's own fault: that file was deleted
+    # when the first run ended; the tracker lists it).
+    **{status: ("completed", [("object 1", "file-u1"), ("object 2", "file-u1"), "delete:file-u1"])
+       for status in (400, 401, 403, 409, 413, 415, 422, 429, 503)},
+    404: ("completed", ["upload", ("object 1", "file-u2"), ("object 2", "file-u2"), "delete:file-u2"]),
+    **{status: ("meta_sam_submission_requires_reconciliation", []) for status in (408, 425, 500, 502, 504)},
 }
 
 
