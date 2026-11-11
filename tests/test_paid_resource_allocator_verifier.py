@@ -617,14 +617,7 @@ def test_admitted_api_call_site_must_name_a_reachable_admission():
 #: The unadmitted API-priced call sites, pinned here so that adding one needs an
 #: explicit, reviewed edit to this test. Removing an entry (once the site is
 #: admitted or gone) passes; the verifier's set must stay within this one.
-PINNED_UNADMITTED_API_CALL_SITES = frozenset({
-    "src/blueprint_pipeline/capture_enrichment_llm.py::_ClaudeHTTPRunner.__call__::anthropic_api_url",
-    "src/blueprint_pipeline/capture_enrichment_llm.py::_CodexRunner.__call__::openai_codex_cli",
-    "src/blueprint_pipeline/capture_enrichment_llm.py::_OpenAISDKRunner.__call__::openai_client_construction",
-    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider._upload_video_as_media_asset::world_labs_marble_request",
-    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.submit::world_labs_marble_request",
-    "src/blueprint_pipeline/scene_semantics.py::_infer_capture_review_with_gemini_video::gemini_client_construction",
-})
+PINNED_UNADMITTED_API_CALL_SITES: frozenset[str] = frozenset()
 
 
 def test_unadmitted_api_call_sites_stay_within_the_pinned_list():

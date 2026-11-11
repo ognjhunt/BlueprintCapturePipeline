@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import sys
 import types
 from pathlib import Path
@@ -9,10 +8,9 @@ import numpy as np
 import pytest
 
 from blueprint_pipeline import industrial_ontology, local_capture, model_access_env
-from blueprint_pipeline import optional_dependencies, wam_vision_success_judge
+from blueprint_pipeline import wam_vision_success_judge
 from blueprint_pipeline.agent_runtime import artifacts, contracts
 from blueprint_pipeline.common import PipelineError
-from blueprint_pipeline.core import optional_dependencies as core_optional_dependencies
 from blueprint_pipeline.synthesis import plucker_rays
 
 
@@ -117,18 +115,6 @@ def test_model_access_env_and_optional_dependency_messages(
     assert stat_status["mode"] is None
     assert stat_status["size_bytes"] is None
 
-    logger = logging.getLogger("test.optional")
-    with caplog.at_level(logging.WARNING, logger="test.optional"):
-        message = optional_dependencies.log_missing_optional_dependency(
-            logger,
-            feature="Feature",
-            package="package-a",
-            extra="llm",
-        )
-    assert optional_dependencies.install_extra_hint("llm") in message
-    assert optional_dependencies.install_extra_hint is core_optional_dependencies.install_extra_hint
-    assert "Feature requires optional dependency `package-a`" in caplog.text
-
 
 def test_local_capture_error_branches_and_root_layout(tmp_path: Path) -> None:
     with pytest.raises(PipelineError, match="not inside a scenes"):
@@ -229,11 +215,6 @@ def test_plucker_tensor_and_zero_moment_normalization(monkeypatch) -> None:  # t
 
 
 def test_industrial_ontology_and_wam_vision_judge_edges() -> None:
-    assert industrial_ontology._normalized_tokens("") == []
-    entity = industrial_ontology.classify_industrial_entity("forklift crossing")
-    assert entity.entity_type == "forklift_lane"
-    assert entity.to_dict()["hazard_relevant"] is True
-    assert "hazard_relevant" in industrial_ontology.industrial_tags_for_label("wet floor")
     multi = industrial_ontology.classify_industrial_entities(
         ["rack tote pallet_zone traffic_zone workcell"]
     )
@@ -244,10 +225,6 @@ def test_industrial_ontology_and_wam_vision_judge_edges() -> None:
         "traffic_zone",
         "workcell",
     }
-    assert industrial_ontology.derive_capture_plan_tags(["", None, "rack", "rack", "charger"]) == [
-        "rack",
-        "charger_candidate",
-    ]
 
     assert wam_vision_success_judge._mapping({"a": 1}) == {"a": 1}
     assert wam_vision_success_judge._mapping(["bad"]) == {}

@@ -67,19 +67,19 @@ def _local_disk_reservation_root(tmp_path, monkeypatch):
 
 # Real iOS raw bundle namelist per CaptureRawContractV3Validator (no pipeline_handoff.json).
 _IOS_MANIFEST = {
-    "scene_id": "scene-1",
-    "capture_id": "capture-1",
-    "site_submission_id": "site-submission-scene-1",
-    "buyer_request_id": "req-scene-1",
-    "capture_job_id": "capture-job-scene-1",
+    "scene_id": "site-1",
+    "capture_id": "walkthrough-1",
+    "site_submission_id": "site-submission-site-1",
+    "buyer_request_id": "req-site-1",
+    "capture_job_id": "capture-job-site-1",
     "requested_outputs": ["robot_eval_dataset", "task_evaluation_run"],
 }
 _IOS_CONTEXT = {
-    "scene_id": "scene-1",
-    "capture_id": "capture-1",
-    "site_submission_id": "site-submission-scene-1",
-    "buyer_request_id": "req-scene-1",
-    "capture_job_id": "capture-job-scene-1",
+    "scene_id": "site-1",
+    "capture_id": "walkthrough-1",
+    "site_submission_id": "site-submission-site-1",
+    "buyer_request_id": "req-site-1",
+    "capture_job_id": "capture-job-site-1",
 }
 
 
@@ -193,20 +193,20 @@ class FakeSubscriber:
 def test_parse_handoff_payload_requires_identity_consistency() -> None:
     payload = {
         "bucket": "capture-bucket",
-        "scene_id": "scene-1",
-        "capture_id": "capture-1",
-        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
-        "pipeline_handoff_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/pipeline_handoff.json",
+        "scene_id": "site-1",
+        "capture_id": "walkthrough-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
+        "pipeline_handoff_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/pipeline_handoff.json",
     }
 
     handoff = parse_handoff_payload(json.dumps(payload).encode("utf-8"))
 
     assert handoff == HandoffMessage(
         bucket="capture-bucket",
-        scene_id="scene-1",
-        capture_id="capture-1",
-        raw_prefix_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
-        pipeline_handoff_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/pipeline_handoff.json",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
+        raw_prefix_uri="gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
+        pipeline_handoff_uri="gs://capture-bucket/scenes/site-1/captures/walkthrough-1/pipeline_handoff.json",
     )
 
 
@@ -215,9 +215,9 @@ def test_parse_handoff_payload_blocks_mismatched_raw_prefix() -> None:
         parse_handoff_payload(
             {
                 "bucket": "capture-bucket",
-                "scene_id": "scene-1",
-                "capture_id": "capture-1",
-                "raw_prefix_uri": "gs://capture-bucket/scenes/other/captures/capture-1/raw",
+                "scene_id": "site-1",
+                "capture_id": "walkthrough-1",
+                "raw_prefix_uri": "gs://capture-bucket/scenes/other/captures/walkthrough-1/raw",
             }
         )
 
@@ -228,7 +228,7 @@ def test_parse_handoff_payload_rejects_invalid_utf8_as_permanent_input_error() -
 
 
 def test_process_handoff_stages_capture_and_runs_e2e(tmp_path: Path) -> None:
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     client = FakeStorageClient(
         [
             FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
@@ -246,9 +246,9 @@ def test_process_handoff_stages_capture_and_runs_e2e(tmp_path: Path) -> None:
     result = process_handoff_payload(
         {
             "bucket": "capture-bucket",
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+            "scene_id": "site-1",
+            "capture_id": "walkthrough-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
         },
         storage_root=tmp_path,
         provider="openai",
@@ -273,7 +273,7 @@ def test_process_handoff_stages_capture_and_runs_e2e(tmp_path: Path) -> None:
 def test_process_handoff_retains_robot_eval_request_for_separate_action(
     tmp_path: Path,
 ) -> None:
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     robot_request_key = f"{prefix}/pipeline/robot_eval_requests/request-1.json"
     client = FakeStorageClient(
         [
@@ -293,9 +293,9 @@ def test_process_handoff_retains_robot_eval_request_for_separate_action(
     result = process_handoff_payload(
         {
             "bucket": "capture-bucket",
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+            "scene_id": "site-1",
+            "capture_id": "walkthrough-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
             "robot_eval_job_request_uri": f"gs://capture-bucket/{robot_request_key}",
             "robot_eval_job_id": "customer-job-1",
             "robot_eval_provisioner": "runpod",
@@ -331,9 +331,9 @@ def test_process_handoff_retains_robot_eval_request_for_separate_action(
     retried = process_handoff_payload(
         {
             "bucket": "capture-bucket",
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+            "scene_id": "site-1",
+            "capture_id": "walkthrough-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
             "robot_eval_job_request_uri": f"gs://capture-bucket/{robot_request_key}",
             "robot_eval_job_id": "customer-job-1",
         },
@@ -349,12 +349,12 @@ def test_process_handoff_retains_robot_eval_request_for_separate_action(
 def test_process_handoff_records_preparation_without_staging_evaluation(
     tmp_path: Path,
 ) -> None:
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     client = FakeStorageClient(
         [
             *_ios_bundle_blobs(prefix),
             *_robot_eval_dataset_blobs(prefix),
-            FakeBlob(f"{prefix}/capture_descriptor.json", b'{"scene_id":"scene-1"}'),
+            FakeBlob(f"{prefix}/capture_descriptor.json", b'{"scene_id":"site-1"}'),
         ]
     )
     configured_capture_root = tmp_path / "configured-single-capture-root"
@@ -381,9 +381,9 @@ def test_process_handoff_records_preparation_without_staging_evaluation(
     result = process_handoff_payload(
         {
             "bucket": "capture-bucket",
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+            "scene_id": "site-1",
+            "capture_id": "walkthrough-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
         },
         storage_root=tmp_path,
         provider="openai",
@@ -415,7 +415,7 @@ def test_process_handoff_records_preparation_without_staging_evaluation(
 
 
 def test_redelivered_completed_handoff_is_idempotent(tmp_path: Path) -> None:
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     client = FakeStorageClient(
         [
             FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
@@ -424,9 +424,9 @@ def test_redelivered_completed_handoff_is_idempotent(tmp_path: Path) -> None:
     )
     payload = {
         "bucket": "capture-bucket",
-        "scene_id": "scene-1",
-        "capture_id": "capture-1",
-        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        "scene_id": "site-1",
+        "capture_id": "walkthrough-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
     }
     calls: list[dict] = []
 
@@ -467,8 +467,8 @@ def test_redelivered_completed_handoff_is_idempotent(tmp_path: Path) -> None:
     status = read_handoff_job_status(
         storage_root=tmp_path,
         bucket="capture-bucket",
-        scene_id="scene-1",
-        capture_id="capture-1",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
     )
     assert status["schema_version"] == "pipeline_job_status.v1"
     assert status["status"] == "completed"
@@ -496,7 +496,7 @@ def test_redelivered_completed_handoff_is_idempotent(tmp_path: Path) -> None:
 def test_expired_lease_recovers_existing_output_commit_without_rerun(
     tmp_path: Path,
 ) -> None:
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     client = FakeStorageClient(
         [
             FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
@@ -505,9 +505,9 @@ def test_expired_lease_recovers_existing_output_commit_without_rerun(
     )
     payload = {
         "bucket": "capture-bucket",
-        "scene_id": "scene-1",
-        "capture_id": "capture-1",
-        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        "scene_id": "site-1",
+        "capture_id": "walkthrough-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
     }
     capture_root = tmp_path / "capture-bucket" / prefix
     assert process_handoff_payload(
@@ -553,8 +553,8 @@ def test_read_handoff_job_status_reports_not_staged(tmp_path: Path) -> None:
     status = read_handoff_job_status(
         storage_root=tmp_path,
         bucket="capture-bucket",
-        scene_id="scene-1",
-        capture_id="capture-1",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
     )
 
     assert status["status"] == "not_staged"
@@ -567,7 +567,7 @@ def test_read_handoff_job_status_reports_not_staged(tmp_path: Path) -> None:
 
 
 def test_crashed_processing_run_is_retried_not_skipped(tmp_path: Path) -> None:
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     client = FakeStorageClient(
         [
             FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
@@ -576,9 +576,9 @@ def test_crashed_processing_run_is_retried_not_skipped(tmp_path: Path) -> None:
     )
     payload = {
         "bucket": "capture-bucket",
-        "scene_id": "scene-1",
-        "capture_id": "capture-1",
-        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        "scene_id": "site-1",
+        "capture_id": "walkthrough-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
     }
     boom_calls: list[dict] = []
 
@@ -616,8 +616,8 @@ def test_crashed_processing_run_is_retried_not_skipped(tmp_path: Path) -> None:
     status = read_handoff_job_status(
         storage_root=tmp_path,
         bucket="capture-bucket",
-        scene_id="scene-1",
-        capture_id="capture-1",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
     )
     assert status["status"] == "failed_retryable"
     assert status["retry_expected_on_redelivery"] is True
@@ -655,7 +655,7 @@ def test_main_status_mode_prints_job_status_without_subscription(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    capture_root = tmp_path / "capture-bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    capture_root = tmp_path / "capture-bucket" / "scenes" / "site-1" / "captures" / "walkthrough-1"
     capture_root.mkdir(parents=True)
     (capture_root / "pipeline_job_ledger.json").write_text(
         json.dumps(
@@ -696,9 +696,9 @@ def test_main_status_mode_prints_job_status_without_subscription(
             "--bucket",
             "capture-bucket",
             "--scene-id",
-            "scene-1",
+            "site-1",
             "--capture-id",
-            "capture-1",
+            "walkthrough-1",
         ]
     ) == 0
 
@@ -720,7 +720,7 @@ def test_main_status_mode_surfaces_provider_spend_and_teardown_attention(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    capture_root = tmp_path / "capture-bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    capture_root = tmp_path / "capture-bucket" / "scenes" / "site-1" / "captures" / "walkthrough-1"
     provider_dir = capture_root / "pipeline" / "robot_eval_job" / "provider_job"
     provider_dir.mkdir(parents=True)
     (capture_root / "pipeline_job_ledger.json").write_text(
@@ -762,9 +762,9 @@ def test_main_status_mode_surfaces_provider_spend_and_teardown_attention(
             "--bucket",
             "capture-bucket",
             "--scene-id",
-            "scene-1",
+            "site-1",
             "--capture-id",
-            "capture-1",
+            "walkthrough-1",
         ]
     ) == 0
 
@@ -787,7 +787,7 @@ def test_main_status_mode_surfaces_retryable_failure(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    capture_root = tmp_path / "capture-bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
+    capture_root = tmp_path / "capture-bucket" / "scenes" / "site-1" / "captures" / "walkthrough-1"
     capture_root.mkdir(parents=True)
     (capture_root / "pipeline_job_ledger.json").write_text(
         json.dumps(
@@ -820,9 +820,9 @@ def test_main_status_mode_surfaces_retryable_failure(
             "--bucket",
             "capture-bucket",
             "--scene-id",
-            "scene-1",
+            "site-1",
             "--capture-id",
-            "capture-1",
+            "walkthrough-1",
         ]
     ) == 0
 
@@ -854,17 +854,17 @@ def test_pull_and_process_acks_successes_and_permanent_invalid_payload(
     payload_one = json.dumps(
         {
             "bucket": "capture-bucket",
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+            "scene_id": "site-1",
+            "capture_id": "walkthrough-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
         }
     ).encode("utf-8")
     payload_two = json.dumps(
         {
             "bucket": "capture-bucket",
-            "scene_id": "scene-2",
-            "capture_id": "capture-2",
-            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-2/captures/capture-2/raw",
+            "scene_id": "site-2",
+            "capture_id": "walkthrough-2",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/site-2/captures/walkthrough-2/raw",
         }
     ).encode("utf-8")
     subscriber = FakeSubscriber(
@@ -941,7 +941,7 @@ def test_pull_and_process_expands_short_subscription_with_adc_project(
 def test_concurrent_duplicate_delivery_observes_active_lease_and_executes_once(
     tmp_path: Path,
 ) -> None:
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     client = FakeStorageClient(
         [
             FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
@@ -950,9 +950,9 @@ def test_concurrent_duplicate_delivery_observes_active_lease_and_executes_once(
     )
     payload = {
         "bucket": "capture-bucket",
-        "scene_id": "scene-1",
-        "capture_id": "capture-1",
-        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        "scene_id": "site-1",
+        "capture_id": "walkthrough-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
     }
     entered = threading.Event()
     release = threading.Event()
@@ -1001,31 +1001,31 @@ def test_expired_job_lease_is_recovered_with_new_attempt(tmp_path: Path) -> None
         tmp_path
         / "capture-bucket"
         / "scenes"
-        / "scene-1"
+        / "site-1"
         / "captures"
-        / "capture-1"
+        / "walkthrough-1"
     )
     now = datetime(2026, 7, 9, 12, tzinfo=timezone.utc)
     first_status, first = listener_module._claim_job_lease(
         capture_root,
-        scene_id="scene-1",
-        capture_id="capture-1",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
         owner="worker-one",
         lease_seconds=30,
         now=now,
     )
     active_status, _ = listener_module._claim_job_lease(
         capture_root,
-        scene_id="scene-1",
-        capture_id="capture-1",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
         owner="worker-two",
         lease_seconds=30,
         now=now + timedelta(seconds=20),
     )
     recovered_status, recovered = listener_module._claim_job_lease(
         capture_root,
-        scene_id="scene-1",
-        capture_id="capture-1",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
         owner="worker-two",
         lease_seconds=30,
         now=now + timedelta(seconds=31),
@@ -1043,7 +1043,7 @@ def test_expired_job_lease_is_recovered_with_new_attempt(tmp_path: Path) -> None
 def test_corrupt_job_ledger_fails_closed_without_execution_or_overwrite(
     tmp_path: Path,
 ) -> None:
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     capture_root = tmp_path / "capture-bucket" / prefix
     capture_root.mkdir(parents=True)
     ledger_path = capture_root / "pipeline_job_ledger.json"
@@ -1052,9 +1052,9 @@ def test_corrupt_job_ledger_fails_closed_without_execution_or_overwrite(
     result = process_handoff_payload(
         {
             "bucket": "capture-bucket",
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+            "scene_id": "site-1",
+            "capture_id": "walkthrough-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
         },
         storage_root=tmp_path,
         provider="openai",
@@ -1076,9 +1076,9 @@ def test_pull_and_process_defers_retryable_result_without_ack(
     payload = json.dumps(
         {
             "bucket": "capture-bucket",
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+            "scene_id": "site-1",
+            "capture_id": "walkthrough-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
         }
     ).encode()
     received = types.SimpleNamespace(
@@ -1139,10 +1139,10 @@ def test_retryable_old_scene_is_deferred_and_new_scene_can_finish_next_pull(
         payload = json.dumps(
             {
                 "bucket": "capture-bucket",
-                "scene_id": scene,
-                "capture_id": f"capture-{scene}",
+                "scene_id": f"site-{scene}",
+                "capture_id": f"walkthrough-{scene}",
                 "raw_prefix_uri": (
-                    f"gs://capture-bucket/scenes/{scene}/captures/capture-{scene}/raw"
+                    f"gs://capture-bucket/scenes/site-{scene}/captures/walkthrough-{scene}/raw"
                 ),
             }
         ).encode()
@@ -1168,7 +1168,7 @@ def test_retryable_old_scene_is_deferred_and_new_scene_can_finish_next_pull(
     def process(payload: bytes, **_kwargs: object) -> dict:
         scene = json.loads(payload)["scene_id"]
         processed.append(scene)
-        if scene == "old":
+        if scene == "site-old":
             return {"status": "retryable_blocked", "queue_disposition": "retryable"}
         return {"status": "processed", "queue_disposition": "terminal_success"}
 
@@ -1185,7 +1185,7 @@ def test_retryable_old_scene_is_deferred_and_new_scene_can_finish_next_pull(
     assert subscriber.ack_deadline_requests[-1]["ack_ids"] == ["ack-old"]
     assert subscriber.ack_deadline_requests[-1]["ack_deadline_seconds"] == 600
     assert pull_and_process(**kwargs) == 1
-    assert processed == ["old", "new"]
+    assert processed == ["site-old", "site-new"]
     assert subscriber.acknowledged == ["ack-new"]
 
 
@@ -1198,9 +1198,9 @@ def test_processing_exception_is_deferred_without_ack(
     payload = json.dumps(
         {
             "bucket": "capture-bucket",
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+            "scene_id": "site-1",
+            "capture_id": "walkthrough-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
         }
     ).encode()
     subscriber = FakeSubscriber(
@@ -1231,14 +1231,14 @@ def test_processing_exception_is_deferred_without_ack(
 def test_stage_handoff_synthesizes_missing_pipeline_handoff(tmp_path: Path) -> None:
     """XR-03: a real iOS bundle (no hand-authored pipeline_handoff.json) stages without error."""
 
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     handoff = HandoffMessage(
         bucket="capture-bucket",
-        scene_id="scene-1",
-        capture_id="capture-1",
-        raw_prefix_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
+        raw_prefix_uri="gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
         pipeline_handoff_uri=(
-            "gs://capture-bucket/scenes/scene-1/captures/capture-1/pipeline_handoff.json"
+            "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/pipeline_handoff.json"
         ),
     )
     client = FakeStorageClient(_ios_bundle_blobs(prefix))
@@ -1248,24 +1248,24 @@ def test_stage_handoff_synthesizes_missing_pipeline_handoff(tmp_path: Path) -> N
     synthesized = capture_root / "pipeline_handoff.json"
     assert synthesized.is_file(), "stage must synthesize pipeline_handoff.json for real iOS bundles"
     payload = json.loads(synthesized.read_text())
-    assert payload["scene_id"] == "scene-1"
-    assert payload["capture_id"] == "capture-1"
-    assert payload["site_submission_id"] == "site-submission-scene-1"
-    assert payload["buyer_request_id"] == "req-scene-1"
-    assert payload["capture_job_id"] == "capture-job-scene-1"
-    assert payload["owner_system"]["request_id"] == "req-scene-1"
+    assert payload["scene_id"] == "site-1"
+    assert payload["capture_id"] == "walkthrough-1"
+    assert payload["site_submission_id"] == "site-submission-site-1"
+    assert payload["buyer_request_id"] == "req-site-1"
+    assert payload["capture_job_id"] == "capture-job-site-1"
+    assert payload["owner_system"]["request_id"] == "req-site-1"
     assert payload["synthesized"] is True
 
 
 def test_stage_handoff_preserves_hand_authored_pipeline_handoff(tmp_path: Path) -> None:
     """A bundle that already carries pipeline_handoff.json is never overwritten by synthesis."""
 
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     handoff = HandoffMessage(
         bucket="capture-bucket",
-        scene_id="scene-1",
-        capture_id="capture-1",
-        raw_prefix_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
+        raw_prefix_uri="gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
         pipeline_handoff_uri=None,
     )
     hand_authored = {"owner_system": {"request_id": "hand-authored"}, "hand_authored": True}
@@ -1283,12 +1283,12 @@ def test_stage_handoff_preserves_hand_authored_pipeline_handoff(tmp_path: Path) 
 def test_stage_handoff_missing_upload_complete_still_raises(tmp_path: Path) -> None:
     """Synthesis must not paper over a genuinely broken bundle (no capture_upload_complete.json)."""
 
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     handoff = HandoffMessage(
         bucket="capture-bucket",
-        scene_id="scene-1",
-        capture_id="capture-1",
-        raw_prefix_uri="gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        scene_id="site-1",
+        capture_id="walkthrough-1",
+        raw_prefix_uri="gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
         pipeline_handoff_uri=None,
     )
     blobs = [
@@ -1302,8 +1302,8 @@ def test_stage_handoff_missing_upload_complete_still_raises(tmp_path: Path) -> N
 
 
 def test_website_upload_runs_preparation_before_legacy_robot_job_conversion(tmp_path: Path) -> None:
-    prefix = "scenes/scene-1/captures/capture-1"
-    manifest = {"scene_id": "scene-1", "capture_id": "capture-1",
+    prefix = "scenes/site-1/captures/walkthrough-1"
+    manifest = {"scene_id": "site-1", "capture_id": "walkthrough-1",
                 "capture_source": "browser_self_capture", "site_submission_id": "request-1"}
     client = FakeStorageClient([
         FakeBlob(f"{prefix}/raw/manifest.json", json.dumps(manifest).encode()),
@@ -1314,7 +1314,7 @@ def test_website_upload_runs_preparation_before_legacy_robot_job_conversion(tmp_
     def prepare(**kwargs):
         calls.append(kwargs)
         return {"status": "completed"}
-    payload = {"bucket": "capture-bucket", "scene_id": "scene-1", "capture_id": "capture-1",
+    payload = {"bucket": "capture-bucket", "scene_id": "site-1", "capture_id": "walkthrough-1",
                "raw_prefix_uri": f"gs://capture-bucket/{prefix}/raw"}
     kwargs = dict(storage_root=tmp_path, provider="openai", run_e2e=prepare,
                   storage_client=client, stage_control_plane=True, run_e2e_enabled=False)
@@ -1402,7 +1402,7 @@ def test_old_failed_lane_completion_is_reopened_under_existing_lease(tmp_path):
     (root / "pipeline_job_output_commit.json").write_text(json.dumps({"status": "committed", "result_sha256": "retained"}))
     (root / "pipeline/run_e2e_stage_ledger.json").write_text(json.dumps({"stages": {
         "capture_pipeline": {"result_snapshot": {"status": "completed_with_lane_failures"}}}}))
-    status, ledger = listener_module._claim_job_lease(root, scene_id="scene-1", capture_id="cap-1",
+    status, ledger = listener_module._claim_job_lease(root, scene_id="site-1", capture_id="cap-1",
                                                      owner="worker", lease_seconds=900)
     assert status == "claimed"
     assert ledger["attempt_count"] == 7
@@ -1412,7 +1412,7 @@ def test_old_failed_lane_completion_is_reopened_under_existing_lease(tmp_path):
 
 
 def test_website_staging_preserves_local_sam_derivatives_outside_raw(tmp_path):
-    prefix = "scenes/scene-1/captures/capture-1"
+    prefix = "scenes/site-1/captures/walkthrough-1"
     root = tmp_path / "capture-bucket" / prefix
     stray = root / "raw/object_index_artifacts/sam3_frames/frame_000000.png"
     stray.parent.mkdir(parents=True)
@@ -1421,7 +1421,7 @@ def test_website_staging_preserves_local_sam_derivatives_outside_raw(tmp_path):
              FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
              FakeBlob(f"{prefix}/raw/walkthrough.mov", b"original video"),
              FakeBlob(f"{prefix}/pipeline_handoff.json", b"{}")]
-    handoff = HandoffMessage(bucket="capture-bucket", scene_id="scene-1", capture_id="capture-1",
+    handoff = HandoffMessage(bucket="capture-bucket", scene_id="site-1", capture_id="walkthrough-1",
         raw_prefix_uri=f"gs://capture-bucket/{prefix}/raw", pipeline_handoff_uri=None)
     for _ in range(2):
         stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=FakeStorageClient(blobs))
@@ -1462,9 +1462,9 @@ def test_recovery_refuses_symlinks_without_moving_anything(tmp_path):
 
 PAYLOAD = {
     "bucket": "capture-bucket",
-    "scene_id": "scene-1",
-    "capture_id": "capture-1",
-    "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+    "scene_id": "site-1",
+    "capture_id": "walkthrough-1",
+    "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
 }
 PAYLOAD_BYTES = json.dumps(PAYLOAD).encode("utf-8")
 
@@ -1590,8 +1590,8 @@ def test_payload_digest_matches_the_recorded_delivery_evidence(tmp_path):
 
 
 SUBSCRIPTION = "projects/p/subscriptions/s"
-_CAPTURE_PREFIX = "scenes/scene-1/captures/capture-1"
-_WEBSITE_MANIFEST = {"scene_id": "scene-1", "capture_id": "capture-1",
+_CAPTURE_PREFIX = "scenes/site-1/captures/walkthrough-1"
+_WEBSITE_MANIFEST = {"scene_id": "site-1", "capture_id": "walkthrough-1",
                      "capture_source": "browser_self_capture", "site_submission_id": "request-1"}
 _ORIGINAL_PROCESS_HANDOFF_PAYLOAD = listener_module.process_handoff_payload
 
@@ -1696,7 +1696,7 @@ def test_consent_expired_finishes_the_job_as_terminal_and_is_acknowledged(tmp_pa
     assert {key: value for key, value in receipt.items() if key != "receipt_digest"} == {
         "schema_version": "pipeline_job_terminal_receipt.v1", "status": "authority_ended",
         "code": "consent_expired", "terminal_operation": "scene-sponsorship",
-        "bucket": "capture-bucket", "scene_id": "scene-1", "capture_id": "capture-1", "attempt_count": 1,
+        "bucket": "capture-bucket", "scene_id": "site-1", "capture_id": "walkthrough-1", "attempt_count": 1,
         "payload_sha256": sha256(PAYLOAD_BYTES).hexdigest(), "ended_at": ledger["terminal_at"],
         "error": "website scene failed",
     }
@@ -1786,7 +1786,7 @@ def test_a_new_payload_reopens_a_terminal_capture(tmp_path, monkeypatch):
     assert kept["payload_sha256"] == sha256(PAYLOAD_BYTES).hexdigest()
     assert kept["receipt_digest"] == canonical_digest(kept, digest_field="receipt_digest")
     status = read_handoff_job_status(storage_root=tmp_path, bucket="capture-bucket",
-                                     scene_id="scene-1", capture_id="capture-1")
+                                     scene_id="site-1", capture_id="walkthrough-1")
     assert status["terminal_receipt_present"] is False
 
 
@@ -1897,9 +1897,9 @@ def test_retryable_results_leave_no_ack_receipt(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("damage", ["unwritable", "malformed"])
 def test_one_bad_ack_receipt_does_not_cost_the_others(tmp_path, monkeypatch, damage):
-    other_prefix = "scenes/scene-2/captures/capture-2"
+    other_prefix = "scenes/site-2/captures/walkthrough-2"
     other_payload = json.dumps({
-        "bucket": "capture-bucket", "scene_id": "scene-2", "capture_id": "capture-2",
+        "bucket": "capture-bucket", "scene_id": "site-2", "capture_id": "walkthrough-2",
         "raw_prefix_uri": f"gs://capture-bucket/{other_prefix}/raw"}).encode("utf-8")
     damaged = _capture_root(tmp_path) / "pipeline_job_ack_receipt.json"
     if damage == "unwritable":
@@ -1928,7 +1928,7 @@ def test_one_bad_ack_receipt_does_not_cost_the_others(tmp_path, monkeypatch, dam
 
 
 def _staging_handoff() -> HandoffMessage:
-    return HandoffMessage(bucket="capture-bucket", scene_id="scene-1", capture_id="capture-1",
+    return HandoffMessage(bucket="capture-bucket", scene_id="site-1", capture_id="walkthrough-1",
                           raw_prefix_uri=f"gs://capture-bucket/{_CAPTURE_PREFIX}/raw",
                           pipeline_handoff_uri=None)
 
@@ -2109,7 +2109,7 @@ def test_status_reports_an_authority_ending_and_its_acknowledgement(tmp_path, mo
     assert _pull(tmp_path) == 1
 
     status = read_handoff_job_status(storage_root=tmp_path, bucket="capture-bucket",
-                                     scene_id="scene-1", capture_id="capture-1")
+                                     scene_id="site-1", capture_id="walkthrough-1")
 
     assert status["status"] == "terminal_authority_ended"
     assert status["terminal_code"] == "consent_expired"
@@ -2122,7 +2122,7 @@ def test_status_reports_an_authority_ending_and_its_acknowledgement(tmp_path, mo
 
 
 def test_an_ack_receipt_never_recreates_a_workspace_retired_after_the_ack(tmp_path, monkeypatch):
-    scene_dir = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    scene_dir = tmp_path / "capture-bucket" / "scenes" / "site-1"
     subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
     record_acknowledgement = subscriber.acknowledge
 
@@ -2186,7 +2186,7 @@ def test_status_survives_an_undecodable_record(tmp_path, capsys, damaged):
     (capture_root / damaged).write_bytes(b"\xff\xfe not utf-8")
 
     assert main(["--status", "--storage-root", str(tmp_path), "--bucket", "capture-bucket",
-                 "--scene-id", "scene-1", "--capture-id", "capture-1"]) == 0
+                 "--scene-id", "site-1", "--capture-id", "walkthrough-1"]) == 0
 
     printed = json.loads(capsys.readouterr().out)
     if damaged == "pipeline_job_ack_receipt.json":
@@ -2197,9 +2197,9 @@ def test_status_survives_an_undecodable_record(tmp_path, capsys, damaged):
 
 
 def test_each_message_is_acknowledged_as_soon_as_it_finishes(tmp_path, monkeypatch):
-    other_prefix = "scenes/scene-2/captures/capture-2"
+    other_prefix = "scenes/site-2/captures/walkthrough-2"
     other_payload = json.dumps({
-        "bucket": "capture-bucket", "scene_id": "scene-2", "capture_id": "capture-2",
+        "bucket": "capture-bucket", "scene_id": "site-2", "capture_id": "walkthrough-2",
         "raw_prefix_uri": f"gs://capture-bucket/{other_prefix}/raw"}).encode("utf-8")
     subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES),
                                  _received(ack_id="poison", data=b"{not-json"),
@@ -2297,7 +2297,7 @@ def _live_terminal_receipt(storage_root: Path) -> Path:
 
 def _status(storage_root: Path) -> dict:
     return read_handoff_job_status(storage_root=storage_root, bucket="capture-bucket",
-                                   scene_id="scene-1", capture_id="capture-1")
+                                   scene_id="site-1", capture_id="walkthrough-1")
 
 
 def test_a_reopened_ending_that_crashed_before_its_receipt_is_repaired(tmp_path, monkeypatch):
@@ -2394,8 +2394,8 @@ def test_each_pull_takes_one_message_and_a_run_stops_at_an_empty_queue(tmp_path,
             events.append(f"ack:{request['ack_ids'][0]}")
 
     def handoff(scene: str) -> bytes:
-        return json.dumps({"bucket": "capture-bucket", "scene_id": scene, "capture_id": "capture-1",
-                           "raw_prefix_uri": f"gs://capture-bucket/scenes/{scene}/captures/capture-1/raw"}).encode()
+        return json.dumps({"bucket": "capture-bucket", "scene_id": scene, "capture_id": "walkthrough-1",
+                           "raw_prefix_uri": f"gs://capture-bucket/scenes/{scene}/captures/walkthrough-1/raw"}).encode()
 
     subscriber = RecordingSubscriber([_received(ack_id="a1", data=handoff("scene-a")),
                                       _received(ack_id="a2", data=handoff("scene-b")),
@@ -2454,7 +2454,7 @@ def test_receipt_repair_never_recreates_a_capture_retired_after_the_claim(tmp_pa
     _install_fake_pubsub(monkeypatch, first,
                          storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
     assert _pull(tmp_path) == 1
-    scene_dir = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    scene_dir = tmp_path / "capture-bucket" / "scenes" / "site-1"
     claim = listener_module._claim_job_lease
 
     def claim_then_retire(*args, **kwargs):
@@ -2534,22 +2534,22 @@ def _retire_scene(storage_root: Path) -> Path:
 
     from blueprint_pipeline import website_scene_workspace_retention as retention
 
-    scene = storage_root / "capture-bucket" / "scenes" / "scene-1"
-    capture = scene / "captures" / "capture-1"
+    scene = storage_root / "capture-bucket" / "scenes" / "site-1"
+    capture = scene / "captures" / "walkthrough-1"
     ledger = _read(capture / "pipeline_job_ledger.json")
-    record = {"capture_id": "capture-1", "ledger": ledger,
+    record = {"capture_id": "walkthrough-1", "ledger": ledger,
               "ack_receipt": _read(capture / "pipeline_job_ack_receipt.json"),
               "staging_manifest": _read(capture / "pipeline_staging_manifest.json")}
     if ledger["status"] == "terminal_authority_ended":
         record["terminal_receipt"] = _read(capture / "pipeline_job_terminal_receipt.json")
     else:
         record["output_commit"] = _read(capture / "pipeline_job_output_commit.json")
-    receipt = {"schema_version": retention.RETIRED_SCHEMA, "bucket": "capture-bucket", "scene_id": "scene-1",
+    receipt = {"schema_version": retention.RETIRED_SCHEMA, "bucket": "capture-bucket", "scene_id": "site-1",
                "workspace": str(scene), "retired_at_epoch": 1.0, "source_plan_digest": "sha256:" + "0" * 64,
                "captures": [record], "cloud_verified": [], "archive": None, "totals": {},
                "evidence_deleted": False}
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
-    path = scene.parent / f"scene-1{retention.RETIRED_SUFFIX}"
+    path = scene.parent / f"site-1{retention.RETIRED_SUFFIX}"
     path.write_text(json.dumps(receipt), encoding="utf-8")
     shutil.rmtree(scene)
     return path
@@ -2563,7 +2563,7 @@ def test_redelivery_for_a_retired_scene_is_acknowledged_without_staging(tmp_path
                          run_e2e=_expired if ending == "authority_ended" else (lambda **_: {"status": "completed"}))
     assert _pull(tmp_path) == 1
     receipt = _retire_scene(tmp_path)
-    scene = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    scene = tmp_path / "capture-bucket" / "scenes" / "site-1"
 
     redelivery = FakeSubscriber([_received(ack_id="a2", data=PAYLOAD_BYTES, delivery_attempt=2)])
     results = _install_fake_pubsub(monkeypatch, redelivery, storage_client=_ListingForbidden(),
@@ -2594,7 +2594,7 @@ def test_redelivery_for_a_retired_scene_is_acknowledged_without_staging(tmp_path
 
 def test_an_unreadable_retirement_receipt_is_not_a_retirement(tmp_path, monkeypatch):
     (tmp_path / "capture-bucket" / "scenes").mkdir(parents=True)
-    (tmp_path / "capture-bucket" / "scenes" / "scene-1.retired.v1.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "capture-bucket" / "scenes" / "site-1.retired.v1.json").write_text("{not json", encoding="utf-8")
     subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
     results = _install_fake_pubsub(monkeypatch, subscriber, storage_client=_ListingForbidden(),
                                    run_e2e=lambda **_: pytest.fail("an invalid receipt must not restage"))
@@ -2608,7 +2608,7 @@ def test_reopened_ledger_keeps_ended_payloads_from_the_retirement_receipt(tmp_pa
     old_digest = "a" * 64
     new_digest = "b" * 64
     status, ledger = listener_module._claim_job_lease(
-        tmp_path / "capture", scene_id="scene-1", capture_id="capture-1", owner="test",
+        tmp_path / "capture", scene_id="site-1", capture_id="walkthrough-1", owner="test",
         lease_seconds=60, payload_sha256=new_digest,
         retired_ended_payload_sha256s=(old_digest,))
 
@@ -2645,7 +2645,7 @@ def test_a_redelivery_waiting_on_the_ledger_lock_never_recreates_a_retired_scene
     _install_fake_pubsub(monkeypatch, first, storage_client=FakeStorageClient(_website_bundle_blobs()),
                          run_e2e=_expired if ending == "authority_ended" else (lambda **_: {"status": "completed"}))
     assert _pull(tmp_path) == 1
-    scene = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    scene = tmp_path / "capture-bucket" / "scenes" / "site-1"
     retired: list[Path] = []
     monkeypatch.setattr(listener_module, "fcntl", _flock_that_retires_first(tmp_path, retired))
 
@@ -2669,7 +2669,7 @@ def test_a_capture_retired_between_the_hook_and_the_claim_is_not_recreated(tmp_p
     _install_fake_pubsub(monkeypatch, first, storage_client=FakeStorageClient(_website_bundle_blobs()),
                          run_e2e=lambda **_: {"status": "completed"})
     assert _pull(tmp_path) == 1
-    scene = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    scene = tmp_path / "capture-bucket" / "scenes" / "site-1"
     claim = listener_module._claim_job_lease
 
     def retire_then_claim(*args, **kwargs):

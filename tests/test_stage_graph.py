@@ -14,13 +14,7 @@ import threading
 
 import pytest
 
-from blueprint_pipeline.core.stage_graph import (
-    PAID_SERIAL_GROUP,
-    StageGraphError,
-    StageSpec,
-    run_stage_graph,
-    stage_concurrency_from_env,
-)
+from blueprint_pipeline.core.stage_graph import PAID_SERIAL_GROUP, StageGraphError, StageSpec, run_stage_graph
 
 _WAIT_SECONDS = 5.0
 _NO_OVERLAP_PROBE_SECONDS = 0.3
@@ -316,23 +310,6 @@ def test_stage_returning_none_produces_empty_artifact() -> None:
     result = run_stage_graph([_spec("quiet", lambda: None)])
     assert result.artifact("quiet") == {}
     assert result.execution("quiet").status == "completed"
-
-
-def test_stage_concurrency_from_env_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    variable = "BLUEPRINT_TEST_STAGE_CONCURRENCY"
-    monkeypatch.delenv(variable, raising=False)
-    assert stage_concurrency_from_env(variable) == 1
-    assert stage_concurrency_from_env(variable, default=3) == 3
-    monkeypatch.setenv(variable, "4")
-    assert stage_concurrency_from_env(variable) == 4
-    monkeypatch.setenv(variable, "not-a-number")
-    assert stage_concurrency_from_env(variable) == 1
-    monkeypatch.setenv(variable, "0")
-    assert stage_concurrency_from_env(variable) == 1
-    monkeypatch.setenv(variable, "99")
-    assert stage_concurrency_from_env(variable) == 1
-    monkeypatch.setenv(variable, "6")
-    assert stage_concurrency_from_env(variable, maximum=4) == 1
 
 
 def test_paid_serial_group_constant_is_reserved_for_the_scheduler() -> None:

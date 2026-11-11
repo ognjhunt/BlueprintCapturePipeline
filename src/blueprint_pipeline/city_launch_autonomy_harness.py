@@ -354,8 +354,6 @@ def build_work_packets(
             owner_agent="privacy-provider-agent",
             description="Prove only privacy-safe video reaches World Labs or video-to-world providers.",
             allowed_paths=(
-                str(pipeline_repo / "src/blueprint_pipeline/privacy_processing.py"),
-                str(pipeline_repo / "src/blueprint_pipeline/provider_preview.py"),
                 str(pipeline_repo / "tests"),
             ),
             proof_fields=(

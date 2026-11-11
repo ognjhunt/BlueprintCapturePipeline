@@ -39,18 +39,6 @@
     {
       "disposition": "accepted_risk",
       "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/capture_enrichment_llm.py",
-      "fingerprint": "3eed07d29abf85f8833bd59803c874f7ede38c89a2e6e7f58f093718de755528",
-      "line_number": 306,
-      "owner": "@ognjhunt",
-      "reason": "The URL is a constant https host chosen in code; no customer data reaches it. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/city_launch_autonomy_harness.py",
       "fingerprint": "39844462ae63eeff180f8e13f009bfc80888ff564168cc755f119c452d0174ce",
       "line_number": 905,
@@ -373,18 +361,6 @@
       "test_id": "B310"
     },
     {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/privacy_processing.py",
-      "fingerprint": "b6fa8c19dd7e949d3323d8091190b93bfc3174e75c3bd68435c73a8951153859",
-      "line_number": 145,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
       "disposition": "mitigated_by_control",
       "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/privacy_runner_service.py",
@@ -402,42 +378,6 @@
       "filename": "src/blueprint_pipeline/privacy_service_runtime.py",
       "fingerprint": "a4ca2fdbcf13bfbe06605c4bee79e2dc167103fc75492550a584782e30e12e02",
       "line_number": 173,
-      "owner": "@ognjhunt",
-      "reason": "The URL or its content comes from a third-party provider's API response; host and size are not yet fully bounded, and the tightening is tracked. Owner re-review 2026-11-06. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/provider_preview.py",
-      "fingerprint": "4bb4fe15b7f5855f1d9eee8282d602e7103fe36d4410a26f56e2b86b6fed88af",
-      "line_number": 50,
-      "owner": "@ognjhunt",
-      "reason": "The URL is a constant https host chosen in code; no customer data reaches it. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/provider_preview.py",
-      "fingerprint": "0e32bafc79567c96d9f68d8219cb11814229c4b6305d1a40e855b32872ef0111",
-      "line_number": 76,
-      "owner": "@ognjhunt",
-      "reason": "The URL or its content comes from a third-party provider's API response; host and size are not yet fully bounded, and the tightening is tracked. Owner re-review 2026-11-06. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/provider_preview.py",
-      "fingerprint": "f907c82d33541171b1e076296d64914ba493eb327b2aa4905184a1e4f7ef5f6a",
-      "line_number": 105,
       "owner": "@ognjhunt",
       "reason": "The URL or its content comes from a third-party provider's API response; host and size are not yet fully bounded, and the tightening is tracked. Owner re-review 2026-11-06. Hardening is due before this window ends.",
       "reviewed_on": "2026-11-06",
@@ -680,18 +620,6 @@
       "line_number": 881,
       "owner": "@ognjhunt",
       "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/worldlabs_asset_materialization.py",
-      "fingerprint": "6f0a376770a1a6bf437386b013cee44957174064c7bc94dab6ac9b7f408297f0",
-      "line_number": 202,
-      "owner": "@ognjhunt",
-      "reason": "The URL or its content comes from a third-party provider's API response; host and size are not yet fully bounded, and the tightening is tracked. Owner re-review 2026-11-06. Hardening is due before this window ends.",
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B310"

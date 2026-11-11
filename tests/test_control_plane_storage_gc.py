@@ -1316,14 +1316,14 @@ def test_gc_phase_retires_verified_terminal_workspace(tmp_path) -> None:
     report = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
 
     phase = report["scene_workspaces"]
-    receipt = scene.parent / "scene-1.retired.v1.json"
+    receipt = scene.parent / f"{scene.name}.retired.v1.json"
     assert (phase["status"], phase["enabled"]) == ("applied", True)
     assert (phase["candidate_count"], phase["retired_count"]) == (1, 1)
     assert phase["candidate_bytes"] >= phase["retired_bytes"] > 0
     from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
     assert build_storage_gc_summary(report)["phases"]["scene_workspaces"]["candidate_bytes"] == phase["candidate_bytes"]
     assert phase["retired_bytes"] > 0 and phase["archive_bytes"] > 0 and phase["retained_counts"] == {}
-    assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": "scene-1", "status": "retired",
+    assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": scene.name, "status": "retired",
                                  "receipt": str(receipt), "removal_complete": True}]
     assert not scene.exists() and receipt.is_file()
     assert "phase_errors" not in report
@@ -1353,8 +1353,9 @@ def test_gc_phase_counts_why_scenes_are_retained(tmp_path) -> None:
         "scene_workspaces"]
 
     assert phase["retained_counts"] == {"acknowledgement_unproven": 1} and phase["retired_count"] == 0
-    assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": "scene-1", "status": "retained",
-                                 "reasons": ["acknowledgement_unproven:capture-1"]}]
+    from tests.test_website_scene_workspace_retention import CAPTURE
+    assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": scene.name, "status": "retained",
+                                 "reasons": [f"acknowledgement_unproven:{CAPTURE}"]}]
     assert scene.is_dir()
 
 
@@ -1519,8 +1520,8 @@ def test_each_tick_first_finishes_removals_a_crash_left_behind(tmp_path) -> None
     copy = tmp_path / "scene-before-retirement"
     shutil.copytree(scene, copy)
     run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
-    receipt = json.loads((scene.parent / "scene-1.retired.v1.json").read_text(encoding="utf-8"))
-    leftover = scene.parent / f".retiring-scene-1-{receipt['retiring_token']}"
+    receipt = json.loads((scene.parent / f"{scene.name}.retired.v1.json").read_text(encoding="utf-8"))
+    leftover = scene.parent / f".retiring-{scene.name}-{receipt['retiring_token']}"
     os.rename(copy, leftover)
 
     dry = run_storage_gc(**common, scene_workspace_retirement_enabled=True)["scene_workspaces"]
@@ -1618,7 +1619,7 @@ def test_post_upload_archive_reference_survives_result_truncation(tmp_path, monk
 def test_ticks_reuse_cached_digests_and_drop_them_once_a_scene_is_retired(tmp_path) -> None:
     scene, common = _scene_tick(tmp_path)
     cache_root = tmp_path / "storage-gc" / "scene-workspace-inventory"
-    cache = cache_root / "capture-bucket" / "scene-1.json"
+    cache = cache_root / "capture-bucket" / f"{scene.name}.json"
 
     first = run_storage_gc(**common, scene_inventory_cache_root=cache_root)["scene_workspaces"]
     second = run_storage_gc(**common, scene_inventory_cache_root=cache_root)["scene_workspaces"]

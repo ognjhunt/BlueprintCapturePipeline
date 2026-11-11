@@ -27,9 +27,9 @@ SUBSCRIPTION = "projects/p/subscriptions/s"
 PAYLOAD = json.dumps(
     {
         "bucket": "capture-bucket",
-        "scene_id": "scene-1",
-        "capture_id": "capture-1",
-        "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        "scene_id": "site-1",
+        "capture_id": "walkthrough-1",
+        "raw_prefix_uri": "gs://capture-bucket/scenes/site-1/captures/walkthrough-1/raw",
     }
 ).encode()
 

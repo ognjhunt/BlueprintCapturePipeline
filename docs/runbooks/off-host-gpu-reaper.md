@@ -93,8 +93,8 @@ only after a publish succeeds and then fails anew. Its status record is
 
 ## Owner steps (none is done by the code)
 
-The Terraform has never been through `terraform validate` or `terraform plan`.
-No binary or credentials were available; it was checked only by text tests.
+CI runs `terraform fmt` and `terraform validate` on this Terraform and both pass. It has never been through `terraform plan` against the real project.
+No cloud credentials were available where it was written, so nothing here has been applied.
 
 1. Create a Secret Manager secret holding a Vast API key for the reaper.
 2. In Terraform, set `off_host_gpu_reaper_enabled = true` and

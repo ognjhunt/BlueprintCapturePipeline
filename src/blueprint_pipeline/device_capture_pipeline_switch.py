@@ -1,47 +1,32 @@
-"""The capture app's processing path, closed unless one switch turns it on.
+"""The capture app's processing path was removed on 2026-11-11; its cloud entries do nothing.
 
 The swap dispatch worker (``functions/storage_trigger.py``) and the
-``blueprint-pipeline`` Cloud Run job (``capture_orchestrator.main``) exist for
+``blueprint-pipeline`` Cloud Run job (``capture_orchestrator.main``) existed for
 captures from the BlueprintCapture app. The app is not in use (owner,
-2026-11-11): every capture comes from a site filming itself through the WebApp,
-and the host listener processes those. The device path still holds six paid
-call sites that cannot see the account's monthly limit
-(``scripts/paid_api_call_sites.json``, class ``unadmitted``), so a message that
-still reaches it must not be able to spend.
+2026-11-11): every capture comes from a site filming itself and uploading it
+through the WebApp, and the host listener processes those. The code those
+entries ran was deleted the same day, so there is no switch to turn it back on.
 
-So the path does nothing unless ``BLUEPRINT_DEVICE_CAPTURE_PIPELINE=enabled``.
-When it is off, the entry writes one record saying why (a structured log line,
-``device_capture_pipeline_closed.v1``) and exits successfully: a delivery is
+The entries stay deployed as they are (how production forwards the upload
+function's message is not yet verified, ``docs/CAPTURE_BRIDGE_CONTRACT.md``).
+Each one writes this record (a structured log line,
+``device_capture_pipeline_closed.v1``) and returns successfully: a delivery is
 acknowledged, never retried, and nothing is left for an operator to clear.
-Turning the switch on requires admitting those six call sites first
-(``docs/CAPTURE_BRIDGE_CONTRACT.md``).
-
-A website capture is refused by the dispatch whatever the switch says
-(``website_capture_entry.is_website_capture_identity``).
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any
 
-SWITCH_ENV = "BLUEPRINT_DEVICE_CAPTURE_PIPELINE"
 CLOSED_RECORD_SCHEMA = "device_capture_pipeline_closed.v1"
-CLOSED_REASON = "device_capture_pipeline_closed"
+CLOSED_REASON = "device_capture_pipeline_removed"
+REMOVED_ON = "2026-11-11"
 
 
-def device_capture_pipeline_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    env = os.environ if environ is None else environ
-    return str(env.get(SWITCH_ENV) or "").strip().lower() == "enabled"
+def closed_device_capture_record(*, entry: str, scene_id: Any = None, capture_id: Any = None) -> dict[str, Any]:
+    """The one record saying why nothing ran."""
 
-
-def closed_device_capture_record(*, entry: str, scene_id: Any = None, capture_id: Any = None,
-                                 environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:
-    """None when the path is switched on; otherwise the one record saying why nothing ran."""
-
-    if device_capture_pipeline_enabled(environ):
-        return None
     return {
         "schema_version": CLOSED_RECORD_SCHEMA,
         "status": "skipped",
@@ -49,11 +34,11 @@ def closed_device_capture_record(*, entry: str, scene_id: Any = None, capture_id
         "entry": entry,
         "scene_id": str(scene_id) if scene_id else None,
         "capture_id": str(capture_id) if capture_id else None,
-        "switch": SWITCH_ENV,
-        "detail": "The capture app's processing path is closed; nothing ran and nothing was bought.",
+        "removed_on": REMOVED_ON,
+        "detail": ("The capture app's processing path was removed on 2026-11-11; "
+                   "nothing ran and nothing was bought."),
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
-__all__ = ["CLOSED_REASON", "CLOSED_RECORD_SCHEMA", "SWITCH_ENV", "closed_device_capture_record",
-           "device_capture_pipeline_enabled"]
+__all__ = ["CLOSED_REASON", "CLOSED_RECORD_SCHEMA", "REMOVED_ON", "closed_device_capture_record"]

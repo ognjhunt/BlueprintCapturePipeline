@@ -7,7 +7,6 @@ from types import ModuleType
 
 import pytest
 
-from blueprint_pipeline.common import PipelineError
 import blueprint_pipeline.capture_orchestrator as co
 
 
@@ -248,60 +247,3 @@ def test_capture_pipeline_dispatch_and_synthesis_edges(
     )
     assert completed["status"] == "completed"
     assert completed["output_video_uri"].endswith("capture-1_cosmos.mp4")
-
-
-def test_capture_orchestrator_cli_edges(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    root = tmp_path / "gcs"
-    descriptor_uri = _descriptor_uri(root)
-    original_for_capture = co.run_capture_pipeline_for_capture
-    monkeypatch.setenv("GCS_ROOT", str(root))
-    monkeypatch.setenv("BLUEPRINT_DEVICE_CAPTURE_PIPELINE", "enabled")  # the job's path, switched on
-    calls: list[tuple[str, dict]] = []
-    monkeypatch.setattr(co, "run_capture_pipeline", lambda **kwargs: calls.append(("descriptor", kwargs)))
-    monkeypatch.setattr(co, "run_capture_pipeline_for_capture", lambda **kwargs: calls.append(("capture", kwargs)))
-
-    assert co.main(["--descriptor-gcs-uri", descriptor_uri, "--lane", "qualification"]) == 0
-    missing_uri = "gs://bucket/scenes/scene-2/captures/capture-2/capture_descriptor.json"
-    assert co.main(
-        [
-            "--descriptor-gcs-uri",
-            missing_uri,
-            "--bucket",
-            "bucket",
-            "--scene-id",
-            "scene-2",
-            "--capture-id",
-            "capture-2",
-        ]
-    ) == 0
-    assert co.main(["--bucket", "bucket", "--scene-id", "scene-3", "--capture-id", "capture-3"]) == 0
-    assert [kind for kind, _ in calls] == ["descriptor", "capture", "capture"]
-    assert "completed" in capsys.readouterr().out
-
-    monkeypatch.setattr(co, "run_capture_pipeline", lambda **_kwargs: (_ for _ in ()).throw(PipelineError("bad")))
-    assert co.main(["--descriptor-gcs-uri", descriptor_uri]) == 1
-    assert "FAILED: bad" in capsys.readouterr().out
-    monkeypatch.setattr(
-        co,
-        "materialize_capture_bundle",
-        lambda **_kwargs: {"descriptor_uri": descriptor_uri},
-    )
-    monkeypatch.setattr(co, "run_capture_pipeline_for_capture", original_for_capture)
-    monkeypatch.setattr(co, "run_capture_pipeline", lambda **kwargs: {"status": "completed", **kwargs})
-    wrapped = co.run_capture_pipeline_for_capture(
-        bucket="bucket",
-        scene_id="scene-1",
-        capture_id="capture-1",
-        config=co.PipelineConfig(gcs_root=root),
-    )
-    assert wrapped["descriptor_gcs_uri"] == descriptor_uri
-    with pytest.raises(SystemExit):
-        co.main([])
-    guard = compile("raise SystemExit(main())", co.__file__, "exec").replace(co_firstlineno=1925)
-    with pytest.raises(SystemExit) as exc_info:
-        exec(guard, {"main": lambda: 0})
-    assert exc_info.value.code == 0

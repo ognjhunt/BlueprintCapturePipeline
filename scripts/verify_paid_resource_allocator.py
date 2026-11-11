@@ -184,14 +184,7 @@ API_CALL_SITE_CLASSES = frozenset({"admitted", "not_automatic", "not_paid", "una
 #: request on every path. A site classified ``unadmitted`` must be named here, and
 #: tests/test_paid_resource_allocator_verifier.py pins this set: adding an entry
 #: needs an explicit edit to that test, while removing one passes.
-UNADMITTED_API_CALL_SITES = frozenset({
-    "src/blueprint_pipeline/capture_enrichment_llm.py::_ClaudeHTTPRunner.__call__::anthropic_api_url",
-    "src/blueprint_pipeline/capture_enrichment_llm.py::_CodexRunner.__call__::openai_codex_cli",
-    "src/blueprint_pipeline/capture_enrichment_llm.py::_OpenAISDKRunner.__call__::openai_client_construction",
-    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider._upload_video_as_media_asset::world_labs_marble_request",
-    "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.submit::world_labs_marble_request",
-    "src/blueprint_pipeline/scene_semantics.py::_infer_capture_review_with_gemini_video::gemini_client_construction",
-})
+UNADMITTED_API_CALL_SITES: frozenset[str] = frozenset()
 _API_HOSTS = {
     "openai": re.compile(r"https://api\.openai\.com(?![\w.-])"),
     "gemini": re.compile(r"https://generativelanguage\.googleapis\.com(?![\w.-])"),
@@ -839,8 +832,6 @@ def _api_call_site_blockers(
             blockers.append(f"new_unadmitted_paid_api_call_site:{key}: route it through an existing"
                             " admission or ledger; adding an unadmitted site needs an explicit edit to the pinned"
                             " list in tests/test_paid_resource_allocator_verifier.py")
-        elif kind == "unadmitted" and row.get("closed_on") is not None:
-            blockers.extend(_closed_on_blockers(key, row, root))
         elif kind == "admitted":
             # ``via``: where the site's path reaches the admission; ``admission``: the
             # admission, reservation or ledger function. Both are ``path::name``.
@@ -856,16 +847,6 @@ def _api_call_site_blockers(
                 blockers.append(f"paid_api_call_site_not_automatic_entry_point_missing:{key}")
             blockers.extend(_structural_claim_blockers(key, row, root))
     return blockers
-
-
-def _closed_on_blockers(key: str, row: dict, root: Path) -> list[str]:
-    """An unadmitted site's claim that a switch closes some automatic entries (``closed_on``)."""
-
-    if str(Path(__file__).resolve().parent) not in sys.path:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from paid_call_site_reachability import closed_entry_blockers
-
-    return closed_entry_blockers(key, row, root)
 
 
 def _structural_claim_blockers(key: str, row: dict, root: Path) -> list[str]:

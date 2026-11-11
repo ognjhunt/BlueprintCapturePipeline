@@ -74,35 +74,6 @@ class IndustrialEntity:
         }
 
 
-def _normalized_tokens(text: str) -> List[str]:
-    lowered = _normalized_entity_text(text)
-    if not lowered:
-        return []
-    return [token for token in lowered.split() if token]
-
-
-def classify_industrial_entity(label: Any) -> IndustrialEntity:
-    normalized = _normalized_entity_text(label)
-    tokens = _normalized_tokens(normalized)
-    matched_type = "object"
-    matched_tokens: List[str] = []
-
-    for entity_type, candidates in _ENTITY_RULES.items():
-        found = [candidate for candidate in candidates if candidate in normalized]
-        if found:
-            matched_type = entity_type
-            matched_tokens = found
-            break
-
-    return IndustrialEntity(
-        entity_type=matched_type,
-        matched_tokens=matched_tokens or tokens[:2],
-        route_relevant=matched_type in _ROUTE_RELEVANT,
-        task_relevant=matched_type in _TASK_RELEVANT,
-        hazard_relevant=matched_type in _HAZARD_RELEVANT,
-    )
-
-
 def classify_industrial_entities(values: Iterable[Any]) -> List[IndustrialEntity]:
     """Return every ontology entity matched across labels or ids.
 
@@ -134,25 +105,3 @@ def classify_industrial_entities(values: Iterable[Any]) -> List[IndustrialEntity
     return entities
 
 
-def industrial_tags_for_label(label: Any) -> List[str]:
-    entity = classify_industrial_entity(label)
-    tags = [entity.entity_type]
-    if entity.route_relevant:
-        tags.append("route_relevant")
-    if entity.task_relevant:
-        tags.append("task_relevant")
-    if entity.hazard_relevant:
-        tags.append("hazard_relevant")
-    return tags
-
-
-def derive_capture_plan_tags(values: Iterable[Any]) -> List[str]:
-    tags: List[str] = []
-    for value in values:
-        text = str(value or "").strip()
-        if not text:
-            continue
-        for entity in classify_industrial_entities([text]) or [classify_industrial_entity(text)]:
-            if entity.entity_type not in tags:
-                tags.append(entity.entity_type)
-    return tags

@@ -15,8 +15,7 @@ from .evaluation_prep_stage import run_evaluation_prep_stage
 from .geometry_sources import load_capture_geometry
 from .core.logging_utils import log_event
 from .local_capture import resolve_local_capture_context
-from .materialization import materialize_capture_bundle
-from .core.pipeline_settings import PipelineConfig, PipelineSettings
+from .core.pipeline_settings import PipelineConfig
 from .site_package_orchestrator import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
 from .core.lane_resume import (
@@ -734,33 +733,24 @@ def run_capture_synthesis_validation(
     }
 
 
-def run_capture_pipeline_for_capture(
-    *,
-    bucket: str,
-    scene_id: str,
-    capture_id: str,
-    lane: Optional[str] = None,
-    requested_lanes: Optional[List[str]] = None,
-    allow_legacy_lanes: bool = False,
-    config: Optional[PipelineConfig] = None,
-) -> Dict[str, Any]:
-    cfg = config or PipelineConfig()
-    materialized = materialize_capture_bundle(
-        bucket=bucket,
-        scene_id=scene_id,
-        capture_id=capture_id,
-        gcs_root=cfg.gcs_root,
-    )
-    return run_capture_pipeline(
-        descriptor_gcs_uri=str(materialized["descriptor_uri"]),
-        lane=lane,
-        requested_lanes=requested_lanes,
-        allow_legacy_lanes=allow_legacy_lanes,
-        config=cfg,
-    )
+def main(argv: Optional[List[str]] = None) -> int:
+    """The ``blueprint-pipeline`` Cloud Run job's entry: a permanent no-op.
 
+    The job served the capture app, whose processing path was removed on 2026-11-11
+    (``device_capture_pipeline_switch``). The image and Terraform still name this
+    entry, so it accepts the job's arguments, writes the one closed record and exits
+    0: the execution is not retried and nothing waits on an operator.
+    """
 
-def _job_entry_refusal(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
+    parser = argparse.ArgumentParser(description="Retired capture-app job entry; runs nothing")
+    parser.add_argument("--descriptor-gcs-uri",
+                        default=(os.getenv("PIPELINE_DESCRIPTOR_GCS_URI") or "").strip() or None)
+    parser.add_argument("--bucket", default=(os.getenv("PIPELINE_BUCKET") or "").strip() or None)
+    parser.add_argument("--scene-id", default=(os.getenv("PIPELINE_SCENE_ID") or "").strip() or None)
+    parser.add_argument("--capture-id", default=(os.getenv("PIPELINE_CAPTURE_ID") or "").strip() or None)
+    parser.add_argument("--lane", default=None)
+    parser.add_argument("--allow-legacy-lanes", action="store_true")
+    args, _unknown = parser.parse_known_args(argv)
     scene_id, capture_id = args.scene_id, args.capture_id
     if args.descriptor_gcs_uri:
         try:
@@ -769,95 +759,8 @@ def _job_entry_refusal(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
             parts = []
         if len(parts) > 3 and parts[0] == "scenes" and parts[2] == "captures":
             scene_id, capture_id = parts[1], parts[3]
-    closed = closed_device_capture_record(entry="cloud_run_job", scene_id=scene_id, capture_id=capture_id)
-    if closed is not None:
-        return closed
-    from .website_capture_entry import is_website_capture_identity
-
-    if is_website_capture_identity(scene_id, capture_id) or is_website_capture_identity(args.scene_id, args.capture_id):
-        return {"schema_version": "device_capture_pipeline_closed.v1", "status": "skipped",
-                "reason": "website_capture", "entry": "cloud_run_job", "scene_id": scene_id,
-                "capture_id": capture_id,
-                "detail": "A website capture is processed by the host listener only; nothing ran here."}
-    return None
-
-
-def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run lane-aware capture pipeline")
-    parser.add_argument(
-        "--descriptor-gcs-uri",
-        default=(os.getenv("PIPELINE_DESCRIPTOR_GCS_URI") or "").strip() or None,
-        help="gs:// URI for capture_descriptor.json",
-    )
-    parser.add_argument("--bucket", default=(os.getenv("PIPELINE_BUCKET") or "").strip() or None)
-    parser.add_argument("--scene-id", default=(os.getenv("PIPELINE_SCENE_ID") or "").strip() or None)
-    parser.add_argument("--capture-id", default=(os.getenv("PIPELINE_CAPTURE_ID") or "").strip() or None)
-    parser.add_argument(
-        "--lane",
-        default=None,
-        help=(
-            "current/all, qualification, evaluation_prep, simulation_automation, "
-            "or explicit legacy lanes: scene_memory, retrieval_index, frame_alignment, "
-            "synthesis_coverage_validation, cosmos_single_capture_smoke"
-        ),
-    )
-    parser.add_argument(
-        "--allow-legacy-lanes",
-        action="store_true",
-        help=(
-            "Explicitly admit deprecated scene-memory/retrieval/alignment/synthesis/"
-            "Cosmos lanes. Current product lanes do not require this flag."
-        ),
-    )
-    args = parser.parse_args(argv)
-    # The Cloud Run job is the capture app's path: closed unless switched on, and never a
-    # website capture's (the host listener's). Either way it records why and exits 0, so the
-    # job is not retried and nothing waits on an operator.
-    skipped = _job_entry_refusal(args)
-    if skipped is not None:
-        print(json.dumps(skipped, sort_keys=True))
-        return 0
-
-    try:
-        settings = PipelineSettings.from_env()
-        cfg = PipelineConfig.from_settings(settings)
-        if args.descriptor_gcs_uri:
-            descriptor_path = resolve_gs_uri_to_path(args.descriptor_gcs_uri, cfg.gcs_root)
-            if descriptor_path.exists() or not (args.bucket and args.scene_id and args.capture_id):
-                run_capture_pipeline(
-                    descriptor_gcs_uri=args.descriptor_gcs_uri,
-                    lane=args.lane,
-                    allow_legacy_lanes=bool(args.allow_legacy_lanes),
-                    config=cfg,
-                )
-            else:
-                run_capture_pipeline_for_capture(
-                    bucket=args.bucket,
-                    scene_id=args.scene_id,
-                    capture_id=args.capture_id,
-                    lane=args.lane,
-                    allow_legacy_lanes=bool(args.allow_legacy_lanes),
-                    config=cfg,
-                )
-        elif args.bucket and args.scene_id and args.capture_id:
-            run_capture_pipeline_for_capture(
-                bucket=args.bucket,
-                scene_id=args.scene_id,
-                capture_id=args.capture_id,
-                lane=args.lane,
-                allow_legacy_lanes=bool(args.allow_legacy_lanes),
-                config=cfg,
-            )
-        else:
-            parser.error("--descriptor-gcs-uri or --bucket/--scene-id/--capture-id is required")
-    except (PipelineError, ValueError) as exc:
-        print(f"[capture-orchestrator] FAILED: {exc}")
-        return 1
-    except Exception as exc:  # pragma: no cover - safety net
-        print(f"[capture-orchestrator] FAILED (unexpected): {exc}")
-        return 1
-
-    print("[capture-orchestrator] completed")
+    record = closed_device_capture_record(entry="cloud_run_job", scene_id=scene_id, capture_id=capture_id)
+    print(json.dumps(record, sort_keys=True))
     return 0
 
 

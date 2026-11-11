@@ -7,7 +7,6 @@ import pytest
 
 from blueprint_pipeline import marble_sim_assets as msa
 from blueprint_pipeline.marble_sim_assets import build_marble_sim_assets
-from blueprint_pipeline.provider_preview import WorldLabsPreviewProvider, run_preview_provider
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -214,111 +213,6 @@ def test_marble_sim_assets_missing_collider_blocks_physics_readiness(tmp_path: P
     assert "missing_collider_mesh_glb" in validation["blockers"]
     assert validation["physics_collision_review_ready"] is False
     assert mujoco["direct_simulator_success_claim"] is False
-
-
-def test_run_preview_provider_persists_marble_sim_asset_handoff(tmp_path: Path, monkeypatch) -> None:
-    capture_root = _build_capture_root(tmp_path)
-    pipeline_dir = capture_root / "pipeline"
-
-    def _fake_submit(self, *, descriptor, capture_root, provider_adapter_input=None):  # type: ignore[no-untyped-def]
-        del descriptor, capture_root, provider_adapter_input
-        return {
-            "provider_name": self.provider_name,
-            "provider_model": self.provider_model,
-            "provider_run_id": "op-1",
-            "status": "processing",
-            "artifact_uris": {},
-            "cost_usd": 0.0,
-            "latency_ms": 1,
-            "worldlabs_request_manifest": {
-                "schema_version": "v1",
-                "provider_name": "world_labs",
-                "provider_model": "marble-1.1",
-                "selected_video_uri": "gs://local-blueprint/privacy/final_walkthrough.mov",
-                "source_manifest_uri": "gs://local-blueprint/privacy/manifest.json",
-                "worldlabs_input_audit_uri": "gs://local-blueprint/pipeline/worldlabs_input_audit.json",
-                "selected_input_checksum_sha256": "selected-sha",
-                "privacy_safe_input": True,
-            },
-            "selected_input_checksum_sha256": "selected-sha",
-            "worldlabs_input_audit_uri": "gs://local-blueprint/pipeline/worldlabs_input_audit.json",
-            "privacy_safe_input": True,
-        }
-
-    def _fake_poll(self, *, run_id):  # type: ignore[no-untyped-def]
-        assert run_id == "op-1"
-        return {
-            "provider_run_id": run_id,
-            "status": "ready",
-            "world_id": "world-1",
-            "launch_url": "https://marble.worldlabs.ai/worlds/world-1",
-            "operation_terminal_status": "ready",
-            "worldlabs_operation": {"operation_id": run_id, "done": True, "status": "ready"},
-            "worldlabs_world": _world_manifest(),
-        }
-
-    def _fake_materialize_assets(
-        *,
-        capture_root,
-        world_manifest=None,
-        include_visual_assets=False,
-        max_asset_bytes=500_000_000,
-        scene_preparation=False,
-    ):  # type: ignore[no-untyped-def]
-        del world_manifest, include_visual_assets, max_asset_bytes
-        assert scene_preparation is False
-        materialized_dir = Path(capture_root) / "pipeline" / "worldlabs_assets"
-        materialized_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = materialized_dir / "materialized_assets_manifest.json"
-        export_path = Path(capture_root) / "pipeline" / "worldlabs_export_manifest.json"
-        _write_json(
-            manifest_path,
-            {
-                "schema_version": "worldlabs_asset_materialization.v1",
-                "status": "complete",
-                "downloads": [],
-            },
-        )
-        _write_json(
-            export_path,
-            {
-                "schema_version": "worldlabs_export_manifest.v1",
-                "source": "test_fixture",
-            },
-        )
-        return {
-            "schema_version": "worldlabs_asset_materialization_result.v1",
-            "status": "complete",
-            "manifest_path": str(manifest_path),
-            "export_manifest_path": str(export_path),
-            "download_count": 0,
-            "failure_count": 0,
-        }
-
-    monkeypatch.setattr(WorldLabsPreviewProvider, "submit", _fake_submit)
-    monkeypatch.setattr(WorldLabsPreviewProvider, "poll", _fake_poll)
-    monkeypatch.setattr(
-        "blueprint_pipeline.worldlabs_asset_materialization.materialize_worldlabs_assets",
-        _fake_materialize_assets,
-    )
-
-    result = run_preview_provider(
-        provider_name="world_labs",
-        descriptor={"capture_id": "capture-1", "raw_prefix_uri": "gs://local-blueprint/raw"},
-        capture_root=capture_root,
-        pipeline_dir=pipeline_dir,
-    )
-
-    assert result["marble_sim_asset_handoff"]["status"] == "review_ready_with_conversion_required"
-    assert result["worldlabs_asset_materialization"]["status"] == "complete"
-    assert result["artifact_uris"]["worldlabs_asset_materialization_manifest_uri"].endswith(
-        "/worldlabs_assets/materialized_assets_manifest.json"
-    )
-    assert result["artifact_uris"]["marble_simready_bridge_uri"].endswith(
-        "/marble_sim_assets/marble_simready_bridge.json"
-    )
-    assert (pipeline_dir / "marble_sim_assets" / "marble_asset_manifest.json").is_file()
-    assert (pipeline_dir / "marble_sim_assets" / "simulators" / "pybullet_review_manifest.json").is_file()
 
 
 def test_marble_helper_normalization_edges(tmp_path: Path) -> None:

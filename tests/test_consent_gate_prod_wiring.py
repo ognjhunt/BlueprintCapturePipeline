@@ -17,7 +17,6 @@ from pathlib import Path
 
 import blueprint_pipeline.alpha_readiness as alpha
 import blueprint_pipeline.consent_takedown as ct
-import blueprint_pipeline.site_package_orchestrator as qualification
 
 
 def _min_capture(tmp_path: Path, *, revoked: bool = False) -> Path:
@@ -70,7 +69,7 @@ def _sync_call_capture_root_flags(module) -> list[bool]:
 
 
 def test_every_production_sync_call_wires_the_consent_gate():
-    for module in (qualification, alpha):
+    for module in (alpha,):
         flags = _sync_call_capture_root_flags(module)
         assert flags, f"no sync_webapp_pipeline_attachment call found in {module.__name__}"
         assert all(flags), (

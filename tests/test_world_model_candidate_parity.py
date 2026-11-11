@@ -12,7 +12,6 @@ from blueprint_pipeline.alpha_readiness import build_alpha_readiness_summary
 from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.local_capture import LocalCaptureContext
 from blueprint_pipeline.materialization import materialize_capture_bundle
-from blueprint_pipeline.site_package_orchestrator import _should_run_default_geometry_stage
 
 
 def _rehash_raw_bundle(raw_root: Path) -> None:
@@ -620,9 +619,3 @@ def test_rights_boolean_normalization_agrees_across_surfaces(
     assert summary["capture_mode"] == (
         "site_world_candidate" if expected else "qualification_only"
     )
-
-    # 5. Default geometry-stage routing.
-    routing_descriptor = CaptureDescriptor.from_dict(
-        {**_DESCRIPTOR_BASE, "metadata": {"capture_rights": rights}}
-    )
-    assert _should_run_default_geometry_stage(routing_descriptor) is expected

@@ -64,20 +64,6 @@ def test_website_handoff_succeeds_without_generic_reports_or_object_index(
     original["metadata"]["capture_entry_source"] = entry_source
     descriptor_path.write_text(json.dumps(original))
 
-    def forbidden(*_args, **_kwargs):
-        pytest.fail("website entered optional generic readiness/reporting")
-
-    for name in (
-        "load_raw_manifest", "ensure_object_index_stage", "infer_task_targets",
-        "_build_runtime_preflight_report", "_build_completeness_scorecard",
-        "_build_qualification_record", "_build_readiness_decision",
-        "build_capture_enrichment_runner", "write_blueprint_canonical_site_package",
-        "run_privacy_postprocess", "infer_capture_fidelity_review",
-        "_prepare_worldlabs_input_video", "build_geometry_stage_contract",
-        "sync_webapp_pipeline_attachment",
-    ):
-        monkeypatch.setattr(orchestrator, name, forbidden)
-    monkeypatch.setattr(orchestrator.support_outputs, "write_alpha_readiness_summary_if_enabled", forbidden)
     handoffs = []
 
     def prepare_media(**kwargs):

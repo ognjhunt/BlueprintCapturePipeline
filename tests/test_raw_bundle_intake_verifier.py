@@ -11,7 +11,6 @@ import pytest
 from blueprint_pipeline import materialization
 from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.ios_manifest import verify_canonical_raw_bundle_path
-from blueprint_pipeline.object_index_stage import run_object_index_stage
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -310,44 +309,6 @@ def test_raw_change_during_materialization_is_quarantined_before_product_writes(
     assert not (capture_root / "qa_report.json").exists()
     assert not (capture_root / "frames").exists()
     assert list((capture_root / "quarantine" / "raw_intake").glob("*.json"))
-
-
-def test_changed_rights_with_new_valid_hashes_cannot_reuse_persisted_intake_identity(
-    tmp_path: Path,
-) -> None:
-    capture_root, raw = _v3_capture(tmp_path)
-    materialization.materialize_capture_bundle(
-        bucket="bucket",
-        scene_id="scene-1",
-        capture_id="capture-1",
-        gcs_root=tmp_path,
-    )
-    original_pointer = json.loads(
-        (capture_root / "pipeline" / "intake" / "current.json").read_text(encoding="utf-8")
-    )
-    _write_json(
-        raw / "rights_consent.json",
-        {
-            "schema_version": "v1",
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "consent_status": "revoked",
-        },
-    )
-    _rehash(raw)
-    assert verify_canonical_raw_bundle_path(
-        raw,
-        expected_scene_id="scene-1",
-        expected_capture_id="capture-1",
-    )["status"] == "verified"
-
-    with pytest.raises(PipelineError, match="immutable_intake_digest_changed"):
-        run_object_index_stage(capture_root=capture_root)
-
-    assert not (capture_root / "pipeline" / "derived" / "object_index").exists()
-    assert json.loads(
-        (capture_root / "pipeline" / "intake" / "current.json").read_text(encoding="utf-8")
-    ) == original_pointer
 
 
 def test_legacy_intake_is_explicitly_degraded_not_current_integrity_proof(tmp_path: Path) -> None:

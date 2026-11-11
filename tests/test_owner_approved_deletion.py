@@ -336,7 +336,8 @@ def test_an_authority_ended_scene_is_deleted_only_after_the_redelivery_window(tm
 
     early = host.plan(manifest, at=now + DAY)
     assert early["entries"][0]["status"] == "skipped"
-    assert early["entries"][0]["reasons"] == ["terminal_within_redelivery_window:capture-1"]
+    from tests.test_website_scene_workspace_retention import CAPTURE
+    assert early["entries"][0]["reasons"] == [f"terminal_within_redelivery_window:{CAPTURE}"]
 
     later = now + 8 * DAY
     plan = host.plan(manifest, at=later)
@@ -353,9 +354,10 @@ def test_a_scene_whose_capture_did_not_end_by_authority_is_kept(tmp_path, host):
     target = host.handoffs / scene.parent.parent.name / "scenes" / scene.name
     target.parent.mkdir(parents=True)
     scene.rename(target)
-    ledger = json.loads((target / "captures" / "capture-1" / "pipeline_job_ledger.json").read_text())
+    from tests.test_website_scene_workspace_retention import CAPTURE
+    ledger = json.loads((target / "captures" / CAPTURE / "pipeline_job_ledger.json").read_text())
     entry = {"class": oad.SCENE, "path": str(target), "captures": [{
-        "capture_id": "capture-1", "terminal_code": "consent_expired", "terminal_at": "2026-09-27T03:53:03+00:00",
+        "capture_id": CAPTURE, "terminal_code": "consent_expired", "terminal_at": "2026-09-27T03:53:03+00:00",
         "terminal_payload_sha256": "a" * 64}]}
     assert ledger["status"] == "completed"
 

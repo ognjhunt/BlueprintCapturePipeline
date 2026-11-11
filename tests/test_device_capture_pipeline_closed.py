@@ -1,4 +1,4 @@
-"""The capture app's path (swap dispatch, Cloud Run job) refuses website captures and is closed by default."""
+"""The capture app's path (swap dispatch, Cloud Run job) was removed: every entry records why and runs nothing."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import pytest
 from blueprint_pipeline import capture_orchestrator as co
 
 ROOT = Path(__file__).resolve().parents[1]
-SWITCH = "BLUEPRINT_DEVICE_CAPTURE_PIPELINE"
 
 # extractFrames' message for a website upload, reduced to the fields dispatch reads.
 WEBSITE_PAYLOAD = {
@@ -57,18 +56,13 @@ def trigger(monkeypatch):
     return module
 
 
-@pytest.mark.parametrize("switch", [None, "enabled"])
 @pytest.mark.parametrize("variant", [
     {},
     {"scene_id": None, "capture_id": None},  # named only by its URIs
     {"scene_id": "site-r1", "capture_id": "supplement-" + "a" * 40,
      "capture_descriptor_uri": None, "raw_prefix_uri": None},
 ])
-def test_swap_dispatch_acknowledges_and_drops_a_website_capture(trigger, monkeypatch, switch, variant) -> None:
-    if switch:
-        monkeypatch.setenv(SWITCH, switch)
-    else:
-        monkeypatch.delenv(SWITCH, raising=False)
+def test_swap_dispatch_acknowledges_and_drops_a_website_capture(trigger, monkeypatch, variant) -> None:
     payload = {key: value for key, value in {**WEBSITE_PAYLOAD, **variant}.items() if value is not None}
     trigger.on_swap_dispatch(_event(payload), context=None)  # returns: the delivery is acknowledged
     assert trigger.on_swap_dispatch_http(type("R", (), {"get_json": lambda self, silent=False: payload})()) == ("ok", 200)
@@ -78,7 +72,6 @@ def test_swap_dispatch_acknowledges_and_drops_a_website_capture(trigger, monkeyp
 
 
 def test_dispatch_never_queues_a_website_capture(trigger, monkeypatch) -> None:
-    monkeypatch.setenv(SWITCH, "enabled")
     queued: list[dict] = []
     monkeypatch.setattr(trigger, "_dispatch_pubsub", lambda payload: queued.append(payload) or "pubsub:1")
     monkeypatch.setattr(trigger, "_dispatch_cloud_tasks", lambda payload: queued.append(payload) or "tasks:1")
@@ -89,7 +82,6 @@ def test_dispatch_never_queues_a_website_capture(trigger, monkeypatch) -> None:
 
 
 def test_raw_completion_of_a_website_capture_is_not_materialized_for_the_app_path(trigger, monkeypatch) -> None:
-    monkeypatch.setenv(SWITCH, "enabled")
     monkeypatch.delenv("SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF", raising=False)
     touched: list[str] = []
     monkeypatch.setattr(trigger, "capture_materialization_readiness", lambda **_: touched.append("readiness"))
@@ -101,56 +93,39 @@ def test_raw_completion_of_a_website_capture_is_not_materialized_for_the_app_pat
     assert touched == []
 
 
-def test_device_capture_path_is_closed_unless_switched_on(trigger, monkeypatch, caplog) -> None:
-    monkeypatch.delenv(SWITCH, raising=False)
+@pytest.mark.parametrize("old_switch", [None, "enabled"])
+def test_device_capture_path_runs_nothing_whatever_the_old_switch_says(trigger, monkeypatch, caplog, old_switch) -> None:
+    if old_switch:
+        monkeypatch.setenv("BLUEPRINT_DEVICE_CAPTURE_PIPELINE", old_switch)
     with caplog.at_level("INFO"):
         trigger.on_swap_dispatch(_event(DEVICE_PAYLOAD), context=None)
     assert trigger.launched == []
     records = [json.loads(r.getMessage()) for r in caplog.records if r.getMessage().startswith("{")]
-    assert [(r["schema_version"], r["reason"], r["capture_id"]) for r in records] == [
-        ("device_capture_pipeline_closed.v1", "device_capture_pipeline_closed", "capture-1")]
+    assert [(r["schema_version"], r["reason"], r["capture_id"], r["removed_on"]) for r in records] == [
+        ("device_capture_pipeline_closed.v1", "device_capture_pipeline_removed", "capture-1", "2026-11-11")]
     monkeypatch.setenv("PIPELINE_EXECUTION_MODE", "inline")
     assert trigger.run_capture_pipeline(descriptor_gcs_uri="gs://b/x")["status"] == "skipped"
-    assert trigger.ran == []
-    for value in ("", "true", "1", "on"):  # only the exact word turns it on
-        monkeypatch.setenv(SWITCH, value)
-        assert trigger._execute_pipeline_payload(dict(DEVICE_PAYLOAD)) == "skipped:device_capture_pipeline_closed"
-    monkeypatch.setenv(SWITCH, "enabled")
+    assert trigger._execute_pipeline_payload(dict(DEVICE_PAYLOAD)) == "skipped:device_capture_pipeline_removed"
     monkeypatch.setenv("PIPELINE_EXECUTION_MODE", "cloud_run_job")
-    trigger.on_swap_dispatch(_event(DEVICE_PAYLOAD), context=None)
-    assert trigger.launched == [DEVICE_PAYLOAD]
+    assert trigger._execute_pipeline_payload(dict(DEVICE_PAYLOAD)) == "skipped:device_capture_pipeline_removed"
+    assert trigger.launched == [] and trigger.ran == []
 
 
-def test_cloud_run_job_entry_exits_zero_with_one_record_when_closed(monkeypatch, capsys) -> None:
-    ran: list[dict] = []
-    monkeypatch.setattr(co, "run_capture_pipeline", lambda **kwargs: ran.append(kwargs))
-    monkeypatch.setattr(co, "run_capture_pipeline_for_capture", lambda **kwargs: ran.append(kwargs))
-    monkeypatch.delenv(SWITCH, raising=False)
-    assert co.main(["--bucket", "bucket", "--scene-id", "scene-1", "--capture-id", "capture-1"]) == 0
+@pytest.mark.parametrize("argv", [
+    ["--bucket", "bucket", "--scene-id", "scene-1", "--capture-id", "capture-1"],
+    ["--descriptor-gcs-uri", "gs://bucket/scenes/scene-1/captures/capture-1/capture_descriptor.json", "--lane", "all"],
+    ["--bucket", "bucket", "--scene-id", "scene-1", "--capture-id", "capture-1", "--an-unknown-flag", "x"],
+])
+def test_cloud_run_job_entry_exits_zero_with_one_record(monkeypatch, capsys, argv) -> None:
+    monkeypatch.setenv("BLUEPRINT_DEVICE_CAPTURE_PIPELINE", "enabled")  # no longer read
+    assert co.main(argv) == 0
     record = json.loads(capsys.readouterr().out)
-    assert (record["schema_version"], record["reason"], record["entry"], record["capture_id"]) == (
-        "device_capture_pipeline_closed.v1", "device_capture_pipeline_closed", "cloud_run_job", "capture-1")
-    monkeypatch.setenv(SWITCH, "enabled")
-    for argv in (["--descriptor-gcs-uri", WEBSITE_PAYLOAD["capture_descriptor_uri"]],
-                 ["--bucket", "bucket", "--scene-id", "site-r1", "--capture-id", "walkthrough-r1"]):
-        assert co.main(argv) == 0
-        assert json.loads(capsys.readouterr().out)["reason"] == "website_capture"
-    assert ran == []
-    assert co.main(["--bucket", "bucket", "--scene-id", "scene-1", "--capture-id", "capture-1"]) == 0
-    assert len(ran) == 1
+    assert (record["schema_version"], record["reason"], record["entry"], record["capture_id"], record["status"]) == (
+        "device_capture_pipeline_closed.v1", "device_capture_pipeline_removed", "cloud_run_job", "capture-1", "skipped")
 
 
-def test_paid_call_sites_record_the_entries_the_switch_closes() -> None:
-    import sys
-
-    sys.path.insert(0, str(ROOT / "scripts"))
-    import paid_call_site_reachability as reachability
-
-    table = json.loads((ROOT / "scripts" / "paid_api_call_sites.json").read_text())["sites"]
-    closed = {key: row for key, row in table.items() if row.get("closed_on")}
-    assert set(closed) == {key for key, row in table.items() if row["class"] == "unadmitted"}
-    assert all(reachability.closed_entry_blockers(key, row, ROOT) == [] for key, row in closed.items())
-    # Without the job entry's guard the claim is refuted: the check reads the code, not the label.
-    key = next(iter(closed))
-    weakened = {**closed[key], "closed_on": {**closed[key]["closed_on"], "guards": ["closed_device_capture_record"]}}
-    assert reachability.closed_entry_blockers(key, weakened, ROOT)[0].startswith("paid_api_call_site_closed_on_refuted:")
+def test_cloud_run_job_entry_with_no_arguments_still_exits_zero(monkeypatch, capsys) -> None:
+    for name in ("PIPELINE_DESCRIPTOR_GCS_URI", "PIPELINE_BUCKET", "PIPELINE_SCENE_ID", "PIPELINE_CAPTURE_ID"):
+        monkeypatch.delenv(name, raising=False)
+    assert co.main([]) == 0
+    assert json.loads(capsys.readouterr().out)["capture_id"] is None
