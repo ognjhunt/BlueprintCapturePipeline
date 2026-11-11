@@ -960,6 +960,10 @@
                   "preferred": {
                     "description": "Only with for_model_id, and only when the website sent preferred_robot_model_ids: whether this body's model was one of them.",
                     "type": "boolean"
+                  },
+                  "chosen_by": {
+                    "description": "Which rule chose the body: a selected candidate's own robot (only with for_candidate_id), the body nearest the candidates' robot, the website's pick, or the fit table's order. Absent in markers written before it.",
+                    "enum": ["candidate_robot", "nearest_body", "preferred", "fit_table"]
                   }
                 },
                 "required": [
