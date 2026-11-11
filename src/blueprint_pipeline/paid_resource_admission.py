@@ -134,8 +134,8 @@ def _monthly_budget_blockers(resource_class: str) -> list[str]:
 
 #: What a paid admission does to spend. ``new_spend`` (the default) starts or
 #: extends spend and is checked against the account monthly limit. ``stop`` only
-#: stops, tears down or destroys what is already running; the limit never blocks
-#: it, so an operator can always stop spend. A stop must say so twice: the caller
+#: stops, tears down or destroys what is already running; neither the account
+#: limit nor the GCP monthly budget ever blocks it, so an operator can always stop spend. A stop must say so twice: the caller
 #: passes ``spend_effect="stop"`` and the admission record it built carries
 #: ``"spend_effect": "stop"``. Anything else is checked as new spend.
 SPEND_EFFECT_NEW_SPEND = "new_spend"
@@ -203,10 +203,12 @@ def require_paid_resource_admission(
     """
     from .core.handoff_lease import handoff_lease_checkpoint, current_handoff_lease_check
     handoff_lease_checkpoint("paid_resource_admission")
-    blockers: list[str] = _monthly_budget_blockers(resource_class)
     effect_blockers, clear_stop = _spend_effect_blockers(admission, spend_effect)
-    blockers.extend(effect_blockers)
+    blockers: list[str] = list(effect_blockers)
     if not clear_stop:
+        # A budget refuses new spend only. A stop refused for a budget reason
+        # would leave the spend it was meant to end running.
+        blockers.extend(_monthly_budget_blockers(resource_class))
         blockers.extend(_account_monthly_limit_blockers())
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")

@@ -25,6 +25,20 @@ The journey is four steps:
 The beta is free. Blueprint pays for preparation and evaluation inside a fixed
 per-site budget. No job is refused by task kind.
 
+### How Capture Works
+
+One capture path is in use (owner, 2026-11-11): a person who works at the site
+films the job with their own smartphone camera and uploads it in the browser,
+through the WebApp's onboarding and site-task flow. No capture app is in use.
+Nobody else films for a site: there are no outside capturers, no Blueprint
+filming visits, no capturer marketplace and no capturer payouts.
+
+The `BlueprintCapture` repository is kept for one reason: its cloud function
+`extractFrames` still receives every website upload and writes the delivery
+records the Pipeline starts from. The phone apps in that repository are not in
+use. Documents and code that describe the app, capturers or payouts are
+history, not current practice.
+
 ### The Only Hard Stops
 
 Fail closed only for:

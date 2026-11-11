@@ -107,6 +107,8 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.unit_failure_notifier",
     "blueprint_pipeline.website_atlas_preview",
     "blueprint_pipeline.website_capture_withdrawal_automatic",
+    "blueprint_pipeline.off_host_gpu_reaper_heartbeat",
+    "blueprint_pipeline.control_plane_state_backup",
 )
 
 ENTRYPOINT_REMEDIATION = (

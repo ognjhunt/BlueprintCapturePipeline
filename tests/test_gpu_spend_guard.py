@@ -2444,6 +2444,37 @@ def test_runpod_key_present_still_inventories_blocks_and_reaps(patched_guard, mo
     assert "runpod" in {row["provider"] for row in lock["provider_inventory"]}
 
 
+def test_a_restore_hold_keeps_admission_closed_until_a_reap_and_billing_postdate_it_then_clears_itself(
+    patched_guard, monkeypatch,
+) -> None:
+    from blueprint_pipeline import control_plane_restore_money_hold as restore_hold
+
+    tmp_path, _terminated = patched_guard
+    monkeypatch.setattr(guard, "_read_secret", lambda name, **_kw: {
+        "vast_api_key": "va-super-secret", "digitalocean_api_token": "do-super-secret"}.get(name))
+    monkeypatch.setattr(guard, "fetch_do_droplets", lambda *_a, **_k: [])
+    now = guard._now()
+    marker = tmp_path / restore_hold.MARKER_NAME
+    restore_hold.write_hold(marker, generation="g-20260626T235500000000Z-00000000",
+                            generation_started_at_epoch=now - 900, restored_at_epoch=now - 60)
+    # The billing feed predates the restore: closed, and the hold stays.
+    stale = _keyed_billing(tmp_path, now - 120)
+    assert guard.main(_guard_args(tmp_path, tmp_path, stale)) == 2
+    lock = json.loads((tmp_path / "lock.json").read_text(encoding="utf-8"))
+    assert lock["admission_allowed"] is False
+    assert lock["blockers"] == [restore_hold.BLOCKER]
+    assert lock["restore_hold"]["waiting_on"] == ["billing_reconciled_after_restore"]
+    assert marker.exists()
+    # The next run's reap and billing feed both postdate it: that run opens admission and retires the hold.
+    fresh = _keyed_billing(tmp_path, now)
+    assert guard.main(_guard_args(tmp_path, tmp_path, fresh)) == 0
+    lock = json.loads((tmp_path / "lock.json").read_text(encoding="utf-8"))
+    assert lock["admission_allowed"] is True and lock["restore_hold"]["status"] == "cleared"
+    assert not marker.exists() and list(tmp_path.glob("restore_hold.retired-*.v1.json"))
+    assert guard.main(_guard_args(tmp_path, tmp_path, fresh)) == 0
+    assert "restore_hold" not in json.loads((tmp_path / "lock.json").read_text(encoding="utf-8"))
+
+
 def test_runpod_key_absent_is_retired_not_required_and_nothing_else_changes(
     patched_guard, monkeypatch, capsys,
 ) -> None:

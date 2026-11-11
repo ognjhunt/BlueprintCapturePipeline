@@ -217,6 +217,8 @@ def test_the_classification_rides_the_existing_call_and_earlier_requests_stay_ex
 RETAINED_BEFORE_RIGIDITY = "70b0d68dcf3886ecc0f767a0bbae1a2fb25f6b070751c6a9f17feb8433b06b1f"
 
 
+# The resend rule this asserts is website_gemini_receipts's, not this module's.
+@pytest.mark.pins("blueprint_pipeline.website_gemini_receipts")
 @pytest.mark.parametrize("status", ["completed", "submitting", "submitting_no_reservation_on_record"])
 def test_an_analysis_bought_before_rigidity_is_never_bought_again(tmp_path, monkeypatch, status):
     """An answer bought before rigidity is reused as it stands. An unanswered earlier dispatch is counted

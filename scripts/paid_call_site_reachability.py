@@ -358,4 +358,64 @@ def claim_blockers(key: str, row: dict, root: Path = ROOT) -> list[str]:
     return blockers
 
 
-__all__ = ["CallGraph", "automatic_roots", "claim_blockers", "graph", "site_module"]
+def closed_entry_blockers(key: str, row: dict, root: Path = ROOT) -> list[str]:
+    """Blockers for an ``unadmitted`` row's ``closed_on`` claim.
+
+    ``closed_on`` names a switch, the guard functions that read it and the entry functions of the
+    path it closes (``entry_functions``, ``module::qualname``, each the start of an automatic
+    process). The claim: walking callees forward from each entry function, the call site is never
+    reached without passing a function that calls a guard. The backward search ``claim_blockers``
+    uses cannot say this, because it counts a module's definitions as its import-time calls, so
+    every top-level function of an entry module is reachable from that module. The claim says
+    nothing about other entries; the row stays ``unadmitted`` while any reaches the site.
+    """
+
+    closed = row.get("closed_on")
+    if closed is None:
+        return []
+    if (not isinstance(closed, dict) or not str(closed.get("switch") or "").strip()
+            or not closed.get("guards") or not closed.get("entry_functions")):
+        return [f"paid_api_call_site_closed_on_invalid:{key}"]
+    path, scope, _signal = key.split("::")
+    call_graph = graph(root)
+    module_name = site_module(path)
+    if module_name not in call_graph.modules:
+        return [f"paid_api_call_site_module_unreadable:{key}"]
+    entries: list[tuple[str, str]] = []
+    for item in closed["entry_functions"]:
+        entry_module, _, qualname = str(item).partition("::")
+        module = call_graph.modules.get(entry_module)
+        if entry_module not in call_graph.roots or module is None or qualname not in module.functions:
+            return [f"paid_api_call_site_closed_on_entry_invalid:{key}:{item}"]
+        entries.append((entry_module, qualname))
+    guards = frozenset(str(item) for item in closed["guards"])
+    defined = {qualname.rsplit(".", 1)[-1] for module in call_graph.modules.values() for qualname in module.functions}
+    missing = sorted(guards - defined)
+    if missing:
+        return [f"paid_api_call_site_closed_on_guard_missing:{key}:{','.join(missing)}"]
+    forward: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for target, sources in call_graph.callers.items():
+        for source in sources:
+            forward.setdefault(source, set()).add(target)
+    starts = call_graph.start_nodes(module_name, scope)
+    parent: dict[tuple[str, str], tuple[str, str]] = {}
+    queue = deque(node for node in entries if not call_graph._calls_guard(node, guards))
+    seen = set(queue)
+    while queue:
+        node = queue.popleft()
+        if node in starts:
+            chain = [node]
+            while chain[-1] in parent:
+                chain.append(parent[chain[-1]])
+            text = " -> ".join(f"{name.rsplit('.', 1)[-1]}:{qual}" for name, qual in reversed(chain[-8:]))
+            return [f"paid_api_call_site_closed_on_refuted:{key}: a closed entry reaches it unguarded: {text}"]
+        for callee in forward.get(node, ()):
+            if callee in seen or call_graph._calls_guard(callee, guards):
+                continue
+            seen.add(callee)
+            parent[callee] = node
+            queue.append(callee)
+    return []
+
+
+__all__ = ["CallGraph", "automatic_roots", "claim_blockers", "closed_entry_blockers", "graph", "site_module"]

@@ -12,7 +12,7 @@ Primary references:
 
 Required behavior:
 - Treat Blueprint as site-world-first.
-- Keep `BlueprintCapture` and `BlueprintCapturePipeline` as the default operating path for building capture-backed site worlds.
+- Keep the WebApp browser upload (a person who works at the site films the job on their own phone) and `BlueprintCapturePipeline` as the default operating path for building capture-backed site worlds. The `BlueprintCapture` phone apps are not in use; that repository is kept only for its `extractFrames` upload hand-off.
 - Treat `Blueprint-WebApp` as the operating layer around site-world records, runtime state, and downstream consumption.
 - Treat `BlueprintValidation` as a downstream consumer of site-world packages, not the default output path.
 - Treat legacy qualification/readiness artifacts as compatibility overlays, not source-of-truth product framing.

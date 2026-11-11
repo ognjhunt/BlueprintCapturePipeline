@@ -103,5 +103,10 @@ remote_cpu_worker_stages = {
   }
 }
 
+# Off-host GPU reaper (docs/runbooks/off-host-gpu-reaper.md). Off by default;
+# the owner turns it on after creating the Vast key secret:
+# off_host_gpu_reaper_enabled                  = true
+# off_host_gpu_reaper_vast_api_key_secret_name = "vast-api-key-off-host-reaper"
+
 # Enable push notifications via Firebase Cloud Messaging
 enable_notifications = true

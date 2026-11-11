@@ -60,6 +60,7 @@ from blueprint_pipeline.spend_admission_lock import (
     build_spend_admission_lock,
     retired_provider_inventory_row,
 )
+from blueprint_pipeline import control_plane_restore_money_hold as restore_money_hold
 
 SCHEMA_VERSION = "gpu_spend_guard.v1"
 SPEND_LEDGER_SCHEMA_VERSION = "gpu_spend_ledger.v1"
@@ -2471,6 +2472,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             billing_reconciliation=billing_reconciliation,
         )
         if args.admission_lock_report:
+            # A restore from backup keeps admission closed until this run's reap and the billing feed
+            # both postdate it; the run that sees both retires the hold (control_plane_restore_money_hold).
+            hold_path = Path(args.admission_lock_report).parent / restore_money_hold.MARKER_NAME
+            terminated = {
+                (str(row.get("provider")), str(row.get("id")))
+                for row in reap_results
+                if row.get("status") == "terminated"
+            }
+            restore_hold = restore_money_hold.evaluate(
+                restore_money_hold.read_hold(hold_path),
+                billing=billing_reconciliation,
+                reap_mode=bool(args.reap),
+                inventory_complete=not inventory_blocked,
+                all_reap_candidates_terminated=all(
+                    (str(inst.provider), str(inst.id)) in terminated for inst in candidates
+                ),
+                now=now,
+            )
             admission_lock = build_spend_admission_lock(
                 fleet_budget=fleet_budget,
                 billing_reconciliation=billing_reconciliation,
@@ -2484,11 +2503,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if args.admission_override
                 else None,
                 now=datetime.fromtimestamp(now, timezone.utc),
+                restore_hold=restore_hold,
             )
             admission_path = Path(args.admission_lock_report)
             admission_path.parent.mkdir(parents=True, exist_ok=True)
             write_json(admission_path, admission_lock)
             print(f"Paid-work admission lock written: {admission_path}")
+            if restore_hold is not None and restore_hold.get("status") == "cleared":
+                retired = restore_money_hold.retire(hold_path, restore_hold, now=now)
+                print(f"Restore money hold retired: {retired}")
             report = build_json_report(
                 instances,
                 protected_ids=protected,

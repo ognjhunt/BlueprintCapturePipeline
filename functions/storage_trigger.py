@@ -18,6 +18,12 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
+from blueprint_pipeline.device_capture_pipeline_switch import closed_device_capture_record  # noqa: E402
+from blueprint_pipeline.website_capture_entry import (  # noqa: E402
+    is_website_capture_identity,
+    is_website_entry_source,
+)
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,6 +34,8 @@ _DESCRIPTOR_PATTERN = re.compile(
 _RAW_COMPLETE_PATTERN = re.compile(
     r"^scenes/(?P<scene_id>[^/]+)/captures/(?P<capture_id>[^/]+)/raw/capture_upload_complete\.json$"
 )
+_URI_IDENTITY_PATTERN = re.compile(r"^gs://[^/]+/scenes/(?P<scene_id>[^/]+)/captures/(?P<capture_id>[^/]+)(?:/|$)")
+_URI_FIELDS = ("descriptor_gcs_uri", "capture_descriptor_uri", "raw_prefix_uri", "pipeline_handoff_uri")
 
 
 def _utc_now_iso() -> str:
@@ -81,6 +89,44 @@ def _bool_env(name: str, default: bool = False) -> bool:
 
 def _capture_bridge_handoff_primary() -> bool:
     return _bool_env("SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF", default=False)
+
+
+def _website_capture_named(payload: Dict[str, Any]) -> bool:
+    """Whether a dispatch payload names a website capture, by its ids, its URIs or its source.
+
+    The swap dispatch and the Cloud Run job are the capture app's path; a website capture is
+    the host listener's alone, whose paid work passes the account's monthly limit.
+    """
+    identities = [(payload.get("scene_id"), payload.get("capture_id"))]
+    for field in _URI_FIELDS:
+        match = _URI_IDENTITY_PATTERN.match(str(payload.get(field) or "").strip())
+        if match:
+            identities.append((match["scene_id"], match["capture_id"]))
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    return (any(is_website_capture_identity(scene, capture) for scene, capture in identities)
+            or is_website_entry_source(payload.get("capture_source"))
+            or is_website_entry_source(payload.get("capture_entry_source"))
+            or is_website_entry_source(metadata.get("capture_entry_source"))
+            or payload.get("site_self_capture") is not None)
+
+
+def _refused_dispatch(payload: Dict[str, Any], *, entry: str) -> Optional[str]:
+    """Why this payload must not start the capture app's path, or None.
+
+    A refusal is an acknowledgement: the caller returns normally, so nothing is redelivered.
+    """
+    scene_id, capture_id = payload.get("scene_id"), payload.get("capture_id")
+    if _website_capture_named(payload):
+        logger.info(
+            "Dropping website capture scene=%s capture=%s at %s: the host listener owns it",
+            scene_id, capture_id, entry,
+        )
+        return "skipped:website_capture"
+    closed = closed_device_capture_record(entry=entry, scene_id=scene_id, capture_id=capture_id)
+    if closed is not None:
+        logger.info(json.dumps(closed, sort_keys=True))
+        return f"skipped:{closed['reason']}"
+    return None
 
 
 def _build_dispatch_payload(
@@ -249,6 +295,10 @@ def _dispatch_cloud_tasks(payload: Dict[str, Any]) -> str:
 
 
 def _dispatch_payload(payload: Dict[str, Any], *, mode: Optional[str] = None) -> str:
+    if _website_capture_named(payload):
+        logger.info("Not dispatching website capture scene=%s capture=%s to the capture app's path",
+                    payload.get("scene_id"), payload.get("capture_id"))
+        return "skipped:website_capture"
     dispatch_mode = _dispatch_mode(mode)
     if dispatch_mode == "pubsub":
         return _dispatch_pubsub(payload)
@@ -271,6 +321,9 @@ def _dispatch_payload(payload: Dict[str, Any], *, mode: Optional[str] = None) ->
         ).strip()
         if not descriptor_uri:
             raise RuntimeError("Dispatch payload missing descriptor_gcs_uri")
+        refused = _refused_dispatch(payload, entry="storage_trigger.direct")
+        if refused:
+            return refused
         run_capture_pipeline(**_pipeline_kwargs_from_payload(payload, descriptor_uri=descriptor_uri))
         return "direct:completed"
     raise RuntimeError(f"Unsupported SWAP_TRIGGER_DISPATCH_MODE: {dispatch_mode}")
@@ -299,6 +352,11 @@ def _pipeline_kwargs_from_payload(payload: Dict[str, Any], *, descriptor_uri: st
 
 
 def run_capture_pipeline(**kwargs: Any) -> Any:
+    # Every in-process run of the capture app's pipeline passes here; closed unless switched on.
+    closed = closed_device_capture_record(entry="storage_trigger.in_process")
+    if closed is not None:
+        logger.info(json.dumps(closed, sort_keys=True))
+        return closed
     from blueprint_pipeline.capture_orchestrator import run_capture_pipeline as _run_capture_pipeline
 
     return _run_capture_pipeline(**kwargs)
@@ -426,6 +484,9 @@ def _run_pipeline_inline(payload: Dict[str, Any]) -> str:
 
 
 def _execute_pipeline_payload(payload: Dict[str, Any]) -> str:
+    refused = _refused_dispatch(payload, entry="swap_dispatch")
+    if refused:
+        return refused
     execution_mode = _pipeline_execution_mode()
     if execution_mode == "cloud_run_job":
         return _launch_cloud_run_job(payload)
@@ -496,6 +557,11 @@ def on_storage_finalize(event: Dict[str, Any], context: Any) -> None:  # noqa: A
         )
         publish_result = _publish_handoff_message(handoff_payload)
         logger.info("Capture bridge handoff published: %s", publish_result)
+        return
+    if is_website_capture_identity(raw_complete["scene_id"], raw_complete["capture_id"]):
+        # Below is the capture app's path (materialize, then dispatch); a website upload is the listener's.
+        logger.info("Not dispatching website capture scene=%s capture=%s to the capture app's path",
+                    raw_complete["scene_id"], raw_complete["capture_id"])
         return
     readiness = capture_materialization_readiness(
         bucket=bucket,

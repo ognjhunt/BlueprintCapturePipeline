@@ -27,9 +27,9 @@ of `supply-chain`, and this gate fails unless they pass. On main they stay
 and undeployable. The pull request's copy of those steps has no permission to sign.
 
 The sentinels include the whole-repository paid-resource allocator
-verification and the module line-budget governance policy. `ci.yml` runs those
-scripts only on push to `main`, where a failure blocks the signed deploy
-artifact after merge, so the required PR gate checks them first.
+verification and the module line-budget governance policy. A failure of either
+on `main` blocks the signed deploy artifact after merge, so the required PR gate
+checks them first.
 
 `python -m blueprint_pipeline.impacted_test_selection` is the shared selector
 and runner. Its local build-loop default is a hard 120-second wall-time limit.
@@ -250,3 +250,47 @@ Release packets and deploy evidence must also follow
 and absolute local credential-file paths are not publishable evidence. Readiness
 artifacts may record credential presence, mode, source, and redaction metadata
 only.
+
+## Checks before merge, pinned sets, and CI's user (2026-11-11)
+
+Four checks, `lint`, `typecheck`, `sast` and `source-governance`, run on every
+pull request as on `main`, and `Impacted test and sentinel gate` fails a pull
+request unless each passes. Until 2026-11-11 they ran only after
+merge: a Bandit finding merged on 2026-11-08 left `main` red and blocked every
+deploy until 2026-11-10. They need no other job, so they start with the impact
+plan and never wait for the test lanes. Each runs whole, as on `main`: none of
+them is the slow part of a run, and the Bandit policy gate needs the whole scan
+(a partial report reads every triaged finding outside it as orphaned). On `main`
+the gate does not check them; `lint`, `typecheck`, `sast` and `source-governance`
+stay `supply-chain`'s prerequisites there, as before. `foundation-prerequisites`
+stays after merge, on push only, because it reads external hosts and an outage
+there would hold every pull request.
+
+A test that asserts a complete set runs, by test node, in the bounded lane
+whenever a member can change, even when its file went to the wide or full lane
+(`src/blueprint_pipeline/impacted_pinned_sets.py`). The selector reads three
+signs from the test itself: it lists a repository directory
+(`SYSTEMD_DIR.iterdir()`, `.glob("*.timer")`), and a change to a file there
+selects it; it compares a module's upper-case constant with a literal set
+(`stall_alarm.PAGE_CODES == {...}`), and a change to the module defining it, or
+to a module the definition takes names from, selects it; or it declares
+`@pytest.mark.pins("blueprint_pipeline.module", "path/glob")` for a rule another
+module owns.
+
+On a root development machine, `scripts/dev/nonroot_pytest.sh <test paths>` runs
+tests as `nobody` with a temporary home and a clean environment, as CI's
+unprivileged user would: writing over a read-only record or under
+`/var/lib/blueprint` fails there as it does in CI. The checkout still belongs to
+root, so a test that checks file ownership or writes into the checkout fails
+for that reason alone; such a failure also appears when the same command runs
+on a clean checkout of `main`.
+
+The Full Test Lane and the wide lane give the locked dependency install three
+bounded attempts (it was two; a shard died on 2026-11-10 when the download did
+not finish twice). `uv lock --check` runs once before any attempt, and every
+attempt is `uv sync --frozen`, so a lock that does not match fails at once and
+nothing is ever resolved anew.
+
+Not covered: no check finds a committed test or fixture date that will pass, which
+code under test compares with the real clock. A run of the tests with the clock
+shifted a year ahead would find them.

@@ -9,6 +9,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
@@ -324,7 +326,7 @@ def test_final_gate_refuses_a_failed_supply_chain_check_on_a_pull_request():
             'WIDE_REQUIRED': 'false', 'WIDE_RESULT': 'skipped',
             'EVENT_NAME': event, 'SUPPLY_INPUTS_CHANGED': changed,
             'DEPENDENCY_RESULT': dependency, 'CONTAINER_RESULT': container, 'SUPPLY_PREVIEW_RESULT': preview,
-        }
+        } | {variable: 'success' for variable in PRE_MERGE_CHECKS.values()}
         outcome = subprocess.run(['bash', '-e', '-c', gate['steps'][0]['run']],
                                  env=environment, capture_output=True, check=False)
         # On main they stay supply-chain's prerequisites and never turn the gate red.
@@ -347,15 +349,55 @@ def test_network_installs_get_one_more_attempt_and_tests_never_do():
         assert (first['uses'], first['with']) == (second['uses'], second['with'])
 
         install = next(step for step in steps if 'uv sync --frozen' in step.get('run', ''))
-        assert 'for attempt in 1 2; do' in install['run']
+        assert 'for attempt in 1 2 3; do' in install['run']
         assert 'timeout --kill-after=10s 360s uv sync --frozen' in install['run']
         assert 'timeout --kill-after=10s 90s uv pip install' in install['run']
+        # The lock is checked once, before any attempt: a lock that does not match fails at once.
+        assert install['run'].index('uv lock --check') < install['run'].index('for attempt')
+        # Three full attempts fit inside the step, and the step inside the job.
+        assert 3 * (360 + 10 + 90 + 10) <= int(install['timeout-minutes']) * 60
         assert int(install['timeout-minutes']) < int(document['jobs'][next(iter(document['jobs']))]['timeout-minutes'])
 
         for step in steps:
             if 'pytest' in step.get('run', ''):
                 assert 'continue-on-error' not in step, step['name']
                 assert 'for attempt' not in step['run'], step['name']
+
+
+@pytest.mark.parametrize('workflow', ['full-test-lane.yml', 'impacted-wide-lane.yml'])
+@pytest.mark.parametrize('failures, succeeds', [(0, True), (2, True), (3, False)])
+def test_the_locked_install_takes_a_third_attempt_and_no_fourth(tmp_path, workflow, failures, succeeds):
+    """A shard died on 2026-11-10 when the download did not finish twice; nothing was wrong with the change."""
+    import yaml
+
+    document = yaml.load((ROOT / '.github/workflows' / workflow).read_text(), Loader=yaml.BaseLoader)
+    job = document['jobs']['full-pytest-shard' if workflow == 'full-test-lane.yml' else 'wide-shard']
+    run = next(step for step in job['steps'] if 'uv sync --frozen' in step.get('run', ''))['run']
+    loop = run[run.index('for attempt'):run.index('\ndone\n') + len('\ndone\n')]
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    # timeout runs the command as given; uv sync fails the first `failures` times, as a stalled download would.
+    (bin_dir / 'timeout').write_text('#!/bin/sh\nshift 2\nexec "$@"\n')
+    (bin_dir / 'uv').write_text(textwrap.dedent('''\
+        #!/bin/sh
+        echo "$1" >> "$CALLS"
+        if [ "$1" = sync ]; then
+          n=$(grep -c '^sync$' "$CALLS")
+          [ "$n" -gt "$FAILURES" ] || exit 2
+        fi
+        exit 0
+        '''))
+    for tool in bin_dir.iterdir():
+        tool.chmod(0o755)
+    calls = tmp_path / 'calls'
+    outcome = subprocess.run(['bash', '-euo', 'pipefail', '-c', loop], capture_output=True, text=True, check=False,
+                             env=os.environ | {'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}',
+                                               'CALLS': str(calls), 'FAILURES': str(failures)})
+    assert (outcome.returncode == 0) is succeeds, outcome.stdout + outcome.stderr
+    syncs = calls.read_text().splitlines().count('sync')
+    assert syncs == min(failures + 1, 3)
+    if not succeeds:
+        assert 'locked dependency install failed after three bounded attempts' in outcome.stdout
 
 
 def _run_script(name: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -464,8 +506,9 @@ def test_full_lane_runs_every_planned_shard_and_never_queues_another_commit() ->
     assert {f"Full pytest shard {index} of {SHARD_COUNT}" for index in range(SHARD_COUNT)} == (
         CANONICAL_SHARD_JOB_NAMES
     )
-    # A balanced shard runs about 15 minutes; a wedged one fails at 45, not 90.
-    assert shard["timeout-minutes"] == "45"
+    # A balanced shard runs about 15 minutes; a wedged one fails at 53, not 90
+    # (45 plus the eight minutes of the dependency install's third attempt).
+    assert shard["timeout-minutes"] == "53"
     run = next(step for step in shard["steps"] if step["name"] == "Run full lane shard")
     assert ".run_paths[]" in run["run"]
     assert run["env"][SHARD_PLAN_ENV] == "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-plan.json"
@@ -531,11 +574,7 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
     )
 
     for job in (
-        "lint",
         "foundation-prerequisites",
-        "typecheck",
-        "sast",
-        "source-governance",
         "supply-chain",
         "dependency-security",
         "container-contract",
@@ -547,6 +586,54 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
             assert "github.event_name == 'push' &&" in job_block
         else:
             assert "if: github.event_name == 'push'" in job_block, job
+
+
+PRE_MERGE_CHECKS = {
+    "lint": "LINT_RESULT",
+    "typecheck": "TYPECHECK_RESULT",
+    "sast": "SAST_RESULT",
+    "source-governance": "GOVERNANCE_RESULT",
+}
+
+
+def test_post_merge_checks_run_on_pull_requests_and_a_red_one_fails_the_gate():
+    """A Bandit finding merged on 2026-11-08 because these four ran only on push to main.
+
+    foundation-prerequisites stays push-only and outside the gate: it is a live read of
+    external hosts, not a check of the tree, and an outage there would hold every pull
+    request with no way for its owner to re-run the job.
+    """
+    jobs = _ci_jobs()
+    gate = jobs["impacted-gate"]
+    step = gate["steps"][0]
+    assert jobs["foundation-prerequisites"]["if"] == "github.event_name == 'push'"
+    assert "foundation-prerequisites" not in gate["needs"]
+    assert "foundation-prerequisites" not in str(step["env"]) + step["run"]
+    for job, variable in PRE_MERGE_CHECKS.items():
+        # Unconditional and independent: they start at once and never wait for the test lanes.
+        assert "if" not in jobs[job], job
+        assert "needs" not in jobs[job], job
+        assert job in gate["needs"], job
+        assert step["env"][variable] == "${{ needs.%s.result }}" % job
+    # supply-chain still needs the same four on main.
+    assert {"lint", "typecheck", "sast", "source-governance"} <= set(jobs["supply-chain"]["needs"])
+    base = os.environ | {
+        "IMPACT_RESULT": "success", "IMPACTED_RESULT": "success",
+        "NATIVE_REQUIRED": "false", "NATIVE_RESULT": "skipped",
+        "NATIVE_SCENE_REQUIRED": "false", "NATIVE_SCENE_RESULT": "skipped",
+        "FULL_REQUIRED": "false", "FULL_RESULT": "skipped",
+        "WIDE_REQUIRED": "false", "WIDE_RESULT": "skipped",
+        "SUPPLY_INPUTS_CHANGED": "false",
+    } | {variable: "success" for variable in PRE_MERGE_CHECKS.values()}
+    for event in ("pull_request", "push"):
+        for variable in PRE_MERGE_CHECKS.values():
+            for result in ("success", "failure", "skipped", "cancelled"):
+                environment = base | {"EVENT_NAME": event, variable: result}
+                outcome = subprocess.run(["bash", "-e", "-c", step["run"]],
+                                         env=environment, capture_output=True, check=False)
+                # On main the gate's verdict is unchanged; supply-chain still refuses to attest.
+                expected = event == "push" or result == "success"
+                assert (outcome.returncode == 0) is expected, (event, variable, result)
 
 
 def test_core_workflows_bind_runner_temp_only_after_job_start() -> None:

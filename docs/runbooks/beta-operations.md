@@ -625,7 +625,9 @@ Only the owner, with SSH from the owner's Mac, can do these (WebApp
 - Record a break-glass note for each change ([`break-glass.md`](break-glass.md)).
 
 If SSH also fails, the host itself is down. Host recovery is the owner's
-action. This repo has no runbook to restart or rebuild the host (unknown).
+action. To rebuild the host from the repository, the state backup and the owner's secrets, see
+[Control-plane state backup and host rebuild](#control-plane-state-backup-and-host-rebuild).
+That rebuild has never been run on a fresh host (unproven).
 
 ## 5. Roll back a bad deploy
 
@@ -1154,3 +1156,85 @@ deploy before you turn it on.
   then follows today's rule on its next tick: it is held if its launch was
   submitted, otherwise it is rebuilt on the live release. The new release's
   workers refuse its old request by commit again, before any provider call.
+
+## Control-plane state backup and host rebuild
+
+What is backed up, every 15 minutes (`blueprint-control-plane-state-backup.timer`,
+`control_plane_state_backup.ALLOWLIST`): ledgers, money records, receipts, consents,
+standing approvals, job queues (their JSON records), `/etc/blueprint` without
+`provider-secrets/`, `credentials/` and `control-plane-backup/`, and each site's
+withdrawal journal. Site data is never backed up: capture video, scene workspaces,
+reconstructions, run evidence and the site-derived stores. Caches, scratch and
+releases are skipped too. Each run's report (`control-plane-backup/latest.json`)
+names every skipped root and why, and counts what a size bound left out.
+
+- Encryption: AES-GCM under the owner's key. Only the host and the holder of the key
+  can read a backup. The bucket sees only part digests and times.
+- Kept: seven days. The newest complete generation is always kept.
+- Until the owner installs the key and bucket files (owner steps below), the unit is
+  skipped and nothing is backed up. Once a backup has completed, the stall alarm pages
+  `control_plane_backup_stale` when none completes for two hours, even if the unit
+  never runs (a forgotten door hold, a dead timer).
+- A run is bounded in bytes and time. A run that cannot finish is `incomplete`,
+  uploads no seal and fails the unit, so the failure notifier reports it.
+- Env files under `/etc/blueprint` are in the backup, encrypted. If one holds a
+  secret inline, the backup holds that secret too.
+
+**Withdrawal.** After a site's deletion receipt is sealed, the next backup run:
+
+1. takes a fresh generation;
+2. lists every object version in the bucket;
+3. deletes every version of every older generation;
+4. lists again to prove they are gone;
+5. writes `website_withdrawal/backup_purge_receipts/<digest>.json`.
+
+Until that receipt says `purged`, the withdrawal pass reports the site
+`incomplete` and waiting on `backup_copies_not_purged`. A bucket that cannot be
+listed leaves it `unknown`, never purged.
+
+**Money after a restore.** A restore onto `/` writes
+`gpu_spend_guard/restore_hold.v1.json`. The spend guard keeps paid admission closed
+(`restored_from_backup_reconciliation_pending`) until two things have both happened
+after the restore: one of its own `--reap` runs with complete inventory and every
+orphan terminated, and a reconciled billing feed. The guard run that sees both
+retires the hold. No operator step clears it.
+
+**Rebuild.** Run `scripts/rebuild_control_plane_host.sh --secrets-from DIR
+--work-volume-device DEV`. Run it with `--dry-run` first; it needs no root.
+
+- It refuses and names every owner secret missing from
+  `deploy/host/rebuild-owner-secrets.txt`, unless the owner waives one by name.
+- Before it binds the work volume, it creates each missing bulk root empty
+  (`mount_work_volume.sh --list-roots`; owner from `control_plane_storage_roots`, mode
+  0750, group `blueprint`). `mount_work_volume.sh` skips a root that does not exist,
+  so without this the volume would be mounted and nothing bound to it.
+- It then checks that every bulk root is a mount point on the work volume, and
+  refuses to restore or install anything until each one is
+  (`--verify-volume` runs that check alone).
+- It restores the standing approvals exactly as they were backed up.
+- It publishes the active release (`/opt/blueprint/task-evaluation-control-plane`)
+  by running the normal deploy tool, `scripts/deploy_control_plane_commit.py`, for
+  this checkout's commit, with the operator door's arguments (`--iteration
+  --preserve-configured-controls-state`). That tool also installs and arms the
+  deployed units.
+- Only after the release exists does it enable the units recorded in the backup.
+- None of this has been run on a fresh host (unproven): not the empty-root bind,
+  not the deploy tool on a host with no earlier release, and not
+  `mount_work_volume.sh` itself on a fresh, empty host. The volume step needs
+  `rsync` on the host; without it, the step refuses.
+
+**Owner steps** (none done; the repository states no price for the bucket):
+
+1. Create a dedicated private B2 bucket, versioning on, with no object lock (the
+   withdrawal purge must be able to delete versions).
+2. Create an application key that can reach only that bucket.
+3. Put these files under `/etc/blueprint/control-plane-backup/` (0600 root):
+   - `b2_key_id`, `b2_application_key`, `b2_bucket`, `b2_s3_endpoint_url`, `b2_region`;
+   - `encryption_key`: 64 hex characters, for example from `openssl rand -hex 32`.
+
+   Keep an offline copy of the key and the bucket credentials. Without them no
+   backup can be restored.
+4. Keep the secrets that `deploy/host/rebuild-owner-secrets.txt` lists, outside the host.
+5. Run the first restore drill on the real host, into a temporary root:
+   `python -m blueprint_pipeline.control_plane_state_backup restore --fs-root /tmp/drill`
+   with the unit's environment. Then compare files, and delete the temporary root.

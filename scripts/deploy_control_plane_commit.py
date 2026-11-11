@@ -514,6 +514,13 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     # approval file, which no deploy installs (website_capture_withdrawal_automatic).
     "blueprint-website-withdrawal-deletion.service",
     "blueprint-website-withdrawal-deletion.timer",
+    # Backs up class (a) state every 15 minutes to the owner's encrypted bucket; it reads state,
+    # writes only its report root and withdrawal purge receipts (control_plane_state_backup).
+    "blueprint-control-plane-state-backup.service",
+    "blueprint-control-plane-state-backup.timer",
+    # Publishes the host's heartbeat and Vast deadlines for the off-host GPU reaper.
+    "blueprint-off-host-reaper-heartbeat.service",
+    "blueprint-off-host-reaper-heartbeat.timer",
     # Retires superseded release and runtime trees behind receipts (its own owner switch).
     "blueprint-control-plane-release-lifecycle.service",
     "blueprint-control-plane-release-lifecycle.timer",
@@ -628,6 +635,10 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # No-spend privacy housekeeping: plans withdrawn sites' deletion, one per run, never
     # while a paid stage is live; deletes only under the owner's standing approval file.
     "blueprint-website-withdrawal-deletion.timer",
+    # No-spend state backup and its withdrawal purge; a door hold pauses it.
+    "blueprint-control-plane-state-backup.timer",
+    # Money safety, no spend: left off, the off-host GPU reaper would read the host as gone.
+    "blueprint-off-host-reaper-heartbeat.timer",
     # No-spend housekeeping with its own receipts and owner switch; a door hold pauses it.
     "blueprint-control-plane-release-lifecycle.timer",
     "blueprint-control-plane-capacity.timer",

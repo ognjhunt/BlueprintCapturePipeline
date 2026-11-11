@@ -1,0 +1,71 @@
+[Unit]
+Description=Back up the control plane's job state, money records and receipts to the dedicated encrypted bucket
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline/blob/main/docs/runbooks/beta-operations.md#control-plane-state-backup-and-host-rebuild
+# An incomplete run (a bound reached, an upload or listing that failed) or a withdrawal purge that could
+# not be proven exits 2, so the notifier reports it (blueprint-unit-failure@.service).
+OnFailure=blueprint-unit-failure@%n.service
+Wants=network-online.target
+After=network-online.target
+# A host the owner has not set up is quiet: until the owner installs the key and bucket files the unit
+# is skipped (not failed) and nothing is backed up. Once a backup has completed, the stall alarm pages
+# control_plane_backup_stale if none completes for two hours, whether or not this unit runs.
+ConditionPathExists=/etc/blueprint/control-plane-backup/encryption_key
+ConditionPathExists=/etc/blueprint/control-plane-backup/b2_bucket
+
+[Service]
+Type=oneshot
+# Root, read-only on the state it copies: the scene-retirement journals, the door's authority and
+# /etc/blueprint are root-owned and private. It writes only its own report root and each withdrawn
+# site's backup purge receipt, beside the deletion receipt, owned like the journal it sits in.
+User=root
+Group=root
+# The ledger and report are read by the withdrawal unit as the service account; they name no path.
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_CHOWN
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_CHOWN
+# The dedicated backup bucket (B2, S3 API) and nothing else.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/control-plane-backup /var/lib/blueprint/pubsub-handoffs
+TasksMax=32
+# Bounded per run in bytes and time (control_plane_state_backup.DEFAULT_MAX_BYTES, DEFAULT_MAX_SECONDS), one
+# file of at most 16 MiB and one 8 MiB part in memory at a time. Not measured on the host yet. In the batch
+# slice so that, with the job-moving units, it can never starve the host; housekeeping, retried: +200.
+Slice=system-blueprintbatch.slice
+MemoryMax=512M
+OOMScoreAdjust=200
+CPUQuota=50%
+CPUWeight=10
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+IOWeight=10
+TimeoutStartSec=20min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_CONTROL_PLANE_BACKUP_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/control-plane-backup
+Environment=BLUEPRINT_WEBSITE_WITHDRAWAL_SITE_ROOTS=/var/lib/blueprint/pubsub-handoffs
+# The owner supplies these files (docs/runbooks/beta-operations.md); without them the run fails and reports.
+Environment=BLUEPRINT_CONTROL_PLANE_BACKUP_ENCRYPTION_KEY_FILE=/etc/blueprint/control-plane-backup/encryption_key
+Environment=BLUEPRINT_CONTROL_PLANE_BACKUP_ACCESS_KEY_ID_FILE=/etc/blueprint/control-plane-backup/b2_key_id
+Environment=BLUEPRINT_CONTROL_PLANE_BACKUP_SECRET_ACCESS_KEY_FILE=/etc/blueprint/control-plane-backup/b2_application_key
+Environment=BLUEPRINT_CONTROL_PLANE_BACKUP_BUCKET_FILE=/etc/blueprint/control-plane-backup/b2_bucket
+Environment=BLUEPRINT_CONTROL_PLANE_BACKUP_ENDPOINT_URL_FILE=/etc/blueprint/control-plane-backup/b2_s3_endpoint_url
+Environment=BLUEPRINT_CONTROL_PLANE_BACKUP_REGION_FILE=/etc/blueprint/control-plane-backup/b2_region
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.control_plane_state_backup run'

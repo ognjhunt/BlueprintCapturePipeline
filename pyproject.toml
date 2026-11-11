@@ -487,5 +487,6 @@ markers = [
     "external_runtime: marks tests requiring a separately provisioned exact external runtime; excluded from the hermetic CPU full lane",
     "gpu: marks tests requiring GPU",
     "integration: marks integration tests",
+    "pins(*targets): the test asserts a complete set; the impacted lane selects it when a target (a dotted module or a repository path glob) changes",
     "slow: marks slow tests",
 ]

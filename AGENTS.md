@@ -100,7 +100,10 @@ results never enter ADP evidence, and only ADP may claim physical validation.
 
 `BlueprintCapture`, `Blueprint-WebApp` and this repo are sibling checkouts;
 where they live depends on the environment. If a sibling you need is missing,
-say so.
+say so. The `BlueprintCapture` phone apps are not in use: a person who works at
+the site films the job on their own phone and uploads it through the WebApp.
+That repository is kept for its `extractFrames` upload hand-off; see "How
+Capture Works" in `PLATFORM_CONTEXT.md`.
 
 ## Cloud Sessions
 
@@ -151,6 +154,7 @@ python -m pip install -e .[dev]
 python -m blueprint_pipeline.impacted_test_selection  # changed tests, capped at 120s
 ruff check <changed Python files>
 scripts/pytest_fast.sh                                # broader, slower
+scripts/dev/nonroot_pytest.sh <test paths>          # as CI's non-root user, on a root machine
 ```
 
 Before merging or deploying a fix for a stopped production job, replay the job's

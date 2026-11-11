@@ -1,5 +1,11 @@
 # Runbook: Beta ops incident response
 
+> **Capture, 2026-11-11.** No capture app is in use, and nobody else films for a
+> site: no outside capturers, Blueprint filming visits, capturer marketplace or
+> capturer payouts. Where this document describes the `BlueprintCapture` app,
+> capturers, visits or payouts, that is history.
+> How capture works today: "How Capture Works" in `PLATFORM_CONTEXT.md`.
+
 Status: active Pipeline-side companion to the cross-repo beta incident runbook
 in `../Blueprint-WebApp/docs/beta-ops-incident-runbook-2026-07-08.md`.
 

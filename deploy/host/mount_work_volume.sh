@@ -104,6 +104,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-terminal-resource-release.path
   blueprint-control-plane-storage-gc.timer
   blueprint-website-withdrawal-deletion.timer
+  blueprint-control-plane-state-backup.timer
   blueprint-control-plane-release-lifecycle.timer
   blueprint-pubsub-handoff-listener.timer
   blueprint-task-evaluation-scene-progression.timer
@@ -139,6 +140,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-terminal-resource-release.service
   blueprint-control-plane-storage-gc.service
   blueprint-website-withdrawal-deletion.service
+  blueprint-control-plane-state-backup.service
   blueprint-control-plane-release-lifecycle.service
   blueprint-owner-approved-deletion.service
   blueprint-owner-approved-deletion-plan.service
@@ -175,6 +177,8 @@ usage: $0 --device /dev/disk/by-id/<volume> [--mount ${MOUNT_DEFAULT}] [--plan |
           [--root-prefix DIR [--bound-roots-file FILE] [--assume-volume-free-mib N]]
 
   --plan              (default) print what would move, with sizes; changes nothing
+  --list-roots        print every root's host path, one per line, and exit (no --device;
+                      changes nothing); the host rebuild creates the missing ones from it
   --apply             perform the migration; requires root and --ack ${ACK_REQUIRED}
   --root-prefix       prefix every host path with DIR (hermetic tests; no mounts are
                       made, and DIR/etc/fstab is edited only when it exists)
@@ -217,11 +221,18 @@ while [ $# -gt 0 ]; do
     --assume-volume-free-mib) ASSUME_VOLUME_FREE_MIB="$2"; shift 2 ;;
     --plan) MODE="plan"; shift ;;
     --apply) MODE="apply"; shift ;;
+    --list-roots) MODE="list"; shift ;;
     --ack) ACK="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [ "${MODE}" = list ]; then
+  for rel in "${ROOTS[@]}"; do echo "${STATE_ROOT%/}/${rel}"; done
+  for abs in "${ABSOLUTE_ROOTS[@]}"; do echo "${abs}"; done
+  exit 0
+fi
 
 [ -n "${DEVICE}" ] || { echo "--device is required" >&2; exit 2; }
 

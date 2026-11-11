@@ -111,7 +111,10 @@ PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trig
                         "scene_budget_doubled",
                         # Not a stall: a preparation stopped on Blueprint's own records, paged once
                         # (preparation_fault_alert).
-                        "website_preparation_blueprint_fault"})
+                        "website_preparation_blueprint_fault",
+                        # Not a stall: the state backup's newest complete generation is over two hours old
+                        # (control_plane_state_backup.backup_freshness); a host never set up stays quiet.
+                        "control_plane_backup_stale"})
 INCOMPLETE_CODE = "stall_check_incomplete"
 
 DISABLE_ENV = "BLUEPRINT_STALL_ALARM"
@@ -1601,6 +1604,20 @@ def _check_preparation_faults(config: StallConfig, *, now: float, remembered: An
     return check_preparation_faults(config.atlas_storage_root, now=now, remembered=remembered, memory_out=memory_out)
 
 
+def _check_state_backup(*, now: float) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    from .control_plane_state_backup import STALE_CODE, backup_freshness, ledger_path, report_root_from_env
+
+    ledger = ledger_path(report_root_from_env())
+    section = backup_freshness(ledger, now=now)
+    if section["status"] == "unreadable":
+        return section, [_incomplete("state_backup_ledger_unreadable")]
+    if section["status"] != "stale":
+        return section, []
+    return section, [_page(STALE_CODE, [{"target": str(ledger), "age_seconds": section["age_seconds"],
+                                         "status": "never_completed" if not section["complete_generation_seen"]
+                                         else "stale"}])]
+
+
 def observe_stalls(
     config: StallConfig,
     *,
@@ -1661,6 +1678,7 @@ def observe_stalls(
         ("preparation_faults", lambda: _check_preparation_faults(
             config, now=observed, remembered=prior_memory.get("preparation_fault"),
             memory_out=preparation_fault_memory)),
+        ("state_backup", lambda: _check_state_backup(now=observed)),
     ):
         try:
             section, rows = run()
@@ -1719,6 +1737,9 @@ def describe(alert: Mapping[str, Any]) -> str | None:
     if code == "website_preparation_blueprint_fault":
         from .preparation_fault_alert import describe as describe_fault
         return describe_fault(alert)
+    if code == "control_plane_backup_stale":
+        what = "no backup has ever completed" if alert.get("status") == "never_completed" else "last complete backup"
+        return f"control-plane state backup stale: {what}, {age} old (timer held, stopped or failing?)"
     if code == "launch_lease_stuck":
         return f"launch lease in processing/ {age} with no dispatcher: {target}{tail}"
     if code == "launch_activation_stuck":

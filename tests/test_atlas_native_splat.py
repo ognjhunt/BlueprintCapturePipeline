@@ -721,6 +721,8 @@ def test_a_review_recorded_before_composites_keeps_its_candidates_and_is_never_b
     assert not (whole / native.CANDIDATE_RECORD).exists()
 
 
+# The resend rule this asserts is website_gemini_receipts's, not this module's.
+@pytest.mark.pins("blueprint_pipeline.website_gemini_receipts")
 @pytest.mark.parametrize("intent", ["reserved", "no_reservation_on_record"])
 def test_an_interrupted_review_is_asked_again_only_under_one_new_reservation(tmp_path, reviewer, monkeypatch, intent):
     """A review call stopped mid-flight left its intent ``submitting``: it may have been billed.
