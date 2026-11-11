@@ -749,7 +749,9 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
                 "contact_point_m": reach_inputs["contact_point_m"],
                 "subject_bounds_m": reach_inputs["subject_bounds_m"],
                 "destination_bounds_world_m": reach_inputs["destination_bounds_world_m"],
-                "place_yaw_free_rad": reach_inputs["place_yaw_free_rad"]}
+                "place_yaw_free_rad": reach_inputs["place_yaw_free_rad"],
+                "destination_orientation_xyzw": reach_inputs.get("destination_orientation_xyzw"),
+                "place_unbounded": bool(reach_inputs.get("place_unbounded"))}
         proposal = station_proposal(stances=stances, carry=carry, named=named, refused=refused,
                                     subject_center=subject_center, task=task, root_z=float(support_top),
                                     revision_digest=str(revision["revision_digest"]),

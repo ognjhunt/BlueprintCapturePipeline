@@ -616,3 +616,76 @@ def test_a_refused_measurement_is_a_typed_hold_and_never_compiles_the_half_again
     assert worker._measurement_due_untried(status) is None
     assert worker._measurement_due_untried({**status, worker.ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD: []}) == (
         "sha256:" + "2" * 64)
+
+
+# The same geometry the reach tests use: a put-down accepted anywhere 0.88-1.02 m from the shoulder, its
+# nominal target at 1.02 m, beyond the Franka's 0.990 m bound.
+_CHAIR = {"obstacle_id": "chair_1", "label": "dining chair", "kind": "chair",
+          "bounds_world_m": {"minimum": [0.2, 0.3, 0.0], "maximum": [0.6, 0.7, 0.9]}, "protected_world_m": []}
+
+
+def _region_task(target_x=1.02, region_near_x=0.88, orientation=(0.0, 0.0, 0.0, 1.0)):
+    return {"start_pose_world": [0.6, 0.0, 0.333, 0.0, 0.0, 0.0, 1.0], "target_position_world_m": [target_x, 0.0, 0.333],
+            "contact_point_m": [0.0, 0.0, 0.0], "subject_bounds_m": {"minimum": [-0.03] * 3, "maximum": [0.03] * 3},
+            "destination_bounds_world_m": {"minimum": [region_near_x, -0.05, 0.323],
+                                           "maximum": [target_x, 0.05, 0.343]},
+            "place_yaw_free_rad": 0.0, "destination_orientation_xyzw": list(orientation)}
+
+
+def _propose(task, at=(0.0, 0.0)):
+    stances = [{"search": {"movable_obstacle_counterfactual": {"stances": [
+        {"position_world_m": list(at), "moved": ["chair_1"], "farthest_task_point_m": 1.02}]}}}]
+    return access.station_proposal(stances=stances, carry={"cleared": False, "results": []}, named=[_CHAIR],
+                                   refused=[], subject_center=[0.8, 0.0, 0.333], task=task, root_z=0.0,
+                                   revision_digest="sha256:" + "1" * 64, collision_sha256="sha256:" + "2" * 64,
+                                   support_label="table")
+
+
+def _gate(task, at=(0.0, 0.0)):
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        rigid_carry_verdict,
+        rigid_reach_shortfall,
+    )
+
+    reach = rigid_reach_shortfall(
+        robot_id="franka_panda", base_pose_world=access._base_pose(at[0], at[1], 0.0, [0.8, 0.0, 0.333]),
+        start_pose_world=task["start_pose_world"], target_position_world=task["target_position_world_m"],
+        contact_point_m=task["contact_point_m"], subject_bounds_m=task["subject_bounds_m"],
+        destination_bounds_world_m=task["destination_bounds_world_m"], place_yaw_free_rad=task["place_yaw_free_rad"],
+        destination_orientation_xyzw=task["destination_orientation_xyzw"])
+    return rigid_carry_verdict({"status": "blocked", "blockers": ["robot_rigid_pick_place_unreachable:carry"]}, reach)
+
+
+def test_a_furniture_move_opening_a_stance_that_reaches_an_accepted_put_down_is_proposed_flagged():
+    from blueprint_pipeline.robot_arm_path_clearance import NOMINAL_CONTACT_FLAG
+
+    proposal = _propose(_region_task())
+    assert proposal["status"] == "proposed" and [row["obstacle_id"] for row in proposal["items"]] == ["chair_1"]
+    stance = proposal["enabled_stance"]
+    assert stance["reach"]["contact_status"] == "flagged" and stance["flags"] == [NOMINAL_CONTACT_FLAG]
+    assert stance["reach"]["task_contact_beyond"] == ["place"]
+    # Every field the record had is still there.
+    assert {"status", "reach_bound_m", "beyond", "task_contact_beyond", "phases"} <= set(stance["reach"])
+
+
+def test_a_furniture_move_whose_every_accepted_put_down_is_out_of_reach_is_not_proposed():
+    proposal = _propose(_region_task(target_x=1.10, region_near_x=1.04))
+    assert proposal["status"] == "not_proposed"
+    assert proposal["reason"] == "no_stance_clear_if_named_items_moved_within_reach"
+    assert proposal["tried"][0]["reach"]["contact_status"] == "out_of_reach"
+
+
+def test_a_furniture_move_with_the_put_down_in_reach_is_proposed_unflagged():
+    proposal = _propose(_region_task(target_x=0.90, region_near_x=0.85))
+    assert proposal["status"] == "proposed" and proposal["enabled_stance"]["reach"]["contact_status"] == "within_bound"
+    assert "flags" not in proposal["enabled_stance"]
+
+
+@pytest.mark.parametrize("target_x, region_near_x, orientation", [
+    (1.02, 0.88, (0.0, 0.0, 0.0, 1.0)), (1.10, 1.04, (0.0, 0.0, 0.0, 1.0)), (0.90, 0.85, (0.0, 0.0, 0.0, 1.0)),
+    (1.10, 1.04, (0.0, 0.7071068, 0.0, 0.7071068))])
+def test_the_furniture_proposal_and_the_admission_verdict_agree_on_the_same_geometry(
+        target_x, region_near_x, orientation):
+    task = _region_task(target_x, region_near_x, orientation)
+    proposed = _propose(task)["status"] == "proposed"
+    assert proposed == (_gate(task)["status"] != "blocked")
