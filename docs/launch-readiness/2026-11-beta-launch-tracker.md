@@ -113,6 +113,14 @@ An end-to-end audit of both repos on 2026-11-10 asked one question of every step
 - No automatic check finds a test that breaks when the date moves. A run with the clock shifted forward would.
 - The default local test run deselects tests marked `slow`. Two failures on #3556 reached CI for that reason.
 
+## Deploy on 2026-11-11 (15:00 UTC window, D-08)
+
+- **Before, 15:00Z (door status and requests):** active release `a0a6360` (#3558). No activation hold, no paid-launch lock held, no screening candidate launching or running, no deploy pending. The last deploy had finished at 04:32Z.
+- **15:00:39Z, head of main `13b48cc` (#3562): refused before anything changed.** Receipt `blocked`, `deploy_scene_retirement_runtime_unproven`, phase `await_attestation`, reason `ci_finished_without_attestation`. Main's CI (run 43032464587) and the Sim-Only Local Gate (run 43032464446) failed on that commit; both had passed on the commit before it. No provider change was made.
+- **15:06:25Z, `8add0da` (#3561), the newest commit on main with a passing CI: deployed at 15:18:23Z.** It carried #3556 (a job extends its own ceiling; the scripted reference row, which still cannot run on today's catalog), #3559 (state backup and rebuild, the off-host GPU reaper, checks before merge), #3560 (the reach rule: a stance counts only when the grasp contact is in reach at the pick-up and the put-down; stance search version 4) and #3561 (the capture app's pipeline deleted). After it: `commit_proven` true, no blockers, the same candidate counts as before.
+- **Not live:** #3562 (publication v4, how far each policy got). It goes out with the next window once main's failing check is fixed. The WebApp has accepted v4 since `bdd5bdc`.
+- **Replay for #3560:** the recorded job's launch run had been offloaded and the work disk had no room to restore it, so the documented replay could not run. The merged stance search was run offline on that job's retained inputs instead; the result is in `2026-11-11-simulation-proof-fast-lane-plan.md` (the job is not held under the new rule; it continues, flagged).
+
 ## Library-aisle navigation run (2026-11-06)
 
 The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.
