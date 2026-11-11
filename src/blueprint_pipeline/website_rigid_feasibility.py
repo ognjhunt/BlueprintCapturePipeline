@@ -3,18 +3,20 @@
 The station is the one the team packet takes (``team_scene_packet``): a mount
 level with the lower of the task's supports, on the closest clear floor, facing
 the start or, when the object ends on another surface, the whole region from
-the start to the target. The hard reach rule decides: from some clear stance,
-some point of the object must lie within the arm's chain reach bound at its
-start and at its place (``robot_arm_path_clearance.rigid_reach_shortfall``); a
-learned policy chooses its own grasp, so that is all a refusal may rest on.
-With no clear stance in reach the verdict abstains with
+the start to the target. The reach rule decides: from some clear stance, the
+carry's grasp contact (the object's centre: no task contact is sealed yet) must
+lie within the arm's chain reach bound at its start and at its place
+(``robot_arm_path_clearance.rigid_reach_shortfall``, ``task_contact_in_reach``),
+as the team packet's station search and the bundle's gate require: a run that
+cannot bring the contact to the place cannot produce a result. With no clear
+stance in reach the verdict abstains with
 ``robot_reach_insufficient:<phase>:<distance>m_vs_<bound>m`` before the owner is
 asked to pay for the scene build. The scripted carry is evidence: from the
-closest clear stances in reach the arm carries the object with one held grasp,
-clear of the reconstructed scene with its hand's body measured
+clear stances in reach, nearest contact first, the arm carries the object with
+one held grasp, clear of the reconstructed scene with its hand's body measured
 (``robot_arm_path_clearance.rigid_pick_place_clearance``), grasps tried best
 first: top-down, then tilted and side-on from four directions. A carry found is
-``clear``; none found, with the object in reach, is ``flagged``
+``clear``; none found, with the contact in reach, is ``flagged``
 (``scripted_carry_path_not_found``, with the attempt that got furthest) and the
 job goes on. Every embodiment an enabled screening candidate runs on is checked
 (``config/beta_policy_candidates.v1.json``); one the gate has no arm model of
@@ -101,8 +103,10 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
         SCRIPTED_CARRY_FLAG,
         RobotArmPathClearanceError,
         first_carrying_stance,
-        reach_shortfall_code,
+        reach_refusal_code,
         rigid_reach_shortfall,
+        task_contact_far_m,
+        task_contact_in_reach,
     )
     from .team_embodiment import TeamEmbodimentError
     from .team_embodiment_stance import EVERY_CLEAR_STANCE, ground_stance
@@ -128,7 +132,7 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
                              "robot_id": arms[0] if arms else None, "robot_profiles": profiles,
                              "unassessed_robot_profiles": unassessed, "collision_sha256": digest,
                              "grasp_basis": "one_held_grasp_top_down_first_then_tilted_and_side_on",
-                             "reach_rule": "nearest_point_of_object_within_reach_from_a_clear_stance",
+                             "reach_rule": "carry_contact_within_reach_at_pick_and_place_from_a_clear_stance",
                              "mount_rule": "level_with_lower_support", "claim_ceiling": "development_only",
                              "physical_world_truth_claimed": False, **({"risks": risks} if risks else {})}
 
@@ -170,7 +174,8 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
                 reaches.append(rigid_reach_shortfall(robot_id=arm, base_pose_world=stance, **reach_task))
             except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
                 reaches.append(None)
-        in_reach = [i for i, row in enumerate(reaches) if row is not None and row["status"] == "within_bound"]
+        in_reach = sorted((i for i, row in enumerate(reaches) if task_contact_in_reach(row)),
+                          key=lambda i: (task_contact_far_m(reaches[i]), i))
         tried = [stations[i] for i in in_reach[:CARRY_STATIONS]] if in_reach else stations[:CARRY_STATIONS]
         cleared, reach, attempts = first_carrying_stance(tried, collision_path=collision, robot_id=arm,
             seeds=[list(NOMINAL_SEED_RAD), list(REST_SEED_RAD[arm])], grasps=_grasps(lower, upper),
@@ -181,11 +186,11 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
         if cleared is not None:
             station, status = cleared, "clear"
         elif in_reach:
-            def nearest(index: int) -> float:
-                return max(float(row["object_nearest_distance_m"]) for row in reaches[index]["phases"])
-            station, status = stations[min(in_reach, key=lambda i: (nearest(i), i))], "flagged"
-        elif all(row is not None and row["status"] == "out_of_reach" for row in reaches):
-            station, status = stations[0], "abstained"
+            station, status = stations[in_reach[0]], "flagged"
+        elif all(row is not None for row in reaches):
+            # The stance whose contact is nearest names the shortfall.
+            station = stations[min(range(len(reaches)), key=lambda i: (task_contact_far_m(reaches[i]), i))]
+            status = "abstained"
         else:
             # A stance whose reach could not be measured proves nothing: flagged, never refused.
             station, status = stations[0], "flagged"
@@ -201,9 +206,9 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
                     **({"flags": [SCRIPTED_CARRY_FLAG]} if v == "flagged" else {})}
                    for a, _s, r, _t, v, o, n in results]
 
-    # Only the hard reach rule refuses: the object beyond reach from every clear stance, named at the closest.
-    blockers = [] if status != "abstained" else [reach_shortfall_code(object_reach)] if len(arms) == 1 else [
-        f"{row[0]}:{reach_shortfall_code(row[5])}" for row in results]
+    # Only the reach rule refuses: the contact beyond reach from every clear stance, named at the closest.
+    blockers = [] if status != "abstained" else [reach_refusal_code(object_reach)] if len(arms) == 1 else [
+        f"{row[0]}:{reach_refusal_code(row[5])}" for row in results]
     value["robot_id"] = arm
     return settle(status, blockers, station=station, reach=reach, embodiments=embodiments,
                   object_reach=object_reach, stances_in_reach=in_reach_count,

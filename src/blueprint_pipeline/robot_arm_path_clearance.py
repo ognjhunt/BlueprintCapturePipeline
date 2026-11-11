@@ -883,10 +883,12 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
     against ``arm_reach_bound`` plus the solver's position tolerance. ``beyond`` lists the phases whose
     nearest point is out of reach, farthest first: with any, no grasp, path or policy reaches the object
     there, a proof (``grasp_independent``). The task's own grasp contact (``contact_point_m``, as
-    ``rigid_pick_place_clearance`` holds it) is measured beside it as evidence (``task_contact_beyond``):
-    the scripted carry's contact, not the policy's. Without bounds only the contact is known: within the
-    bound it is a point of the object in reach; beyond it, nothing is proved (``unassessed``). No simulator
-    runs; this is CPU geometry.
+    ``rigid_pick_place_clearance`` holds it) is measured beside it (``task_contact_beyond``). ``status``
+    reports the object's nearest point only; a station is chosen, and a rigid carry admitted, only with
+    the contact also in reach at both ends (``task_contact_in_reach``, ``rigid_carry_verdict``), since a
+    run that cannot bring the task's contact to the place cannot produce a result. Without bounds only
+    the contact is known: within the bound it is a point of the object in reach; beyond it, ``status``
+    is ``unassessed``. No simulator runs; this is CPU geometry.
     """
     shoulder_base, bound = arm_reach_bound(robot_id)
     world_from_base = _pose_matrix(base_pose_world)
@@ -941,6 +943,32 @@ def reach_shortfall_code(reach: Mapping[str, Any]) -> str:
     """``reach_insufficient_code`` for an ``out_of_reach`` verdict: its farthest phase's nearest point."""
     far = next(row for row in reach["phases"] if row["phase"] == reach["beyond"][0])
     return reach_insufficient_code(far["phase"], far["object_nearest_distance_m"], reach["reach_bound_m"])
+
+
+def task_contact_in_reach(reach: Mapping[str, Any] | None) -> bool:
+    """Whether the task's grasp contact lies within the arm's reach bound at both its pick and its place.
+
+    The rule a rigid carry's station is chosen and admitted by (``rigid_reach_shortfall``'s
+    ``task_contact_beyond`` empty): an arm that cannot bring the task's contact to the place cannot
+    complete the task there, so a paid run from that base cannot produce a result. ``None`` (reach
+    unmeasured) is not in reach.
+    """
+    return reach is not None and not reach["beyond"] and not reach["task_contact_beyond"]
+
+
+def task_contact_far_m(reach: Mapping[str, Any]) -> float:
+    """The larger of the task contact's distances from the shoulder at the pick and the place."""
+    return max(float(row["distance_m"]) for row in reach["phases"])
+
+
+def reach_refusal_code(reach: Mapping[str, Any]) -> str:
+    """The typed reason a rigid carry is refused for reach: the object's nearest point when the whole
+    object is beyond the bound (``reach_shortfall_code``), else the task contact at its farthest phase
+    beyond it, e.g. ``robot_reach_insufficient:place:1.086m_vs_0.990m``."""
+    if reach["beyond"]:
+        return reach_shortfall_code(reach)
+    far = next(row for row in reach["phases"] if row["phase"] == reach["task_contact_beyond"][0])
+    return reach_insufficient_code(far["phase"], far["distance_m"], reach["reach_bound_m"])
 
 
 def carry_grasps(task: Mapping[str, Any], bounds_m: Mapping[str, Sequence[float]] | None) -> list[dict[str, Any]]:
@@ -1085,14 +1113,16 @@ def _packet_rigid_clearance(root: Path, plan: Mapping[str, Any], spec: Mapping[s
 
 
 def rigid_carry_verdict(carry: Mapping[str, Any], reach: Mapping[str, Any] | None) -> dict[str, Any]:
-    """A rigid carry's admission: refused only by the hard reach rule; a scripted carry miss is a flag.
+    """A rigid carry's admission: refused only by the reach rule; a scripted carry miss is a flag.
 
     ``carry`` is ``rigid_pick_place_clearance``'s report (the scripted grasp, approach and IK path),
     ``reach`` the object's reach from the same base (``rigid_reach_shortfall``), or ``None`` when it
-    could not be measured. The object beyond reach at its start or its place is ``blocked`` by name:
-    no grasp, path or policy reaches it there. Otherwise a carry the scripted path did not find is
-    ``flagged``: its codes are advisories and ``SCRIPTED_CARRY_FLAG`` is recorded, and nothing is refused,
-    since a learned policy chooses its own grasp (AGENTS.md: only privacy, rights and money stop a job).
+    could not be measured. The object beyond reach at its start or its place, or the task's grasp
+    contact beyond the arm's reach bound at either (``task_contact_in_reach``), is ``blocked`` by name
+    (``reach_refusal_code``): a run from this base cannot bring the task's contact to the place, so
+    paying for it cannot produce a result (money; capture-447 ran 39 episodes with the place contact
+    at 1.086 m against a 0.990 m bound). Otherwise a carry the scripted path did not find is
+    ``flagged``: its codes are advisories and ``SCRIPTED_CARRY_FLAG`` is recorded, and nothing is refused.
     """
     value = dict(carry)
     if reach is not None:
@@ -1100,8 +1130,8 @@ def rigid_carry_verdict(carry: Mapping[str, Any], reach: Mapping[str, Any] | Non
                                                                 "grasp_basis", "task_contact_beyond")},
                                  "phases": [{key: row[key] for key in ("phase", "distance_m", "object_nearest_distance_m")
                                              if key in row} for row in reach["phases"]]}
-    if reach is not None and reach["status"] == "out_of_reach":
-        return {**value, "status": "blocked", "blockers": [reach_shortfall_code(reach)],
+    if reach is not None and (reach["status"] == "out_of_reach" or reach["task_contact_beyond"]):
+        return {**value, "status": "blocked", "blockers": [reach_refusal_code(reach)],
                 "scripted_carry_blockers": list(carry.get("blockers") or [])}
     if carry.get("status") == "clear":
         return value
@@ -1120,8 +1150,8 @@ def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
     (a team's own) is unassessed: never measured with the Franka's model, never refused for lacking one.
     A rigid carry also tries the intake's tilted and side-on grasps after the task's own
     (``carry_grasps``), as the packet's station search did, and names the one that cleared. It is
-    blocked only when the object is beyond the arm's reach at its start or its place; a scripted carry
-    not found is ``flagged`` evidence (``rigid_carry_verdict``).
+    blocked only when the object, or the task's grasp contact, is beyond the arm's reach at its start or
+    its place; a scripted carry not found is ``flagged`` evidence (``rigid_carry_verdict``).
     """
     import json
 

@@ -329,11 +329,11 @@ def station_proposal(*, stances: Sequence[Mapping[str, Any]], carry: Mapping[str
     rigid task's ``start_pose_world``, ``target_position_world_m``, ``contact_point_m`` and
     ``subject_bounds_m``, and optionally where its place is accepted (``destination_bounds_world_m``,
     ``place_yaw_free_rad``). Of the stances clear were named items moved (best first, as the search ranks
-    them), the one from which the object is in the Franka's reach at its pick and its place (the hard
-    reach rule, ``rigid_reach_shortfall``) and that needs the fewest items is proposed.
+    them), the one from which the task's contact is in the Franka's reach at its pick and its place (the
+    station search's rule, ``task_contact_in_reach``) and that needs the fewest items is proposed.
     """
 
-    from .robot_arm_path_clearance import RobotArmPathClearanceError, rigid_reach_shortfall
+    from .robot_arm_path_clearance import RobotArmPathClearanceError, rigid_reach_shortfall, task_contact_in_reach
 
     why = {"reason": "no_ranked_stance_carries", "carry_cleared": bool(carry.get("cleared")),
            "stances_tried": len(carry.get("results") or []),
@@ -363,10 +363,11 @@ def station_proposal(*, stances: Sequence[Mapping[str, Any]], carry: Mapping[str
             continue
         tried.append({"rank": rank, "position_world_m": pose["position_world_m"], "moved": moved,
                       "farthest_task_point_m": row.get("farthest_task_point_m"),
-                      "reach": {key: reach[key] for key in ("status", "reach_bound_m", "beyond")}
+                      "reach": {key: reach[key] for key in ("status", "reach_bound_m", "beyond",
+                                                            "task_contact_beyond")}
                       | {"phases": [{key: phase[key] for key in ("phase", "distance_m", "object_nearest_distance_m")
                                      if key in phase} for phase in reach["phases"]]}})
-    within = [row for row in tried if row["reach"]["status"] == "within_bound"]
+    within = [row for row in tried if task_contact_in_reach(row["reach"])]
     if not within:
         return {**base, "status": "not_proposed", "tried": tried[:8],
                 "reason": ("no_stance_clear_if_named_items_moved" if not tried

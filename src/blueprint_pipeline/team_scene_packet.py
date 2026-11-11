@@ -140,22 +140,24 @@ def _runtime_source(path: Path) -> dict[str, Any]:
 
 
 #: How the Franka's station is chosen among the clear stances (``_carrying_station``).
-STATION_RULE = "first_in_reach_stance_the_scripted_carry_clears_else_nearest_graspable_point"
+STATION_RULE = "first_task_contact_in_reach_stance_the_scripted_carry_clears_else_nearest_task_contact"
 
 
 def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, Any], collision: Path,
                       profile: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """The Franka's station among the clear ``stances`` (ranked, best first), and the record of the choice.
 
-    The hard rule first: from each clear stance, whether any point of the object lies within the arm's
-    reach bound at its start and wherever the task accepts it (``rigid_reach_shortfall``,
-    ``object_reach_inputs``). A learned policy chooses its own grasp, so that is all a station needs.
-    The scripted carry (``robot_arm_path_clearance.first_carrying_stance``: the task's own grasp, then
-    the intake's tilted and side-on ones, ``carry_grasps``) is tried from the first ``CARRY_STATIONS``
-    stances in reach, in rank order, as evidence: the first it clears from is the station. Without one,
-    the stance in reach whose object is nearest (the farther of its pick and place) stands, and the
-    record flags ``SCRIPTED_CARRY_FLAG`` with the attempt that got furthest; nothing is refused for it.
-    Only with no clear stance in reach does the closest stance stand ``out_of_reach``
+    The reach rule first: from each clear stance, whether the task's grasp contact lies within the arm's
+    reach bound at both its pick and its place (``rigid_reach_shortfall``, ``object_reach_inputs``,
+    ``task_contact_in_reach``): a stance from which the arm cannot bring the contact to the place cannot
+    produce a result (capture-447: some point of the tray in reach at both ends, its contact 1.086 m from
+    the shoulder at the place against a 0.990 m bound). Stances in reach rank by the farther of the two
+    contact distances, nearest first, then by the search's own rank. The scripted carry
+    (``robot_arm_path_clearance.first_carrying_stance``: the task's own grasp, then the intake's tilted and
+    side-on ones, ``carry_grasps``) is tried from the first ``CARRY_STATIONS`` stances in reach, in that
+    order, as evidence: the first it clears from is the station. Without one, the first stance in reach
+    stands, and the record flags ``SCRIPTED_CARRY_FLAG`` with the attempt that got furthest; nothing is
+    refused for it. Only with no clear stance in reach does the stance whose contact is nearest stand
     (``reach_shortfall``), and the bundle's gate refuses the packet by name before any GPU run.
     """
     from .robot_arm_path_clearance import (
@@ -168,6 +170,8 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
         first_carrying_stance,
         object_reach_inputs,
         rigid_reach_shortfall,
+        task_contact_far_m,
+        task_contact_in_reach,
     )
 
     try:
@@ -189,7 +193,8 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
             reaches.append(rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=stance, **reach_inputs))
         except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
             reaches.append(None)
-    in_reach = [i for i, reach in enumerate(reaches) if reach is not None and reach["status"] == "within_bound"]
+    in_reach = sorted((i for i, reach in enumerate(reaches) if task_contact_in_reach(reach)),
+                      key=lambda i: (task_contact_far_m(reaches[i]), i))
     tried = [stances[i] for i in in_reach[:CARRY_STATIONS]] if in_reach else list(stances[:CARRY_STATIONS])
     try:
         cleared, furthest, attempts = first_carrying_stance(tried, collision_path=collision, robot_id="franka_panda",
@@ -198,16 +203,14 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
     except (KeyError, TypeError, ValueError) as exc:
         raise TeamScenePacketError("team_scene_carry_inputs_invalid") from exc
 
-    def nearest(index: int) -> float:
-        rows = (reaches[index] or {}).get("phases") or []
-        return max((float(row.get("object_nearest_distance_m", row["distance_m"])) for row in rows), default=math.inf)
-
+    measured = [i for i, reach in enumerate(reaches) if reach is not None]
     if cleared is not None:
         station, basis = cleared, "scripted_carry_cleared"
     elif in_reach:
-        station, basis = stances[min(in_reach, key=lambda i: (nearest(i), i))], "nearest_graspable_point_in_reach"
+        station, basis = stances[in_reach[0]], "nearest_graspable_point_in_reach"
     else:
-        station, basis = stances[0], "no_clear_stance_in_reach"
+        closest = min(measured, key=lambda i: (task_contact_far_m(reaches[i]), i)) if measured else 0
+        station, basis = stances[closest], "no_clear_stance_in_reach"
     rank = next(i for i, row in enumerate(stances) if row is station)
     record: dict[str, Any] = {
         "rule": STATION_RULE, "cleared": cleared is not None, "chosen_basis": basis, "chosen_rank": rank,
@@ -219,7 +222,8 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
                     for row, report in attempts]}
     if reaches[rank] is not None:
         reach = reaches[rank]
-        record["object_reach"] = {key: reach[key] for key in ("rule", "status", "reach_bound_m", "beyond")} | {
+        record["object_reach"] = {key: reach[key] for key in ("rule", "status", "reach_bound_m", "beyond",
+                                                              "task_contact_beyond")} | {
             "phases": [{key: row[key] for key in ("phase", "distance_m", "object_nearest_distance_m") if key in row}
                        for row in reach["phases"]]}
     if cleared is None:
@@ -1044,8 +1048,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
 
     # The station: a mount level with the task's support, on the closest clear floor facing the task,
     # out of a moving part's way. A rigid pick and place is measured from every clear stance: it takes the
-    # first in the object's reach that the scripted carry clears from, else the one in reach whose object is
-    # nearest, the miss flagged (``_carrying_station``), as the bundle's gate will measure it. The pedestal keeps the arm's own
+    # first with the task's contact in reach that the scripted carry clears from, else the one in reach whose
+    # contact is nearest, the miss flagged (``_carrying_station``), as the bundle's gate will measure it. The pedestal keeps the arm's own
     # margin from the room and the object (``PEDESTAL_SEARCH``), and a rigid task's stances rank by the
     # farther of its start and target, a footprint apart, so the carry is tried from several spots.
     whole_region = not articulated and destination_support is not None
@@ -1084,7 +1088,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         ranked_stances = station if carry else None
         station, station_search = (_carrying_station(station, task_spec=task_spec, collision=collision,
                                                      profile=profile) if carry else (station, None))
-        # Moving furniture is proposed only when no clear stance has the object in reach (the hard rule);
+        # Moving furniture is proposed only when no clear stance has the task's contact in reach;
         # a scripted carry miss with the object in reach is a flag, and the half goes on.
         if (carry and station_search is not None and not station_search["cleared"]
                 and not station_search.get("stances_in_reach") and movable_furniture is not None):
