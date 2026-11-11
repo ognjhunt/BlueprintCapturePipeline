@@ -61,7 +61,7 @@ An end-to-end audit of both repos on 2026-11-10 asked one question of every step
 **Fixed after the first list was written (same day)**
 
 - A job whose object's facing or position cannot be found ends at once and asks the site for a new video; the email for every new-video stop now says what the job page says ([WebApp #1264](https://github.com/ognjhunt/Blueprint-WebApp/pull/1264)).
-- A preparation whose job never received a grant is ended on the host once the WebApp has ended the job ([WebApp #1263](https://github.com/ognjhunt/Blueprint-WebApp/pull/1263) and the Pipeline half).
+- A preparation whose job never received a grant is ended on the host once the WebApp has ended the job ([WebApp #1263](https://github.com/ognjhunt/Blueprint-WebApp/pull/1263); the Pipeline half merged from another session as [#3557](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3557), which also makes a deploy wait for work in flight).
 - Shared content stores: a blob linked only from the withdrawing site's own directories is deleted with them; one another site also links is kept and named.
 
 ## Library-aisle navigation run (2026-11-06)
