@@ -34,7 +34,6 @@ watchdogs, and teardown obligations.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -210,30 +209,6 @@ def _effective_serial_group(stage: StageSpec, *, paid_concurrency_authorized: bo
     if stage.paid and not paid_concurrency_authorized:
         return PAID_SERIAL_GROUP
     return None
-
-
-def stage_concurrency_from_env(
-    variable: str,
-    *,
-    default: int = 1,
-    maximum: int = 8,
-) -> int:
-    """Read a bounded stage-concurrency knob from the environment.
-
-    Invalid or out-of-range values fail closed to the serial default rather
-    than silently widening concurrency.
-    """
-
-    raw = str(os.getenv(variable) or "").strip()
-    if not raw:
-        return max(1, min(int(default), maximum))
-    try:
-        value = int(raw)
-    except ValueError:
-        return 1
-    if value < 1 or value > maximum:
-        return 1
-    return value
 
 
 def run_stage_graph(
@@ -498,5 +473,4 @@ __all__ = [
     "StageGraphResult",
     "StageSpec",
     "run_stage_graph",
-    "stage_concurrency_from_env",
 ]

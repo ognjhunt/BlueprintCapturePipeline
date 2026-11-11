@@ -13,7 +13,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from blueprint_pipeline import eval_ready_task_grounding as grounding
+from tests import support_eval_ready_task_grounding as grounding
 from blueprint_pipeline import oscar_cosmos_wam_evaluator as evaluator
 from blueprint_pipeline import wam_backend_strategy as backend_strategy
 from blueprint_pipeline import wam_generated_video_success_label_gemini as success_label_adapter

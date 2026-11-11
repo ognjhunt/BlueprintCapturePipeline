@@ -53,11 +53,10 @@ BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
     # test_native_g1_beta_automatic_bundle.py executes that public launch path
     # and checks current-commit binding, resume, and stale-commit/source refusal.
     "native_g1_beta_bundle.py",
-    # ADP-009D diagnostics and the launch qualification bundle.
+    # ADP-009D diagnostics.
     "adp009d_native_microcheck_bundle.py",
     "articulated_isaac_bundle.py",
     "articulated_native_diagnostic_bundle.py",
-    "launch_bundle.py",
 }
 
 

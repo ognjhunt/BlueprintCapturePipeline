@@ -67,11 +67,6 @@ def test_launch_proof_policy_and_world_model_helpers(tmp_path: Path, monkeypatch
     assert launch_proof_policy.fallback_geometry_launchable_allowed(prod_env) is False
     assert launch_proof_policy.fallback_geometry_launchable_allowed({}) is True
     assert launch_proof_policy.buyer_access_required(local_env) is True
-    checksum_path = tmp_path / "artifact.bin"
-    checksum_path.write_bytes(b"abc")
-    assert launch_proof_policy.relative_artifact_checksum(checksum_path) == (
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-    )
 
     for name in [
         "WORLD_MODEL_OUTPUT_POLICY",

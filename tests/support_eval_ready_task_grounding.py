@@ -1,18 +1,22 @@
-"""Build eval-ready task grounding for learned WAM and lightweight state checks."""
+"""Test fixture builder: the eval-ready task-grounding packet the WAM evaluator reads.
+
+Moved here from ``blueprint_pipeline.eval_ready_task_grounding`` when the capture app's
+object-index path that produced it was removed (2026-11-11). Kept only so the WAM
+evaluator's handling of an existing packet stays tested.
+"""
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from .camera_geometry_validation import validate_camera_calibration
-from .common import read_json_any, utc_now_iso, write_json
-from .object_index_artifacts import resolve_current_object_index_artifacts
-from .robot_kinematics import solve_robot_forward_kinematics
+from blueprint_pipeline.camera_geometry_validation import validate_camera_calibration
+from blueprint_pipeline.common import read_json_any, utc_now_iso, write_json
+from blueprint_pipeline.object_index_artifacts import resolve_current_object_index_artifacts
+from blueprint_pipeline.robot_kinematics import solve_robot_forward_kinematics
 
 
 SCHEMA_VERSION = "eval_ready_task_grounding.v1"
@@ -1797,70 +1801,3 @@ def build_eval_ready_task_grounding(
     }
     write_json(output, manifest)
     return manifest
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--capture-root", required=True)
-    parser.add_argument(
-        "--task-id",
-        default=None,
-        help="Explicit task id. Omit to derive a site-grounded default from the object index.",
-    )
-    parser.add_argument(
-        "--task-text",
-        default=None,
-        help="Explicit task text. Omit to derive a site-grounded default from the object index.",
-    )
-    parser.add_argument(
-        "--target-label",
-        default=None,
-        help="Explicit target label. Omit to derive a site-grounded default from the object index.",
-    )
-    parser.add_argument("--scene-asset")
-    parser.add_argument("--initial-frame")
-    parser.add_argument("--camera-calibration")
-    parser.add_argument("--robot-model")
-    parser.add_argument("--robot-state")
-    parser.add_argument("--task-contract")
-    parser.add_argument("--buyer-grade", action="store_true")
-    parser.add_argument("--output-path")
-    parser.add_argument("--articulated-handle-proxy", action="store_true")
-    parser.add_argument("--handle-axis")
-    parser.add_argument("--handle-on-threshold-deg", type=float, default=DEFAULT_HANDLE_ON_THRESHOLD_DEG)
-    args = parser.parse_args(argv)
-    manifest = build_eval_ready_task_grounding(
-        capture_root=args.capture_root,
-        task_id=args.task_id,
-        task_text=args.task_text,
-        target_label=args.target_label,
-        scene_asset=args.scene_asset,
-        initial_frame=args.initial_frame,
-        camera_calibration=args.camera_calibration,
-        robot_model=args.robot_model,
-        robot_state=args.robot_state,
-        task_contract=args.task_contract,
-        buyer_grade=args.buyer_grade,
-        output_path=args.output_path,
-        articulated_handle_proxy=args.articulated_handle_proxy,
-        handle_axis=args.handle_axis,
-        handle_on_threshold_deg=args.handle_on_threshold_deg,
-    )
-    print(
-        json.dumps(
-            {
-                "status": manifest["status"],
-                "eval_ready_task_grounding": manifest["output_path"],
-                "learned_rollout_request_ready": manifest["readiness"][
-                    "learned_rollout_request_ready"
-                ],
-                "blockers": manifest["readiness"]["blockers"],
-            },
-            indent=2,
-        )
-    )
-    return 0 if manifest["status"] != "blocked" else 2
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

@@ -37,8 +37,8 @@ from tests.test_pubsub_handoff_listener import FakeBlob, FakeStorageClient, SUBS
 
 
 BUCKET = "capture-bucket"
-SCENE = "scene-1"
-CAPTURE = "capture-1"
+SCENE = "site-1"
+CAPTURE = "walkthrough-1"
 HOUR = 3600
 DAY = 24 * HOUR
 ARTIFACT_BUCKET = "blueprint-task-evaluation-artifacts-test"
@@ -180,7 +180,7 @@ def _plan(tmp_path: Path, cloud: FakeCloud, *, age: float = 72 * HOUR, context=N
 REQUEST = {
     "schema_version": "task_evaluation_scene_intake_request.v1", "submission_id": "submission-1",
     "owner": {"user_id": "user-1", "organization_id": "org-1"},
-    "source": {"kind": "capture_bundle", "binding_id": "website-scene-1", "content_digest": "sha256:" + "c" * 64},
+    "source": {"kind": "capture_bundle", "binding_id": "website-site-1", "content_digest": "sha256:" + "c" * 64},
     "task": {"strategy": "pick_and_place", "task_id": "task-1"},
     "execution": {"expires_at_epoch": 0},
     "consent": {"accepted_by": "user-1"},
@@ -303,22 +303,22 @@ def test_legacy_completed_with_lane_failures_keeps_reopening(tmp_path):
 
 
 def test_not_retired_while_any_capture_is_not_terminal(tmp_path):
-    scene, cloud = _scene(tmp_path, captures=(CAPTURE, "capture-2"))
-    ledger_path = scene / "captures" / "capture-2" / "pipeline_job_ledger.json"
+    scene, cloud = _scene(tmp_path, captures=(CAPTURE, "walkthrough-2"))
+    ledger_path = scene / "captures" / "walkthrough-2" / "pipeline_job_ledger.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
 
     ledger_path.write_text(json.dumps({**ledger, "status": "failed_retryable"}), encoding="utf-8")
-    assert _plan(tmp_path, cloud)["reasons"] == ["capture_not_terminal:capture-2"]
+    assert _plan(tmp_path, cloud)["reasons"] == ["capture_not_terminal:walkthrough-2"]
 
     lease = time.time() + 30 * DAY
     ledger_path.write_text(json.dumps({**ledger, "status": "processing", "lease_expires_at":
                                        listener._iso_at(listener.datetime.fromtimestamp(lease, listener.timezone.utc))}),
                            encoding="utf-8")
-    assert _plan(tmp_path, cloud)["reasons"] == ["capture_lease_held:capture-2", "capture_not_terminal:capture-2"]
+    assert _plan(tmp_path, cloud)["reasons"] == ["capture_lease_held:walkthrough-2", "capture_not_terminal:walkthrough-2"]
 
     ledger_path.write_text("{not json", encoding="utf-8")
     plan = _plan(tmp_path, cloud)
-    assert plan["status"] == "retained" and plan["reasons"] == ["capture_ledger_unreadable:capture-2"]
+    assert plan["status"] == "retained" and plan["reasons"] == ["capture_ledger_unreadable:walkthrough-2"]
     assert plan["cloud_verified"] == [] and plan["archive"] == [], "no cloud inventory once a check retains"
     assert cloud.listings == []
 
@@ -361,7 +361,7 @@ def _manifest(scene: Path, capture: str, manifest: dict | None) -> None:
         path.write_text(json.dumps({**manifest, "capture_id": capture}), encoding="utf-8")
 
 
-@pytest.mark.parametrize("captures", [(CAPTURE,), (CAPTURE, "capture-2")], ids=["device", "mixed"])
+@pytest.mark.parametrize("captures", [(CAPTURE,), (CAPTURE, "walkthrough-2")], ids=["device", "mixed"])
 def test_a_device_capture_scene_is_never_retired(tmp_path, captures):
     """Retirement is for finished website scenes; device captures stage differently and stay."""
 
@@ -1057,7 +1057,7 @@ def test_restore_refuses_a_tampered_receipt_or_changed_cloud_bytes(tmp_path):
     materializer = functools.partial(store.materialize_configured_scene_artifact, client=client, bucket=ARTIFACT_BUCKET)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     tampered = tmp_path / "tampered.json"
-    tampered.write_text(json.dumps({**receipt, "scene_id": "scene-2"}), encoding="utf-8")
+    tampered.write_text(json.dumps({**receipt, "scene_id": "site-2"}), encoding="utf-8")
 
     with pytest.raises(retention.WebsiteSceneWorkspaceRetentionError, match="receipt_invalid"):
         retention.restore_scene_workspace(receipt_path=tampered, destination=tmp_path / "a", cloud=cloud,
@@ -1204,7 +1204,7 @@ def test_a_retirement_receipt_answers_for_the_messages_it_proves_terminal(tmp_pa
     assert status is not None and status["receipt"] == result["receipt"]
     assert (status["status"], status["queue_disposition"]) == ("terminal_authority_ended", "terminal_authority_ended")
     assert status["payload_sha256s"] == [listener.payload_sha256(_payload(CAPTURE))]
-    for other in ({"capture_id": "capture-9"}, {"scene_id": "scene-2"}, {"bucket": "other-bucket"},
+    for other in ({"capture_id": "capture-9"}, {"scene_id": "site-2"}, {"bucket": "other-bucket"},
                   {"capture_id": "../x"}):
         query = {"storage_root": storage, "bucket": BUCKET, "scene_id": SCENE, "capture_id": CAPTURE, **other}
         assert retention.retired_capture_status(**query) is None
@@ -1338,7 +1338,7 @@ def test_a_tick_finishes_removing_what_a_crash_left_behind(tmp_path):
     token = json.loads(receipt.read_text(encoding="utf-8"))["retiring_token"]
     leftover = scene.parent / f".retiring-{SCENE}-{token}"  # a crash between the rename and the removal
     os.rename(copy, leftover)
-    unreceipted = scene.parent / f".retiring-scene-2-{'1' * 16}"  # never delete what no receipt restores
+    unreceipted = scene.parent / f".retiring-site-2-{'1' * 16}"  # never delete what no receipt restores
     (unreceipted / "captures").mkdir(parents=True)
 
     swept = retention.sweep_retiring_workspaces(tmp_path / "pubsub-handoffs")

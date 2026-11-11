@@ -228,30 +228,31 @@ subscription, or something else. Treat it as unknown.
 7. Objects under `gs://<bucket>/_pipeline_failures/`. A failed job run writes there outside any
    site's prefix, and withdrawal cleanup does not cover it.
 
-### The capture app's path is closed
+### The capture app's path was removed
 
-The capture app is not in use (owner, 2026-11-11). Its path still exists: the swap dispatch worker
-(`on_swap_dispatch`, the HTTP form, the Cloud Tasks and inline modes) and the `blueprint-pipeline`
-Cloud Run job (`capture_orchestrator.main`). That path holds six paid call sites that cannot see
-the account's monthly limit (`scripts/paid_api_call_sites.json`, class `unadmitted`). Two rules
-now apply:
+The capture app is not in use (owner, 2026-11-11), and its processing code was deleted the same
+day: the device branch of the qualification pipeline and the modules only it used, including the
+six paid call sites that could not see the account's monthly limit. There is no switch to turn it
+back on (`BLUEPRINT_DEVICE_CAPTURE_PIPELINE` is not read).
 
-- **No website capture on that path, ever.** Every dispatch branch acknowledges and drops a
-  capture named in the WebApp's website namespace. That means a scene starting `site-`, a capture
-  starting `walkthrough-` or `supplement-`, a website capture source, or a URI that names one.
-  The job entry refuses one too. The publish to the bridge topic is unchanged.
-- **Closed unless `BLUEPRINT_DEVICE_CAPTURE_PIPELINE=enabled`.** When the switch is off (the
-  default), the dispatch worker launches nothing and runs nothing. The job exits 0 and writes one
-  record (`device_capture_pipeline_closed.v1`) saying why. A delivery is acknowledged, so nothing
-  is retried and nothing waits on an operator.
+What is deployed stays as it is, because how production forwards extractFrames' message to the
+listener is not verified (the checks above):
 
-The six rows record this as `closed_on`. `scripts/verify_paid_resource_allocator.py` checks the
-claim on the call graph: from each entry function, every path to the site passes the switch's
-guard. The rows stay `unadmitted`, because the host listener's path still reaches them on the
-static graph; at run time, a website capture returns before them.
+- **The swap dispatch worker** (`functions/storage_trigger.py`, unchanged) still acknowledges and
+  drops a website capture, and still publishes the bridge-topic handoff on a raw upload
+  completion. For any other payload it launches nothing and runs nothing.
+- **The `blueprint-pipeline` Cloud Run job** keeps its entry (`capture_orchestrator.main`). It
+  accepts the job's arguments, writes one record (`device_capture_pipeline_closed.v1`, reason
+  `device_capture_pipeline_removed`, `removed_on` 2026-11-11) and exits 0.
+- **The host listener** ends a handoff named outside the WebApp's website namespace (a scene not
+  starting `site-`, a capture not starting `walkthrough-` or `supplement-`) before claiming or
+  staging anything. It writes one permanent-invalid delivery record (blocker
+  `device_capture_pipeline_removed`) and acknowledges the message: no retry, no dead letter, no
+  page.
 
-**Turning the switch on requires admitting those six call sites first**, through the account limit
-and the paid-resource admission.
+Readers of artifacts that the capture app's path wrote before (for example
+`privacy_processing_manifest.json`, `task_scope_record.json`, `canonical_site_package.json`) stay,
+so stored records remain readable.
 
 ### Large videos
 

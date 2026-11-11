@@ -9,6 +9,26 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterator
 
+from .website_capture_entry import is_website_capture_identity
+
+#: A handoff outside the WebApp's website namespace came from the capture app, whose processing
+#: path was removed on 2026-11-11 (device_capture_pipeline_switch). It ends before any claim.
+DEVICE_CAPTURE_REMOVED = 'device_capture_pipeline_removed'
+PERMANENT_INVALID = 'permanent_invalid'
+
+
+def device_capture_removed_result(handoff) -> dict[str, Any] | None:
+    """The ending of a device-format handoff, or None for a website capture.
+
+    Nothing is claimed, staged or run. The pull loop acknowledges it on the
+    permanent-invalid path: one evidence record, no retry, no dead letter.
+    """
+    if is_website_capture_identity(handoff.scene_id, handoff.capture_id):
+        return None
+    return {'schema_version': 'v1', 'status': DEVICE_CAPTURE_REMOVED, 'queue_disposition': PERMANENT_INVALID,
+            'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+            'blockers': [DEVICE_CAPTURE_REMOVED]}
+
 def _stage_handoff_capture_body(_listener, /, handoff, *, storage_root, storage_client, expected_purpose=None):
     if handoff.source_finalize is not None:
         from .capture_delivery_staging import stage_selected_capture
@@ -91,6 +111,9 @@ def __synthesize_pipeline_handoff_body(_listener, /, handoff, *, capture_root):
 
 def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None, expected_target_choice_correction=None, expected_robot_fit_recheck=None, expected_held_replay=None, expected_revision=None):
     handoff = _listener.parse_handoff_payload(payload)
+    ended = device_capture_removed_result(handoff)
+    if ended is not None:
+        return ended
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
     selected_staged = None
@@ -509,10 +532,18 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
         message = received.message
         _listener.logger.info('pubsub_handoff.received', extra={'message_id': message.message_id, 'attributes': dict(message.attributes)})
         try:
-            _listener.parse_handoff_payload(message.data)
+            ended = device_capture_removed_result(_listener.parse_handoff_payload(message.data))
         except _listener.PipelineError as exc:
             evidence_path = _listener._write_delivery_evidence(storage_root=storage_root, message=message, received=received, disposition='permanent_invalid', blockers=[str(exc)])
             _listener.logger.error('pubsub_handoff.permanent_invalid', extra={'message_id': message.message_id, 'error_type': type(exc).__name__, 'error': str(exc), 'queue_disposition': 'permanent_invalid_ack', 'failure_evidence_path': str(evidence_path)})
+            acknowledge(received.ack_id)
+            acknowledged += 1
+            clear_deferral(storage_root=storage_root, received=received)
+            continue
+        if ended is not None:
+            # The capture app's path was removed: acknowledged and ended, never retried or dead-lettered.
+            evidence_path = _listener._write_delivery_evidence(storage_root=storage_root, message=message, received=received, disposition=PERMANENT_INVALID, blockers=ended['blockers'])
+            _listener.logger.info('pubsub_handoff.device_capture_pipeline_removed', extra={'message_id': message.message_id, 'scene_id': ended['scene_id'], 'capture_id': ended['capture_id'], 'queue_disposition': 'permanent_invalid_ack', 'failure_evidence_path': str(evidence_path)})
             acknowledge(received.ack_id)
             acknowledged += 1
             clear_deferral(storage_root=storage_root, received=received)

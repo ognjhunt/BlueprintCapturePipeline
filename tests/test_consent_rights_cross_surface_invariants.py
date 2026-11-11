@@ -30,7 +30,6 @@ from blueprint_pipeline.consent_takedown import (
     evaluate_delivery_time_takedown_gate,
     read_consent_state,
 )
-from blueprint_pipeline.proof_contracts import build_rights_provenance_review
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -254,50 +253,6 @@ def test_qualification_revocation_overrides_allow_flags() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "rights",
-    [
-        {"consentRevoked": True, "consent_status": "documented"},
-        {"consentRevokedAt": "2026-01-01T00:00:00Z", "consent_status": "documented"},
-        {"consentStatus": "revoked", "consent_status": "documented"},
-    ],
-)
-def test_rights_review_blocks_camelcase_revocation(rights: dict) -> None:
-    review = build_rights_provenance_review(
-        rights_summary={
-            "derived_scene_generation_allowed": True,
-            "permission_document_uri": "s3://consent/doc.pdf",
-            **rights,
-        },
-        privacy_processing=None,
-        provenance_summary=None,
-        site_identity=None,
-        adjacent_systems=None,
-    )
-    assert review["rights"]["consent_revoked"] is True
-    assert review["rights"]["status"] == "blocked"
-    assert review["status"] == "blocked"
-
-
-def test_rights_review_scope_intersection_blocks_contradictory_spelling() -> None:
-    review = build_rights_provenance_review(
-        rights_summary={
-            "derived_scene_generation_allowed": True,
-            "consent_status": "documented",
-            "permission_document_uri": "s3://consent/doc.pdf",
-            "consent_scope": ["model_training", "robot_evaluation"],
-            "consentScope": ["robot_evaluation"],
-        },
-        privacy_processing=None,
-        provenance_summary=None,
-        site_identity=None,
-        adjacent_systems=None,
-        required_use_classes=["model_training"],
-    )
-    # model_training is granted by only one spelling → not granted.
-    assert review["rights"]["status"] == "blocked"
-
-
 # ---------------------------------------------------------------------------
 # Delivery-time consent gate (consent_takedown)
 # ---------------------------------------------------------------------------
@@ -488,8 +443,7 @@ def test_every_surface_blocks_the_same_hostile_consent_source(
     """The core invariant: no surface may be more permissive than another.
 
     For each hostile consent source, the delivery gate must refuse to serve,
-    PTDP must refuse consent evidence, and the rights-provenance review over
-    the same fields must not clear.
+    and PTDP must refuse consent evidence.
     """
     root = _capture_root(tmp_path, source)
 
@@ -508,15 +462,6 @@ def test_every_surface_blocks_the_same_hostile_consent_source(
         generated_at="2026-07-11T00:00:00+00:00",
     )
     assert record["consent_evidence_present"] is False
-
-    review = build_rights_provenance_review(
-        rights_summary={"derived_scene_generation_allowed": True, **source},
-        privacy_processing=None,
-        provenance_summary=None,
-        site_identity=None,
-        adjacent_systems=None,
-    )
-    assert review["rights"]["status"] != "cleared"
 
 
 def test_active_statuses_and_revoked_statuses_are_disjoint() -> None:

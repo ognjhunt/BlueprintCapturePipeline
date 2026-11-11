@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from blueprint_pipeline import alpha_readiness as alpha
-from blueprint_pipeline import canonical_site_package as canonical
 
 import pytest
 
@@ -93,60 +92,3 @@ def test_alpha_evaluation_prep_sync_records_upstream_bootstrap_failures(
     assert "missing upstream request bootstrap" in failed["reason"]
 
 
-def test_canonical_site_package_defensive_inputs_and_missing_fields(tmp_path: Path) -> None:
-    invalid_json = tmp_path / "invalid.json"
-    invalid_json.write_text("{not-json", encoding="utf-8")
-
-    assert canonical._string_list("restricted") == ["restricted"]
-    assert canonical._read_optional_json(tmp_path / "missing.json") == {}
-    assert canonical._read_optional_json(invalid_json) == {}
-    assert canonical._world_labs_readiness(
-        worldlabs_input={
-            "status": "ready",
-            "output_video_uri": "gs://bucket/privacy/world-model.mp4",
-            "audit_payload": {"privacy_safe_input": True},
-        },
-        privacy_processing={"status": "person_removed"},
-        rights_review={"status": "cleared"},
-        provenance_summary={"status": "stale"},
-    )["warnings"] == ["provenance_summary:stale"]
-
-    package = canonical.build_blueprint_canonical_site_package(
-        descriptor={
-            "scene_id": "scene-1",
-            "capture_id": "capture-1",
-            "metadata": {"privacy_restrictions": "no faces"},
-        },
-        capture_root=tmp_path / "capture",
-        pipeline_dir=tmp_path / "capture" / "pipeline",
-        bucket="local-blueprint",
-        storage_root=tmp_path,
-        pipeline_prefix="scenes/scene-1/captures/capture-1/pipeline",
-        descriptor_uri="gs://local-blueprint/scenes/scene-1/captures/capture-1/capture_descriptor.json",
-        qa_report_uri="gs://local-blueprint/scenes/scene-1/captures/capture-1/qa_report.json",
-        qa_report={"status": "passed"},
-        privacy_processing={},
-        worldlabs_input={},
-        geometry_artifacts={},
-        provenance_summary={},
-        rights_provenance_review={},
-        site_intake={},
-        scorecard={},
-        qualification_record={},
-        task_targets_payload={"targets": [123, {"object_label": "tote"}]},
-        task_hypothesis_report={},
-    )
-
-    assert package["semantic_task_context"]["restricted_areas"] == ["no faces"]
-    assert package["semantic_task_context"]["target_objects"] == [
-        {"label": "tote", "source": "task_targets", "raw": {"object_label": "tote"}}
-    ]
-    assert package["conditioning"]["rgb_video"]["restricted_raw_capture"] == {
-        "present": False,
-        "exported": False,
-        "access_scope": "restricted_internal_evidence",
-    }
-    assert "conditioning.frames.frame_index_uri" in package["missing_fields"]
-    assert "conditioning.camera.poses_uri" in package["missing_fields"]
-    assert "conditioning.camera.intrinsics_uri" in package["missing_fields"]
-    assert "conditioning.depth_confidence.depth" in package["missing_fields"]

@@ -1309,12 +1309,3 @@ def test_retry_after_survives_audited_error_transport_without_retaining_other_he
     assert client.retry_after is None
 
 
-@pytest.mark.parametrize("model", ["atlas-beta", "worldlabs-atlas"])
-def test_the_marble_request_builder_never_names_another_model(monkeypatch, model):
-    from blueprint_pipeline.provider_preview import WorldLabsPreviewProvider
-    monkeypatch.setenv("WORLDLABS_DEFAULT_MODEL", model)
-    descriptor = {"scene_id": "scene-1", "capture_id": "capture-1", "metadata": {
-        "worldlabs_input_video_uri": "gs://bucket/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/in.mp4"}}
-    # Refused while building the request, before any video upload.
-    with pytest.raises(ValueError, match="worldlabs_model_not_a_world_model"):
-        WorldLabsPreviewProvider()._build_request_manifest(descriptor=descriptor, capture_root=Path("/tmp/capture"))

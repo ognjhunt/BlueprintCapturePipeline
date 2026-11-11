@@ -36,7 +36,6 @@
     "python_versions": ["3.11", "3.12"],
     "suite": [
       "scripts/validate_python_interpreter_matrix.py",
-      "tests/test_eval_ready_task_grounding.py",
       "tests/test_public_scientific_claims.py",
       "tests/test_sc3_eval_protocol.py"
     ],

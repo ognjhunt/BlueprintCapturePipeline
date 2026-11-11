@@ -145,30 +145,6 @@ def _resolve_input_video(pipeline_root: Path, capture_root: Path) -> Optional[Pa
     return None
 
 
-def apply_clean_plate_to_reconstruction_input(
-    worldlabs_input: Mapping[str, Any], clean_plate: Mapping[str, Any],
-) -> Dict[str, Any]:
-    """Legacy capture: never let a task-analysis hold fall back to the unedited source video."""
-    result = dict(worldlabs_input)
-    status = clean_plate.get("status")
-    if status == "disabled":
-        return result
-    passed = (
-        status in {"noop", "objects_removed"}
-        and clean_plate.get("privacy_verified") is True
-        and not clean_plate.get("blockers")
-    )
-    if status == "objects_removed" and not clean_plate.get("clean_plate_video_uri"):
-        passed = False
-    if not passed:
-        return {**result, "status": "blocked", "output_video_uri": None,
-                "reason": clean_plate.get("reason") or "task_scene_preparation_required",
-                "clean_plate_blockers": list(clean_plate.get("blockers") or [])}
-    if status == "objects_removed":
-        result.update(output_video_uri=clean_plate["clean_plate_video_uri"], clean_plate_applied=True)
-    return result
-
-
 def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
     """Per-target manifest linking a removed source object to its (future) asset.
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Mapping
 
 from .common import parse_bool
@@ -75,11 +74,3 @@ def buyer_access_required(env: Mapping[str, str] | None = None) -> bool:
     )
 
 
-def relative_artifact_checksum(path: Path) -> str:
-    import hashlib
-
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
