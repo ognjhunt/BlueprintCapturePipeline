@@ -38,7 +38,8 @@ import json
 import math
 import time
 from collections.abc import Callable, Mapping
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -133,6 +134,7 @@ class ContractPolicyService:
         self.metadata_path = urlsplit(policy_spec["metadata_url"]).path
         self.endpoint_path = urlsplit(policy_spec["endpoint_url"]).path
         self.inference_count = 0
+        self._lock = threading.Lock()  # One inference at a time, in arrival order, as on the native server.
 
     def authorized(self, header: str | None) -> bool:
         expected = "Bearer " + self._token
@@ -152,9 +154,10 @@ class ContractPolicyService:
                 or not isinstance(request["request_id"], str) or not 1 <= len(request["request_id"]) <= 128):
             raise ContractRequestError("contract_request_envelope_invalid")
         observation = decode_observation(request["observation"])
-        started = self._clock()
-        output = self._policy.infer(observation)
-        self.inference_count += 1
+        with self._lock:
+            started = self._clock()
+            output = self._policy.infer(observation)
+            self.inference_count += 1
         if not isinstance(output, Mapping):
             # The client refuses a non-object envelope; never reshape the policy's answer.
             return {"policy_output_not_object": _wire(output)}
@@ -167,6 +170,8 @@ def _handler(service: ContractPolicyService) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "BlueprintContractPolicy/1"
         sys_version = ""
+        # The bounded client reads to Content-Length on a kept-alive connection, then closes it itself.
+        protocol_version = "HTTP/1.1"
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
             return None  # Request lines carry no secrets, but observations stay out of logs.
@@ -217,10 +222,11 @@ def _handler(service: ContractPolicyService) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-class ContractHTTPServer(HTTPServer):
-    """One request at a time, as OpenPI's websocket server serves one client."""
+class ContractHTTPServer(ThreadingHTTPServer):
+    """Loopback only; requests are read concurrently, inference runs one at a time (``ContractPolicyService``)."""
 
     allow_reuse_address = True
+    daemon_threads = True
 
     def get_request(self):  # type: ignore[no-untyped-def]
         connection, address = super().get_request()

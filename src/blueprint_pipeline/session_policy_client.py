@@ -36,6 +36,8 @@ from .openpi_droid_policy_runtime import OPENPI_INFERENCE_TIMEOUT_SECONDS
 LOOPBACK_HOST = "127.0.0.1"
 UNAVAILABLE = "session_policy_server_unavailable"
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+# ``core.security_controls`` wraps a refused connect and a connection closed mid-response in these.
+_UNREACHABLE = frozenset({"all validated remote IP connections failed", "remote connection closed before completion"})
 
 
 def loopback_origin(port: int) -> str:
@@ -90,8 +92,11 @@ def loopback_transport(spec: LoopbackDroidPolicySpec, *, fetch: Any = fetch_boun
         except TimeoutError:
             raise ValueError("droid_https_policy_response_timeout") from None
         except SecurityValidationError as exc:
-            if "time limit" in str(exc):
+            message = str(exc)
+            if "time limit" in message:
                 raise ValueError("droid_https_policy_response_timeout") from None
+            if message in _UNREACHABLE:  # Nothing listening, or the connection dropped mid-answer.
+                raise ValueError(f"{UNAVAILABLE}:{type(exc.__cause__ or exc).__name__}") from None
             raise ValueError("droid_https_policy_response_transport_invalid") from None
         except (ConnectionError, http.client.HTTPException, OSError) as exc:
             raise ValueError(f"{UNAVAILABLE}:{type(exc).__name__}") from None

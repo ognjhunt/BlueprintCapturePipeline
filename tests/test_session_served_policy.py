@@ -165,16 +165,21 @@ def test_served_candidate_settles_and_publishes_through_the_real_coordinator(tmp
     assert Decimal(published["budget"]["spent_upper_bound_usd"]) == Decimal("4")
 
 
-def test_existing_native_plan_and_publication_are_unchanged_by_the_new_path(tmp_path, monkeypatch):
-    """The packaged plan fixture is byte-identical with no registry entry; adding one changes only its own row."""
-    plan, facts = _plan(tmp_path / "plain", monkeypatch, scene_half="team_scene")
-    plain = {row["candidate_id"]: row for row in plan["candidates"]}
-    served, _, _ = served_plan(tmp_path / "served", monkeypatch)
-    # Every native row's identity (configuration, admission, runtime) is what it was without the entry.
-    for key in ("pi05_droid", "groot_n17_droid", "molmoact2_droid"):
-        before = plain[key]
-        assert before["configuration_digest"] == next(row for row in load_default_catalog()["candidates"]
-                                                      if row["candidate_id"] == key)["configuration_digest"]
-        assert before["execution_spec"]["runtime_digest"] == facts["capabilities"]["candidate_bindings"][key]["runtime_digest"]
-    assert plan["catalog_digest"] == load_default_catalog()["catalog_digest"]
-    assert {row["candidate_id"] for row in served["candidates"]} == {CANDIDATE}
+def test_existing_native_candidates_are_unchanged_by_a_registry_entry(tmp_path, monkeypatch):
+    """With the entry, every native row plans, binds and quotes exactly as without it; only its own row is new."""
+    plan, facts = _plan(tmp_path, monkeypatch, scene_half="team_scene")
+    profile = profile_for_capture(str(tmp_path / "capture"))
+    profile["screening_candidates"] = {CANDIDATE: {"session_served_policy": dict(ENTRY)}}
+    catalog = catalog_for_profile(profile)
+    served = build_planning_inputs(catalog=catalog, profile=profile, capture_root=tmp_path / "capture",
+                                   source=plan["source"], inputs_dir=tmp_path / "screening-inputs")
+    before, after = facts["capabilities"]["candidate_bindings"], served["capabilities"]["candidate_bindings"]
+    assert set(after) == set(before) | {CANDIDATE}
+    for key in before:
+        assert after[key] == before[key]
+        assert {k: v for k, v in served["cost_quotes"][key].items() if k not in {"valid_until", "quote_digest"}} == {
+            k: v for k, v in facts["cost_quotes"][key].items() if k not in {"valid_until", "quote_digest"}}
+    rows = {row["candidate_id"]: row for row in catalog["candidates"]}
+    assert all(rows[row["candidate_id"]] == row for row in load_default_catalog()["candidates"])
+    # Without an entry the effective catalog is the packaged one, so existing campaign ids are unchanged.
+    assert catalog_for_profile(profile_for_capture(str(tmp_path / "capture")))["catalog_digest"] == plan["catalog_digest"]
