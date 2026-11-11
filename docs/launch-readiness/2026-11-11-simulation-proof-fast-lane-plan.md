@@ -66,9 +66,21 @@ Each step is useful by itself and is proved before the next one starts.
 1. **Place the robot where it can do the job, or hold before spending.**
    A stance counts as in reach only when the grasp point is within reach at
    both the pick-up and the put-down. When no stance qualifies, the existing
-   admission stop holds the job before any paid run. On the branch
-   `claude/fervent-noether-5qvel0` with unit tests; before it merges, replay
-   capture-447's next step on the branch, as `AGENTS.md` requires.
+   admission stop holds the job before any paid run. Built on the branch
+   `claude/fervent-noether-5qvel0` with unit tests that reproduce the recorded
+   distances (0.729 m nearest point, 1.086 m grasp contact, 0.990 m bound).
+   Not merged or deployed. Before it merges:
+   - Replay capture-447 on the branch, as `AGENTS.md` requires. The stage
+     replay does not reach this code; the downstream replay does:
+     `python -m blueprint_pipeline.task_evaluation_downstream_replay --launch-run "$L" --intent-dir "$I" --capture-dir "$C" --registry "$R" --webapp-snapshots ./webapp --mirror ./mirror --until screening_plan --replay-root ./replays`,
+     with the inputs pulled as `docs/OPERATOR_DOOR.md` describes. Check the
+     chosen stance and its contact distances in `robot_station_search`.
+   - Decide whether to raise `STANCE_SEARCH_VERSION`. Its comment says to raise
+     it whenever station choice changes; raising it recompiles completed team
+     halves, so it was left as it is on the branch.
+   - The intake check judges reach from the object's centre, because no grasp
+     contact is sealed that early. It can disagree with the later check on a
+     large object.
 2. **Score progress, not only success.** Add a 0-to-1 progress score per
    episode: reached, touched, grasped, lifted, carried, placed. Compute it
    first offline from retained traces with
