@@ -36,6 +36,7 @@ import hmac
 import io
 import json
 import math
+import os
 import time
 from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -166,7 +167,14 @@ class ContractPolicyService:
         return response
 
 
-def _handler(service: ContractPolicyService) -> type[BaseHTTPRequestHandler]:
+class ServiceSlot:
+    """The service a bound listener answers with; empty (``None``) while the checkpoint still loads."""
+
+    def __init__(self, service: ContractPolicyService | None = None):
+        self.service = service
+
+
+def _handler(slot: ServiceSlot) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "BlueprintContractPolicy/1"
         sys_version = ""
@@ -184,14 +192,20 @@ def _handler(service: ContractPolicyService) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(payload)
 
-        def _authorized(self) -> bool:
+        def _authorized(self) -> ContractPolicyService | None:
+            service = slot.service
+            if service is None:
+                # Bound before the checkpoint loads, so no other process can hold this port meanwhile.
+                self._send(503, {"error": "contract_server_loading"})
+                return None
             if service.authorized(self.headers.get("Authorization")):
-                return True
+                return service
             self._send(401, {"error": "contract_request_unauthorized"})
-            return False
+            return None
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib name
-            if not self._authorized():
+            service = self._authorized()
+            if service is None:
                 return
             if self.path != service.metadata_path:
                 self._send(404, {"error": "contract_path_unknown"})
@@ -199,7 +213,8 @@ def _handler(service: ContractPolicyService) -> type[BaseHTTPRequestHandler]:
             self._send(200, service.metadata)
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib name
-            if not self._authorized():
+            service = self._authorized()
+            if service is None:
                 return
             if self.path != service.endpoint_path:
                 self._send(404, {"error": "contract_path_unknown"})
@@ -234,12 +249,22 @@ class ContractHTTPServer(ThreadingHTTPServer):
         return connection, address
 
 
-def build_server(service: ContractPolicyService, *, port: int, host: str = LOOPBACK_HOST) -> ContractHTTPServer:
+def build_server(service: ContractPolicyService | None, *, port: int, host: str = LOOPBACK_HOST) -> ContractHTTPServer:
+    """Bind the loopback listener now; ``service`` may follow later through ``server.slot``."""
     if host != LOOPBACK_HOST:
         raise ValueError("contract_server_must_be_loopback_only")
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("contract_server_port_invalid")
-    return ContractHTTPServer((host, port), _handler(service))
+    slot = ServiceSlot(service)
+    server = ContractHTTPServer((host, port), _handler(slot))
+    server.slot = slot  # type: ignore[attr-defined]
+    return server
+
+
+def _write_identity(path: str | Path, value: Mapping[str, Any]) -> None:
+    temporary = Path(str(path) + ".tmp")
+    temporary.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def read_token(path: str | Path) -> str:
@@ -265,16 +290,28 @@ def serve(*, execution_spec_path: str | Path, checkpoint_dir: str | Path, checkp
     if urlsplit(policy_spec["endpoint_url"]).port != port:
         raise ValueError("contract_server_port_mismatch")
     service_token = read_token(token_file)
-    policy, local_verification = load_identity_bound_policy(
-        spec=native, checkpoint_dir=checkpoint_dir, checkpoint_inventory_path=checkpoint_inventory_path)
-    service = ContractPolicyService(policy=policy, policy_spec=policy_spec, bearer_token=service_token)
-    server = build_server(service, port=port)
-    # Written after load and bind: the starter reads it into its receipt. No secret in it.
-    Path(identity_out).write_text(json.dumps({
-        "schema_version": SCHEMA_VERSION, "status": "serving", "host": LOOPBACK_HOST, "port": port,
-        "native_server_metadata": native.server_metadata(), "local_checkpoint_verification": local_verification,
-        "contract_metadata": service.metadata, "outbound_calls": "none"}, sort_keys=True), encoding="utf-8")
-    server.serve_forever()
+    # Bind first, then load (minutes): the port is this process's from now on, and every request meanwhile
+    # is answered "loading". The starter sends the token only once this record names this process.
+    server = build_server(None, port=port)
+    base = {"schema_version": SCHEMA_VERSION, "host": LOOPBACK_HOST, "port": port, "pid": os.getpid(),
+            "outbound_calls": "none"}
+    _write_identity(identity_out, {**base, "status": "loading"})
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        policy, local_verification = load_identity_bound_policy(
+            spec=native, checkpoint_dir=checkpoint_dir, checkpoint_inventory_path=checkpoint_inventory_path)
+        service = ContractPolicyService(policy=policy, policy_spec=policy_spec, bearer_token=service_token)
+    except BaseException:
+        server.shutdown()
+        server.server_close()
+        raise
+    # The starter reads this into its receipt. No secret in it.
+    _write_identity(identity_out, {**base, "status": "serving", "native_server_metadata": native.server_metadata(),
+                                   "local_checkpoint_verification": local_verification,
+                                   "contract_metadata": service.metadata})
+    server.slot.service = service  # type: ignore[attr-defined]
+    thread.join()
 
 
 def main(argv: list[str] | None = None) -> int:

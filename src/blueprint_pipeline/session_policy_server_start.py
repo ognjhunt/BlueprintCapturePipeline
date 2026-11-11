@@ -11,9 +11,17 @@ process identity at the end of the session.
 A server that does not start, exits, or never answers within its bound fails
 this step: the entrypoint records the candidate's provisioning stage
 (``policy_canary_policy_provisioning_failed``), an infrastructure failure of the
-attempt that scores no episode. A server that dies after it is ready makes each
-later request ``session_policy_server_unavailable``, which the episode evidence
-records as infrastructure, never as the policy failing.
+attempt that scores no episode. A server that dies while serving an inference
+fails that try as the policy's, as the same crash does on the native path; each
+later request finds nothing listening (``session_policy_server_unavailable``) and
+is void as infrastructure (``session_policy_client``).
+
+The token goes only to the process this step started. The server binds its
+port before it loads the checkpoint and records its own pid in its identity
+file; no readiness request (each carries the token) is sent until that record
+names the started process, which is still alive and so still holds the port.
+Another local process that took the port first makes the server's bind fail,
+and the step fails before any token is sent.
 
 The bearer token is generated on the session by the entrypoint into a private
 file outside the output directory; it is never in the bundle, the receipt or
@@ -45,6 +53,16 @@ def _token(environment: Mapping[str, str]) -> str:
     if not path:
         raise ValueError("session_policy_token_unavailable")
     return read_token(path)
+
+
+def listener_is_started_process(identity_out: Path, *, pid: int, port: int) -> bool:
+    """The server's own record says the started process bound the port (it writes it only after binding)."""
+    try:
+        record = json.loads(identity_out.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (isinstance(record, dict) and record.get("pid") == pid and record.get("port") == port
+            and record.get("host") == "127.0.0.1" and record.get("status") in {"loading", "serving"})
 
 
 def server_command(*, python: str, spec_path: Path, checkpoint_dir: str, inventory: str, token_file: str,
@@ -106,6 +124,10 @@ def start(*, spec: Mapping[str, Any], spec_path: Path, python: str, runtime: Pat
                 raise RuntimeError(f"session_policy_server_exited_before_ready:{process.returncode}")
             if monotonic() - started > block["startup_timeout_seconds"]:
                 raise RuntimeError(f"session_policy_server_not_ready_within_bound:{last or 'no_answer'}")
+            if not listener_is_started_process(identity_out, pid=process.pid, port=block["port"]):
+                last = "session_policy_server_not_bound"  # no token is sent to a listener not proven ours
+                sleep(POLL_SECONDS)
+                continue
             attempts += 1
             try:
                 readiness = factory(spec, token).preflight_readiness()
@@ -152,4 +174,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["server_command", "start"]
+__all__ = ["listener_is_started_process", "server_command", "start"]
