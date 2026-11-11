@@ -157,19 +157,59 @@ def test_a_room_with_no_station_abstains_by_name_instead_of_crashing(tmp_path, m
     assert verdict["status"] == "abstained" and verdict["blockers"] == ["robot_station_stance_no_clear_floor"]
 
 
-def test_a_long_object_with_its_near_end_in_reach_and_its_centre_beyond_abstains_as_the_gate_would(tmp_path):
+def _bar():
     # A 1.2 m bar on the wide table, its far end nearest the table's edge: some of it is within the arm's reach
-    # from a pedestal beside the table, but the carry's contact (its centre, as at the team packet's gate) is
-    # not, at its start or its place. The verdict names the contact's shortfall, as the bundle's gate does.
-    from blueprint_pipeline.robot_arm_path_clearance import reach_refusal_code
-
+    # from a pedestal beside the table, its centre (the intake's assumed contact) is not.
     wide = {"description": "wide table top", "aabb_min_xyz": [-1.2, -1.2, 0.74], "aabb_max_xyz": [1.2, 1.2, 0.74]}
-    preparation = _preparation({"relation": "on", "position_world_m": [0.1, 0.0, 0.74]}, support=wide,
-                               subject=([-0.6, -0.03, 0.74], [0.6, 0.03, 0.80]))
-    verdict = rigid_task_verdict(preparation=preparation, collision_path=_wide_table(tmp_path), robot_profiles=[DROID])
-    assert verdict["status"] == "abstained" and verdict["stances_in_reach"] == 0 and "flags" not in verdict
+    return _preparation({"relation": "on", "position_world_m": [0.1, 0.0, 0.74]}, support=wide,
+                        subject=([-0.6, -0.03, 0.74], [0.6, 0.03, 0.80]))
+
+
+def test_a_long_object_with_its_near_end_in_reach_and_its_centre_beyond_is_flagged_and_goes_on(tmp_path):
+    # No task contact is sealed at intake: a centre beyond the bound proves nothing, so the job is not held.
+    # The advisory names the assumed contact's numbers; the team half, with the task's own contact, decides.
+    from blueprint_pipeline.robot_arm_path_clearance import SCRIPTED_CARRY_FLAG
+    from blueprint_pipeline.website_rigid_feasibility import ASSUMED_CONTACT_FLAG
+
+    verdict = rigid_task_verdict(preparation=_bar(), collision_path=_wide_table(tmp_path), robot_profiles=[DROID])
+    assert verdict["status"] == "flagged" and verdict["blockers"] == [] and verdict["stances_in_reach"] > 0
     reach = verdict["object_reach"]
     assert reach["status"] == "within_bound" and reach["beyond"] == [] and reach["task_contact_beyond"]
-    assert verdict["blockers"] == [reach_refusal_code(reach)]
-    assert verdict["blockers"][0].startswith("robot_reach_insufficient:") and verdict["blockers"][0].endswith(
-        "m_vs_0.990m")
+    assert verdict["flags"] == [SCRIPTED_CARRY_FLAG, ASSUMED_CONTACT_FLAG]
+    assert verdict["advisories"] and all(code.startswith("robot_reach_assumed_contact_beyond:")
+                                         and code.endswith("m_vs_0.990m") for code in verdict["advisories"])
+    [entry] = verdict["embodiments"]
+    assert entry["assumed_contact_beyond"] == reach["task_contact_beyond"] and "reach_held" not in entry
+    # The robot-fit reports read it as the verdict does: flagged, so unknown, never a pass or a refusal.
+    from blueprint_pipeline import website_robot_fit_precheck as precheck
+    from blueprint_pipeline.website_robot_fit import _verdict_reach
+
+    assert _verdict_reach(verdict, "franka_panda")["result"] == "unknown"
+    row = _precheck_franka(precheck, verdict)
+    assert (row["verdict"], row["reasons"]) == ("unknown", ["assumed_contact_beyond_reach_bound"])
+
+
+def _precheck_franka(precheck, verdict):
+    original = precheck._reach_bound
+    try:
+        precheck._reach_bound = lambda *_, **__: {"result": "not_ruled_out"}
+        return precheck._franka({}, verdict)
+    finally:
+        precheck._reach_bound = original
+
+
+def test_the_robot_fit_reports_fail_only_where_the_verdict_holds_on_its_reach_proof(tmp_path):
+    from blueprint_pipeline import website_robot_fit_precheck as precheck
+    from blueprint_pipeline.website_robot_fit import _verdict_reach
+
+    held = rigid_task_verdict(preparation=_far_preparation(), collision_path=_wide_table(tmp_path / "far"),
+                              robot_profiles=[DROID])
+    assert held["status"] == "abstained" and held["embodiments"][0]["reach_held"] is True
+    assert _verdict_reach(held, "franka_panda")["result"] == "fail"
+    assert _precheck_franka(precheck, held)["verdict"] == "no_fit"
+    # In reach with the centre too: the scripted carry clears or is only flagged, and both reports pass.
+    clear = rigid_task_verdict(preparation=_preparation({"relation": "on", "position_world_m": [0.5, 0.3, 0.0]}),
+                               collision_path=_room(tmp_path), robot_profiles=[DROID])
+    assert clear["status"] in {"clear", "flagged"} and "assumed_contact_beyond" not in clear["embodiments"][0]
+    assert _verdict_reach(clear, "franka_panda")["result"] == "pass"
+    assert _precheck_franka(precheck, clear)["verdict"] == "fit"

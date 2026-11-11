@@ -257,6 +257,7 @@ def test_a_tray_mid_table_with_its_contact_out_of_reach_from_every_stance_is_hel
     from blueprint_pipeline import robot_arm_path_clearance as clearance
     from blueprint_pipeline import team_scene_packet
     from blueprint_pipeline.team_embodiment_stance import EVERY_CLEAR_STANCE
+    from blueprint_pipeline.website_candidate_feasibility import candidate_feasibility, infeasible_blockers
 
     tried: list[dict[str, Any]] = []
 
@@ -271,7 +272,7 @@ def test_a_tray_mid_table_with_its_contact_out_of_reach_from_every_stance_is_hel
     stances = _search(room, ranked=EVERY_CLEAR_STANCE, task_points_world_m=[PICK, PLACE], **PEDESTAL_SEARCH)
     spec = _tray_spec()
     profile = {"robot_joint_reset_positions_rad": {f"panda_joint{i}": 0.0 for i in range(1, 8)}}
-    _station, record = team_scene_packet._carrying_station(stances, task_spec=spec, collision=room, profile=profile)
+    station, record = team_scene_packet._carrying_station(stances, task_spec=spec, collision=room, profile=profile)
     reaches = [clearance.rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=stance,
                                                **clearance.object_reach_inputs(spec)) for stance in stances]
     # Every clear stance was measured; from every one the tray's near edge is in reach and its contact is not.
@@ -290,5 +291,19 @@ def test_a_tray_mid_table_with_its_contact_out_of_reach_from_every_stance_is_hel
     # The bundle's gate, from that station, refuses the packet by name before any paid run.
     verdict = clearance.rigid_carry_verdict(record["results"][0], chosen)
     assert verdict["status"] == "blocked"
-    assert verdict["blockers"] == [clearance.reach_insufficient_code("pick", pick["distance_m"],
-                                                                     chosen["reach_bound_m"])]
+    code = clearance.reach_insufficient_code("pick", pick["distance_m"], chosen["reach_bound_m"])
+    assert verdict["blockers"] == [code]
+    # Planning reads the half the same way: the DROID candidates are infeasible by the gate's own reason.
+    plan = {"plan_digest": "sha256:" + "d" * 64, "task_kind": "rigid_pick_place",
+            "robot": {"robot_id": "franka_panda", "base_pose_world": {
+                key: station[key] for key in ("position_world_m", "orientation_xyzw")}},
+            "objects": [{"semantic_role": "task_object", "object_type": "RIGID", "task_subject": True}],
+            "task_spec": spec}
+    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: {
+        "robot_station": station, "robot_station_search": record})
+    catalog = {"candidates": [{"candidate_id": key, "interface": {"robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"}}
+                              for key in ("pi05_droid", "groot_n17_droid")]}
+    feasibility = candidate_feasibility(scene_plan=plan, catalog=catalog, profile={})
+    row = feasibility["candidates"]["pi05_droid"]
+    assert (row["status"], row["blockers"], row["reach_source"]) == ("infeasible", [code], "franka_chain_reach_bound")
+    assert infeasible_blockers(feasibility) == {"pi05_droid": [code], "groot_n17_droid": [code]}

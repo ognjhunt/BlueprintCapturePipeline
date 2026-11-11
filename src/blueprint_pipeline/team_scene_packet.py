@@ -147,21 +147,23 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
                       profile: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """The Franka's station among the clear ``stances`` (ranked, best first), and the record of the choice.
 
-    The reach rule first: from each clear stance, whether the task's grasp contact lies within the arm's
-    reach bound at both its pick and its place (``rigid_reach_shortfall``, ``object_reach_inputs``,
-    ``task_contact_in_reach``): a stance from which the arm cannot bring the contact to the place cannot
-    produce a result (capture-447: some point of the tray in reach at both ends, its contact 1.086 m from
-    the shoulder at the place against a 0.990 m bound). Stances in reach rank by the farther of the two
-    contact distances, nearest first, then by the search's own rank. The scripted carry
-    (``robot_arm_path_clearance.first_carrying_stance``: the task's own grasp, then the intake's tilted and
-    side-on ones, ``carry_grasps``) is tried from the first ``CARRY_STATIONS`` stances in reach, in that
-    order, as evidence: the first it clears from is the station. Without one, the first stance in reach
-    stands, and the record flags ``SCRIPTED_CARRY_FLAG`` with the attempt that got furthest; nothing is
-    refused for it. Only with no clear stance in reach does the stance whose contact is nearest stand
+    The reach rule first: from each clear stance, whether the task's grasp contact can lie within the
+    arm's reach bound at its pick and at some place the task accepts (``rigid_reach_shortfall``,
+    ``object_reach_inputs``, ``task_contact_in_reach``): from a stance proved otherwise no run can succeed
+    (capture-447: some point of the tray in reach at both ends, its contact 1.086 m from the shoulder at
+    the place against a 0.990 m bound). Stances in reach rank those reaching the nominal place first, then
+    by the farther of the two nominal contact distances, nearest first, then by the search's own rank.
+    The scripted carry (``robot_arm_path_clearance.first_carrying_stance``: the task's own grasp, then the
+    intake's tilted and side-on ones, ``carry_grasps``) is tried from the first ``CARRY_STATIONS`` stances
+    in reach, in that order, as evidence: the first it clears from is the station. Without one, the first
+    stance in reach stands, and the record flags ``SCRIPTED_CARRY_FLAG`` with the attempt that got
+    furthest; a station that reaches the contact only at another accepted place than the nominal one is
+    flagged ``NOMINAL_CONTACT_FLAG``. Nothing is refused for either. Only with no clear stance in reach does the stance whose contact is nearest stand
     (``reach_shortfall``), and the bundle's gate refuses the packet by name before any GPU run.
     """
     from .robot_arm_path_clearance import (
         CARRY_STATIONS,
+        NOMINAL_CONTACT_FLAG,
         NOMINAL_SEED_RAD,
         REST_SEED_RAD,
         SCRIPTED_CARRY_FLAG,
@@ -169,6 +171,7 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
         carry_grasps,
         first_carrying_stance,
         object_reach_inputs,
+        contact_reach_status,
         rigid_reach_shortfall,
         task_contact_far_m,
         task_contact_in_reach,
@@ -194,7 +197,7 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
         except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
             reaches.append(None)
     in_reach = sorted((i for i, reach in enumerate(reaches) if task_contact_in_reach(reach)),
-                      key=lambda i: (task_contact_far_m(reaches[i]), i))
+                      key=lambda i: (contact_reach_status(reaches[i]) == "flagged", task_contact_far_m(reaches[i]), i))
     tried = [stances[i] for i in in_reach[:CARRY_STATIONS]] if in_reach else list(stances[:CARRY_STATIONS])
     try:
         cleared, furthest, attempts = first_carrying_stance(tried, collision_path=collision, robot_id="franka_panda",
@@ -215,7 +218,8 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
     record: dict[str, Any] = {
         "rule": STATION_RULE, "cleared": cleared is not None, "chosen_basis": basis, "chosen_rank": rank,
         "stances_measured": len(stances), "stances_in_reach": len(in_reach),
-        "flags": [SCRIPTED_CARRY_FLAG] if cleared is None and in_reach else [],
+        "flags": ([SCRIPTED_CARRY_FLAG] if cleared is None and in_reach else [])
+                 + ([NOMINAL_CONTACT_FLAG] if contact_reach_status(reaches[rank]) == "flagged" else []),
         "grasps_tried": len({report.get("grasp") for _, report in attempts}),
         "results": [{"stance_digest": row["stance_digest"], "status": report["status"],
                      "blockers": report["blockers"], **({"grasp": report["grasp"]} if "grasp" in report else {})}
@@ -784,7 +788,12 @@ def _robot_access_applied(access: Mapping[str, Any], *, scope: Mapping[str, Any]
         find_confirmation,
         write_collider_without,
     )
-    from .robot_arm_path_clearance import RobotArmPathClearanceError, object_reach_inputs, rigid_reach_shortfall
+    from .robot_arm_path_clearance import (
+        RobotArmPathClearanceError,
+        contact_reach_status,
+        object_reach_inputs,
+        rigid_reach_shortfall,
+    )
     from .team_embodiment import TeamEmbodimentError
     from .team_embodiment_stance import EVERY_CLEAR_STANCE, ground_stance
 
@@ -850,7 +859,10 @@ def _robot_access_applied(access: Mapping[str, Any], *, scope: Mapping[str, Any]
     try:
         reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=moved_station,
                                       **object_reach_inputs(task_spec))
-        record["cpu_checks"]["reach"] = {key: reach[key] for key in ("status", "reach_bound_m", "beyond")}
+        # ``contact_status`` is the reach rule the bundle's gate holds by (``contact_reach_status``).
+        record["cpu_checks"]["reach"] = {key: reach[key] for key in ("status", "reach_bound_m", "beyond",
+                                                                     "task_contact_beyond")} | {
+            "contact_status": contact_reach_status(reach)}
     except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
         record["cpu_checks"]["reach"] = {"status": "unassessed", "reason": "reach_inputs_invalid"}
     record["cpu_checks"]["carry_cleared"] = bool(search["cleared"])

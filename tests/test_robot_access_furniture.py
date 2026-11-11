@@ -353,6 +353,8 @@ def test_chairs_are_measured_without_asking_the_site_then_moved_only_on_the_owne
     applied = third["robot_access_removal"]
     assert applied["status"] == "applied" and applied["confirmation_digest"] == approval["confirmation_digest"]
     assert applied["cpu_checks"]["carry_cleared"] is True and applied["cpu_checks"]["reach"]["status"] == "within_bound"
+    # The record says what the bundle's gate holds by: the task's contact in reach from the new station.
+    assert applied["cpu_checks"]["reach"]["contact_status"] == "within_bound"
     assert applied["cpu_checks"]["rest_check"]["status"] == applied["cpu_checks"]["rest_check_before"]["status"]
     assert third["robot_station_search"]["cleared"] is True
     assert third["robot_station"]["position_world_m"][:2] == [0.5, -0.42]

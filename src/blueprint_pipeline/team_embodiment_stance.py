@@ -117,8 +117,12 @@ MOVABLE_RULE = "clear_if_named_obstacles_moved_never_chosen"
 #: (``team_scene_packet_worker``), and a release that leaves the search alone recompiles nothing. A stance recorded
 #: without it is version 1: every one before the pedestal search (2026-11-04). Version 3 (2026-11-04): the station
 #: is chosen by the hard reach rule, any point of the object within the arm's reach from a clear stance, and the
-#: scripted carry is evidence (``robot_arm_path_clearance.SCRIPTED_CARRY_FLAG``).
-STANCE_SEARCH_VERSION = 3
+#: scripted carry is evidence (``robot_arm_path_clearance.SCRIPTED_CARRY_FLAG``). Version 4 (2026-11-11): a stance
+#: counts as in reach only when the task's grasp contact can be within the bound at the pick and at some accepted
+#: place (``robot_arm_path_clearance.contact_reach_status``; capture-447's place contact was 1.086 m against 0.990 m),
+#: ranked nominal place first. A completed half whose station passes that rule is never recompiled for it
+#: (``team_scene_packet_worker.stale_unreached_station``).
+STANCE_SEARCH_VERSION = 4
 #: A ``ranked`` count that returns every clear stance of the search disc: a rigid carry's station is chosen
 #: among all of them by the hard reach rule (``team_scene_packet._carrying_station``).
 EVERY_CLEAR_STANCE = (2 * math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9) + 1) ** 2

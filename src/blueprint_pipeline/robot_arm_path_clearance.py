@@ -844,6 +844,25 @@ def _place_nearest_distance(shoulder: np.ndarray, target: np.ndarray, held: np.n
     return distance
 
 
+def _place_contact_distance(shoulder: np.ndarray, target: np.ndarray, contact: np.ndarray,
+                            region: tuple[np.ndarray, np.ndarray] | None, yaw_free_rad: float) -> float:
+    """A lower bound on the distance from ``shoulder`` to the task's contact wherever the task accepts the object.
+
+    ``contact`` is the contact's offset from the object's origin, held at the start's orientation. The origin
+    may be anywhere in ``region`` (with ``target``); a turn of up to ``yaw_free_rad`` about the vertical moves
+    the offset's horizontal part by at most the chord ``2 r sin(yaw / 2)`` on each axis. The box covering all of
+    it is measured, so the true least distance is never smaller: a contact beyond this is beyond every place.
+    Without a region or a turn it is the exact distance at ``target``.
+    """
+    if region is None and yaw_free_rad <= 0.0:
+        return float(np.linalg.norm(target + contact - shoulder))
+    origin_low, origin_high = (target, target) if region is None else (
+        np.minimum(region[0], target), np.maximum(region[1], target))
+    grow = 2.0 * math.hypot(contact[0], contact[1]) * math.sin(min(yaw_free_rad, math.pi) / 2.0)
+    swing = np.array([grow, grow, 0.0])
+    return _box_gap(shoulder, origin_low + contact - swing, origin_high + contact + swing)
+
+
 def object_reach_inputs(task_spec: Mapping[str, Any]) -> dict[str, Any]:
     """``rigid_reach_shortfall``'s task arguments from a rigid task spec.
 
@@ -859,12 +878,24 @@ def object_reach_inputs(task_spec: Mapping[str, Any]) -> dict[str, Any]:
         yaw = float(orientation["tolerance_rad"])
     else:
         yaw = float(task_spec.get("destination_orientation_tolerance_rad") or 0.0)
+    # The contract's own containment region counts too: the union of it and the spec's bounds holds every
+    # accepted place. A contract that ignores containment accepts the object anywhere: no place is proved.
+    region = task_spec.get("destination_position_bounds_world_m")
+    containment = contract.get("destination_containment")
+    unbounded = isinstance(containment, Mapping) and containment.get("mode") == "ignored"
+    sealed = containment.get("position_bounds_world_m") if isinstance(containment, Mapping) else None
+    if not unbounded and isinstance(sealed, Mapping):
+        region = sealed if region is None else {
+            "minimum": np.minimum(np.asarray(region["minimum"], dtype=float),
+                                  np.asarray(sealed["minimum"], dtype=float)).tolist(),
+            "maximum": np.maximum(np.asarray(region["maximum"], dtype=float),
+                                  np.asarray(sealed["maximum"], dtype=float)).tolist()}
     return {"start_pose_world": task_spec["start_pose_world"],
             "target_position_world": task_spec["target_position_world_m"],
             "contact_point_m": task_spec["interaction_affordance"]["contact_point_scoring_frame_m"],
             "subject_bounds_m": task_spec.get("subject_collision_bounds_scoring_frame_m"),
-            "destination_bounds_world_m": task_spec.get("destination_position_bounds_world_m"),
-            "place_yaw_free_rad": yaw}
+            "destination_bounds_world_m": region, "place_yaw_free_rad": yaw,
+            **({"place_unbounded": True} if unbounded else {})}
 
 
 def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequence[float]],
@@ -872,7 +903,7 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
                           contact_point_m: Sequence[float],
                           subject_bounds_m: Mapping[str, Sequence[float]] | None = None,
                           destination_bounds_world_m: Mapping[str, Sequence[float]] | None = None,
-                          place_yaw_free_rad: float = 0.0) -> dict[str, Any]:
+                          place_yaw_free_rad: float = 0.0, place_unbounded: bool = False) -> dict[str, Any]:
     """Whether every point of the object lies beyond the arm's reach bound at its start or at its place.
 
     The hard reach rule: a learned policy chooses its own grasp, so the task is out of reach from a base
@@ -884,9 +915,9 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
     nearest point is out of reach, farthest first: with any, no grasp, path or policy reaches the object
     there, a proof (``grasp_independent``). The task's own grasp contact (``contact_point_m``, as
     ``rigid_pick_place_clearance`` holds it) is measured beside it (``task_contact_beyond``). ``status``
-    reports the object's nearest point only; a station is chosen, and a rigid carry admitted, only with
-    the contact also in reach at both ends (``task_contact_in_reach``, ``rigid_carry_verdict``), since a
-    run that cannot bring the task's contact to the place cannot produce a result. Without bounds only
+    reports the object's nearest point only; ``contact_admissible_distance_m`` (a lower bound over every
+    place the task accepts; none with ``place_unbounded``) and ``task_contact_admissible_beyond`` give the
+    contact's proof, which ``contact_reach_status`` reads for station choice and admission. Without bounds only
     the contact is known: within the bound it is a point of the object in reach; beyond it, ``status``
     is ``unassessed``. No simulator runs; this is CPU geometry.
     """
@@ -915,12 +946,24 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
                        if phase == "pick" else
                        _place_nearest_distance(shoulder, centre, held, lower, upper, region, yaw))
             row["object_nearest_distance_m"] = round(nearest, 4)
+        # The least distance to the task's contact wherever the task accepts the object (a lower bound, so a
+        # contact beyond it is beyond at every accepted place); none when any place is accepted.
+        if phase == "place" and place_unbounded:
+            row["place_unbounded"] = True
+        else:
+            row["contact_admissible_distance_m"] = round(
+                float(np.linalg.norm(centre + contact - shoulder)) if phase == "pick" else
+                _place_contact_distance(shoulder, centre, contact, region, yaw), 4)
         phases.append(row)
     measured = subject_bounds_m is not None
-    beyond = sorted((row for row in phases if measured and row["object_nearest_distance_m"] > limit),
+    beyond = sorted((row for row in phases if measured and not row.get("place_unbounded")
+                     and row["object_nearest_distance_m"] > limit),
                     key=lambda row: -row["object_nearest_distance_m"])
     contact_beyond = [row["phase"] for row in sorted(phases, key=lambda row: -row["distance_m"])
                       if row["distance_m"] > limit]
+    admissible_beyond = [row["phase"] for row in sorted(
+        (row for row in phases if "contact_admissible_distance_m" in row),
+        key=lambda row: -row["contact_admissible_distance_m"]) if row["contact_admissible_distance_m"] > limit]
     status = "out_of_reach" if beyond else "within_bound" if measured or not contact_beyond else "unassessed"
     return {"rule": OBJECT_REACH_RULE if measured else REACH_RULE, "robot_id": robot_id,
             "shoulder_world_m": shoulder.tolist(), "reach_bound_m": round(bound, 4),
@@ -930,7 +973,8 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
                                  "minimum": region[0].tolist(), "maximum": region[1].tolist()},
                              "yaw_free_rad": round(yaw, 6)},
             "phases": phases, "beyond": [row["phase"] for row in beyond], "status": status,
-            "task_contact_beyond": contact_beyond, "grasp_independent": bool(beyond),
+            "task_contact_beyond": contact_beyond, "task_contact_admissible_beyond": admissible_beyond,
+            "grasp_independent": bool(beyond),
             "claim_ceiling": "cpu_bounded_estimate", "simulator_executed": False}
 
 
@@ -945,15 +989,47 @@ def reach_shortfall_code(reach: Mapping[str, Any]) -> str:
     return reach_insufficient_code(far["phase"], far["object_nearest_distance_m"], reach["reach_bound_m"])
 
 
-def task_contact_in_reach(reach: Mapping[str, Any] | None) -> bool:
-    """Whether the task's grasp contact lies within the arm's reach bound at both its pick and its place.
+#: An advisory: the task's contact is beyond the bound at its nominal place, within it at another place the
+#: task accepts. Flagged, never refused.
+NOMINAL_CONTACT_FLAG = "robot_reach_nominal_contact_beyond_bound"
 
-    The rule a rigid carry's station is chosen and admitted by (``rigid_reach_shortfall``'s
-    ``task_contact_beyond`` empty): an arm that cannot bring the task's contact to the place cannot
-    complete the task there, so a paid run from that base cannot produce a result. ``None`` (reach
-    unmeasured) is not in reach.
+
+def contact_reach_status(reach: Mapping[str, Any] | None) -> str:
+    """The reach rule a rigid carry is held by, from ``rigid_reach_shortfall``: hold only on proof.
+
+    ``out_of_reach`` (a proof: no run from this base can succeed): the whole object beyond the bound at
+    its pick or every accepted place (``beyond``), or, with the object's box measured, the task's grasp
+    contact beyond it at the pick or at every place the task accepts (``task_contact_admissible_beyond``,
+    a lower bound on the distance). ``flagged``: the contact beyond the bound only at its nominal place.
+    ``within_bound``: the contact in reach at both ends. ``unassessed``: unmeasured, or the contact beyond
+    with no box to prove anything by. Only ``out_of_reach`` holds a job.
     """
-    return reach is not None and not reach["beyond"] and not reach["task_contact_beyond"]
+    if reach is None:
+        return "unassessed"
+    if reach["beyond"]:
+        return "out_of_reach"
+    if reach.get("grasp_basis") != "nearest_point_of_object_any_grasp":
+        return "within_bound" if not reach["task_contact_beyond"] else "unassessed"
+    if reach.get("task_contact_admissible_beyond"):
+        return "out_of_reach"
+    return "flagged" if reach["task_contact_beyond"] else "within_bound"
+
+
+def reach_refused(reach: Mapping[str, Any] | None) -> bool:
+    """Whether reach proves a run from this base cannot succeed (``contact_reach_status`` ``out_of_reach``)."""
+    return contact_reach_status(reach) == "out_of_reach"
+
+
+def task_contact_in_reach(reach: Mapping[str, Any] | None) -> bool:
+    """Whether a stance may be a rigid carry's station: its contact reach is ``within_bound`` or only
+    ``flagged`` (``contact_reach_status``). An unassessed reach is not in reach."""
+    return contact_reach_status(reach) in ("within_bound", "flagged")
+
+
+def nominal_contact_advisory(reach: Mapping[str, Any]) -> str:
+    """The advisory for a contact beyond the bound at its nominal (farthest) phase, with its numbers."""
+    far = next(row for row in reach["phases"] if row["phase"] == reach["task_contact_beyond"][0])
+    return f"{NOMINAL_CONTACT_FLAG}:{far['phase']}:{far['distance_m']:.3f}m_vs_{reach['reach_bound_m']:.3f}m"
 
 
 def task_contact_far_m(reach: Mapping[str, Any]) -> float:
@@ -962,13 +1038,14 @@ def task_contact_far_m(reach: Mapping[str, Any]) -> float:
 
 
 def reach_refusal_code(reach: Mapping[str, Any]) -> str:
-    """The typed reason a rigid carry is refused for reach: the object's nearest point when the whole
-    object is beyond the bound (``reach_shortfall_code``), else the task contact at its farthest phase
-    beyond it, e.g. ``robot_reach_insufficient:place:1.086m_vs_0.990m``."""
+    """The typed reason a rigid carry is refused for reach (``reach_refused``): the object's nearest point
+    when the whole object is beyond the bound (``reach_shortfall_code``), else the task contact's least
+    admissible distance at its farthest phase beyond it, e.g.
+    ``robot_reach_insufficient:place:1.086m_vs_0.990m``."""
     if reach["beyond"]:
         return reach_shortfall_code(reach)
-    far = next(row for row in reach["phases"] if row["phase"] == reach["task_contact_beyond"][0])
-    return reach_insufficient_code(far["phase"], far["distance_m"], reach["reach_bound_m"])
+    far = next(row for row in reach["phases"] if row["phase"] == reach["task_contact_admissible_beyond"][0])
+    return reach_insufficient_code(far["phase"], far["contact_admissible_distance_m"], reach["reach_bound_m"])
 
 
 def carry_grasps(task: Mapping[str, Any], bounds_m: Mapping[str, Sequence[float]] | None) -> list[dict[str, Any]]:
@@ -1117,12 +1194,14 @@ def rigid_carry_verdict(carry: Mapping[str, Any], reach: Mapping[str, Any] | Non
 
     ``carry`` is ``rigid_pick_place_clearance``'s report (the scripted grasp, approach and IK path),
     ``reach`` the object's reach from the same base (``rigid_reach_shortfall``), or ``None`` when it
-    could not be measured. The object beyond reach at its start or its place, or the task's grasp
-    contact beyond the arm's reach bound at either (``task_contact_in_reach``), is ``blocked`` by name
-    (``reach_refusal_code``): a run from this base cannot bring the task's contact to the place, so
-    paying for it cannot produce a result (money; capture-447 ran 39 episodes with the place contact
-    at 1.086 m against a 0.990 m bound). Otherwise a carry the scripted path did not find is
-    ``flagged``: its codes are advisories and ``SCRIPTED_CARRY_FLAG`` is recorded, and nothing is refused.
+    could not be measured. Only a proof holds (``reach_refused``): the object beyond reach at its start
+    or every accepted place, or, with its box measured, the task's grasp contact beyond the arm's reach
+    bound at the pick or at every place the task accepts. That is ``blocked`` by name
+    (``reach_refusal_code``): a run from this base cannot bring the task's contact to an accepted place,
+    so paying for it cannot produce a result (money; capture-447 ran 39 episodes with the place contact
+    at 1.086 m against a 0.990 m bound). A contact beyond the bound only at its nominal place is
+    ``flagged`` (``NOMINAL_CONTACT_FLAG``, with its numbers as an advisory); so is a carry the scripted
+    path did not find (``SCRIPTED_CARRY_FLAG``, its codes advisories). Unknown reach refuses nothing.
     """
     value = dict(carry)
     if reach is not None:
@@ -1130,13 +1209,16 @@ def rigid_carry_verdict(carry: Mapping[str, Any], reach: Mapping[str, Any] | Non
                                                                 "grasp_basis", "task_contact_beyond")},
                                  "phases": [{key: row[key] for key in ("phase", "distance_m", "object_nearest_distance_m")
                                              if key in row} for row in reach["phases"]]}
-    if reach is not None and (reach["status"] == "out_of_reach" or reach["task_contact_beyond"]):
+    if reach_refused(reach):
         return {**value, "status": "blocked", "blockers": [reach_refusal_code(reach)],
                 "scripted_carry_blockers": list(carry.get("blockers") or [])}
-    if carry.get("status") == "clear":
+    nominal = [nominal_contact_advisory(reach)] if contact_reach_status(reach) == "flagged" else []
+    if carry.get("status") == "clear" and not nominal:
         return value
-    return {**value, "status": "flagged", "blockers": [], "flags": [SCRIPTED_CARRY_FLAG],
-            "advisories": list(carry.get("blockers") or [])}
+    missed = carry.get("status") != "clear"
+    return {**value, "status": "flagged", "blockers": [],
+            "flags": ([SCRIPTED_CARRY_FLAG] if missed else []) + ([NOMINAL_CONTACT_FLAG] if nominal else []),
+            "advisories": (list(carry.get("blockers") or []) if missed else []) + nominal}
 
 
 def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:

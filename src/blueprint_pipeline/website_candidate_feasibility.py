@@ -12,9 +12,11 @@ which source decided it (``reach_source``):
   ``robot_arm_path_clearance.rigid_reach_shortfall``), no grasp or policy
   reaches it there: the candidate is infeasible with
   ``robot_reach_insufficient:<phase>:<distance>m_vs_<bound>m``, the object's
-  nearest point. So it is when the task's grasp contact is beyond the bound at
-  either end (``task_contact_in_reach``), named by the contact's distance, as
-  the bundle's gate refuses it (``rigid_carry_verdict``). The team half chose
+  nearest point. So it is when, with the object's box measured, the task's
+  grasp contact is beyond the bound at the pick or at every place the task
+  accepts (``reach_refused``), named by the contact's least distance, as the
+  bundle's gate refuses it (``rigid_carry_verdict``); beyond only at the
+  nominal place it is flagged (``NOMINAL_CONTACT_FLAG``). The team half chose
   that station as one with the contact in reach whenever any clear stance has
   it (``team_scene_packet``). Otherwise the
   candidate is feasible, and the packet's recorded station search
@@ -85,9 +87,11 @@ def _packet_arm_reach(scene_plan: Mapping[str, Any], search: Mapping[str, Any]) 
         SCRIPTED_CARRY_FLAG,
         RobotArmPathClearanceError,
         object_reach_inputs,
+        NOMINAL_CONTACT_FLAG,
+        contact_reach_status,
         reach_refusal_code,
+        reach_refused,
         rigid_reach_shortfall,
-        task_contact_in_reach,
     )
 
     robot, task = scene_plan.get("robot") or {}, scene_plan.get("task_spec") or {}
@@ -103,11 +107,13 @@ def _packet_arm_reach(scene_plan: Mapping[str, Any], search: Mapping[str, Any]) 
     except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
         return {**row, "status": "unassessed", "blockers": ["packet_arm_reach_inputs_invalid"], "reach_source": None}
     row["reach"] = reach
-    if not task_contact_in_reach(reach):
-        # No point of the object, or not the task's grasp contact, is in reach at its start or its place: the
-        # bundle's gate refuses the packet by the same name (``rigid_carry_verdict``).
+    if reach_refused(reach):
+        # Proved: no point of the object, or not the task's grasp contact, can be in reach at its start or at any
+        # place the task accepts. The bundle's gate refuses the packet by the same name (``rigid_carry_verdict``).
         return {**row, "status": "infeasible", "reach_source": "franka_chain_reach_bound",
                 "blockers": [reach_refusal_code(reach)]}
+    # The contact beyond the bound only at its nominal place: flagged, as the gate flags it.
+    nominal = [NOMINAL_CONTACT_FLAG] if contact_reach_status(reach) == "flagged" else []
     station = search.get("robot_station") or {}
     recorded = search.get("robot_station_search") or {}
     result = next((item for item in recorded.get("results") or []
@@ -116,17 +122,18 @@ def _packet_arm_reach(scene_plan: Mapping[str, Any], search: Mapping[str, Any]) 
     if result is None or _pose(station) != _pose(robot["base_pose_world"]):
         if within:
             return {**row, "status": "feasible", "blockers": [], "reach_source": "franka_chain_reach_bound",
-                    "flags": ["packet_station_search_not_recorded"]}
+                    "flags": ["packet_station_search_not_recorded", *nominal]}
         return {**row, "status": "unassessed", "blockers": ["packet_station_search_not_recorded"], "reach_source": None}
     row["station_search"] = {"status": result["status"], "blockers": list(result["blockers"]),
                              "cleared": recorded.get("cleared")}
     if result["status"] == "clear":
-        return {**row, "status": "feasible", "blockers": [], "reach_source": "packet_station_search"}
+        return {**row, "status": "feasible", "blockers": [], "reach_source": "packet_station_search",
+                **({"flags": nominal} if nominal else {})}
     if within:
         # The task's contact is in reach; the scripted carry found no path. A learned policy chooses its own grasp:
         # planned and screened, with the miss recorded as a flag (and funded after unflagged rows, ``reach_rank``).
         return {**row, "status": "feasible", "blockers": [], "reach_source": "franka_chain_reach_bound",
-                "flags": [SCRIPTED_CARRY_FLAG]}
+                "flags": [SCRIPTED_CARRY_FLAG, *nominal]}
     # The gate's search found no carry, but nothing proves there is none: unknown, never a refusal.
     return {**row, "status": "unassessed", "reach_source": None,
             "blockers": ["packet_station_search_blocked:" + code for code in result["blockers"]]}

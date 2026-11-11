@@ -192,17 +192,29 @@ def _verdict_reach(verdict: Mapping[str, Any], arm: str) -> dict[str, Any]:
         values["verdict_blockers"] = list(verdict.get("blockers") or [])
         return _check("reach", "unknown", "the capability verdict did not try a carry with this arm", values)
     values.update(carry_status=entry.get("status"), grasp=entry.get("grasp"), blockers=list(entry.get("blockers") or []))
+    # As the verdict holds: fail only on its reach proof (``reach_held``), unknown when reach is only flagged.
+    if entry.get("reach_held") is True:
+        values.update(object_reach=entry.get("object_reach"), reach_held=True)
+        return _check("reach", "fail", "the object is beyond the arm's reach from every clear station: "
+                      + ", ".join(verdict.get("blockers") or values["blockers"]), values)
     if entry.get("status") == "clear":
         return _check("reach", "pass", "the capability verdict's carry clears the reconstructed scene", values)
+    if entry.get("object_reach") == "within_bound" and entry.get("assumed_contact_beyond"):
+        values.update(object_reach="within_bound", assumed_contact_beyond=list(entry["assumed_contact_beyond"]),
+                      advisories=list(entry.get("advisories") or []), flags=list(entry.get("flags") or []))
+        return _check("reach", "unknown", "part of the object is within the arm's reach, its centre is not "
+                      "(flagged; the scene's own grasp decides): " + ", ".join(values["advisories"]), values)
     if entry.get("object_reach") == "within_bound":
         # The hard reach rule passed; the scripted carry's miss is a flag a learned policy is not bound by.
         values.update(object_reach="within_bound", flags=list(entry.get("flags") or []))
         return _check("reach", "pass", "the object is within the arm's reach from a clear station; the scripted "
                       "carry found no path (flagged): " + ", ".join(values["blockers"]), values)
-    if entry.get("status") == "blocked" and values["blockers"]:
+    if verdict.get("status") == "abstained" and entry.get("status") == "blocked" and values["blockers"]:
+        # A verdict recorded before ``reach_held``: it held the job on this carry's refusal.
         return _check("reach", "fail", "the capability verdict's carry was refused from every station tried: "
                       + ", ".join(values["blockers"]), values)
-    return _check("reach", "unknown", "the capability verdict's carry for this arm is undecided", values)
+    return _check("reach", "unknown", "the capability verdict's carry for this arm is undecided: "
+                  + ", ".join(values["blockers"]), values)
 
 
 def _spec_reach(model: Mapping[str, Any], stations: Sequence[Sequence[float]], points: Sequence[Sequence[float]],

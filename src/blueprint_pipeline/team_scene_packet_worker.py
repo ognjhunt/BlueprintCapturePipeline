@@ -537,14 +537,52 @@ def stale_unreached_station(path: Any) -> str | None:
     shortfall = search.get("reach_shortfall") if isinstance(search.get("reach_shortfall"), Mapping) else {}
     in_reach = search.get("stances_in_reach")
     if isinstance(in_reach, int) and not isinstance(in_reach, bool) and in_reach > 0:
-        # Chosen by the hard reach rule with the object in reach: its policies are planned, and a scripted
-        # carry miss is only a flag (``team_scene_packet._carrying_station``), so it is never recompiled for it.
+        # Chosen with the object in reach. A scripted carry miss is only a flag, so it is never recompiled for
+        # that; only a station the reach proof now refuses (version 4: the task's contact beyond the bound at
+        # the pick or every accepted place) is searched again, once. One that passes is left as it is.
+        if _station_reach_refused(value):
+            return f"station_contact_out_of_reach:stance_search_v{recorded}<v{STANCE_SEARCH_VERSION}"
+        return None
+    if recorded >= 3:
+        # A version-3 search already found no stance with any of the object in reach; the newer rule only
+        # narrows which stances count, so another search would find none either.
         return None
     if search.get("cleared") is False:
         return f"station_search_not_cleared:stance_search_v{recorded}<v{STANCE_SEARCH_VERSION}"
     if shortfall.get("status") == "out_of_reach":
         return f"station_out_of_reach:stance_search_v{recorded}<v{STANCE_SEARCH_VERSION}"
     return None
+
+
+def _station_reach_refused(value: Mapping[str, Any]) -> bool:
+    """Whether the bundle's gate would refuse a compiled rigid half's station on its reach proof.
+
+    Measured from the half's own packet plan (its robot base and task) and sealed success contract, as
+    ``robot_arm_path_clearance.packet_arm_path_clearance`` measures it. False when anything is unreadable:
+    an unknown is never a reason to search again.
+    """
+    from .robot_arm_path_clearance import (
+        RobotArmPathClearanceError,
+        object_reach_inputs,
+        reach_refused,
+        rigid_reach_shortfall,
+    )
+
+    try:
+        plan = _read_json(Path(str(value["base_native_packet"]["path"])).parent
+                          / "native_task_arena_scene_plan.v1.json")
+        spec = dict(plan["task_spec"])
+        if spec.get("manipulation_strategy") != "pick_and_place" or any(
+                isinstance(row, Mapping) and row.get("object_type") == "ARTICULATION"
+                for row in plan.get("objects") or []):
+            return False
+        if isinstance(value.get("task_success_contract"), Mapping) and "task_success_contract" not in spec:
+            spec["task_success_contract"] = value["task_success_contract"]
+        reach = rigid_reach_shortfall(robot_id=str(plan["robot"]["robot_id"]),
+                                      base_pose_world=plan["robot"]["base_pose_world"], **object_reach_inputs(spec))
+    except (OSError, ValueError, KeyError, TypeError, RobotArmPathClearanceError):
+        return False
+    return reach_refused(reach)
 
 
 def _stance_search_untried(status: Mapping[str, Any], release: str | None) -> str | None:

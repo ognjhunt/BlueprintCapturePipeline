@@ -519,3 +519,91 @@ def test_planning_a_carry_comfortably_in_reach_is_unchanged(monkeypatch, status,
     row = candidate_feasibility(scene_plan=_wide_plan(OLD_STATION, spec), catalog=_catalog("pi05_droid"),
                                 profile={})["candidates"]["pi05_droid"]
     assert (row["status"], row["blockers"], row["reach_source"], row.get("flags")) == ("feasible", [], source, flags)
+
+
+# A put-down the success contract accepts anywhere in a region: its nominal target 1.02 m from the shoulder,
+# beyond the 0.990 m bound, while the region's nearest edge is 0.88 m away.
+SMALL_BOX = {"minimum": [-0.03, -0.03, -0.03], "maximum": [0.03, 0.03, 0.03]}
+
+
+def _region_spec():
+    spec = _wide_spec(start=[0.6, 0.0, SHOULDER_Z, 0.0, 0.0, 0.0, 1.0], target=[1.02, 0.0, SHOULDER_Z],
+                      contact=[0.0, 0.0, 0.0], bounds=SMALL_BOX)
+    region = {"minimum": [0.88, -0.05, SHOULDER_Z - 0.01], "maximum": [1.02, 0.05, SHOULDER_Z + 0.01]}
+    criteria = {"destination_containment": {"mode": "required", "position_bounds_world_m": region},
+                "orientation": {"mode": "required", "reference_xyzw": [0.0, 0.0, 0.0, 1.0], "tolerance_rad": 0.0}}
+    return {**spec, "task_success_contract": {"criteria": criteria}}
+
+
+def test_a_nominal_put_down_beyond_reach_inside_an_accepted_region_in_reach_is_flagged_never_held(monkeypatch):
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        NOMINAL_CONTACT_FLAG,
+        contact_reach_status,
+        object_reach_inputs,
+        reach_refused,
+        rigid_carry_verdict,
+    )
+    from blueprint_pipeline.team_scene_packet import _carrying_station
+
+    spec = _region_spec()
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(spec))
+    place = next(row for row in reach["phases"] if row["phase"] == "place")
+    assert place["distance_m"] == pytest.approx(1.02, abs=5e-4) and reach["task_contact_beyond"] == ["place"]
+    assert place["contact_admissible_distance_m"] == pytest.approx(0.88, abs=5e-4)
+    assert reach["task_contact_admissible_beyond"] == [] and not reach_refused(reach)
+    assert contact_reach_status(reach) == "flagged"
+    miss = {"status": "blocked", "blockers": ["robot_rigid_pick_place_unreachable:carry"]}
+    verdict = rigid_carry_verdict(miss, reach)
+    assert verdict["status"] == "flagged" and verdict["blockers"] == []
+    assert verdict["flags"] == [SCRIPTED_CARRY_FLAG, NOMINAL_CONTACT_FLAG]
+    assert verdict["advisories"][-1] == f"{NOMINAL_CONTACT_FLAG}:place:1.020m_vs_0.990m"
+    # Planning agrees: feasible, flagged.
+    from blueprint_pipeline import team_scene_packet
+
+    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: {
+        "robot_station": OLD_STATION, "robot_station_search": {"cleared": False, "results": [
+            {"stance_digest": OLD_STATION["stance_digest"], **miss}]}})
+    row = candidate_feasibility(scene_plan=_wide_plan(OLD_STATION, spec), catalog=_catalog("pi05_droid"),
+                                profile={})["candidates"]["pi05_droid"]
+    assert (row["status"], row["flags"]) == ("feasible", [SCRIPTED_CARRY_FLAG, NOMINAL_CONTACT_FLAG])
+    # A stance that reaches the nominal target too ranks first, whatever the search's own rank.
+    ahead = {**OLD_STATION, "position_world_m": [0.3, 0.0, 0.0], "stance_digest": "sha256:" + "a" * 64}
+    tried = _scripted(monkeypatch, clears=False)
+    station, record = _carrying_station([OLD_STATION, ahead], task_spec=spec, collision="unused.usda",
+                                        profile=PANDA_RESET)
+    assert tried == [ahead["stance_digest"], OLD_STATION["stance_digest"]] and station is ahead
+    assert record["stances_in_reach"] == 2 and NOMINAL_CONTACT_FLAG not in record["flags"]
+    # Alone, the region-only stance stands, flagged.
+    station, record = _carrying_station([OLD_STATION], task_spec=spec, collision="unused.usda", profile=PANDA_RESET)
+    assert station is OLD_STATION and record["flags"] == [SCRIPTED_CARRY_FLAG, NOMINAL_CONTACT_FLAG]
+
+
+def test_without_the_objects_box_a_contact_beyond_the_bound_is_unassessed_and_flagged_never_held(monkeypatch):
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        contact_reach_status,
+        object_reach_inputs,
+        rigid_carry_verdict,
+    )
+
+    spec = _wide_spec(bounds=None)
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(spec))
+    assert reach["status"] == "unassessed" and reach["task_contact_beyond"] == ["place"]
+    assert contact_reach_status(reach) == "unassessed"
+    verdict = rigid_carry_verdict({"status": "blocked", "blockers": ["robot_rigid_pick_place_unreachable:carry"]},
+                                  reach)
+    assert verdict["status"] == "flagged" and verdict["blockers"] == [] and verdict["flags"] == [SCRIPTED_CARRY_FLAG]
+    from blueprint_pipeline import team_scene_packet
+
+    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: {})
+    row = candidate_feasibility(scene_plan=_wide_plan(OLD_STATION, spec), catalog=_catalog("pi05_droid"),
+                                profile={})["candidates"]["pi05_droid"]
+    assert row["status"] == "unassessed" and row["blockers"] == ["packet_station_search_not_recorded"]
+
+
+def test_the_recorded_capture_447_numbers_are_still_held_by_name():
+    from blueprint_pipeline.robot_arm_path_clearance import object_reach_inputs, reach_refusal_code, reach_refused
+
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION,
+                                  **object_reach_inputs(_wide_spec()))
+    assert reach_refused(reach) and reach_refusal_code(reach) == CODE_447 == (
+        "robot_reach_insufficient:place:1.086m_vs_0.990m")
