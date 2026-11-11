@@ -1411,19 +1411,25 @@ def test_a_request_that_cannot_succeed_fails_the_step_at_once(monkeypatch, site,
     assert world.advance() == "failed" and len(world.runs) == 1
 
 
-@pytest.mark.parametrize("blockers,state", [
-    (["meta_sam_http_413"], "failed"),
-    # A preserved scene lists its registration limit first; the provider's answer behind it still counts.
-    (["metric_scene_registration_unproven", "meta_sam_http_413"], "failed"),
-    (["metric_scene_registration_unproven", "meta_sam_http_503"], "processing"),
+@pytest.mark.parametrize("blockers,state,reason", [
+    (["meta_sam_http_413"], "failed", "meta_sam_http_413"),
+    (["meta_sam_http_503"], "processing", None),
+    # Any blocker that is not a provider's answer may need a person: exactly main's outcome, the first.
+    (["metric_scene_registration_unproven", "meta_sam_http_413"], "needs_input", "metric_scene_registration_unproven"),
+    (["meta_sam_http_413", "metric_scene_registration_unproven"], "needs_input", "meta_sam_http_413"),
+    (["metric_scene_registration_unproven", "meta_sam_http_503"], "needs_input", "metric_scene_registration_unproven"),
+    (["meta_sam_http_503", "metric_scene_registration_unproven"], "needs_input", "meta_sam_http_503"),
 ])
-def test_a_kept_result_with_a_provider_answer_among_its_blockers_is_never_needs_input(monkeypatch, site, blockers, state):
+def test_a_kept_result_takes_the_retry_policy_only_when_every_blocker_is_a_provider_answer(
+        monkeypatch, site, blockers, state, reason):
     _enqueue(site)
     world = World(monkeypatch, site, [{"status": "needs_input", "download": None,
                                        "blockers": blockers, "digest": "sha256:retained"}])
     assert world.advance() == state
     job = _job(site)
-    assert job["reason"] == (blockers[-1] if state == "failed" else None)
+    assert job["reason"] == reason
+    if state == "needs_input":
+        assert job["stage"] == "preparation" and job.get("refusal_retries", 0) == 0
     if state == "processing":
         assert job["refusal_retries"] == 1 and job["next_attempt_at_epoch"] > world.clock
 

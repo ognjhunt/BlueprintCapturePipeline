@@ -369,13 +369,13 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
         if not result.get("download"):
             blockers = result.get('blockers') or []
             from .job_retry_policy import provider_answer, request_cannot_succeed
-            answered = next((str(row) for row in blockers
-                             if provider_answer(str(row)) is not None or request_cannot_succeed(str(row))), None)
-            if answered is not None:
-                # A provider's answer among the blockers, wherever it stands (a preserved scene lists
-                # metric_scene_registration_unproven first; capture-39ecdc97 kept meta_sam_http_413):
-                # the retry policy decides it, never needs_input.
-                return _failed_step(job, ValueError(answered), current)
+            answers = [str(row) for row in blockers
+                       if provider_answer(str(row)) is not None or request_cannot_succeed(str(row))]
+            if blockers and len(answers) == len(blockers):
+                # Every blocker is a provider's answer (capture-39ecdc97 kept meta_sam_http_413): the
+                # retry policy decides it, never needs_input. When any blocker is not, that one may
+                # need a person, and the outcome below is main's, naming the first blocker.
+                return _failed_step(job, ValueError(answers[0]), current)
             reason = (_reason(ValueError(result["reason"]))
                       if result.get("stage") in {"source_pose", "target_correction"} and result.get("reason")
                       else _reason(ValueError(blockers[0])) if blockers
