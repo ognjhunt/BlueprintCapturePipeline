@@ -281,6 +281,29 @@ def _gemini(prompt: str) -> tuple[Callable[[], None], Callable[[], dict[str, Any
     return preflight, invoke
 
 
+def _result_receipt(receipts: Path, request_digest: str, result: Any) -> dict[str, str]:
+    """The receipt that holds the returned result: its path and its own request (dispatch) digest.
+
+    Among this request's completed receipts (its own file, or a later dispatch of the same request
+    beside it, ``<stem>.<suffix>.json``), the one whose stored result is the returned one, the
+    request's own file first. If none is (it should not happen), the request's own file is named.
+    """
+    stem = request_digest[7:]
+    wanted = canonical_digest(result) if isinstance(result, dict) else None
+    for path in [receipts / f"{stem}.json", *sorted(receipts.glob(f"{stem}.*.json"))]:
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (wanted is not None and isinstance(receipt, dict) and receipt.get("status") == "completed"
+                and isinstance(receipt.get("request"), dict) and canonical_digest(receipt["request"]) == request_digest
+                and isinstance(receipt.get("result"), dict)
+                and receipt.get("result_digest") == canonical_digest(receipt["result"]) == wanted
+                and isinstance(receipt.get("request_digest"), str)):
+            return {"request_digest": receipt["request_digest"], "receipt_path": str(path)}
+    return {"request_digest": request_digest, "receipt_path": str(receipts / f"{stem}.json")}
+
+
 def rank_website_candidates(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any] | None,
                             pipeline_dir: Path, capture_root: Path,
                             catalog: Mapping[str, Any] | None = None,
@@ -337,8 +360,8 @@ def rank_website_candidates(*, task_context: Mapping[str, Any], task_masks: Mapp
                      catalog_digest=catalog["catalog_digest"], catalog_revision=catalog["revision"],
                      task_kind=kind, facts=facts, facts_digest=canonical_digest(facts),
                      business_context={key: brief[key] for key in ("source_file", "section", "markers", "sha256")},
-                     model=MODEL, maximum_cost_usd=quote, request_digest=request_digest,
-                     receipt_path=str(receipts / (request_digest[7:] + ".json")), candidates=listed,
+                     model=MODEL, maximum_cost_usd=quote, **_result_receipt(receipts, request_digest, result),
+                     candidates=listed,
                      priority_order=[row["candidate_id"] for row in listed],
                      # Highest priority first: what the site ledger would prepare once a hook exists.
                      preparation_requested=[{"candidate_id": row["candidate_id"],

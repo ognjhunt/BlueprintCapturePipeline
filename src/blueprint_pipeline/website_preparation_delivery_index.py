@@ -117,7 +117,10 @@ def update(capture_root: Path, delivery: Mapping[str, Any]) -> None:
                 old = json.loads(path.read_text())
             except (FileNotFoundError, ValueError):
                 return
-            if old.get("revision") == delivery.get("revision"):
+            if old.get("revision") == delivery.get("revision") or (
+                    # A retired record supersedes an older revision's hint too (website_preparation_status).
+                    delivery.get("state") == "retired" and type(old.get("revision")) is int
+                    and type(delivery.get("revision")) is int and old["revision"] < delivery["revision"]):
                 path.unlink()
             return
         hint = {"schema_version": SCHEMA_VERSION, "capture_relative_path": relative,

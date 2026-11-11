@@ -270,7 +270,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'blockers': ['selected_handoff_existing_state_requires_reconciliation']}
     if claim_status in {'assessment_resume_changed', 'reconstruction_resume_changed', 'target_choice_correction_changed',
-                        'held_handoff_replay_changed', 'revision_changed'}:
+                        'robot_fit_recheck_changed', 'held_handoff_replay_changed', 'revision_changed'}:
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                 'blockers': ['website_' + claim_status]}

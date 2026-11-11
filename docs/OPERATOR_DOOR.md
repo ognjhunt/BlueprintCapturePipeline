@@ -441,7 +441,7 @@ intake restart and the re-arm. The receipt's `trigger_pause_seconds` says how
 long drained triggers, all other watchers and new paid launches were held;
 `stage_timings_seconds` splits the whole deploy by stage.
 
-**A deploy waits while a paid stage is live.** Before the fetch,
+**A deploy waits while work is in flight on the running release.** Before the fetch,
 `door-deploy.sh` runs `operator_door/activation_hold.py`, which only reads. It
 holds the deploy, never the job, while any of these is bound to the running
 release: a scene-configuration activation (pending, claimed by a live worker, or
@@ -451,15 +451,26 @@ that progression submitted for this release and that is pending in
 `.dispatcher.lock`; a `provider-locks/*.lock` slot (not the `.gate.lock`)
 flocked by a process whose working directory is this release's tree; or a
 beta-screening candidate `launching` or `running` in `screening_ledger.v1.json`
-whose plan froze this release's commit. A held deploy parks (an iteration
+whose plan froze this release's commit. Those are the paid stages. It also
+holds for work that is not paid yet and that the new release would refuse and
+rebuild: a scene attempt still in its factory, publication or submission
+(`scene_attempt_preparation`); a scene-configuration preparation pending,
+claimed by a live worker, or finished and not yet named by an activation
+(`scene_configuration_preparation`); and a beta-screening candidate `preparing`
+with no blocker (`beta_screening_preparation`). A held deploy parks (an iteration
 deploy) or is refused with `scene_configuration_activation_live`, `retry_after`
 and `deploys_by` (a production deploy, which never parks; the code keeps its
-old name whichever stage holds it). It goes out when nothing is live, after
-`CAP_SECONDS` (285 min) in all for one hold however the stages hand over, or at
+old name whichever stage holds it). It goes out when nothing is live, when its bound is reached, or at
 once with `--activation-hold-override <reason>` (money, privacy, rights or a fix
-to the stuck stage). Anything unreadable counts as not live. `status`
-`deploy_activation_hold` shows the last check: `stages` and each `live` row's
-`stage` and `state` say what holds it. A normal deploy does not update the door:
+to the stuck stage). Two bounds: paid work holds for `CAP_SECONDS` (285 min)
+counted from the first moment of the hold that a paid stage was live, so a hold
+that began earlier still outlives the activation; work that is not paid yet
+holds for `UNPAID_CAP_SECONDS` (60 min) in all. No hold lasts longer than the
+two added together. Anything unreadable counts as not live. `status`
+`deploy_activation_hold` shows the last check: `stages`, `paid_stages`,
+`unpaid_stages`, `bound` (`paid`, `unpaid`, `ceiling`, or `single` for a hold an
+older door began) and each `live` row's `stage` and `state` say what holds it.
+The parked reason is `in_flight_work_live` when any live stage is not paid. A normal deploy does not update the door:
 the installed door gets a change here only after `upgrade-door` or
 `install.sh --upgrade` as root (below).
 

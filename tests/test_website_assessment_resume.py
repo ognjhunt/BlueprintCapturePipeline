@@ -402,3 +402,31 @@ def test_missing_grant_is_accepted_only_for_the_assessment_wait(grantless_waitin
         write_json(root / listener.JOB_LEDGER_FILENAME, ledger)
     with pytest.raises(PreparationStatusUnavailable):
         read_preparation_status(capture_root=root, selectors=_status_selectors(grantless_waiting), grantless_assessment_wait=True)
+
+
+NO_GRANT_ENDED = "website_control_scene-sponsorship_http_409:website_scene_job_no_grant_ended"
+
+
+@pytest.mark.parametrize("unconfirmed", [False, True])
+def test_a_waiting_job_the_webapp_ended_with_no_grant_is_ended_never_granted(request, monkeypatch, unconfirmed):
+    """The assessment drain asks before the first grant it would request; the same claim ends the job."""
+    waiting = request.getfixturevalue("grantless_waiting" if unconfirmed else "waiting")
+    root = waiting[0]
+    reads, creates = [], []
+
+    def webapp(*, capture_id, operation, payload, **_):
+        if operation != "scene-sponsorship":
+            raise ValueError("website_control_" + operation + "_http_503:unavailable")
+        assert payload["create"] is False
+        reads.append(payload)
+        raise ValueError(NO_GRANT_ENDED)
+
+    monkeypatch.setattr(context_reader, "website_webapp_request", webapp)
+    monkeypatch.setattr(context_reader, "load_website_scene_sponsorship",
+                        lambda **kwargs: creates.append(kwargs) or pytest.fail("a first grant was requested"))
+    resume.reconcile_waiting_assessments(listener, storage_root=root.parents[4], process_args={
+        "provider": "openai", "run_e2e": lambda **_: pytest.fail("an ended job ran")})
+    ledger = listener._read_job_ledger(root)
+    assert ledger["status"] == "terminal_authority_ended"
+    assert ledger["terminal_code"] == "website_scene_job_no_grant_ended" and creates == []
+    assert len(reads) == 2  # The drain's trigger, then the claimed attempt's own read.

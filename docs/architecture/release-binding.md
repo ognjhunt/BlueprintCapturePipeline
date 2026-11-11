@@ -65,7 +65,7 @@ counts 77 modules.
 | Stage of the job at the deploy | Before this change | Now |
 |---|---|---|
 | No attempt yet | nothing | nothing |
-| Preparation building, queued or done; no paid reservation | rebuilt on B: **CPU** (factory, staging, preparation worker). Large inputs are hard-linked and content-addressed from the earlier attempt, so bytes are not copied again. | same |
+| Preparation building, queued or done; no paid reservation | rebuilt on B: **CPU** (factory, staging, preparation worker). Large inputs are hard-linked and content-addressed from the earlier attempt, so bytes are not copied again. | the door holds the deploy for it, for 60 min at most (`UNPAID_CAP_SECONDS`); rebuilt only if the deploy goes out first |
 | Paid reservation and activation staged, launch not yet submitted | old rows settled, rebuilt on B: **CPU** plus a new activation and a new reservation (no spend) | same |
 | Launch submitted to the WebApp, not yet queued | retired and rebuilt: a **second paid launch** was possible while the first was still delivered and dispatched | held; the first launch finishes and is joined |
 | Launch queued in `task-evaluation-launches/pending` | same risk: ownership reconciliation reads only `processing` | held |
@@ -105,3 +105,12 @@ stage is live" rule protect two stages. After this change, a launch that was
 already submitted is no longer interrupted by a deploy, so the hold is needed
 only between staging an activation and submitting its launch. The policy text in
 `AGENTS.md` and `docs/runbooks/beta-operations.md` is unchanged.
+
+Update, 2026-11-11: the hold was widened instead of narrowed. Rule B is still
+not built, so the door now also holds a deploy for work that is not paid yet
+and that the new release would refuse (the preparation rows above and a
+screening candidate being staged), for 60 minutes at most. The 285 minutes
+still protect paid work and are counted from when a paid stage is first live.
+Not held for: a preparation waiting on its SAM child job, a preparation waiting
+for disk, and the episode compilation and scene object discovery requests.
+`AGENTS.md` and the runbook state the new rule.

@@ -114,10 +114,11 @@ Decision D-08 (2026-11-02, delegated by the owner): every Pipeline deploy
 retires and rebuilds each in-flight website attempt, so deploys are batched.
 
 - Deploy `main` once a day, in the window that opens at 15:00 UTC.
-- The door holds a deploy itself while a website or screening job's paid stage
-  is live on the running release (it parks, never touching the job), until it
-  ends or for 285 min at most. Request the deploy; if it parks, `door status`
-  `deploy_activation_hold` (`stages`) says why. This needs the installed door
+- The door holds a deploy itself while a website or screening job has work in
+  flight on the running release (it parks, never touching the job): a paid
+  stage until it ends or for 285 min at most, work that is not paid yet for
+  60 min at most. Request the deploy; if it parks, `door status`
+  `deploy_activation_hold` (`stages`, `bound`) says why. This needs the installed door
   upgraded (`install.sh --upgrade` as root, `docs/OPERATOR_DOOR.md`); until
   then, also skip the window while `door status` shows a held
   `paid_launch_locks` entry or beta-screening candidates `launching` or
