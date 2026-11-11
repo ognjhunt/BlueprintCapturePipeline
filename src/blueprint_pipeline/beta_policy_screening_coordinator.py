@@ -1807,13 +1807,8 @@ _ANY_LATER_COMMIT = "known-good-control:any-later-commit"
 
 def _final_without_control(ledger: Mapping[str, Any], plan: Mapping[str, Any],
                            plans: Callable[[str, str], Mapping[str, Any]]) -> bool:
-    """Whether the campaign, as if its known-good control did not exist, has ended ``completed`` for good.
-
-    Read with the coordinator's own rules: ``campaign_status`` of its learned rows is ``completed``, it is
-    not superseded, and ``_replan_scope`` would plan nothing again, neither by itself nor after any deploy
-    (no harness retry, nothing held for a deploy, no budget close the site could still fund, no machine
-    fault, no self re-plan due). Only then may the control reserve, so a re-plan or successor never sees it.
-    """
+    """Whether the campaign without its known-good control ended ``completed`` for good: ``campaign_status`` of
+    its learned rows, not superseded, and ``_replan_scope`` would plan nothing again by itself or after any deploy."""
     state = ledger["campaigns"][plan["campaign_id"]]
     rows = {key: row for key, row in state["candidates"].items() if not is_control(row)}
     if state.get("superseded_by") or campaign_status(rows) != "completed":
@@ -1824,9 +1819,7 @@ def _final_without_control(ledger: Mapping[str, Any], plan: Mapping[str, Any],
 
 
 def _source_still_current(plan: Mapping[str, Any]) -> bool:
-    """The job's current task, consent and rights, read as every paid attempt reads them before spend
-    (``beta_policy_screening_worker.require_current_source``). An owner's closed run, a withdrawn consent
-    or a changed task reads as not current; so does a read that fails now."""
+    """The job's task, consent and rights as every paid attempt reads them (``require_current_source``)."""
     from .beta_policy_screening_worker import require_current_source
 
     try:
@@ -1837,11 +1830,8 @@ def _source_still_current(plan: Mapping[str, Any]) -> bool:
 
 
 def _control_may_reserve(root: Path, plan: Mapping[str, Any]) -> bool:
-    """Whether the campaign's pending known-good control may reserve now (``control_gate``).
-
-    The job's source is read first, outside the ledger lock, only once every learned row has ended: the
-    row never reserves after the owner closed the run or the site's consent ended.
-    """
+    """Whether the pending known-good control may reserve now (``control_gate``); the job's source is read
+    outside the lock once every learned row has ended, so it never reserves after an owner closure."""
     with _lock(root):
         rows = _ledger(root)["campaigns"][plan["campaign_id"]]["candidates"]
         ended = all(rows[item["candidate_id"]]["status"] not in ACTIVE_STATUSES | QUEUED_STATUSES
