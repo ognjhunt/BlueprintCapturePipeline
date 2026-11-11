@@ -15,11 +15,13 @@ Body types: ``fixed_arm``, ``mobile_manipulator`` (an arm on a wheeled or legged
 ``humanoid`` (legs) and ``wheeled_humanoid`` (a humanoid upper body on a wheeled base).
 
 A robot that moves is judged by how high and how low its hand goes, not by the distance between the
-spots: ``max_hand_height_m`` and ``min_hand_height_m`` are the highest and lowest heights above the
-floor that the maker states the hand (or wrist) reaches. Only a height the maker states as one above
-the floor counts ("Floor" or a workspace that starts at 0 is ``0``); a lift's travel or a "vertical
-reach" with no reference point is not a hand height. The lowest may be ``0``, every other figure is
-above zero, and the highest must be above the lowest. A fixed arm stands on its mount, so it may leave
+spots: ``max_hand_height_m`` and ``min_hand_height_m`` are the highest and lowest working heights the
+maker lists. Two kinds of figure count: a height the maker states as above the floor ("Floor to
+2.2 m", where "Floor" is ``0``), or a vertical workspace range the maker publishes starting at 0,
+which is read as measured from the floor; the model's notes say which, and for which point (the
+hand, or the wrist centre where the maker says so). A lift's travel or a "vertical reach" with no
+reference point is not a working height. The lowest may be ``0``, every other figure is above zero,
+and the highest must be above the lowest. A fixed arm stands on its mount, so it may leave
 both out, as it may its base speed.
 
 Units: ``m`` (``max_reach_m``, ``max_hand_height_m``, ``min_hand_height_m``,
