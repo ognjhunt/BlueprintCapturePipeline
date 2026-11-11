@@ -186,7 +186,7 @@ def test_server_module_makes_no_outbound_call():
         elif isinstance(node, ast.ImportFrom):
             imported.add(("." * node.level) + (node.module or ""))
             imported.update(alias.name for alias in node.names)
-    allowed = {"__future__", "annotations", "argparse", "base64", "binascii", "hmac", "io", "json", "math", "time",
+    allowed = {"__future__", "annotations", "argparse", "base64", "binascii", "hmac", "io", "json", "math", "os", "time",
                "threading", "collections.abc", "Callable", "Mapping", "http.server", "BaseHTTPRequestHandler",
                "ThreadingHTTPServer", "pathlib", "Path", "typing", "Any", "urllib.parse", "urlsplit", "numpy", "PIL",
                "Image", ".droid_https_policy_client", "IMAGE_KEYS", "INTERFACE_ID", "METADATA_SCHEMA",
@@ -242,9 +242,13 @@ def _served_spec():
                "native_candidate_id": "pi05_droid", "startup_timeout_seconds": 60})
 
 
-def _start(tmp_path, *, process, client_factory, clock):
+def _start(tmp_path, *, process, client_factory, clock, bound=True):
     from blueprint_pipeline.session_policy_server_start import start
 
+    if bound:  # what the started server writes once it holds its port (``serve``)
+        (tmp_path / "out").mkdir(exist_ok=True)
+        (tmp_path / "out" / "session_policy_server_identity.pi05_droid_contract.json").write_text(json.dumps(
+            {"pid": process.pid, "port": 8765, "host": "127.0.0.1", "status": "loading"}))
     token = tmp_path / "token"
     token.write_text(TOKEN)
     token.chmod(0o600)
@@ -393,3 +397,93 @@ def test_a_lost_identity_read_stays_infrastructure():
         raise ConnectionRefusedError("nothing listening")
     with pytest.raises(ValueError, match="^" + UNAVAILABLE):
         loopback_transport(spec, fetch=refused)(url=spec.endpoint_url, method="POST", body=b"{}", headers={})
+
+
+@pytest.mark.parametrize("record", [None, {"pid": 1, "port": 8765, "host": "127.0.0.1", "status": "loading"},
+                                    {"pid": "self", "port": 9999, "host": "127.0.0.1", "status": "loading"}])
+def test_no_token_is_sent_to_a_listener_not_proven_to_be_the_started_server(tmp_path, record):
+    """Review of aefc7d09a, finding 6: another local process could take the port while the checkpoint loads."""
+    calls = []
+
+    class Client:
+        def preflight_readiness(self):
+            calls.append("token sent")
+            return {"server_metadata": {}}
+    process = FakeProcess()
+    if record is not None:
+        (tmp_path / "out").mkdir()
+        record = {**record, "pid": process.pid if record["pid"] == "self" else record["pid"]}
+        (tmp_path / "out" / "session_policy_server_identity.pi05_droid_contract.json").write_text(json.dumps(record))
+    with pytest.raises(RuntimeError, match="session_policy_server_not_ready_within_bound:session_policy_server_not_bound"):
+        _start(tmp_path, process=process, client_factory=lambda spec, token: Client(),
+               clock=iter(range(0, 100_000, 7)).__next__, bound=False)
+    assert calls == []
+
+
+def test_a_bound_server_answers_loading_until_its_policy_is_set():
+    from blueprint_pipeline.openpi_droid_contract_server import ContractPolicyService, build_server
+
+    server = build_server(None, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        spec = _spec(server.server_address[1])
+        with pytest.raises(ValueError, match="droid_https_policy_response_status_invalid:503"):
+            session_policy_client(spec, TOKEN).preflight_readiness()
+        server.slot.service = ContractPolicyService(policy=StandInPolicy(), policy_spec=spec["policy_spec"],
+                                                    bearer_token=TOKEN)
+        assert session_policy_client(spec, TOKEN).preflight_readiness()["server_metadata"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_server_binds_its_port_before_it_loads_the_checkpoint(tmp_path, monkeypatch):
+    import socket
+
+    from blueprint_pipeline import openpi_droid_contract_server as server_module
+    from blueprint_pipeline import openpi_droid_policy_runtime as runtime
+
+    seen = {}
+
+    def loader(*, spec, checkpoint_dir, checkpoint_inventory_path):
+        with socket.socket() as probe:  # the port is already held by this process while loading
+            seen["taken"] = probe.connect_ex(("127.0.0.1", 8765)) == 0
+        seen["record"] = json.loads((tmp_path / "identity.json").read_text())
+        return StandInPolicy(), {"local_checkpoint_verified": True}
+    monkeypatch.setattr(runtime, "load_identity_bound_policy", loader)
+    monkeypatch.setattr(server_module.ContractHTTPServer, "serve_forever", lambda self: None)
+    spec = _served_spec()
+    (tmp_path / "spec.json").write_text(json.dumps(spec))
+    token = tmp_path / "token"
+    token.write_text(TOKEN)
+    token.chmod(0o600)
+    try:
+        server_module.serve(execution_spec_path=tmp_path / "spec.json", checkpoint_dir="/ckpt",
+                            checkpoint_inventory_path="/inv", token_file=token, port=8765,
+                            identity_out=tmp_path / "identity.json")
+    except OSError:
+        pytest.skip("port 8765 is in use on this machine")
+    assert seen["taken"] is True and seen["record"]["status"] == "loading" and seen["record"]["pid"] == os.getpid()
+    assert json.loads((tmp_path / "identity.json").read_text())["status"] == "serving"
+
+
+def test_teardown_signals_only_the_exact_started_process(tmp_path):
+    """The reviewer's missing test: a reused or mismatched pid is never signalled."""
+    from blueprint_pipeline.adp009d_policy_server_worker import terminate_ready_server_from_receipt
+
+    receipt = tmp_path / "receipt.json"
+    command = ["/opt/venv/bin/python", "-m", "blueprint_pipeline.openpi_droid_contract_server"]
+    receipt.write_text(json.dumps({"status": "ready", "server_pid": 4242, "command": command,
+                                   "candidate_id": "pi05_droid_contract"}))
+    signalled = []
+    other = terminate_ready_server_from_receipt(receipt, command_reader=lambda pid: ["/usr/bin/other"],
+                                                signal_process=lambda pid, sig: signalled.append(pid),
+                                                monotonic=iter(range(100)).__next__, sleep=lambda s: None)
+    assert signalled == [] and other["policy_server_process_terminated"] is False
+    assert other["exact_process_identity_verified"] is False
+    alive = iter([command, None])
+    exact = terminate_ready_server_from_receipt(receipt, command_reader=lambda pid: next(alive),
+                                                signal_process=lambda pid, sig: signalled.append(pid),
+                                                monotonic=iter(range(100)).__next__, sleep=lambda s: None)
+    assert signalled == [4242] and exact["policy_server_process_terminated"] is True
