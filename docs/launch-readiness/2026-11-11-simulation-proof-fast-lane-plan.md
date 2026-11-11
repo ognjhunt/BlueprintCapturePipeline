@@ -254,3 +254,57 @@ These counts are by name and are an upper bound.
 - A real arm for paired trials, or a partner who has one.
 - Stopping the humanoid and navigation work while this lane is built. Two
   other sessions are driving those jobs today.
+
+## Testing the named robot itself (scripted)
+
+**What the code change does.** Each new website campaign already plans one
+scripted reference row (`beta_policy_screening_known_good_control`):
+Blueprint's own pick-and-place script, three nominal tries, reference only,
+never a candidate or part of the estimate, never a gate. Until now it ran only
+on the body of a selected learned candidate, and every learned candidate a rigid
+job selects today is on the DROID Franka, which has no scripted body, so the row always said
+`known_good_control_unavailable:embodiment`. Now, when no selected candidate's
+robot has a scripted body, the row takes a registered scripted body for a model
+the job's own robot fit table says fits: `fits` before `fits_spec`, `unknown`
+only if neither has a body, never `doesnt_fit`, ties in the table's order. The
+row records the spec-catalog model (`for_model_id`) and, when the body has no
+station of its own in the scene and stands at the scene's robot station,
+the code `scene_packet_station`. Its money rule is now the one its docstring
+promised: it runs only when its cap fits in what the selected rows leave of the
+plan budget and the site's allowance, and that leftover could not pay for any
+row still waiting for money. No cap, limit or budget value changed. The site
+sees "N of M tries" as `episodes_succeeded` of `episodes_scored` on the row
+`blueprint_scripted_<body>`.
+
+**It is not inert.** The host registry (`/etc/blueprint/team-evaluation-registry.json`,
+unchanged since 2026-10-31) registers all 24 scripted bodies, and the effective
+catalog of the newest campaign (2026-11-10) lists every one enabled, the UR10e
+(`universal_robots_ur10e_robotiq_2f85_sim`) among them, with its model file
+present. So the first new rigid job after a deploy can plan this row.
+
+**Steps to the first real UR10e run.**
+
+1. *Host operation:* merge, then deploy in the daily window (D-08). Nothing to
+   prepare for the UR10e: it was imported by batch `public-robot-imports-20261031-11`.
+2. *Owner instruction, if the UR10e itself is wanted:* the row takes the first
+   fitting model in the fit table's order, and the table lists the UR5e before
+   the UR10e. When both fit equally, the UR5e runs. The robot the WebApp names
+   is not passed to the screening planner today, so this change cannot prefer it.
+3. *Host operation (none to start):* a new rigid pick-and-place website job.
+   Its scene handoff must carry a robot fit table bound to the job; capture-447's
+   handoff has none, so a re-plan of that job gets no fallback body.
+4. *Money:* the row is quoted at the per-candidate cap, $4.00
+   (`DEFAULT_CANDIDATE_CAP_USD`; resource bound $0.80/h for 4 h), and is
+   bounded by the $15 plan budget, the $30 site limit, the job's ceiling and the
+   $200 account limit. With today's catalog a rigid job selects three learned
+   policies at $4.00 each, leaving $3.00, so the row is listed
+   `unavailable:budget`. Running it needs an owner money decision: fewer learned
+   policies on that job, or a different cap or budget. On 2026-11-11 the month
+   stood at $147.16 of $200, forecast to reach the limit on 2026-11-15.
+5. What one scripted run costs and how long it takes has never been measured.
+
+Not needed for the UR10e, but for any new body: an import needs 24 GiB free on
+`/mnt/blueprint-work` above its floor; on 2026-11-11 it had 8.2 GiB, so new
+imports are refused until about 16 GiB is freed (host operation). The stuck
+grant `public-robot-imports-20261030-01` spent nothing, expired on 2026-10-31 and is
+re-read every pass because the queue only clears completed grants; it blocks nothing here.
