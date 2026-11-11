@@ -249,10 +249,11 @@ def _tray_spec() -> dict[str, Any]:
                                        "pregrasp_clearance_m": 0.1}}
 
 
-def test_a_tray_mid_table_is_in_reach_by_its_near_edge_and_its_policies_are_planned_flagged(tmp_path, monkeypatch):
-    # capture-447: no stance the pedestal can take holds the tray's centre within the Franka's reach, and the
-    # scripted carry, which holds it there, found no path. The tray's near edge is in reach: a learned policy
-    # chooses its own grasp, so the station stands, the miss is a flag, and the DROID candidates are planned.
+def test_a_tray_mid_table_with_its_contact_out_of_reach_from_every_stance_is_held_before_any_paid_run(
+        tmp_path, monkeypatch):
+    # capture-447: no stance the pedestal can take holds the tray's centre (the task's grasp contact) within the
+    # Franka's reach, though its near edge is. A run that cannot bring the contact to the place cannot produce
+    # a result (39 paid episodes, 0 successes), so no stance is in reach and the bundle's gate refuses it.
     from blueprint_pipeline import robot_arm_path_clearance as clearance
     from blueprint_pipeline import team_scene_packet
     from blueprint_pipeline.team_embodiment_stance import EVERY_CLEAR_STANCE
@@ -274,21 +275,25 @@ def test_a_tray_mid_table_is_in_reach_by_its_near_edge_and_its_policies_are_plan
     station, record = team_scene_packet._carrying_station(stances, task_spec=spec, collision=room, profile=profile)
     reaches = [clearance.rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=stance,
                                                **clearance.object_reach_inputs(spec)) for stance in stances]
-    # Every clear stance was measured; from the chosen one the tray's centre is beyond the bound at its pick.
-    assert record["stances_measured"] == len(stances) > 8 and record["stances_in_reach"] > 0
+    # Every clear stance was measured; from every one the tray's near edge is in reach and its contact is not.
+    assert record["stances_measured"] == len(stances) > 8 and record["stances_in_reach"] == 0
+    assert any(reach["status"] == "within_bound" for reach in reaches)
+    assert all(reach["task_contact_beyond"] for reach in reaches)
+    assert record["cleared"] is False and record["chosen_basis"] == "no_clear_stance_in_reach"
+    assert record["flags"] == [] and tried == stances[:8]
+    # The stance whose contact is nearest stands, with its measured shortfall.
     chosen = reaches[record["chosen_rank"]]
+    farthest = [clearance.task_contact_far_m(reach) for reach in reaches]
+    assert farthest[record["chosen_rank"]] == min(farthest)
     assert chosen["task_contact_beyond"] == ["pick"] and chosen["status"] == "within_bound"
     pick = next(row for row in chosen["phases"] if row["phase"] == "pick")
     assert pick["distance_m"] > chosen["reach_bound_m"] > pick["object_nearest_distance_m"]
-    # The scripted carry was tried only from stances in reach; it missed, so the stance whose tray is nearest
-    # stands, flagged, and nothing is refused.
-    assert len(tried) == 8 and all(reaches[stances.index(row)]["status"] == "within_bound" for row in tried)
-    assert record["cleared"] is False and record["chosen_basis"] == "nearest_graspable_point_in_reach"
-    assert record["flags"] == [clearance.SCRIPTED_CARRY_FLAG]
-    farthest = [max(row["object_nearest_distance_m"] for row in reach["phases"]) for reach in reaches]
-    assert farthest[record["chosen_rank"]] == min(farthest[i] for i, reach in enumerate(reaches)
-                                                  if reach["status"] == "within_bound")
-    # The plan reads the half: the DROID candidates are feasible, planned, and carry the flag.
+    # The bundle's gate, from that station, refuses the packet by name before any paid run.
+    verdict = clearance.rigid_carry_verdict(record["results"][0], chosen)
+    assert verdict["status"] == "blocked"
+    code = clearance.reach_insufficient_code("pick", pick["distance_m"], chosen["reach_bound_m"])
+    assert verdict["blockers"] == [code]
+    # Planning reads the half the same way: the DROID candidates are infeasible by the gate's own reason.
     plan = {"plan_digest": "sha256:" + "d" * 64, "task_kind": "rigid_pick_place",
             "robot": {"robot_id": "franka_panda", "base_pose_world": {
                 key: station[key] for key in ("position_world_m", "orientation_xyzw")}},
@@ -299,7 +304,6 @@ def test_a_tray_mid_table_is_in_reach_by_its_near_edge_and_its_policies_are_plan
     catalog = {"candidates": [{"candidate_id": key, "interface": {"robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"}}
                               for key in ("pi05_droid", "groot_n17_droid")]}
     feasibility = candidate_feasibility(scene_plan=plan, catalog=catalog, profile={})
-    assert infeasible_blockers(feasibility) == {}
     row = feasibility["candidates"]["pi05_droid"]
-    assert (row["status"], row["blockers"], row["flags"]) == ("feasible", [], [clearance.SCRIPTED_CARRY_FLAG])
-    assert row["station_search"]["blockers"] == ["robot_rigid_pick_place_unreachable:approach"]
+    assert (row["status"], row["blockers"], row["reach_source"]) == ("infeasible", [code], "franka_chain_reach_bound")
+    assert infeasible_blockers(feasibility) == {"pi05_droid": [code], "groot_n17_droid": [code]}

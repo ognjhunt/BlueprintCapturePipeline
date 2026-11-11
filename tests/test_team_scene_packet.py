@@ -473,7 +473,10 @@ def test_each_registered_body_gets_its_own_station_from_its_own_manifest(tmp_pat
     assert "embodiment_stations" not in alone and set(record) - set(alone) == {"embodiment_stations"}
     assert record["robot_station"] == alone["robot_station"] == franka_only["robot_station"]
     assert record["robot_station_search"] == alone["robot_station_search"]
-    assert alone["robot_station_search"]["chosen_rank"] == 2
+    # The third stance tried (in-reach stances go nearest task contact first, not in the search's rank order).
+    search = alone["robot_station_search"]
+    assert search["results"][2]["stance_digest"] == alone["robot_station"]["stance_digest"]
+    assert search["chosen_basis"] == "scripted_carry_cleared" and search["chosen_rank"] > 0
     assert set(record["embodiment_stations"]) == {row["embodiment_digest"] for row in body.values()}
     stations = {row["embodiment_id"]: row for row in record["embodiment_stations"].values()}
     task = json.loads((Path(compiled["path"]).parent / "native-task-packet"

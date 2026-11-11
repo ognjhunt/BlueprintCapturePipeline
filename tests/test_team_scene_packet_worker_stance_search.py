@@ -159,3 +159,62 @@ def test_the_versions_tried_survive_an_interrupted_recompile(tmp_path, monkeypat
     recovered = _status(world)
     assert recovered["blockers"] == ["team_scene_packet_interrupted"]
     assert recovered[worker.STANCE_SEARCH_REQUEUE_FIELD] == [team_embodiment_stance.STANCE_SEARCH_VERSION]
+
+
+def test_a_half_chosen_with_the_tray_in_reach_whose_station_the_gate_now_refuses_is_searched_again_once(
+        tmp_path, monkeypatch) -> None:
+    # Compiled under the old rule with some of the tray in reach (``stances_in_reach`` > 0) and its contact
+    # out of reach: the gate now refuses its station, so it is searched again once, under the new version.
+    # A half whose station passes the new rule is left as it is, compiled once and never again.
+    world = _world(tmp_path, monkeypatch)
+    queue = world["queue"]
+    _release(monkeypatch, RELEASE_1)
+    _at(monkeypatch, 0)
+    [status] = world["process"]()["results"]
+    half = status["team_scene_inputs_path"]
+    _as_capture447_before_the_pedestal_search(half, in_reach=3)
+    version = team_embodiment_stance.STANCE_SEARCH_VERSION
+    monkeypatch.setattr(worker, "_station_reach_refused", lambda _value: False)
+    assert worker.stale_unreached_station(half) is None
+    _release(monkeypatch, RELEASE_2)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    untouched = json.loads(Path(half).read_text())["inputs_digest"]
+    assert world["process"]()["automatic_requeue"] == []
+    assert json.loads(Path(half).read_text())["inputs_digest"] == untouched
+    monkeypatch.setattr(worker, "_station_reach_refused", lambda _value: True)
+    stale = f"station_contact_out_of_reach:stance_search_v1<v{version}"
+    assert worker.stale_unreached_station(half) == stale
+    [requeued] = worker.requeue_transient_blocked(queue_root=queue)["requeued"]
+    assert (requeued["reason"], requeued["detail"]) == ("stance_search_version", stale)
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    assert status[worker.STANCE_SEARCH_REQUEUE_FIELD] == [version]
+    # Searched under this version: never again, even were its new station refused too.
+    assert worker.stale_unreached_station(status["team_scene_inputs_path"]) is None
+    _release(monkeypatch, "c" * 40)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+
+
+def test_the_stale_check_measures_the_station_from_the_halfs_own_packet_plan(tmp_path) -> None:
+    from tests.test_plan_time_reach import OLD_STATION, _region_spec, _wide_spec
+
+    def refused(spec, contract=None) -> bool:
+        packet = tmp_path / str(len(list(tmp_path.iterdir())))
+        packet.mkdir()
+        (packet / "native_task_arena_scene_plan.v1.json").write_text(json.dumps({
+            "robot": {"robot_id": "franka_panda", "base_pose_world": {
+                key: OLD_STATION[key] for key in ("position_world_m", "orientation_xyzw")}},
+            "objects": [{"object_type": "RIGID"}], "task_spec": spec}))
+        value = {"base_native_packet": {"path": str(packet / "native_task_arena_packet_receipt.v1.json")},
+                 **({"task_success_contract": contract} if contract else {})}
+        return worker._station_reach_refused(value)
+
+    # capture-447's recorded numbers: the contact 1.086 m from the shoulder at the place, the bound 0.990 m.
+    assert refused(_wide_spec()) is True
+    # The put-down accepted 0.88 m away, though nominally 1.02 m: the station passes and is left alone.
+    region = _region_spec()
+    assert refused({key: value for key, value in region.items() if key != "task_success_contract"},
+                   region["task_success_contract"]) is False
+    # No box to prove anything by, or an unreadable plan: unknown, never searched again for it.
+    assert refused(_wide_spec(bounds=None)) is False
+    assert worker._station_reach_refused({"base_native_packet": {"path": str(tmp_path / "absent" / "r.json")}}) is False
