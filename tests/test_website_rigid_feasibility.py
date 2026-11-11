@@ -155,3 +155,21 @@ def test_a_room_with_no_station_abstains_by_name_instead_of_crashing(tmp_path, m
     monkeypatch.setattr(team_embodiment_stance, "ground_stance", nowhere)
     verdict = rigid_task_verdict(preparation=_preparation(DESK), collision_path=_room(tmp_path), robot_profiles=[DROID])
     assert verdict["status"] == "abstained" and verdict["blockers"] == ["robot_station_stance_no_clear_floor"]
+
+
+def test_a_long_object_with_its_near_end_in_reach_and_its_centre_beyond_abstains_as_the_gate_would(tmp_path):
+    # A 1.2 m bar on the wide table, its far end nearest the table's edge: some of it is within the arm's reach
+    # from a pedestal beside the table, but the carry's contact (its centre, as at the team packet's gate) is
+    # not, at its start or its place. The verdict names the contact's shortfall, as the bundle's gate does.
+    from blueprint_pipeline.robot_arm_path_clearance import reach_refusal_code
+
+    wide = {"description": "wide table top", "aabb_min_xyz": [-1.2, -1.2, 0.74], "aabb_max_xyz": [1.2, 1.2, 0.74]}
+    preparation = _preparation({"relation": "on", "position_world_m": [0.1, 0.0, 0.74]}, support=wide,
+                               subject=([-0.6, -0.03, 0.74], [0.6, 0.03, 0.80]))
+    verdict = rigid_task_verdict(preparation=preparation, collision_path=_wide_table(tmp_path), robot_profiles=[DROID])
+    assert verdict["status"] == "abstained" and verdict["stances_in_reach"] == 0 and "flags" not in verdict
+    reach = verdict["object_reach"]
+    assert reach["status"] == "within_bound" and reach["beyond"] == [] and reach["task_contact_beyond"]
+    assert verdict["blockers"] == [reach_refusal_code(reach)]
+    assert verdict["blockers"][0].startswith("robot_reach_insufficient:") and verdict["blockers"][0].endswith(
+        "m_vs_0.990m")

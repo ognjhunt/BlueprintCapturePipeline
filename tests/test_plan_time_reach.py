@@ -2,8 +2,9 @@
 
 The geometry below follows the website job capture-447 (a tray carried along a dining table): the
 packet's station stands about a metre from the tray's centre at both ends, beyond the DROID Franka's chain
-reach, while the tray's near edge is within it. A learned policy chooses its own grasp, so only an object
-wholly out of reach is refused; the scripted carry's miss is a flag.
+reach, while the tray's near edge is within it. The team half's station and the bundle's gate need the
+task's grasp contact in reach at both ends (capture-447 ran 39 paid episodes with it out of reach at the
+place); the scripted carry's miss with the contact in reach is a flag.
 """
 from __future__ import annotations
 
@@ -248,10 +249,12 @@ def test_a_station_search_that_carries_from_nowhere_keeps_its_best_attempt_and_t
     assert record["grasps_tried"] == len(seen["grasps"]) == 10
     assert record["best_attempt"]["stance_digest"] == stances[1]["stance_digest"]
     assert record["best_attempt"]["grasp"] == seen["grasps"][-1]
-    # The tray's near edge is in reach from both: the station stands, flagged, and nothing is refused.
-    assert record["stances_in_reach"] == 2 and record["chosen_basis"] == "nearest_graspable_point_in_reach"
-    assert record["flags"] == [SCRIPTED_CARRY_FLAG] and record["reach_shortfall"]["status"] == "within_bound"
+    # The tray's near edge is in reach from both, its contact from neither: no stance is in reach, the closest
+    # stands with its measured shortfall, and the bundle's gate refuses it (``rigid_carry_verdict``).
+    assert record["stances_in_reach"] == 0 and record["chosen_basis"] == "no_clear_stance_in_reach"
+    assert record["flags"] == [] and record["reach_shortfall"]["status"] == "within_bound"
     assert record["reach_shortfall"]["task_contact_beyond"] == ["place", "pick"]
+    assert record["object_reach"]["task_contact_beyond"] == ["place", "pick"]
     # From stances across the room no point of the tray is in reach: the closest stands, out of reach.
     far = [{**FAR, "stance_digest": "sha256:" + str(i) * 64} for i in range(2)]
     station, record = _carrying_station(far, task_spec=task_spec, collision="unused.usda", profile=profile)
@@ -259,7 +262,7 @@ def test_a_station_search_that_carries_from_nowhere_keeps_its_best_attempt_and_t
     assert record["stances_in_reach"] == 0 and record["reach_shortfall"]["beyond"] == ["pick", "place"]
 
 
-def test_the_station_is_the_in_reach_stance_whose_object_is_nearest_when_no_scripted_carry_clears(monkeypatch):
+def test_the_station_is_the_in_reach_stance_whose_contact_is_nearest_when_no_scripted_carry_clears(monkeypatch):
     from blueprint_pipeline import robot_arm_path_clearance as clearance
     from blueprint_pipeline.team_scene_packet import _carrying_station
 
@@ -271,8 +274,10 @@ def test_the_station_is_the_in_reach_stance_whose_object_is_nearest_when_no_scri
                               "furthest_sample": 0, "path_samples": 60, "grasp": "task"}) for stance in stances]
         return None, attempts[0][1], attempts
     monkeypatch.setattr(clearance, "first_carrying_stance", nothing_carries)
-    # Ranked best first by the search: out of reach, in reach, nearer the tray's edges still.
-    rows = [FAR, STATION, {**STATION, "position_world_m": [0.1, -0.5, 0.8166]}]
+    # Ranked best first by the search: out of reach, the tray's edge only in reach, its contact in reach
+    # (0.903 m at the place), its contact nearer still (0.752 m).
+    rows = [FAR, STATION, {**STATION, "position_world_m": [0.25, -0.6, 0.8166]},
+            {**STATION, "position_world_m": [0.1, -0.5, 0.8166]}]
     stances = [{**row, "stance_digest": "sha256:" + str(i) * 64} for i, row in enumerate(rows)]
     task_spec = {"start_pose_world": START, "target_position_world_m": TARGET,
                  "subject_collision_bounds_scoring_frame_m": TRAY,
@@ -282,9 +287,10 @@ def test_the_station_is_the_in_reach_stance_whose_object_is_nearest_when_no_scri
                                             "pregrasp_clearance_m": 0.1}}
     profile = {"robot_joint_reset_positions_rad": {f"panda_joint{i}": 0.0 for i in range(1, 8)}}
     station, record = _carrying_station(stances, task_spec=task_spec, collision="unused.usda", profile=profile)
-    # The scripted carry is tried only from stances in reach, in rank order; the nearest of them stands.
-    assert tried["stances"] == [stances[1]["stance_digest"], stances[2]["stance_digest"]]
-    assert station is stances[2] and record["chosen_rank"] == 2 and record["stances_in_reach"] == 2
+    # The scripted carry is tried only from stances with the contact in reach, nearest contact first; it stands.
+    assert tried["stances"] == [stances[3]["stance_digest"], stances[2]["stance_digest"]]
+    assert station is stances[3] and record["chosen_rank"] == 3 and record["stances_in_reach"] == 2
+    assert record["chosen_basis"] == "nearest_graspable_point_in_reach" and record["flags"] == [SCRIPTED_CARRY_FLAG]
 
 
 def test_the_packet_gate_admits_a_carry_only_a_tilted_grasp_clears(tmp_path, monkeypatch):
@@ -318,3 +324,155 @@ def test_the_packet_gate_admits_a_carry_only_a_tilted_grasp_clears(tmp_path, mon
     flagged = clearance.packet_arm_path_clearance(packet)
     assert flagged["status"] == "flagged" and flagged["grasp"] == "task" and flagged["blockers"] == []
     assert flagged["flags"] == [SCRIPTED_CARRY_FLAG]
+
+
+# capture-447 as the tracker records it (2026-11-06 reach pass): the task's grasp contact 0.970 m from the
+# shoulder at the pick and 1.086 m at the place, against a 0.990 m bound, while the tray's nearest point is
+# 0.735 m and 0.729 m away. Laid out in the plane of the shoulder: the base at the origin (shoulder 0.333 m
+# up), the pick ahead of it along x, the place to its left along y, the contact 0.10 m along the tray's x.
+SHOULDER_Z = 0.333
+WIDE_TRAY = {"minimum": [-0.135, -0.35239, -0.02], "maximum": [0.135, 0.35239, 0.02]}
+WIDE_CONTACT = [0.10, 0.0, 0.0]
+WIDE_START = [0.87, 0.0, SHOULDER_Z, 0.0, 0.0, 0.0, 1.0]
+WIDE_TARGET = [0.0, math.sqrt(1.086 ** 2 - 0.10 ** 2), SHOULDER_Z]
+OLD_STATION = {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+               "stance_digest": "sha256:" + "e" * 64}
+#: About midway between the pick and the place.
+MIDWAY = {"position_world_m": [0.435, WIDE_TARGET[1] / 2.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+          "stance_digest": "sha256:" + "f" * 64}
+CODE_447 = "robot_reach_insufficient:place:1.086m_vs_0.990m"
+
+
+def _wide_spec(start=WIDE_START, target=WIDE_TARGET, contact=WIDE_CONTACT, bounds=WIDE_TRAY):
+    return {"manipulation_strategy": "pick_and_place", "start_pose_world": list(start),
+            "target_position_world_m": list(target), "subject_collision_bounds_scoring_frame_m": bounds,
+            "interaction_affordance": {"contact_point_scoring_frame_m": list(contact),
+                                       "approach_unit_scoring_frame": [0.0, 0.0, 1.0],
+                                       "gripper_orientation_scoring_frame_xyzw": [0.0, 1.0, 0.0, 0.0],
+                                       "pregrasp_clearance_m": 0.1}}
+
+
+PANDA_RESET = {"robot_joint_reset_positions_rad": {f"panda_joint{i}": 0.0 for i in range(1, 8)}}
+
+
+def _scripted(monkeypatch, *, clears):
+    """Replace the scripted carry: it clears from the first stance it is given, or from none."""
+    from blueprint_pipeline import robot_arm_path_clearance as clearance
+
+    tried: list[str] = []
+
+    def carry(stances, *, grasps, **task):
+        tried.extend(row["stance_digest"] for row in stances)
+        attempts = [(row, {"status": "clear" if clears and i == 0 else "blocked", "grasp": "task",
+                           "blockers": [] if clears and i == 0 else ["robot_rigid_pick_place_unreachable:carry"],
+                           "furthest_sample": 15, "path_samples": 42}) for i, row in enumerate(stances)]
+        return (stances[0] if clears else None), attempts[0][1], attempts
+    monkeypatch.setattr(clearance, "first_carrying_stance", carry)
+    return tried
+
+
+def test_capture_447s_station_has_some_of_the_tray_in_reach_but_not_its_contact_and_is_out_of_reach(monkeypatch):
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        object_reach_inputs,
+        task_contact_in_reach,
+    )
+    from blueprint_pipeline.team_scene_packet import _carrying_station
+
+    spec = _wide_spec()
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(spec))
+    rows = {row["phase"]: row for row in reach["phases"]}
+    assert rows["pick"]["distance_m"] == pytest.approx(0.970, abs=5e-4)
+    assert rows["place"]["distance_m"] == pytest.approx(1.086, abs=5e-4)
+    assert rows["pick"]["object_nearest_distance_m"] == pytest.approx(0.735, abs=5e-4)
+    assert rows["place"]["object_nearest_distance_m"] == pytest.approx(0.729, abs=5e-4)
+    assert reach["reach_bound_m"] == pytest.approx(0.990, abs=5e-4)
+    # The old rule's pass (some point of the tray in reach at both ends) still reads as before ...
+    assert reach["status"] == "within_bound" and reach["beyond"] == []
+    # ... but the contact is beyond the bound at the place: the stance is out of reach.
+    assert reach["task_contact_beyond"] == ["place"] and task_contact_in_reach(reach) is False
+    _scripted(monkeypatch, clears=False)
+    station, record = _carrying_station([OLD_STATION], task_spec=spec, collision="unused.usda", profile=PANDA_RESET)
+    assert station is OLD_STATION and record["stances_in_reach"] == 0
+    assert record["chosen_basis"] == "no_clear_stance_in_reach" and record["flags"] == []
+    assert record["reach_shortfall"]["task_contact_beyond"] == ["place"]
+
+
+@pytest.mark.parametrize("clears, basis", [(True, "scripted_carry_cleared"),
+                                           (False, "nearest_graspable_point_in_reach")])
+def test_a_stance_midway_between_pick_and_place_is_chosen_with_both_contacts_in_reach(monkeypatch, clears, basis):
+    from blueprint_pipeline.robot_arm_path_clearance import object_reach_inputs
+    from blueprint_pipeline.team_scene_packet import _carrying_station
+
+    spec = _wide_spec()
+    tried = _scripted(monkeypatch, clears=clears)
+    # The search ranks the old station first; it is not in reach, so the carry is tried from the midway one only.
+    station, record = _carrying_station([OLD_STATION, MIDWAY], task_spec=spec, collision="unused.usda",
+                                        profile=PANDA_RESET)
+    assert station is MIDWAY and record["chosen_rank"] == 1 and record["chosen_basis"] == basis
+    assert tried == [MIDWAY["stance_digest"]] and record["stances_in_reach"] == 1
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=MIDWAY, **object_reach_inputs(spec))
+    assert reach["task_contact_beyond"] == [] and record["object_reach"]["task_contact_beyond"] == []
+    assert all(row["distance_m"] < reach["reach_bound_m"] for row in reach["phases"])
+
+
+def test_with_no_stance_bringing_the_contact_to_the_place_the_gate_holds_the_job_before_any_paid_run(
+        tmp_path, monkeypatch):
+    import json
+
+    from blueprint_pipeline import robot_arm_path_clearance as clearance
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        RobotArmPathAdmissionBlocked,
+        object_reach_inputs,
+        reach_refusal_code,
+        require_robot_arm_path_admission,
+        rigid_carry_verdict,
+    )
+
+    spec = _wide_spec()
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(spec))
+    miss = {"status": "blocked", "blockers": ["robot_rigid_pick_place_unreachable:carry"], "furthest_sample": 15}
+    verdict = rigid_carry_verdict(miss, reach)
+    assert verdict["status"] == "blocked" and verdict["blockers"] == [CODE_447] == [reach_refusal_code(reach)]
+    assert verdict["scripted_carry_blockers"] == ["robot_rigid_pick_place_unreachable:carry"]
+    assert verdict["object_reach"]["status"] == "within_bound"
+    assert verdict["object_reach"]["task_contact_beyond"] == ["place"]
+    # The packet's own gate, from its scene plan, refuses it by the same name.
+    pytest.importorskip("pxr")
+    from tests.test_robot_arm_path_clearance import _rigid_packet
+
+    monkeypatch.setattr(clearance, "rigid_pick_place_clearance", lambda **_: dict(miss))
+    packet = _rigid_packet(tmp_path / "packet", target=WIDE_TARGET)
+    plan_path = packet / "native_task_arena_scene_plan.v1.json"
+    plan = json.loads(plan_path.read_text())
+    plan["task_spec"].update({key: spec[key] for key in (
+        "start_pose_world", "target_position_world_m", "subject_collision_bounds_scoring_frame_m")})
+    plan["task_spec"]["interaction_affordance"]["contact_point_scoring_frame_m"] = WIDE_CONTACT
+    plan_path.write_text(json.dumps(plan))
+    with pytest.raises(RobotArmPathAdmissionBlocked) as refused:
+        require_robot_arm_path_admission(packet)
+    assert refused.value.blockers == [CODE_447]
+
+
+@pytest.mark.parametrize("clears", [True, False])
+def test_a_carry_comfortably_in_reach_keeps_its_station_and_passes_the_gate(monkeypatch, clears):
+    from blueprint_pipeline.robot_arm_path_clearance import object_reach_inputs, rigid_carry_verdict
+    from blueprint_pipeline.team_scene_packet import _carrying_station
+
+    box = {"minimum": [-0.03, -0.03, -0.03], "maximum": [0.03, 0.03, 0.03]}
+    spec = _wide_spec(start=[0.5, 0.0, SHOULDER_Z, 0.0, 0.0, 0.0, 1.0], target=[0.4, 0.3, SHOULDER_Z],
+                      contact=[0.0, 0.0, 0.0], bounds=box)
+    behind = {**OLD_STATION, "position_world_m": [-0.2, 0.0, 0.0], "stance_digest": "sha256:" + "d" * 64}
+    stances = [OLD_STATION, behind]
+    reaches = [rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=row, **object_reach_inputs(spec))
+               for row in stances]
+    # Both stances were in reach by the old rule and are by the new one.
+    assert all(row["status"] == "within_bound" and row["task_contact_beyond"] == [] for row in reaches)
+    tried = _scripted(monkeypatch, clears=clears)
+    station, record = _carrying_station(stances, task_spec=spec, collision="unused.usda", profile=PANDA_RESET)
+    assert station is OLD_STATION and record["chosen_rank"] == 0 and record["stances_in_reach"] == 2
+    assert tried == [OLD_STATION["stance_digest"], behind["stance_digest"]]
+    carry = {"status": "clear", "blockers": []} if clears else {
+        "status": "blocked", "blockers": ["robot_rigid_pick_place_unreachable:carry"]}
+    verdict = rigid_carry_verdict(carry, reaches[0])
+    assert verdict["status"] == ("clear" if clears else "flagged")
+    assert verdict["blockers"] == [] and verdict.get("flags", []) == ([] if clears else [SCRIPTED_CARRY_FLAG])

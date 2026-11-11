@@ -333,7 +333,11 @@ def station_proposal(*, stances: Sequence[Mapping[str, Any]], carry: Mapping[str
     station search's rule, ``task_contact_in_reach``) and that needs the fewest items is proposed.
     """
 
-    from .robot_arm_path_clearance import RobotArmPathClearanceError, rigid_reach_shortfall, task_contact_in_reach
+    from .robot_arm_path_clearance import (
+        RobotArmPathClearanceError,
+        rigid_reach_shortfall,
+        task_contact_in_reach,
+    )
 
     why = {"reason": "no_ranked_stance_carries", "carry_cleared": bool(carry.get("cleared")),
            "stances_tried": len(carry.get("results") or []),
