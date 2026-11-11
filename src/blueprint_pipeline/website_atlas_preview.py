@@ -179,11 +179,8 @@ def _outage(error: BaseException) -> bool:
     if isinstance(status, int):
         return status == 429 or status >= 500
     if isinstance(error, ValueError):
-        from .job_retry_policy import provider_says_retry_later
         return (_reason(error) in _TASK_CONTEXT_CHANGED
-                or re.match(r"(?:website_control_|owned_capture_atlas_control_)[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None
-                # An outside service's "try again later": 408, 409, 425, 429 or any 5xx (``meta_sam_http_503``).
-                or provider_says_retry_later(str(error)))
+                or re.match(r"(?:website_control_|owned_capture_atlas_control_)[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None)
     return isinstance(error, OSError)
 
 
@@ -254,7 +251,12 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     detail = {"last_error": error_description(error)}
     if _outage(error):
         return _outage_retry(job, current, code, detail)
-    from .job_retry_policy import request_cannot_succeed
+    from .job_retry_policy import provider_says_retry_later, request_cannot_succeed
+    if provider_says_retry_later(code):
+        # An outside service's "try again later" (408, 409, 425, 429, any 5xx): the bounded refusal
+        # schedule, as on main (6 timed retries per streak, at most 12 in the job's life), then failed
+        # with the code. Each retry of a refused SAM dispatch reserves anew: no call releases a hold.
+        return _refusal_retry(job, current, code, detail)
     if request_cannot_succeed(code):
         # An outside service refused the request itself (a 413, a 400, a 403...), or it cannot be made
         # to fit: sending it again unchanged cannot succeed, so the step ends now with that code. A
