@@ -76,6 +76,10 @@ def test_no_runtime_code_names_a_non_runtime_path() -> None:
         for path in sorted((REPO_ROOT / root).rglob("*")):
             if not path.is_file() or path.is_symlink() or "__pycache__" in path.parts:
                 continue
+            # Packaging metadata the build writes beside the sources (PKG-INFO is a copy of
+            # README.md). It is not in the repository and nothing reads it as a path at run time.
+            if any(part.endswith(".egg-info") for part in path.parts):
+                continue
             # Every offence contains a directory's last component; most files have none.
             if not any(name in path.read_bytes() for name in names):
                 continue
