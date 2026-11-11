@@ -44,7 +44,7 @@ from tests.test_policy_episode_graded_report import _task_spec
 ROOT = Path(__file__).parents[1]
 FIXTURE = ROOT / "tests/fixtures/beta_policy_screening_progress_publication.v4.json"
 #: The fixture's bytes. The WebApp pins the same value for its copy.
-FIXTURE_SHA256 = "0" * 64
+FIXTURE_SHA256 = "5ad8e51f64357ff520ad2b961c0db169e21ec9f5d82b17583cc04cdd33c75da6"
 SCHEMA = {version: json.loads((ROOT / f"docs/schemas/beta_policy_screening_publication.{version}.schema.json").read_text())
           for version in ("v2", "v3", "v4")}
 
@@ -60,8 +60,11 @@ SPEC = _task_spec(
 DEPTH = {stage: index + 1 for index, stage in enumerate(PROGRESS_STAGE_IDS)} | {"none": 0}
 
 
-def trace(depth: int, *, approach: bool = True) -> list[dict]:
-    """A 14-step trace that gets exactly ``depth`` stages along the ladder; ``approach=False`` records no grasp frame."""
+def trace(depth: int, *, approach: bool = True, height: float | None = None) -> list[dict]:
+    """A 14-step trace that gets exactly ``depth`` stages along the ladder; ``approach=False`` records no grasp frame.
+
+    ``height``: where a trace that never gets within reach holds the grasp frame above the object's centre.
+    """
     x0, y0, z0 = START
     path = [START] * 14
     if depth == DEPTH["moved"]:
@@ -73,7 +76,7 @@ def trace(depth: int, *, approach: bool = True) -> list[dict]:
         path = ([START] * 3 + [(x0, y0, z0 + 0.03), (1.07, (y0 + end[1]) / 2, z0 + 0.03), (*end[:2], z0 + 0.03)]
                 + [end] * 8)
     holding = range(2, 8 if depth == DEPTH["released_and_settled"] else 14) if depth >= DEPTH["contact"] else range(0)
-    offset = 0.3 if depth == DEPTH["none"] else 0.06 if depth == DEPTH["approached"] else 0.04
+    offset = (height or 0.3) if depth == DEPTH["none"] else 0.06 if depth == DEPTH["approached"] else 0.04
     samples = []
     for step, position in enumerate(path):
         held = step in holding
@@ -92,19 +95,33 @@ def trace(depth: int, *, approach: bool = True) -> list[dict]:
     return samples
 
 
-def episode(depth: int, *, approach: bool = True) -> tuple[dict, list[dict]]:
-    samples = trace(depth, approach=approach)
+def episode(depth: int, *, approach: bool = True, height: float | None = None) -> tuple[dict, list[dict]]:
+    samples = trace(depth, approach=approach, height=height)
     return score_task_episode_from_spec(task_spec=SPEC, samples=samples), samples
 
 
-def session_result(value, candidate, depths, *, approach=True, scripted=False):
+def session_result(value, candidate, depths, *, approach=True, scripted=False, heights=None):
     """The candidate's validated native session result, each episode carrying its real score and sealed trace."""
-    result = native_result(value, candidate)
+    if len(candidate["scenario_cells"]) == 10:
+        result = native_result(value, candidate)
+    else:  # The control's three cells: the same builder's result, rebound to that row.
+        template = next(row for row in value["candidates"] if len(row["scenario_cells"]) == 10)
+        result = deepcopy(native_result(value, template))
+        binding = result["beta_screening_admission"]
+        binding.update(candidate_id=candidate["candidate_id"], admission_digest=candidate["admission_digest"],
+                       configuration_digest=candidate["configuration_digest"])
+        result.update(candidate_ids=[candidate["candidate_id"]], configuration_digest=candidate["configuration_digest"],
+                      episodes_per_policy=len(depths), learned_policy_rollout_count=len(depths))
+        rows = result["episodes"][:len(depths)]
+        for row, cell in zip(rows, candidate["scenario_cells"], strict=True):
+            row.update(cell, candidate_id=candidate["candidate_id"],
+                       runtime_identity_digest=candidate["execution_spec"]["runtime_digest"])
+        result["episodes"] = rows
     if scripted:
         result.update(rollout_counts({candidate["candidate_id"]: SCRIPTED}, len(depths)),
                       scripted_controller_invoked=True, candidate_policy_queried=False)
-    for row, depth in zip(result["episodes"], depths, strict=True):
-        score, samples = episode(depth, approach=approach)
+    for index, (row, depth) in enumerate(zip(result["episodes"], depths, strict=True)):
+        score, samples = episode(depth, approach=approach, height=heights[index] if heights else None)
         state = {"task_state_samples": samples}
         row["episode"] = {"score": score, "state_trace": state}
         row["deterministic_score_digest"] = canonical_digest({"value": score})
@@ -118,7 +135,9 @@ def session_result(value, candidate, depths, *, approach=True, scripted=False):
 CAMPAIGN = {
     "policy-a": {"display_name": "Policy A", "depths": [7, 7, 6, 5, 5, 4, 3, 2, 1, 0]},
     "policy-b": {"display_name": "Policy B", "depths": [5, 4, 4, 3, 2, 2, 1, 1, 0, 0]},
-    "policy-c": {"display_name": "Policy C", "depths": [2, 1, 1, 1, 1, 0, 0, 0, 0, 0]},
+    # Never within reach: the ladder is all zeros and the distance is what tells it apart.
+    "policy-c": {"display_name": "Policy C", "depths": [0] * 10,
+                 "heights": [0.12, 0.13, 0.14, 0.15, 0.16, 0.18, 0.2, 0.22, 0.25, 0.3]},
     "policy-d": {"display_name": "Policy D", "depths": [4, 3, 3, 2, 2, 2, 0, 0, 0, 0], "approach": False},
 }
 
@@ -136,7 +155,8 @@ def campaign_plan():
 def run_to_completion(root):
     value = campaign_plan()
     observations = {row["candidate_id"]: closed(session_result(
-        value, row, CAMPAIGN[row["candidate_id"]]["depths"], approach=CAMPAIGN[row["candidate_id"]].get("approach", True)))
+        value, row, CAMPAIGN[row["candidate_id"]]["depths"], approach=CAMPAIGN[row["candidate_id"]].get("approach", True),
+        heights=CAMPAIGN[row["candidate_id"]].get("heights")))
         for row in value["candidates"][:-1]}
     control = value["candidates"][-1]
     observations[control["candidate_id"]] = closed(session_result(value, control, [7, 7, 6], scripted=True))
@@ -233,7 +253,7 @@ def test_a_grading_error_or_an_unbound_episode_is_skipped_and_never_fails_the_su
     rows[2]["episode"].pop("state_trace")
     graded, skipped = progress.grade_rows(rows)
     assert graded["episodes_graded"] == 7
-    assert skipped == {"episode_not_scored": 1, "state_trace_digest_mismatch": 1, "state_trace_missing": 1}
+    assert skipped == {"score_digest_mismatch": 1, "state_trace_digest_mismatch": 1, "state_trace_missing": 1}
 
     calls = []
     real = progress.progress_episode
@@ -343,12 +363,13 @@ def test_a_campaign_with_progress_publishes_v4_and_each_earlier_form_is_the_same
     assert stages(rows["policy-d"])[0] == ("contact", 6) and len(stages(rows["policy-d"])) == 6
     assert "closest_approach_m" not in rows["policy-d"]["progress"]
     assert [rows[key]["progress"]["closest_approach_m"] for key in ("policy-a", "policy-b", "policy-c")] == [
-        {"median": 0.0, "min": 0.0}, {"median": 0.0, "min": 0.0}, {"median": 0.13, "min": 0.0}]
-    assert [rows[key]["progress"]["mean_score"] for key in CAMPAIGN] == [0.5714, 0.3143, 0.1, 0.2667]
+        {"median": 0.0, "min": 0.0}, {"median": 0.0, "min": 0.0}, {"median": 0.12, "min": 0.07}]
+    assert [row["episodes"] for row in rows["policy-c"]["progress"]["stages"]] == [0] * 7
+    assert [rows[key]["progress"]["mean_score"] for key in CAMPAIGN] == [0.5714, 0.3143, 0.0, 0.1667]
     assert [rows[key]["episodes_succeeded"] for key in CAMPAIGN] == [2, 0, 0, 0]
 
     v3 = as_v3(publication)
-    assert v3["schema_version"] == PUBLICATION_SCHEMA_V3 and "progress" not in json.dumps(v3)
+    assert v3["schema_version"] == PUBLICATION_SCHEMA_V3 and not any("progress" in row for row in v3["candidates"])
     Draft202012Validator(SCHEMA["v3"], format_checker=FormatChecker()).validate(v3)
     assert v3["publication_digest"] == cross_runtime_canonical_digest(v3, digest_field="publication_digest")
     assert as_v2(publication) == as_v2(v3)
@@ -423,8 +444,7 @@ def test_a_website_that_refuses_v4_is_sent_v3_in_the_same_pass_and_v2_if_it_refu
         "acknowledged": 1, "pending": 0, "downgraded_to_v2": 1, "downgraded_to_v3": 1}
     assert [row["schema_version"] for row in older.received] == [
         PUBLICATION_SCHEMA_V4, PUBLICATION_SCHEMA_V3, PUBLICATION_SCHEMA_V2]
-    assert older.received[2] == as_v2(offered | {"publication_digest": older.received[0]["publication_digest"]}) or \
-        older.received[2]["schema_version"] == PUBLICATION_SCHEMA_V2
+    assert older.received[1] == as_v3(older.received[0]) and older.received[2] == as_v2(older.received[0])
     record = state_of(root, offered["campaign_id"])[DOWNGRADE_FIELD]
     assert (record["from_schema_version"], record["to_schema_version"]) == (PUBLICATION_SCHEMA_V3, PUBLICATION_SCHEMA_V2)
     assert coordinator.pending_publications(queue_root=root) == []
@@ -505,7 +525,7 @@ def test_an_older_score_without_behaviour_has_no_rung_unless_the_driver_is_asked
     value = campaign_plan()
     candidate = value["candidates"][0]
     result = native_result(value, candidate)
-    for row, depth in zip(result["episodes"], CAMPAIGN["policy-c"]["depths"], strict=True):
+    for row, depth in zip(result["episodes"], [2, 1, 1, 1, 1, 0, 0, 0, 0, 0], strict=True):
         score, samples = episode(depth)
         score = {key: item for key, item in score.items() if key != "behaviour"}  # sealed before it carried one
         state = {"task_state_samples": samples}
