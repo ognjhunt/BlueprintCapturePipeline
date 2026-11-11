@@ -220,6 +220,9 @@ def retained(tmp_path, monkeypatch, request):
                 "committed_upper_bound_usd": "4", "spent_upper_bound_usd": "4", "reserved_usd": "0"})
     version = options.get("publication_version")
     if version is not None:
+        # The retained v1 and v2 variants never carried the v3 set-up flag fields.
+        from blueprint_pipeline.beta_policy_screening_publication_flags import as_v2
+        publication = as_v2(publication)
         publication.update(schema_version="beta_policy_screening_publication." + version,
             purpose="job_evaluation" if version == "v2" else "screening",
             claim_ceiling="simulation_estimate" if version == "v2" else "diagnostic_policy_execution")

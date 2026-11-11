@@ -306,7 +306,7 @@ ATTEMPT_STATE_KEYS = ("attempt_id", "attempt_commit", "attempt", "factory", "pub
                       "native_task_family_packet",
                       "preparation_state", "preparation_link", "preparation_result", "activation_link",
                       "activation", "scene_configuration_launch", "failure", "preparation_failure",
-                      "configuration_failure", "capacity_recovery_admission")
+                      "configuration_failure", "capacity_recovery_admission", "configuration_recovery_wait")
 
 
 def _website_configuration_launch(*, observed, config, release, launcher):
@@ -394,6 +394,13 @@ def _settle_ended_authority(*, directory, intent, state, config, now):
 
 def _release_successor(*, directory, intent, state, config, release, now):
     from .task_evaluation_scene_progression_recovery import reconcile_ownership
+    from .task_evaluation_scene_release_hold import previous_launch_in_flight
+    # A paid launch that already left this attempt finishes on its own release
+    # and is joined from its receipt; retiring under it could launch it twice.
+    if previous_launch_in_flight(
+            activation_link_path=_reference(state["activation_link"]) if state.get("activation_link") else None,
+            launch_record=state.get("scene_configuration_launch"), config=config):
+        return False
     previous_id = state["attempt_id"]
     previous_path = _reference(state["attempt"])
     previous = intake._read(previous_path, "attempt_digest")
@@ -485,14 +492,30 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
                                     config, release, machinery, output, now):
     from .task_evaluation_scene_capacity_recovery import observe_failure, capacity_admission, retain_failure, KIND
     from .task_evaluation_scene_progression_recovery import reconcile_ownership
+    from . import task_evaluation_scene_launch_recovery as launch_recovery
     observed = observe_failure(attempt=attempt, link_path=link_path, preparation_path=preparation_path,
-                               factory_path=_reference(state["factory"]), config=config)
+                               factory_path=_reference(state["factory"]), config=config, now=now)
     if observed is None:
         return None
     state["configuration_failure"] = observed["result"]
     if not observed["recoverable"]:
         return {"status": "blocked", "phase": "scene_configuration_failed", "blockers": observed["blockers"]}
-    admission = capacity_admission(observed, config, now)
+    # Zero-spend classes rented nothing and have no capacity to measure: they wait
+    # on the shared refusal schedule instead, bounded by the same pre-allocation counter.
+    from .task_evaluation_scene_recovery import MAX_PREALLOCATION_CAPACITY_RECOVERIES
+    zero_spend = observed.get("kind") in launch_recovery.ZERO_SPEND_KINDS
+    prior_zero_spend = sum(row.get("kind") == KIND for row in state.get("recovery_predecessors", []))
+    # An exhausted bound ends at once below; it never waits out one more backoff first.
+    scheduled = sum(row.get("configuration_failure_kind") in launch_recovery.ZERO_SPEND_KINDS
+                    for row in state.get("recovery_predecessors", []))
+    wait = (launch_recovery.backoff_wait(observed, scheduled, now)
+            if zero_spend and prior_zero_spend < MAX_PREALLOCATION_CAPACITY_RECOVERIES else None)
+    if wait is not None:
+        state["configuration_recovery_wait"] = wait
+        return {"status": "blocked", "phase": "configuration_capacity", "blockers": [wait["blocker"]]}
+    state.pop("configuration_recovery_wait", None)
+    admission = (launch_recovery.zero_spend_admission(observed, now) if zero_spend
+                 else capacity_admission(observed, config, now))
     state["capacity_recovery_admission"] = admission
     if admission["status"] != "admitted":
         credit = admission.get("authoring_authentication_admission") or admission.get("provider_credit_admission") or {}
@@ -502,10 +525,10 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
     # nothing started, did not execute the model or simulator; max_retries
     # counts executed work. Retain the first rejected request allowance and
     # bound administrative recovery.
-    from .task_evaluation_scene_capacity_recovery import CREDIT_KIND, nothing_started
+    from .task_evaluation_scene_capacity_recovery import CREDIT_KIND, DEAD_MACHINE_KIND, nothing_started
     from .task_evaluation_authoring_auth_recovery import KIND as AUTH_KIND
     unstarted = (attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
-                 and (observed.get("kind") in {CREDIT_KIND, AUTH_KIND}
+                 and (observed.get("kind") in {CREDIT_KIND, AUTH_KIND, *launch_recovery.ZERO_SPEND_KINDS}
                       or observed.get("kind") == KIND and nothing_started(observed["values"]["result"])))
     require(intent["request"]["execution"]["max_retries"] > 0 or unstarted, "retry_cap_exhausted")
     successor_id = "source-" + canonical_digest({"prior_attempt_digest": attempt["attempt_digest"],
@@ -513,9 +536,16 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
         "failure_result_digest": observed["values"]["result"]["result_digest"], "kind": KIND})[7:31]
     if attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1":
         from .task_evaluation_scene_preparation_attempts import create_preparation_attempt, preparation_attempt_path
-        from .task_evaluation_scene_recovery import MAX_PREALLOCATION_CAPACITY_RECOVERIES
-        require(sum(row.get("kind") == KIND for row in state.get("recovery_predecessors", []))
-                < MAX_PREALLOCATION_CAPACITY_RECOVERIES, "preallocation_capacity_recovery_cap_exhausted")
+        from .task_evaluation_scene_recovery import PAID_RETRY_KIND
+        # A rented machine that died is executed, paid work: it spends the intent's
+        # signed max_retries, never the $0 pre-allocation allowance.
+        paid_retry = observed.get("kind") == DEAD_MACHINE_KIND
+        if paid_retry:
+            require(sum(row.get("kind") == PAID_RETRY_KIND for row in state.get("recovery_predecessors", []))
+                    < intent["request"]["execution"]["max_retries"], "retry_cap_exhausted")
+        else:
+            require(prior_zero_spend < MAX_PREALLOCATION_CAPACITY_RECOVERIES,
+                    "preallocation_capacity_recovery_cap_exhausted")
         failure_path = retain_failure(observation=observed, attempt=attempt,
             output_root=output / "capacity-recovery", admission=admission)
         evidence = reconcile_ownership(attempt=attempt, failure_path=failure_path, config=config,
@@ -526,7 +556,9 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
             source_commit=release["source_commit"], runtime_digest=release["runtime_digest"],
             input_digest=state["binding_digest"])
         state.setdefault("recovery_predecessors", []).append(
-            {"attempt": state["attempt"], "factory": state["factory"], "evidence": evidence, "kind": KIND})
+            {"attempt": state["attempt"], "factory": state["factory"], "evidence": evidence,
+             "kind": PAID_RETRY_KIND if paid_retry else KIND,
+             **({"configuration_failure_kind": observed["kind"]} if zero_spend else {})})
         _clear_attempt(state)
         state.update(attempt_id=successor_id, attempt_commit=release["source_commit"],
                      attempt=record(preparation_attempt_path(directory, successor_id)))

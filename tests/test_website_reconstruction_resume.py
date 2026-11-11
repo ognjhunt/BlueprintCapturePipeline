@@ -242,19 +242,30 @@ def test_only_the_whole_atlas_wait_counts_anywhere_in_the_chain():
     assert not resume.atlas_wait(StageError("website_scene_preparation", "website_atlas_job_failed"))
 
 
-ASSESSMENT_ROW = {"stage": "website_assessment_preparation",
-                  "error": "website_control_scene-sponsorship_http_409:website_assessment_preparation_pending",
-                  "assessment_resume": {"schema_version": "website_assessment_resume.v1"}}
-WAIT_ROW = {"stage": "run_e2e", "error": resume.WAIT_ERROR,
-            resume.FIELD: {"schema_version": resume.SCHEMA, "error": resume.WAIT_ERROR}}
-
-
-@pytest.mark.parametrize("history,recovered,allowed", [
-    ([], False, True), ([WAIT_ROW], False, True), ([ASSESSMENT_ROW, WAIT_ROW], False, True),
-    ([{"stage": "run_e2e", "error": "unknown_provider_charge"}], False, False), ([], True, False),
-    ([{**WAIT_ROW, resume.FIELD: {"schema_version": resume.SCHEMA, "error": "other"}}], False, False)])
-def test_only_explicit_waits_before_it_arm_the_replay(history, recovered, allowed):
-    assert resume.safe_to_arm(len(history) + 1, history, recovered) is allowed
+def test_a_wait_after_a_real_failure_or_a_dead_attempt_still_arms(waiting):
+    """The resume is armed on the wait itself: an earlier failure no longer disarms it (finding 3)."""
+    root, owner, context, raw, record = waiting
+    history = listener._read_job_ledger(root)["attempt_history"]
+    unknown = {**history[0], "error": "clean_plate: meta_sam_http_500", resume.FIELD: None}
+    dead = {"attempt_number": 2, "status": "failed_retryable", "stage": resume.LEASE_EXPIRED_STAGE,
+            "error": resume.LEASE_EXPIRED_ERROR, "outcome": "unknown", "recovered_expired_lease": True}
+    ledger = listener._read_job_ledger(root)
+    ledger.update(attempt_history=[unknown, dead], attempt_count=2, last_error=resume.LEASE_EXPIRED_ERROR)
+    ledger.pop(resume.FIELD)
+    write_json(root / listener.JOB_LEDGER_FILENAME, ledger)
+    with pytest.raises(PipelineError, match="website_atlas_job_processing"):
+        listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
+                                         run_e2e=_orchestrated(root, owner, context))
+    armed = listener._read_job_ledger(root)
+    assert resume.armed(armed) and armed[resume.FIELD] == record and armed["attempt_count"] == 3
+    # And it resumes when the Atlas job ends.
+    _job(root, "ready")
+    calls = []
+    process_args = {"provider": "openai", "run_evaluation_prep": False,
+                    "run_e2e": lambda **kw: calls.append(kw) or {"status": "completed"}}
+    assert resume.reconcile_waiting_reconstructions(listener, storage_root=root.parents[4],
+                                                     process_args=process_args) == {"resumed": 1, "pending": 0}
+    assert len(calls) == 1 and listener._read_job_ledger(root)["status"] == "completed"
 
 
 def test_a_job_that_is_no_longer_processing_is_not_armed(waiting):
@@ -262,8 +273,7 @@ def test_a_job_that_is_no_longer_processing_is_not_armed(waiting):
     _job(root, "ready")
     wait = StageError("website_scene_preparation", "website_atlas_job_processing")
     assert resume.resume_record(listener, exc=wait, payload=raw, payload_digest=record["source_payload_sha256"],
-        producer_delivery_key=record["producer_delivery_key"], capture_root=root, attempt_count=1,
-        previous_history=[], recovered_expired_lease=False) is None
+        producer_delivery_key=record["producer_delivery_key"], capture_root=root) is None
 
 
 def test_the_existing_empty_queue_tick_also_replays_finished_atlas_waits(monkeypatch, tmp_path):

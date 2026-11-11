@@ -55,6 +55,8 @@ _PUBLICATION_FIELDS = frozenset({
 _PUBLICATION_VARIANTS = {
     "beta_policy_screening_publication.v1": ("screening", "diagnostic_policy_execution"),
     "beta_policy_screening_publication.v2": ("job_evaluation", "simulation_estimate"),
+    # v2 plus typed set-up flags (``beta_policy_screening_publication_flags``); the same tier and ceiling.
+    "beta_policy_screening_publication.v3": ("job_evaluation", "simulation_estimate"),
 }
 _CANDIDATE_FIELDS = frozenset({
     "candidate_id", "configuration_digest", "display_name", "status", "blockers", "episodes_planned",
@@ -151,20 +153,25 @@ def _epoch_stamp(value: Any) -> datetime:
 
 
 def _publication_contract(value: Mapping[str, Any]) -> dict[str, str]:
-    """Existing exact WebApp v1/v2 wire variants, with no tier conversion.
+    """Existing exact WebApp v1/v2/v3 wire variants, with no tier conversion.
 
     Mirrors betaPolicyScreeningContract's strict variants and count/budget
     invariants. Native runtime contracts are validated separately; accepting a
     job-facing simulation_estimate never changes their diagnostic ceiling.
     """
+    from .beta_policy_screening_publication_flags import (
+        CAMPAIGN_FLAG_FIELD, PUBLICATION_SCHEMA_V3, ROW_FLAG_FIELDS, publication_flags_valid,
+    )
     from .beta_policy_screening_result import CANDIDATE_STATUSES, SOURCE_FIELDS, campaign_status
 
     schema = value.get("schema_version")
     variant = _PUBLICATION_VARIANTS.get(schema) if isinstance(schema, str) else None
+    flagged = schema == PUBLICATION_SCHEMA_V3
     fields = _PUBLICATION_FIELDS | ({"recommendation_eligible"} if schema == "beta_policy_screening_publication.v1" else set())
-    # v2 may carry kept practice-run videos beside the candidates; they are checked below.
-    keys = set(value) - ({"review_videos"} if schema == "beta_policy_screening_publication.v2" else set())
-    if (variant is None or keys != fields
+    fields |= {CAMPAIGN_FLAG_FIELD} if flagged else set()
+    # v2 and v3 may carry kept practice-run videos beside the candidates; they are checked below.
+    keys = set(value) - ({"review_videos"} if schema != "beta_policy_screening_publication.v1" else set())
+    if (variant is None or keys != fields or (flagged and not publication_flags_valid(value))
             or (value.get("purpose"), value.get("claim_ceiling")) != variant
             or (schema.endswith(".v1") and value.get("recommendation_eligible") is not False)
             or value.get("execution_operator") != {"kind": "blueprint"}
@@ -198,7 +205,8 @@ def _publication_contract(value: Mapping[str, Any]) -> dict[str, str]:
     ids = set()
     for row in rows:
         row = _object(row)
-        if (set(row) != _CANDIDATE_FIELDS or not isinstance(row.get("candidate_id"), str)
+        if (set(row) - (set(ROW_FLAG_FIELDS) if flagged else set()) != _CANDIDATE_FIELDS
+                or not isinstance(row.get("candidate_id"), str)
                 or not _WIRE_ID.fullmatch(row["candidate_id"]) or row["candidate_id"] in ids
                 or not isinstance(row.get("configuration_digest"), str) or not _DIGEST.fullmatch(row["configuration_digest"])
                 or not isinstance(row.get("status"), str) or row["status"] not in CANDIDATE_STATUSES

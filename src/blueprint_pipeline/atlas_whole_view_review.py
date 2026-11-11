@@ -168,7 +168,7 @@ def review_whole_views(*, views, root: Path, task_context, policy, source_video_
             except ValueError as error:
                 if str(error) != "website_gemini_requires_reconciliation":
                     raise
-                result = None  # Its one resend was left unanswered too: review, never a third call.
+                result = None  # An uncertain earlier call never authorizes another.
             answer = (result or {}).get("answer")
             rows = answer.get("views") if isinstance(answer, dict) else None
             answers = {row.get("view_id"): row for row in (rows if isinstance(rows, list) else [])

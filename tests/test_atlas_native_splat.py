@@ -593,35 +593,6 @@ def test_retained_finalization_adopts_a_completed_review_and_never_buys_one(tmp_
     assert len(reviewer.asked) == len(reviewer.reserved) == 1
 
 
-@pytest.mark.parametrize("resend_answered", [True, False])
-def test_an_unanswered_review_is_resent_once_then_left_unresolved(tmp_path, reviewer, monkeypatch, resend_answered):
-    # Owner decision 2026-11-10 ("same rule for Gemini"): the first is counted as spent and sent once more.
-    from blueprint_pipeline import atlas_whole_view_review as review
-    views = native.merge_duplicate_views([*source_frames(), gap_view(keep(slice(20, None)))])
-    reviewer.admit = {"candidate-0002"}
-    kwargs = dict(views=views, root=tmp_path, task_context=CONTEXT, policy=splat_policy(),
-                  source_video_digest="video")
-    answer = review._ask
-
-    def no_answer(**_kwargs):
-        raise TimeoutError("the provider may have answered")
-    monkeypatch.setattr(review, "_ask", no_answer)
-    with pytest.raises(TimeoutError):
-        review.review_whole_views(**kwargs)
-    if resend_answered:
-        monkeypatch.setattr(review, "_ask", answer)
-        assert review.review_whole_views(**kwargs)["status"] == "reviewed"
-    else:
-        with pytest.raises(TimeoutError):
-            review.review_whole_views(**kwargs)
-        monkeypatch.setattr(review, "_ask", answer)
-        unresolved = review.review_whole_views(**kwargs)
-        assert unresolved["status"] == "unresolved" and not unresolved["verdicts"][0]["admit_whole"]
-    assert review.review_whole_views(**kwargs)["status"] == ("reviewed" if resend_answered else "unresolved")
-    reserved = [row["binding_digest"] for row in reviewer.reserved]
-    assert len(reserved) == len(set(reserved)) == 2 and len(reviewer.asked) == int(resend_answered)
-
-
 def test_a_view_without_an_overlapping_real_frame_is_never_admitted_or_reviewed(tmp_path, reviewer):
     from blueprint_pipeline import atlas_whole_view_review as review
     away = gap_view(keep(slice(20, None)), position=(0, 0, -50))
@@ -750,7 +721,7 @@ def test_a_review_recorded_before_composites_keeps_its_candidates_and_is_never_b
     assert not (whole / native.CANDIDATE_RECORD).exists()
 
 
-def test_an_interrupted_legacy_review_keeps_its_candidates_and_is_resent_once(tmp_path, reviewer, monkeypatch):
+def test_an_interrupted_legacy_review_keeps_its_candidates_and_reserves_no_new_call(tmp_path, reviewer, monkeypatch):
     """An earlier release's review intent survived a stop before ``whole_view_review.json`` was written."""
     from blueprint_pipeline import atlas_whole_view_review as review
     frames, calls = [*three_views(), gap_view(keep(slice(20, None)))], []
@@ -769,12 +740,10 @@ def test_an_interrupted_legacy_review_keeps_its_candidates_and_is_resent_once(tm
     assert not (whole / "whole_view_review.json").exists() and len(reviewer.reserved) == 1
     monkeypatch.setattr(review, "_ask", answer)
     done = refined(frames, tmp_path / "draft-refined", ["completed"], calls)
-    # The same binding finds the unanswered call: it is counted as spent and resent once
-    # (owner decision 2026-11-10, "same rule for Gemini"), under its own reservation.
-    assert len(reviewer.reserved) == 2 and len(reviewer.asked) == 1
-    assert reviewer.reserved[0]["binding_digest"] != reviewer.reserved[1]["binding_digest"]
+    # The same binding finds the uncertain call: nothing is admitted and nothing more is reserved.
+    assert len(reviewer.reserved) == 1 and len(reviewer.asked) == 0
     record = json.loads((whole / "whole_view_review.json").read_text())
-    assert record["status"] == "reviewed" and "candidate_basis" not in record
+    assert record["status"] == "unresolved" and "candidate_basis" not in record
     assert not (whole / native.CANDIDATE_RECORD).exists()
-    assert [call["output_root"] for call in calls] == [tmp_path / "draft-refined-whole/native"]
-    assert done["refined_splat"]["request_form"] == "documented_reviewed_whole"
+    assert [call["output_root"] for call in calls] == [tmp_path / "draft-refined-minimal/native"]
+    assert done["refined_splat"]["request_form"] == "documented_minimal"

@@ -33,10 +33,14 @@ ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/scene-object-discoverie
 TasksMax=512
 LimitNOFILE=16384
 # Host memory (8.3 GB, no swap): it reads a whole splat and has not run on the
-# host since 10-27, so MemoryMax stays at main's, with no throttle, until it
-# is. Batch job, retried: +200, so it goes before the always-on services, paid
+# host since 10-27, so its peak is not measured.
+# It runs in system-blueprintbatch.slice, which bounds the batch units
+# together, and its own cap is the slice's (8G was above the host and never
+# acted).
+# Batch job, retried: +200, so it goes before the always-on services, paid
 # work and the money-safety units.
-MemoryMax=8G
+Slice=system-blueprintbatch.slice
+MemoryMax=5.5G
 OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=4h

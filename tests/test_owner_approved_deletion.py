@@ -14,6 +14,7 @@ import functools
 import json
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -305,6 +306,20 @@ def _authority_ended_scene(tmp_path: Path, host: Host) -> Path:
     return target
 
 
+def _approval_around(now: float) -> dict:
+    """An approval window that holds the clock a test plans at.
+
+    The scene builder stamps a scene's ending from the real clock, and these tests plan up to eight days after it.
+    With the default fixed expiry (2026-11-18) they began to fail on 2026-11-10, eight days before it, on every
+    branch. The window is the longest the tool accepts, starting at the test's own clock.
+    """
+
+    def stamp(epoch: float) -> str:
+        return datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return {"approved_at": stamp(now), "expires_at": stamp(int(now) + oad.MAX_APPROVAL_SECONDS)}
+
+
 def _scene_entry(scene: Path) -> dict:
     captures = []
     for capture in sorted((scene / "captures").iterdir()):
@@ -316,8 +331,8 @@ def _scene_entry(scene: Path) -> dict:
 
 def test_an_authority_ended_scene_is_deleted_only_after_the_redelivery_window(tmp_path, host):
     scene = _authority_ended_scene(tmp_path, host)
-    manifest = host.manifest([_scene_entry(scene)])
     now = time.time()
+    manifest = host.manifest([_scene_entry(scene)], **_approval_around(now))
 
     early = host.plan(manifest, at=now + DAY)
     assert early["entries"][0]["status"] == "skipped"
@@ -344,11 +359,12 @@ def test_a_scene_whose_capture_did_not_end_by_authority_is_kept(tmp_path, host):
         "terminal_payload_sha256": "a" * 64}]}
     assert ledger["status"] == "completed"
 
-    plan = host.plan(host.manifest([entry]), at=time.time() + 8 * DAY)
+    now = time.time()
+    plan = host.plan(host.manifest([entry], **_approval_around(now)), at=now + 8 * DAY)
 
     assert plan["entries"][0]["status"] == "skipped"
     assert "capture_authority_not_ended" in plan["entries"][0]["reasons"]
-    assert host.apply(host.manifest([entry]), at=time.time() + 8 * DAY)["outcome_counts"] == {
+    assert host.apply(host.manifest([entry], **_approval_around(now)), at=now + 8 * DAY)["outcome_counts"] == {
         "not_eligible_in_plan": 1}
     assert target.is_dir()
 
@@ -357,7 +373,8 @@ def test_a_queued_authority_ended_scene_is_kept(tmp_path, host):
     scene = _authority_ended_scene(tmp_path, host)
     (host.control / "queue" / "processing" / "row.json").write_text(json.dumps({"scene_id": scene.name}))
 
-    plan = host.plan(host.manifest([_scene_entry(scene)]), at=time.time() + 8 * DAY)
+    now = time.time()
+    plan = host.plan(host.manifest([_scene_entry(scene)], **_approval_around(now)), at=now + 8 * DAY)
 
     assert "queue_referenced" in plan["entries"][0]["reasons"]
 

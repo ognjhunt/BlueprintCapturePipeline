@@ -89,7 +89,7 @@ def __synthesize_pipeline_handoff_body(_listener, /, handoff, *, capture_root):
     return destination
 
 
-def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None, expected_target_choice_correction=None, expected_robot_fit_recheck=None, expected_held_replay=None, expected_timed_retry=None):
+def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None, expected_target_choice_correction=None, expected_robot_fit_recheck=None, expected_held_replay=None, expected_revision=None):
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
@@ -242,9 +242,6 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     if selected_staged is None and not capture_present and (skipped := retired_terminal()) is not None:
         return skipped
     owner = lease_owner or _listener._lease_owner()
-    # A website browser delivery keeps its exact bytes from the claim on, so the drain can retry it on
-    # a timer once the broker stops (website_preparation_timed_retry); a killed run never reaches a failure path.
-    from .website_preparation_timed_retry import retained_record as timed_record
     try:
         claim_status, ledger = _listener._claim_job_lease(
             capture_root, scene_id=handoff.scene_id, capture_id=handoff.capture_id,
@@ -265,16 +262,15 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             **({'expected_robot_fit_recheck': expected_robot_fit_recheck}
                if expected_robot_fit_recheck is not None else {}),
             **({'expected_held_replay': expected_held_replay} if expected_held_replay is not None else {}),
-            **({'expected_timed_retry': expected_timed_retry} if expected_timed_retry is not None else {}),
-            timed_retry_record=timed_record(_listener, payload=payload, payload_digest=digest,
-                                            producer_delivery_key=producer_delivery_key))
+            # The host's own retry claims only the revision it scheduled (website_preparation_retry).
+            **({'expected_revision': expected_revision} if expected_revision is not None else {}))
     except _listener.HandoffCaptureRetired:
         return retired_terminal() or {'schema_version': 'v1', 'status': 'capture_retired_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'blockers': ['handoff_capture_retired_while_claiming']}
     if claim_status == 'prior_delivery_effects_unresolved':
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'blockers': ['selected_handoff_existing_state_requires_reconciliation']}
     if claim_status in {'assessment_resume_changed', 'reconstruction_resume_changed', 'target_choice_correction_changed',
-                        'held_handoff_replay_changed', 'timed_retry_changed'}:
+                        'held_handoff_replay_changed', 'revision_changed'}:
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                 'blockers': ['website_' + claim_status]}
@@ -309,6 +305,10 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         recovered_record = {'attempt_number': attempt_count, 'status': 'completed_from_output_commit', 'stage': 'output_commit_recovery', 'started_at': attempt_started_at, 'completed_at': recovered_at, 'result_sha256': recovered_commit.get('result_sha256')}
         completed_ledger = _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'completed', 'updated_at': recovered_at, 'completed_at': recovered_at, 'output_commit_status': 'committed', 'output_commit_path': _listener.JOB_OUTPUT_COMMIT_FILENAME, 'attempt_history': [*previous_history, recovered_record]})
         return {'schema_version': 'v1', 'status': 'skipped_committed_output_recovered', 'queue_disposition': 'terminal_success', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'output_commit': recovered_commit, 'job_ledger': completed_ledger}
+    # The exact bytes stay beside the ledger, so the host can run this attempt again without a delivery.
+    from .website_preparation_retry import retain_payload
+    retain_payload(_listener, capture_root=capture_root, payload=payload, payload_digest=digest,
+                   producer_delivery_key=producer_delivery_key)
     control_plane_staging: dict[str, Any] | None = None
     failure_stage = 'stage_handoff_capture'
     try:
@@ -382,15 +382,18 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             if isinstance(expected_held_replay.get('record'), dict):
                 kept_recheck[HELD_FIELD] = expected_held_replay['record']
         reconstruction = waiting_record(_listener, exc=exc, payload=payload, payload_digest=digest,
-            producer_delivery_key=producer_delivery_key, capture_root=capture_root, attempt_count=attempt_count,
-            previous_history=previous_history, recovered_expired_lease=ledger.get('recovered_expired_lease'),
-            correction=bool(correction))
+            producer_delivery_key=producer_delivery_key, capture_root=capture_root)
         if reconstruction is not None:
             failure_record[RECONSTRUCTION_FIELD] = reconstruction
+        # Any other retryable failure is run again by the host's own tick, with growing gaps.
+        from .website_preparation_retry import FIELD as RETRY_FIELD, failure_retry
+        retry = failure_retry(exc=exc, capture_root=capture_root, payload_digest=digest,
+            producer_delivery_key=producer_delivery_key, history=[*previous_history, failure_record],
+            failed_at=failed_at, owned_elsewhere=bool(resume_record or reconstruction or correction or kept_recheck))
         # Keep the exact bytes while a guessed object can still be corrected.
         replay = replay_record(_listener, payload=payload, payload_digest=digest,
             producer_delivery_key=producer_delivery_key, capture_root=capture_root)
-        _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'failed_retryable', 'updated_at': failed_at, 'last_failed_at': failed_at, 'last_error_type': type(exc).__name__, 'last_error': str(exc), 'attempt_history': [*previous_history, failure_record], **({'assessment_resume': resume_record} if resume_record else {}), **({RECONSTRUCTION_FIELD: reconstruction} if reconstruction else {}), **({REPLAY_FIELD: replay} if replay else {}), **kept_recheck})
+        _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'failed_retryable', 'updated_at': failed_at, 'last_failed_at': failed_at, 'last_error_type': type(exc).__name__, 'last_error': str(exc), 'attempt_history': [*previous_history, failure_record], **({'assessment_resume': resume_record} if resume_record else {}), **({RECONSTRUCTION_FIELD: reconstruction} if reconstruction else {}), **({REPLAY_FIELD: replay} if replay else {}), **({RETRY_FIELD: retry} if retry else {}), **kept_recheck})
         raise
     completed_at = _listener.utc_now_iso()
     control_plane_staging_status = str(control_plane_staging.get('status') or '') or None if control_plane_staging else None
@@ -446,10 +449,11 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
     # This existing scheduled drain is also the durable delivery retry owner.
     # It reads committed ledgers; no provider processing is reopened by delivery.
     from .website_preparation_status import reconcile_preparation_wakeups
+    from .website_preparation_recovery import note_recovery
     try:
         reconcile_preparation_wakeups(storage_root, limit=1, listener=_listener)
-    except Exception:
-        _listener.logger.debug("pubsub_handoff.preparation_delivery_retry_unavailable")
+    except Exception as error:
+        note_recovery(_listener, storage_root, key='pass:preparation_wakeups', recovery='preparation_wakeups', error=error)
     from .website_assessment_resume import reconcile_waiting_assessments
     from .website_reconstruction_resume import reconcile_waiting_reconstructions
     process_args = {
@@ -460,28 +464,29 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
     reconcile_waiting_assessments(_listener, storage_root=storage_root, limit=1, process_args=process_args)
     try:
         reconcile_waiting_reconstructions(_listener, storage_root=storage_root, limit=1, process_args=process_args)
-    except Exception:
-        _listener.logger.debug("pubsub_handoff.reconstruction_resume_unavailable")
+    except Exception as error:
+        note_recovery(_listener, storage_root, key='pass:reconstruction_resume', recovery='reconstruction_resume', error=error)
     from .website_task_target_choice import reconcile_target_choices
     try:
         reconcile_target_choices(_listener, storage_root=storage_root, limit=1, process_args=process_args)
-    except Exception:
-        _listener.logger.debug("pubsub_handoff.target_choice_correction_unavailable")
+    except Exception as error:
+        note_recovery(_listener, storage_root, key='pass:target_choice_correction', recovery='target_choice_correction', error=error)
     from .website_robot_fit_hold import reconcile_robot_fit_holds
     try:
         reconcile_robot_fit_holds(_listener, storage_root=storage_root, limit=1, process_args=process_args)
-    except Exception:
-        _listener.logger.debug("pubsub_handoff.robot_fit_recheck_unavailable")
+    except Exception as error:
+        note_recovery(_listener, storage_root, key='pass:robot_fit_recheck', recovery='robot_fit_recheck', error=error)
     from .website_held_handoff_replay import reconcile_held_handoffs
     try:
         reconcile_held_handoffs(_listener, storage_root=storage_root, limit=1, process_args=process_args)
-    except Exception:
-        _listener.logger.debug("pubsub_handoff.held_handoff_replay_unavailable")
-    from .website_preparation_timed_retry_drain import reconcile_timed_retries
+    except Exception as error:
+        note_recovery(_listener, storage_root, key='pass:held_handoff_replay', recovery='held_handoff_replay', error=error)
+    # The host owns the retry of a failed preparation: dead attempts, then one due retry.
+    from .website_preparation_retry import reconcile_preparation_retries, spool_unclaimed
     try:
-        reconcile_timed_retries(_listener, storage_root=storage_root, limit=1, process_args=process_args)
-    except Exception:
-        _listener.logger.debug("pubsub_handoff.timed_retry_unavailable")
+        reconcile_preparation_retries(_listener, storage_root=storage_root, limit=1, process_args=process_args)
+    except Exception as error:
+        note_recovery(_listener, storage_root, key='pass:preparation_retry', recovery='preparation_retry', error=error)
     from google.cloud import pubsub_v1
     from .pubsub_retry_deferrals import clear_deferral, record_deferral, wake_older_release_deferrals
     subscriber = pubsub_v1.SubscriberClient()
@@ -535,6 +540,7 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
             _listener.logger.exception('pubsub_handoff.processing_failed', extra={'message_id': message.message_id, 'queue_disposition': 'retryable_deferred', 'retry_defer_seconds': _listener.RETRY_DEFER_SECONDS, 'delivery_attempt': getattr(received, 'delivery_attempt', None), 'max_delivery_attempts': max_delivery_attempts})
             heartbeat.defer_retry()
             record_deferral(storage_root=storage_root, subscription=subscription_resource, received=received, payload_digest=digest, lease_seconds=_listener.RETRY_DEFER_SECONDS)
+            spool_unclaimed(_listener, storage_root=storage_root, payload=message.data, payload_digest=digest, result=None)
             continue
         if result.get('queue_disposition') == 'retryable' or result.get('status') in _listener._JOB_RETRYABLE_STATUSES:
             delivery_attempt = getattr(received, 'delivery_attempt', None)
@@ -543,6 +549,8 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
             _listener.logger.warning('pubsub_handoff.retryable_result', extra={'message_id': message.message_id, 'status': result.get('status'), 'blockers': result.get('blockers') or [], 'delivery_attempt': getattr(received, 'delivery_attempt', None), 'max_delivery_attempts': max_delivery_attempts, 'dead_letter_policy_owns_exhausted_delivery': True, 'retry_defer_seconds': _listener.RETRY_DEFER_SECONDS})
             heartbeat.defer_retry()
             record_deferral(storage_root=storage_root, subscription=subscription_resource, received=received, payload_digest=digest, lease_seconds=_listener.RETRY_DEFER_SECONDS)
+            # Refused before any claim: no ledger keeps it, so the host keeps its bytes (website_preparation_retry).
+            spool_unclaimed(_listener, storage_root=storage_root, payload=message.data, payload_digest=digest, result=result)
             continue
         acknowledge(received.ack_id)
         acknowledged += 1

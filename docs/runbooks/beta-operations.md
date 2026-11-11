@@ -21,6 +21,8 @@ Before you act:
 | Section | Use it when |
 |---|---|
 | [1. A job stops moving](#1-a-job-stops-moving) | A stall page arrives, or a job shows the same state for hours. |
+| [1a. A unit failed](#1a-a-unit-failed) | A `unit_failed:<unit>:…` post arrives, or `failed_units` names a unit. |
+| [1b. The batch memory slice](#1b-the-batch-memory-slice) | A batch unit was killed for memory, or runs slowly near 5G. |
 | [2. Vast credit runs out](#2-vast-credit-runs-out) | `provider_credit_insufficient` pages, or a launch is refused for credit. |
 | [2a. Provider funding](#2a-provider-funding) | An OpenAI, World Labs or Google Cloud spend page arrives (`*_spend_*_high`). |
 | [2b. Account monthly limit](#2b-account-monthly-limit) | An `account_spend_*` alert arrives, or a paid admission is refused with `account_monthly_spend_*`. |
@@ -75,8 +77,123 @@ What frequent states mean:
 |---|---|---|
 | `running` / `previous_release`, blocker `previous_release_attempt_not_terminal` | A deploy moved the release. The old attempt must end first. Then scene progression starts a successor on the new release (`_release_successor` in `src/blueprint_pipeline/task_evaluation_scene_progression.py`). | Wait. See section 5. |
 | `blocked` / `configuration_capacity` | A $0 refusal before allocation waits for credit or disk. | Section 2 or 3. |
+| `blocked` / `configuration_capacity`, blocker `scene_configuration_recovery_backoff:due_in_hours:<n>` | The launch's own records prove it rented nothing and made no paid API call: no GPU offer, an object-storage staging error, a Vast inventory query error, a watchdog that would not arm, or a paid admission refused for a stale account spend report. The scene waits, then makes a $0 successor by itself. `state.configuration_recovery_wait.next_check_epoch` says when. | Wait. Section 2 has the classes, the proof and the bound. |
+| `blocked` / `scene_configuration_failed`, blocker `scene_configuration_launch_result_missing_spend_unproven` | The launch ended without an allocator result and its receipt cannot prove that nothing was spent. It is not retried. | Read the launch receipt and the allocator logs in the launch run directory. Settle by hand only with a provider bill. |
+| `blocked` / `scene_configuration_failed`, blocker `scene_configuration_launch_dispatcher_lost` | The dispatcher wrote no receipt, and its own allocator timeout ended 15 min ago or more. It died. | Read the dispatcher's journal and the provider inventory (`door status`). |
+| `blocked` / `preparation`, blocker `preallocation_capacity_recovery_cap_exhausted` | Six $0 recoveries were spent. The job has ended (`capacity_recovery_cap_exhausted`). | Find out why the market, storage or guard kept refusing. |
+| `blocked` / `preparation`, blocker `retry_cap_exhausted` | A rented machine was lost and the intent had no retry left: one retry for an intent issued since 2026-11-10, none before. The job has ended. | Read the dead machine's launch receipt. |
 | blocker `scene_intake_spend_cap_exhausted` or `scene_intake_attempt_cap_exhausted` | The scene's own budget is used up. This is a money hold, so it does not page. | Owner decision. Preview, then apply, `door extend-scene-execution-budget` ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)). |
 | blocker `scene_intake_authority_expired` | The execution window expired. | Owner decision. Plan, then apply, `door extend-scene-execution-window`. |
+
+### A website preparation failed
+
+The handoff listener owns the retry of a website preparation; it no longer
+depends on Pub/Sub's five deliveries
+(`src/blueprint_pipeline/website_preparation_retry.py`). Each listener tick,
+before it pulls messages:
+
+- An attempt whose process died holding its lease (an out-of-memory kill) is
+  recorded as `failed_retryable` once its 15-minute lease has expired and its
+  process is gone from this host. Its history keeps a `lease_expired` row with
+  `outcome: unknown`. It runs again at most 10 minutes later. A live lease, or
+  a lease taken on another host, is never touched.
+- A preparation that failed for a retryable reason runs again from the exact
+  message bytes kept beside its ledger (`.pipeline_preparation_retry_payload.json`).
+  The ledger's `preparation_retry` field holds `kind`, `retry_count` and
+  `next_attempt_at`, on the one retry policy (`job_retry_policy.py`). An
+  outage (429, 5xx, timeout, disk) or a money refusal is retried every 2
+  minutes, growing to every hour, until the job's grant ends it. Any other
+  failure gets six retries (15 min, 1 h, 3 h, 6 h, 12 h, 24 h) and is then left
+  as it is; the grant-expiry ending and the WebApp's window sweep end it.
+  Each paid call keeps its own intent and receipt, so a re-run buys nothing that
+  was already bought.
+- A delivery refused before its claim (the WebApp's rights check, a disk or
+  staging refusal) has no ledger yet. Its bytes wait in
+  `/var/lib/blueprint/pubsub-handoffs/.website_preparation_unclaimed/` and run
+  again on the same schedule until a run claims the capture.
+
+Never retried by the host: a privacy or rights refusal (`hard_stop_kind`), an
+authority ending (terminal), and
+an attempt that another drain replays (the Atlas wait, the assessment wait, a
+target-choice correction, a robot fit recheck, a held replay).
+
+A recovery that keeps failing logs `pubsub_handoff.preparation_recovery_failed`
+at warning, with the capture id. Its count is in
+`/var/lib/blueprint/pubsub-handoffs/.website_preparation_recovery_failures.json`
+(`consecutive_failures` per capture). Read it with
+`door cat /var/lib/blueprint/pubsub-handoffs/.website_preparation_recovery_failures.json`.
+The stall alarm does not read this file yet.
+
+`python3 scripts/operator_door.py selected-handoff --resume-preparation` is now
+a manual override, not the normal path. Use it to run a job at once instead of
+waiting for its next retry, or for a job that failed before this release and
+kept no message bytes (the tick counts it as `website_preparation_retry_payload_unavailable`).
+
+## 1a. A unit failed
+
+Thirteen units start `blueprint-unit-failure@<unit>.service` when they fail
+(`OnFailure=`): the spend guard, the intake, the capacity controller and the
+units that move a website job (the handoff listener, Atlas preview and provider
+poll, scene progression, launch preparation, activation and dispatcher, team
+scene packet, the rigid probe runner, screening). The list is
+`UNIT_FAILURE_NOTIFIED_UNITS` in `tests/test_deploy_systemd_contract.py`.
+
+The notifier (`src/blueprint_pipeline/unit_failure_notifier.py`) does two things:
+
+- It rewrites one record,
+  `/var/lib/blueprint/pipeline-control-plane/unit-failures/<unit>.json`:
+  `result`, `exit_status`, `failure_count`, first and last failure, last post.
+  `door status` and the capacity summary do not show this record yet; read it
+  with `door cat`. `door status` still lists the unit under `failed_units`.
+- It posts on the capacity alert route, `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`,
+  with the capacity controller's own posting code. The text reads
+  `systemd unit_failed:<unit>:<result>`. A unit that fails on every run posts
+  once, then once an hour.
+
+| `result` | Meaning | Do this |
+|---|---|---|
+| `timeout` | The run passed its `TimeoutStartSec` and systemd stopped it. A timer starts the next run. | Read the journal for the step it hung in. |
+| `oom-kill` | The kernel killed it for memory, in its own cgroup or in the batch slice (1b). | `door status`, `memory.oom_reports`. |
+| `exit-code` | The worker exited non-zero. For the spend guard, status 2 means that paid admission is closed or a reap failed. | Read the journal. For the guard read `gpu_spend_guard/latest.json`. |
+| `signal`, `core-dump` | The worker was killed or crashed. | Read the journal. |
+| `null` | systemd did not pass the result (older than 251). | Read the journal. |
+
+```bash
+door cat /var/lib/blueprint/pipeline-control-plane/unit-failures/<unit>.json
+door journal <unit> -n 200 --since -1h
+```
+
+Two units on the job's path have no notifier on purpose, because a non-zero
+exit is an ordinary result there: the launch reconciler (exit 2 while a
+teardown is still being proven) and the billing reconciler (exit 2 when a
+provider read is blocked; the spend guard then reports it).
+
+## 1b. The batch memory slice
+
+The 23 units that decode video, fuse or load scenes, compile episodes or stage
+GPU bundles run in `system-blueprintbatch.slice`
+(`deploy/systemd/system-blueprintbatch.slice`; the list is `BATCH_SLICE_UNITS`
+in `tests/test_deploy_systemd_contract.py`). The slice bounds them together:
+`MemoryHigh=5G`, `MemoryMax=5.5G` (binary units; 5.5G is 5.91 GB). The host has
+8.33 GB and 6.19 GB of it free with nothing heavy running (2026-11-10).
+
+- Above 5G the kernel reclaims the slice's page cache and slows its
+  allocations. Above 5.5G it kills inside the slice, by each unit's
+  `OOMScoreAdjust`. The killed unit fails with `oom-kill` and its timer or path
+  unit starts it again.
+- The intake, the operator door, the spend guard, the billing reconciler, the
+  capacity controller and the other money-safety and housekeeping units are
+  outside the slice.
+- `door status`, `memory.system_units`, lists the slice as one row with the
+  batch units' total and peak. It no longer lists the batch units one by one;
+  each unit's journal still records its peak when a run ends.
+- A unit joins the slice the next time it starts with an empty cgroup. A run in
+  flight at the deploy, and a unit whose GPU watchdog is still alive, keep the
+  cgroup they have until they end.
+
+A stage that needs more than 5.5G by itself now fails here every time. That is
+a capacity decision for the owner (a larger host), not a setting to raise:
+5.5G plus the always-on units is what this host has.
 
 ## 2. Vast credit runs out
 
@@ -134,11 +251,49 @@ Recover:
    `src/blueprint_pipeline/task_evaluation_scene_recovery.py`). After that, the
    blocker is `preallocation_capacity_recovery_cap_exhausted`.
 
-This recovery covers only a refusal before allocation. A run that started and
-then lost its machine is a different case. On a website scene
-(`max_retries: 0`) it stops at `scene_configuration_failed` or
-`retry_cap_exhausted` (`_recover_configuration_capacity` in
-`src/blueprint_pipeline/task_evaluation_scene_progression.py`).
+The same recovery, with the same bound of 6, also takes every launch whose own
+records prove that it spent nothing (`src/blueprint_pipeline/task_evaluation_scene_launch_recovery.py`).
+It never needs a deploy:
+
+| Class | Blocker (up to `:`) | Proof the launch's records must give |
+|---|---|---|
+| No GPU offer after the in-run search | `no_vast_offer_*`, `vast_native_offer_search_coverage_incomplete` | The allocator result shows no instance, no provider mutation, no API pretraining, no CPU prestage, no output and nothing still spending, and its only other blockers are the consequences of producing nothing. The teardown manifest in the launch receipt shows `completed` with no instance and no action, and the adapter result shows no create call. |
+| Object-storage staging error | `object_store_staging_blocked`, `object_store_upload_or_presign_failed`, `fresh_output_key_absence_unverified`, `signed_output_sentinel_*`, `durable_provider_bundle_binding_readback_failed`, `scene_configuration_provider_bundle_durable_publication_failed` | The same allocator-result proof, the teardown `not_required_provider_adapter_never_invoked`, and no `object_store_provider_zero_not_proven` blocker. |
+| Watchdog not armed | `independent_watchdog_not_armed` | As for staging. |
+| Vast inventory query error | `vast_prelaunch_inventory_query_failed` | As for staging, with the teardown `not_required_prelaunch_inventory_guard_blocked`. |
+| No allocator result | any | The sealed launch receipt shows the allocator was never invoked, or it stopped before its paid admission (`absent_before_paid_admission`), or its admission was refused only for `account_monthly_spend_report_stale`, `account_monthly_spend_report_missing_or_invalid` or `account_monthly_spend_limit_unavailable` before the Vast lane ran. A receipt blocker that the outcome registry maps to privacy, rights, money, site action or capability is never retried. |
+
+Only a $0 preparation attempt (a Website scene) is recovered this way. A paid
+source attempt keeps its blocker. Before each successor the scene waits:
+15 min, 1 h, 3 h, 6 h, 12 h, then 24 h after the failure, the shared schedule
+for a refusal nobody has classified (`src/blueprint_pipeline/job_retry_policy.py`;
+6 recoveries span about 46 h). The credit, disk and authentication classes keep
+their own measured gates. While it waits, the blocker names the whole hours
+left (`scene_configuration_recovery_backoff:due_in_hours:<n>`), so it changes
+at least hourly and the stall alarm does not page a scheduled wait; a wait
+still showing `due_in_hours:0` after 90 min does page. It also needs the same global provider-zero and
+ownership reconciliation as every other recovery. A retired launch that proved
+no allocation keeps only the spend its records cannot rule out: at most the
+API allowance before the GPU, and $0 for a launch that never reached a provider
+(`budget_retained_hold` in
+`src/blueprint_pipeline/task_evaluation_terminal_scene_attempt_settlement.py`).
+The same failure without that proof stays at `scene_configuration_failed`.
+
+A run that started and then lost its machine is executed, paid work. It
+spends the intent's signed `max_retries`, never the $0 allowance. A Website
+grant issued since 2026-11-10 names one retry
+(`scene_configuration_max_retries: 1` in WebApp
+`server/utils/websiteSceneSponsorship.ts`), so its intent carries
+`max_retries: 1` and gets exactly one successor. The successor is reserved
+inside the same dollar cap and `max_paid_attempts`. An intent issued before
+then carries `max_retries: 0`, and a lost machine ends it at
+`retry_cap_exhausted`.
+
+`max_paid_attempts` counts a Website scene's scene-configuration rows reserved
+since 2026-11-10 (`counts_as_paid_attempt` on the row). A row whose settlement
+proves it spent nothing is not counted. Rows reserved before then are not
+counted, so a job in flight is never refused for them. A reservation past the
+limit is refused with `scene_intake_attempt_cap_exhausted`, a money hold.
 
 ## 2a. Provider funding
 

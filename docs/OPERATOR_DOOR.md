@@ -765,54 +765,90 @@ python3 scripts/operator_door.py confirm-owner-success-contract <intent_id> --ow
 ### Owner confirmation of a website job's success thresholds
 
 A website job is built with Blueprint's fixed development controls as its
-success thresholds, marked `proposal_only` (`website_native_submission`), so
-the team packet refuses it with
-`team_scene_owner_contract_invalid:configured_owner_success_contract_authority_missing`
-and screening refuses an unconfirmed owner contract. Once the job is published,
-the owner can accept those exact thresholds: run the preview, show the owner
-the `preview.configured_success_criteria` it returns, and apply with its
-`apply_ack` and the owner's verbatim approval as `--approval-evidence`. The
-confirmation changes no threshold.
+success thresholds, marked `proposal_only` (`website_native_submission`).
+**The job does not wait for this confirmation.** The team packet worker
+compiles the job at once on those thresholds and it goes on to the robot-free
+probe and screening (owner direction 2026-11-07: submitting is the
+confirmation, and inferences are disclosed as assumptions). What was assumed is
+recorded (`website_owner_success_assumption`):
+
+- the team-packet status and the half's `team_scene_inputs.v1.json` carry
+  `owner_success_assumption` with `status`
+  `blueprint_standard_thresholds_assumed_not_confirmed_by_site`;
+- the sealed success contract carries the same criteria a confirmed one would,
+  and names Blueprint where a confirmed one names the site: `author_id`
+  `blueprint:website_standard_success_thresholds.v1`, `confirmed_by_team_id`
+  `blueprint:assumed_not_confirmed_by_site`. Every result is bound to the
+  digest of the contract it was scored under, so a result scored under the
+  assumption stays labelled so.
+
+The owner can still accept those exact thresholds at any time: run the
+preview, show the owner the `preview.configured_success_criteria` it returns,
+and apply with its `apply_ack` and the owner's verbatim approval as
+`--approval-evidence`. The confirmation changes no threshold.
 
 The team packet worker reads the record from the request's own intent
 (`team_scene_packet_worker.owner_success_confirmation_scope`: the intent must be
 the request's, by id and digest, and its progression must have queued that
 exact request). It recomputes the binding (revision digest, success document
 reference, thresholds digest, proposal digest, owner) from what it compiled,
-and only an exact match makes the owner contract `task_owner`/`confirmed` with
-author `owner-success-confirmation:<confirmation_digest>`; anything else refuses
-as before. A request blocked on an owner-contract refusal returns to `pending/`
-once per new confirmation of its intent, on the worker's own pass or the
-screening timer's (`requeue_transient_blocked`); to run it now,
-`python3 scripts/operator_door.py unit start blueprint-team-scene-packet.service`.
-Screening then reads the contract the team packet sealed.
+and only an exact match, found when the revision's half is first compiled,
+makes the owner contract `task_owner`/`confirmed` with author
+`owner-success-confirmation:<confirmation_digest>` and no
+`owner_success_assumption`.
+
+A confirmation of exactly the assumed thresholds that arrives after that
+compile is only recorded. On the worker's own pass or the screening timer's
+(`requeue_transient_blocked`) the request's status gains, inside
+`owner_success_assumption`, `site_answer` `confirmed` and `confirmed_later`
+(`confirmation_digest`, `confirmed_at`, `issuer_channel`): scored on
+Blueprint's standard thresholds, assumed at the time; the site confirmed the
+same thresholds later. Nothing is requeued or compiled again, so the contract
+digest, the robot-free probe and the screening campaign stand and nothing is
+bought twice. If the half is compiled again for another reason (a new stance
+search, moved furniture), it keeps the assumed contract and its record carries
+the same `confirmed_later`.
 
 The owner can also confirm on the website job page, with no operator
 (`website_owner_success_confirmation`). On the screening timer's pass,
-`requeue_transient_blocked` sends each request blocked only on that refusal
-(at most four a pass, rotating) to the WebApp over the signed Pipeline sync
-transport: `POST /api/internal/pipeline/task-evaluation-scene-intents/<intent>/owner-success-proposal`
+`requeue_transient_blocked` sends each completed request whose half assumed
+its thresholds (at most four a pass, rotating) to the WebApp over the signed
+Pipeline sync transport: `POST /api/internal/pipeline/task-evaluation-scene-intents/<intent>/owner-success-proposal`
 carries the published thresholds, their revision and a `proposal_digest`
 sealing the whole binding. The WebApp shows them to the job's owner link only,
 in plain words, with Confirm and "this is wrong" (a typed reason, no numbers),
 and answers with the owner's decision on exactly that proposal. A confirmation
 is written by the door's own writer and validators, with `issuer_channel`
-`website`, and the same pass returns the request to `pending/`. A "wrong"
-answer writes nothing under the intent and leaves the request blocked; its
-status keeps the reason under `website_owner_success`, as it keeps `pending`
-or a `failed` exchange. Each request is asked again only at its kept
+`website`, and the same pass records it in the status as above. A "wrong"
+answer writes nothing under the intent, changes no number and stops nothing:
+the half and its screening go on, and the status says the site disputed the
+thresholds (`owner_success_assumption.site_answer` `this_is_wrong`, with the
+reason under `this_is_wrong`; without `site_answer` the site has not
+answered). It also keeps the exchange under `website_owner_success`, as it
+keeps `pending` or a `failed` exchange. A corrected threshold reaches the Pipeline only as a
+republished job (a new scene revision, so a new request, half and screening
+source); the earlier revision's results stay in their own campaigns. Each
+request is asked again only at its kept
 `next_check_at`, or at once when its intent's progression changes and builds a
 new proposal; the wait doubles while the answer repeats, from 2 min (pending,
 up to 1 h), 30 min (held, up to 1 day), 15 min (a WebApp 4xx, up to 1 day) or
 2 min (a transport failure, up to 6 h). Any error in one job's exchange is that
 job's `failed` exchange and never stops the screening pass. A republished job
 has a new proposal digest and needs a new decision. The door path above is
-unchanged. The WebApp alerts ops (Slack, then ops email) when an owner holds a
-job's thresholds.
+unchanged. The WebApp alerts ops (Slack, then ops email) when an owner says a
+job's thresholds are wrong.
+
+A request a release before 2026-11-10 left blocked on
+`team_scene_owner_contract_invalid:configured_owner_success_contract_authority_missing`
+is returned to `pending/` by the first pass of a release with this behaviour
+(reason `new_release`) and compiled on assumed thresholds. An owner contract
+that still cannot be sealed (a threshold missing from the success document,
+say) is a deterministic refusal like any other: the website job is told it is
+held (`team_scene_packet_blocked`).
 
 Every team-packet status names the release that wrote it (`release_commit`,
-the commit of the release checkout the worker or timer runs from). Any other
-deterministic refusal (neither transient nor owner-contract) returns to
+the commit of the release checkout the worker or timer runs from). Every
+deterministic refusal (not a transient one) returns to
 `pending/` once per newly deployed release, on the same two passes, so a deploy
 that fixes its cause re-drives it with no operator step; a status without
 `release_commit` counts as an older release. The status keeps the releases

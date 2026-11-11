@@ -302,8 +302,9 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     owner_targets = owner_success_criteria(context)
     template["owner_success_criteria"] = owner_targets
     # Fixed development controls do not translate or confirm the operator's bar.
-    # The native adapter retains this authority; owner-scoring admission refuses
-    # proposal_only until an actual translated success contract is confirmed.
+    # The native adapter retains this authority; the website team packet scores
+    # on these thresholds as Blueprint's stated assumption until the site
+    # confirms them (website_owner_success_assumption).
     template["owner_success_contract_authority"] = {
         "confirmation_status": "proposal_only",
         "accepted_by": intent["request"]["owner"]["user_id"],

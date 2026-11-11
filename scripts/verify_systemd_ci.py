@@ -44,6 +44,10 @@ def stage_root(unit_dir: Path, root: Path, python_executable: Path) -> list[Path
         target = destination / unit.name
         shutil.copy2(unit, target)
         staged.append(target)
+    # A slice runs nothing, so it has no security score; it is staged so the
+    # services that name it (Slice=) load its real limits, and verify_root checks it.
+    for unit in sorted(unit_dir.glob("*.slice")):
+        shutil.copy2(unit, destination / unit.name)
     for target_path, source in executables.items():
         target = root / target_path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -51,8 +55,40 @@ def stage_root(unit_dir: Path, root: Path, python_executable: Path) -> list[Path
     return staged
 
 
+def _referenced_units(unit: Path) -> set[str]:
+    """Unit files a service names with Slice= or OnFailure=, a template as its file name."""
+    names: set[str] = set()
+    for line in unit.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key in {"Slice", "OnFailure"}:
+            for name in value.split():
+                prefix, at, rest = name.partition("@")
+                names.add(f"{prefix}@.{rest.rpartition('.')[2]}" if at else name)
+    return names
+
+
+def verify_slices(root: Path, units: list[Path]) -> None:
+    """systemd-analyze accepts a missing slice or notifier and a mistyped limit; this does not."""
+    installed = root / "etc/systemd/system"
+    for unit in units:
+        for name in sorted(_referenced_units(unit)):
+            if not (installed / name).is_file():
+                raise ValueError(f"referenced_unit_missing:{unit.name}:{name}")
+    for unit in sorted(installed.glob("*.slice")):
+        result = subprocess.run(
+            ["systemd-analyze", f"--root={root}", "verify", str(unit)],
+            capture_output=True, text=True, check=True, timeout=60,
+        )
+        # Its few lines are all limits: any diagnostic is a limit systemd would ignore.
+        if result.stderr.strip() or result.stdout.strip():
+            raise ValueError(f"slice_unit_invalid:{unit.name}")
+        if not any(line.startswith("MemoryMax=") for line in unit.read_text(encoding="utf-8").splitlines()):
+            raise ValueError(f"slice_unit_unbounded:{unit.name}")
+
+
 def verify_root(root: Path, units: list[Path]) -> None:
     command = ["systemd-analyze", f"--root={root}"]
+    verify_slices(root, units)
     subprocess.run([*command, "verify", *map(str, units)], check=True, timeout=60)
     for unit in units:
         subprocess.run(

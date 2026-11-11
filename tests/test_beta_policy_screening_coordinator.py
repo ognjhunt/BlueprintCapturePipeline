@@ -201,7 +201,9 @@ def test_closed_native_result_within_budget_is_the_jobs_evaluation_result(tmp_pa
     assert published["status"] == "completed"
     assert (row["episodes_scored"], row["episodes_succeeded"], row["episodes_failed"], row["success_rate"]) == (10, 7, 3, 0.7)
     # One tier: the automatic run is the job's result, stated as an estimate.
-    assert published["schema_version"] == "beta_policy_screening_publication.v2"
+    # v3: the v2 result plus the scene check's verdict, unknown for a plan that recorded none.
+    assert published["schema_version"] == "beta_policy_screening_publication.v3"
+    assert published["scene_feasibility"] == {"status": "unknown", "flags": []}
     assert published["purpose"] == "job_evaluation" and published["claim_ceiling"] == "simulation_estimate"
     assert "recommendation_eligible" not in published
     assert published["budget"]["spent_upper_bound_usd"] == "4" and published["budget"]["limit_usd"] == "30"
