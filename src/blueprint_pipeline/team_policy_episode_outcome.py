@@ -45,6 +45,9 @@ def episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
         return ("success", "task_succeeded") if verdict else ("failure", "task_not_completed")
     if row.get("status") == "completed":
         return "void", "simulator_score_undetermined"
+    if str(episode_failure_fields(row).get("failure_code") or "").startswith(SERVER_UNAVAILABLE):
+        # The cause wins over the stage: the policy's server was gone, wherever in the try that was noticed.
+        return "void", SERVER_UNAVAILABLE_REASON
     if row.get("episode_failure_stage") == "action_delivery_rejected":
         return "failure", "policy_action_beyond_joint_limits"
     attempted = row.get("candidate_policy_query_attempted") is True or row.get("candidate_policy_queried") is True
@@ -67,8 +70,6 @@ def episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
         return "void", "episode_media_unavailable"
     if row.get("episode_failure_stage") == "after_first_observation":
         return "void", "simulator_failed_during_episode"
-    if str(episode_failure_fields(row).get("failure_code") or "").startswith(SERVER_UNAVAILABLE):
-        return "void", SERVER_UNAVAILABLE_REASON  # the policy's server was gone, not the simulator
     return "void", "simulator_failed_before_policy"
 
 

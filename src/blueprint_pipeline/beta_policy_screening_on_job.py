@@ -328,7 +328,7 @@ def _standing(catalog: Mapping[str, Any], scene: Mapping[str, Any], *, campaign_
                    for candidate_id in options["candidate_ids"]}
     return standing_plan(plan, policy_left=policy_left, month_left=max(Decimal(0), total - usage["month_usd"]),
                          record=standing_record(monthly_total=total, month=month, request_id=request_id,
-                                                authorization_reference=reference))
+                                                authorization_reference=reference), identities=identities)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

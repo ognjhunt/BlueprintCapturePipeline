@@ -56,11 +56,12 @@ from .account_monthly_spend import LIMIT_REACHED as ACCOUNT_LIMIT_REACHED_BLOCKE
 from .account_monthly_spend import REPORT_INVALID, REPORT_STALE
 from .beta_policy_screening_failure_scope import (
     CANDIDATE_SPECIFIC_BLOCKERS, POLICY_PROVISIONING_BLOCKER, TRANSIENT_PROVISIONING_BLOCKERS,
-    candidate_specific_failure, transient_provisioning_failed, transient_void_run,
+    candidate_specific_failure, server_lost_retry_allowed, transient_provisioning_failed, transient_void_run,
 )
 from .beta_policy_screening_settlement import settled_cost
 from .beta_policy_screening_known_good_control import CONTROL_FIELD, control_gate, is_control
-from .beta_policy_screening_standing_test import funding_fields, is_standing
+from .beta_policy_screening_standing_test import POLICY_CAP_INSUFFICIENT, funding_fields, is_standing, policy_cap_reached
+from .beta_policy_screening_tested_pairs import require_new_pairs
 from .decision_evidence_contracts import canonical_digest
 from .job_retry_policy import hard_stop_kind, refusal_retry_delay
 from .policy_execution_evidence import SCRIPTED
@@ -365,6 +366,7 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
             if old["plan_digest"] != value["plan_digest"]:
                 raise ScreeningCoordinatorError("beta_screening_campaign_identity_changed")
             return {"campaign_id": campaign_id, "status": "already_enqueued", "plan_digest": value["plan_digest"]}
+        require_new_pairs(root, ledger, value)  # never a pair finished or in flight elsewhere, never one twice
         path = root / "plans" / f"{campaign_id}.json"
         if path.exists():
             if _read(path) != value:
@@ -446,9 +448,8 @@ def _held_for_deploy(row: Mapping[str, Any]) -> bool:
 
 
 def _machine_fault_retry_allowed(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> bool:
-    faults = sum(1 for state in ledger["campaigns"].values()
-                 if state["site_id"] == site_id and _machine_faulted(state["candidates"].get(candidate_id) or {}))
-    return 0 < faults <= MACHINE_FAULT_RETRY_LIMIT
+    rows = [state["candidates"].get(candidate_id) or {} for state in ledger["campaigns"].values() if state["site_id"] == site_id]
+    return 0 < sum(map(_machine_faulted, rows)) <= MACHINE_FAULT_RETRY_LIMIT and server_lost_retry_allowed(rows)
 
 
 def _measured_nothing(row: Mapping[str, Any]) -> bool:
@@ -878,15 +879,10 @@ def latest_campaign(campaign_id: str, *, queue_root: str | Path | None = None) -
 
 def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementation_commit: str,
                        queue_root: str | Path | None = None) -> dict[str, Any]:
-    """Atomically enqueue a re-plan and close the old campaign's unprepared rows.
-
-    One ledger write does both, rechecking under the lock that the old campaign
-    holds no reservation and that the new plan covers only unspent candidates
-    of the same site and source. The site's budget is shared, so the new plan
-    can never spend what the old one committed. A re-plan is admitted for a
-    changed commit, or for a scene half the new plan froze that differs from
-    the old plan's (read from both plans' own sealed scene inputs).
-    """
+    """Atomically enqueue a re-plan and close the old campaign's unprepared rows: one ledger write, rechecking
+    under the lock that the old campaign holds no reservation and that the new plan covers only unspent
+    candidates of the same site and source (the site's budget is shared). Admitted for a changed commit, or
+    a scene half the new plan froze that differs from the old plan's (both plans' sealed scene inputs)."""
     from .beta_policy_screening_plan import validate_screening_plan
     from .beta_policy_screening_scene_half import planned_half
 
@@ -913,6 +909,7 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
                 or value["source"] != previous["source"]
                 or not {row["candidate_id"] for row in value["candidates"]} <= set(scope)):
             raise ScreeningCoordinatorError("beta_screening_replan_not_admitted")
+        require_new_pairs(root, ledger, value, superseding=campaign_id)
         path = root / "plans" / f"{successor}.json"
         if path.exists():
             if _read(path) != value:
@@ -1205,8 +1202,8 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         blocker = None
         if not _quote_current(candidate):
             blocker = QUOTE_EXPIRED_BLOCKER
-        elif cap <= 0:
-            blocker = "beta_screening_cost_bound_invalid"
+        elif cap <= 0 or is_standing(state) and policy_cap_reached(root, ledger, plan, candidate):
+            blocker = "beta_screening_cost_bound_invalid" if cap <= 0 else POLICY_CAP_INSUFFICIENT
         elif (not is_standing(state) and _amount(site["committed_upper_bound_usd"]) + cap > SITE_LIMIT
               or _amount(campaign["committed_upper_bound_usd"]) + cap > _amount(plan["budget_usd"])):
             # Another attempt holds the money it needs. That attempt may still

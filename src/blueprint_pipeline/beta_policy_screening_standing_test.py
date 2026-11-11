@@ -178,13 +178,20 @@ def standing_usage(queue_root: str | Path | None, *, month: str) -> dict[str, An
     """What standing tests hold: ``month_usd`` for ``month``, ``by_policy[(site_id, candidate_id)]`` and
     ``rows``: each campaign row's ``(site_id, candidate_id, policy_identity, used)``. A row whose campaign
     catalog was not kept has no identity (``None``) and is counted by its candidate id alone."""
-    from .beta_policy_screening_coordinator import _ledger, _lock, _plan, _root
-    from .beta_policy_screening_plan import money
-    from .beta_policy_screening_tested_pairs import campaign_catalog_rows, policy_identity
+    from .beta_policy_screening_coordinator import _ledger, _lock, _root
 
     root = _root(queue_root)
     with _lock(root):
         ledger = _ledger(root)
+    return usage_from_ledger(root, ledger, month=month)
+
+
+def usage_from_ledger(root: Path, ledger: Mapping[str, Any], *, month: str | None) -> dict[str, Any]:
+    """``standing_usage`` from a ledger the caller already holds (the coordinator, under its lock)."""
+    from .beta_policy_screening_coordinator import _plan
+    from .beta_policy_screening_plan import money
+    from .beta_policy_screening_tested_pairs import campaign_catalog_rows, policy_identity
+
     month_usd, by_policy, rows = Decimal(0), {}, []
     for campaign_id, state in ledger["campaigns"].items():
         if not is_standing(state):
@@ -204,12 +211,27 @@ def standing_usage(queue_root: str | Path | None, *, month: str) -> dict[str, An
     return {"month": month, "month_usd": month_usd, "by_policy": by_policy, "rows": rows}
 
 
-def policy_used(usage: Mapping[str, Any], *, site_id: str, candidate_id: str, identity: str) -> Decimal:
+def policy_cap_reached(root: Path, ledger: Mapping[str, Any], plan: Mapping[str, Any],
+                       candidate: Mapping[str, Any]) -> bool:
+    """At a standing row's reservation: its policy on this job already holds or spent more than
+    ``POLICY_CAP_USD`` (this row's own funded cap and every earlier attempt included), under any candidate
+    id. Retries inside one standing campaign are bounded here, not only by the campaign's budget."""
+    from .beta_policy_screening_tested_pairs import campaign_catalog_rows, policy_identity
+
+    source = campaign_catalog_rows(root, plan).get(candidate["candidate_id"])
+    identity = None if source is None else policy_identity(source)["policy_identity"]
+    usage = usage_from_ledger(root, ledger, month=None)
+    return policy_used(usage, site_id=plan["site_id"], candidate_id=candidate["candidate_id"],
+                       identity=identity) > POLICY_CAP_USD
+
+
+def policy_used(usage: Mapping[str, Any], *, site_id: str, candidate_id: str, identity: str | None) -> Decimal:
     """What one policy holds on one job against ``POLICY_CAP_USD``: every standing row of the same policy
     identity, under any candidate id, and every row under the same candidate id (so a row whose identity is
     unknown is never left out). Each row counts once."""
     return sum((used for row_site, row_candidate, row_identity, used in usage["rows"]
-                if row_site == site_id and (row_identity == identity or row_candidate == candidate_id)), Decimal(0))
+                if row_site == site_id and (row_identity is not None and row_identity == identity
+                                            or row_candidate == candidate_id)), Decimal(0))
 
 
 def _deferred(row: Mapping[str, Any], code: str) -> dict[str, Any]:
@@ -219,9 +241,10 @@ def _deferred(row: Mapping[str, Any], code: str) -> dict[str, Any]:
 
 
 def standing_plan(plan: Mapping[str, Any], *, policy_left: Mapping[str, Decimal], month_left: Decimal,
-                  record: Mapping[str, Any]) -> dict[str, Any]:
+                  record: Mapping[str, Any], identities: Mapping[str, str] | None = None) -> dict[str, Any]:
     """A planned limited campaign re-funded from the standing allowance: each runnable row fitted to what
-    its policy has left of ``POLICY_CAP_USD`` and, in plan order, to what the month has left."""
+    its policy has left of ``POLICY_CAP_USD`` and, in plan order, to what the month has left. Rows of one
+    policy identity (``identities``, by candidate id) share what that policy has left, this plan included."""
     from .beta_policy_screening_g1 import BACKEND as G1_BACKEND
     from .beta_policy_screening_plan import (
         STANDING_TEST_FIELD, WAITLISTED, fit_run_to_cap, money, validate_screening_plan,
@@ -229,12 +252,14 @@ def standing_plan(plan: Mapping[str, Any], *, policy_left: Mapping[str, Decimal]
     from .decision_evidence_contracts import canonical_digest
 
     value = json.loads(json.dumps(plan))
-    left, planned, rows = Decimal(month_left), Decimal(0), []
+    left, planned, rows, in_plan = Decimal(month_left), Decimal(0), [], {}
     for row in value["candidates"]:
         if row["status"] not in {"selected", WAITLISTED}:
             rows.append(row)
             continue
-        cap = min(POLICY_CAP_USD, Decimal(policy_left.get(row["candidate_id"], POLICY_CAP_USD)))
+        policy = (identities or {}).get(row["candidate_id"], row["candidate_id"])
+        cap = min(POLICY_CAP_USD, Decimal(policy_left.get(row["candidate_id"], POLICY_CAP_USD))) - in_plan.get(
+            policy, Decimal(0))
         spec, quote = row["execution_spec"], row["cost_quote"]
         fitted = None
         if cap > 0 and not (spec.get("backend") == G1_BACKEND and money(quote["maximum_cost_usd"]) > cap):
@@ -250,6 +275,7 @@ def standing_plan(plan: Mapping[str, Any], *, policy_left: Mapping[str, Decimal]
             continue
         left -= maximum
         planned += maximum
+        in_plan[policy] = in_plan.get(policy, Decimal(0)) + maximum
         rows.append({**row, "status": "selected", "blockers": [], "execution_spec": spec,
                      "admission_digest": canonical_digest(spec), "cost_quote": quote,
                      "max_cost_usd": quote["maximum_cost_usd"]})
@@ -291,7 +317,7 @@ def validate_standing_plan(plan: Mapping[str, Any]) -> None:
 
 __all__ = ["ALLOWANCE_FILE_ENV", "ALLOWANCE_SCHEMA", "CANNOT_FIT", "DEFAULT_ALLOWANCE_FILE", "FUNDING_FIELD",
            "MONTHLY_TOTAL_INSUFFICIENT", "MONTHLY_TOTAL_INVALID", "MONTHLY_TOTAL_UNSET", "NOT_ALLOWED",
-           "PERMISSION_FIELD", "POLICY_CAP_DECISION", "POLICY_CAP_INSUFFICIENT", "POLICY_CAP_USD", "STANDING",
+           "PERMISSION_FIELD", "POLICY_CAP_DECISION", "policy_cap_reached", "usage_from_ledger", "POLICY_CAP_INSUFFICIENT", "POLICY_CAP_USD", "STANDING",
            "funding_fields", "is_standing", "month_of", "monthly_total_usd", "require_launch_authority",
            "policy_used", "require_site_permission", "site_allows", "standing_deadline", "standing_plan", "standing_record",
            "standing_usage", "validate_standing_plan"]
