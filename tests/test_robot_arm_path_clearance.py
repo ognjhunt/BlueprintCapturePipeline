@@ -496,6 +496,7 @@ def _rigid_packet(root, *, target, strategy="pick_and_place", robot_id="franka_p
                       "base_pose_world": {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}},
             "task_spec": {"task_kind": "rigid_pick_place", "manipulation_strategy": strategy,
                           "start_pose_world": [0.5, 0.0, 0.0325, 0.0, 0.0, 0.0, 1.0], "target_position_world_m": target,
+                          "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],  # as a compiled plan records it
                           "interaction_affordance": {"contact_point_scoring_frame_m": [0.0, 0.0, 0.0],
                                                      "approach_unit_scoring_frame": [0.0, 0.0, 1.0],
                                                      "gripper_orientation_scoring_frame_xyzw": [0.0, 1.0, 0.0, 0.0],

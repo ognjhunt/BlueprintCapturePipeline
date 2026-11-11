@@ -172,10 +172,20 @@ def _franka(geometry: Mapping[str, Any], verdict: Mapping[str, Any] | None) -> d
                  None)
     fields["carry"] = None if carry is None else {"status": carry.get("status"), "grasp": carry.get("grasp"),
                                                   "blockers": list(carry.get("blockers") or []),
-                                                  **{key: carry[key] for key in ("object_reach", "flags")
+                                                  **{key: carry[key] for key in ("object_reach", "flags",
+                                                                                  "reach_held",
+                                                                                  "assumed_contact_beyond",
+                                                                                  "advisories")
                                                      if key in carry}}
+    if carry is not None and carry.get("reach_held") is True:
+        # The capability verdict's reach proof: the object beyond the arm from every clear station.
+        return _row("no_fit", ["reach"], **fields)
     if carry is not None and carry.get("status") == "clear":
         return _row("fit", [], **fields)
+    if carry is not None and carry.get("object_reach") == "within_bound" and carry.get("assumed_contact_beyond"):
+        # Part of the object is in reach, its centre (the assumed contact) is not: flagged, decided later.
+        return _row("unknown", ["assumed_contact_beyond_reach_bound"], **fields,
+                    flags=list(carry.get("flags") or []))
     if carry is not None and carry.get("object_reach") == "within_bound":
         # The object is in the arm's reach from a clear station (the hard reach rule); the scripted carry's
         # miss is a flag, never a refusal: a learned policy chooses its own grasp.

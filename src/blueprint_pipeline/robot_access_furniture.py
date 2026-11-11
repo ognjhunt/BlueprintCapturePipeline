@@ -328,12 +328,20 @@ def station_proposal(*, stances: Sequence[Mapping[str, Any]], carry: Mapping[str
     ``carry`` is the carry search's record (``team_scene_packet._carrying_station``); ``task`` holds the
     rigid task's ``start_pose_world``, ``target_position_world_m``, ``contact_point_m`` and
     ``subject_bounds_m``, and optionally where its place is accepted (``destination_bounds_world_m``,
-    ``place_yaw_free_rad``). Of the stances clear were named items moved (best first, as the search ranks
-    them), the one from which the object is in the Franka's reach at its pick and its place (the hard
-    reach rule, ``rigid_reach_shortfall``) and that needs the fewest items is proposed.
+    ``place_yaw_free_rad``, ``destination_orientation_xyzw``, ``place_unbounded``: ``object_reach_inputs``,
+    as the bundle's gate measures it). Of the stances clear were named items moved (best first, as the
+    search ranks them), the one from which the task's contact is in the Franka's reach at its pick and an
+    accepted place (the station search's rule, ``task_contact_in_reach``, decided on the full report: its
+    ``contact_status`` is recorded) and that needs the fewest items is proposed. A stance that reaches only
+    an accepted place other than the nominal one is proposed flagged (``NOMINAL_CONTACT_FLAG``).
     """
 
-    from .robot_arm_path_clearance import RobotArmPathClearanceError, rigid_reach_shortfall
+    from .robot_arm_path_clearance import (
+        NOMINAL_CONTACT_FLAG,
+        RobotArmPathClearanceError,
+        contact_reach_status,
+        rigid_reach_shortfall,
+    )
 
     why = {"reason": "no_ranked_stance_carries", "carry_cleared": bool(carry.get("cleared")),
            "stances_tried": len(carry.get("results") or []),
@@ -358,15 +366,22 @@ def station_proposal(*, stances: Sequence[Mapping[str, Any]], carry: Mapping[str
                                           contact_point_m=task["contact_point_m"],
                                           subject_bounds_m=task.get("subject_bounds_m"),
                                           destination_bounds_world_m=task.get("destination_bounds_world_m"),
-                                          place_yaw_free_rad=float(task.get("place_yaw_free_rad") or 0.0))
+                                          place_yaw_free_rad=float(task.get("place_yaw_free_rad") or 0.0),
+                                          place_unbounded=bool(task.get("place_unbounded")),
+                                          destination_orientation_xyzw=task.get("destination_orientation_xyzw"))
         except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
             continue
+        # Decided on the full report, before it is projected for the record.
+        status = contact_reach_status(reach)
         tried.append({"rank": rank, "position_world_m": pose["position_world_m"], "moved": moved,
                       "farthest_task_point_m": row.get("farthest_task_point_m"),
-                      "reach": {key: reach[key] for key in ("status", "reach_bound_m", "beyond")}
-                      | {"phases": [{key: phase[key] for key in ("phase", "distance_m", "object_nearest_distance_m")
+                      "reach": {key: reach[key] for key in ("status", "reach_bound_m", "beyond",
+                                                            "task_contact_beyond")}
+                      | {"contact_status": status,
+                         "phases": [{key: phase[key] for key in ("phase", "distance_m", "object_nearest_distance_m",
+                                                                 "contact_admissible_distance_m")
                                      if key in phase} for phase in reach["phases"]]}})
-    within = [row for row in tried if row["reach"]["status"] == "within_bound"]
+    within = [row for row in tried if row["reach"]["contact_status"] in ("within_bound", "flagged")]
     if not within:
         return {**base, "status": "not_proposed", "tried": tried[:8],
                 "reason": ("no_stance_clear_if_named_items_moved" if not tried
@@ -376,7 +391,9 @@ def station_proposal(*, stances: Sequence[Mapping[str, Any]], carry: Mapping[str
     binding = removal_binding(revision_digest=revision_digest, collision_sha256=collision_sha256, items=items)
     return {**base, "status": "proposed", "items": [dict(row) for row in items],
             "support_label": str(support_label or "the support")[:160],
-            "enabled_stance": {key: chosen[key] for key in ("position_world_m", "farthest_task_point_m", "reach")},
+            "enabled_stance": {key: chosen[key] for key in ("position_world_m", "farthest_task_point_m", "reach")}
+                              | ({"flags": [NOMINAL_CONTACT_FLAG]} if chosen["reach"]["contact_status"] == "flagged"
+                                 else {}),
             "removal_binding": binding, "removal_binding_digest": canonical_digest(binding),
             "binding": binding, "binding_digest": canonical_digest(binding),
             "appearance": dict(APPEARANCE), "claim_ceiling": "cpu_bounded_estimate"}

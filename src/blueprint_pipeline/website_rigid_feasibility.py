@@ -16,7 +16,12 @@ clear of the reconstructed scene with its hand's body measured
 first: top-down, then tilted and side-on from four directions. A carry found is
 ``clear``; none found, with the object in reach, is ``flagged``
 (``scripted_carry_path_not_found``, with the attempt that got furthest) and the
-job goes on. Every embodiment an enabled screening candidate runs on is checked
+job goes on. The carry's contact here is assumed (the object's centre: no task
+contact is sealed yet), so a contact beyond the bound proves nothing: the
+station's ``assumed_contact_beyond`` phases are recorded with the advisory
+``robot_reach_assumed_contact_beyond:<phase>:<distance>m_vs_<bound>m`` and
+``ASSUMED_CONTACT_FLAG``, and the team half, which holds the task's own
+contact, decides. Every embodiment an enabled screening candidate runs on is checked
 (``config/beta_policy_candidates.v1.json``); one the gate has no arm model of
 is unassessed, never refused. A pass means the arm can reach the object, not
 that a policy finds a grasp. A target region that evaluation's surface-target
@@ -36,6 +41,17 @@ from .decision_evidence_contracts import canonical_digest
 from .usd_binary_read_cache import read_scoped
 
 SCHEMA = "website_rigid_task_capability_verdict.v1"
+#: The intake's assumed contact (the object's centre) is beyond the bound at the chosen station: flagged only.
+ASSUMED_CONTACT_FLAG = "robot_reach_assumed_contact_beyond_bound"
+
+
+def assumed_contact_advisories(reach: Mapping[str, Any] | None) -> list[str]:
+    """``robot_reach_assumed_contact_beyond:<phase>:<distance>m_vs_<bound>m`` per phase beyond, farthest first."""
+    if reach is None:
+        return []
+    rows = {row["phase"]: row for row in reach["phases"]}
+    return [f"robot_reach_assumed_contact_beyond:{phase}:{rows[phase]['distance_m']:.3f}m_vs_"
+            f"{reach['reach_bound_m']:.3f}m" for phase in reach.get("task_contact_beyond") or []]
 DEFAULT_PREGRASP_CLEARANCE_M = 0.10
 
 
@@ -198,8 +214,14 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
         results, key=lambda row: order[row[4]])
     embodiments = [{"robot_id": a, "status": r["status"], "blockers": list(r["blockers"]), "grasp": r.get("grasp"),
                     "object_reach": None if o is None else o["status"], "stances_in_reach": n,
-                    **({"flags": [SCRIPTED_CARRY_FLAG]} if v == "flagged" else {})}
+                    **({"reach_held": True} if v == "abstained" else {}),
+                    **({"assumed_contact_beyond": list(o["task_contact_beyond"]),
+                        "advisories": assumed_contact_advisories(o)}
+                       if v != "abstained" and o is not None and o["task_contact_beyond"] else {}),
+                    **({"flags": [SCRIPTED_CARRY_FLAG] + ([ASSUMED_CONTACT_FLAG] if o and o["task_contact_beyond"]
+                                                          else [])} if v == "flagged" else {})}
                    for a, _s, r, _t, v, o, n in results]
+    advisories = assumed_contact_advisories(object_reach) if status == "flagged" else []
 
     # Only the hard reach rule refuses: the object beyond reach from every clear stance, named at the closest.
     blockers = [] if status != "abstained" else [reach_shortfall_code(object_reach)] if len(arms) == 1 else [
@@ -207,8 +229,9 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
     value["robot_id"] = arm
     return settle(status, blockers, station=station, reach=reach, embodiments=embodiments,
                   object_reach=object_reach, stances_in_reach=in_reach_count,
-                  **({"flags": [SCRIPTED_CARRY_FLAG],
+                  **({"flags": [SCRIPTED_CARRY_FLAG] + ([ASSUMED_CONTACT_FLAG] if advisories else []),
                       "scripted_carry_blockers": list(reach["blockers"])} if status == "flagged" else {}),
+                  **({"advisories": advisories} if advisories else {}),
                   stations_tried=len({id(s) for s, _r in attempts}),
                   grasps_tried=len({r.get("grasp") for _s, r in attempts}),
                   station_results=[{"position_world_m": s["position_world_m"], "yaw_rad": s["yaw_rad"],
