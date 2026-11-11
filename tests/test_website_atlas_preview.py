@@ -1494,3 +1494,38 @@ def test_an_upload_left_undeleted_is_deleted_by_the_ended_jobs_cleanup_until_the
     assert cleanup["state"] == "complete" and cleanup["remaining"] == []
     assert {"meta:file-background", "meta:file-cleanplate"} <= set(cleanup["deleted"])
     assert calls == ["file-background", "file-cleanplate", "file-background"]
+
+
+def test_a_request_from_a_later_run_reopens_a_finished_cleanup_until_the_provider_confirms(monkeypatch, site):
+    from io import BytesIO
+
+    from blueprint_pipeline import meta_sam31 as sam
+
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "needs_input", "download": None, "digest": "sha256:rejected"}])
+    assert world.advance() == "needs_input"
+    assert _job(site)["provider_cleanup"]["state"] == "complete"
+    # Later, a clean-plate run's delete fails; nothing would ever try it again without the request.
+    root = site.pipeline / "clean_plate/task_masks/x/abc"
+    root.mkdir(parents=True)
+    sam.write_json(root / sam.UPLOAD_RECEIPT, {"file_id": "file-late", "clip_digest": "sha256:" + "a" * 64})
+    answers = [ConnectionResetError("no answer"), ConnectionResetError("no answer"), b'{"deleted":true}']
+
+    def provider(request, **_kwargs):
+        answer = answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return BytesIO(answer)
+
+    monkeypatch.setattr(sam, "_open_no_redirect", provider)
+    sam.delete_uploaded_video(root=root, opener=provider)
+    assert (site.job.parent / sam.CLEANUP_REQUEST).is_file()
+    world.clock += 60
+    world.advance()
+    cleanup = _job(site)["provider_cleanup"]
+    assert cleanup["state"] == "pending" and cleanup["remaining"] == ["meta:file-late"]
+    world.clock = cleanup["next_attempt_at_epoch"]
+    world.advance()
+    cleanup = _job(site)["provider_cleanup"]
+    assert cleanup["state"] == "complete" and "meta:file-late" in cleanup["deleted"] and answers == []

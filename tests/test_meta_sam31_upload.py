@@ -327,3 +327,68 @@ def test_a_retained_meta_reservation_is_reusable_only_for_its_own_binding():
         website_task_context.reuse_website_preparation_spend(
             admission={**admission, "expires_at_epoch": time.time() - 1}, binding_digest="sha256:" + "a" * 64,
             provider="meta")
+
+
+class GoneUpload(Provider):
+    """Answers a prompt 404 while its file id is in ``gone``: the provider no longer holds that upload."""
+
+    def __init__(self, gone):
+        super().__init__()
+        self.gone = set(gone)
+
+    def __call__(self, request, **kwargs):
+        if request.full_url == sam.ENDPOINT:
+            file_id = json.loads(request.data)["input"][0]["content"][1]["file_id"]
+            if file_id in self.gone:
+                text = json.loads(request.data)["input"][0]["content"][0]["text"]
+                self.calls.append((text, file_id))
+                raise HTTPError(sam.ENDPOINT, 404, "Not Found", {}, None)
+        return super().__call__(request, **kwargs)
+
+
+def test_a_404_on_a_dispatch_uploads_again_and_resends_once_under_the_same_hold(tmp_path, monkeypatch):
+    args, _, root = _job(tmp_path, monkeypatch)
+    website = Website(monkeypatch)
+    provider = GoneUpload({"file-clip1"})
+    assert sam.run_meta_sam31(**args, opener=provider)["status"] == "completed"
+    assert provider.calls == ["upload", ("object 0", "file-clip1"), "upload", ("object 0", "file-clip2"),
+                              ("object 1", "file-clip2"), ("object 2", "file-clip2"), "delete"]
+    # The vanished file is recorded gone, never deleted by id; the second upload is deleted.
+    assert provider.deleted == ["file-clip2"]
+    assert len(website.holds) == 1 and _unused_live_holds(website, root) == []
+
+
+def test_a_second_404_in_one_run_ends_the_step_with_its_code(tmp_path, monkeypatch):
+    args, _, root = _job(tmp_path, monkeypatch)
+    website = Website(monkeypatch)
+    provider = GoneUpload({"file-clip1", "file-clip2"})
+    with pytest.raises(ValueError, match="meta_sam_http_404"):
+        sam.run_meta_sam31(**args, opener=provider)
+    assert provider.calls == ["upload", ("object 0", "file-clip1"), "upload", ("object 0", "file-clip2"), "delete"]
+    assert len(website.holds) == 1
+
+
+@pytest.mark.parametrize("refusal", [400, 403, 413, 422])
+def test_any_other_refusal_of_a_dispatch_is_not_resent(tmp_path, monkeypatch, refusal):
+    args, _, _ = _job(tmp_path, monkeypatch)
+    Website(monkeypatch)
+    provider = Provider(refuse={"object 0": refusal})
+    with pytest.raises(ValueError, match=f"meta_sam_http_{refusal}"):
+        sam.run_meta_sam31(**args, opener=provider)
+    assert provider.calls == ["upload", ("object 0", "file-clip1"), "delete"]
+
+
+def test_an_undeleted_upload_reopens_a_finished_preview_cleanup(tmp_path, monkeypatch):
+    # The clean-plate masks of a capture whose preview job ended and cleaned up long ago.
+    capture = tmp_path / "scenes/site-req1/captures/walkthrough-req1"
+    job = capture / "pipeline/atlas/preview_job.json"
+    job.parent.mkdir(parents=True)
+    job.write_text("{}")
+    args, _, root = _job(tmp_path, monkeypatch)
+    args["output_root"] = capture / "pipeline/clean_plate/task_masks/x"
+    Website(monkeypatch)
+    sam.run_meta_sam31(**args, opener=Provider(refuse_delete=True))
+    request = job.parent / sam.CLEANUP_REQUEST
+    assert json.loads(request.read_text())["upload_root"].startswith(str(args["output_root"]))
+    # A capture with no preview job has no such loop: the request is not left anywhere.
+    assert sam.request_capture_cleanup(tmp_path / "elsewhere/pipeline/clean_plate/y") is None

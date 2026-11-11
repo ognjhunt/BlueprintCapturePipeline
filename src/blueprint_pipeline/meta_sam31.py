@@ -320,6 +320,31 @@ def delete_uploaded_video(*, root: Path, opener: Any, token: str | None = None) 
             write_json(Path(root) / UPLOAD_CLEANUP, {"file_id": file_id, "deleted": False})
         except OSError:
             pass
+    if not _cleanup_done(Path(root), file_id):
+        request_capture_cleanup(Path(root))
+
+
+#: Left beside a capture's preview job when one of its uploads is not confirmed deleted. The preview
+#: worker's provider cleanup, which runs after the job ends, is reopened by it (``website_atlas_preview``).
+CLEANUP_REQUEST = "provider-cleanup-request.json"
+
+
+def request_capture_cleanup(root: Path) -> Path | None:
+    """Ask the capture's preview job to delete this upload, even after that job has ended; the request's path.
+
+    The upload's directory lies under the capture's ``pipeline`` folder (the background step, the
+    clean-plate masks, the robot-access measurement). None when that capture has no preview job:
+    then only a later run of the same request, or the withdrawal sweep, deletes the copy.
+    """
+    for parent in Path(root).parents:
+        if parent.name == "pipeline" and (parent / "atlas" / "preview_job.json").is_file():
+            path = parent / "atlas" / CLEANUP_REQUEST
+            try:
+                write_json(path, {"schema_version": "meta_sam31_cleanup_request.v1", "upload_root": str(root)})
+            except OSError:
+                return None
+            return path
+    return None
 
 
 #: An upload whose outcome is unknown (no answer, a server error, an unusable answer): the provider

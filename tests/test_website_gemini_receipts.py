@@ -34,6 +34,10 @@ def setup_call(tmp_path, monkeypatch):
         return admission, require_paid_resource_admission(admission,
             resource_class=kwargs["resource_class"], expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
     monkeypatch.setattr(module, "reserve_website_preparation_spend", reserve)
+    # The website's task-context read, which a held reservation's reuse asks before any dispatch.
+    from blueprint_pipeline import website_task_context
+    monkeypatch.setattr(website_task_context, "load_current_website_task_context",
+                        lambda **kw: calls.append(("source_read", kw)) or context())
     def invoke():
         calls.append(("invoke", None))
         return {"status": "completed", "targets": ["box"]}
@@ -121,7 +125,8 @@ def test_lease_lost_after_reservation_cannot_start_provider_call(tmp_path, monke
     # Stopped before the dispatch: proof of $0, so the same reservation pays the next one.
     assert json.loads(next(tmp_path.glob("*.json")).read_text())["status"] == "not_dispatched"
     module.retained_gemini_call(**args)
-    assert [row[0] for row in calls] == ["reserve", "invoke"]
+    # The held reservation is reused only after the capture's current source is read.
+    assert [row[0] for row in calls] == ["reserve", "source_read", "invoke"]
     assert not list(tmp_path.glob("*.unanswered-*.json")) and not list(tmp_path.glob("*.resend-*.json"))
 
 
@@ -409,8 +414,8 @@ def test_a_refusal_that_proves_no_work_reuses_the_same_reservation(tmp_path, mon
     assert classify(f"{type(refused.value).__name__}: http_{status}") == "outage"
     args["invoke"] = answer
     module.retained_gemini_call(**args)
-    # One hold, one dispatch digest, never counted as spent.
-    assert [row[0] for row in calls] == ["reserve"] + ["invoke"] * 6
+    # One hold, one dispatch digest, never counted as spent; each reuse reads the current source first.
+    assert [row[0] for row in calls] == ["reserve", "invoke"] + ["source_read", "invoke"] * 5
     assert not list(tmp_path.glob("*.unanswered-*.json")) and not list(tmp_path.glob("*.resend-*.json"))
 
 
@@ -467,6 +472,27 @@ def test_a_budget_refusal_of_a_retained_reservation_is_a_money_wait(tmp_path, mo
     monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: ["account_monthly_spend_limit_reached"])
     with pytest.raises(PaidResourceAdmissionBlocked, match="account_monthly_spend_limit_reached"):
         module.retained_gemini_call(**args)
-    assert [row[0] for row in calls] == ["reserve"]
+    assert [row[0] for row in calls] == ["reserve", "source_read"]
     assert json.loads(intent.read_text())["status"] == "refused"
     assert not list(tmp_path.glob("*.unanswered-*.json")) and not list(tmp_path.glob("*.replacement-*.json"))
+
+
+def test_a_withdrawn_source_stops_a_reused_reservation_before_anything_is_sent(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context
+    args, calls = setup_call(tmp_path, monkeypatch)
+
+    class Refused(Exception):
+        code = 429
+    def refuses():
+        calls.append(("invoke", None))
+        raise Refused("resource exhausted")
+    args["invoke"] = refuses
+    with pytest.raises(Refused):
+        module.retained_gemini_call(**args)
+    def withdrawn(**_kw):
+        raise ValueError("website_control_task-context_http_409:source_revoked")
+    monkeypatch.setattr(website_task_context, "load_current_website_task_context", withdrawn)
+    args["invoke"] = lambda: pytest.fail("nothing may be sent once the site has withdrawn")
+    with pytest.raises(ValueError, match="source_revoked"):
+        module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve", "invoke"]

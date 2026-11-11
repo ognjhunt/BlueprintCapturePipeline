@@ -487,6 +487,23 @@ def _delete_assets(client: Any, asset_ids: list[str]) -> tuple[list[str], list[s
     return deleted, failed
 
 
+def _reopen_cleanup_if_requested(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float]) -> dict[str, Any]:
+    """A segmentation upload of this capture is not confirmed deleted (``meta_sam31.request_capture_cleanup``):
+    a finished cleanup opens again, due now, with a fresh attempt count, so the timer keeps deleting
+    until the provider confirms. A cleanup still pending already covers it."""
+    from .meta_sam31 import CLEANUP_REQUEST
+    request = job_dir / CLEANUP_REQUEST
+    if not request.exists():
+        return job
+    cleanup = job.get("provider_cleanup") or {}
+    if cleanup and cleanup.get("state") != "pending":
+        job = {**job, "provider_cleanup": {**cleanup, "state": "pending", "attempts": 0,
+                                           "next_attempt_at_epoch": int(now()),
+                                           "reopened_at_epoch": int(now())}}
+    request.unlink(missing_ok=True)
+    return job
+
+
 def _clean_meta_uploads(pipeline_dir: Path) -> tuple[list[str], list[str], list[str]]:
     """Delete each segmentation upload under the capture's pipeline that is not yet confirmed deleted.
 
@@ -650,6 +667,7 @@ def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, An
                 job = step(job)
             if job["state"] in TERMINAL and not job.get("retry_at_epoch"):
                 job = _retract_archive(job)
+                job = _reopen_cleanup_if_requested(job, job_dir=job_dir, now=now)
                 job = _clean_provider(job, job_dir=job_dir, now=now, transport=transport)
             job = deliver(job)
             if json.dumps(job, sort_keys=True) != before:
