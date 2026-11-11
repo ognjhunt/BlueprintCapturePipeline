@@ -34,7 +34,8 @@ What the row is, and is not:
   profile (the marker's ``for_candidate_id``). Otherwise it is the body of a model the job's own
   robot fit table (``website_robot_fit``, passed as the ``robot_fit_rows`` capability) says fits
   this scene: ``fits`` before ``fits_spec``, ``unknown`` only when neither has a registered body,
-  never ``doesnt_fit``, ties in the table's order. The website's own picks
+  never ``doesnt_fit``, ties in the table's order. The body only carries the check: the row tests
+  this simulated set-up, never the robot, whichever body it runs on. The website's own picks
   (``preferred_robot_model_ids``, read with the job's ceiling and passed as the
   ``preferred_robot_model_ids`` capability) come first, in their order, among the fitting models
   (``fits`` and ``fits_spec`` together) and among the ``unknown`` ones, never ahead of a fitting

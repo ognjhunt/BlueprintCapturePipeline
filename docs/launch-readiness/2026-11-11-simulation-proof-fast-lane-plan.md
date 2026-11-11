@@ -255,12 +255,15 @@ These counts are by name and are an upper bound.
 - Stopping the humanoid and navigation work while this lane is built. Two
   other sessions are driving those jobs today.
 
-## Testing the named robot itself (scripted)
+## Scripted reference check on a fitting body
 
 **What the code change does.** Each new website campaign already plans one
 scripted reference row (`beta_policy_screening_known_good_control`):
 Blueprint's own pick-and-place script, three nominal tries, reference only,
-never a candidate or part of the estimate, never a gate. Until now it ran only
+never a candidate or part of the estimate, never a gate. It checks only
+Blueprint's own simulation: whether this scene, task and scorer can register a
+success at all. It is not a test of any robot, the one the website names
+included, and is never described as one. Until now it ran only
 on the body of a selected learned candidate, and every learned candidate a rigid
 job selects today is on the DROID Franka, which has no scripted body, so the row always said
 `known_good_control_unavailable:embodiment`. Now, when no selected candidate's
@@ -273,9 +276,9 @@ the code `scene_packet_station`. Its money rule is now the one its docstring
 promised: it runs only when its cap fits in what the selected rows leave of the
 plan budget and the site's allowance, and that leftover could not pay for any
 row still waiting for money. Its own cap is $3.00 (step 4); no other cap,
-limit or budget value changed. The site
-sees "N of M tries" as `episodes_succeeded` of `episodes_scored` on the row
-`blueprint_scripted_<body>`.
+limit or budget value changed. The
+publication carries the check's outcome flag and its `episodes_succeeded` of
+`episodes_scored` on the row `blueprint_scripted_<body>`.
 
 **It is not inert.** The host registry (`/etc/blueprint/team-evaluation-registry.json`,
 unchanged since 2026-10-31) registers all 24 scripted bodies, and the effective
@@ -283,11 +286,13 @@ catalog of the newest campaign (2026-11-10) lists every one enabled, the UR10e
 (`universal_robots_ur10e_robotiq_2f85_sim`) among them, with its model file
 present. So the first new rigid job after a deploy can plan this row.
 
-**Steps to the first real UR10e run.**
+**Steps to the first real check, on the UR10e body for example.**
 
 1. *Host operation:* merge, then deploy in the daily window (D-08). Nothing to
    prepare for the UR10e: it was imported by batch `public-robot-imports-20261031-11`.
-2. *WebApp change:* the row prefers the robots the website names. The WebApp's
+2. *WebApp change (optional):* the check's body can follow the robots the
+   website names, which only picks which fitting body the simulation check
+   runs on. The WebApp's
    non-creating Atlas configuration read (the one that already returns
    `job_ceiling` to screening planning) may add `preferred_robot_model_ids`: up
    to 3 distinct spec-catalog model ids, the answer's pick first, then its
