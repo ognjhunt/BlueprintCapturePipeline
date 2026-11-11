@@ -251,6 +251,17 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     detail = {"last_error": error_description(error)}
     if _outage(error):
         return _outage_retry(job, current, code, detail)
+    from .job_retry_policy import provider_says_retry_later, request_cannot_succeed
+    if provider_says_retry_later(code):
+        # An outside service's "try again later" (408, 409, 425, 429, any 5xx): the bounded refusal
+        # schedule, as on main (6 timed retries per streak, at most 12 in the job's life), then failed
+        # with the code. Each retry of a refused SAM dispatch reserves anew: no call releases a hold.
+        return _refusal_retry(job, current, code, detail)
+    if request_cannot_succeed(code):
+        # An outside service refused the request itself (a 413, a 400, a 403...), or it cannot be made
+        # to fit: sending it again unchanged cannot succeed, so the step ends now with that code. A
+        # rate limit (429) is an outage above; an operator's retry reopens the job after a fix.
+        return _transition(job, current, "failed", code, **detail)
     if not isinstance(error, ValueError):
         return _refusal_retry(job, current, code, detail)  # a defect: not proven permanent, not an outage
     kind = hard_stop_kind(code)
@@ -357,6 +368,14 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
                                stage='preserved_scene_completion', result_digest=result.get('digest'))
         if not result.get("download"):
             blockers = result.get('blockers') or []
+            from .job_retry_policy import provider_answer, request_cannot_succeed
+            answers = [str(row) for row in blockers
+                       if provider_answer(str(row)) is not None or request_cannot_succeed(str(row))]
+            if blockers and len(answers) == len(blockers):
+                # Every blocker is a provider's answer (capture-39ecdc97 kept meta_sam_http_413): the
+                # retry policy decides it, never needs_input. When any blocker is not, that one may
+                # need a person, and the outcome below is main's, naming the first blocker.
+                return _failed_step(job, ValueError(answers[0]), current)
             reason = (_reason(ValueError(result["reason"]))
                       if result.get("stage") in {"source_pose", "target_correction"} and result.get("reason")
                       else _reason(ValueError(blockers[0])) if blockers

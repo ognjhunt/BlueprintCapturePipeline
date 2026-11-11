@@ -26,7 +26,11 @@ __all__ = [
     "REFUSAL_RETRY_DELAYS_SECONDS",
     "hard_stop_kind",
     "outage_retry_delay",
+    "RETRY_LATER_STATUSES",
+    "provider_answer",
+    "provider_says_retry_later",
     "refusal_retry_delay",
+    "request_cannot_succeed",
 ]
 
 PRIVACY_RIGHTS = "privacy_rights"
@@ -103,3 +107,54 @@ def hard_stop_kind(code: object) -> str | None:
     if words & _MONEY_WORDS:
         return MONEY
     return None
+
+
+# An outside service's HTTP answer, as typed refusal codes name it ("meta_sam_http_413").
+_PROVIDER_ANSWER = re.compile(r"[a-z0-9_-]+_http_([0-9]{3})")
+_OWN_CONTROL_PREFIXES = ("website_control_", "owned_capture_atlas_control_")
+
+
+def provider_answer(code: object) -> int | None:
+    """The HTTP status an outside service answered, when ``code`` names one; else None.
+
+    Only the code before any ``:`` detail counts. Such an answer is the service's
+    outcome for one request, never a fact only a person can supply: a controller
+    retries it on this module's schedules rather than waiting for input. Blueprint's
+    own WebApp control answers (``website_control_...``) are not outside services:
+    the typed reason after their ``:`` decides them.
+    """
+    if not isinstance(code, str):
+        return None
+    head = code.partition(":")[0].strip().lower()
+    if head.startswith(_OWN_CONTROL_PREFIXES):
+        return None
+    match = _PROVIDER_ANSWER.fullmatch(head)
+    return int(match.group(1)) if match else None
+
+
+#: Answers that mean "try again later": a timeout, a conflict, too early, a rate limit, and every 5xx.
+RETRY_LATER_STATUSES = frozenset({408, 409, 425, 429})
+
+#: Requests this release can never send successfully as they stand: an inline clip whose last
+#: encoding still does not fit (``meta_sam31``), and a prompt whose one allowed resend is used up
+#: (owner decision 2026-11-07: never a second resend; the step ends rather than wait for a person).
+_UNSENDABLE_REQUEST_CODES = frozenset({"meta_sam_inline_clip_exceeds_request_ceiling",
+                                       "meta_sam_submission_requires_reconciliation",
+                                       "meta_sam_caller_grant_covers_another_clip"})
+
+
+def provider_says_retry_later(code: object) -> bool:
+    """Whether an outside service's answer means "try again later" (``RETRY_LATER_STATUSES`` or any 5xx)."""
+    status = provider_answer(code)
+    return status is not None and (status in RETRY_LATER_STATUSES or 500 <= status < 600)
+
+
+def request_cannot_succeed(code: object) -> bool:
+    """Whether sending this request again unchanged cannot succeed: an outside service refused the
+    request itself (a 4xx that does not mean "try again later"), or the request cannot be sent at all."""
+    if not isinstance(code, str):
+        return False
+    status = provider_answer(code)
+    if status is not None:
+        return 400 <= status < 500 and status not in RETRY_LATER_STATUSES
+    return code.partition(":")[0].strip().lower() in _UNSENDABLE_REQUEST_CODES

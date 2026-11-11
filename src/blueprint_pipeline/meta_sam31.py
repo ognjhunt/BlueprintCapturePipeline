@@ -63,9 +63,15 @@ def parser_timeout_seconds(text: str) -> int:
 #: A refusal it answered is a definite outcome, unlike a timeout or a dropped connection.
 #: 429 (rate limited) and 503 (unavailable) refuse before any work; the job retries them later.
 REFUSAL_STATUSES = frozenset({400, 401, 403, 404, 409, 413, 415, 422, 429, 503})
+#: For an inline request only (nothing stored at the provider), 408 (request timeout) and 425 (too
+#: early) also refuse before any work, and any other answered error (a 500, 502, 504...) may have
+#: been processed: it is counted like an unanswered dispatch (``count_unanswered_dispatches``),
+#: and its one resend gets its own reservation. A request naming an uploaded file keeps the rules
+#: above exactly, since resending it would name a file its run has already deleted.
+INLINE_REFUSAL_STATUSES = REFUSAL_STATUSES | {408, 425}
 
 
-def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
+def retire_refused_dispatches(root: Path, pending: Sequence[int], *, inline: bool = False) -> int:
     """Archive pending prompts whose last dispatch the provider refused; return this binding's refusal count.
 
     The provider answered each with a refusal status (``failure-<i>.json``, written only from its
@@ -74,7 +80,7 @@ def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
     A 404 also retires the uploaded video it named (the provider no longer holds that file), so
     the next dispatch uploads it again. A prompt whose dispatch got no answer at all is counted as
     spent and sent once more (``count_unanswered_dispatches``). Any other answer, such as a 500,
-    may have been processed and still requires reconciliation.
+    may have been processed: it is counted the same way.
     """
     archive = Path(root) / "refused"
     count = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
@@ -86,7 +92,7 @@ def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
             status = json.loads(failure.read_text()).get("http_status")
         except ValueError:
             continue
-        if isinstance(status, bool) or status not in REFUSAL_STATUSES:
+        if isinstance(status, bool) or status not in (INLINE_REFUSAL_STATUSES if inline else REFUSAL_STATUSES):
             continue
         count += 1
         target = archive / f"attempt-{count}"
@@ -124,7 +130,7 @@ def _counted_as_spent(root: Path) -> dict[int, tuple[Path, dict[str, Any]]]:
 
 
 def count_unanswered_dispatches(root: Path, pending: Sequence[int], *, binding_digest: str,
-                                limit: int | None = None) -> dict[int, dict[str, Any]]:
+                                limit: int | None = None, inline: bool = False) -> dict[int, dict[str, Any]]:
     """Count each pending prompt's unanswered dispatch as spent, once per prompt; return the resend marks.
 
     An intent with no response and no recorded answer is what a crashed attempt leaves (or a
@@ -144,14 +150,29 @@ def count_unanswered_dispatches(root: Path, pending: Sequence[int], *, binding_d
     attempts = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
     for index in pending:
         intent, failure = root / f"intent-{index}.json", root / f"failure-{index}.json"
-        if not intent.is_file() or intent.is_symlink() or failure.exists() or failure.is_symlink():
+        if not intent.is_file() or intent.is_symlink() or failure.is_symlink():
             continue
+        answered_status = None
+        if failure.exists() and not inline:
+            continue  # a request naming an uploaded file: any answered error waits, as it always has
+        if failure.exists():
+            # An answered error the provider may have processed (a 500, 502, 504...) is counted like
+            # no answer. A refusal that did no work was retired before this (``retire_refused_dispatches``).
+            try:
+                answered_status = json.loads(failure.read_text()).get("http_status")
+            except ValueError:
+                continue
+            if isinstance(answered_status, bool) or not isinstance(answered_status, int) \
+                    or answered_status in INLINE_REFUSAL_STATUSES:
+                continue
         raw = intent.read_bytes()
         digest = "sha256:" + hashlib.sha256(raw).hexdigest()
         if index in counted:
             target, record = counted[index]
             if record.get("intent_sha256") == digest and not (target / intent.name).exists():
                 os.replace(intent, target / intent.name)  # finish an archive a crash interrupted
+                if failure.is_file() and not (target / failure.name).exists():
+                    os.replace(failure, target / failure.name)
             continue
         try:
             value = json.loads(raw)
@@ -167,12 +188,15 @@ def count_unanswered_dispatches(root: Path, pending: Sequence[int], *, binding_d
         target = archive / f"attempt-{attempts}"
         target.mkdir(parents=True)
         record = {"schema_version": COUNTED_AS_SPENT_SCHEMA, "status": "counted_as_spent", "outcome": "unknown",
+                  **({"answered_http_status": answered_status} if answered_status is not None else {}),
                   "prompt_index": index, "binding_digest": binding_digest, "intent_sha256": digest,
                   "allocation_binding_digest": allocation, "clip_digest": value.get("clip_digest"),
                   "reservation": "held_at_maximum_never_released_or_settled_as_zero",
                   "resends_allowed": 1, "recorded_at": datetime.now(timezone.utc).isoformat()}
         write_json(target / COUNTED_AS_SPENT, record)
         os.replace(intent, target / intent.name)
+        if failure.is_file():
+            os.replace(failure, target / failure.name)
         counted[index] = (target, record)
     return {index: {"resend_of": record["intent_sha256"], "resend_index": 1}
             for index, (_, record) in counted.items()}
@@ -479,7 +503,13 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
             for oid, rows in observations.items()]
 
 
-def encode_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequence[Mapping[str, Any]], root: Path) -> Path:
+#: The largest clip any request carries (an inline clip is further bound by the request ceiling).
+CLIP_MAX_BYTES = 32 * 1024**2
+
+
+def encode_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequence[Mapping[str, Any]], root: Path,
+                rung: Mapping[str, Any] | None = None) -> Path:
+    """The frames as one clip, losslessly (crf 0, yuv444p), or at an ``INLINE_CLIP_LADDER`` rung."""
     if not 1 <= len(registry) <= 15000 or len(artifacts) != len(registry):
         raise ValueError("meta_sam_frame_count_invalid")
     sizes = {(int(row["width"]), int(row["height"])) for row in registry}
@@ -499,7 +529,9 @@ def encode_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequence[Ma
     clip = root / "retained-frames.mp4"
     # One encoded frame per registry row, with no resizing, interpolation or frame dropping.
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-framerate", "1", "-i", str(root / "frame-%06d.png"),
-                    "-frames:v", str(len(registry)), "-c:v", "libx264", "-crf", "0", "-pix_fmt", "yuv444p",
+                    "-frames:v", str(len(registry)), "-c:v", "libx264",
+                    *(["-threads", str(rung["threads"])] if rung else []),
+                    "-crf", str(rung["crf"] if rung else 0), "-pix_fmt", rung["pix_fmt"] if rung else "yuv444p",
                     "-movflags", "+faststart", str(clip)], check=True, timeout=120, capture_output=True)
     probe = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
                             "-show_entries", "stream=width,height,nb_read_frames", "-of", "json", str(clip)],
@@ -507,9 +539,153 @@ def encode_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequence[Ma
     stream = json.loads(probe.stdout)["streams"][0]
     if (stream["width"], stream["height"], int(stream["nb_read_frames"])) != (width, height, len(registry)):
         raise ValueError("meta_sam_encoded_frame_mapping_invalid")
-    if clip.stat().st_size > 32 * 1024**2:
+    if rung is None and clip.stat().st_size > CLIP_MAX_BYTES:
         raise ValueError("meta_sam_inline_clip_too_large")
     return clip
+
+
+#: A multi-frame request sent inline (the clip as a base64 data URL in the request body) stays under
+#: this many bytes, about half the size at which the provider refused one with 413 (capture-39ecdc97,
+#: 2026-11-11: 17,324,561 bytes refused). Nothing is stored at the provider by an inline request.
+INLINE_REQUEST_CEILING_BYTES = 8_000_000
+#: The inline clip's encodings, tried in order until the request fits. The source is a phone video
+#: that is already compressed. Measured on that job's 16 frames at 1920x1080 (SSIM against the
+#: lossless clip; lossless was 12,993,229 bytes): crf 22 2,592,735 bytes, SSIM 0.9941; crf 26
+#: 1,394,354, 0.9922; crf 30 780,206, 0.9898; crf 34 472,799, 0.9866. Two encoder threads keep the
+#: output identical from run to run on one encoder build.
+INLINE_CLIP_LADDER: tuple[dict[str, Any], ...] = tuple(
+    {"encoding": f"h264_crf{crf}_yuv444p_threads2_v1", "crf": crf, "pix_fmt": "yuv444p", "threads": 2}
+    for crf in (22, 26, 30, 34))
+#: The lowest quality an inline clip is sent at: the last rung, SSIM 0.9866 against the lossless clip on
+#: capture-39ecdc97's 16 frames. A clip that does not fit even here is not sent (``INLINE_CLIP_TOO_LARGE``).
+INLINE_CLIP_QUALITY_FLOOR = INLINE_CLIP_LADDER[-1]
+INLINE_CLIP_TOO_LARGE = "meta_sam_inline_clip_exceeds_request_ceiling"
+#: How a clip encoded before the ladder existed was made (always lossless).
+LEGACY_LOSSLESS_ENCODING = "h264_crf0_yuv444p_lossless"
+CLIP_ENCODING_FILE = "clip-encoding.json"
+#: Answers bought for an earlier clip of this binding, set aside when the clip changed.
+SUPERSEDED_CLIP_ARCHIVE = "superseded-clip"
+
+
+def _inline_body_bytes(clip: Path, prompts: Sequence[Mapping[str, Any]]) -> int:
+    """The largest request body these prompts send with this clip inline."""
+    encoded = 4 * math.ceil(clip.stat().st_size / 3)
+    longest = max((str(prompt["text"]) for prompt in prompts), key=lambda text: len(json.dumps(text)), default="")
+    shell = {"model": MODEL, "stream": False, "metadata": {"mask_encoding": "one_bit"}, "input": [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": longest},
+                                                        {"type": "input_video", "video_url": "data:video/mp4;base64,"}]}]}
+    return len(json.dumps(shell).encode()) + encoded
+
+
+def encode_inline_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequence[Mapping[str, Any]],
+                       root: Path, prompts: Sequence[Mapping[str, Any]]) -> tuple[Path, dict[str, Any]]:
+    """The first ladder rung whose whole request fits under ``INLINE_REQUEST_CEILING_BYTES``, and its record.
+
+    Recorded in ``clip-encoding.json`` and in each answer bought with it. If even the last rung does
+    not fit, the step ends with ``INLINE_CLIP_TOO_LARGE``: sending it could never succeed.
+    """
+    for rung in INLINE_CLIP_LADDER:
+        clip = encode_clip(registry=registry, artifacts=artifacts, root=root, rung=rung)
+        body = _inline_body_bytes(clip, prompts)
+        if body <= INLINE_REQUEST_CEILING_BYTES and clip.stat().st_size <= CLIP_MAX_BYTES:
+            record = {"encoding": rung["encoding"], "clip_digest": _sha256_file(clip),
+                      "clip_bytes": clip.stat().st_size, "largest_request_bytes": body,
+                      "ceiling_bytes": INLINE_REQUEST_CEILING_BYTES}
+            write_json(root / CLIP_ENCODING_FILE, record)
+            return clip, record
+    raise ValueError(INLINE_CLIP_TOO_LARGE)
+
+
+def _retained_inline_clip(root: Path, *, answered_digests: set[str],
+                          prompts: Sequence[Mapping[str, Any]]) -> tuple[Path, dict[str, Any]] | None:
+    """This binding's retained clip, when its digest is the one its record or its answers name and its
+    request fits under the ceiling: reused as it is, never encoded again (another encoder build or
+    thread count would give other bytes)."""
+    clip = root / "retained-frames.mp4"
+    if not clip.is_file() or clip.is_symlink():
+        return None
+    digest = _sha256_file(clip)
+    try:
+        record = json.loads((root / CLIP_ENCODING_FILE).read_text())
+    except (OSError, ValueError):
+        record = None
+    if isinstance(record, dict) and record.get("clip_digest") == digest:
+        verified = record
+    elif answered_digests == {digest}:
+        verified = {"encoding": LEGACY_LOSSLESS_ENCODING, "clip_digest": digest}
+    else:
+        return None
+    body = _inline_body_bytes(clip, prompts)
+    if body > INLINE_REQUEST_CEILING_BYTES or clip.stat().st_size > CLIP_MAX_BYTES:
+        return None
+    return clip, {**verified, "clip_bytes": clip.stat().st_size, "largest_request_bytes": body,
+                  "ceiling_bytes": INLINE_REQUEST_CEILING_BYTES}
+
+
+def _clip_encoding_name(root: Path, clip_digest: str, current: Mapping[str, Any] | None) -> str:
+    if current:
+        return str(current["encoding"])
+    try:
+        record = json.loads((root / CLIP_ENCODING_FILE).read_text())
+    except (OSError, ValueError):
+        record = {}
+    return str(record["encoding"]) if record.get("clip_digest") == clip_digest else LEGACY_LOSSLESS_ENCODING
+
+
+SET_ASIDE_RECORD = "superseded.json"
+
+
+def _recorded_rebuys(root: Path) -> list[dict[str, Any]]:
+    """Each re-buy this binding recorded, oldest first (a record is written before any answer moves)."""
+    archive = root / SUPERSEDED_CLIP_ARCHIVE
+    rows = []
+    for path in archive.glob(f"attempt-*/{SET_ASIDE_RECORD}") if archive.is_dir() else ():
+        record = json.loads(path.read_text())
+        rows.append((int(path.parent.name.removeprefix("attempt-")), {**record, "directory": str(path.parent)}))
+    return [record for _, record in sorted(rows, key=lambda row: row[0])]
+
+
+def _move_set_aside(root: Path, record: Mapping[str, Any]) -> None:
+    target = Path(record["directory"])
+    earlier = set(record["earlier_clip_digests"])
+    for index in record["prompt_indices"]:
+        response = root / f"response-{index}.json"
+        if response.is_file() and json.loads(response.read_text()).get("clip_digest") not in earlier:
+            continue  # bought again with the new clip since: it stays
+        for name in (f"response-{index}.json", f"parsed-response-{index}.json", f"intent-{index}.json"):
+            if (root / name).is_file() and not (target / name).exists():
+                os.replace(root / name, target / name)
+    if (root / "tracks.json").is_file() and not (target / "tracks.json").exists():
+        os.replace(root / "tracks.json", target / "tracks.json")
+
+
+def _finish_interrupted_set_asides(root: Path) -> None:
+    """A run stopped between the record and its last move left answers in place: move them now."""
+    for record in _recorded_rebuys(root):
+        _move_set_aside(root, record)
+
+
+def _set_aside_answers_for_another_clip(root: Path, answered: Sequence[int], *, clip_digest: str) -> int:
+    """Set aside answers bought with an earlier clip (with their intents and parsed tracks); their count.
+
+    The record goes first, fsynced, so every later run derives the re-buy from it, then each file
+    moves. A run stopped anywhere in between is finished by the next (``_finish_interrupted_set_asides``).
+    """
+    archive = root / SUPERSEDED_CLIP_ARCHIVE
+    count = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
+    target = archive / f"attempt-{count + 1}"
+    target.mkdir(parents=True)
+    old = {json.loads((root / f"response-{index}.json").read_text()).get("clip_digest") for index in answered}
+    record = {"reason": "clip_changed", "earlier_clip_digests": sorted(map(str, old)), "clip_digest": clip_digest,
+              "prompt_indices": list(answered)}
+    temporary = target / (SET_ASIDE_RECORD + ".tmp")
+    with temporary.open("w") as stream:
+        json.dump(record, stream, indent=2, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, target / SET_ASIDE_RECORD)
+    _move_set_aside(root, {**record, "directory": str(target)})
+    return count + 1
 
 
 def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifacts: Sequence[Mapping[str, Any]],
@@ -541,7 +717,16 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     root = output_root / digest[7:]
     pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
     retained = bool(prompts) and not pending
-    refused = retire_refused_dispatches(root, pending) if pending and not require_retained_video else 0
+    inline = video_artifact is None and len(frame_registry) > 1
+    # Finish a set-aside a stopped run began, before anything else reads which prompts are answered.
+    if inline and not require_retained_video:
+        _finish_interrupted_set_asides(root)
+        pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
+        retained = bool(prompts) and not pending
+    # The newer answer rules (``INLINE_REFUSAL_STATUSES``) cover every request that names no upload.
+    sent_inline = video_artifact is None
+    refused = (retire_refused_dispatches(root, pending, inline=sent_inline)
+               if pending and not require_retained_video else 0)
     image_request = len(frame_registry) == 1
     unit_cost = 0.0025 if image_request else max(50, len(frame_registry)) * PRICE_PER_FRAME_USD
     room = (None if maximum_cost_usd is None
@@ -549,7 +734,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     # The resend marks of every pending prompt whose first dispatch got no answer: that one is
     # counted as spent (its reservation stays held), and this dispatch is its single resend.
     resends = ({index: mark for index, mark in count_unanswered_dispatches(
-                    root, pending, binding_digest=digest, limit=room).items() if index in pending}
+                    root, pending, binding_digest=digest, limit=room, inline=sent_inline).items() if index in pending}
                if pending and not require_retained_video else {})
     if require_retained_video:
         required = [root / name for name in ("binding.json", "tracks.json")]
@@ -565,11 +750,21 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     # prompts rather than redispatching the already reserved parent binding.
     # A resend is never the original grant: the binding names each intent it resends, so the
     # website reserves it afresh beside the held first reservation, never "already_reserved".
-    admission_digest = (digest if len(pending) == len(prompts) and not refused and not resends else canonical_digest({
-        "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
-        "pending_prompt_indices": pending, **({"refused_dispatches": refused} if refused else {}),
-        **({"unanswered_resends": [{"prompt_index": index, **resends[index]} for index in sorted(resends)]}
-           if resends else {})}))
+    def admission_for(pending: Sequence[int]) -> str:
+        # Every re-buy this binding recorded (``superseded-clip``) is part of the digest on every later
+        # run, so a re-buy whose reservation was refused, or whose worker died, is never reserved
+        # under the original binding again ("already_reserved"), nor bought twice under one hold.
+        rebuys = _recorded_rebuys(root) if inline else []
+        if len(pending) == len(prompts) and not refused and not resends and not rebuys:
+            return digest
+        return canonical_digest({
+            "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
+            "pending_prompt_indices": list(pending), **({"refused_dispatches": refused} if refused else {}),
+            **({"unanswered_resends": [{"prompt_index": index, **resends[index]} for index in sorted(resends)]}
+               if resends else {}),
+            **({"clip_rebuy": len(rebuys), "clip_digest": rebuys[-1]["clip_digest"]} if rebuys else {})})
+
+    admission_digest = admission_for(pending)
     if not prompts or len({p["prompt_id"] for p in prompts}) != len(prompts):
         raise ValueError("meta_sam_prompts_invalid")
     for prompt in prompts:
@@ -579,7 +774,19 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     if not require_retained_video:
         root.mkdir(parents=True, exist_ok=True)
         write_json(root / "binding.json", binding)
-    if video_artifact is None:
+    clip_encoding, clip_digest = None, None
+    answered_digests = {str(json.loads((root / f"response-{index}.json").read_text()).get("clip_digest"))
+                        for index in range(len(prompts)) if index not in pending} if inline else set()
+    if inline and retained and len(answered_digests) == 1:
+        # Every prompt has its answer for one clip: nothing is encoded, sent or set aside.
+        clip, clip_digest = root / "retained-frames.mp4", next(iter(answered_digests))
+    elif inline:
+        # Sent inline: the retained clip when it is verified and fits; otherwise the first rung of
+        # ``INLINE_CLIP_LADDER`` whose whole request fits, retained for the next run.
+        kept = _retained_inline_clip(root, answered_digests=answered_digests, prompts=prompts)
+        clip, clip_encoding = kept or encode_inline_clip(registry=frame_registry, artifacts=frame_artifacts,
+                                                         root=root, prompts=prompts)
+    elif video_artifact is None:
         clip = encode_clip(registry=frame_registry, artifacts=frame_artifacts, root=root)
     else:
         clip = Path(video_artifact["path"])
@@ -591,9 +798,23 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 or clip.stat().st_size > 32 * 1024**2 or max(stream["width"], stream["height"]) > 4096
                 or any((row["width"], row["height"]) != (stream["width"], stream["height"]) for row in frame_registry)):
             raise ValueError("meta_sam_encoded_frame_mapping_invalid")
+    clip_digest = clip_digest or _sha256_file(clip)
+    answered = [index for index in range(len(prompts)) if index not in pending]
+    if (video_artifact is None and not image_request and answered and not require_retained_video
+            and any(json.loads((root / f"response-{index}.json").read_text()).get("clip_digest") != clip_digest
+                    for index in answered)):
+        # The clip changed since those answers were bought (a new encoding, an encoder update): they
+        # describe other pixels, so every prompt is bought again with this clip, under its own
+        # reservation, never the earlier one's. The answers set aside stay retained and are recorded.
+        if admission_grant is not None:
+            # A caller's own grant names the request it was given for, not this new one.
+            raise ValueError("meta_sam_caller_grant_covers_another_clip")
+        _set_aside_answers_for_another_clip(root, answered, clip_digest=clip_digest)
+        pending, retained = list(range(len(prompts))), False
+        token = token or meta_api_key()
+        admission_digest = admission_for(pending)
     if any((root / f"intent-{i}.json").exists() for i in pending):
         raise ValueError("meta_sam_submission_requires_reconciliation")
-    clip_digest = _sha256_file(clip)
     for index in range(len(prompts)):
         if index in pending:
             continue
@@ -630,7 +851,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             result_path, intent_path = root / f"response-{index}.json", root / f"intent-{index}.json"
             if result_path.is_file():
                 receipt = json.loads(result_path.read_text())
-                if receipt["binding_digest"] != digest or receipt["clip_digest"] != _sha256_file(clip):
+                if receipt["binding_digest"] != digest or receipt["clip_digest"] != clip_digest:
                     raise ValueError("meta_sam_retained_response_changed")
                 response = receipt["response"]
             else:
@@ -663,7 +884,8 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                     raise ValueError(f"meta_sam_http_{exc.code}") from None
                 receipt = {"binding_digest": digest, "clip_digest": _sha256_file(clip),
                            "allocation_binding_digest": admission_digest, "response": response,
-                           "reserved_cost_usd": unit_cost, **resends.get(index, {})}
+                           "reserved_cost_usd": unit_cost, **resends.get(index, {}),
+                           **({"clip_encoding": clip_encoding["encoding"]} if clip_encoding else {})}
                 temporary = result_path.with_suffix(".tmp")
                 write_json(temporary, receipt)
                 os.replace(temporary, result_path)
@@ -695,6 +917,9 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
         result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
                   "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
+        if inline:
+            # The rung the answers were bought with, in the receipt every caller keeps.
+            result["clip_encoding"] = _clip_encoding_name(root, clip_digest, clip_encoding)
         if require_retained_video:
             if load_track_json(root / "tracks.json") != result:
                 raise ValueError("meta_sam_retained_tracks_changed")

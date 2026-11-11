@@ -665,6 +665,11 @@ def run_automation(
                 **({"refined_splat": refined_splat} if refined_splat else {}),
             )
     except (ValueError, StopIteration) as exc:
+        from .job_retry_policy import provider_answer, request_cannot_succeed
+        if provider_answer(str(exc)) is not None or request_cannot_succeed(str(exc)):
+            # An outside service refused one request (capture-39ecdc97: meta_sam_http_413). That is
+            # its answer, not input anyone can give: the job's own retry schedule handles it.
+            raise
         # Keep source reconstruction and usable size estimates even when consent,
         # budget, pixels, review, depth agreement or export blocks this candidate.
         background = {

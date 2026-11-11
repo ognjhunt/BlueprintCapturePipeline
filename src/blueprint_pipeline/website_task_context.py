@@ -210,6 +210,28 @@ class RetainedAdmissionUnusable(ValueError):
     """The retained reservation itself can no longer pay a dispatch: expired, or not this binding's."""
 
 
+def require_current_website_source(task_context: Mapping[str, Any]) -> None:
+    """The capture's current source and task, read fresh, before anything is sent under an earlier hold.
+
+    A new reservation gets this from the website's own spend transaction. A retained hold does
+    not, so its reuse asks first: an owned capture through its worker's source fence, a website
+    capture through the authenticated ``task-context`` read, which refuses a withdrawn or revoked
+    source (``..._http_409:source_revoked``). A context that changed since the run loaded it is
+    ``website_scene_sponsorship_binding_invalid``, which the job retries with the fresh one.
+    """
+    from .atlas_preparation_runtime import preparation_source_checkpoint
+    source_checkpoint = preparation_source_checkpoint(task_context)
+    if source_checkpoint is not None:
+        source_checkpoint("owned_atlas_spend_reservation")
+        return
+    current = load_current_website_task_context(
+        request_id=task_context["request_id"], scene_id=task_context["scene_id"],
+        capture_id=task_context["capture_id"],
+        purpose="scene_preparation" if task_context.get("purpose") == "scene_preparation" else None)
+    if current.get("context_digest") != task_context.get("context_digest"):
+        raise ValueError("website_scene_sponsorship_binding_invalid")
+
+
 def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_digest: str,
                                     now: float | None = None) -> Any:
     """The in-process grant of a retained Gemini reservation whose last dispatch provably bought nothing.

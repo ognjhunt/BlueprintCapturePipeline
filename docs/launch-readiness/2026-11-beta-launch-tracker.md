@@ -113,12 +113,26 @@ An end-to-end audit of both repos on 2026-11-10 asked one question of every step
 - No automatic check finds a test that breaks when the date moves. A run with the clock shifted forward would.
 - The default local test run deselects tests marked `slow`. Two failures on #3556 reached CI for that reason.
 
+## Segmentation upload path: open faults (2026-11-11)
+
+**not started.** Steps that give the hosted segmentation provider a whole source video (`video_artifact`: the clean-plate task masks, the robot-access measurement) upload it with `meta_sam31._upload_video`, which leaves a copy at the provider until it is deleted by its file id. Two reviews on 2026-11-11 established these faults of that path on `main`:
+
+- At the end of a run the copy is deleted only by a run that had prompts to send. A delete that fails is recorded as not deleted. The job tries it again only if a later run of the same request still has prompts to send. Otherwise only a site withdrawal deletes it: that path deletes every recorded file id and retries a failed delete.
+- An upload with no clear outcome (no answer, a server error, or an answer without a usable file id) leaves an intent with no file id. Every later run then stops with `meta_sam_video_upload_requires_reconciliation` until a person resolves it. The reservation made before the upload stays held. A withdrawal lists such an intent as a copy whose id is unknown.
+- A 404 on a prompt is always taken to mean that the uploaded file is gone, and the next run uploads again; the code does not check that this is what the provider meant.
+- Outside a withdrawal, nothing deletes a copy whose run was killed between the upload and the delete.
+
+The reviews did not check how long the provider keeps an uploaded file, or whether it deletes files by itself.
+
+Intended design: every upload is written to one record before it is sent, and stays there until the provider confirms its delete. One periodic sweep empties that record, skipping runs that still hold their lock.
+
 ## Deploy on 2026-11-11 (15:00 UTC window, D-08)
 
 - **Before, 15:00Z (door status and requests):** active release `a0a6360` (#3558). No activation hold, no paid-launch lock held, no screening candidate launching or running, no deploy pending. The last deploy had finished at 04:32Z.
 - **15:00:39Z, head of main `13b48cc` (#3562): refused before anything changed.** Receipt `blocked`, `deploy_scene_retirement_runtime_unproven`, phase `await_attestation`, reason `ci_finished_without_attestation`. Main's CI (run 43032464587) and the Sim-Only Local Gate (run 43032464446) failed on that commit; both had passed on the commit before it. No provider change was made. The cause was not the code: between about 13:49Z and 14:01Z the runners could not install system packages (the gate's `apt-get install` stalled until its 12-minute limit; the four wide shards' Playwright dependency install failed with "Temporary failure resolving 'archive.ubuntu.com'"), so no test ran in either workflow. On a clone at `13b48cc` the commit's own four test files pass (84), and the branch's impacted selection passes (845). Re-running the two workflows gives the commit a passing run; the cloud session's GitHub access cannot re-run a workflow (403), so that is an owner click, or the next merge to main supersedes it.
 - **15:06:25Z, `8add0da` (#3561), the newest commit on main with a passing CI: deployed at 15:18:23Z.** It carried #3556 (a job extends its own ceiling; the scripted reference row, which still cannot run on today's catalog), #3559 (state backup and rebuild, the off-host GPU reaper, checks before merge), #3560 (the reach rule: a stance counts only when the grasp contact is in reach at the pick-up and the put-down; stance search version 4) and #3561 (the capture app's pipeline deleted). After it: `commit_proven` true, no blockers, the same candidate counts as before.
-- **Not live:** #3562 (publication v4, how far each policy got). It goes out with the next window once main's failing check is fixed. The WebApp has accepted v4 since `bdd5bdc`.
+- **Not live after the first deploy:** #3562 (publication v4, how far each policy got); it went out with the second deploy below. The WebApp has accepted v4 since `bdd5bdc`.
+- **Second deploy the same day, outside the window, on the owner's word ("deploy now", about 17:45Z):** requested at 17:47:08Z for `49759e2` (#3563), which waited for main's CI to attest the commit and was deployed at 18:18:26Z. Before it: nothing launching, running, preparing or pending, no hold, no paid-launch lock held, the last deploy more than two hours earlier. It carried #3562 (publication v4: how far each policy got) and #3563 (the scripted reference check on a fitting body with its $3.00 cap, 11 more robots in the spec catalog, recording-rights statement version `2026-11-11.v3` accepted, the CI mirror fallback). After it: `commit_proven` true, no blockers. The owner had re-run #3563's failed checks once the runners could resolve Ubuntu's package hosts again; all twelve full-suite shards passed.
 - **Replay for #3560:** the recorded job's launch run had been offloaded and the work disk had no room to restore it, so the documented replay could not run. The merged stance search was run offline on that job's retained inputs instead; the result is in `2026-11-11-simulation-proof-fast-lane-plan.md` (the job is not held under the new rule; it continues, flagged).
 
 ## Library-aisle navigation run (2026-11-06)

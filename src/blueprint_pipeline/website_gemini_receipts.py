@@ -13,8 +13,8 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .paid_resource_admission import require_paid_resource_admission_grant
 from .website_task_context import (
-    RetainedAdmissionUnusable, reserve_website_preparation_spend, reuse_website_preparation_spend,
-    validate_website_task_context,
+    RetainedAdmissionUnusable, require_current_website_source, reserve_website_preparation_spend,
+    reuse_website_preparation_spend, validate_website_task_context,
 )
 
 
@@ -184,6 +184,9 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
                     return retained
         preflight()
         if reuse is not None:
+            # A held reservation skips the website's spend transaction, so the capture's current
+            # source is read first: nothing is sent under it once the site has withdrawn.
+            require_current_website_source(task_context)
             try:
                 # The same hold, never released, pays this dispatch: the last one provably bought nothing.
                 grant = reuse_website_preparation_spend(admission=reuse, binding_digest=dispatch)

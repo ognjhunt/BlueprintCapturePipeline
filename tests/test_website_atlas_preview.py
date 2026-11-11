@@ -1395,3 +1395,57 @@ def test_a_deterministic_refusal_still_ends_at_the_jobs_deadline(monkeypatch, si
     world.advance()
     world.clock += preview.MAXIMUM_JOB_SECONDS + 1
     assert world.advance() == "failed" and _job(site)["reason"] == "atlas_preview_expired" and len(world.runs) == 1
+
+
+@pytest.mark.parametrize("code", ["meta_sam_http_413", "meta_sam_inline_clip_exceeds_request_ceiling"])
+def test_a_request_that_cannot_succeed_fails_the_step_at_once(monkeypatch, site, code):
+    # capture-39ecdc97 (2026-11-11): the segmentation provider answered 413, and the job sat in
+    # needs_input, which nothing steps again. Sending the same request again cannot succeed.
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError(code)])
+    assert world.advance() == "failed"
+    job = _job(site)
+    assert (job["state"], job["reason"], job["retry_at_epoch"]) == ("failed", code, None)
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("failed", code)
+    world.clock += 7 * 86400
+    assert world.advance() == "failed" and len(world.runs) == 1
+
+
+@pytest.mark.parametrize("blockers,state,reason", [
+    (["meta_sam_http_413"], "failed", "meta_sam_http_413"),
+    (["meta_sam_http_503"], "processing", None),
+    # Any blocker that is not a provider's answer may need a person: exactly main's outcome, the first.
+    (["metric_scene_registration_unproven", "meta_sam_http_413"], "needs_input", "metric_scene_registration_unproven"),
+    (["meta_sam_http_413", "metric_scene_registration_unproven"], "needs_input", "meta_sam_http_413"),
+    (["metric_scene_registration_unproven", "meta_sam_http_503"], "needs_input", "metric_scene_registration_unproven"),
+    (["meta_sam_http_503", "metric_scene_registration_unproven"], "needs_input", "meta_sam_http_503"),
+])
+def test_a_kept_result_takes_the_retry_policy_only_when_every_blocker_is_a_provider_answer(
+        monkeypatch, site, blockers, state, reason):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "needs_input", "download": None,
+                                       "blockers": blockers, "digest": "sha256:retained"}])
+    assert world.advance() == state
+    job = _job(site)
+    assert job["reason"] == reason
+    if state == "needs_input":
+        assert job["stage"] == "preparation" and job.get("refusal_retries", 0) == 0
+    if state == "processing":
+        assert job["refusal_retries"] == 1 and job["next_attempt_at_epoch"] > world.clock
+
+
+@pytest.mark.parametrize("code", ["meta_sam_http_408", "meta_sam_http_409", "meta_sam_http_425",
+                                  "meta_sam_http_429", "meta_sam_http_502", "meta_sam_http_503"])
+def test_a_try_again_answer_takes_the_bounded_schedule_then_fails_with_its_code(monkeypatch, site, code):
+    # Each retry of a refused dispatch reserves anew (no call releases a hold), so the retries are
+    # counted: main's refusal schedule, six timed retries, then the step ends with the code.
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError(code)] * 7)
+    assert world.advance() == "processing"
+    assert _job(site)["last_refusal_reason"] == code and _job(site)["transient_failures"] == 0
+    assert {row["state"] for row in world.pushed} == {"processing"}  # the site is told the build goes on
+    for _ in range(len(preview.REFUSAL_RETRY_DELAYS_SECONDS)):
+        world.clock = _job(site)["next_attempt_at_epoch"]
+        world.advance()
+    assert (_job(site)["state"], _job(site)["reason"]) == ("failed", code)
+    assert len(world.runs) == 1 + len(preview.REFUSAL_RETRY_DELAYS_SECONDS)
