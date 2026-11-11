@@ -29,12 +29,21 @@ What the row is, and is not:
   At run time nothing that funds, waitlists, refills, defers or closes a learned candidate counts
   it while it is unreserved (``beta_policy_screening_coordinator._refill_waitlist``, the job's
   local holds): every learned row is decided exactly as if the row did not exist. It is reserved
-  only once every learned row of its campaign has ended, through the coordinator's ordinary
-  reservation, so the plan budget, the site limit, the job ceiling and the account limit bound it.
-  If its cap does not fit then, it ends at once with ``known_good_control_unavailable:budget``; it
-  never waits on money (``control_gate``), so its campaign always completes. Once reserved its
-  money is real against the site limit, like any row's, and other campaigns at the site see it:
-  the owner approved up to $3.00 per job for it.
+  only when its campaign, read as if the row did not exist, has ended ``completed`` for good
+  (``beta_policy_screening_coordinator._final_without_control``: ``campaign_status`` of the learned
+  rows, not superseded, and ``_replan_scope`` would plan nothing again by itself or after any
+  deploy), the job's source is still current (the read every paid attempt makes; an owner's closed
+  run or ended consent is not), and the sibling-harness hold does not apply. Otherwise it closes at
+  once without running or holding money (``known_good_control_interrupted``), so a re-plan and any
+  successor see exactly what they would without it. When the same check is active in another
+  campaign it closes the same way; a finished pass or fail of it is reused. It never waits on money
+  or on another campaign: it waits only while a learned row of its own campaign may still run. Then
+  it goes through the coordinator's ordinary reservation, so the plan budget, the site limit, the
+  job ceiling and the account limit bound it; if its cap does not fit, it ends at once with
+  ``known_good_control_unavailable:budget``. Once reserved its money is real against the site
+  limit, like any row's: the owner approved up to $3.00 per job for it. The cost of this rule: a
+  re-plan and a successor campaign carry no reference row, so a job whose first campaign did not
+  finish cleanly gets no check.
 - It is planned only for a rigid pick/place task on the rigid lane, with a registered scripted
   profile for its body. The body is the robot of a selected candidate when one has a scripted
   profile (the marker's ``for_candidate_id``). Otherwise it is the body of a model the job's own
@@ -456,22 +465,28 @@ def reuse_key(plan: Mapping[str, Any]) -> str:
 
 def control_gate(ledger: Mapping[str, Any], campaign_id: str, plan: Mapping[str, Any], *,
                  plans: Callable[[str, str], Mapping[str, Any]], committed: Callable[..., Decimal],
-                 site_limit: Decimal) -> str:
+                 site_limit: Decimal, final: Callable[[], bool]) -> str:
     """Whether a pending control may be reserved now: ``proceed``, ``wait``, ``reused`` or ``closed``.
 
     Called under the ledger lock; may mark the ledger row (its key, a reused result, or its close) in place.
-    ``committed(site_id, campaign_id=None)`` is what funding already counts.
+    ``committed(site_id, campaign_id=None)`` is what funding already counts. ``final()``: whether the
+    campaign, as if the row did not exist, has ended ``completed`` for good, with nothing a re-plan or a
+    successor would take up (``beta_policy_screening_coordinator._final_without_control``).
 
-    It runs last: it waits while any learned row of its campaign may still need money or run (they always
-    end), or while the same check runs in another campaign (that run always ends; a pending control never
-    makes another wait). Then it either fits what is left of the site limit and the plan budget, or it
-    closes at once with a budget blocker (``known_good_control_unavailable:budget``): it never waits on money.
+    It waits only while a learned row of its own campaign may still need money or run. Then, once, it
+    reuses a finished pass or fail of the same check, or is closed without running (as not run:
+    ``known_good_control_interrupted``) when the same check is active in another campaign or the campaign
+    without it did not end ``completed`` for good, or closes for budget when its cap does not fit, or
+    proceeds to the ordinary reservation. It never waits on money or on another campaign.
     """
     from .beta_policy_screening_plan import money
 
     state = ledger["campaigns"][campaign_id]
     configured = next(row for row in plan["candidates"] if is_control(row))
     row = state["candidates"][configured["candidate_id"]]
+    if any(state["candidates"][item["candidate_id"]]["status"] in _LEARNED_OPEN
+           for item in plan["candidates"] if not is_control(item)):
+        return "wait"
     key = row.setdefault(KEY_FIELD, reuse_key(plan))
     for other_id, other in sorted(ledger["campaigns"].items()):
         if other["site_id"] != state["site_id"]:
@@ -480,7 +495,9 @@ def control_gate(ledger: Mapping[str, Any], campaign_id: str, plan: Mapping[str,
             if other_id == campaign_id or not is_control(other_row) or other_row.get(KEY_FIELD) != key:
                 continue
             if other_row["status"] in _ACTIVE:
-                return "wait"  # The same check is running; its result is reused, never paid twice.
+                # The same check runs elsewhere: this one is not paid for twice, and never waits for it.
+                row.update(status="unavailable", blockers=[NOT_RUN_BLOCKER])
+                return "closed"
             other_plan = plans(other_id, other["plan_digest"])
             other_configured = next((item for item in other_plan["candidates"] if item["candidate_id"] == other_key), None)
             outcome = control_outcome(other_configured or {}, other_row).split(":")[0]
@@ -488,9 +505,11 @@ def control_gate(ledger: Mapping[str, Any], campaign_id: str, plan: Mapping[str,
                 row.update(status="unavailable", blockers=[REUSED_BLOCKER])
                 row[REUSED_FIELD] = {"campaign_id": other_id, "outcome": outcome}
                 return "reused"
-    if any(state["candidates"][item["candidate_id"]]["status"] in _LEARNED_OPEN
-           for item in plan["candidates"] if not is_control(item)):
-        return "wait"
+    if not final():
+        # Something of the campaign may still be retried, held for a deploy or planned again: the row never
+        # runs or holds money beside it, so the re-plan and any successor see exactly what they would without it.
+        row.update(status="unavailable", blockers=[NOT_RUN_BLOCKER])
+        return "closed"
     cap = money(configured["max_cost_usd"])
     if (committed(state["site_id"]) + cap <= site_limit
             and committed(state["site_id"], campaign_id=campaign_id) + cap <= money(plan["budget_usd"])):

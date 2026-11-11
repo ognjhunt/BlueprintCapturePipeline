@@ -39,9 +39,11 @@ _SOURCE_KEYS = (
 )
 # The recording-rights statements a site can have attested on the WebApp
 # (`client/src/lib/recordingRightsStatement.ts`). A closed set: records made
-# under v1 stay valid, v2 is the sentence the site now sees where it attests,
-# and any other version is refused.
-RECORDING_RIGHTS_STATEMENT_VERSIONS = frozenset({"2026-09-18.v1", "2026-11-02.v2"})
+# under v1 and v2 stay valid; v3 is the short sentence shown on the start form
+# from the WebApp release that turns it on ("By sending, you agree to our Terms
+# and Privacy Policy and confirm you're allowed to film and share this site.").
+# Any other version is refused.
+RECORDING_RIGHTS_STATEMENT_VERSIONS = frozenset({"2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3"})
 
 
 OWNER_OBSERVATION_REASON_CODES = frozenset({

@@ -281,14 +281,26 @@ the scene's robot station rather than its own, the code `scene_packet_station`.
 what the selected candidates leave of the plan budget and the site's allowance.
 At run time nothing that funds, waitlists, refills or closes a learned
 candidate counts it while it is unreserved, so every learned row ends exactly
-as it would without it (a test runs the same queue with and without the row
-and compares every learned row's end and money). It is reserved only after
-every learned row of its campaign has ended, through the ordinary reservation,
-so the plan budget, the site limit, the job ceiling and the account limit
-bound it. If its cap does not fit then, it ends at once as
-`known_good_control_unavailable:budget`; it never waits on money, so the
-campaign always completes. Once reserved, its money counts against the site
-limit like any row's. The publication carries the check's outcome flag and its
+as it would without it (tests run the same queue with and without the row,
+through harness failures, settlements, a deploy's re-plan, a successor, an
+owner-closed run and a binding site limit, and compare every learned row's end
+and money, the re-plan and the successor's money). It is reserved only when
+its campaign, read as if the row did not exist, has finished `completed` for
+good: nothing would be retried, held for a deploy or planned again, the job's
+source is still current (the owner did not close the run, consent holds), and
+its own harness has not just failed there. Otherwise it closes at once without
+running or holding money, as "did not finish"
+(`known_good_control_interrupted`); it also closes that way when the same check
+is running for another campaign. It never waits on money or on another
+campaign. Then it goes through the ordinary reservation, so the plan budget,
+the site limit, the job ceiling and the account limit bound it; if its cap
+does not fit, it ends as `known_good_control_unavailable:budget`. Once
+reserved, its money counts against the site limit like any row's. What this
+costs: a re-plan or a successor campaign carries no reference row, so a job
+whose first campaign did not finish cleanly gets no check. That includes a job
+whose plan closed learned policies for the plan budget while the site still
+had money, because a later deploy would plan those again.
+The publication carries the check's outcome flag and its
 `episodes_succeeded` of `episodes_scored` on the row `blueprint_scripted_<body>`.
 
 **It is not inert.** The host registry (`/etc/blueprint/team-evaluation-registry.json`,

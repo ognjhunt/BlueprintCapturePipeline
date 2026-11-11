@@ -226,6 +226,8 @@ def closed(result):
 @pytest.fixture
 def summaries(monkeypatch):
     monkeypatch.setattr(coordinator, "candidate_result_summary", lambda result, **_kwargs: dict(result))
+    # The job's source stays current (no owner closure, consent granted) unless a test says otherwise.
+    monkeypatch.setattr(coordinator, "_source_still_current", lambda _plan: True)
     monkeypatch.setattr(coordinator, "_settle", lambda *_args, **_kwargs: False)
 
 
@@ -346,22 +348,21 @@ def test_a_pass_or_fail_is_reused_for_the_same_check_and_never_paid_twice(tmp_pa
     assert backend.order.count(CONTROL) == 2
 
 
-def test_waiting_for_the_same_check_elsewhere_ends_when_that_run_ends(tmp_path, summaries):
+def test_the_same_check_active_elsewhere_closes_this_one_without_waiting(tmp_path, summaries):
     coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1)), queue_root=tmp_path)
     coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1), campaign_id="campaign-2"),
                                            queue_root=tmp_path)
-    backend = PerRow(done("candidate-000"))  # the first control keeps running
+    backend = PerRow(done("candidate-000"))  # the first control keeps running (or never reconciles)
     run(tmp_path, backend, passes=8, max_launches=3)
     assert backend.order.count(CONTROL) == 1
     ledger = json.loads((tmp_path / coordinator.LEDGER_FILENAME).read_text())
-    statuses = sorted(state["candidates"][CONTROL]["status"] for state in ledger["campaigns"].values())
-    assert statuses == ["pending", "running"]
-    backend.observations[CONTROL] = closed(_summary(3, 1, scripted=True, planned=3))
-    publications = {row["campaign_id"]: row for row in run(tmp_path, backend, passes=6)}
-    assert backend.order.count(CONTROL) == 1
-    flags = sorted(_rows(value)[CONTROL]["setup_quality_flags"][0] for value in publications.values())
-    assert flags == ["known_good_control_passed", "known_good_control_passed:reused"]
-    assert {value["status"] for value in publications.values()} == {"completed"}
+    # The second is closed as not run at once: it never waits on another campaign's run.
+    assert sorted(state["candidates"][CONTROL]["status"] for state in ledger["campaigns"].values()) == [
+        "running", "unavailable"]
+    publications = {row["campaign_id"]: row for row in coordinator.pending_publications(queue_root=tmp_path)}
+    flags = {key: _rows(value)[CONTROL]["setup_quality_flags"] for key, value in publications.items()}
+    assert sorted(flag for values in flags.values() for flag in values) == [
+        "known_good_control_interrupted", "known_good_control_pending"]
 
 
 # ---- the control never changes how a learned row is funded, and the campaign always completes -------------
@@ -436,17 +437,19 @@ def test_no_state_leaves_the_control_pending_while_nothing_else_can_move(tmp_pat
                                      "reconciliation_required"} for row in state["candidates"].values())
     assert coordinator.campaign_status(state["candidates"]) not in {"queued", "running"}
     configured = next(row for row in shaped(control_row=True, **settings)["candidates"] if control.is_control(row))
-    assert control.control_outcome(configured, state["candidates"][CONTROL]) in {
-        control.PASSED, f"{control.UNAVAILABLE}:budget"}
+    outcome = control.control_outcome(configured, state["candidates"][CONTROL])
+    assert outcome in {control.PASSED, control.INTERRUPTED, f"{control.UNAVAILABLE}:budget"}
+    # It ran only when the campaign without it ended completed for good.
+    assert (outcome == control.PASSED) is (shape == "all_selected")
 
 
 def test_the_reviewers_deadlock_shape_now_completes_and_funds_the_waiting_row(tmp_path, summaries):
     # 2026-11-11 review: three $4 rows, the third waitlisted at $8.50, the $3 control planned. A release
-    # funds the waiting row ($4 + $8.50 of $15) exactly as without the control; the control then cannot
-    # fit and ends for budget, so the campaign completes instead of waiting until its quotes expire.
+    # funds the waiting row ($4 + $8.50 of $15) exactly as without the control. The released row would be
+    # planned again after a deploy, so the control closes without running: the campaign completes.
     state, backend = drive(tmp_path, shaped(control_row=True, count=3, waiting="8.50"), refuse=True)
     assert state["candidates"]["candidate-002"]["status"] == "completed"
-    assert state["candidates"][CONTROL]["status"] == "deferred" and CONTROL not in backend.order
+    assert state["candidates"][CONTROL]["status"] == "unavailable" and CONTROL not in backend.order
 
 
 def test_an_unreserved_control_is_not_a_hold_on_the_jobs_ceiling(tmp_path):
@@ -869,3 +872,198 @@ def test_a_chosen_by_rule_is_validated(change):
     value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
     with pytest.raises(BetaPolicyScreeningPlanError):
         validate_screening_plan(value)
+
+
+# ---- round 4: the row runs only when its campaign, without it, ended completed for good --------------------
+#
+# Real settlement and failure paths: the summaries are passed through, but committed attempts settle through
+# the coordinator's own ``_settle`` (at $1 each), harness failures hold siblings, a deploy re-plans and a
+# successor campaign runs at the same site. Every shape is driven with and without the row and compared.
+
+HARNESS_FAIL = {"status": "blocked", "provider_allocation_performed": True, "provider_zero_verified": True,
+                "blockers": ["beta_screening_native_result_missing_or_invalid"]}
+REVOKED = {"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
+           "blockers": ["beta_screening_current_source_revoked"]}
+LATER = "b" * 40
+
+
+@pytest.fixture
+def settles(monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_settlement as settlement
+
+    monkeypatch.setattr(coordinator, "candidate_result_summary", lambda result, **_kwargs: dict(result))
+    monkeypatch.setattr(coordinator, "_source_still_current", lambda _plan: True)
+
+    def settle(*, attempt_dir, attempt, candidate, settled_at):
+        receipt = {"schema_version": settlement.SETTLEMENT_SCHEMA, "settlement_basis": settlement.SETTLEMENT_BASIS,
+                   "settled_cost_usd": "1", "settled_at": settled_at, "attempt_id": attempt["attempt_id"],
+                   "maximum_cost_usd": attempt["maximum_cost_usd"], "receipt_digest": ""}
+        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+        return {"settled_cost_usd": "1", "settlement_basis": settlement.SETTLEMENT_BASIS, "settled_at": settled_at,
+                "settlement_receipt": receipt, "settlement_receipt_digest": receipt["receipt_digest"]}
+
+    monkeypatch.setattr(settlement, "attempt_settlement", settle)
+
+
+def _successor(value, scope):
+    """The re-plan a deploy enqueues: the same source, only the candidates ``_replan_scope`` named."""
+    value = deepcopy(value)
+    value["campaign_id"] = "campaign-2"
+    value["candidates"] = [row for row in value["candidates"] if row["candidate_id"] in scope
+                           and not control.is_control(row)]
+    for row in value["candidates"]:
+        row.update(status="selected", blockers=[])
+    value["maximum_planned_cost_usd"] = f"{sum(Decimal(row['max_cost_usd']) for row in value['candidates']):.2f}"
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    return validate_screening_plan(value)
+
+
+class OtherCampaignKeepsRunning(PerRow):
+    """Campaign ``campaign-0`` (another job at the site) keeps its reservations: its runs never end here."""
+
+    def reconcile_candidate(self, **kwargs):
+        if kwargs["plan"]["campaign_id"] == "campaign-0":
+            self.reconciliations += 1
+            return {"status": "running"}
+        return super().reconcile_candidate(**kwargs)
+
+
+def _observe(root, value, observations, *, passes=12, max_launches=2, setup=None):
+    coordinator.enqueue_screening_campaign(value, queue_root=root)
+    if setup:
+        setup(root)
+    backend = (OtherCampaignKeepsRunning if setup else PerRow)(observations)
+    run(root, backend, passes=passes, max_launches=max_launches)
+    from blueprint_pipeline import beta_policy_screening_job_ceiling as job_ceiling
+
+    ledger = json.loads((root / coordinator.LEDGER_FILENAME).read_text())
+    state = ledger["campaigns"]["campaign-1"]
+    learned = {key: row for key, row in state["candidates"].items() if not row.get("known_good_control")}
+    facts = {"learned": _learned_money(state), "status": coordinator.campaign_status(learned),
+             "scope": coordinator.replan_scope("campaign-1", implementation_commit=LATER, queue_root=root),
+             "self_scope": coordinator.replan_scope("campaign-1", implementation_commit="a" * 40, queue_root=root),
+             "holds": job_ceiling.local_screening_holds(root, site_id="site-job-1", published_usd=Decimal(0))}
+    if facts["scope"]:
+        # A deploy: the successor plans what the scope names, then runs; its own rows and the site's money
+        # left for it are compared too.
+        facts["site_left_for_successor"] = job_ceiling.site_screening_remaining(root, site_id="site-job-1")
+        coordinator.supersede_campaign("campaign-1", _successor(value, facts["scope"]), implementation_commit=LATER,
+                                       queue_root=root)
+        backend.observations = {**backend.observations, **done(*facts["scope"])}
+        run(root, backend, passes=passes, max_launches=max_launches)
+        ledger = json.loads((root / coordinator.LEDGER_FILENAME).read_text())
+        facts["successor"] = _learned_money(ledger["campaigns"]["campaign-2"])
+        facts["site_left_after_successor"] = job_ceiling.site_screening_remaining(root, site_id="site-job-1")
+    else:
+        facts["site_left"] = job_ceiling.site_screening_remaining(root, site_id="site-job-1")
+    state = json.loads((root / coordinator.LEDGER_FILENAME).read_text())["campaigns"]["campaign-1"]
+    return facts, backend, state
+
+
+def _other_campaign_holds(amount):
+    def setup(root):
+        other = queue_plan(campaign_id="campaign-0", cost=amount, count=3)
+        coordinator.enqueue_screening_campaign(other, queue_root=root)
+        for row in other["candidates"]:
+            assert coordinator._reserve(root, other, row) is not None
+    return setup
+
+
+ROUND4 = {
+    # The reviewer's shape: both learned rows fail on the harness, retried after the next deploy.
+    "harness_failure": dict(count=2, observations={"candidate-000": HARNESS_FAIL, "candidate-001": HARNESS_FAIL}),
+    # Row A fails on the harness and settles at $1; B and C are held for the deploy.
+    "harness_failure_settled_siblings_held": dict(count=3, observations={"candidate-000": HARNESS_FAIL},
+                                                  max_launches=1),
+    # A deploy lands while the learned rows are still queued (nothing launched yet).
+    "deploy_mid_run": dict(count=3, observations={}, passes=1, max_launches=0),
+    # The owner closed the run (the source was revoked) after one learned row and while the other ran.
+    "owner_closed_run": dict(count=2, observations={"candidate-000": LEARNED_DONE, "candidate-001": REVOKED},
+                             source_current=False),
+    # Another campaign at the site keeps $15 of a $21 limit: one $6 learned row fits, the other waits on it.
+    "site_limit_binding": dict(count=2, observations=done("candidate-000", "candidate-001"),
+                               setup=_other_campaign_holds("5.00"), cost="6.00", site_limit="21"),
+    # Everything completes and settles: the only shape where the row runs.
+    "all_completed_and_settled": dict(count=2, observations=done("candidate-000", "candidate-001")),
+}
+
+
+def _round4_plan(settings, *, control_row):
+    count, cost = settings["count"], settings.get("cost", "4.00")
+    value = queue_plan(count=count, cost=cost)
+    return with_control(value, cost="3.00") if control_row else value
+
+
+@pytest.mark.parametrize("shape", sorted(ROUND4))
+def test_with_and_without_the_row_every_learned_row_replan_and_successor_are_identical(tmp_path, settles, shape,
+                                                                                         monkeypatch):
+    settings = ROUND4[shape]
+    if settings.get("source_current") is False:
+        monkeypatch.setattr(coordinator, "_source_still_current", lambda _plan: False)
+    if "site_limit" in settings:
+        monkeypatch.setattr(coordinator, "SITE_LIMIT", Decimal(settings["site_limit"]))
+    options = {key: settings[key] for key in ("passes", "max_launches", "setup") if key in settings}
+    control_result = closed(_summary(3, 1, scripted=True, planned=3))
+    without, plain, _ = _observe(tmp_path / "without", _round4_plan(settings, control_row=False),
+                                 dict(settings["observations"]), **options)
+    with_row, backend, state = _observe(tmp_path / "with", _round4_plan(settings, control_row=True),
+                                        {**settings["observations"], CONTROL: control_result}, **options)
+    ran = CONTROL in backend.order
+    # The row runs only when the campaign without it ended completed with nothing planned again.
+    assert ran is (without["status"] == "completed" and without["scope"] is None and without["self_scope"] is None
+                   and settings.get("source_current", True))
+    assert ran is (shape == "all_completed_and_settled")
+    money_keys = {"site_left", "holds"} if ran else set()  # the one difference: what the row really spent
+    assert {key: value for key, value in with_row.items() if key not in money_keys} == {
+        key: value for key, value in without.items() if key not in money_keys}
+    assert [key for key in backend.order if key != CONTROL] == plain.order
+    if ran:
+        # Settled at $1 of its $3.00 cap: only that is less for the site afterwards.
+        assert Decimal(without["site_left"]) - Decimal(with_row["site_left"]) == Decimal("1")
+    else:
+        assert state["candidates"][CONTROL]["status"] != "pending"
+        # Never held a reservation, so the re-plan and the successor saw exactly what they would without it.
+        assert "attempt" not in state["candidates"][CONTROL]
+
+
+def test_a_withdrawn_site_never_reserves_the_row(tmp_path, summaries, monkeypatch):
+    coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1)), queue_root=tmp_path)
+    backend = PerRow(done("candidate-000", control_result=closed(_summary(3, 1, scripted=True, planned=3))))
+    run(tmp_path, backend, passes=1)  # the learned row launches before the withdrawal
+    monkeypatch.setattr(coordinator, "site_withdrawal_state", lambda _site: "withdrawn")
+    run(tmp_path, backend, passes=6)
+    ledger = json.loads((tmp_path / coordinator.LEDGER_FILENAME).read_text())
+    row = ledger["campaigns"]["campaign-1"]["candidates"][CONTROL]
+    assert CONTROL not in backend.order and "attempt" not in row and row["status"] in {"blocked", "unavailable"}
+
+
+def test_a_learned_row_active_again_keeps_the_row_from_deciding():
+    value = with_control(queue_plan(count=1))
+    ledger = {"campaigns": {"campaign-1": {"site_id": "site-job-1", "candidates": {
+        "candidate-000": {"status": "running"}, CONTROL: {"status": "pending", "known_good_control": True}}}}}
+    decision = control.control_gate(ledger, "campaign-1", value, plans=lambda *_: value,
+                                    committed=lambda *_a, **_k: Decimal(0), site_limit=Decimal(30),
+                                    final=lambda: pytest.fail("decided before the learned row ended"))
+    assert decision == "wait" and ledger["campaigns"]["campaign-1"]["candidates"][CONTROL]["status"] == "pending"
+    # Once it ends but the campaign is not final, the row closes as not run; it never waits on anything else.
+    ledger["campaigns"]["campaign-1"]["candidates"]["candidate-000"]["status"] = "blocked"
+    decision = control.control_gate(ledger, "campaign-1", value, plans=lambda *_: value,
+                                    committed=lambda *_a, **_k: Decimal(0), site_limit=Decimal(30),
+                                    final=lambda: False)
+    row = ledger["campaigns"]["campaign-1"]["candidates"][CONTROL]
+    assert decision == "closed" and row["status"] == "unavailable"
+    assert control.control_outcome(value["candidates"][-1], row) == control.INTERRUPTED
+
+
+def test_the_row_takes_the_sibling_harness_hold(tmp_path, summaries):
+    value = with_control(queue_plan(count=1))
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+    ledger = coordinator._ledger(tmp_path)
+    state = ledger["campaigns"]["campaign-1"]
+    state["candidates"]["candidate-000"].update(status="blocked", blockers=["beta_screening_native_result_missing_or_invalid"])
+    coordinator._save(tmp_path, ledger)
+    if not coordinator._holds_siblings(state["candidates"]["candidate-000"]):
+        pytest.skip("this harness code does not hold siblings")
+    assert coordinator._reserve(tmp_path, value, value["candidates"][-1]) is None
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"][CONTROL]
+    assert row["status"] == "blocked" and row["blockers"] == [coordinator.HARNESS_HOLD_BLOCKER]
