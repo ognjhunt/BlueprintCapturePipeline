@@ -16,7 +16,8 @@ jobs:
   wide-shard:
     name: Wide impacted shard ${{ matrix.shard_index }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # 45 until 2026-11-11; +8 for the dependency install's third attempt.
+    timeout-minutes: 53
     strategy:
       fail-fast: false
       matrix:
@@ -255,7 +256,9 @@ jobs:
           exit 1
 
       - name: Install and protect system-Python dependencies for full Linux proof
-        timeout-minutes: 16
+        # Three attempts of at most 360 s + 90 s each. A download that did not finish
+        # in two cost a whole shard on 2026-11-10 with nothing wrong in the change.
+        timeout-minutes: 24
         run: |
           set -euo pipefail
           sudo --non-interactive true
@@ -265,15 +268,18 @@ jobs:
           test -f /sys/fs/cgroup/cgroup.controllers
           sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/blueprint-native-test-venv
           uv venv --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
+          # A lock that does not match pyproject.toml fails here, before any attempt;
+          # --frozen never resolves, so a retry only repeats the same locked downloads,
+          # and every completed one stays in uv's cache for the next attempt.
           uv lock --check
-          for attempt in 1 2; do
+          for attempt in 1 2 3; do
             if timeout --kill-after=10s 360s uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
                 --extra exact-geometry-development --python /usr/bin/python3 --link-mode copy \
               && timeout --kill-after=10s 90s uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts; then
               break
             fi
-            if test "${attempt}" = 2; then
-              echo "locked dependency install failed after two bounded attempts"
+            if test "${attempt}" = 3; then
+              echo "locked dependency install failed after three bounded attempts"
               exit 1
             fi
             echo "locked dependency install attempt ${attempt} did not complete"

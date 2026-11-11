@@ -1,0 +1,102 @@
+{
+  "schema_version": "capture_bridge_contract_fixture.v1",
+  "description": "Recorded from the capture repository, which no CI here runs. Re-record it, with the commit, whenever cloud/extract-frames changes a topic, a field the Pipeline reads, or the ingest limit. Values in the example message are illustrative; the field names and shapes are the contract.",
+  "recorded_from": {
+    "capture": {
+      "repository": "BlueprintCapture",
+      "commit": "870ad89d1eade7db0a1b98e86c1051728dd16b82",
+      "file": "cloud/extract-frames/src/index.ts",
+      "lines": {
+        "topics": "62-65",
+        "inline_limit": "75",
+        "limit_override_env": "1257-1265",
+        "large_video_block": "1324-1460,3334-3381",
+        "handoff_message": "1884-1928,4183-4198",
+        "handoff_publish": "2095-2112,4200-4231"
+      }
+    },
+    "webapp": {
+      "repository": "Blueprint-WebApp",
+      "commit": "a0ed5262693787ab964617b6f00f8ca9e16079b0",
+      "file": "server/routes/self-capture-uploads.ts",
+      "lines": {
+        "max_upload_bytes": "128,147"
+      }
+    }
+  },
+  "extract_frames": {
+    "pipeline_handoff_topic_default": "blueprint-capture-pipeline-handoff",
+    "pipeline_handoff_topic_env": "BLUEPRINT_CAPTURE_PIPELINE_TOPIC",
+    "large_video_ingest_topic_default": "blueprint-large-video-ingest",
+    "large_video_ingest_topic_env": "BLUEPRINT_LARGE_VIDEO_INGEST_TOPIC",
+    "max_inline_video_bytes_default": 1000000000,
+    "max_inline_video_bytes_env": "BLUEPRINT_EXTRACT_FRAMES_MAX_INLINE_VIDEO_BYTES",
+    "large_video_block_object": "scenes/{scene_id}/captures/{capture_id}/large_video_ingest_blocked.json",
+    "large_video_block_schema": "extract_frames_large_video_block.v1",
+    "large_video_block_code": "blocked_large_video_requires_segmented_ingest",
+    "large_video_block_publishes_pipeline_handoff": false
+  },
+  "webapp": {
+    "self_capture_max_upload_bytes_default": 2147483648,
+    "self_capture_max_upload_bytes_env": "SELF_CAPTURE_MAX_UPLOAD_BYTES"
+  },
+  "browser_delivery_message": {
+    "schema_version": "v1",
+    "handoff_source": "BlueprintCapture.extractFrames",
+    "handoff_envelope_version": 2,
+    "bucket": "blueprint-capture-test-bucket",
+    "handoff_topic": "blueprint-capture-pipeline-handoff",
+    "handoff_trigger_object": "scenes/site-r1/captures/walkthrough-r1/raw/capture_upload_complete.json",
+    "handoff_trigger_kind": "completion_marker",
+    "scene_id": "site-r1",
+    "capture_id": "walkthrough-r1",
+    "site_submission_id": "r1",
+    "buyer_request_id": null,
+    "capture_job_id": null,
+    "region_id": null,
+    "rights_profile": null,
+    "capture_source": "browser_self_capture",
+    "source_device": "browser",
+    "capture_modality": "video",
+    "raw_video_uri": "gs://blueprint-capture-test-bucket/scenes/site-r1/captures/walkthrough-r1/raw/walkthrough.mp4",
+    "media_metadata": {},
+    "qa_status": "passed",
+    "requested_outputs": [
+      "qualification"
+    ],
+    "requested_lanes": [
+      "qualification"
+    ],
+    "raw_prefix_uri": "gs://blueprint-capture-test-bucket/scenes/site-r1/captures/walkthrough-r1/raw",
+    "raw_prefix": "scenes/site-r1/captures/walkthrough-r1/raw",
+    "frames_index_uri": "gs://blueprint-capture-test-bucket/scenes/site-r1/captures/walkthrough-r1/deliveries/e6cad6de2fe75571892201e8a92d585cb4f268350bfadb217adf4db44157a1ed/frames/index.jsonl",
+    "capture_descriptor_uri": "gs://blueprint-capture-test-bucket/scenes/site-r1/captures/walkthrough-r1/deliveries/e6cad6de2fe75571892201e8a92d585cb4f268350bfadb217adf4db44157a1ed/capture_descriptor.json",
+    "qa_report_uri": "gs://blueprint-capture-test-bucket/scenes/site-r1/captures/walkthrough-r1/deliveries/e6cad6de2fe75571892201e8a92d585cb4f268350bfadb217adf4db44157a1ed/qa_report.json",
+    "pipeline_handoff_uri": "gs://blueprint-capture-test-bucket/scenes/site-r1/captures/walkthrough-r1/deliveries/e6cad6de2fe75571892201e8a92d585cb4f268350bfadb217adf4db44157a1ed/pipeline_handoff.json",
+    "keyframe_uri": "gs://blueprint-capture-test-bucket/scenes/site-r1/captures/walkthrough-r1/deliveries/e6cad6de2fe75571892201e8a92d585cb4f268350bfadb217adf4db44157a1ed/keyframe.jpg",
+    "pipeline_status_event": {
+      "event_type": "capture.raw_upload_complete.v1"
+    },
+    "source_finalize": {
+      "bucket": "blueprint-capture-test-bucket",
+      "object_name": "scenes/site-r1/captures/walkthrough-r1/raw/capture_upload_complete.json",
+      "generation": "1730000000000001",
+      "event_id": "event-1",
+      "event_source": "//storage.googleapis.com/projects/_/buckets/blueprint-capture-test-bucket"
+    },
+    "source_membership_status": "verified_delivery_membership",
+    "source_membership_selector": {
+      "object_name": "scenes/site-r1/captures/walkthrough-r1/deliveries/e6cad6de2fe75571892201e8a92d585cb4f268350bfadb217adf4db44157a1ed/capture_delivery_membership.json",
+      "generation": "1730000000000009",
+      "size_bytes": 2048,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "task_site_context": {},
+    "scene_memory_capture": {},
+    "capture_rights": {},
+    "privacy_lineage": {},
+    "provenance_lineage": {},
+    "identity": {},
+    "generated_at": "2026-11-11T00:00:00Z"
+  }
+}

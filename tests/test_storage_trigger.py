@@ -3,6 +3,15 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _device_capture_pipeline_enabled(monkeypatch):
+    # These tests cover the capture app's path as it runs when switched on
+    # (tests/test_device_capture_pipeline_closed.py covers it closed, the default).
+    monkeypatch.setenv("BLUEPRINT_DEVICE_CAPTURE_PIPELINE", "enabled")
+
 
 def _load_storage_trigger_module():
     module_path = Path(__file__).resolve().parents[1] / "functions" / "storage_trigger.py"

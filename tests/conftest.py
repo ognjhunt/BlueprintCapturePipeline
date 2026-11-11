@@ -66,6 +66,8 @@ def _isolated_control_plane_state(tmp_path_factory, monkeypatch):
     (``test_sage_collision_partition``). A test of verdict reuse, or of the default root, sets
     or deletes the variable itself."""
     monkeypatch.setenv("BLUEPRINT_ACCOUNT_MONTHLY_SPEND_ROOT", str(tmp_path_factory.mktemp("account-monthly-spend")))
+    # The state backup's ledger decides whether a withdrawal is finished; never the host's.
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_BACKUP_REPORT_ROOT", str(tmp_path_factory.mktemp("control-plane-backup")))
     blocked = tmp_path_factory.getbasetemp() / "validation-verdicts-are-not-kept-in-tests"
     blocked.touch(exist_ok=True)  # a file: nothing can be created beneath it
     monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(blocked / "verdicts"))

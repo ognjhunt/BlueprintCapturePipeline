@@ -194,33 +194,40 @@ def run_overrides(target: Mapping[str, Any], overrides: Mapping[str, Any]) -> di
 
 def load_dispatcher_credentials(*, environ: Mapping[str, str] | None = None,
                                 factory: Callable[..., Any] | None = None) -> Any:
-    """The service-account key systemd loaded as ``$CREDENTIALS_DIRECTORY/remote-cpu-dispatcher``.
+    """The service-account key systemd loaded as ``$CREDENTIALS_DIRECTORY/remote-cpu-dispatcher``."""
+
+    directory = str((os.environ if environ is None else environ).get("CREDENTIALS_DIRECTORY") or "").strip()
+    if not directory:
+        raise CloudRunJobsError(None, "remote_cpu_dispatcher_credential_missing")
+    return load_service_account_file(os.path.join(directory, DISPATCHER_CREDENTIAL),
+                                     error_prefix="remote_cpu_dispatcher", factory=factory)
+
+
+def load_service_account_file(path: str, *, error_prefix: str, factory: Callable[..., Any] | None = None) -> Any:
+    """One service-account key file, read safely: ``<error_prefix>_credential_{missing,unsafe,invalid}``.
 
     The file must be a regular, non-symlinked file with no group-write or other access.  Its bytes
     stay in memory; only ``google.oauth2.service_account`` (imported here, lazily) sees them.
     """
 
-    directory = str((os.environ if environ is None else environ).get("CREDENTIALS_DIRECTORY") or "").strip()
-    if not directory:
-        raise CloudRunJobsError(None, "remote_cpu_dispatcher_credential_missing")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        descriptor = os.open(os.path.join(directory, DISPATCHER_CREDENTIAL), flags)
+        descriptor = os.open(path, flags)
     except FileNotFoundError:
-        raise CloudRunJobsError(None, "remote_cpu_dispatcher_credential_missing") from None
+        raise CloudRunJobsError(None, f"{error_prefix}_credential_missing") from None
     except OSError:
-        raise CloudRunJobsError(None, "remote_cpu_dispatcher_credential_unsafe") from None
+        raise CloudRunJobsError(None, f"{error_prefix}_credential_unsafe") from None
     with os.fdopen(descriptor, "rb") as stream:
         status = os.fstat(stream.fileno())
         if not stat.S_ISREG(status.st_mode) or status.st_mode & 0o027 or status.st_size > _MAX_CREDENTIAL_BYTES:
-            raise CloudRunJobsError(None, "remote_cpu_dispatcher_credential_unsafe")
+            raise CloudRunJobsError(None, f"{error_prefix}_credential_unsafe")
         payload = stream.read(_MAX_CREDENTIAL_BYTES + 1)
     try:
         info = json.loads(payload)
     except ValueError:
         info = None
     if not isinstance(info, dict) or info.get("type") != "service_account":
-        raise CloudRunJobsError(None, "remote_cpu_dispatcher_credential_invalid")
+        raise CloudRunJobsError(None, f"{error_prefix}_credential_invalid")
     if factory is None:
         from google.oauth2 import service_account
 

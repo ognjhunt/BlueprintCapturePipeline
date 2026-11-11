@@ -138,6 +138,15 @@
       ]
     },
     {
+      "path": "src/blueprint_pipeline/control_plane_state_backup.py",
+      "classification": "metered_object_storage_data_plane",
+      "required_markers": [
+        "put_object",
+        "delete_object",
+        "list_object_versions"
+      ]
+    },
+    {
       "path": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
       "classification": "canonical_adapter",
       "required_markers": [

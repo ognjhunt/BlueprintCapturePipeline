@@ -216,6 +216,30 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert "ReadWritePaths=/var/lib/blueprint\n" not in text and "ReadWritePaths=/var/lib/blueprint " not in text
             assert "TasksMax=32" in text and "MemoryMax=256M" in text and "CPUQuota=100%" in text
             continue
+        if unit.name == STATE_BACKUP_UNIT:
+            # The state backup: root, because what it copies includes root-owned private records (scene
+            # retirement journals and consents, the door's authority, /etc/blueprint), with only the read and
+            # owner capabilities that needs, the full sandbox, and writes only to its report root and the site
+            # journals where a withdrawal's backup purge receipt goes.
+            text = unit.read_text(encoding="utf-8")
+            for control in required_controls:
+                if not control.startswith(("User=", "Group=", "UMask=", "CapabilityBoundingSet=", "AmbientCapabilities=",
+                                           "ReadWritePaths=", "CPUQuota=")):
+                    assert control in text, (unit.name, control)
+            assert "User=root\n" in text and "UMask=0022\n" in text
+            assert "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_CHOWN\n" in text
+            writable = next(line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+            assert writable == ["/var/lib/blueprint/pipeline-control-plane/control-plane-backup",
+                                "/var/lib/blueprint/pubsub-handoffs"]
+            for control in ("TasksMax=32", "MemoryMax=512M", "CPUQuota=50%", "Nice=19", "IOSchedulingPriority=7",
+                            "TimeoutStartSec=20min", "OnFailure=" + NOTIFIER_ON_FAILURE, "Slice=" + BATCH_SLICE):
+                assert control in text, (unit.name, control)
+            assert "-m blueprint_pipeline.control_plane_state_backup run'" in text
+            # An unconfigured host skips the run rather than failing it every 15 minutes.
+            for name in ("encryption_key", "b2_bucket"):
+                condition = f"ConditionPathExists=/etc/blueprint/control-plane-backup/{name}\n"
+                assert condition in text and f"_FILE=/etc/blueprint/control-plane-backup/{name}\n" in text
+            continue
         if unit.name == WITHDRAWAL_DELETION_UNIT:
             # The withdrawal deletion pass: the service account (it writes beside files the intake and the workers
             # own), the full sandbox, writes only where a withdrawal deletion removes or records, low priority.
@@ -234,6 +258,19 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                             "TimeoutStartSec=45min", "OnFailure=" + NOTIFIER_ON_FAILURE):
                 assert control in text, (unit.name, control)
             assert "-m blueprint_pipeline.website_capture_withdrawal_automatic'" in text
+            continue
+        if unit.name == REAPER_HEARTBEAT_UNIT:
+            # The off-host reaper's heartbeat: the service account, the full sandbox, one writable directory
+            # for its status record; it publishes to Cloud Storage and pages on the webhook.
+            text = unit.read_text(encoding="utf-8")
+            for control in required_controls:
+                if not control.startswith(("ReadWritePaths=", "CPUQuota=")):
+                    assert control in text, (unit.name, control)
+            assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/off-host-gpu-reaper\n" in text
+            for control in ("TasksMax=32", "MemoryMax=256M", "CPUQuota=100%", "TimeoutStartSec=2min",
+                            "OnFailure=" + NOTIFIER_ON_FAILURE):
+                assert control in text, (unit.name, control)
+            assert "-m blueprint_pipeline.off_host_gpu_reaper_heartbeat'" in text
             continue
         if unit.name == "blueprint-operator-door.service":
             # Cloud agents' HTTPS window onto this host (deploy/operator-door). It
@@ -443,6 +480,10 @@ HOST_MEMORY_KEPT = {
     "blueprint-owner-approved-deletion.service": ("200", "1G"),
     # Not measured on the host yet: one site's plan, the owner-approved deletion units' cap.
     "blueprint-website-withdrawal-deletion.service": ("200", "1G"),
+    # Not measured on the host yet: one file of at most 16 MiB and one 8 MiB part held at a time.
+    "blueprint-control-plane-state-backup.service": ("200", "512M"),
+    # The off-host reaper's heartbeat (money safety); a run peaked at 122 MB locally.
+    "blueprint-off-host-reaper-heartbeat.service": ("-200", "256M"),
     "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "5.5G"),
     "blueprint-website-atlas-preview.service": ("-200", "5.5G"),
     "blueprint-team-evaluation-runner.service": ("-200", "5.5G"),
@@ -522,6 +563,8 @@ BATCH_SLICE = "system-blueprintbatch.slice"
 NOTIFIER_UNIT = "blueprint-unit-failure@.service"
 NOTIFIER_ON_FAILURE = "blueprint-unit-failure@%n.service"
 WITHDRAWAL_DELETION_UNIT = "blueprint-website-withdrawal-deletion.service"
+STATE_BACKUP_UNIT = "blueprint-control-plane-state-backup.service"
+REAPER_HEARTBEAT_UNIT = "blueprint-off-host-reaper-heartbeat.service"
 #: The live reading the slice is sized from (2026-11-10 15:10Z, nothing heavy running), in the decimal GB that
 #: /proc/meminfo's kB make, and the readiness plan's ceiling for the heavy units' caps together.
 HOST_MEMTOTAL_GB = 8.33
@@ -556,6 +599,8 @@ BATCH_SLICE_UNITS = (
     "blueprint-task-evaluation-episode-compilation-remote.service",
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-agent-stage-replay.service",
+    # Not a job mover, but bulk reads and uploads every 15 minutes: bounded with them so it never starves the host.
+    "blueprint-control-plane-state-backup.service",
 )
 #: Every other service stays outside the slice, for the reason given: it must keep running, or keep money
 #: safe, while the batch units sit at their bound.
@@ -582,6 +627,7 @@ OUTSIDE_BATCH_SLICE = {
     "blueprint-owner-approved-deletion-plan.service": "started by hand, capped at 1G",
     "blueprint-owner-approved-deletion.service": "started by hand, capped at 1G",
     "blueprint-website-withdrawal-deletion.service": "privacy housekeeping at low priority, capped at 1G",
+    REAPER_HEARTBEAT_UNIT: "money safety: the off-host GPU reaper's heartbeat",
 }
 #: Units whose failure is abnormal and matters: the money guard, the intake, the pager and the units that
 #: move a website job. Each starts the notifier when it fails.
@@ -601,6 +647,10 @@ UNIT_FAILURE_NOTIFIED_UNITS = (
     "blueprint-beta-policy-screening.service",
     # A privacy promise: a withdrawn site's deletion must not stop silently.
     "blueprint-website-withdrawal-deletion.service",
+    # An incomplete backup, or a withdrawal purge that could not be proven, must not stop silently.
+    "blueprint-control-plane-state-backup.service",
+    # Money safety: without it the off-host reaper reads the host as gone.
+    "blueprint-off-host-reaper-heartbeat.service",
 )
 #: Units on the website job's path that are left without the notifier on purpose: there a non-zero exit is an
 #: ordinary result, so the notifier would report routine work every hour.

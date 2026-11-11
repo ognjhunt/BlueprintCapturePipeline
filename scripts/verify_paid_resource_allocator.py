@@ -839,6 +839,8 @@ def _api_call_site_blockers(
             blockers.append(f"new_unadmitted_paid_api_call_site:{key}: route it through an existing"
                             " admission or ledger; adding an unadmitted site needs an explicit edit to the pinned"
                             " list in tests/test_paid_resource_allocator_verifier.py")
+        elif kind == "unadmitted" and row.get("closed_on") is not None:
+            blockers.extend(_closed_on_blockers(key, row, root))
         elif kind == "admitted":
             # ``via``: where the site's path reaches the admission; ``admission``: the
             # admission, reservation or ledger function. Both are ``path::name``.
@@ -854,6 +856,16 @@ def _api_call_site_blockers(
                 blockers.append(f"paid_api_call_site_not_automatic_entry_point_missing:{key}")
             blockers.extend(_structural_claim_blockers(key, row, root))
     return blockers
+
+
+def _closed_on_blockers(key: str, row: dict, root: Path) -> list[str]:
+    """An unadmitted site's claim that a switch closes some automatic entries (``closed_on``)."""
+
+    if str(Path(__file__).resolve().parent) not in sys.path:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from paid_call_site_reachability import closed_entry_blockers
+
+    return closed_entry_blockers(key, row, root)
 
 
 def _structural_claim_blockers(key: str, row: dict, root: Path) -> list[str]:

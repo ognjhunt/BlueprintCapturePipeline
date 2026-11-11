@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .core.common import PipelineError, parse_bool, parse_gs_uri, resolve_gs_uri_to_path
+from .device_capture_pipeline_switch import closed_device_capture_record
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .geometry_sources import load_capture_geometry
 from .core.logging_utils import log_event
@@ -759,6 +760,28 @@ def run_capture_pipeline_for_capture(
     )
 
 
+def _job_entry_refusal(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
+    scene_id, capture_id = args.scene_id, args.capture_id
+    if args.descriptor_gcs_uri:
+        try:
+            parts = parse_gs_uri(args.descriptor_gcs_uri).key.split("/")
+        except (PipelineError, ValueError):
+            parts = []
+        if len(parts) > 3 and parts[0] == "scenes" and parts[2] == "captures":
+            scene_id, capture_id = parts[1], parts[3]
+    closed = closed_device_capture_record(entry="cloud_run_job", scene_id=scene_id, capture_id=capture_id)
+    if closed is not None:
+        return closed
+    from .website_capture_entry import is_website_capture_identity
+
+    if is_website_capture_identity(scene_id, capture_id) or is_website_capture_identity(args.scene_id, args.capture_id):
+        return {"schema_version": "device_capture_pipeline_closed.v1", "status": "skipped",
+                "reason": "website_capture", "entry": "cloud_run_job", "scene_id": scene_id,
+                "capture_id": capture_id,
+                "detail": "A website capture is processed by the host listener only; nothing ran here."}
+    return None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run lane-aware capture pipeline")
     parser.add_argument(
@@ -787,6 +810,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    # The Cloud Run job is the capture app's path: closed unless switched on, and never a
+    # website capture's (the host listener's). Either way it records why and exits 0, so the
+    # job is not retried and nothing waits on an operator.
+    skipped = _job_entry_refusal(args)
+    if skipped is not None:
+        print(json.dumps(skipped, sort_keys=True))
+        return 0
 
     try:
         settings = PipelineSettings.from_env()

@@ -174,17 +174,62 @@
     "src/blueprint_pipeline/capture_enrichment_llm.py::_ClaudeHTTPRunner.__call__::anthropic_api_url": {
       "provider": "anthropic",
       "class": "unadmitted",
-      "can_spend_on": "Anthropic Messages API (POST /v1/messages) for capture enrichment; usage recorded after the call only"
+      "can_spend_on": "Anthropic Messages API (POST /v1/messages) for capture enrichment; usage recorded after the call only",
+      "closed_on": {
+        "switch": "BLUEPRINT_DEVICE_CAPTURE_PIPELINE",
+        "guards": [
+          "closed_device_capture_record",
+          "_job_entry_refusal",
+          "_refused_dispatch"
+        ],
+        "entry_functions": [
+          "blueprint_pipeline.capture_orchestrator::main",
+          "functions.storage_trigger::on_storage_finalize",
+          "functions.storage_trigger::on_swap_dispatch",
+          "functions.storage_trigger::on_swap_dispatch_http"
+        ],
+        "note": "the capture app's path (the swap dispatch worker and the blueprint-pipeline Cloud Run job) runs nothing unless the switch is on; turning it on requires admitting this site first (docs/CAPTURE_BRIDGE_CONTRACT.md). The host listener's path still reaches it on the static graph (at run time a website capture returns before it), so the site stays unadmitted"
+      }
     },
     "src/blueprint_pipeline/capture_enrichment_llm.py::_CodexRunner.__call__::openai_codex_cli": {
       "provider": "openai",
       "class": "unadmitted",
-      "can_spend_on": "paid Codex CLI exec run for capture enrichment"
+      "can_spend_on": "paid Codex CLI exec run for capture enrichment",
+      "closed_on": {
+        "switch": "BLUEPRINT_DEVICE_CAPTURE_PIPELINE",
+        "guards": [
+          "closed_device_capture_record",
+          "_job_entry_refusal",
+          "_refused_dispatch"
+        ],
+        "entry_functions": [
+          "blueprint_pipeline.capture_orchestrator::main",
+          "functions.storage_trigger::on_storage_finalize",
+          "functions.storage_trigger::on_swap_dispatch",
+          "functions.storage_trigger::on_swap_dispatch_http"
+        ],
+        "note": "the capture app's path (the swap dispatch worker and the blueprint-pipeline Cloud Run job) runs nothing unless the switch is on; turning it on requires admitting this site first (docs/CAPTURE_BRIDGE_CONTRACT.md). The host listener's path still reaches it on the static graph (at run time a website capture returns before it), so the site stays unadmitted"
+      }
     },
     "src/blueprint_pipeline/capture_enrichment_llm.py::_OpenAISDKRunner.__call__::openai_client_construction": {
       "provider": "openai",
       "class": "unadmitted",
-      "can_spend_on": "OpenAI Responses calls for capture enrichment; usage receipt recorded after the call only"
+      "can_spend_on": "OpenAI Responses calls for capture enrichment; usage receipt recorded after the call only",
+      "closed_on": {
+        "switch": "BLUEPRINT_DEVICE_CAPTURE_PIPELINE",
+        "guards": [
+          "closed_device_capture_record",
+          "_job_entry_refusal",
+          "_refused_dispatch"
+        ],
+        "entry_functions": [
+          "blueprint_pipeline.capture_orchestrator::main",
+          "functions.storage_trigger::on_storage_finalize",
+          "functions.storage_trigger::on_swap_dispatch",
+          "functions.storage_trigger::on_swap_dispatch_http"
+        ],
+        "note": "the capture app's path (the swap dispatch worker and the blueprint-pipeline Cloud Run job) runs nothing unless the switch is on; turning it on requires admitting this site first (docs/CAPTURE_BRIDGE_CONTRACT.md). The host listener's path still reaches it on the static graph (at run time a website capture returns before it), so the site stays unadmitted"
+      }
     },
     "src/blueprint_pipeline/claude_opus_authoring_invoker.py::<module>::anthropic_api_url": {
       "provider": "anthropic",
@@ -408,7 +453,22 @@
     "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider._upload_video_as_media_asset::world_labs_marble_request": {
       "provider": "world_labs",
       "class": "unadmitted",
-      "can_spend_on": "World Labs Marble media upload, a step of the Marble submit (refused for website captures only)"
+      "can_spend_on": "World Labs Marble media upload, a step of the Marble submit (refused for website captures only)",
+      "closed_on": {
+        "switch": "BLUEPRINT_DEVICE_CAPTURE_PIPELINE",
+        "guards": [
+          "closed_device_capture_record",
+          "_job_entry_refusal",
+          "_refused_dispatch"
+        ],
+        "entry_functions": [
+          "blueprint_pipeline.capture_orchestrator::main",
+          "functions.storage_trigger::on_storage_finalize",
+          "functions.storage_trigger::on_swap_dispatch",
+          "functions.storage_trigger::on_swap_dispatch_http"
+        ],
+        "note": "the capture app's path (the swap dispatch worker and the blueprint-pipeline Cloud Run job) runs nothing unless the switch is on; turning it on requires admitting this site first (docs/CAPTURE_BRIDGE_CONTRACT.md). The host listener's path still reaches it on the static graph (at run time a website capture returns before it), so the site stays unadmitted"
+      }
     },
     "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.poll::world_labs_marble_request": {
       "provider": "world_labs",
@@ -418,7 +478,22 @@
     "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.submit::world_labs_marble_request": {
       "provider": "world_labs",
       "class": "unadmitted",
-      "can_spend_on": "World Labs Marble world generation (POST worlds:generate); refused for website captures, otherwise no admission"
+      "can_spend_on": "World Labs Marble world generation (POST worlds:generate); refused for website captures, otherwise no admission",
+      "closed_on": {
+        "switch": "BLUEPRINT_DEVICE_CAPTURE_PIPELINE",
+        "guards": [
+          "closed_device_capture_record",
+          "_job_entry_refusal",
+          "_refused_dispatch"
+        ],
+        "entry_functions": [
+          "blueprint_pipeline.capture_orchestrator::main",
+          "functions.storage_trigger::on_storage_finalize",
+          "functions.storage_trigger::on_swap_dispatch",
+          "functions.storage_trigger::on_swap_dispatch_http"
+        ],
+        "note": "the capture app's path (the swap dispatch worker and the blueprint-pipeline Cloud Run job) runs nothing unless the switch is on; turning it on requires admitting this site first (docs/CAPTURE_BRIDGE_CONTRACT.md). The host listener's path still reaches it on the static graph (at run time a website capture returns before it), so the site stays unadmitted"
+      }
     },
     "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::_scoped_review_model_provider::openai_agents_provider": {
       "provider": "openai",
@@ -469,7 +544,22 @@
     "src/blueprint_pipeline/scene_semantics.py::_infer_capture_review_with_gemini_video::gemini_client_construction": {
       "provider": "gemini",
       "class": "unadmitted",
-      "can_spend_on": "Gemini video review of a capture; runs whenever a Gemini API key is set"
+      "can_spend_on": "Gemini video review of a capture; runs whenever a Gemini API key is set",
+      "closed_on": {
+        "switch": "BLUEPRINT_DEVICE_CAPTURE_PIPELINE",
+        "guards": [
+          "closed_device_capture_record",
+          "_job_entry_refusal",
+          "_refused_dispatch"
+        ],
+        "entry_functions": [
+          "blueprint_pipeline.capture_orchestrator::main",
+          "functions.storage_trigger::on_storage_finalize",
+          "functions.storage_trigger::on_swap_dispatch",
+          "functions.storage_trigger::on_swap_dispatch_http"
+        ],
+        "note": "the capture app's path (the swap dispatch worker and the blueprint-pipeline Cloud Run job) runs nothing unless the switch is on; turning it on requires admitting this site first (docs/CAPTURE_BRIDGE_CONTRACT.md). The host listener's path still reaches it on the static graph (at run time a website capture returns before it), so the site stays unadmitted"
+      }
     },
     "src/blueprint_pipeline/scene_semantics.py::_infer_with_gemini_video::gemini_client_construction": {
       "provider": "gemini",

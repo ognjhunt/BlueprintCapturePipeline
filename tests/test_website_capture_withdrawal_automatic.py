@@ -525,6 +525,7 @@ def test_a_finished_deletion_names_the_copies_that_remain_at_providers(harness):
     assert summary["withdrawals"]["complete_provider_retention_remains"] == 1
     assert summary["withdrawals"]["complete"] == 0
     assert summary["sites"] == [{"scene_id": "site-req1", "status": "complete_provider_retention_remains",
+                                 "backup_copies": "no_backup_taken",
                                  "provider_retention_remains": ["gemini", "openai", "vast", "world_labs"],
                                  "acknowledged_at_epoch": summary["sites"][0]["acknowledged_at_epoch"]}]
     projected = automatic.capacity_projection(summary)
@@ -963,3 +964,57 @@ def test_a_pass_interrupted_after_the_sites_entries_went_finishes_the_blob_next_
     assert not mine.exists() and str(mine) in receipt["deleted"]["content_blobs"]
     journal = json.loads((harness.site() / "website_withdrawal/content_blobs.json").read_text())
     assert journal["blobs"][str(mine)]["status"] == "deleted"
+
+
+class _BackupBucket:
+    """The state backup's bucket: one older generation's objects, or a bucket that cannot be listed."""
+
+    def __init__(self, generation: str, *, listable: bool = True):
+        self.rows = [(f"control-plane-state/generations/{generation}/{name}", "v1")
+                     for name in ("part-000000.bin", "index.bin", "seal.json")]
+        self.listable = listable
+
+    def versions(self, prefix):
+        if not self.listable:
+            raise ConnectionError("bucket unreachable")
+        return [row for row in self.rows if row[0].startswith(prefix)]
+
+    def delete(self, key, version):
+        self.rows.remove((key, version))
+
+
+def test_a_withdrawal_is_incomplete_until_its_backup_purge_receipt_exists(harness, tmp_path):
+    from blueprint_pipeline import control_plane_state_backup as backup
+
+    older = "g-20260101T000000000000Z-00000000"
+    ledger = tmp_path / "backup/ledger.json"
+    ledger.parent.mkdir()
+    backup._write_ledger(ledger, [{"id": older, "started_at_epoch": harness.now - HOUR, "status": "sealed"}])
+    harness.approve()
+    summary = harness.run(backup_ledger=ledger)
+    assert harness.state()["status"] == "applied"
+    # Deleted on the host, but a backup older than the deletion still holds the site's records.
+    assert summary["withdrawals"]["completed"] == 0 and summary["withdrawals"]["incomplete"] == 1
+    row = summary["sites"][0]
+    assert row["status"] == "incomplete" and row["waiting_on"] == ["backup_copies_not_purged"]
+    assert row["backup_copies"]["status"] == "purge_pending"
+    # The pass never deletes again for it; the backup unit purges.
+    harness.run(offset=10 * HOUR, backup_ledger=ledger)
+    assert harness.applies == ["walkthrough-req1"]
+
+    fresh = {"id": "g-20990101T000000000000Z-00000001", "started_at_epoch": time.time() + 60}
+    unknown = backup.purge_withdrawn(_BackupBucket(older, listable=False), site_roots=[harness.partition],
+                                     ledger=ledger, fresh=fresh, now=time.time())
+    assert unknown["outcome"] == "unknown"
+    summary = harness.run(offset=11 * HOUR, backup_ledger=ledger)
+    assert summary["withdrawals"]["completed"] == 0
+    assert summary["sites"][0]["backup_copies"]["status"] == "unknown"
+
+    bucket = _BackupBucket(older)
+    purged = backup.purge_withdrawn(bucket, site_roots=[harness.partition], ledger=ledger, fresh=fresh,
+                                    now=time.time())
+    assert purged["outcome"] == "deleted" and bucket.rows == []
+    summary = harness.run(offset=12 * HOUR, backup_ledger=ledger)
+    assert summary["withdrawals"]["completed"] == 1 and summary["withdrawals"]["incomplete"] == 0
+    assert summary["sites"][0]["backup_copies"] == "purged"
+    assert summary["sites"][0]["status"] == "complete_provider_retention_remains"

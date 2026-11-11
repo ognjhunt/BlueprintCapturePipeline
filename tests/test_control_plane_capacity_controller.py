@@ -1728,7 +1728,9 @@ def test_money_credit_spend_and_stall_pages_are_unchanged():
         # 2026-11-10: a scene ceiling passed a whole multiple of its grant (warn early; gates nothing).
         "scene_budget_doubled",
         # 2026-11-10: a preparation stopped on a mismatch inside Blueprint's own records (ours to fix).
-        "website_preparation_blueprint_fault"}
+        "website_preparation_blueprint_fault",
+        # 2026-11-11: the state backup stopped completing (a held timer, a dead unit).
+        "control_plane_backup_stale"}
     assert preparation_delivery.PAGE_CODES == {"preparation_delivery_stalled"}
     for code in {"provider_credit_insufficient", *provider_spend.PAGE_CODES, *stall_alarm.PAGE_CODES,
                  *preparation_delivery.PAGE_CODES}:

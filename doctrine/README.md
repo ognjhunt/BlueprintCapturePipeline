@@ -2,6 +2,9 @@
 
 This directory is the **one editable place** for doctrine shared across
 `BlueprintCapture`, `BlueprintCapturePipeline`, and `Blueprint-WebApp`.
+`BlueprintCapture` still receives the blocks although its phone apps are not
+in use; the repository is kept for its `extractFrames` upload hand-off (see
+"How Capture Works" in `platform-context.md`).
 
 The shared doctrine names two active programs across all three repos: the free
 beta's job-first automation service (owner update 2026-10-21) and Arm Decision

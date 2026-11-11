@@ -104,6 +104,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-terminal-resource-release.path
   blueprint-control-plane-storage-gc.timer
   blueprint-website-withdrawal-deletion.timer
+  blueprint-control-plane-state-backup.timer
   blueprint-control-plane-release-lifecycle.timer
   blueprint-pubsub-handoff-listener.timer
   blueprint-task-evaluation-scene-progression.timer
@@ -139,6 +140,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-terminal-resource-release.service
   blueprint-control-plane-storage-gc.service
   blueprint-website-withdrawal-deletion.service
+  blueprint-control-plane-state-backup.service
   blueprint-control-plane-release-lifecycle.service
   blueprint-owner-approved-deletion.service
   blueprint-owner-approved-deletion-plan.service

@@ -1,5 +1,11 @@
 # Cross-Repo Readiness Matrix
 
+> **Capture, 2026-11-11.** No capture app is in use, and nobody else films for a
+> site: no outside capturers, Blueprint filming visits, capturer marketplace or
+> capturer payouts. Where this document describes the `BlueprintCapture` app,
+> capturers, visits or payouts, that is history.
+> How capture works today: "How Capture Works" in `PLATFORM_CONTEXT.md`.
+
 > **Archived 2026-11-02 (tracker H-01).** A cross-repo readiness snapshot from
 > June 2026, kept for its history. It is not current launch state. Beta status:
 > [`launch-readiness/2026-11-beta-launch-tracker.md`](launch-readiness/2026-11-beta-launch-tracker.md).

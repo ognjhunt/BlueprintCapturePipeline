@@ -360,7 +360,32 @@ def _write_state(site: Path, state: Mapping[str, Any]) -> None:
     write_json(path, state)
 
 
-def _site_row(site: Path, now: float) -> dict[str, Any]:
+def _receipt_view(site: Path, tombstone_digest: str | None, backup_ledger: Path) -> dict[str, Any] | None:
+    """The finished receipt, with whether any backup can still hold what it deleted (read fresh each pass).
+
+    The sealed receipt is never rewritten. A backup generation taken before the deletion can still hold the
+    site's deleted records until the backup unit purges it (``control_plane_state_backup``); until then the
+    withdrawal is not finished, whatever the receipt says, and is reported ``backup_copies_not_purged``.
+    """
+
+    receipt = _sealed_receipt(site, tombstone_digest)
+    if receipt is None:
+        return None
+    from .control_plane_state_backup import backup_copies_status
+
+    receipt["backup_copies"] = backup_copies_status(site, receipt["digest"], receipt.get("applied_at_iso"),
+                                                    ledger=backup_ledger)
+    return receipt
+
+
+def _finished(row: Mapping[str, Any]) -> bool:
+    from .control_plane_state_backup import BACKUP_CLEARED_STATUSES
+
+    receipt = row["receipt"]
+    return receipt is not None and receipt["backup_copies"]["status"] in BACKUP_CLEARED_STATUSES
+
+
+def _site_row(site: Path, now: float, backup_ledger: Path) -> dict[str, Any]:
     """What the pass knows about one withdrawn site without planning: tombstone, receipt and state."""
 
     tombstone_path = site / "website_withdrawal" / "tombstone.json"
@@ -385,7 +410,7 @@ def _site_row(site: Path, now: float) -> dict[str, Any]:
     request_id = site.name[5:]
     return {"site": site, "capture_root": site / "captures" / f"walkthrough-{request_id}", "scene_id": site.name,
             "tombstone_digest": digest, "acknowledged_at_epoch": acknowledged,
-            "receipt": _sealed_receipt(site, digest), "state": state}
+            "receipt": _receipt_view(site, digest, backup_ledger), "state": state}
 
 
 def _failed(state: Mapping[str, Any], error: str, now: float) -> dict[str, Any]:
@@ -523,7 +548,7 @@ def _alerts(rows: Sequence[Mapping[str, Any]], approval: Mapping[str, Any], prob
         alerts.append({"code": "website_withdrawal_scan_incomplete", "target": "site_roots",
                        "count": len(problems), "reason": problems[0]["reason"]})
     for row in rows:
-        if row["receipt"] is not None:
+        if _finished(row):
             continue
         state = row["state"] or {}
         held = state.get("status") == "legal_hold"
@@ -586,10 +611,21 @@ def _summary(rows: Sequence[Mapping[str, Any]], *, approval: Mapping[str, Any], 
     overdue = {alert["target"] for alert in alerts if alert["code"] == "website_withdrawal_deletion_overdue"}
     for row in rows:
         counts["total"] += 1
+        if row["receipt"] is not None and not _finished(row):
+            # Deleted on the host; an older backup generation still has to be purged.
+            counts["waiting"] += 1
+            counts["incomplete"] += 1
+            sites.append({"scene_id": row["scene_id"], "status": "incomplete",
+                          "waiting_on": ["backup_copies_not_purged"],
+                          "deletion_status": row["receipt"]["deletion_status"],
+                          "backup_copies": row["receipt"]["backup_copies"],
+                          "acknowledged_at_epoch": row["acknowledged_at_epoch"]})
+            continue
         if row["receipt"] is not None:
             counts["completed"] += 1
             counts[row["receipt"]["deletion_status"]] += 1
             sites.append({"scene_id": row["scene_id"], "status": row["receipt"]["deletion_status"],
+                          "backup_copies": row["receipt"]["backup_copies"]["status"],
                           "provider_retention_remains": row["receipt"]["provider_retention_remains"],
                           "acknowledged_at_epoch": row["acknowledged_at_epoch"]})
             continue
@@ -640,8 +676,11 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
              planner: Callable[..., dict[str, Any]] | None = None,
              applier: Callable[..., dict[str, Any]] | None = None,
              site_index_root: Path | None = None, indexed_roots: Sequence[Path] = (),
-             index_budget: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """One timer pass: at most one site planned (and applied when approved), every state recorded, alerts posted."""
+             index_budget: Mapping[str, Any] | None = None, backup_ledger: Path | None = None) -> dict[str, Any]:
+    """One timer pass: at most one site planned (and applied when approved), every state recorded, alerts posted.
+
+    ``backup_ledger`` is the state backup's ledger (default: ``control_plane_state_backup`` under its report
+    root); a site is finished only once no backup generation older than its deletion survives."""
 
     if planner is None or applier is None:
         from . import website_capture_withdrawal_deletion as deletion
@@ -649,6 +688,10 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
         planner = planner or deletion.plan_withdrawal_deletion
         applier = applier or deletion.apply_withdrawal_deletion
     observed = time.time() if now is None else float(now)
+    if backup_ledger is None:
+        from .control_plane_state_backup import ledger_path, report_root_from_env
+
+        backup_ledger = ledger_path(report_root_from_env())
     report_root = Path(report_root)
     report_root.mkdir(parents=True, exist_ok=True, mode=0o750)
     with _host_lock(report_root) as held:
@@ -659,7 +702,7 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
         rows = []
         for site in sites:
             try:
-                rows.append(_site_row(site, observed))
+                rows.append(_site_row(site, observed, backup_ledger))
             except OSError as error:
                 # One site's unreadable journal must not stop the others; the scan reports it.
                 problems.append({"path": str(site), "reason": "site_unreadable:" + _error_code(error)})
@@ -678,7 +721,7 @@ def run_pass(*, site_roots: Sequence[Path], report_root: Path, resolution: Calla
             row = due[0]
             state = _handle(row, approval=approval, approval_path=Path(approval_path), now=observed,
                             resolution=resolution, quiet=quiet, planner=planner, applier=applier)
-            row.update(state=state, receipt=_sealed_receipt(row["site"], row["tombstone_digest"]))
+            row.update(state=state, receipt=_receipt_view(row["site"], row["tombstone_digest"], backup_ledger))
             action = {"scene_id": row["scene_id"], "status": state["status"],
                       "waiting_on": state.get("waiting_on") or [], "last_error": state.get("last_error"),
                       "deletion_status": state.get("deletion_status")}

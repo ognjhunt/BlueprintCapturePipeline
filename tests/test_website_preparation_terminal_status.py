@@ -152,6 +152,8 @@ def test_v1_receipt_is_unchanged_and_v2_separates_capacity(website_capture, upda
     assert "PRIVATE" not in new.text and "need_bytes" not in new.text
 
 
+# Every status version the reader knows: a new version changes this list.
+@pytest.mark.pins("blueprint_pipeline.website_preparation_status")
 @pytest.mark.parametrize("header, expected", [(None, "website_preparation_status.v1"),
     ("1", "website_preparation_status.v1"), ("2", "website_preparation_status.v2"),
     ("3", "website_preparation_status.v3"), ("4", "website_preparation_status.v4"),

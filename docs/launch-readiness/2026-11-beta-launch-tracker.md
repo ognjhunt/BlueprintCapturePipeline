@@ -24,7 +24,8 @@ An end-to-end audit of both repos on 2026-11-10 asked one question of every step
 - [#3552](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3552): no wait for the site to confirm Blueprint's own thresholds; one memory bound for batch units (`MemoryHigh=5G`, `MemoryMax=5.5G`); start timeouts; unit-failure alerts.
 - [#3554](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3554): set-up flags published as publication v3; a deploy leaves a job alone while its paid launch is in flight; the host retries a website preparation; a scene launch that spent nothing recovers on the timed schedule; one paid retry after a lost machine when the grant allows it; `max_paid_attempts` counts scene-configuration rows.
 - [#3555](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3555): withdrawal deletion planned hourly and run under one standing approval file; a per-site index of nine roots and a receipt that says complete, complete with provider retention, or incomplete; the stall alarm covers Atlas, team scene packets, rigid probes and screening; a Gemini call never stops for an operator; Vast credit held across launch slots; a $0 drill of the monthly limit; a spend forecast and a ledger-to-billing reconciliation.
-- The pull request that adds this section: a job's scene ceiling extends by itself when its grant allows it and the monthly limit admits it; kept holds settle at the final billed charge; one scripted reference check per website campaign that never blocks a job; a reconstruction refusal continues on a named estimate or waits on a key instead of a timer; a new release can adopt a $0 preparation of the previous release (off by default).
+- [#3556](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3556): a job's scene ceiling extends by itself when its grant allows it and the monthly limit admits it; kept holds settle at the final billed charge, collected at least 48 hours after teardown; one scripted reference check per website campaign that never blocks a job; a reconstruction refusal continues on a named estimate or waits on a key instead of a timer; a new release can adopt a $0 preparation of the previous release (off by default).
+- [#3557](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3557), from another session: a deploy waits for work in flight, paid or not; the host ends a preparation once the WebApp has ended a job that never got a grant.
 
 **Merged, WebApp**
 
@@ -51,18 +52,66 @@ An end-to-end audit of both repos on 2026-11-10 asked one question of every step
 
 **Not done**
 
-- Six API-priced call sites are still not behind the account check: the three capture-enrichment runners, the two World Labs preview calls and the Gemini capture review. They run in the Cloud Run capture job, which cannot read the host's account spend report, so a check there would always pass. It needs a design decision (an admission the Cloud Run job can ask, or the job refusing with no limit). Of the other 38 sites: 17 are not reachable from an automatic job, 5 run only inside an admitted rental or session, and 16 now check the account limit at the start of their step (WP-23). The WebApp route `/creator-captures/:id/world/reconstruct` has no account check; its caller is in the BlueprintCapture repo.
+- Six API-priced call sites are not behind the account check: the three capture-enrichment runners, the two World Labs preview calls and the Gemini capture review. They run in the Cloud Run capture job, which served the capture app. That job is closed by default from 2026-11-11 (see the next section), so they cannot run there. A device-format message that reached the host listener would still reach them; only the unused app or the operator command `scripts/stage_capture_bundle.py` produces one. Turning the device path back on requires putting them behind the check first. Of the other 38 sites: 17 are not reachable from an automatic job, 5 run only inside an admitted rental or session, and 16 now check the account limit at the start of their step (WP-23). The WebApp route `/creator-captures/:id/world/reconstruct` has no account check; its caller is in the BlueprintCapture repo.
 - `website_registration_anchor_frame_missing`, `_anchor_frame_invalid` and `_scale_conflicts_declared` are a mismatch inside Blueprint's own records. The site is not asked for anything; the stage takes its timed retries, the stall alarm pages the owner once per capture and code, and the job's window ends it.
 - The replay set covers five stops before scene preparation (level estimate, view-dependent colour, mesh registration, coverage gap, deterministic wait). It has no record for the scale review (it follows a paid pose no synthetic record carries), dropped review citations or dropped surrounding views.
 - Content-store blobs that nothing links to are never deleted by a withdrawal. Their clean-up only plans until the approval file names `garbage_collection_policy_class`; while such a blob predates a withdrawal, that withdrawal's receipt stays incomplete.
 - A provider upload with no recorded id keeps its withdrawal incomplete until the owner records the provider's answer with `python -m blueprint_pipeline.website_capture_withdrawal_provider_copies resolve`.
-- Host backup and rebuild, an off-host GPU reaper, lint and security checks before merge, and an audit of the BlueprintCapture upload hand-off.
 
 **Fixed after the first list was written (same day)**
 
 - A job whose object's facing or position cannot be found ends at once and asks the site for a new video; the email for every new-video stop now says what the job page says ([WebApp #1264](https://github.com/ognjhunt/Blueprint-WebApp/pull/1264)).
 - A preparation whose job never received a grant is ended on the host once the WebApp has ended the job ([WebApp #1263](https://github.com/ognjhunt/Blueprint-WebApp/pull/1263); the Pipeline half merged from another session as [#3557](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3557), which also makes a deploy wait for work in flight).
 - Shared content stores: a blob linked only from the withdrawing site's own directories is deleted with them; one another site also links is kept and named.
+
+## Keeping the system alive, and one way to capture (2026-11-11)
+
+**Owner decisions, 2026-11-11**
+
+- The capture app is not in use. A person who works at the site films the job with their own phone and uploads in the browser ("BlueprintCapture is irrelvant - we dont use the app/ask other people to capture"). The statement is in `doctrine/platform-context.md`, "How Capture Works".
+- Blueprint filming visits are retired, and the capturer payout and account routes are switched off ("switched off/retired - we need this as simple as possible"). The switch-off is [WebApp #1266](https://github.com/ognjhunt/Blueprint-WebApp/pull/1266). The owner also asked for the capturer-only WebApp code to be deleted ("delete the 170 files of capturer code too"): [WebApp #1267](https://github.com/ognjhunt/Blueprint-WebApp/pull/1267) removes 48 files and about 19,700 lines. Most of the files first counted are shared with site jobs and stay.
+
+**Built in the pull request that adds this section.** None of it is deployed, and nothing here has run against a real bucket, host or cloud project.
+
+- **State backup** (`control_plane_state_backup.py`, `blueprint-control-plane-state-backup.timer`, every 15 minutes). Job state, money records, receipts and standing approvals go, encrypted with AES-GCM, to a dedicated B2 bucket; seven days are kept. Site video and scene data are never included. The unit is skipped until the owner's key and bucket files exist. A ledger whose newest complete generation is more than 2 hours old pages `control_plane_backup_stale`.
+  - After a withdrawal, older generations are deleted and the withdrawal stays incomplete (`backup_copies_not_purged`) until that is proven.
+  - A restore onto the production root closes paid admission (`restored_from_backup_reconciliation_pending`) until a spend-guard reap and a billing reconciliation both postdate it. Then it opens by itself.
+- **Rebuild** (`scripts/rebuild_control_plane_host.sh`, with `--dry-run`). It refuses until every secret in `deploy/host/rebuild-owner-secrets.txt` is supplied or waived by name. It has never run on a fresh host.
+- **Off-host GPU reaper** (`off_host_gpu_reaper.py`, a Cloud Run job every 10 minutes; `off_host_gpu_reaper_heartbeat.py`, a host unit every 2 minutes). Off unless Terraform's `off_host_gpu_reaper_enabled` is set.
+  - A Blueprint machine past its published deadline plus 15 minutes is destroyed, host alive or not.
+  - With no heartbeat for 30 minutes: a machine past its deadline is destroyed; a machine absent from a complete deadline list that started more than 10 minutes before the last heartbeat is destroyed (its watchdog was already gone); one that started later, or any absent machine under an incomplete list, waits for the longest deadline the code can arm.
+  - A machine inside its deadline is never destroyed. Nothing is done when no heartbeat was ever published or a list cannot be read.
+  - The Terraform has not been through `terraform validate` or `plan`.
+- **A stop is never refused for a budget reason** (`paid_resource_admission.py`): two stop callers could be refused by the GCP monthly budget check.
+- **Checks before merge.** Lint, type check, Bandit and source governance run on every pull request and the required gate fails without them. `foundation-prerequisites` stays after merge, because it reads external hosts. A test that pins a complete set is selected whenever a member can change (`impacted_pinned_sets.py`). The dependency install gets three attempts. `scripts/dev/nonroot_pytest.sh` runs tests as CI's user would.
+- **The capture app's cloud path is closed by default** (`device_capture_pipeline_switch.py`, `BLUEPRINT_DEVICE_CAPTURE_PIPELINE`). The swap dispatch drops a website capture and the Cloud Run job exits with one record. This takes effect only when the cloud functions and job are next deployed. `docs/CAPTURE_BRIDGE_CONTRACT.md` records the hand-off, with a contract test.
+- **WebApp.** A video too large for the upload function gets the new-video ask in the same job ([WebApp #1265](https://github.com/ognjhunt/Blueprint-WebApp/pull/1265)).
+
+**What the host showed (read-only, through the door, 2026-11-11)**
+
+- Every hand-off message on record is 9 to 10.8 KB: the upload function's full message. The repository defaults would deliver only the trigger's short message, which cannot start a job. Production is wired differently, and that is written down nowhere. The read-only checks that settle it are in `docs/CAPTURE_BRIDGE_CONTRACT.md`.
+- Twenty deliveries gave up between 09-20 and 11-06: 15 `handoff_processing_exception`, 2 `capture_source_membership_unavailable`, 1 `capture_owner_observation_unavailable`, 2 `required_stage_not_complete:task_evaluation_supervisor:skipped`.
+- All 1,567 Vast charge rows in the spend snapshot carry no observation time, so hold settlement reads the collection time (#3556).
+- The host runs `19e409cbd` (#3524), deployed 11-10 at 03:31Z. Work volume 92% used. Account spend $145.40 of $200 for November.
+
+**Owner steps**
+
+1. Backup: create a dedicated B2 bucket with no object lock and a key scoped to it. Install `encryption_key`, `b2_key_id`, `b2_application_key`, `b2_bucket`, `b2_s3_endpoint_url` and `b2_region` under `/etc/blueprint/control-plane-backup/`. Keep a copy of the encryption key off the host. Run one restore drill into a temporary root.
+2. Reaper: create the Vast key secret, set `off_host_gpu_reaper_enabled` and the secret name, run `terraform plan` and apply. Install the heartbeat key at `/etc/blueprint/credentials/off-host-gpu-reaper-heartbeat.json` and add `BLUEPRINT_OFF_HOST_GPU_REAPER_BUCKET` to `/etc/blueprint/pipeline-control-plane.env`.
+3. Cloud side: run the read-only checks in `docs/CAPTURE_BRIDGE_CONTRACT.md`. Then redeploy the trigger functions and the job so the closed switch applies, or remove `swap-dispatch-worker`, the `blueprint-pipeline` job, its Cloud Tasks queues and the large-video topic. Keep `extractFrames`: every website upload goes through it.
+4. Terms and Privacy: the revised text drops filming visits and carries a placeholder effective date, 2026-11-25. Terms section 12 promises account holders an email before a material change takes effect. Set the date and decide the email. Counsel has not reviewed it (G-01).
+5. Render: unset `IOS_APP_STORE_ID`, `IOS_APP_CLIP_BUNDLE_ID` and `APPLE_TEAM_ID`. The WebApp no longer reads them.
+6. BlueprintCapture: its shared doctrine block is stale. The session that made this change could only read that repository.
+7. After WebApp #1267: remove the six capturer Firestore triggers that are still deployed (`firebase functions:delete`) and deploy `firestore.rules`. BlueprintCapture's copy of the rules still has the old grants and would restore them if deployed from there.
+8. Paperclip: `field-ops-daily` is paused in the WebApp repo's config only. Run `scripts/paperclip/reconcile-blueprint-paperclip-company.sh` on the Paperclip host to apply it. That agent can send messages to people outside Blueprint by itself; its route now answers 410.
+
+**Not done**
+
+- No backup, restore, rebuild or reaper pass has run for real.
+- Withdrawal deletion does not cover `_pipeline_failures/` at the bucket root (capture ids and error text) or Cloud Run logs.
+- The Pipeline's app-only modules are still in the tree, closed by the switch above.
+- No automatic check finds a test that breaks when the date moves. A run with the clock shifted forward would.
+- The default local test run deselects tests marked `slow`. Two failures on #3556 reached CI for that reason.
 
 ## Library-aisle navigation run (2026-11-06)
 

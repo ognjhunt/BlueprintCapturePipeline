@@ -1,5 +1,11 @@
 # Paid Marketplace Beta Launch Gate
 
+> **Capture, 2026-11-11.** No capture app is in use, and nobody else films for a
+> site: no outside capturers, Blueprint filming visits, capturer marketplace or
+> capturer payouts. Where this document describes the `BlueprintCapture` app,
+> capturers, visits or payouts, that is history.
+> How capture works today: "How Capture Works" in `PLATFORM_CONTEXT.md`.
+
 > **Archived 2026-11-02 (tracker H-01).** This gate checked the earlier paid
 > marketplace path: checkout, payouts and buyer access. The beta is free, with
 > no fees or checkout (`PLATFORM_CONTEXT.md`). This is not a current launch

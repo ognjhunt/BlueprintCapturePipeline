@@ -727,6 +727,16 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         source = unit_dir / f"blueprint-website-withdrawal-deletion.{suffix}"
         source.write_text("[Unit]\nDescription=Exact withdrawal deletion fixture\n", encoding="utf-8")
         withdrawal_deletion_units.append(source)
+    state_backup_units = []
+    for suffix in ("service", "timer"):
+        source = unit_dir / f"blueprint-control-plane-state-backup.{suffix}"
+        source.write_text("[Unit]\nDescription=Exact state backup fixture\n", encoding="utf-8")
+        state_backup_units.append(source)
+    reaper_heartbeat_units = []
+    for suffix in ("service", "timer"):
+        source = unit_dir / f"blueprint-off-host-reaper-heartbeat.{suffix}"
+        source.write_text("[Unit]\nDescription=Exact reaper heartbeat fixture\n", encoding="utf-8")
+        reaper_heartbeat_units.append(source)
     release_lifecycle_units = []
     for suffix in ("service", "timer"):
         source = unit_dir / f"blueprint-control-plane-release-lifecycle.{suffix}"
@@ -849,6 +859,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         storage_gc_service,
         storage_gc_timer,
         *withdrawal_deletion_units,
+        *state_backup_units,
+        *reaper_heartbeat_units,
         *release_lifecycle_units,
         *owner_deletion_units,
         capacity_service,
@@ -958,6 +970,10 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-control-plane-storage-gc.timer",
         "blueprint-website-withdrawal-deletion.service",
         "blueprint-website-withdrawal-deletion.timer",
+        "blueprint-control-plane-state-backup.service",
+        "blueprint-control-plane-state-backup.timer",
+        "blueprint-off-host-reaper-heartbeat.service",
+        "blueprint-off-host-reaper-heartbeat.timer",
         "blueprint-control-plane-release-lifecycle.service",
         "blueprint-control-plane-release-lifecycle.timer",
         "blueprint-owner-approved-deletion-plan.service",
@@ -1005,6 +1021,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-control-plane-storage-gc.timer",
         "blueprint-completed-replay-cache-gc.timer",
         "blueprint-website-withdrawal-deletion.timer",
+        "blueprint-control-plane-state-backup.timer",
+        "blueprint-off-host-reaper-heartbeat.timer",
         "blueprint-control-plane-release-lifecycle.timer",
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.timer",
