@@ -135,22 +135,13 @@ extension. The WebApp half landed as WebApp #1257.
    Pipeline ledger stays as it was.
 4. **Refusals cached by a revision constant** (Atlas levelling). A timed retry
    of the same inputs and code gives the same answer.
-5. **A website job that never received a grant: now ended on both sides.**
-   The WebApp's no-grant sweep ends such a job one window after its wait
-   started (`websiteJobWindowSweep.ts`, `website_job_no_grant_ending`), and
-   from then on answers the host's non-creating grant read and its spend
-   reservations with `website_scene_job_no_grant_ended` (409) instead of
-   `website_scene_sponsorship_missing`. On the Pipeline, the host retry gives
-   every failure of a grant-less job only the six timed retries
-   (`has_deadline`); `end_expired_preparation` asks the WebApp about a silent
-   grant-less preparation as it does about an expired grant, once per sweep
-   visit, and on that answer writes the listener's terminal authority ending
-   (stage `website_preparation_no_grant_ending`) once. A grant issued later
-   still reopens the job on the WebApp. Not ended: a job the WebApp keeps on
-   file, or does not treat as a website job; the host keeps asking about it
-   (one read per visit, nothing paid). Either side may deploy first: an older
-   WebApp answers "missing" and nothing ends; an older host takes the new
-   code as an ordinary retryable 409.
+5. **A website job that never received a grant has no deadline.** The WebApp
+   sweep reads the grant's window, and such a job has none, so it is not
+   ended. On the Pipeline, `end_expired_preparation` needs a grant too, so
+   nothing ends such a preparation; the host retry therefore gives every
+   failure of a grant-less job, an outage included, only the six timed retries
+   (`has_deadline` in `website_preparation_retry.py`) and then leaves it. Its
+   ledger is not marked ended.
 
 ## 6. Reconstruction refusals: continue on an estimate, or wait on a key (2026-11-10)
 
