@@ -179,56 +179,18 @@ APPROVED_ATLAS_PLAN_CALLERS = {
 #: Every site the signals below find is classified in this table; see
 #: ``_api_call_site_blockers``.
 API_CALL_SITE_TABLE = ROOT / "scripts/paid_api_call_sites.json"
-API_CALL_SITE_CLASSES = frozenset({"admitted", "not_paid", "unadmitted"})
+API_CALL_SITE_CLASSES = frozenset({"admitted", "not_automatic", "not_paid", "unadmitted"})
 #: Sites that can spend and pass no admission, reservation or ledger before the
 #: request on every path. A site classified ``unadmitted`` must be named here, and
 #: tests/test_paid_resource_allocator_verifier.py pins this set: adding an entry
 #: needs an explicit edit to that test, while removing one passes.
 UNADMITTED_API_CALL_SITES = frozenset({
-    "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>::openai_codex_cli",
-    "src/blueprint_pipeline/agent_execution/openai_transport.py::OpenAIAgentsHTTP.request::openai_api_url",
-    "src/blueprint_pipeline/agent_operator_runtime.py::run_agents_sdk_operator._run::openai_agents_sdk_runner",
-    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_cli_operator::openai_codex_cli",
-    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator::openai_codex_client_construction",
-    "src/blueprint_pipeline/agent_runtime/openai_phase2.py::CodexOpenAIPhase2Runner.__call__::openai_codex_cli",
-    "src/blueprint_pipeline/agent_runtime/openai_phase2.py::_OpenAISDKRunner.__call__::openai_client_construction",
-    "src/blueprint_pipeline/arena_result_ingest.py::_run_agents_sdk_operator._run::openai_agents_sdk_runner",
-    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_cli",
-    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_client_construction",
     "src/blueprint_pipeline/capture_enrichment_llm.py::_ClaudeHTTPRunner.__call__::anthropic_api_url",
     "src/blueprint_pipeline/capture_enrichment_llm.py::_CodexRunner.__call__::openai_codex_cli",
     "src/blueprint_pipeline/capture_enrichment_llm.py::_OpenAISDKRunner.__call__::openai_client_construction",
-    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_agentic_video::gemini_client_construction",
-    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_text_repair::gemini_client_construction",
-    "src/blueprint_pipeline/dreamlabs_policy_client.py::<module>::dreamlabs_api_url",
-    "src/blueprint_pipeline/hosted_image_generation_preflight.py::<module>::openai_api_url",
-    "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::nvidia_nim_api_url",
-    "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::openai_api_url",
-    "src/blueprint_pipeline/nvidia_nim_model_preflight.py::<module>::nvidia_nim_api_url",
-    "src/blueprint_pipeline/openai_prompt_cache_canary.py::run_mechanics_canary::openai_client_construction",
-    "src/blueprint_pipeline/palatial_physready.py::<module>::palatial_api_url",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini.py::run_canary::gemini_client_construction",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::submit_pilot::gemini_client_construction",
     "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider._upload_video_as_media_asset::world_labs_marble_request",
     "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.submit::world_labs_marble_request",
-    "src/blueprint_pipeline/render_visual_qc.py::_gemini_review_image::gemini_client_construction",
-    "src/blueprint_pipeline/rollout_vision_label_openai.py::_openai_label::openai_client_construction",
-    "src/blueprint_pipeline/scene_placement/target_resolver.py::_gemini_resolve_text::gemini_client_construction",
     "src/blueprint_pipeline/scene_semantics.py::_infer_capture_review_with_gemini_video::gemini_client_construction",
-    "src/blueprint_pipeline/scene_semantics.py::_infer_with_gemini_video::gemini_client_construction",
-    "src/blueprint_pipeline/simulation_automation.py::CodexSdkSimulationAutomationAgentAdapter.build_ledger::openai_codex_cli",
-    "src/blueprint_pipeline/site_eval_director.py::CodexSdkCodeMaintainerAdapter.build_request_manifest::openai_codex_cli",
-    "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_agents_sdk_runner",
-    "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_credentials",
-    "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_provider",
-    "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_sdk_runner",
-    "src/blueprint_pipeline/task_object_artisan_bridge.py::main::openai_client_construction",
-    "src/blueprint_pipeline/wam_compute_providers.py::_deepinfra_api_base_url::deepinfra_api_url",
-    "src/blueprint_pipeline/wam_episode_consistency_label_gemini.py::build_gemini_wam_episode_consistency_labels::gemini_client_construction",
-    "src/blueprint_pipeline/wam_episode_consistency_label_openai.py::_openai_score_one::openai_client_construction",
-    "src/blueprint_pipeline/wam_generated_video_success_label_gemini.py::build_gemini_wam_success_labels::gemini_client_construction",
-    "src/blueprint_pipeline/wam_generated_video_success_label_openai.py::_openai_label_one::openai_client_construction",
-    "src/blueprint_pipeline/website_image_completion.py::_verify_completed_background::gemini_client_construction",
 })
 _API_HOSTS = {
     "openai": re.compile(r"https://api\.openai\.com(?![\w.-])"),
@@ -884,7 +846,36 @@ def _api_call_site_blockers(
                 path, _, name = str(row.get(field) or "").partition("::")
                 if not name or _first_reference_line(root / path, name) is None:
                     blockers.append(f"paid_api_call_site_{field}_missing:{key}")
+            blockers.extend(_structural_claim_blockers(key, row, root))
+        elif kind == "not_automatic":
+            path, _, name = str(row.get("entry_point") or "").partition("::")
+            if not name or not str(row.get("reason") or "").strip() or (
+                    _first_reference_line(root / path, name) is None and name not in {"<module>", "main"}):
+                blockers.append(f"paid_api_call_site_not_automatic_entry_point_missing:{key}")
+            blockers.extend(_structural_claim_blockers(key, row, root))
     return blockers
+
+
+def _structural_claim_blockers(key: str, row: dict, root: Path) -> list[str]:
+    """Check a ``not_automatic`` or ``guards``/``reachable_only_through`` claim on the call graph.
+
+    An ``admitted`` row without either keeps the older label check, unless it says why the graph
+    cannot express its admission (``structural_check``: a callable injected at run time).
+    """
+
+    if str(Path(__file__).resolve().parent) not in sys.path:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from paid_call_site_reachability import claim_blockers, unproven_guards
+
+    guarded = bool(row.get("guards") or row.get("reachable_only_through"))
+    if row.get("class") == "admitted" and not guarded:
+        return []
+    blockers = [f"paid_api_call_site_guard_unproven:{key}:{name}"
+                for name in unproven_guards(frozenset(row.get("guards") or []), root)]
+    if row.get("reachable_only_through") and not (
+            str(row.get("enclosing_admission") or "").strip() and str(row.get("bound") or "").strip()):
+        blockers.append(f"paid_api_call_site_enclosing_admission_missing:{key}")
+    return blockers + claim_blockers(key, row, root)
 
 
 def _verify_api_call_sites() -> list[str]:

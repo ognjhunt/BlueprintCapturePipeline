@@ -497,10 +497,12 @@ def test_unconfigured_roots_are_reported_as_incomplete(tmp_path: Path) -> None:
     config = stall.StallConfig(None, None, None, None, config_errors=("threshold_invalid:X",))
     result = stall.observe_stalls(config, now=NOW, unit_reader=lambda _units: {})
     assert set(result["checks"]) == {"scene_progression", "launch_leases", "launch_activations", "triggers",
-                                     "atlas_preview", "team_scene_packets", "rigid_probes", "screening"}
+                                     "atlas_preview", "team_scene_packets", "rigid_probes", "screening",
+                                     "scene_budget", "preparation_faults"}
     assert result["checks"]["launch_activations"] == {"status": "not_configured"}
     assert all(result["checks"][name] == {"status": "not_configured"}
-               for name in ("atlas_preview", "team_scene_packets", "rigid_probes", "screening"))
+               for name in ("atlas_preview", "team_scene_packets", "rigid_probes", "screening", "scene_budget",
+                            "preparation_faults"))
     assert [row["reason"] for row in result["alerts"]] == [
         "threshold_invalid:X", "scene_intent_root_unconfigured", "launch_roots_unconfigured",
         "deploy_tool_unconfigured"]

@@ -377,6 +377,24 @@ def build_supervisor_snapshot(
         omitted_terminal_rows.append(included_terminal_rows.pop(0))
 
 
+#: Before the paid model call: the account-wide monthly limit refused it. Nothing was invoked
+#: or reserved, nothing is cached, and the next tick asks again by itself.
+ACCOUNT_LIMIT_WAIT_STATUS = "waiting_for_account_limit"
+
+
+def _account_limit_wait(snapshot_digest: str) -> dict[str, Any] | None:
+    from .paid_resource_admission import PaidResourceAdmissionBlocked, require_paid_resource_budget
+
+    try:
+        require_paid_resource_budget(resource_class="openai_api_candidate")
+    except PaidResourceAdmissionBlocked as exc:
+        return {"schema_version": SUPERVISOR_SCHEMA_VERSION, "status": ACCOUNT_LIMIT_WAIT_STATUS,
+                "snapshot_digest": snapshot_digest, "agent_invoked": False, "blockers": list(exc.blockers),
+                "provider_mutation_performed": False, "allocator_invoked": False,
+                "automatic_retry_performed": False, "authority_granted": False}
+    return None
+
+
 def run_launch_supervisor(
     *,
     snapshot: Mapping[str, Any],
@@ -423,6 +441,9 @@ def run_launch_supervisor(
         cached_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return result
 
+    waiting = _account_limit_wait(snapshot_digest)
+    if waiting is not None:
+        return waiting
     model = str(os.getenv(SUPERVISOR_MODEL_ENV) or DEFAULT_SUPERVISOR_AGENT_MODEL).strip()
     try:
         budget = float(os.getenv(SUPERVISOR_BUDGET_ENV) or "0")
@@ -547,7 +568,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             encoding="utf-8",
         )
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["status"] in {"completed", "disabled"} else 2
+    return 0 if result["status"] in {"completed", "disabled", ACCOUNT_LIMIT_WAIT_STATUS} else 2
 
 
 if __name__ == "__main__":  # pragma: no cover

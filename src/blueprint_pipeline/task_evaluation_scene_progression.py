@@ -306,7 +306,8 @@ ATTEMPT_STATE_KEYS = ("attempt_id", "attempt_commit", "attempt", "factory", "pub
                       "native_task_family_packet",
                       "preparation_state", "preparation_link", "preparation_result", "activation_link",
                       "activation", "scene_configuration_launch", "failure", "preparation_failure",
-                      "configuration_failure", "capacity_recovery_admission", "configuration_recovery_wait")
+                      "configuration_failure", "capacity_recovery_admission", "configuration_recovery_wait",
+                      "preparation_contract", "release_adoption")
 
 
 def _website_configuration_launch(*, observed, config, release, launcher):
@@ -759,14 +760,23 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     state["binding_digest"] = binding["binding_digest"]
     state["source_binding"] = record(resolution.binding_path)
     active_id = state.get("attempt_id")
+    # The release the attempt is bound to: the live one, or (switch on) the
+    # retained earlier release whose $0 preparation this release adopted.
+    bound_release = release
     if active_id and state.get("attempt_commit") != release["source_commit"]:
+        from .task_evaluation_scene_release_adoption import adopt_previous_preparation
+        adopted = adopt_previous_preparation(directory=directory, intent=intent, state=state,
+                                             config=config, release=release, binding=binding)
+        if adopted is not None:
+            bound_release = adopted
         # Do not replace an old in-flight attempt merely because a deploy moved.
         # A terminal preparation and fresh ownership/zero reconciliation must
         # precede an administrative successor.
-        if not _release_successor(directory=directory, intent=intent, state=state,
-                                  config=config, release=release, now=now):
+        elif not _release_successor(directory=directory, intent=intent, state=state,
+                                    config=config, release=release, now=now):
             return emit("running", "previous_release", ["previous_release_attempt_not_terminal"])
-        active_id = None
+        else:
+            active_id = None
     if not active_id:
         identity = {"intent_digest": intent["intent_digest"], "binding_digest": binding["binding_digest"],
                     "source_commit": release["source_commit"], "runtime_digest": release["runtime_digest"]}
@@ -783,7 +793,7 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                                                           "task_evaluation_website_scene_machinery.v1"}
                         or (machinery.get("schema_version") == "task_evaluation_public_scene_machinery.v1"
                             and binding["binding_id"] in machinery.get("retained_prefix_only_binding_ids", [])))
-    attempt_args = {"source_commit": release["source_commit"], "runtime_digest": release["runtime_digest"],
+    attempt_args = {"source_commit": bound_release["source_commit"], "runtime_digest": bound_release["runtime_digest"],
         "input_digest": binding["binding_digest"], "provider": machinery.get("provider", "vast"),
         "maximum_spend_usd": machinery["maximum_preparation_spend_usd"]}
     attempt_path = directory / "attempts" / (active_id + ".json")
@@ -807,7 +817,7 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     # Mutable service pointers are snapshotted once per immutable attempt.
     binding_path = _put(output / "source_binding.json", binding)
     machinery_path = _put(output / "machinery.json", machinery)
-    release_path = _put(output / "release_binding.json", release)
+    release_path = _put(output / "release_binding.json", bound_release)
     factory_path = output / "factory.json"
     if state.get("factory"):
         factory = read(_reference(state["factory"]), digest_field="factory_digest")
@@ -828,6 +838,9 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                     and factory.get("provider_mutation_performed") is False, "factory_receipt_invalid")
         _put(factory_path, factory)
         state["factory"] = record(factory_path)
+        from .release_preparation_adoption import contract_identity
+        # Recorded with the preparation by the code that made it (adoption, see the module).
+        state["preparation_contract"] = contract_identity()
     if factory.get('status') == 'native_packet_ready':
         # Supplied family scenes are already compiled. They retain the same
         # owner/source/release/preparation identity and hold gates above, but
@@ -898,6 +911,10 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         logging.getLogger(__name__).warning("agent_failure_subscription_unavailable:%s", type(exc).__name__)
     if observed.get("result_reference"):
         state["preparation_result"] = observed["result_reference"]
+    if observed["status"] == "blocked" and bound_release is not release:
+        from .task_evaluation_scene_release_adoption import refuse_adoption
+        refuse_adoption(state, observed.get("result", {}).get("blockers"))
+        return emit("preparing", "previous_release", ["release_adoption_refused"])
     if observed["status"] in {"blocked", "awaiting_source_preparation"}:
         if preparation_only:
             return emit("blocked", "source_preparation", observed.get("result", {}).get("blockers") or ["preparation_failed"])
@@ -936,6 +953,9 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             # skips them, so this tick is the one writer of their launch.
             state["scene_configuration_launch"] = _website_configuration_launch(
                 observed=observed, config=config, release=release, launcher=configuration_launcher)
+            if state["scene_configuration_launch"].get("status") == "adopted_activation_refused":
+                from .task_evaluation_scene_release_adoption import refuse_adoption
+                refuse_adoption(state, state["scene_configuration_launch"].get("blockers"))
             return emit("awaiting_execution", "scene_configuration",
                         state["scene_configuration_launch"].get("blockers") or ())
         return emit("awaiting_execution", "scene_configuration")

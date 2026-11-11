@@ -76,6 +76,12 @@ def plan(count=2, maximum="2.00", **kwargs):
                                 cost_quotes=quotes, now=NOW, **kwargs)
 
 
+def candidate_rows(value):
+    """A plan's or publication's candidate rows, without a new website campaign's known-good control row."""
+    return [row for row in value["candidates"] if not row.get("known_good_control")
+            and not any(code.startswith("known_good_control") for code in row.get("setup_quality_flags") or [])]
+
+
 def reseal(value):
     value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
     return value

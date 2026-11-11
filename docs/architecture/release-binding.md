@@ -98,6 +98,106 @@ job whose state was written by the previous release keeps progressing.
   configured-controls worker, whose record progression does not read. The hold
   covers their queued and running launches, not the WebApp transit window.
 
+## Adopt or rebind: $0 work across a deploy
+
+Rule for this table: a $0 artifact may be adopted by a later release only if no
+paid launch is admitted against it. The launch activation worker admits a
+paid launch against the preparation request, its result receipt, the adapter,
+the construction envelope and the toolchain, and checks that each names its own
+commit (`task_evaluation_launch_activation_worker.py`, the checks of
+`expected_production_commit` near lines 327, 441, 650, 972 and 1162). So the $0
+preparation of a rigid website job is part of the paid admission. It is not
+adopted across a commit.
+
+| # | Guards | Adopt or rebind | Why |
+|---|---|---|---|
+| 1 | which release is live | strict (not an artifact) | Every later binding is read from it. |
+| 2 | the $0 attempt id | rebind | The attempt's `source_commit` is copied into the paid reservation row (`_activation_link`), and settlement requires factory, attempt and row to name one commit. Serves money: left strict. |
+| 3 | retiring the $0 attempt | rebind | It could adopt only if rows 4 to 10 accepted another commit. |
+| 4 | $0 factory (staged bundle, request) | rebind | The request names `expected_production_commit` and the release's toolchain publication, which the activation worker verifies. Serves money: left strict. |
+| 5 | $0 factory receipt | n/a | Same attempt only. |
+| 6 | $0 bundle publication | rebind | Its namespace and manifest follow the request (row 4). |
+| 7 | $0 preparation worker result | rebind | The activation worker checks its receipt's `source_commit` (line 1162). Serves money: left strict. |
+| 8 | intake admission | strict | Paid admission. |
+| 9 | activation staging | strict | Paid admission. |
+| 10 | $0 activation (about an hour of CPU) | strict | Its output is the launch profile and bundle a paid launch runs. |
+| 11 | dispatch | strict | Paid. A launch already queued finishes (row 18). |
+| 12 | completed scene configuration | adopted today | The join reads the run's own commit. |
+| 13 | completed robot-team result | adopted today | Same. |
+| 14 | adopted controls result | strict | Not explained here. |
+| 15 | $0 team scene half | adopted today; retried once per release | A completed half is kept. Release is used only as the signal that a fix may have shipped. |
+| 16 | paid probe retry | strict | Paid. |
+| 17 | paid screening | strict | Paid. |
+| 18 | a paid launch already left | strict | Paid. |
+
+$0 work that a deploy already does not repeat:
+
+- the website preparation and its registration (`website_scene_dispatch.resolve_website_source` keys on the request digest, not the commit);
+- the staged input bytes (hard links from earlier attempts, `earlier_attempt_submissions`);
+- fetched inputs (the preparation worker's content-addressed store);
+- a public scene's mesh normalization (`tests/test_scene_preparation_restart.py`).
+
+What a deploy still repeats for a job that has not submitted its launch: the
+commit-bound wrapper (factory request, publication, preparation worker result)
+and the activation. A preparation contract version cannot remove that wrapper
+without letting rows 4, 7, 9 and 10 accept a request that names another commit.
+That is the side-by-side releases change, which needs validation on the host.
+
+## Adoption across a deploy (dark launch, approved 2026-11-10)
+
+Off by default. The host switch `BLUEPRINT_RELEASE_PREPARATION_ADOPTION=enabled`
+in `/etc/blueprint/pipeline-control-plane.env` turns it on
+(`release_preparation_adoption.py`). With it off, every check above refuses
+exactly as before.
+
+With it on, scene progression keeps the attempt (`task_evaluation_scene_release_adoption.py`)
+instead of retiring it when all of these hold:
+
+- the attempt is a $0 preparation with a factory and no paid reservation yet;
+- its intent digest and source binding digest are unchanged;
+- its earlier release is retained: the attempt's release snapshot, deploy
+  receipt, provenance and runtime publications still verify;
+- the preparation recorded a **contract identity** when it was made, and it
+  equals the running code's identity. A preparation made before this change
+  records none and is never adopted.
+
+Progression then writes one sealed record,
+`<preparation queue>/release-adoptions/<request digest>-<adopting commit>.json`.
+Rows 7, 9 and 10 accept the request that names the earlier commit only when that
+record exists, the switch is on, and their own process computes the same
+identity. They change nothing else they compare.
+
+**Contract identity.** A digest over the source bytes of the preparation's
+producer code: the root modules in `PRODUCER_MODULES`, every module they import
+(also inside a function), then the module-level import closure of those (about
+340 files). It cannot catch:
+
+- a change to a module reached only through a deeper function-level import;
+- a third-party package upgrade;
+- non-Python data files;
+- the toolchain itself. The toolchain is bound separately: the activation uses
+  the earlier release's retained tree (`.../scene-configuration/<commit>`) and
+  verifies its manifest against that commit.
+
+**Provenance.** The preparation, its worker result and the paid reservation
+keep the commit that made the preparation. The worker result, the activation
+staging state, the activation result and the launch state each add
+`release_adoption` with `prepared_commit` and `adopting_commit`, plus
+`worker_source_commit` (the release that ran that step). No record claims one
+commit did both.
+
+**Refusal.** A refusal before any provider call marks the adoption refused,
+and the next tick rebuilds once on the live release. The refusal is either the
+new worker closing the request `blocked`, or the activation worker refusing
+the activation (for example, the retained toolchain is gone). A rebuilt attempt
+is bound to the live release.
+
+**Not covered:**
+- An activation that was staged before the deploy: it rebinds, as before.
+- The robot-team (configured-controls) path.
+- A second deploy after the paid reservation was made under adoption: as
+  before, the attempt is held or rebuilt by `_release_successor`.
+
 ## Policy that could change (owner decision)
 
 The door's activation hold (285 minutes) and the "skip the window while a paid

@@ -566,6 +566,22 @@ def backfill_runtime_diagnostics(root: Path, *, max_writes: int = 5) -> dict[str
         return {"status": "failed", "error": error_description(exc)}
 
 
+def alert_known_good_controls(root: Path) -> dict[str, Any]:
+    """Page the owner once for each campaign whose known-good control ran and failed; never stops the tick."""
+    from .beta_policy_screening_coordinator import _ledger, _lock, _plan
+    from .beta_policy_screening_known_good_control import alert_failed_controls, failed_controls, is_control
+    from .control_plane_capacity_controller import WEBHOOK_URL_ENV
+
+    try:
+        with _lock(root):
+            ledger = _ledger(root)
+        campaigns = [(key, state, _plan(root, key, state["plan_digest"])) for key, state in ledger["campaigns"].items()
+                     if any(is_control(row) for row in state["candidates"].values())]
+        return alert_failed_controls(root, failed_controls(campaigns), webhook_url=os.getenv(WEBHOOK_URL_ENV) or "")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {"status": "failed", "error_type": type(exc).__name__}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from .beta_policy_screening_coordinator import QUEUE_ROOT_ENV, _root, process_screening_queue
     from .beta_policy_screening_status import write_worker_status
@@ -596,6 +612,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
         max_launches=args.max_launches)
     after = deliver_publications(queue_root=root)
+    control_alerts = alert_known_good_controls(root)
     from .beta_policy_screening_holds import deliver_holds
 
     # A held evaluation (no campaign could start) reaches the website by name, like a campaign.
@@ -620,7 +637,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
                       "publication_after": after, "holds": holds, "selections": selections,
                       "runtime_diagnostics_backfill": diagnostics, "review_video_backfill": review_videos,
-                      "unspent_bundle_prune": unspent_bundles, "worker_status": status},
+                      "unspent_bundle_prune": unspent_bundles, "worker_status": status,
+                      "known_good_control_alerts": control_alerts},
                      sort_keys=True))
     return 0
 

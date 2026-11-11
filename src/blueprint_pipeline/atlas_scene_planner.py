@@ -375,6 +375,18 @@ The shared remaining budget is data, not authority to change prices or limits.
 """
 
 
+#: The revision of how ``proposal_review`` decides on a retained review (``deterministic_refusal``). A refusal it
+#: raises on the same review and survey repeats until this changes, so it is not re-run on a timer.
+PROPOSAL_REVIEW_REVISION = "atlas_proposal_review.r1"
+
+
+def _review_refusal(code, proposal, survey):
+    """A refusal decided only by the retained review and survey: the same inputs and code repeat it."""
+    from .deterministic_refusal import DeterministicRefusal
+    return DeterministicRefusal(code, step="atlas_proposal_review", inputs={
+        "proposal_digest": canonical_digest(proposal), "survey_digest": str(survey.get("digest"))})
+
+
 def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, reference_sources=()):
     schema = ((SemanticRefinementProposal if feedback is not None else SemanticSceneProposal)
               if "task_semantics" in proposal else RefinementProposal if feedback is not None else SceneProposal)
@@ -387,7 +399,7 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
     intervals = value["static_intervals_seconds"]
     if not intervals or any(len(row) != 2 or not all(math.isfinite(v) for v in row)
                             or not 0 <= row[0] < row[1] for row in intervals):
-        raise ValueError("atlas_scene_planner_intervals_invalid")
+        raise _review_refusal("atlas_scene_planner_intervals_invalid", proposal, survey)
     frames = {r["frame_id"]: r for r in survey["frames"]}
     unsafe = set(value["unsafe_frame_ids"])
     selected = {key for key, r in frames.items() if any(a <= r["timestamp_seconds"] <= b for a, b in intervals)}
@@ -410,7 +422,7 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
         raise ValueError("atlas_scene_planner_coverage_or_privacy_invalid")
     transient = set(value["transient_frame_ids"])
     if not transient <= frames.keys():
-        raise ValueError("atlas_scene_planner_transients_invalid")
+        raise _review_refusal("atlas_scene_planner_transients_invalid", proposal, survey)
     # Unsafe wins. A frame can show a person and another scene state at once
     # (2026-10-23: 22 such frames failed a whole plan); it is never an input,
     # so nothing in it is erased.
@@ -418,7 +430,7 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
     kinds = []
     if transient:
         if not value.get("automation"):
-            raise ValueError("atlas_scene_planner_transients_require_automation")
+            raise _review_refusal("atlas_scene_planner_transients_require_automation", proposal, survey)
         # People are the transient every working scene has; always look for them.
         for row in [*value["transients"], {"label": "person", "segmentation_prompt": "person"}]:
             if row["segmentation_prompt"].strip().lower() not in {k["segmentation_prompt"].strip().lower() for k in kinds}:
@@ -431,7 +443,7 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                 or not set(feedback["prior_selected_frame_ids"]) <= required | additional
                 or (value["action"] == "keep" and additional)
                 or (value["action"] == "refine" and not (additional - set(feedback["prior_selected_frame_ids"])))):
-            raise ValueError("atlas_refinement_state_or_selection_invalid")
+            raise _review_refusal("atlas_refinement_state_or_selection_invalid", proposal, survey)
     automation = value.get("automation")
     if origin in PRESERVED_SCENE_ORIGINS and (
             not automation or any(o["disposition"] != "keep" for o in automation["objects"])
@@ -439,7 +451,8 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
         raise ValueError("atlas_synthetic_subject_requires_preserved_capture" if origin == "synthetic_design"
                          else "atlas_scene_requires_preserved_capture")
     if {k["target_id"] for k in kinds} & {o["target_id"] for o in (automation or {}).get("objects", [])}:
-        raise ValueError("atlas_scene_planner_transients_invalid")
+        raise _review_refusal("atlas_scene_planner_transients_invalid", proposal, survey)
+    dropped = []
     if automation:
         referenced = {r["frame_id"] for r in automation["scale_references"]}
         referenced |= {r["frame_id"] for obj in automation["objects"] for r in obj["regions"]}
@@ -455,8 +468,19 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                 "required_frame_ids": sorted(cited)}]
             required |= cited
             value["cited_frames_added_to_coverage"] = sorted(cited)
-        if not referenced <= required | additional or referenced & unsafe:
-            raise ValueError("atlas_automation_frames_not_selected")
+        # A citation of a frame that is unsafe or outside the selection is dropped and flagged, not the
+        # job (capture-5b067498, 2026-11-06: one such citation failed the third review). The review stays
+        # as the model gave it otherwise. An object whose every region was such a citation has no
+        # evidence left, so that review still refuses, once: the same review repeats it.
+        dropped = sorted(frame for frame in referenced if frame not in required | additional or frame in unsafe)
+        if any(obj["regions"] and all(r["frame_id"] in dropped for r in obj["regions"])
+               for obj in automation["objects"]):
+            raise _review_refusal("atlas_automation_frames_not_selected", proposal, survey)
+        if dropped:
+            automation["scale_references"] = [r for r in automation["scale_references"]
+                                              if r["frame_id"] not in dropped]
+            for obj in automation["objects"]:
+                obj["regions"] = [r for r in obj["regions"] if r["frame_id"] not in dropped]
     # Hold the required RGBD coverage aside before selecting pose inputs.
     # Buying posing alone must not consume the rest of the shared allowance.
     if origin not in PRESERVED_SCENE_ORIGINS:
@@ -480,6 +504,8 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                 "coverage_requirements", "uncaptured_regions", "selection_policy")},
             **({"cited_frames_added_to_coverage": value["cited_frames_added_to_coverage"]}
                if "cited_frames_added_to_coverage" in value else {}),
+            # Flagged where the scene's estimates are collected (``atlas_scene_estimates``).
+            **({"automation_citations_dropped": dropped} if dropped else {}),
             "moving_people_excluded": True, "same_scene_state": True,
             "reviewed_by": "production_agents_sdk:" + policy["model"],
             "review_basis": "model_proposal_not_physical_or_privacy_proof",

@@ -66,11 +66,13 @@ def _robot_fit_hold(root: Path, handoff: dict[str, Any], task_context_digest: st
 
 
 def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
-                             state: str, robot_fit_hold: bool = False) -> dict[str, Any] | None:
+                             state: str, robot_fit_hold: bool = False, recapture: bool = False) -> dict[str, Any] | None:
     """Only a current stopped attempt may project a verified retained finding.
 
     ``robot_fit_hold`` (status v6) also projects a job held before spend because no robot the
-    screening catalog runs fits its task (``_robot_fit_hold``).
+    screening catalog runs fits its task (``_robot_fit_hold``). ``recapture`` (status v7) projects a
+    preparation that ended on a stop only a new video can clear (``website_recapture_required``): its
+    reason is the stop's own code, and the site is asked to film again.
     """
     if state not in {"awaiting_inputs", "failed_retryable", "failed_terminal"}:
         return None
@@ -89,6 +91,11 @@ def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
     if retains_rejected_selection(handoff, context) or retains_observed_room_limit(handoff, context):
         return {"category": "insufficient_evidence", "reason": "task_evidence_incomplete",
                 "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
+    if recapture:
+        from .website_recapture_required import retains_recapture_required
+        if retains_recapture_required(handoff, context):
+            return {"category": "insufficient_evidence", "reason": handoff["recapture_required"]["code"],
+                    "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
     if robot_fit_hold:
         held = _robot_fit_hold(root, handoff, task_context_digest)
         if held is not None:

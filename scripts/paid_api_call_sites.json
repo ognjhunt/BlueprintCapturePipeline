@@ -4,13 +4,17 @@
   "sites": {
     "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>::openai_codex_cli": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "paid Codex CLI (npx @openai/codex exec) advisory reviews via run_codex_cli_operator; the operator ledger records the run, it does not bound spend"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; an ADP evidence-program constant read by its own module only"
     },
     "src/blueprint_pipeline/agent_execution/openai_transport.py::OpenAIAgentsHTTP.request::openai_api_url": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Agents API sessions; bounded only by the OpenAI project's dashboard spend limit, checked through a caller-injected validate_admission; no reservation or ledger before the request"
+      "class": "admitted",
+      "structural_check": "not expressible on the static graph: AgentTaskService receives the runtime factory as a callable (runtime_for_task), so every method of the production service looks reachable from its module",
+      "via": "src/blueprint_pipeline/agent_execution/production.py::_require_account_limit",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "a task starts only after validate_admission and the account-wide monthly limit (_enqueue_record); a refusal raises agent_account_monthly_limit_wait before anything is admitted, and autostart asks again on its next pass; steps of a task already started are never refused by it"
     },
     "src/blueprint_pipeline/agent_execution/sdk_runtime.py::OpenAIAgentsSDKRuntime._run::openai_agents_sdk_runner": {
       "provider": "openai",
@@ -47,43 +51,82 @@
     },
     "src/blueprint_pipeline/agent_operator_runtime.py::run_agents_sdk_operator._run::openai_agents_sdk_runner": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Agents SDK model calls (operator run); env opt-in only"
+      "class": "admitted",
+      "guards": [
+        "require_paid_resource_budget"
+      ],
+      "via": "src/blueprint_pipeline/agent_operator_runtime.py::run_agents_sdk_operator",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "every path from an automatic entry passes the account-wide monthly limit at the operator's start; a refusal is a RuntimeError its callers record as an advisory-ledger blocker, nothing sent"
     },
     "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_cli_operator::openai_codex_cli": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "paid Codex CLI exec run; env opt-in only"
+      "class": "admitted",
+      "guards": [
+        "require_paid_resource_budget"
+      ],
+      "via": "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_cli_operator",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "every path from an automatic entry passes the account-wide monthly limit at the operator's start; a refusal is a RuntimeError its callers record as an advisory-ledger blocker, nothing sent"
     },
     "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator::openai_codex_client_construction": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Codex SDK session (operator run); env opt-in only"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/site_eval_director.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; called only by the site_eval_director and simulation_automation operator CLIs"
     },
     "src/blueprint_pipeline/agent_runtime/openai_phase2.py::CodexOpenAIPhase2Runner.__call__::openai_codex_cli": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "paid Codex CLI exec run for agent runtime phase 2"
+      "class": "admitted",
+      "guards": [
+        "_account_limit_refuses"
+      ],
+      "via": "src/blueprint_pipeline/agent_runtime/openai_phase2.py::_account_limit_refuses",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "every path from an automatic entry passes the account-wide monthly limit; a refusal skips the optional skill (returns None, the deterministic fallback runs) and records why"
     },
     "src/blueprint_pipeline/agent_runtime/openai_phase2.py::_OpenAISDKRunner.__call__::openai_client_construction": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Responses calls for agent runtime phase 2; usage receipt recorded after the call only"
+      "class": "admitted",
+      "guards": [
+        "_account_limit_refuses"
+      ],
+      "via": "src/blueprint_pipeline/agent_runtime/openai_phase2.py::_account_limit_refuses",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "every path from an automatic entry passes the account-wide monthly limit; a refusal skips the optional skill (returns None, the deterministic fallback runs) and records why"
     },
     "src/blueprint_pipeline/arena_result_ingest.py::_run_agents_sdk_operator._run::openai_agents_sdk_runner": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Agents SDK model calls (arena ingest operator); env opt-in only"
+      "class": "admitted",
+      "guards": [
+        "_live_agents_blockers",
+        "_live_codex_blockers"
+      ],
+      "via": "src/blueprint_pipeline/arena_result_ingest.py::_live_agents_blockers",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "the live-operator gate asks the account-wide monthly limit last; a refusal is a ledger blocker (status blocked), nothing sent, and the next ingest asks again"
     },
     "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_cli": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "paid Codex CLI fallback via run_codex_cli_operator; env opt-in only"
+      "class": "admitted",
+      "guards": [
+        "_live_agents_blockers",
+        "_live_codex_blockers"
+      ],
+      "via": "src/blueprint_pipeline/arena_result_ingest.py::_live_codex_blockers",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "the live-operator gate asks the account-wide monthly limit last; a refusal is a ledger blocker (status blocked), nothing sent, and the next ingest asks again"
     },
     "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_client_construction": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Codex SDK session (arena ingest operator); env opt-in only"
+      "class": "admitted",
+      "guards": [
+        "_live_agents_blockers",
+        "_live_codex_blockers"
+      ],
+      "via": "src/blueprint_pipeline/arena_result_ingest.py::_live_codex_blockers",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "the live-operator gate asks the account-wide monthly limit last; a refusal is a ledger blocker (status blocked), nothing sent, and the next ingest asks again"
     },
     "src/blueprint_pipeline/atlas_background_automation.py::_provider_preflight::meta_sam_credentials": {
       "provider": "meta_sam",
@@ -171,18 +214,41 @@
     },
     "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_agentic_video::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini video analysis; the website path (task context with capture_id) is reserved via retained_gemini_call, but the legacy diagnostic path (no capture_id) reaches the same call behind only an env gate"
+      "class": "admitted",
+      "guards": [
+        "retained_gemini_call",
+        "require_paid_resource_budget"
+      ],
+      "via": "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::analyze_removal_targets",
+      "admission": "src/blueprint_pipeline/website_task_context.py::reserve_website_preparation_spend",
+      "note": "a website job's call reserves through retained_gemini_call (reserve_website_preparation_spend runs require_paid_resource_budget first); a run with no website job checks require_paid_resource_budget and blocks the stage by name on a refusal"
     },
     "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_text_repair::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini video analysis; the website path (task context with capture_id) is reserved via retained_gemini_call, but the legacy diagnostic path (no capture_id) reaches the same call behind only an env gate"
+      "class": "admitted",
+      "guards": [
+        "retained_gemini_call",
+        "require_paid_resource_budget"
+      ],
+      "via": "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::analyze_removal_targets",
+      "admission": "src/blueprint_pipeline/website_task_context.py::reserve_website_preparation_spend",
+      "note": "a website job's call reserves through retained_gemini_call (reserve_website_preparation_spend runs require_paid_resource_budget first); a run with no website job checks require_paid_resource_budget and blocks the stage by name on a refusal"
     },
     "src/blueprint_pipeline/dreamlabs_policy_client.py::<module>::dreamlabs_api_url": {
       "provider": "dreamlabs",
-      "class": "unadmitted",
-      "can_spend_on": "DreamLabs policy gateway get_action inference per step; pricing not shown free and no admission before infer"
+      "class": "admitted",
+      "request_functions": [
+        "src/blueprint_pipeline/dreamlabs_policy_client.py::DreamLabsPolicyClient.infer"
+      ],
+      "reachable_only_through": [
+        "src/blueprint_pipeline/team_candidate_policy_client.py",
+        "src/blueprint_pipeline/policy_canary_session_bundle_identity.py"
+      ],
+      "enclosing_admission": "the screening or team policy session, which runs the hosted policy client only inside the GPU session its launch admitted (require_paid_resource_admission, account limit included)",
+      "bound": "that session's hard cap and TTL",
+      "via": "src/blueprint_pipeline/team_candidate_policy_client.py::canary_policy_client",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_admission",
+      "note": "inference is the priced request; the model-metadata GET (discover_model_metadata) is an unpriced listing; policy_canary_session_bundle_identity ships the client into the admitted session bundle"
     },
     "src/blueprint_pipeline/groot_oscar_runpod_serverless.py::<module>::runpod_serverless_api_url": {
       "provider": "runpod_serverless",
@@ -193,18 +259,42 @@
     },
     "src/blueprint_pipeline/hosted_image_generation_preflight.py::<module>::openai_api_url": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "one OpenAI image generation (POST /v1/images/generations) per preflight run"
+      "class": "admitted",
+      "guards": [
+        "account_limit_blockers"
+      ],
+      "via": "src/blueprint_pipeline/hosted_image_generation_preflight.py::account_limit_blockers",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "the probe checks the account-wide monthly limit before its one request; a refusal is a blocked preflight record, nothing sent",
+      "request_functions": [
+        "src/blueprint_pipeline/hosted_image_generation_preflight.py::materialize_hosted_image_generation_preflight"
+      ]
     },
     "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::nvidia_nim_api_url": {
       "provider": "nvidia_nim",
-      "class": "unadmitted",
-      "can_spend_on": "one NVIDIA NIM chat completion per preflight run"
+      "class": "admitted",
+      "guards": [
+        "account_limit_blockers"
+      ],
+      "via": "src/blueprint_pipeline/hosted_model_inference_preflight.py::account_limit_blockers",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "the probe checks the account-wide monthly limit before its one request; a refusal is a blocked preflight record, nothing sent",
+      "request_functions": [
+        "src/blueprint_pipeline/hosted_model_inference_preflight.py::materialize_hosted_model_inference_preflight"
+      ]
     },
     "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::openai_api_url": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "one OpenAI chat completion (POST /v1/chat/completions) per preflight run"
+      "class": "admitted",
+      "guards": [
+        "account_limit_blockers"
+      ],
+      "via": "src/blueprint_pipeline/hosted_model_inference_preflight.py::account_limit_blockers",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "the probe checks the account-wide monthly limit before its one request; a refusal is a blocked preflight record, nothing sent",
+      "request_functions": [
+        "src/blueprint_pipeline/hosted_model_inference_preflight.py::materialize_hosted_model_inference_preflight"
+      ]
     },
     "src/blueprint_pipeline/meta_sam31.py::<module>::meta_sam_api_url": {
       "provider": "meta_sam",
@@ -232,8 +322,9 @@
     },
     "src/blueprint_pipeline/nvidia_nim_model_preflight.py::<module>::nvidia_nim_api_url": {
       "provider": "nvidia_nim",
-      "class": "unadmitted",
-      "can_spend_on": "NVIDIA NIM chat-completion probe (and a free /v1/models read) per preflight run"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/nvidia_nim_model_preflight.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI and the ADP joint-agent lane's operator preflight"
     },
     "src/blueprint_pipeline/openai_credential_preflight.py::<module>::openai_api_url": {
       "provider": "openai",
@@ -247,18 +338,21 @@
     },
     "src/blueprint_pipeline/openai_prompt_cache_canary.py::run_mechanics_canary::openai_client_construction": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Responses canary; local cap max_total_cost_usd <= 1.0, no admission or ledger"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/openai_prompt_cache_canary.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator canary CLI"
     },
     "src/blueprint_pipeline/palatial_physready.py::<module>::palatial_api_url": {
       "provider": "palatial",
-      "class": "unadmitted",
-      "can_spend_on": "Palatial asset generation (POST external/generate); env gate only"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/palatial_physready.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI"
     },
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini.py::run_canary::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini evaluator diagnostic canary; env gate only"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator diagnostic CLI (and its matrix and transport-canary CLIs)"
     },
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::collect_pilot::gemini_client_construction": {
       "provider": "gemini",
@@ -267,8 +361,9 @@
     },
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::submit_pilot::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini batch submission (7 requests); env gate only"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator diagnostic CLI"
     },
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::cleanup_matrix_media::gemini_client_construction": {
       "provider": "gemini",
@@ -348,13 +443,15 @@
     },
     "src/blueprint_pipeline/render_visual_qc.py::_gemini_review_image::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini image review for render QC; runs whenever a Gemini API key is set"
+      "class": "not_automatic",
+      "entry_point": "scripts/run_isaac_g1_kitchen_parity_eval.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator parity-evaluation script"
     },
     "src/blueprint_pipeline/rollout_vision_label_openai.py::_openai_label::openai_client_construction": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI vision labels for rollouts; env gate only"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/rollout_vision_label_openai.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator labeling CLI"
     },
     "src/blueprint_pipeline/runpod_provider_adapter.py::<module>::runpod_serverless_api_url": {
       "provider": "runpod_serverless",
@@ -365,8 +462,9 @@
     },
     "src/blueprint_pipeline/scene_placement/target_resolver.py::_gemini_resolve_text::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini text resolution for placement targets; runs whenever a Gemini API key is set"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/scene_placement/target_resolver.py::<module>",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; library default with no production caller"
     },
     "src/blueprint_pipeline/scene_semantics.py::_infer_capture_review_with_gemini_video::gemini_client_construction": {
       "provider": "gemini",
@@ -375,18 +473,21 @@
     },
     "src/blueprint_pipeline/scene_semantics.py::_infer_with_gemini_video::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini video scene semantics; runs whenever a Gemini API key is set"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/scene_semantics.py::infer_scene_semantics",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; called only by infer_scene_semantics, which no automatic entry calls"
     },
     "src/blueprint_pipeline/simulation_automation.py::CodexSdkSimulationAutomationAgentAdapter.build_ledger::openai_codex_cli": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "paid Codex CLI via run_codex_cli_operator; the operator ledger records the run, it does not bound spend"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/simulation_automation.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI"
     },
     "src/blueprint_pipeline/site_eval_director.py::CodexSdkCodeMaintainerAdapter.build_request_manifest::openai_codex_cli": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "paid Codex CLI via run_codex_cli_operator; the operator ledger records the run, it does not bound spend"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/site_eval_director.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI"
     },
     "src/blueprint_pipeline/task_evaluation_authoring_auth_recovery.py::authenticate_key::openai_api_url": {
       "provider": "openai",
@@ -409,28 +510,52 @@
     },
     "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_agents_sdk_runner": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Agents SDK model calls; the reservation is optional (recorded only if the caller configured an audit) and the cap is caller-set. Callers that do reserve: agent_execution/sdk_runtime.py, task_object_astra_authoring.budgeted_invoker, public_scene_sam31_ai_visual_reviewer. task_evaluation_passive_destination_cad_agent spends through it without one"
+      "class": "admitted",
+      "structural_check": "not expressible on the static graph: AgentTaskService receives the runtime factory as a callable (runtime_for_task), so every method of the production service looks reachable from its module",
+      "via": "src/blueprint_pipeline/task_evaluation_launch_supervisor.py::_account_limit_wait",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "the launch supervisor checks the account limit before invoking (a refusal is waiting_for_account_limit, not cached, asked again next tick); the production agent service checks it before a task starts; every other caller runs inside an admitted paid lane with its own reservation audit"
     },
     "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_credentials": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI Agents SDK model calls; the reservation is optional (recorded only if the caller configured an audit) and the cap is caller-set. Callers that do reserve: agent_execution/sdk_runtime.py, task_object_astra_authoring.budgeted_invoker, public_scene_sam31_ai_visual_reviewer. task_evaluation_passive_destination_cad_agent spends through it without one"
+      "class": "admitted",
+      "structural_check": "not expressible on the static graph: AgentTaskService receives the runtime factory as a callable (runtime_for_task), so every method of the production service looks reachable from its module",
+      "via": "src/blueprint_pipeline/task_evaluation_launch_supervisor.py::_account_limit_wait",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
+      "note": "the launch supervisor checks the account limit before invoking (a refusal is waiting_for_account_limit, not cached, asked again next tick); the production agent service checks it before a task starts; every other caller runs inside an admitted paid lane with its own reservation audit"
     },
     "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_provider": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "default OpenAIProvider model for the same session; reservation depends on the caller's invoker"
+      "class": "admitted",
+      "reachable_only_through": [
+        "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py"
+      ],
+      "enclosing_admission": "the scene-configuration stage that runs only inside the GPU rental the scene-configuration allocator admitted (require_paid_resource_admission, account limit included)",
+      "bound": "the stage's OpenAI official-cost gate (scene_configuration_openai_stage_gate) and the budgeted invoker's durable reservation audit",
+      "via": "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py::execute_astra_component",
+      "admission": "src/blueprint_pipeline/task_evaluation_scene_configuration_openai_gate.py::scene_configuration_openai_stage_gate"
     },
     "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_sdk_runner": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI model turns through a caller-supplied invoker whose reservation is optional; the ASTRA driver passes a budgeted_invoker that reserves"
+      "class": "admitted",
+      "reachable_only_through": [
+        "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py"
+      ],
+      "enclosing_admission": "the scene-configuration stage that runs only inside the GPU rental the scene-configuration allocator admitted (require_paid_resource_admission, account limit included)",
+      "bound": "the stage's OpenAI official-cost gate (scene_configuration_openai_stage_gate) and the budgeted invoker's durable reservation audit",
+      "via": "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py::execute_astra_component",
+      "admission": "src/blueprint_pipeline/task_evaluation_scene_configuration_openai_gate.py::scene_configuration_openai_stage_gate"
     },
     "src/blueprint_pipeline/task_object_artisan_bridge.py::main::openai_client_construction": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "the client itself only reads models.retrieve, but the bridge then runs upstream ARTISAN with this key; install_metering bounds only Responses.create and compact, and other billable calls are not shown to be absent"
+      "class": "admitted",
+      "reachable_only_through": [
+        "src/blueprint_pipeline/task_evaluation_scene_configuration_artisan_driver.py"
+      ],
+      "enclosing_admission": "the scene-configuration stage that runs only inside the GPU rental the scene-configuration allocator admitted (require_paid_resource_admission, account limit included)",
+      "bound": "the stage's OpenAI official-cost gate (scene_configuration_openai_stage_gate)",
+      "via": "src/blueprint_pipeline/task_evaluation_scene_configuration_artisan_driver.py::execute_artisan_component",
+      "admission": "src/blueprint_pipeline/task_evaluation_scene_configuration_openai_gate.py::scene_configuration_openai_stage_gate"
     },
     "src/blueprint_pipeline/task_object_astra_worker.py::author_one::openai_api_url": {
       "provider": "openai",
@@ -456,8 +581,14 @@
     },
     "src/blueprint_pipeline/wam_compute_providers.py::_deepinfra_api_base_url::deepinfra_api_url": {
       "provider": "deepinfra",
-      "class": "unadmitted",
-      "can_spend_on": "DeepInfra Cosmos inference; env gate only, cost ledger written after the call"
+      "class": "admitted",
+      "reachable_only_through": [
+        "src/blueprint_pipeline/oscar_wam_provider_command_adapter.py"
+      ],
+      "enclosing_admission": "the closed-loop WAM evaluation, which runs only inside the GPU episode its paid lane admitted",
+      "bound": "that episode's own hard cap and TTL",
+      "via": "src/blueprint_pipeline/oscar_wam_provider_command_adapter.py::run_compute_provider",
+      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_admission"
     },
     "src/blueprint_pipeline/wam_compute_providers.py::_resolve_deepinfra_download_url::deepinfra_api_url": {
       "provider": "deepinfra",
@@ -466,23 +597,27 @@
     },
     "src/blueprint_pipeline/wam_episode_consistency_label_gemini.py::build_gemini_wam_episode_consistency_labels::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini WAM episode labels; env gate only"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/wam_episode_consistency_label_gemini.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator labeling CLI"
     },
     "src/blueprint_pipeline/wam_episode_consistency_label_openai.py::_openai_score_one::openai_client_construction": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI WAM episode labels; env gate only"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/wam_episode_consistency_label_openai.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator labeling CLI"
     },
     "src/blueprint_pipeline/wam_generated_video_success_label_gemini.py::build_gemini_wam_success_labels::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini WAM success labels; env gate only"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/wam_generated_video_success_label_gemini.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator labeling CLI"
     },
     "src/blueprint_pipeline/wam_generated_video_success_label_openai.py::_openai_label_one::openai_client_construction": {
       "provider": "openai",
-      "class": "unadmitted",
-      "can_spend_on": "OpenAI WAM success labels; env gate only"
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/wam_generated_video_success_label_openai.py::main",
+      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator labeling CLI"
     },
     "src/blueprint_pipeline/website_assembly_coverage.py::classify_frames.invoke::gemini_client_construction": {
       "provider": "gemini",
@@ -558,8 +693,14 @@
     },
     "src/blueprint_pipeline/website_image_completion.py::_verify_completed_background::gemini_client_construction": {
       "provider": "gemini",
-      "class": "unadmitted",
-      "can_spend_on": "Gemini background review; verify_completed_background calls it without a reservation when the task context has no capture_id"
+      "class": "admitted",
+      "guards": [
+        "retained_gemini_call",
+        "require_paid_resource_budget"
+      ],
+      "via": "src/blueprint_pipeline/website_image_completion.py::verify_completed_background",
+      "admission": "src/blueprint_pipeline/website_task_context.py::reserve_website_preparation_spend",
+      "note": "a website job's review reserves through retained_gemini_call; a run with no website job checks require_paid_resource_budget first"
     },
     "src/blueprint_pipeline/website_image_completion.py::complete_background_images::openai_credentials": {
       "provider": "openai",

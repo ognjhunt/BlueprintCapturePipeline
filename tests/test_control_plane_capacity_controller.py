@@ -1724,7 +1724,11 @@ def test_money_credit_spend_and_stall_pages_are_unchanged():
         "trigger_inactive_unheld",
         # 2026-11-10: the four job stores nothing watched page on the same route.
         "atlas_preview_stalled", "team_scene_packet_stalled", "rigid_probe_stalled",
-        "screening_campaign_stalled", "screening_publication_stalled"}
+        "screening_campaign_stalled", "screening_publication_stalled",
+        # 2026-11-10: a scene ceiling passed a whole multiple of its grant (warn early; gates nothing).
+        "scene_budget_doubled",
+        # 2026-11-10: a preparation stopped on a mismatch inside Blueprint's own records (ours to fix).
+        "website_preparation_blueprint_fault"}
     assert preparation_delivery.PAGE_CODES == {"preparation_delivery_stalled"}
     for code in {"provider_credit_insufficient", *provider_spend.PAGE_CODES, *stall_alarm.PAGE_CODES,
                  *preparation_delivery.PAGE_CODES}:

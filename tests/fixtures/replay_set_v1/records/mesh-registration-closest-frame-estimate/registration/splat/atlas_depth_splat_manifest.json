@@ -1,0 +1,1 @@
+{"voxel_size": 0.01, "units": "provider_world_units", "outputs": [{"role": "splat_ply", "path": "atlas_depth_splat.ply", "sha256": "sha256:ac7e2e55f79e5cefc201d86f183a3f72aa40296961726f8df65402ff82462c0a"}], "digest": "sha256:c7e9eb914b601fcc6cd33f640243b39dae8a0b0a1650cbe76a702ec63acfe0d5"}

@@ -874,6 +874,177 @@
               "blockers"
             ],
             "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "admission_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "blockers": {
+                "maxItems": 0,
+                "type": "array"
+              },
+              "candidate_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                "type": "string"
+              },
+              "configuration_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "cost_quote": {
+                "$ref": "#/$defs/quote"
+              },
+              "display_name": {
+                "const": "Blueprint scripted reference check"
+              },
+              "episode_count": {
+                "const": 3
+              },
+              "execution_evidence_kind": {
+                "const": "scripted_simulator_state_baseline"
+              },
+              "execution_spec": {
+                "$ref": "#/$defs/execution"
+              },
+              "max_cost_usd": {
+                "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+                "type": "string"
+              },
+              "scenario_cells": {
+                "items": {
+                  "$ref": "#/$defs/cell"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "status": {
+                "const": "selected"
+              },
+              "known_good_control": {
+                "additionalProperties": false,
+                "properties": {
+                  "schema_version": {
+                    "const": "beta_screening_known_good_control.v1"
+                  },
+                  "role": {
+                    "const": "reference_only"
+                  },
+                  "episodes": {
+                    "const": 3
+                  },
+                  "pass_at_successes": {
+                    "const": 1
+                  },
+                  "for_candidate_id": {
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "schema_version",
+                  "role",
+                  "episodes",
+                  "pass_at_successes",
+                  "for_candidate_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "candidate_id",
+              "display_name",
+              "configuration_digest",
+              "status",
+              "blockers",
+              "admission_digest",
+              "execution_spec",
+              "cost_quote",
+              "max_cost_usd",
+              "episode_count",
+              "scenario_cells",
+              "execution_evidence_kind",
+              "known_good_control"
+            ],
+            "type": "object",
+            "description": "The campaign's known-good control (beta_policy_screening_known_good_control): Blueprint's scripted pick/place controller on three nominal cells, reference only, never a candidate or part of the estimate. At most one, after every candidate row."
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "const": "candidate_disabled"
+                },
+                "maxItems": 1,
+                "minItems": 1,
+                "type": "array"
+              },
+              "candidate_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                "type": "string"
+              },
+              "configuration_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "display_name": {
+                "const": "Blueprint scripted reference check"
+              },
+              "execution_evidence_kind": {
+                "const": "scripted_simulator_state_baseline"
+              },
+              "status": {
+                "const": "unavailable"
+              },
+              "known_good_control": {
+                "additionalProperties": false,
+                "properties": {
+                  "schema_version": {
+                    "const": "beta_screening_known_good_control.v1"
+                  },
+                  "role": {
+                    "const": "reference_only"
+                  },
+                  "episodes": {
+                    "const": 3
+                  },
+                  "pass_at_successes": {
+                    "const": 1
+                  },
+                  "unavailable": {
+                    "enum": [
+                      "task_kind",
+                      "embodiment",
+                      "backend",
+                      "budget"
+                    ]
+                  }
+                },
+                "required": [
+                  "schema_version",
+                  "role",
+                  "episodes",
+                  "pass_at_successes",
+                  "unavailable"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "candidate_id",
+              "display_name",
+              "configuration_digest",
+              "status",
+              "blockers",
+              "execution_evidence_kind",
+              "known_good_control"
+            ],
+            "type": "object",
+            "description": "A known-good control that does not run here: its reason is in known_good_control.unavailable and in the row's published outcome flag known_good_control_unavailable:<reason>."
           }
         ]
       },

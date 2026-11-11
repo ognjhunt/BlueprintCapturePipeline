@@ -34,6 +34,7 @@ from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
 from . import task_evaluation_launch_activation_destination as destination_activation
+from . import release_preparation_adoption as adoption_rule
 from .task_evaluation_configured_controls_autostart import (
     configured_controls_autostart_registry_name,
     validate_configured_controls_autostart_intent,
@@ -1661,7 +1662,9 @@ def process_launch_activation_queue(
                     target_root=activation_base,
                     reservation_root=disk_reservation_root,
                     **activation_reservation_terms(request, activation_base))
-            if request["expected_production_commit"] != observed_commit:
+            # Dark launch, off by default: an adopted $0 preparation of a retained release.
+            adoption = adoption_rule.activation_adoption(request, prep_queue, observed_commit)
+            if request["expected_production_commit"] != observed_commit and adoption is None:
                 raise TaskEvaluationLaunchActivationWorkerError(
                     "launch_activation_worker_source_commit_mismatch"
                 )
@@ -1715,7 +1718,7 @@ def process_launch_activation_queue(
                 activation_id=request["activation_id"],
                 activation_intent_digest=launch_activation_intent_digest(request),
                 team_namespace=request["team_namespace"],
-                expected_production_commit=observed_commit,
+                expected_production_commit=request["expected_production_commit"],
                 provider_allowlist=preparation_request["spend"]["provider_allowlist"],
                 hard_cap_usd=preparation_request["spend"]["hard_cap_usd"],
             )
@@ -1752,8 +1755,8 @@ def process_launch_activation_queue(
                     activation_materialized=materialized,
                     activation_root=owned_root,
                     repository_root=repository,
-                    toolchain_root=Path(
-                        scene_configuration_toolchain_root
+                    toolchain_root=adoption_rule.adopted_toolchain(
+                        scene_configuration_toolchain_root, adoption
                     ),
                     destination_prefix=destination_prefix,
                     profile_dir=Path(profile_dir).resolve(),
@@ -1821,6 +1824,7 @@ def process_launch_activation_queue(
                     window=window,
                     preparation_receipt=preparation_receipt,
                 )
+            result = adoption_rule.with_adoption(result, adoption, observed_commit)
         except Exception as exc:
             terminal_state = "blocked"
             result = {
