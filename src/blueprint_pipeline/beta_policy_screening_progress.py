@@ -212,12 +212,13 @@ def result_report(value: Mapping[str, Any], *, path: str, recompute_behaviour: b
         kind = kinds.get(candidate_id, "learned_policy")
         progress, skipped = ((None, {"scripted_row": len(own)}) if kind == SCRIPTED
                              else grade_rows(own, recompute_behaviour=recompute_behaviour))
+        recomputed = skipped.pop("behaviour_recomputed", 0)
         source = (None if not progress or "closest_approach_m" not in progress
-                  else "recomputed_from_recorded_trace" if skipped.get("behaviour_recomputed") == progress["episodes_graded"]
-                  else "partly_recomputed_from_recorded_trace" if skipped.get("behaviour_recomputed")
+                  else "recomputed_from_recorded_trace" if recomputed == progress["episodes_graded"]
+                  else "partly_recomputed_from_recorded_trace" if recomputed
                   else "sealed_score")
         table.append({"candidate_id": candidate_id, "execution_evidence_kind": kind, "episodes": len(own),
-                      "closest_approach_source": source,
+                      "closest_approach_source": source, "episodes_behaviour_recomputed": recomputed,
                       "episodes_completed": sum(row.get("status") == "completed" for row in own),
                       "episodes_graded": progress["episodes_graded"] if progress else 0,
                       "episodes_skipped": skipped, "progress": progress})

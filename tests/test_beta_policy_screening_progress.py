@@ -546,6 +546,7 @@ def test_an_older_score_without_behaviour_has_no_rung_unless_the_driver_is_asked
     [row] = table["results"][0]["candidates"]
     assert table["behaviour_recompute_requested"] is True
     assert row["closest_approach_source"] == "recomputed_from_recorded_trace"
-    assert row["episodes_skipped"] == {"behaviour_recomputed": 10}
+    assert row["episodes_skipped"] == {} and row["episodes_behaviour_recomputed"] == 10
+    assert plain["episodes_behaviour_recomputed"] == 0
     assert row["progress"]["stages"][0] == {"stage": "approached", "episodes": 5}
     assert row["progress"]["closest_approach_m"] == {"median": 0.13, "min": 0.0}
