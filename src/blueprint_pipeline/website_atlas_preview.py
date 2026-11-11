@@ -179,11 +179,11 @@ def _outage(error: BaseException) -> bool:
     if isinstance(status, int):
         return status == 429 or status >= 500
     if isinstance(error, ValueError):
-        from .job_retry_policy import provider_answer
+        from .job_retry_policy import provider_says_retry_later
         return (_reason(error) in _TASK_CONTEXT_CHANGED
                 or re.match(r"(?:website_control_|owned_capture_atlas_control_)[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None
-                # Any outside service's rate limit or server error (``meta_sam_http_503``).
-                or provider_answer(str(error)) in {429} | set(range(500, 600)))
+                # An outside service's "try again later": 408, 409, 425, 429 or any 5xx (``meta_sam_http_503``).
+                or provider_says_retry_later(str(error)))
     return isinstance(error, OSError)
 
 

@@ -61,8 +61,11 @@ def parser_timeout_seconds(text: str) -> int:
 
 #: HTTP statuses the provider answers when it refused a request without processing it.
 #: A refusal it answered is a definite outcome, unlike a timeout or a dropped connection.
-#: 429 (rate limited) and 503 (unavailable) refuse before any work; the job retries them later.
-REFUSAL_STATUSES = frozenset({400, 401, 403, 404, 409, 413, 415, 422, 429, 503})
+#: 408 (request timeout), 425 (too early), 429 (rate limited) and 503 (unavailable) refuse
+#: before any work; the job retries them later. Any other answered error (a 500, 502, 504...)
+#: may have been processed: it is counted like an unanswered dispatch
+#: (``count_unanswered_dispatches``), and its one resend gets its own reservation.
+REFUSAL_STATUSES = frozenset({400, 401, 403, 404, 408, 409, 413, 415, 422, 425, 429, 503})
 
 
 def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
@@ -74,7 +77,7 @@ def retire_refused_dispatches(root: Path, pending: Sequence[int]) -> int:
     A 404 also retires the uploaded video it named (the provider no longer holds that file), so
     the next dispatch uploads it again. A prompt whose dispatch got no answer at all is counted as
     spent and sent once more (``count_unanswered_dispatches``). Any other answer, such as a 500,
-    may have been processed and still requires reconciliation.
+    may have been processed: it is counted the same way.
     """
     archive = Path(root) / "refused"
     count = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
@@ -144,14 +147,27 @@ def count_unanswered_dispatches(root: Path, pending: Sequence[int], *, binding_d
     attempts = sum(1 for path in archive.glob("attempt-*") if path.is_dir()) if archive.is_dir() else 0
     for index in pending:
         intent, failure = root / f"intent-{index}.json", root / f"failure-{index}.json"
-        if not intent.is_file() or intent.is_symlink() or failure.exists() or failure.is_symlink():
+        if not intent.is_file() or intent.is_symlink() or failure.is_symlink():
             continue
+        answered_status = None
+        if failure.exists():
+            # An answered error the provider may have processed (a 500, 502, 504...) is counted like
+            # no answer. A refusal that did no work was retired before this (``retire_refused_dispatches``).
+            try:
+                answered_status = json.loads(failure.read_text()).get("http_status")
+            except ValueError:
+                continue
+            if isinstance(answered_status, bool) or not isinstance(answered_status, int) \
+                    or answered_status in REFUSAL_STATUSES:
+                continue
         raw = intent.read_bytes()
         digest = "sha256:" + hashlib.sha256(raw).hexdigest()
         if index in counted:
             target, record = counted[index]
             if record.get("intent_sha256") == digest and not (target / intent.name).exists():
                 os.replace(intent, target / intent.name)  # finish an archive a crash interrupted
+                if failure.is_file() and not (target / failure.name).exists():
+                    os.replace(failure, target / failure.name)
             continue
         try:
             value = json.loads(raw)
@@ -167,12 +183,15 @@ def count_unanswered_dispatches(root: Path, pending: Sequence[int], *, binding_d
         target = archive / f"attempt-{attempts}"
         target.mkdir(parents=True)
         record = {"schema_version": COUNTED_AS_SPENT_SCHEMA, "status": "counted_as_spent", "outcome": "unknown",
+                  **({"answered_http_status": answered_status} if answered_status is not None else {}),
                   "prompt_index": index, "binding_digest": binding_digest, "intent_sha256": digest,
                   "allocation_binding_digest": allocation, "clip_digest": value.get("clip_digest"),
                   "reservation": "held_at_maximum_never_released_or_settled_as_zero",
                   "resends_allowed": 1, "recorded_at": datetime.now(timezone.utc).isoformat()}
         write_json(target / COUNTED_AS_SPENT, record)
         os.replace(intent, target / intent.name)
+        if failure.is_file():
+            os.replace(failure, target / failure.name)
         counted[index] = (target, record)
     return {index: {"resend_of": record["intent_sha256"], "resend_index": 1}
             for index, (_, record) in counted.items()}
@@ -479,6 +498,10 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
             for oid, rows in observations.items()]
 
 
+#: The largest clip any request carries (an inline clip is further bound by the request ceiling).
+CLIP_MAX_BYTES = 32 * 1024**2
+
+
 def encode_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequence[Mapping[str, Any]], root: Path,
                 rung: Mapping[str, Any] | None = None) -> Path:
     """The frames as one clip, losslessly (crf 0, yuv444p), or at an ``INLINE_CLIP_LADDER`` rung."""
@@ -511,7 +534,7 @@ def encode_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequence[Ma
     stream = json.loads(probe.stdout)["streams"][0]
     if (stream["width"], stream["height"], int(stream["nb_read_frames"])) != (width, height, len(registry)):
         raise ValueError("meta_sam_encoded_frame_mapping_invalid")
-    if clip.stat().st_size > 32 * 1024**2:
+    if rung is None and clip.stat().st_size > CLIP_MAX_BYTES:
         raise ValueError("meta_sam_inline_clip_too_large")
     return clip
 
@@ -528,7 +551,12 @@ INLINE_REQUEST_CEILING_BYTES = 8_000_000
 INLINE_CLIP_LADDER: tuple[dict[str, Any], ...] = tuple(
     {"encoding": f"h264_crf{crf}_yuv444p_threads2_v1", "crf": crf, "pix_fmt": "yuv444p", "threads": 2}
     for crf in (22, 26, 30, 34))
+#: The lowest quality an inline clip is sent at: the last rung, SSIM 0.9866 against the lossless clip on
+#: capture-39ecdc97's 16 frames. A clip that does not fit even here is not sent (``INLINE_CLIP_TOO_LARGE``).
+INLINE_CLIP_QUALITY_FLOOR = INLINE_CLIP_LADDER[-1]
 INLINE_CLIP_TOO_LARGE = "meta_sam_inline_clip_exceeds_request_ceiling"
+#: How a clip encoded before the ladder existed was made (always lossless).
+LEGACY_LOSSLESS_ENCODING = "h264_crf0_yuv444p_lossless"
 CLIP_ENCODING_FILE = "clip-encoding.json"
 #: Answers bought for an earlier clip of this binding, set aside when the clip changed.
 SUPERSEDED_CLIP_ARCHIVE = "superseded-clip"
@@ -554,13 +582,49 @@ def encode_inline_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequ
     for rung in INLINE_CLIP_LADDER:
         clip = encode_clip(registry=registry, artifacts=artifacts, root=root, rung=rung)
         body = _inline_body_bytes(clip, prompts)
-        if body <= INLINE_REQUEST_CEILING_BYTES:
+        if body <= INLINE_REQUEST_CEILING_BYTES and clip.stat().st_size <= CLIP_MAX_BYTES:
             record = {"encoding": rung["encoding"], "clip_digest": _sha256_file(clip),
                       "clip_bytes": clip.stat().st_size, "largest_request_bytes": body,
                       "ceiling_bytes": INLINE_REQUEST_CEILING_BYTES}
             write_json(root / CLIP_ENCODING_FILE, record)
             return clip, record
     raise ValueError(INLINE_CLIP_TOO_LARGE)
+
+
+def _retained_inline_clip(root: Path, *, answered_digests: set[str],
+                          prompts: Sequence[Mapping[str, Any]]) -> tuple[Path, dict[str, Any]] | None:
+    """This binding's retained clip, when its digest is the one its record or its answers name and its
+    request fits under the ceiling: reused as it is, never encoded again (another encoder build or
+    thread count would give other bytes)."""
+    clip = root / "retained-frames.mp4"
+    if not clip.is_file() or clip.is_symlink():
+        return None
+    digest = _sha256_file(clip)
+    try:
+        record = json.loads((root / CLIP_ENCODING_FILE).read_text())
+    except (OSError, ValueError):
+        record = None
+    if isinstance(record, dict) and record.get("clip_digest") == digest:
+        verified = record
+    elif answered_digests == {digest}:
+        verified = {"encoding": LEGACY_LOSSLESS_ENCODING, "clip_digest": digest}
+    else:
+        return None
+    body = _inline_body_bytes(clip, prompts)
+    if body > INLINE_REQUEST_CEILING_BYTES or clip.stat().st_size > CLIP_MAX_BYTES:
+        return None
+    return clip, {**verified, "clip_bytes": clip.stat().st_size, "largest_request_bytes": body,
+                  "ceiling_bytes": INLINE_REQUEST_CEILING_BYTES}
+
+
+def _clip_encoding_name(root: Path, clip_digest: str, current: Mapping[str, Any] | None) -> str:
+    if current:
+        return str(current["encoding"])
+    try:
+        record = json.loads((root / CLIP_ENCODING_FILE).read_text())
+    except (OSError, ValueError):
+        record = {}
+    return str(record["encoding"]) if record.get("clip_digest") == clip_digest else LEGACY_LOSSLESS_ENCODING
 
 
 def _set_aside_answers_for_another_clip(root: Path, answered: Sequence[int], *, clip_digest: str) -> int:
@@ -648,11 +712,19 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     if not require_retained_video:
         root.mkdir(parents=True, exist_ok=True)
         write_json(root / "binding.json", binding)
-    clip_encoding = None
-    if video_artifact is None and not image_request:
-        # Sent inline: an encoding whose whole request fits (``INLINE_CLIP_LADDER``).
-        clip, clip_encoding = encode_inline_clip(registry=frame_registry, artifacts=frame_artifacts, root=root,
-                                                 prompts=prompts)
+    clip_encoding, clip_digest = None, None
+    inline = video_artifact is None and not image_request
+    answered_digests = {str(json.loads((root / f"response-{index}.json").read_text()).get("clip_digest"))
+                        for index in range(len(prompts)) if index not in pending} if inline else set()
+    if inline and retained and len(answered_digests) == 1:
+        # Every prompt has its answer for one clip: nothing is encoded, sent or set aside.
+        clip, clip_digest = root / "retained-frames.mp4", next(iter(answered_digests))
+    elif inline:
+        # Sent inline: the retained clip when it is verified and fits; otherwise the first rung of
+        # ``INLINE_CLIP_LADDER`` whose whole request fits, retained for the next run.
+        kept = _retained_inline_clip(root, answered_digests=answered_digests, prompts=prompts)
+        clip, clip_encoding = kept or encode_inline_clip(registry=frame_registry, artifacts=frame_artifacts,
+                                                         root=root, prompts=prompts)
     elif video_artifact is None:
         clip = encode_clip(registry=frame_registry, artifacts=frame_artifacts, root=root)
     else:
@@ -665,7 +737,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 or clip.stat().st_size > 32 * 1024**2 or max(stream["width"], stream["height"]) > 4096
                 or any((row["width"], row["height"]) != (stream["width"], stream["height"]) for row in frame_registry)):
             raise ValueError("meta_sam_encoded_frame_mapping_invalid")
-    clip_digest = _sha256_file(clip)
+    clip_digest = clip_digest or _sha256_file(clip)
     answered = [index for index in range(len(prompts)) if index not in pending]
     if (video_artifact is None and not image_request and answered and not require_retained_video
             and any(json.loads((root / f"response-{index}.json").read_text()).get("clip_digest") != clip_digest
@@ -673,6 +745,9 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
         # The clip changed since those answers were bought (a new encoding, an encoder update): they
         # describe other pixels, so every prompt is bought again with this clip, under its own
         # reservation, never the earlier one's. The answers set aside stay retained and are recorded.
+        if admission_grant is not None:
+            # A caller's own grant names the request it was given for, not this new one.
+            raise ValueError("meta_sam_caller_grant_covers_another_clip")
         rebuy = _set_aside_answers_for_another_clip(root, answered, clip_digest=clip_digest)
         pending, retained = list(range(len(prompts))), False
         token = token or meta_api_key()
@@ -720,7 +795,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             result_path, intent_path = root / f"response-{index}.json", root / f"intent-{index}.json"
             if result_path.is_file():
                 receipt = json.loads(result_path.read_text())
-                if receipt["binding_digest"] != digest or receipt["clip_digest"] != _sha256_file(clip):
+                if receipt["binding_digest"] != digest or receipt["clip_digest"] != clip_digest:
                     raise ValueError("meta_sam_retained_response_changed")
                 response = receipt["response"]
             else:
@@ -786,6 +861,9 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
         result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
                   "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
+        if inline:
+            # The rung the answers were bought with, in the receipt every caller keeps.
+            result["clip_encoding"] = _clip_encoding_name(root, clip_digest, clip_encoding)
         if require_retained_video:
             if load_track_json(root / "tracks.json") != result:
                 raise ValueError("meta_sam_retained_tracks_changed")

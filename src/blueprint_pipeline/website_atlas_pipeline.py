@@ -262,6 +262,11 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
                     return {"status": "needs_input", "reason": "atlas_scale_review_unresolved",
                             "scene_measurements_digest": measurements["digest"]}
     except ValueError as exc:
+        from .job_retry_policy import provider_answer, request_cannot_succeed
+        if provider_answer(str(exc)) is not None or request_cannot_succeed(str(exc)):
+            # An outside service's answer (the scale references' segmentation) or a request that cannot
+            # be sent: the job's retry policy decides it, never needs_input.
+            raise
         return {"status": "needs_input", "reason": str(exc)}
     return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],
             "pose_relative_path": str(pose_root.relative_to(parent_root.parent)),
