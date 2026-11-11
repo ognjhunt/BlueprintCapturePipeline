@@ -89,7 +89,7 @@ def __synthesize_pipeline_handoff_body(_listener, /, handoff, *, capture_root):
     return destination
 
 
-def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None, expected_target_choice_correction=None, expected_robot_fit_recheck=None, expected_held_replay=None):
+def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None, expected_target_choice_correction=None, expected_robot_fit_recheck=None, expected_held_replay=None, expected_timed_retry=None):
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
@@ -242,6 +242,9 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     if selected_staged is None and not capture_present and (skipped := retired_terminal()) is not None:
         return skipped
     owner = lease_owner or _listener._lease_owner()
+    # A website browser delivery keeps its exact bytes from the claim on, so the drain can retry it on
+    # a timer once the broker stops (website_preparation_timed_retry); a killed run never reaches a failure path.
+    from .website_preparation_timed_retry import retained_record as timed_record
     try:
         claim_status, ledger = _listener._claim_job_lease(
             capture_root, scene_id=handoff.scene_id, capture_id=handoff.capture_id,
@@ -261,14 +264,17 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                if expected_target_choice_correction is not None else {}),
             **({'expected_robot_fit_recheck': expected_robot_fit_recheck}
                if expected_robot_fit_recheck is not None else {}),
-            **({'expected_held_replay': expected_held_replay} if expected_held_replay is not None else {}))
+            **({'expected_held_replay': expected_held_replay} if expected_held_replay is not None else {}),
+            **({'expected_timed_retry': expected_timed_retry} if expected_timed_retry is not None else {}),
+            timed_retry_record=timed_record(_listener, payload=payload, payload_digest=digest,
+                                            producer_delivery_key=producer_delivery_key))
     except _listener.HandoffCaptureRetired:
         return retired_terminal() or {'schema_version': 'v1', 'status': 'capture_retired_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'blockers': ['handoff_capture_retired_while_claiming']}
     if claim_status == 'prior_delivery_effects_unresolved':
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'blockers': ['selected_handoff_existing_state_requires_reconciliation']}
     if claim_status in {'assessment_resume_changed', 'reconstruction_resume_changed', 'target_choice_correction_changed',
-                        'held_handoff_replay_changed'}:
+                        'held_handoff_replay_changed', 'timed_retry_changed'}:
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                 'blockers': ['website_' + claim_status]}
@@ -471,6 +477,11 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
         reconcile_held_handoffs(_listener, storage_root=storage_root, limit=1, process_args=process_args)
     except Exception:
         _listener.logger.debug("pubsub_handoff.held_handoff_replay_unavailable")
+    from .website_preparation_timed_retry_drain import reconcile_timed_retries
+    try:
+        reconcile_timed_retries(_listener, storage_root=storage_root, limit=1, process_args=process_args)
+    except Exception:
+        _listener.logger.debug("pubsub_handoff.timed_retry_unavailable")
     from google.cloud import pubsub_v1
     from .pubsub_retry_deferrals import clear_deferral, record_deferral, wake_older_release_deferrals
     subscriber = pubsub_v1.SubscriberClient()

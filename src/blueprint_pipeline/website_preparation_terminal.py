@@ -178,8 +178,24 @@ def _commit(capture_root: Path, ledger: Mapping[str, Any], record: Mapping[str, 
     return committed
 
 
-def _silent_since(ledger: Mapping[str, Any], current: datetime) -> datetime | None:
-    """When this attempt stopped moving, or None while it may still move on its own."""
+def _silent_since(ledger: Mapping[str, Any], current: datetime, root: Path | None = None) -> datetime | None:
+    """When this attempt stopped moving, or None while it may still move on its own.
+
+    While the drain owes the job a timed retry (``website_preparation_timed_retry``), it may still
+    move: silence starts when that retry is due. None is owed once the grant's own expiry has passed,
+    so the expiry ending below is never put off by the timer.
+    """
+    silent = _plain_silent_since(ledger, current)
+    if silent is None or root is None:
+        return silent
+    from .website_preparation_timed_retry import timed_plan
+    plan = timed_plan(root, ledger, current.timestamp())
+    if plan is None:
+        return silent
+    return max(silent, datetime.fromtimestamp(plan["due_at_epoch"], tz=timezone.utc))
+
+
+def _plain_silent_since(ledger: Mapping[str, Any], current: datetime) -> datetime | None:
     status = ledger.get("status")
     if status in _RETRYABLE_STATUSES:
         if (status == "failed_retryable" and ledger.get("last_error") == _ASSESSMENT_PENDING
@@ -213,7 +229,7 @@ def record_unretried_preparation(capture_root: Path, *, alive_since: datetime,
         if state != "ledger_present":
             return None
         ledger = _read_job_ledger(Path(capture_root))
-        silent = _silent_since(ledger, current)
+        silent = _silent_since(ledger, current, Path(capture_root))
         # Listener liveness only qualifies the delay observation. It says
         # nothing about this message's source/DLQ/recovery delivery state.
         if (silent is None or type(ledger.get("attempt_count")) is not int
@@ -221,6 +237,7 @@ def record_unretried_preparation(capture_root: Path, *, alive_since: datetime,
                 or max(silent, alive_since) + timedelta(seconds=silence_seconds()) > current
                 or current_terminal(ledger) is not None or current_overdue(ledger) is not None):
             return None
+        from .website_preparation_timed_retry import next_retry_at
         status = ledger.get("status")
         cause = ("control_plane_capacity" if capacity_only(ledger) else
                  "capture_budget" if _budget_refused(ledger) else
@@ -233,10 +250,32 @@ def record_unretried_preparation(capture_root: Path, *, alive_since: datetime,
                   "source_payload_sha256": ledger.get("source_payload_sha256"),
                   "lease_token": ledger.get("lease_token"), "silent_since": _iso(silent),
                   "age_seconds": max(0.0, (current - silent).total_seconds()),
-                  "next_action": "reconcile_per_job_recovery_state", "next_retry_at": None,
+                  "next_action": "reconcile_per_job_recovery_state",
+                  "next_retry_at": next_retry_at(Path(capture_root), ledger, current.timestamp()),
                   "retry_exhaustion_proven": False,
                   "recorded_at": _iso(current)}
         return _commit(Path(capture_root), ledger, record)
+
+
+def _retained_grant(capture_root: Path, ledger: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The retained grant when it is sealed, binds this capture and names a finite expiry; else None."""
+    path = Path(capture_root) / GRANT_FILE
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        grant = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(grant, dict):
+        return None
+    expiry = grant.get("expires_at_epoch")
+    if (grant.get("schema_version") != "website_scene_sponsorship.v1"
+            or grant.get("authority_digest") != canonical_digest(grant, digest_field="authority_digest")
+            or grant.get("scene_id") != ledger.get("scene_id")
+            or grant.get("capture_id") != ledger.get("capture_id")
+            or isinstance(expiry, bool) or not isinstance(expiry, (int, float)) or not math.isfinite(expiry)):
+        return None
+    return grant
 
 
 def _grant_may_have_ended(capture_root: Path, ledger: Mapping[str, Any], now_epoch: float) -> bool:
@@ -248,22 +287,8 @@ def _grant_may_have_ended(capture_root: Path, ledger: Mapping[str, Any], now_epo
     the grant is valid. The extension lives on the scene intent, which a capture
     root does not name, so whether the grant has ended is asked of the WebApp.
     """
-    path = Path(capture_root) / GRANT_FILE
-    if path.is_symlink() or not path.is_file():
-        return False
-    try:
-        grant = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    if not isinstance(grant, dict):
-        return False
-    expiry = grant.get("expires_at_epoch")
-    return not (grant.get("schema_version") != "website_scene_sponsorship.v1"
-                or grant.get("authority_digest") != canonical_digest(grant, digest_field="authority_digest")
-                or grant.get("scene_id") != ledger.get("scene_id")
-                or grant.get("capture_id") != ledger.get("capture_id")
-                or isinstance(expiry, bool) or not isinstance(expiry, (int, float))
-                or not math.isfinite(expiry) or expiry > now_epoch)
+    grant = _retained_grant(capture_root, ledger)
+    return grant is not None and grant["expires_at_epoch"] <= now_epoch
 
 
 def _webapp_ended(capture_root: Path, ledger: Mapping[str, Any]) -> ValueError | None:
@@ -312,7 +337,7 @@ def end_expired_preparation(capture_root: Path, *, alive_since: datetime, listen
         if state != "ledger_present":
             return None
         ledger = _read_job_ledger(root)
-        silent = _silent_since(ledger, current)
+        silent = _silent_since(ledger, current, root)
         if (silent is None or type(ledger.get("revision")) is not int
                 or any(type(ledger.get(key)) is not str or not ledger[key] for key in
                        ("scene_id", "capture_id", "producer_delivery_key", "source_payload_sha256"))
