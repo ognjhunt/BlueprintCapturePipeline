@@ -29,6 +29,7 @@ from .dual_task_rehearsal_contract import (
 from .simready_graph_asset_static_qualification import (
     SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
 )
+from .simready_central_qualification import valid_static_qualification
 
 
 SCHEMA_VERSION = "simready_replacement_native_qualification.v1"
@@ -178,6 +179,7 @@ def _verify_native_import_receipt_evidence(
     expected_task_freeze_digest: str,
     expected_static_qualification_digest: str,
     expected_asset_sha256: str,
+    expected_static_schema_version: str = STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
 ) -> None:
     evidence = native_import.get("evidence_receipts")
     errors: list[str] = []
@@ -189,7 +191,7 @@ def _verify_native_import_receipt_evidence(
         "scene_freeze": ("dual_task_scene_freeze.v1", expected_scene_freeze_digest),
         "task_freeze": ("dual_task_task_freeze.v1", expected_task_freeze_digest),
         "static_qualification": (
-            STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
+            expected_static_schema_version,
             expected_static_qualification_digest,
         ),
     }
@@ -388,11 +390,7 @@ def materialize_simready_replacement_native_import_execution(
             ]
         ) from exc
     errors: list[str] = []
-    if not _canonical_receipt_valid(
-        static,
-        schema_version=STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
-        status="authored_structure_statically_qualified",
-    ):
+    if not valid_static_qualification(static):
         errors.append(
             "simready_replacement_native_import_execution_static_qualification_invalid"
         )
@@ -518,11 +516,7 @@ def materialize_simready_replacement_native_import_receipt(
     errors: list[str] = []
     if task["scene_freeze_digest"] != scene["scene_freeze_digest"]:
         errors.append("simready_replacement_native_import_task_scene_mismatch")
-    if not _canonical_receipt_valid(
-        static,
-        schema_version=STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
-        status="authored_structure_statically_qualified",
-    ):
+    if not valid_static_qualification(static):
         errors.append("simready_replacement_native_import_static_qualification_invalid")
     static_identity = {
         key: common_identity[key] for key in ("task_id", "task_freeze_digest", "asset_id")
@@ -634,11 +628,7 @@ def materialize_simready_replacement_native_qualification(
         "asset_id": str(removal["replacement_asset_id"]),
         "replacement_qualification_id": str(removal["replacement_qualification_id"]),
     }
-    if not _canonical_receipt_valid(
-        static,
-        schema_version=STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
-        status="authored_structure_statically_qualified",
-    ):
+    if not valid_static_qualification(static):
         errors.append("simready_replacement_native_static_qualification_invalid")
     static_identity = {
         key: common_identity[key] for key in ("task_id", "task_freeze_digest", "asset_id")
@@ -659,6 +649,7 @@ def materialize_simready_replacement_native_qualification(
         expected_task_freeze_digest=str(task["task_freeze_digest"]),
         expected_static_qualification_digest=str(static["receipt_digest"]),
         expected_asset_sha256=str(static_asset),
+        expected_static_schema_version=str(static["schema_version"]),
     )
     if errors:
         raise SimReadyReplacementNativeQualificationError(errors)

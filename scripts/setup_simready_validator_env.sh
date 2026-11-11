@@ -9,7 +9,10 @@ fi
 source_root="$1"
 venv_path="$2"
 expected_revision="$3"
-requirements_path="${source_root}/nv_core/validator_sample/requirements.txt"
+requirements_path="${source_root}/requirements.txt"
+if [[ ! -f "${requirements_path}" ]]; then
+  requirements_path="${source_root}/nv_core/validator_sample/requirements.txt"
+fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ ! -f "${requirements_path}" ]]; then

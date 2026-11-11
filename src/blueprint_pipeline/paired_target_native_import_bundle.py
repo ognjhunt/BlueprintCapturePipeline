@@ -29,6 +29,9 @@ from .native_task_execution_admission import (
     prepare_native_task_execution_candidate,
     validate_native_task_execution_candidate,
 )
+from .simready_central import verify_intake
+from .simready_central_qualification import SCHEMA_VERSION as CATALOG_STATIC_SCHEMA
+from .simready_central_qualification import valid_static_qualification
 
 
 SCHEMA_VERSION = "paired_target_native_import_provider_bundle.v1"
@@ -268,7 +271,8 @@ def _write_zip_member(archive: zipfile.ZipFile, name: str, source: Path) -> None
 
 def build_paired_target_native_import_bundle(
     *,
-    native_render_request_path: str | Path,
+    native_render_request_path: str | Path | None = None,
+    catalog_static_qualification_path: str | Path | None = None,
     runner_path: str | Path,
     output_root: str | Path,
     implementation_commit: str,
@@ -279,11 +283,33 @@ def build_paired_target_native_import_bundle(
         character not in "0123456789abcdef" for character in implementation_commit
     ):
         raise PairedTargetNativeImportBundleError("paired_target_native_import_commit_invalid")
-    source_path, source = _read_mapping(
-        native_render_request_path,
-        "paired_target_native_import_source_request_invalid",
-    )
-    replacements = _source_replacement_set(source)
+    if (native_render_request_path is None) == (catalog_static_qualification_path is None):
+        raise PairedTargetNativeImportBundleError("select_exactly_one_render_or_catalog_source")
+    if catalog_static_qualification_path:
+        source_path, source = _read_mapping(catalog_static_qualification_path, "catalog_static_invalid")
+        if source.get("schema_version") != CATALOG_STATIC_SCHEMA or not valid_static_qualification(source):
+            raise PairedTargetNativeImportBundleError("catalog_static_invalid")
+        intake_path = Path(source["intake_receipt"]["path"])
+        intake = verify_intake(intake_path)
+        if (intake["receipt_digest"] != source["intake_receipt"]["receipt_digest"]
+                or _sha256(intake_path) != source["intake_receipt"]["sha256"]):
+            raise PairedTargetNativeImportBundleError("catalog_intake_changed")
+        asset_path = _verified_source_file(source["replacement_usd"], "catalog_asset_invalid")
+        package_root = intake_path.parent / intake["package_directory"]
+        if asset_path not in [(package_root / p).resolve() for p in intake["root_usds"]]:
+            raise PairedTargetNativeImportBundleError("catalog_root_not_declared")
+        replacements = [{"task_id": source.get("task_id") or "catalog-import",
+                         "asset_id": _safe_identifier(source["asset_id"], "catalog_asset_id_invalid"),
+                         "source": source["replacement_usd"], "source_path": asset_path,
+                         "registered_static_qualification": {"receipt_digest": source["receipt_digest"]},
+                         "asset_frame_registration": None,
+                         "catalog_intake": intake, "catalog_intake_path": intake_path}]
+        scene_id = "simready-central-catalog-import"
+    else:
+        source_path, source = _read_mapping(
+            native_render_request_path, "paired_target_native_import_source_request_invalid")
+        replacements = _source_replacement_set(source)
+        scene_id = str(source.get("scene_id") or "")
     runner = Path(runner_path).expanduser().resolve()
     if runner.is_symlink() or not runner.is_file() or runner.suffix != ".py":
         raise PairedTargetNativeImportBundleError("paired_target_native_import_runner_invalid")
@@ -299,8 +325,27 @@ def build_paired_target_native_import_bundle(
         for index, row in enumerate(replacements):
             suffix = row["source_path"].suffix.lower()
             filename = f"replacement_{index:02d}{suffix}"
-            staged = assets_dir / filename
-            shutil.copyfile(row["source_path"], staged)
+            catalog = row.get("catalog_intake")
+            catalog_files = []
+            if catalog:
+                catalog_root = assets_dir / f"catalog_{index:02d}"
+                origin = row["catalog_intake_path"].parent
+                for record in catalog["files"]:
+                    relative = catalog["package_directory"] + "/" + record["relative_path"]
+                    target = catalog_root / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(origin / relative, target)
+                    if target.stat().st_size != record["size_bytes"] or _sha256(target) != "sha256:" + record["sha256"]:
+                        raise PairedTargetNativeImportBundleError("catalog_dependency_copy_mismatch")
+                    catalog_files.append({"relative_path": target.relative_to(runtime).as_posix(),
+                                          "size_bytes": record["size_bytes"], "sha256": "sha256:" + record["sha256"]})
+                shutil.copyfile(row["catalog_intake_path"], catalog_root / "intake.json")
+                for evidence_name in ("catalog.txt", "source_tree.json"):
+                    shutil.copyfile(origin / evidence_name, catalog_root / evidence_name)
+                staged = catalog_root / row["source_path"].relative_to(origin)
+            else:
+                staged = assets_dir / filename
+                shutil.copyfile(row["source_path"], staged)
             if (
                 staged.stat().st_size != row["source"]["size_bytes"]
                 or _sha256(staged) != row["source"]["sha256"]
@@ -313,21 +358,22 @@ def build_paired_target_native_import_bundle(
                     "index": index,
                     "task_id": row["task_id"],
                     "asset_id": row["asset_id"],
-                    "relative_path": f"assets/{filename}",
+                    "relative_path": staged.relative_to(runtime).as_posix(),
                     "size_bytes": staged.stat().st_size,
                     "sha256": _sha256(staged),
-                    "asset_frame_registration_digest": row["asset_frame_registration"][
-                        "registration_digest"
-                    ],
+                    "asset_frame_registration_digest": (row["asset_frame_registration"][
+                        "registration_digest"] if row["asset_frame_registration"] else None),
                     "registered_static_qualification_digest": row[
                         "registered_static_qualification"
                     ]["receipt_digest"],
+                    **({"source_kind": "licensed_catalog_package", "catalog_intake_digest": catalog["receipt_digest"],
+                        "catalog_files": catalog_files, "license": catalog["license"]} if catalog else {}),
                 }
             )
         candidate_path = runtime / "native_task_execution_candidate.v1.json"
         try:
             execution_candidate = prepare_native_task_execution_candidate(
-                scene_id=str(source.get("scene_id") or ""),
+                scene_id=scene_id,
                 runtime_image=DEFAULT_IMAGE,
                 assets=[
                     {
@@ -353,8 +399,10 @@ def build_paired_target_native_import_bundle(
             "schema_version": REQUEST_SCHEMA_VERSION,
             "status": "frozen_pending_native_isaac_import",
             "program_id": "arm-decision-proof-v1",
-            "scene_id": str(source.get("scene_id") or ""),
-            "source_native_render_request": {
+            "scene_id": scene_id,
+            "source_kind": "licensed_catalog_package" if catalog_static_qualification_path else "authored_replacement_set",
+            ("source_catalog_static_qualification" if catalog_static_qualification_path else
+             "source_native_render_request"): {
                 "path": str(source_path),
                 "size_bytes": source_path.stat().st_size,
                 "sha256": _sha256(source_path),
@@ -417,6 +465,7 @@ def build_paired_target_native_import_bundle(
         manifest: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "status": "ready",
+            "source_kind": request["source_kind"],
             "implementation_commit": implementation_commit,
             "source_commit_sha": implementation_commit,
             "container_image": DEFAULT_IMAGE,
@@ -588,7 +637,9 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Build the immutable paired-target native import bundle.")
-    parser.add_argument("--native-render-request", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--native-render-request")
+    source.add_argument("--catalog-static-qualification")
     parser.add_argument("--runner", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--implementation-commit", required=True)
@@ -596,6 +647,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         receipt = build_paired_target_native_import_bundle(
             native_render_request_path=args.native_render_request,
+            catalog_static_qualification_path=args.catalog_static_qualification,
             runner_path=args.runner,
             output_root=args.output_root,
             implementation_commit=args.implementation_commit,

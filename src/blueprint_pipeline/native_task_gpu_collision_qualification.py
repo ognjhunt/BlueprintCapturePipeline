@@ -25,7 +25,7 @@ STATIC_QUALIFICATION_SCHEMA_VERSION = (
 )
 DEFAULT_MAXIMUM_CONVEX_HULL_ASPECT_RATIO = 100.0
 SUPPORTED_DYNAMIC_MESH_APPROXIMATIONS = frozenset(
-    {"convexHull", "convexDecomposition", "boundingCube"}
+    {"convexHull", "convexDecomposition", "boundingCube", "sdf"}
 )
 
 
@@ -102,7 +102,9 @@ def audit_native_task_gpu_collisions(
     rows: list[dict[str, Any]] = []
     primitive_rows: list[dict[str, Any]] = []
     blockers: list[str] = []
-    for prim in stage.Traverse():
+    # Catalog assets routinely instance their mesh payloads. Ordinary traversal
+    # skips instance proxies and would falsely report no colliders.
+    for prim in Usd.PrimRange.Stage(stage, Usd.TraverseInstanceProxies()):
         if not prim.HasAPI(UsdPhysics.CollisionAPI):
             continue
         body = prim
@@ -171,6 +173,25 @@ def audit_native_task_gpu_collisions(
             row_blockers.append(
                 f"native_task_dynamic_convex_hull_gpu_oblong:{prim_path}"
             )
+        sdf = {}
+        if approximation == "sdf":
+            # usd-core lacks PhysxSchema, so inspect the composed authored API
+            # list as well as native GetAppliedSchemas(). The schema default is
+            # 256 in the pinned Omni Physics contract; native readback must
+            # confirm this exact value before construction admission.
+            schemas = prim.GetMetadata("apiSchemas")
+            applied = schemas.GetAppliedItems() if schemas is not None else []
+            resolution = prim.GetAttribute("physxSDFMeshCollision:sdfResolution").Get()
+            source = "authored_or_resolved_schema"
+            if resolution is None and "PhysxSDFMeshCollisionAPI" in applied:
+                resolution = 256
+                source = "PhysxSDFMeshCollisionAPI_default_requires_native_readback"
+            if ("PhysxSDFMeshCollisionAPI" not in applied
+                    or not isinstance(resolution, int) or isinstance(resolution, bool)
+                    or resolution <= 0 or len(positive_dimensions) != 3
+                    or not all(math.isfinite(value) for value in dimensions)):
+                row_blockers.append(f"native_task_dynamic_sdf_configuration_invalid:{prim_path}")
+            sdf = {"sdf_resolution": resolution, "sdf_resolution_source": source}
         blockers.extend(row_blockers)
         rows.append(
             {
@@ -179,6 +200,7 @@ def audit_native_task_gpu_collisions(
                 "approximation": approximation or None,
                 "local_dimensions_m": dimensions,
                 "aspect_ratio": aspect_ratio,
+                **sdf,
                 "blockers": row_blockers,
             }
         )

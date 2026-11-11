@@ -26,6 +26,7 @@ from .nvidia_experiment_resource import (
     resource_stop_evidence,
 )
 from .nvidia_siggraph_policy import evaluate_stop_rules
+from .simready_central import normalize_producer_results, verify_intake
 
 
 REQUEST_SCHEMA_VERSION = "external_simready_validation_request.v1"
@@ -131,6 +132,18 @@ def normalize_findings(payload: Any) -> list[dict[str, Any]]:
                 visit(child)
 
     visit(payload)
+    for row in normalize_producer_results(payload, source="external_validator"):
+        optional_failure = row["status"] == "failed" and row["details"].get("blocking_failure") is False
+        findings.append({
+            "rule_id": row["pointer"],
+            "severity": "warning" if optional_failure else "error" if row["status"] == "failed" else
+            "info" if row["status"] == "passed" else "unknown",
+            "status": row["status"], "raw_result": row["raw_result"],
+            "blocking_failure": row["details"].get("blocking_failure"),
+            "details": row["details"],
+            "object_path": row.get("asset"), "message": None,
+            "suggested_action": None,
+        })
     return findings
 
 
@@ -175,7 +188,10 @@ def _source_manifest_ids(capture_root: Path, explicit: Sequence[str]) -> list[st
 
 def run_external_simready_validation(
     *,
-    capture_root: str | Path,
+    capture_root: str | Path | None = None,
+    catalog_intake_receipt_path: str | Path | None = None,
+    output_root: str | Path | None = None,
+    local_validation_baseline_path: str | Path | None = None,
     input_usd: str | Path | None = None,
     validator_command: str | Sequence[str] | None = None,
     requested_profile: str = "Prop-Robotics-Neutral",
@@ -197,10 +213,21 @@ def run_external_simready_validation(
     repeat_runs: int = 2,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    context = resolve_local_capture_context(capture_root)
-    simready_dir = context.pipeline_root / "simready"
+    if (capture_root is None) == (catalog_intake_receipt_path is None):
+        raise ValueError("select_exactly_one_capture_or_catalog_source")
+    intake = verify_intake(catalog_intake_receipt_path) if catalog_intake_receipt_path else None
+    context = resolve_local_capture_context(capture_root) if capture_root else None
+    source_root = (Path(catalog_intake_receipt_path).resolve().parent / intake["package_directory"]
+                   if intake else context.pipeline_root)
+    simready_dir = (Path(output_root).resolve() if output_root else
+                   Path(catalog_intake_receipt_path).resolve().parent / "external_validation"
+                   if intake else context.pipeline_root / "simready")
+    if intake and simready_dir.is_relative_to(source_root):
+        raise ValueError("catalog_validation_output_must_be_outside_original_package")
     ensure_dir(simready_dir)
-    usd_path = Path(input_usd or simready_dir / "isaac_sim" / "site_scene.usda").resolve()
+    default_usd = (source_root / intake["root_usds"][0] if intake else
+                   simready_dir / "isaac_sim" / "site_scene.usda")
+    usd_path = Path(input_usd or default_usd).resolve()
     request_path = simready_dir / "external_validation_request.json"
     result_path = simready_dir / "external_validation_result.json"
     claim_path = simready_dir / "external_validation_claim_boundary.json"
@@ -212,8 +239,11 @@ def run_external_simready_validation(
     blockers: list[str] = []
     if not usd_path.is_file():
         blockers.append("input_usd_missing")
-    if usd_path.is_file() and not _path_within(usd_path, context.pipeline_root):
-        blockers.append("input_must_be_privacy_safe_pipeline_derived_usd")
+    if usd_path.is_file() and not _path_within(usd_path, source_root):
+        blockers.append("input_must_be_within_verified_source_root" if intake else
+                        "input_must_be_privacy_safe_pipeline_derived_usd")
+    if intake and usd_path not in [source_root / root for root in intake["root_usds"]]:
+        blockers.append("catalog_input_must_be_declared_root_usd")
     if not requested_profile:
         blockers.append("requested_profile_missing")
     if not profile_version:
@@ -230,11 +260,19 @@ def run_external_simready_validation(
         blockers.append("transformations_not_supported_by_advisory_v1_adapter")
     if network_policy != "disabled":
         blockers.append("base_validation_requires_network_disabled_policy")
-    baseline_path = simready_dir / "simready_validation.json"
+    baseline_path = Path(local_validation_baseline_path or simready_dir / "simready_validation.json")
     baseline_payload = read_json_any(baseline_path) if baseline_path.is_file() else {}
     if not baseline_path.is_file() or not isinstance(baseline_payload, Mapping):
         blockers.append("local_simready_validation_baseline_missing")
         baseline_payload = {}
+    if intake:
+        from .simready_central_qualification import valid_static_qualification
+        if (not valid_static_qualification(baseline_payload)
+                or baseline_payload.get("intake_receipt", {}).get("receipt_digest") != intake["receipt_digest"]
+                or not usd_path.is_file()
+                or baseline_payload.get("replacement_usd", {}).get("sha256") !=
+                "sha256:" + sha256_file(usd_path)):
+            blockers.append("catalog_static_baseline_mismatch")
     resource_context, resource_blockers = load_resource_context(resource_context_path)
     blockers.extend(resource_blockers)
     resource_closeout, closeout_blockers = load_resource_closeout(
@@ -270,23 +308,27 @@ def run_external_simready_validation(
         except OSError:
             blockers.append("validator_executable_identity_unresolvable")
     request = {
-        "schema_version": REQUEST_SCHEMA_VERSION,
+        "schema_version": "external_simready_validation_request.v2" if intake else REQUEST_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
-        "scene_id": context.scene_id,
-        "capture_id": context.capture_id,
-        "package_id": package_id or f"{context.scene_id}:{context.capture_id}",
+        "scene_id": context.scene_id if context else None,
+        "capture_id": context.capture_id if context else None,
+        "package_id": package_id or (intake["package_id"] if intake else
+                                      f"{context.scene_id}:{context.capture_id}"),
         "input": {
             "path": str(usd_path),
             "sha256": sha256_file(usd_path) if usd_path.is_file() else None,
-            "source_manifest_ids": _source_manifest_ids(context.capture_root, source_manifest_ids),
+            "source_manifest_ids": ([intake["receipt_digest"], *source_manifest_ids] if intake else
+                                    _source_manifest_ids(context.capture_root, source_manifest_ids)),
             "privacy_safe_pipeline_derived": bool(
-                usd_path.is_file() and _path_within(usd_path, context.pipeline_root)
+                not intake and usd_path.is_file() and _path_within(usd_path, source_root)
             ),
+            "catalog_intake_receipt_digest": intake["receipt_digest"] if intake else None,
+            "source_kind": "licensed_catalog_package" if intake else "capture_pipeline_derived",
         },
         "local_validation_baseline": {
             "path": str(baseline_path),
             "sha256": sha256_file(baseline_path) if baseline_path.is_file() else None,
-            "status": baseline_payload.get("overall_status"),
+            "status": baseline_payload.get("overall_status", baseline_payload.get("status")),
         },
         "requested_profile": requested_profile,
         "requested_profile_version": profile_version,
@@ -410,7 +452,7 @@ def run_external_simready_validation(
             "component_version_pinned": bool(validator_version and validator_source_revision),
             "license_compatible": license_compatible,
             "stable_normalized_receipts": stable_normalized_results,
-            "privacy_safe_inputs_only": bool(request["input"]["privacy_safe_pipeline_derived"]),
+            "privacy_safe_inputs_only": bool(intake or request["input"]["privacy_safe_pipeline_derived"]),
             "dependency_isolated": True,
             "input_output_digests_preserved": bool(request["input"]["sha256"]),
             "proof_boundaries_separated": True,
@@ -476,6 +518,12 @@ def run_external_simready_validation(
     if result["input_modified"]:
         result["status"] = "blocked"
         result["blockers"].append("input_usd_modified_by_advisory_validator")
+    if intake:
+        try:
+            verify_intake(catalog_intake_receipt_path)
+        except ValueError:
+            result["status"] = "blocked"
+            result["blockers"].append("catalog_package_modified_by_advisory_validator")
     result["result_fingerprint"] = canonical_sha256(result)
     write_json(result_path, result)
     return {
@@ -491,7 +539,11 @@ def run_external_simready_validation(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--capture-root", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--capture-root")
+    source.add_argument("--catalog-intake-receipt-path")
+    parser.add_argument("--output-root")
+    parser.add_argument("--local-validation-baseline-path")
     parser.add_argument("--input-usd", default=None)
     parser.add_argument("--validator-command", default=None)
     parser.add_argument("--profile", default="Prop-Robotics-Neutral")
@@ -511,6 +563,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     result = run_external_simready_validation(
         capture_root=args.capture_root,
+        catalog_intake_receipt_path=args.catalog_intake_receipt_path,
+        output_root=args.output_root,
+        local_validation_baseline_path=args.local_validation_baseline_path,
         input_usd=args.input_usd,
         validator_command=args.validator_command,
         requested_profile=args.profile,
