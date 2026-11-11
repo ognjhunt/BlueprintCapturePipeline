@@ -84,11 +84,11 @@ def _pose(value: Mapping[str, Any]) -> dict[str, list[float]]:
 def _packet_arm_reach(scene_plan: Mapping[str, Any], search: Mapping[str, Any]) -> dict[str, Any]:
     """Blueprint's DROID Franka at the packet's station: the reach proof, else the station search's verdict."""
     from .robot_arm_path_clearance import (
+        NOMINAL_CONTACT_FLAG,
         SCRIPTED_CARRY_FLAG,
         RobotArmPathClearanceError,
-        object_reach_inputs,
-        NOMINAL_CONTACT_FLAG,
         contact_reach_status,
+        object_reach_inputs,
         reach_refusal_code,
         reach_refused,
         rigid_reach_shortfall,

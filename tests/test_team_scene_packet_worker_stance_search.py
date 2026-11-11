@@ -167,7 +167,7 @@ def test_a_half_chosen_with_the_tray_in_reach_whose_station_the_gate_now_refuses
     # out of reach: the gate now refuses its station, so it is searched again once, under the new version.
     # A half whose station passes the new rule is left as it is, compiled once and never again.
     world = _world(tmp_path, monkeypatch)
-    queue, key = world["queue"], world["key"]
+    queue = world["queue"]
     _release(monkeypatch, RELEASE_1)
     _at(monkeypatch, 0)
     [status] = world["process"]()["results"]
