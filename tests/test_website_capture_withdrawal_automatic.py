@@ -319,6 +319,66 @@ def test_two_waiting_sites_are_handled_one_per_pass(tmp_path):
     assert second["withdrawals"]["completed"] == 2
 
 
+_ROOT_READS_EVERYTHING = pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 0o000 folder anyway")
+
+
+@_ROOT_READS_EVERYTHING
+def test_a_hidden_folder_the_service_cannot_read_is_not_a_bucket(harness):
+    # Production, 2026-11-11: the storage GC's root-only 0700 `.scene-workspace-inventory` cache sits beside the
+    # buckets, and the first pass crashed on it with PermissionError. A bucket is named after a GCS bucket, which
+    # never starts with a dot, so hidden folders (spools, evidence, caches) are never read as buckets.
+    hidden = harness.partition / ".scene-workspace-inventory"
+    hidden.mkdir()
+    hidden.chmod(0o000)
+    try:
+        summary = harness.run()
+    finally:
+        hidden.chmod(0o700)
+    assert harness.plans == ["walkthrough-req1"]
+    assert summary["scan_complete"] is True and summary["scan_problems"] == []
+    assert summary["alerts"] == []
+
+
+@_ROOT_READS_EVERYTHING
+def test_a_bucket_the_service_cannot_read_is_reported_and_the_rest_still_scanned(harness):
+    locked = harness.partition / "locked-bucket"
+    locked.mkdir()
+    locked.chmod(0o000)
+    try:
+        summary = harness.run()
+    finally:
+        locked.chmod(0o700)
+    # Never read as empty: the pass names what it could not read, and still plans the site it found.
+    assert harness.plans == ["walkthrough-req1"]
+    assert summary["scan_complete"] is False
+    assert summary["scan_problems"] == [{"path": str(locked), "reason": "unlistable:PermissionError"}]
+    assert "website_withdrawal_scan_incomplete" in harness.posted_codes()
+
+
+@_ROOT_READS_EVERYTHING
+def test_a_site_the_service_cannot_read_is_reported_and_the_other_site_still_planned(tmp_path):
+    harness = Harness(tmp_path, sites=("req1", "req2"))
+    locked = harness.site("req1")
+    locked.chmod(0o000)
+    try:
+        summary = harness.run()
+    finally:
+        locked.chmod(0o750)
+    assert harness.plans == ["walkthrough-req2"]
+    assert summary["scan_problems"] == [{"path": str(locked), "reason": "site_unreadable:PermissionError"}]
+    assert "website_withdrawal_scan_incomplete" in harness.posted_codes()
+
+
+def test_a_tombstone_under_a_hidden_folder_is_not_a_withdrawal(tmp_path):
+    root = tmp_path / "pubsub-handoffs"
+    for bucket in ("blueprint-8c1ca.appspot.com", ".website_preparation_pending"):
+        tombstone = root / bucket / "scenes" / "site-a" / "website_withdrawal" / "tombstone.json"
+        tombstone.parent.mkdir(parents=True)
+        tombstone.write_text("{}")
+    sites, problems = automatic.discover_withdrawals([root])
+    assert sites == [root / "blueprint-8c1ca.appspot.com" / "scenes" / "site-a"] and problems == []
+
+
 def test_a_failing_plan_backs_off_and_is_retried_and_alerts_when_it_keeps_failing(harness):
     calls = []
 
