@@ -140,18 +140,28 @@ extension. The WebApp half landed as WebApp #1257.
    privacy or rights refusal is never re-run. A dead process's attempt is
    recorded `failed_retryable` once its lease has expired and its process is
    gone, and runs again within 10 minutes. A delivery refused before its claim
-   keeps its bytes until a run claims it. A re-run creates no capacity for an
-   unanswered paid call: an intent with no receipt stops it before any dispatch
-   (Gemini never resends; SAM resends once, the owner's 2026-11-07 rule), which
-   `tests/test_website_preparation_retry.py` checks for both. Still not
-   covered: a Gemini error or timeout inside the clean-plate analysis is stored
-   as a completed "blocked" plan, and a Gemini call with no answer has no
-   owner rule, so it stays `website_gemini_requires_reconciliation`.
+   keeps its bytes until a run claims it. An unanswered paid call is sent
+   again only under a new reservation: SAM resends once (the owner's
+   2026-11-07 rule). Gemini (owner approval 2026-11-10, every call site through
+   `retained_gemini_call`): a dispatch with no answer may have been billed, so
+   it is counted as spent (its reservation stays held at its maximum, which the
+   WebApp ledger debits; there is no Google settlement route) and the call is
+   sent once more under one new reservation, which the WebApp admits only
+   inside the job's ceiling and the account limit. A refused reservation, or an
+   unanswered call with no reservation on record, is a money wait, never a
+   send. A Gemini error in the clean-plate analysis is raised
+   (`GeminiProviderError`) and retried by this policy, never retained as a
+   completed "blocked" plan; a "blocked" plan an older release retained is
+   still read and reused as it stands.
 3. **Three preparation states with no ending on the Pipeline at expiry**
    (readiness plan G50). The WebApp now ends the job for the site; the
    Pipeline ledger stays as it was.
 4. **Refusals cached by a revision constant** (Atlas levelling). A timed retry
    of the same inputs and code gives the same answer.
-5. **A job that ended with no grant stays ended on the host.** If the owner
-   later issues a grant, the WebApp shows the job live again, but the host
-   does not run that delivery again. It needs a new handoff.
+5. **A job that never received a grant.** The WebApp ends it after the job
+   window (WebApp #1260) and the host then ends its preparation (section 4).
+   Until then the host retry gives every failure of a grant-less job, an
+   outage included, only the six timed retries (`has_deadline` in
+   `website_preparation_retry.py`). Once ended it stays ended on the host: if
+   the owner later issues a grant, the WebApp shows the job live again, but
+   the host does not run that delivery again. It needs a new handoff.

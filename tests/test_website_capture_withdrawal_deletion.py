@@ -200,7 +200,8 @@ def world(tmp_path):
                   "team_registry": tmp_path / "etc/team-evaluation-registry.json",
                   "team_scene_packet_queue_root": control / "team-scene-packets",
                   "rigid_probe_queue_root": control / "rigid-robot-free-probes",
-                  "rigid_probe_work_root": tmp_path / "work/rigid-robot-free-probe-work"}
+                  "rigid_probe_work_root": tmp_path / "work/rigid-robot-free-probe-work",
+                  "unclaimed_handoff_root": tmp_path / "handoffs/.website_preparation_unclaimed"}
     return {"capture": capture, "site": capture.parents[1], "store": store, "resolution": resolution,
             "construction": construction, "canary": canary, "other": other, "launches": launches,
             "prepared": prepared / intent_id, "review": review, "offloaded": offloaded, "workspace": workspace,
@@ -587,7 +588,8 @@ def test_cli_delete_is_a_dry_run_unless_applied_with_authorization(world, tmp_pa
             "--team-registry", str(world["resolution"]["team_registry"]),
             "--team-scene-packet-queue-root", str(world["resolution"]["team_scene_packet_queue_root"]),
             "--rigid-probe-queue-root", str(world["resolution"]["rigid_probe_queue_root"]),
-            "--rigid-probe-work-root", str(world["resolution"]["rigid_probe_work_root"])]
+            "--rigid-probe-work-root", str(world["resolution"]["rigid_probe_work_root"]),
+            "--unclaimed-handoff-root", str(world["resolution"]["unclaimed_handoff_root"])]
     before = _snapshot(tmp_path)
     monkeypatch.setattr(sys, "argv", argv)
     deletion.main()

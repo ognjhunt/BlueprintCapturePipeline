@@ -106,6 +106,11 @@ DEFAULT_STORAGE_GC_SUMMARY = Path(
     "/var/lib/blueprint/pipeline-control-plane/storage-gc/summary.json"
 )
 GC_SUMMARY_INTERVAL_SECONDS = 3600
+# The withdrawal deletion unit's summary (website_capture_withdrawal_automatic): counts only.
+DEFAULT_WEBSITE_WITHDRAWAL_SUMMARY = Path(
+    "/var/lib/blueprint/pipeline-control-plane/website-withdrawal-deletion/summary.json"
+)
+WEBSITE_WITHDRAWAL_SUMMARY_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_DELETION_SUMMARY"
 DEFAULT_MOUNTS: tuple[str, ...] = ("/var/lib/blueprint",)
 WORK_VOLUME_MOUNT = "/mnt/blueprint-work"
 _DEFAULT_SURVEY = object()
@@ -972,6 +977,8 @@ def capacity_summary(report: Mapping[str, Any], *, max_bytes: int = SUMMARY_MAX_
                             if key in report["stall"]}
     if isinstance(report.get("provider_spend"), Mapping):
         summary["provider_spend"] = provider_spend.summary_projection(report["provider_spend"])
+    if isinstance(report.get("website_withdrawal_deletion"), Mapping):
+        summary["website_withdrawal_deletion"] = dict(report["website_withdrawal_deletion"])
 
     def size() -> int:
         return len(json.dumps(summary, indent=2, sort_keys=True)) + 1
@@ -1301,6 +1308,7 @@ def run_controller(
     stall_check: Callable[[float, Mapping[str, Any] | None], Mapping[str, Any]] | None = None,
     spend_check: Callable[[float], Mapping[str, Any]] | None = None,
     delivery_check: Callable[[float], Mapping[str, Any]] | None = None,
+    website_withdrawal_summary_path: Path | None = None,
 ) -> dict[str, Any]:
     """One tick. By default, survey when stale or forced. Pass ``survey=None``
     only to reuse an existing report without scanning. ``stall_check`` (the
@@ -1309,7 +1317,10 @@ def run_controller(
     ``spend_check`` (``provider_spend_alerts``) adds provider spend pages the
     same way; it only reads, and nothing admits or refuses work on it.
     ``delivery_check`` (``website_preparation_delivery_index``) reads the
-    listener's preparation status delivery metrics the same way."""
+    listener's preparation status delivery metrics the same way.
+    ``website_withdrawal_summary_path`` (the service passes the withdrawal deletion
+    unit's summary) is copied as counts only, so ``door status`` shows withdrawals
+    waiting on the owner's approval; that unit posts its own alerts, so none is added here."""
 
     observed = time.time() if now is None else float(now)
     previous = _read_json(report_root / "latest.json")
@@ -1436,6 +1447,12 @@ def run_controller(
                                                      "reason": "stall_check_failed"}]}
         report["alerts"].extend(row for row in stall.pop("alerts", []) if isinstance(row, Mapping))
         report["stall"] = stall
+    if website_withdrawal_summary_path is not None:
+        from .website_capture_withdrawal_automatic import capacity_projection
+
+        withdrawals = capacity_projection(_read_attention_summary(website_withdrawal_summary_path))
+        if withdrawals is not None:
+            report["website_withdrawal_deletion"] = withdrawals
     if not webhook_url:
         report["alerts"].append({"code": "operator_alert_route_unconfigured"})
         if report["level"] == "ok":
@@ -1567,6 +1584,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             lambda now, prior: stall_alarm.observe_stalls(stall_config, now=now, previous=prior)),
         spend_check=provider_spend.configured_spend_check(),
         delivery_check=preparation_delivery.configured_delivery_check(),
+        website_withdrawal_summary_path=Path(
+            os.getenv(WEBSITE_WITHDRAWAL_SUMMARY_ENV) or str(DEFAULT_WEBSITE_WITHDRAWAL_SUMMARY)),
     )
     if args.print_report:
         print(json.dumps(report, indent=2, sort_keys=True))

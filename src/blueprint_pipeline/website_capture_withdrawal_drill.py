@@ -22,7 +22,13 @@ as removed or remaining with a reason, and that nothing outside the site's copie
 changed, and prints one row per copy class: count before, count after, and why
 anything remains.
 
-``python -m blueprint_pipeline.website_capture_withdrawal_drill [--work-root DIR]``
+``--automatic`` walks the same site through the timer's passes instead
+(``run_automatic_drill``, ``website_capture_withdrawal_automatic``): with no standing
+approval a pass only plans and deletes nothing; with a synthetic approval written
+inside the work root the next pass applies and seals a receipt naming it; a third
+pass does nothing. No operator step runs between them.
+
+``python -m blueprint_pipeline.website_capture_withdrawal_drill [--work-root DIR] [--automatic]``
 """
 from __future__ import annotations
 
@@ -34,6 +40,7 @@ import json
 import os
 import tempfile
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -196,7 +203,17 @@ def build_world(work: Path, request_id: str) -> dict[str, Any]:
     # A Pipeline root the deletion does not cover yet; the receipt names it with its reason.
     uncovered = inputs / "sam31-preparations"
     _write(uncovered / "drill-entry/record.json", {"note": "synthetic"})
+    # Indexed by ownership in the automatic drill: one entry names the site, one the other site.
+    _write(uncovered / "site-entry/record.json", {"scene_id": f"site-{request_id}"})
+    _write(uncovered / "other-entry/record.json", {"scene_id": "site-drill-other"})
+    # The preparation retry's unclaimed handoffs: one names the site, one the other site.
+    unclaimed = partition / ".website_preparation_unclaimed"
+    _write(unclaimed / f"handoff-{request_id}/payload.json",
+           {"bucket": "synthetic", "scene_id": f"site-{request_id}", "capture_id": f"walkthrough-{request_id}"})
+    _write(unclaimed / "handoff-drill-other.json",
+           {"bucket": "synthetic", "scene_id": "site-drill-other", "capture_id": "walkthrough-drill-other"})
     resolution = {"run_roots": (launches, canaries, prepared), "intent_root": control / "task-evaluation-scene-intents",
+                  "unclaimed_handoff_root": unclaimed,
                   "binding_root": control / "website-source-bindings", "uncovered_roots": (uncovered,),
                   "screening_queue_root": control / "beta-policy-screening",
                   "screening_work_root": work / "work/beta-policy-screening-work",
@@ -273,7 +290,8 @@ def _audit(event: str, arguments: tuple[Any, ...]) -> None:
         target = _resolve(path, dir_fd)
         # Bytecode caches are the interpreter's, not the drill's.
         if target and not (target == confinement["root"] or target.startswith(confinement["root"] + os.sep)
-                           or f"{os.sep}__pycache__{os.sep}" in target):
+                           or f"{os.sep}__pycache__{os.sep}" in target
+                           or target.endswith(f"{os.sep}__pycache__")):
             confinement["violations"].append(f"{event}:{target}")
 
 
@@ -409,6 +427,83 @@ def _run_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
             "receipt": receipt, "record": rows}
 
 
+def run_automatic_drill(work: Path, *, vector_path: Path = DEFAULT_VECTOR) -> dict[str, Any]:
+    """The timer's passes on the drill's site, confined to ``work``; raises ``DrillFailure`` when a property fails."""
+
+    with _confined(Path(work)):
+        result = _run_automatic_drill(Path(work), vector_path=vector_path)
+    result["outside_work_root_unchanged"] = True
+    return result
+
+
+def _run_automatic_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
+    import time
+
+    from . import website_capture_withdrawal as withdrawal
+    from . import website_capture_withdrawal_automatic as automatic
+    from . import website_capture_withdrawal_deletion as deletion
+
+    command = json.loads(Path(vector_path).read_text())["command"]
+    world = build_world(Path(work), command["request_id"])
+    capture, site, store, gcs = world["capture"], world["site"], world["store"], world["gcs"]
+    index_root = Path(work) / "report/site-index"
+    uncovered = world["resolution"]["uncovered_roots"][0]
+    # The entry no record attributes (``drill-entry``) is left for the owner; the automatic drill shows the
+    # complete path, so it starts without it.
+    import shutil
+    shutil.rmtree(uncovered / "drill-entry")
+    resolution = {**world["resolution"], "object_store": deletion.B2ObjectVersions(store, BUCKET), "cloud_storage": gcs,
+                  "site_index_root": index_root, "provider_copies": True, "provider_deleters": {}}
+    outside = [world["other_capture"], world["other_run"], uncovered / "other-entry"]
+    outside_before = _snapshot(outside)
+    withdrawal.acknowledge_withdrawal(capture_root=capture, command=command)
+    approval_path = Path(work) / "etc/website-withdrawal-deletion-approval.json"
+    now = time.time()
+
+    def run(at: float) -> dict[str, Any]:
+        return automatic.run_pass(site_roots=[world["partition"]], report_root=Path(work) / "report",
+                                  resolution=lambda: resolution, quiet=lambda: [], approval_path=approval_path,
+                                  approval_owner_uid=os.getuid(), now=at, site_index_root=index_root,
+                                  indexed_roots=[uncovered])
+
+    # 1. No standing approval: the pass plans by itself and deletes nothing.
+    files_before = _site_files(site)
+    planned = run(now)
+    state = json.loads((site / "website_withdrawal" / automatic.STATE_FILENAME).read_text())
+    _check(state["status"] == "planned" and state["waiting_on"] == ["standing_approval_absent"]
+           and state["unresolved_count"] == 0, "drill_automatic_plan_unexpected")
+    _check(planned["withdrawals"]["awaiting_owner_approval"] == 1, "drill_automatic_approval_wait_not_counted")
+    _check(_site_files(site) == files_before and store.deleted == [], "drill_automatic_plan_deleted_something")
+
+    # 2. A synthetic standing approval (inside the work root, never /etc): the next pass applies.
+    approval_path.parent.mkdir(parents=True, exist_ok=True)
+    approval_path.write_text(json.dumps({
+        "schema_version": automatic.APPROVAL_SCHEMA, "approved_by": "drill (synthetic)",
+        "approved_at": datetime.fromtimestamp(now - 60, timezone.utc).isoformat(),
+        "policy_class": automatic.POLICY_CLASS, "cool_off_hours": 0}))
+    approval_path.chmod(0o644)
+    applied = run(now + 1)
+    state = json.loads((site / "website_withdrawal" / automatic.STATE_FILENAME).read_text())
+    _check(state["status"] == "applied", "drill_automatic_apply_unexpected: " + str(state.get("last_error")))
+    receipt = json.loads((site / "website_withdrawal" / "deletion_receipts"
+                          / f"{state['plan_digest'][7:]}.json").read_text())
+    _check(receipt["authorization"]["kind"] == "standing_owner_approval"
+           and receipt["authorization"]["approval_digest"] == applied["approval"]["digest"],
+           "drill_automatic_receipt_does_not_name_the_approval")
+    _check(_site_files(site) == 0 and receipt["covered_copies_deleted"] is True
+           and receipt["deletion_status"] == deletion.COMPLETE_PROVIDER_RETENTION_REMAINS
+           and {row["provider"] for row in receipt["provider_retention_remains"]} >= {"openai", "vast"}
+           and not (uncovered / "site-entry").exists(),
+           "drill_automatic_copies_remaining: " + json.dumps(receipt.get("incomplete_reasons"))[:500])
+    _check(_snapshot(outside) == outside_before and store.versions_of(world["other_uri"]) == 1,
+           "drill_automatic_touched_another_site")
+
+    # 3. Nothing is due once the receipt is sealed.
+    again = run(now + 2)
+    _check(again["action"] is None and again["withdrawals"]["completed"] == 1, "drill_automatic_second_pass_acted")
+    return {"plan_pass": planned, "apply_pass": applied, "idle_pass": again, "receipt": receipt}
+
+
 def format_record(rows: list[dict[str, Any]]) -> str:
     lines = ["copy_class | before | after | remaining_reason"]
     for row in rows:
@@ -423,7 +518,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--work-root", type=Path, help="An empty directory to run in (default: a new temporary one)")
     parser.add_argument("--vector", type=Path, default=DEFAULT_VECTOR)
+    parser.add_argument("--automatic", action="store_true",
+                        help="Walk the site through the timer's passes (plan only, then a synthetic approval)")
     args = parser.parse_args(argv)
+    if args.automatic:
+        if args.work_root is not None:
+            args.work_root.mkdir(parents=True, exist_ok=True)
+            if any(args.work_root.iterdir()):
+                parser.error("--work-root must be empty")
+            outcome = run_automatic_drill(args.work_root, vector_path=args.vector)
+        else:
+            with tempfile.TemporaryDirectory(prefix="withdrawal-drill-") as work:
+                outcome = run_automatic_drill(Path(work), vector_path=args.vector)
+        print(f"pass 1 (no approval): {outcome['plan_pass']['action']}")
+        print(f"pass 2 (standing approval): {outcome['apply_pass']['action']}")
+        print(f"pass 3: {outcome['idle_pass']['action']}")
+        receipt = outcome["receipt"]
+        print(f"receipt: {receipt['digest']} authorized by {receipt['authorization']['kind']}")
+        print(f"deletion status: {receipt['deletion_status']}")
+        for row in receipt.get("provider_retention_remains") or []:
+            print(f"  remains at {row['provider']}: {row['reason']}")
+        return 0
     if args.work_root is not None:
         args.work_root.mkdir(parents=True, exist_ok=True)
         if any(args.work_root.iterdir()):

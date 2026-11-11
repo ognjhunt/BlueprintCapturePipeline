@@ -1228,7 +1228,8 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/gpu_spend_guard" \
   "${STATE_DIR}/provider-locks" \
   "${STATE_DIR}/storage-pins" \
-  "${STATE_DIR}/unit-failures"
+  "${STATE_DIR}/unit-failures" \
+  "${STATE_DIR}/website-withdrawal-deletion"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launches/pending" \
   "${STATE_DIR}/task-evaluation-launches/processing" \
@@ -1571,6 +1572,12 @@ install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-storage-gc.timer" \
   "${SYSTEMD_DIR}/blueprint-control-plane-storage-gc.timer"
 install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-website-withdrawal-deletion.service" \
+  "${SYSTEMD_DIR}/blueprint-website-withdrawal-deletion.service"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-website-withdrawal-deletion.timer" \
+  "${SYSTEMD_DIR}/blueprint-website-withdrawal-deletion.timer"
+install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-capacity.service" \
   "${SYSTEMD_DIR}/blueprint-control-plane-capacity.service"
 install -m 0644 \
@@ -1764,6 +1771,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-scene-progression.timer
   systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path
   systemctl enable --now blueprint-control-plane-storage-gc.timer
+  systemctl enable --now blueprint-website-withdrawal-deletion.timer
   systemctl enable --now blueprint-control-plane-capacity.timer
   systemctl enable --now blueprint-control-plane-preflight.timer
   systemctl enable --now blueprint-website-atlas-preview.timer

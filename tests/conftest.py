@@ -55,6 +55,23 @@ def _isolated_native_g1_site_registration_root(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_control_plane_state(tmp_path_factory, monkeypatch):
+    """The account spend report and the validation verdict store default to the host's
+    ``/var/lib/blueprint``. A test run as root wrote both there on a development machine
+    (2026-11-10) and later runs read that state; as another user the same tests fail.
+
+    The spend report gets a temporary root per test (it decides paid admission). The verdict
+    store gets a root nothing can be written under, for any user: CI's user never could write
+    the default, so tests that count measurements rely on no verdict being kept
+    (``test_sage_collision_partition``). A test of verdict reuse, or of the default root, sets
+    or deletes the variable itself."""
+    monkeypatch.setenv("BLUEPRINT_ACCOUNT_MONTHLY_SPEND_ROOT", str(tmp_path_factory.mktemp("account-monthly-spend")))
+    blocked = tmp_path_factory.getbasetemp() / "validation-verdicts-are-not-kept-in-tests"
+    blocked.touch(exist_ok=True)  # a file: nothing can be created beneath it
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(blocked / "verdicts"))
+
+
+@pytest.fixture(autouse=True)
 def _website_object_spec_agent_off(monkeypatch):
     """The spec research agent is on by default in production (2026-09-27); never
     let a test reach the web or the WebApp by default. A test that exercises

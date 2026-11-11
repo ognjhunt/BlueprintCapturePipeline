@@ -96,7 +96,7 @@ def review_whole_views(*, views, root: Path, task_context, policy, source_video_
     """
     from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
     from .decision_evidence_contracts import canonical_digest
-    from .website_gemini_receipts import gemini_quote, retained_gemini_call
+    from .website_gemini_receipts import UNRESERVED, gemini_quote, retained_gemini_call
 
     candidates = [(base, view) for base, view, _ in views
                   if view.get("keep_mask") is not None and not view["keep_mask"].all() and view["keep_mask"].any()]
@@ -166,9 +166,9 @@ def review_whole_views(*, views, root: Path, task_context, policy, source_video_
                     task_context=task_context, maximum_cost_usd=quote, preflight=preflight, invoke=invoke,
                     source_video_digest=source_video_digest)
             except ValueError as error:
-                if str(error) != "website_gemini_requires_reconciliation":
+                if str(error) not in {"website_gemini_requires_reconciliation", UNRESERVED}:
                     raise
-                result = None  # An uncertain earlier call never authorizes another.
+                result = None  # An unanswered call with no reservation on record never authorizes another.
             answer = (result or {}).get("answer")
             rows = answer.get("views") if isinstance(answer, dict) else None
             answers = {row.get("view_id"): row for row in (rows if isinstance(rows, list) else [])

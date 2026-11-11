@@ -206,6 +206,35 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
     return value, grant
 
 
+class RetainedAdmissionUnusable(ValueError):
+    """The retained reservation itself can no longer pay a dispatch: expired, or not this binding's."""
+
+
+def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_digest: str,
+                                    now: float | None = None) -> Any:
+    """The in-process grant of a retained Gemini reservation whose last dispatch provably bought nothing.
+
+    Only ``website_gemini_receipts`` calls this, for an intent the provider refused before any work
+    (429/503) or one never dispatched: the same WebApp hold, never released, pays the next dispatch
+    under the same binding. No new reservation is made. The admission's own validity (its binding,
+    shape and ``expires_at_epoch``, which the WebApp sets to the grant's window) raises
+    ``RetainedAdmissionUnusable``; the account and budget checks that run again raise as they
+    always do (a money wait).
+    """
+    import time
+
+    from .paid_resource_admission import require_paid_resource_admission
+    expires = admission.get("expires_at_epoch")
+    if (admission.get("allocation_binding_digest") != binding_digest or admission.get("provider") != "google"
+            or admission.get("resource_class") != "evaluator_api" or admission.get("status") != "admitted"
+            or admission.get("schema_version") != "paid_lane_admission.v1" or admission.get("blockers") not in ([], None)
+            or isinstance(expires, bool) or not isinstance(expires, (int, float))
+            or not expires > (time.time() if now is None else now)):
+        raise RetainedAdmissionUnusable("website_preparation_retained_admission_unusable")
+    return require_paid_resource_admission(admission, resource_class="evaluator_api",
+                                           expected_schema_version="paid_lane_admission.v1")
+
+
 def load_atlas_operator_admission(path: Path, *, command: Mapping[str, Any],
                                   task_context: Mapping[str, Any]) -> dict[str, Any]:
     """A short-lived signed handoff from the actual WebApp reservation transaction.
