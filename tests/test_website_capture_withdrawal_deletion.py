@@ -604,3 +604,50 @@ def test_cli_delete_is_a_dry_run_unless_applied_with_authorization(world, tmp_pa
     with pytest.raises(deletion.WithdrawalDeletionError, match="explicit_authorization_required"):
         deletion.main()
     assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("remote", ["missing", "differs"])
+def test_a_restored_run_kept_for_its_archive_leaves_nothing_after_a_withdrawal(world, remote):
+    """A restored launch run whose archive the store no longer holds (or holds other bytes under) is kept
+    by the offloader. A withdrawal then deletes every file of that run: nothing derived from the capture,
+    the run's offload pointer included, stays behind beside it."""
+    import hashlib
+
+    from blueprint_pipeline.control_plane_evidence_offload import (
+        EXECUTE_ACK, POINTER_SCHEMA_VERSION, POINTER_SUFFIX, apply_evidence_offload,
+        build_evidence_offload_manifest,
+    )
+    from blueprint_pipeline.task_evaluation_configured_scene_object_store import (
+        TaskEvaluationConfiguredSceneObjectStoreError as StoreError,
+    )
+
+    run = world["construction"]
+    (world["launches"] / f".{run.name}.offload-1234.tar").unlink()  # only the restored run beside its pointer
+    members = [{"relative_path": path.relative_to(run).as_posix(), "size_bytes": path.stat().st_size,
+                "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+               for path in sorted(run.rglob("*")) if path.is_file()]
+    uri = _uri("control-plane-evidence", "7", "evidence.tar")
+    pointer = world["launches"] / f"{run.name}{POINTER_SUFFIX}"
+    _write(pointer, _sealed({"schema_version": POINTER_SCHEMA_VERSION, "status": "offloaded", "directory": run.name,
+                             "terminal_receipt": "launch_receipt.json", "uri": uri, "digest": "sha256:" + "7" * 64,
+                             "size_bytes": 4096, "member_count": len(members), "members": members,
+                             "retained_receipt_bytes": {}, "offloaded_at_epoch": 1.0,
+                             "evidence_deleted": False}, "pointer_digest"))
+    if remote == "differs":
+        world["store"].put(uri, b"other bytes under the sealed name")
+    now = 4_000_000_000.0
+    manifest = build_evidence_offload_manifest(evidence_roots=[world["launches"]], hot_window_seconds=0,
+                                               now=lambda: now, classifier=lambda *a, **k: None)
+
+    def verifier(reference):
+        raise StoreError("configured_scene_artifact_missing" if remote == "missing"
+                         else "configured_scene_artifact_existing_identity_mismatch")
+    applied = apply_evidence_offload(manifest, ack=EXECUTE_ACK, now=lambda: now, remote_verifier=verifier)
+    assert {"name": run.name, "reason": f"restored_archive_{remote}"} in applied["skipped"]
+    assert run.is_dir()
+    plan = _plan(world)
+    assert plan["unresolved"] == []
+    _apply(world, plan)
+    assert not [path for path in world["launches"].iterdir() if path.name.startswith((run.name, f".{run.name}"))]
+    if remote == "differs":
+        assert not world["store"].present(uri)  # the object under the sealed name goes too

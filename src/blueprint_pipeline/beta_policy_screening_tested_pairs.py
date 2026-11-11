@@ -28,7 +28,8 @@ list under ``<queue>/tested_pairs/<site_id>.json`` for operators. Nothing here m
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,29 @@ CANDIDATE_ID_BASIS = "candidate_id_fallback"
 #: A pair read from a campaign whose catalog was not kept: only its old key is known.
 LEGACY_BASIS = "legacy_configuration_digest"
 EVERY_PAIR_RECORD_SCHEMA = "blueprint.beta_screening_every_pair_tested.v1"
+#: One planning lock per job (``site_planning_lock``), taken by both planners.
+PLANNING_LOCK_PREFIX = ".pair-planning-"
+#: The order every screening lock is taken in, outermost first. A planner holding one never waits on one
+#: earlier in this list, so the two planners cannot deadlock: the worker holds ``.source.lock`` for its pass,
+#: then a job's planning lock; ``on_job`` takes the planning lock, then ``.standing.lock``; either takes the
+#: ledger lock last and briefly.
+LOCK_ORDER = (".source.lock", PLANNING_LOCK_PREFIX, ".standing.lock", ".ledger.lock")
+
+
+def planning_lock_name(site_id: str) -> str:
+    return PLANNING_LOCK_PREFIX + canonical_digest({"site_id": site_id})[7:39] + ".lock"
+
+
+@contextmanager
+def site_planning_lock(queue_root: str | Path | None, site_id: str) -> Iterator[None]:
+    """Held from reading a job's tested and in-flight pairs until its new campaign is enqueued.
+
+    Both planners (the worker's re-plan and ``beta_policy_screening_on_job``) take it, so two requests at
+    the same moment cannot both read the same exclusions and both plan, and pay for, the same pair."""
+    from .beta_policy_screening_coordinator import _lock, _root
+
+    with _lock(_root(queue_root), planning_lock_name(site_id)):
+        yield
 
 
 def policy_identity(row: Mapping[str, Any]) -> dict[str, str]:
@@ -273,8 +297,8 @@ def record_tested_pairs(queue_root: str | Path | None, site_id: str) -> dict[str
     return record
 
 
-__all__ = ["CANDIDATE_ID_BASIS", "CHECKPOINT_BASIS", "EVERY_PAIR_TESTED", "LEGACY_BASIS", "RECORD_SCHEMA",
+__all__ = ["CANDIDATE_ID_BASIS", "CHECKPOINT_BASIS", "EVERY_PAIR_TESTED", "LEGACY_BASIS", "LOCK_ORDER", "PLANNING_LOCK_PREFIX", "RECORD_SCHEMA",
            "campaign_catalog_rows", "candidate_keys", "cells_digest", "every_pair_inputs_digest",
            "every_pair_tested_recorded", "excluded_pair_keys", "finished", "finished_pair_keys", "identity_pair_key",
-           "in_flight", "pair_key", "plan_row_key", "planning_exclusions", "policy_identity",
-           "record_every_pair_tested", "record_tested_pairs", "site_pairs"]
+           "in_flight", "pair_key", "plan_row_key", "planning_exclusions", "planning_lock_name", "policy_identity",
+           "record_every_pair_tested", "record_tested_pairs", "site_pairs", "site_planning_lock"]

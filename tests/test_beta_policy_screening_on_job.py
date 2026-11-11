@@ -645,3 +645,105 @@ def test_standing_and_site_money_never_pay_for_each_other(world, monkeypatch):
     # Reserving: the standing row never reaches the site's figures; the ordinary row is refused by them.
     finish(world, standing_run["campaign_id"])
     assert coordinator._budget(ledger(world), SITE)["committed_upper_bound_usd"] == "0"
+
+
+# Follow-up 1: "never twice" under concurrency, and the lock order.
+
+def _order_recorder(monkeypatch):
+    """Wrap the screening lock so each thread's acquisitions, and what it held at the time, are recorded."""
+    import contextlib
+    import threading
+
+    real, held, taken = coordinator._lock, threading.local(), []
+
+    @contextlib.contextmanager
+    def recorded(root, name=".ledger.lock", **kwargs):
+        stack = held.__dict__.setdefault("stack", [])
+        taken.append((threading.current_thread().name, tuple(stack), name))
+        with real(root, name, **kwargs):
+            stack.append(name)
+            try:
+                yield
+            finally:
+                stack.pop()
+    monkeypatch.setattr(coordinator, "_lock", recorded)
+    return taken
+
+
+def _rank(name):
+    return next((index for index, prefix in enumerate(tested.LOCK_ORDER) if name.startswith(prefix)), None)
+
+
+def test_two_planners_at_the_worst_moment_plan_a_pair_once(world, monkeypatch):
+    """A job test has read the job's pairs and planned, and is about to enqueue, when the worker's re-plan
+    for a catalog change starts. The worker waits for the job's planning lock, then sees the queued pair."""
+    import threading
+
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+
+    taken = _order_recorder(monkeypatch)
+    paused, go, worker_at_lock, worker_done = (threading.Event() for _ in range(4))
+    real_enqueue, real_lock = coordinator.enqueue_screening_campaign, tested.site_planning_lock
+
+    def enqueue(plan, **kwargs):
+        if threading.current_thread().name == "job-test":
+            paused.set()
+            assert go.wait(30)
+        return real_enqueue(plan, **kwargs)
+
+    def planning_lock(queue_root, site_id):
+        if threading.current_thread().name == "worker":
+            worker_at_lock.set()
+        return real_lock(queue_root, site_id)
+    monkeypatch.setattr(coordinator, "enqueue_screening_campaign", enqueue)
+    monkeypatch.setattr(tested, "site_planning_lock", planning_lock)
+    results = {}
+
+    def job_test():
+        results["job_test"] = run(world, request(), "req-1")
+
+    def replan():
+        try:
+            results["worker"] = worker.enqueue_prepared_scenes(
+                queue_root=world["screening_queue"], packet_queue_root=world["packet_queue"])["sources"]
+        finally:
+            worker_done.set()
+    first = threading.Thread(target=job_test, name="job-test")
+    first.start()
+    assert paused.wait(30)  # the job test holds its plan, not yet enqueued
+    second = threading.Thread(target=replan, name="worker")
+    second.start()
+    # The worker reaches the job's planning lock (or, without one, runs to its end) before the job test goes on.
+    while not (worker_at_lock.wait(0.05) or worker_done.is_set()):
+        pass
+    go.set()
+    first.join(30)
+    second.join(30)
+    assert results["job_test"]["status"] == "enqueued"
+    [source] = results["worker"]
+    planned = [campaign_id for campaign_id, campaign in ledger(world)["campaigns"].items()
+               if "pi05_droid" in campaign["candidates"]]
+    assert planned == [results["job_test"]["campaign_id"]], "pi05_droid planned by both"
+    assert "pi05_droid" not in {row["candidate_id"] for row in plan_of(world, source["campaign_id"])["candidates"]}
+    # The worker waited on the job's lock while holding only its source lock.
+    waits = [held for thread, held, name in taken if thread == "worker" and name.startswith(tested.PLANNING_LOCK_PREFIX)]
+    assert waits and all(held == (".source.lock",) for held in waits)
+
+
+def test_no_planner_waits_on_an_earlier_lock_than_one_it_holds(world, monkeypatch):
+    """The lock order (``LOCK_ORDER``) holds for every acquisition both planners make, so they cannot deadlock."""
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+
+    taken = _order_recorder(monkeypatch)
+    allow_standing(world, monkeypatch)
+    run(world, request(), "req-1")
+    run(world, request("standing_test", ("groot_n17_droid",)), "req-2")
+    worker.enqueue_prepared_scenes(queue_root=world["screening_queue"], packet_queue_root=world["packet_queue"])
+    names = {name for _thread, _held, name in taken}
+    assert {".source.lock", ".standing.lock", ".ledger.lock"} <= names
+    assert any(name.startswith(tested.PLANNING_LOCK_PREFIX) for name in names)
+    for _thread, held, name in taken:
+        rank = _rank(name)
+        if rank is None:
+            continue
+        assert all(_rank(other) is None or _rank(other) < rank for other in held), (held, name)

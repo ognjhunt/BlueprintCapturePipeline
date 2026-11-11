@@ -33,6 +33,7 @@ from .control_plane_retained_receipt import MAX_RECEIPT_BYTES, RETAINED_RECEIPTS
 from .task_evaluation_configured_scene_object_store import (
     materialize_configured_scene_artifact,
     publish_configured_scene_stream,
+    verify_configured_scene_artifact,
 )
 
 
@@ -47,7 +48,15 @@ POINTER_SUFFIX = ".offloaded.v1.json"
 # sit beside the run too. Like this module's own pointer they are files, never runs.
 RESIDUE_POINTER_SUFFIX = ".residue.v1.json"
 RESIDUE_RESTORE_SUFFIX = ".residue-restore.v1.json"
+# A restored run's pointer whose archive the store no longer holds moves into the run under this name (never
+# deleted, and never a file outside the run, so a withdrawal deletes it with the run); the run is then
+# offloaded again as a new one.
+MISSING_ARCHIVE_POINTER_NAME = "offload_pointer_archive_missing.v1.json"
 _SIDECAR_SUFFIXES = (POINTER_SUFFIX, RESIDUE_POINTER_SUFFIX, RESIDUE_RESTORE_SUFFIX)
+#: Why a restored run's local copy was kept: its archive is gone, holds other bytes, or could not be checked.
+RESTORED_ARCHIVE_MISSING = "restored_archive_missing"
+RESTORED_ARCHIVE_DIFFERS = "restored_archive_differs"
+RESTORED_ARCHIVE_UNCHECKED = "restored_archive_check_failed"
 TERMINAL_RECEIPT_NAMES = ("dispatch_receipt.json", "launch_receipt.json")
 DEFAULT_HOT_WINDOW_SECONDS = 14 * 24 * 60 * 60
 # A run directory that never received a terminal receipt and has not changed
@@ -493,6 +502,35 @@ def _archived_copy(directory: Path, pointer_path: Path) -> str | None:
     return pointer["pointer_digest"] if actual == expected and len(expected) == len(pointer["members"]) else None
 
 
+def _move_into_run(pointer: Path, directory: Path) -> None:
+    """Keep a pointer whose archive is gone inside its run (it is the run's record), never beside it.
+
+    The run keeps its last change time, so its hot window is not started again; a pointer already moved
+    there is never overwritten."""
+    target = directory / MISSING_ARCHIVE_POINTER_NAME
+    if target.exists() or target.is_symlink():
+        raise FileExistsError(str(target))
+    times = directory.stat()
+    os.rename(pointer, target)
+    os.utime(directory, ns=(times.st_atime_ns, times.st_mtime_ns))
+
+
+def _remote_archive_state(pointer: Mapping[str, Any], verifier: Callable[..., Mapping[str, Any]]) -> str:
+    """``present`` when the store still holds the pointer's sealed archive (one metadata read), else why not."""
+    try:
+        verifier(reference={"schema_version": "task_evaluation_scene_artifact_reference.v1",
+                            "status": "remote_verified", "artifact_kind": ARTIFACT_KIND, "uri": pointer["uri"],
+                            "digest": pointer["digest"], "size_bytes": pointer["size_bytes"],
+                            "remote_identity_verified": True, "full_byte_service_account_readback_passed": True,
+                            "raw_secret_values_recorded": False})
+    except Exception as exc:  # noqa: BLE001 - every failure keeps the local copy
+        code = str(exc)
+        return {"configured_scene_artifact_missing": RESTORED_ARCHIVE_MISSING,
+                "configured_scene_artifact_existing_identity_mismatch": RESTORED_ARCHIVE_DIFFERS,
+                }.get(code, RESTORED_ARCHIVE_UNCHECKED)
+    return "present"
+
+
 def _members_unchanged(directory: Path, members: Sequence[Mapping[str, Any]]) -> bool:
     """Reopen exact packed bytes immediately before local eviction."""
     try:
@@ -551,8 +589,15 @@ def apply_evidence_offload(
     stream_publisher: Callable[..., Mapping[str, Any]] = publish_configured_scene_stream,
     now: Callable[[], float] = time.time,
     protection_checker: Callable[[Path], bool | str | None] | None = None,
+    remote_verifier: Callable[..., Mapping[str, Any]] = verify_configured_scene_artifact,
 ) -> dict[str, Any]:
     """Offload every manifest candidate whose state is unchanged; keep the rest.
+
+    A restored run beside its pointer loses its local copy only after one metadata read of the store
+    (``remote_verifier``, no bytes downloaded) confirms the sealed archive is there with its size and
+    digest. Gone: the copy is kept, the pointer moves into the run (``MISSING_ARCHIVE_POINTER_NAME``) and
+    the next pass offloads the run as a new one. Other bytes under the sealed name: kept and flagged for a
+    person. The read failing: kept, and asked again on the next pass.
 
     ``protection_checker`` is the manifest's: any truthy answer (a reason or
     ``True``) keeps the candidate.
@@ -596,6 +641,15 @@ def apply_evidence_offload(
             if (recorded is None or recorded["pointer_digest"] != archived
                     or not _members_unchanged(directory, recorded["members"])):
                 skipped.append({"name": name, "reason": "restored_tree_changed"})
+                continue
+            remote = _remote_archive_state(recorded, remote_verifier)
+            if remote != "present":
+                if remote == RESTORED_ARCHIVE_MISSING:
+                    try:
+                        _move_into_run(pointer, directory)
+                    except OSError as exc:
+                        remote = f"{RESTORED_ARCHIVE_MISSING}:pointer_kept:{type(exc).__name__}"
+                skipped.append({"name": name, "reason": remote})
                 continue
             try:
                 shutil.rmtree(directory)
@@ -764,6 +818,10 @@ __all__ = [
     "ControlPlaneEvidenceOffloadError",
     "DEFAULT_HOT_WINDOW_SECONDS",
     "EXECUTE_ACK",
+    "MISSING_ARCHIVE_POINTER_NAME",
+    "RESTORED_ARCHIVE_DIFFERS",
+    "RESTORED_ARCHIVE_MISSING",
+    "RESTORED_ARCHIVE_UNCHECKED",
     "POINTER_SUFFIX",
     "TERMINAL_RECEIPT_NAMES",
     "apply_evidence_offload",

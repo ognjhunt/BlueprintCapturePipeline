@@ -193,6 +193,7 @@ def _test(value: Mapping[str, Any], *, request_id: str, root: Path,
     from .beta_policy_screening_coordinator import _lock, _read, enqueue_screening_campaign
     from .beta_policy_screening_tested_pairs import (
         EVERY_PAIR_TESTED, planning_exclusions, policy_identity, record_tested_pairs, site_pairs,
+        site_planning_lock,
     )
     from .beta_policy_screening_worker import job_window_closed
     from .team_scene_packet_worker import QUEUE_ROOT_ENV as PACKET_QUEUE_ENV
@@ -239,63 +240,65 @@ def _test(value: Mapping[str, Any], *, request_id: str, root: Path,
     if existing.exists():
         return {"campaign_id": campaign_id, **enqueue_screening_campaign(_read(existing), queue_root=root),
                 "funding": funding}
-    pairs = site_pairs(root, site_id)
-    # The rule the worker's re-plan uses too: never a pair already finished, queued or running.
-    known = planning_exclusions(pairs)
-    identities = {row["candidate_id"]: policy_identity(row)["policy_identity"] for row in catalog["candidates"]}
-    from .beta_policy_screening_capabilities import build_planning_inputs
-    from .website_candidate_ranking import retained_priority
+    # Read the job's pairs and enqueue under the job's one planning lock (the worker takes it too).
+    with site_planning_lock(root, site_id):
+        pairs = site_pairs(root, site_id)
+        # The rule the worker's re-plan uses too: never a pair already finished, queued or running.
+        known = planning_exclusions(pairs)
+        identities = {row["candidate_id"]: policy_identity(row)["policy_identity"] for row in catalog["candidates"]}
+        from .beta_policy_screening_capabilities import build_planning_inputs
+        from .website_candidate_ranking import retained_priority
 
-    priority = retained_priority(capture / "pipeline", task_context_digest=source["task_context_digest"])
-    intake_ranking = bool(priority)
-    if not priority:
-        from .beta_policy_screening_default_priority import default_screening_priority
+        priority = retained_priority(capture / "pipeline", task_context_digest=source["task_context_digest"])
+        intake_ranking = bool(priority)
+        if not priority:
+            from .beta_policy_screening_default_priority import default_screening_priority
 
-        priority = default_screening_priority()
-    inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture, source=source,
-                                   inputs_dir=root / "inputs" / campaign_id, priority=priority)
-    options = {"capabilities": inputs["capabilities"], "cost_quotes": inputs["cost_quotes"],
-               "priority": inputs.get("candidate_priority"), "candidate_ids": list(value["candidate_ids"]),
-               "intake_ranking": intake_ranking, "finished_pairs": known}
+            priority = default_screening_priority()
+        inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture, source=source,
+                                       inputs_dir=root / "inputs" / campaign_id, priority=priority)
+        options = {"capabilities": inputs["capabilities"], "cost_quotes": inputs["cost_quotes"],
+                   "priority": inputs.get("candidate_priority"), "candidate_ids": list(value["candidate_ids"]),
+                   "intake_ranking": intake_ranking, "finished_pairs": known}
 
-    def skipped(plan: Mapping[str, Any] | None) -> dict[str, list[str]]:
-        planned = {row["candidate_id"] for row in plan["candidates"]} if plan else set()
-        rows = {"already_tested": [], "in_progress": []}
-        for candidate_id in value["candidate_ids"]:
-            if candidate_id in planned:
-                continue
-            done = any(entry["candidate_id"] == candidate_id or entry["policy_identity"] == identities[candidate_id]
-                       for entry in pairs["finished"].values())
-            rows["already_tested" if done else "in_progress"].append(candidate_id)
-        return {key: ids for key, ids in rows.items() if ids}
+        def skipped(plan: Mapping[str, Any] | None) -> dict[str, list[str]]:
+            planned = {row["candidate_id"] for row in plan["candidates"]} if plan else set()
+            rows = {"already_tested": [], "in_progress": []}
+            for candidate_id in value["candidate_ids"]:
+                if candidate_id in planned:
+                    continue
+                done = any(entry["candidate_id"] == candidate_id or entry["policy_identity"] == identities[candidate_id]
+                           for entry in pairs["finished"].values())
+                rows["already_tested" if done else "in_progress"].append(candidate_id)
+            return {key: ids for key, ids in rows.items() if ids}
 
-    from .beta_policy_screening_plan import BetaPolicyScreeningPlanError, SITE_BUDGET_USD, build_screening_plan
+        from .beta_policy_screening_plan import BetaPolicyScreeningPlanError, SITE_BUDGET_USD, build_screening_plan
 
-    with _lock(root, ".standing.lock"):
-        try:
-            if funding == SITE_ALLOWANCE:
-                from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
+        with _lock(root, ".standing.lock"):
+            try:
+                if funding == SITE_ALLOWANCE:
+                    from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
 
-                plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id, queue_root=root,
-                                               context=context, capture_root=capture, **options)
-            else:
-                plan = _standing(catalog, inputs["scene"], campaign_id=campaign_id, root=root, month=month,
-                                 request_id=request_id, reference=value["authorization_reference"],
-                                 site_id=site_id, options=options, budget=SITE_BUDGET_USD,
-                                 build=build_screening_plan, identities=identities)
-        except BetaPolicyScreeningPlanError as exc:
-            if str(exc) == EVERY_PAIR_TESTED:
-                raise JobTestRefused(ALREADY_TESTED, skipped=skipped(None)) from None
-            raise
-        selected = [row["candidate_id"] for row in plan["candidates"] if row["status"] == "selected"]
-        if not selected:
-            raise JobTestRefused(NOTHING_FUNDED, skipped=skipped(plan), candidates={
-                row["candidate_id"]: {"status": row["status"], "blockers": row["blockers"]}
-                for row in plan["candidates"]})
-        from .website_candidate_selection import retain_campaign_catalog
+                    plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id, queue_root=root,
+                                                   context=context, capture_root=capture, **options)
+                else:
+                    plan = _standing(catalog, inputs["scene"], campaign_id=campaign_id, root=root, month=month,
+                                     request_id=request_id, reference=value["authorization_reference"],
+                                     site_id=site_id, options=options, budget=SITE_BUDGET_USD,
+                                     build=build_screening_plan, identities=identities)
+            except BetaPolicyScreeningPlanError as exc:
+                if str(exc) == EVERY_PAIR_TESTED:
+                    raise JobTestRefused(ALREADY_TESTED, skipped=skipped(None)) from None
+                raise
+            selected = [row["candidate_id"] for row in plan["candidates"] if row["status"] == "selected"]
+            if not selected:
+                raise JobTestRefused(NOTHING_FUNDED, skipped=skipped(plan), candidates={
+                    row["candidate_id"]: {"status": row["status"], "blockers": row["blockers"]}
+                    for row in plan["candidates"]})
+            from .website_candidate_selection import retain_campaign_catalog
 
-        retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
-        enqueued = enqueue_screening_campaign(plan, queue_root=root)
+            retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
+            enqueued = enqueue_screening_campaign(plan, queue_root=root)
     record_tested_pairs(root, site_id)
     return {**enqueued, "funding": funding, "selected": selected, "skipped": skipped(plan),
             "maximum_planned_cost_usd": plan["maximum_planned_cost_usd"],

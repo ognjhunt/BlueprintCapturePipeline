@@ -436,8 +436,11 @@ def test_a_restored_run_is_a_live_tree_again_and_goes_cold_again_after_its_windo
 
     def never(**kwargs):
         raise AssertionError("a restored run is never uploaded again")
+    heads = []
     applied = apply_evidence_offload(cold, ack=EXECUTE_ACK, stream_publisher=never, publisher=never,
-                                     now=lambda: restored_at + window + 60)
+                                     now=lambda: restored_at + window + 60,
+                                     remote_verifier=lambda reference: heads.append(reference) or {})
+    assert len(heads) == 1 and heads[0]["digest"] == applied["offloaded"][0]["digest"]
     assert applied["offloaded_count"] == 1 and applied["offloaded"][0]["transfer_mode"] == "already_archived"
     assert not launch.exists() and (launch.parent / f"{launch.name}{POINTER_SUFFIX}").is_file()
     # And it can be restored again from the same pointer.
@@ -479,3 +482,57 @@ def test_a_job_whose_scene_workspace_is_retired_names_that_restore_first(tmp_pat
     receipt = restore_launch_run(site_id="site-job1", request_id="req-1", packet_queue_root=tmp_path)
     assert receipt["status"] == "refused" and receipt["restore_operation"] == "restore-scene-workspace"
 
+
+
+@pytest.mark.parametrize(("remote", "reason"), [
+    ("missing", "restored_archive_missing"), ("differs", "restored_archive_differs"),
+    ("unreadable", "restored_archive_check_failed")])
+def test_a_restored_copy_is_removed_only_while_the_store_still_holds_its_archive(cold_job, remote, reason):
+    """Follow-up 2: one metadata read before the local copy goes. Missing: kept, flagged, and offloaded as a
+    new run on the next pass. Other bytes: kept and flagged. The read failing: kept and asked again."""
+    import time
+
+    from blueprint_pipeline.control_plane_evidence_offload import (
+        EXECUTE_ACK, MISSING_ARCHIVE_POINTER_NAME, POINTER_SUFFIX, apply_evidence_offload,
+        build_evidence_offload_manifest,
+    )
+    from blueprint_pipeline.screening_launch_run_restore import restore_launch_run
+    from blueprint_pipeline.task_evaluation_configured_scene_object_store import (
+        TaskEvaluationConfiguredSceneObjectStoreError as StoreError,
+    )
+
+    launch = cold_job["launch"]
+    pointer = launch.parent / f"{launch.name}{POINTER_SUFFIX}"
+    sealed = pointer.read_text()
+    restore_launch_run(site_id="site-job1", request_id="req-1", packet_queue_root=cold_job["packets"],
+                       materializer=cold_job["materializer"], reserve=_reserve_ok([]))
+    later = time.time() + 3 * 86400
+
+    def manifest():
+        return build_evidence_offload_manifest(evidence_roots=[launch.parent], hot_window_seconds=86400,
+                                               now=lambda: later, classifier=lambda *a, **k: None)
+
+    def verifier(reference):
+        raise StoreError({"missing": "configured_scene_artifact_missing",
+                          "differs": "configured_scene_artifact_existing_identity_mismatch",
+                          "unreadable": "configured_scene_artifact_head_failed"}[remote])
+
+    def never(**kwargs):
+        raise AssertionError("nothing is uploaded in this pass")
+    first = manifest()
+    assert first["candidates"][0].get("archived_pointer_digest")
+    applied = apply_evidence_offload(first, ack=EXECUTE_ACK, stream_publisher=never, publisher=never,
+                                     now=lambda: later, remote_verifier=verifier)
+    assert applied["offloaded_count"] == 0 and applied["skipped"] == [{"name": launch.name, "reason": reason}]
+    assert (launch / "launch_receipt.json").is_file()
+    following = manifest()
+    if remote == "missing":
+        # The pointer moves into the run, never deleted and never left beside it; the next pass offloads
+        # the run as a new one (the pointer's record goes with it into the new archive).
+        assert (launch / MISSING_ARCHIVE_POINTER_NAME).read_text() == sealed and not pointer.exists()
+        assert sorted(path.name for path in launch.parent.iterdir()) == [launch.name]
+        assert [row["name"] for row in following["candidates"]] == [launch.name]
+        assert "archived_pointer_digest" not in following["candidates"][0]
+    else:
+        assert pointer.read_text() == sealed
+        assert following["candidates"][0].get("archived_pointer_digest")  # asked again next pass

@@ -210,21 +210,41 @@ class RetainedAdmissionUnusable(ValueError):
     """The retained reservation itself can no longer pay a dispatch: expired, or not this binding's."""
 
 
-def reuse_website_sam_spend(*, task_context: Mapping[str, Any], admission: Mapping[str, Any],
-                            binding_digest: str) -> Any:
-    """The grant of a SAM run's own retained reservation, when that run stopped before dispatching anything.
+def require_current_website_source(task_context: Mapping[str, Any]) -> None:
+    """The capture's current source and task, read fresh, before frames leave under an earlier hold.
 
-    ``meta_sam31`` calls this only for a binding none of whose prompts was sent under the
-    reservation (its upload was refused, or the run stopped first): the same WebApp hold pays the
-    next run, so a failed upload leaves no second hold. The same source, paid-work stop and budget
-    checks run as before a new reservation.
+    A new reservation gets this from the website's own spend transaction. A retained hold does
+    not, so its reuse asks first: an owned capture through its worker's source fence, a website
+    capture through the authenticated ``task-context`` read, which refuses a withdrawn or revoked
+    source (``..._http_409:source_revoked``). A context that changed since the run loaded it is
+    ``website_scene_sponsorship_binding_invalid``, which the job retries with the fresh one.
     """
     from .atlas_preparation_runtime import preparation_source_checkpoint
-    from .paid_resource_admission import require_paid_resource_budget
-    from .website_paid_work_stop import refuse_paid_work_when_held
     source_checkpoint = preparation_source_checkpoint(task_context)
     if source_checkpoint is not None:
         source_checkpoint("owned_atlas_spend_reservation")
+        return
+    current = load_current_website_task_context(
+        request_id=task_context["request_id"], scene_id=task_context["scene_id"],
+        capture_id=task_context["capture_id"],
+        purpose="scene_preparation" if task_context.get("purpose") == "scene_preparation" else None)
+    if current.get("context_digest") != task_context.get("context_digest"):
+        raise ValueError("website_scene_sponsorship_binding_invalid")
+
+
+def reuse_website_sam_spend(*, task_context: Mapping[str, Any], admission: Mapping[str, Any],
+                            binding_digest: str) -> Any:
+    """The grant of a SAM hold this binding already has, for the requests it has not yet paid for.
+
+    ``meta_sam31`` calls this for a hold whose run stopped before dispatching (a failed upload, a
+    crash) or whose dispatch the provider refused without any work: the same WebApp hold pays
+    the next run, so no second hold is made beside it. The capture's current source is read
+    first (``require_current_website_source``), then the same paid-work stop and budget checks
+    as before a new reservation; an expired or foreign hold raises ``RetainedAdmissionUnusable``.
+    """
+    from .paid_resource_admission import require_paid_resource_budget
+    from .website_paid_work_stop import refuse_paid_work_when_held
+    require_current_website_source(task_context)
     refuse_paid_work_when_held()
     require_paid_resource_budget(resource_class="evaluator_api")
     return reuse_website_preparation_spend(admission=admission, binding_digest=binding_digest, provider="meta")

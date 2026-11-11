@@ -87,7 +87,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .beta_policy_screening_scene_half import current_half
     from .beta_policy_screening_tested_pairs import (
         EVERY_PAIR_TESTED, every_pair_inputs_digest, every_pair_tested_recorded, excluded_pair_keys,
-        record_every_pair_tested,
+        record_every_pair_tested, site_planning_lock,
     )
     from .beta_policy_screening_team import catalog_for_profile
     from .rigid_robot_free_probe_runner import _running_release, source_commit
@@ -235,37 +235,38 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     # none, nothing is new and no campaign is made. That outcome is kept against what could
                     # change it, so it is not planned again until one of them does. The consent read above
                     # still runs on every pass first, so a withdrawal stops this job as before.
-                    finished = excluded_pair_keys(root, retained["scene_id"]) if superseded is None else None
-                    unchanged = None if finished is None else every_pair_inputs_digest(
-                        campaign_id=campaign_id, profile=profile, implementation_commit=implementation_commit(),
-                        excluded=finished)
-                    plan = None
-                    if unchanged is not None and every_pair_tested_recorded(root, campaign_id, unchanged):
-                        outcome["status"] = "already_tested"  # nothing it depends on changed since
-                    else:
-                        inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
-                            source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
-                        try:
-                            # The job's one dollar ceiling sizes the plan; unreadable, it holds and retries.
-                            plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id,
-                                queue_root=root, context=context, capture_root=capture,
-                                capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
-                                priority=inputs.get("candidate_priority"), candidate_ids=replan,
-                                superseding=superseded, finished_pairs=finished,
-                                intake_ranking=outcome["candidate_order"] == "intake_ranking")
-                        except ValueError as exc:
-                            if str(exc) != EVERY_PAIR_TESTED:
-                                raise
-                            outcome["status"] = "already_tested"
-                            if unchanged is not None:
-                                record_every_pair_tested(root, campaign_id, unchanged)
-                    if plan is not None:
-                        retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
-                    if plan is not None and superseded is None:
-                        outcome.update(enqueue_screening_campaign(plan, queue_root=root))
-                    elif plan is not None:
-                        outcome.update(supersede_campaign(superseded, plan, implementation_commit=commit,
-                                                          queue_root=root))
+                    with site_planning_lock(root, retained["scene_id"]):  # the one lock on_job takes too
+                        finished = excluded_pair_keys(root, retained["scene_id"]) if superseded is None else None
+                        unchanged = None if finished is None else every_pair_inputs_digest(
+                            campaign_id=campaign_id, profile=profile, implementation_commit=implementation_commit(),
+                            excluded=finished)
+                        plan = None
+                        if unchanged is not None and every_pair_tested_recorded(root, campaign_id, unchanged):
+                            outcome["status"] = "already_tested"  # nothing it depends on changed since
+                        else:
+                            inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
+                                source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
+                            try:
+                                # The job's one dollar ceiling sizes the plan; unreadable, it holds and retries.
+                                plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id,
+                                    queue_root=root, context=context, capture_root=capture,
+                                    capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
+                                    priority=inputs.get("candidate_priority"), candidate_ids=replan,
+                                    superseding=superseded, finished_pairs=finished,
+                                    intake_ranking=outcome["candidate_order"] == "intake_ranking")
+                            except ValueError as exc:
+                                if str(exc) != EVERY_PAIR_TESTED:
+                                    raise
+                                outcome["status"] = "already_tested"
+                                if unchanged is not None:
+                                    record_every_pair_tested(root, campaign_id, unchanged)
+                        if plan is not None:
+                            retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
+                        if plan is not None and superseded is None:
+                            outcome.update(enqueue_screening_campaign(plan, queue_root=root))
+                        elif plan is not None:
+                            outcome.update(supersede_campaign(superseded, plan, implementation_commit=commit,
+                                                              queue_root=root))
                 # A campaign is planned (now or before): the evaluation started.
                 hold = RELEASE
                 if current is not None and replan is None:

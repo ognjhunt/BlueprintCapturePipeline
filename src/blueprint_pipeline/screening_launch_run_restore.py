@@ -26,8 +26,9 @@ reservations, so the restored bytes count from the moment they land, and the res
 the restore's peak) is released after. The run's directory time is set to the restore's, so the
 offloader's hot window starts again from now; the pointer stays beside it (it is the only record of the
 archive, which withdrawal deletion also reads), and once that window has passed the offloader removes
-the restored copy again if it still matches the archive byte for byte
-(``control_plane_evidence_offload``), without uploading it a second time.
+the restored copy again, without uploading it a second time, only if it still matches the archive byte
+for byte and a metadata read of the store confirms the sealed archive is still there
+(``control_plane_evidence_offload``).
 """
 from __future__ import annotations
 

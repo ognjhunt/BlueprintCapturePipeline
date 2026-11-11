@@ -56,6 +56,8 @@ answer changes.
 | 1.6 | A standing-test allowance: a cap per policy per job and a monthly total, outside the seven-day window, stopped at once by withdrawal or run closure | both | owner: money |
 | 1.7 | Consent: new jobs agree to "keep testing new AI robots on this job"; existing jobs are asked, not assumed | WebApp | owner: rights |
 
+**The same pair, as built (step 1.2).** A pair is one policy on one scene revision, under one harness revision, over one set of tries. A policy is the same policy when its catalog row has the same checkpoint (kind, source, revision and digest), interface (robot, cameras, action settings) and runtime; its name, notes and links do not count. A row with no stable checkpoint (no revision or digest, no interface, or a scripted controller) is also told apart by its candidate id. A setting that lives only in the execution spec is not part of a policy's identity, so changing one does not by itself cause a re-test; raising the harness revision does.
+
 **Cost.** About $1.50 per policy per job, plus a restore when the job is cold
 (cost and time of a restore have never been measured). Twenty stored jobs and
 four new policies in a month is about $120. The account month is $200 and stood

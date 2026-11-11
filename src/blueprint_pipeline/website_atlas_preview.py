@@ -254,6 +254,13 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     detail = {"last_error": error_description(error)}
     if _outage(error):
         return _outage_retry(job, current, code, detail)
+    from .job_retry_policy import provider_answer
+    answered = provider_answer(code)
+    if answered is not None and 400 <= answered < 500:
+        # An outside service refused the request itself (a 413, a 400, a 403...): sending it again
+        # unchanged cannot succeed, so the step ends now with that code. A rate limit (429) is an
+        # outage above; an operator's retry reopens the job once a release changes the request.
+        return _transition(job, current, "failed", code, **detail)
     if not isinstance(error, ValueError):
         return _refusal_retry(job, current, code, detail)  # a defect: not proven permanent, not an outage
     kind = hard_stop_kind(code)
@@ -361,10 +368,12 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
         if not result.get("download"):
             blockers = result.get('blockers') or []
             from .job_retry_policy import provider_answer
-            if blockers and provider_answer(blockers[0]) is not None:
-                # A result an older release kept with a provider's answer as its blocker
-                # (capture-39ecdc97: meta_sam_http_413) takes the retry schedule, never needs_input.
-                return _failed_step(job, ValueError(blockers[0]), current)
+            answered = next((str(row) for row in blockers if provider_answer(str(row)) is not None), None)
+            if answered is not None:
+                # A provider's answer among the blockers, wherever it stands (a preserved scene lists
+                # metric_scene_registration_unproven first; capture-39ecdc97 kept meta_sam_http_413):
+                # the retry policy decides it, never needs_input.
+                return _failed_step(job, ValueError(answered), current)
             reason = (_reason(ValueError(result["reason"]))
                       if result.get("stage") in {"source_pose", "target_correction"} and result.get("reason")
                       else _reason(ValueError(blockers[0])) if blockers
@@ -478,6 +487,29 @@ def _delete_assets(client: Any, asset_ids: list[str]) -> tuple[list[str], list[s
     return deleted, failed
 
 
+def _clean_meta_uploads(pipeline_dir: Path) -> tuple[list[str], list[str], list[str]]:
+    """Delete each segmentation upload under the capture's pipeline that is not yet confirmed deleted.
+
+    Returns ``meta:<file id>`` entries deleted (now or before) and still to delete, and the records
+    of possible copies whose id was never recorded (deleted by hand; the withdrawal sweep lists them).
+    """
+    from . import meta_sam31 as sam
+    deleted, failed = [], []
+    for receipt in sorted(pipeline_dir.rglob(sam.UPLOAD_RECEIPT)):
+        if receipt.is_symlink():
+            continue
+        try:
+            file_id = json.loads(receipt.read_text()).get("file_id")
+        except (OSError, ValueError):
+            continue
+        if not isinstance(file_id, str) or not file_id:
+            continue
+        sam.delete_uploaded_video(root=receipt.parent, opener=sam._open_no_redirect)
+        (deleted if sam._cleanup_done(receipt.parent, file_id) else failed).append("meta:" + file_id)
+    unknown = [str(path.relative_to(pipeline_dir)) for path in sam.possible_provider_copies(pipeline_dir)]
+    return deleted, failed, unknown
+
+
 def _clean_provider(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float],
                     transport: Any = None) -> dict[str, Any]:
     """Delete every Atlas asset the job made, reconciling operations it never collected first."""
@@ -491,6 +523,12 @@ def _clean_provider(job: dict[str, Any], *, job_dir: Path, now: Callable[[], flo
     operations = _pending_operations(job_dir)
     assets = [asset for asset in atlas_asset_ids(job_dir) if asset not in set(cleanup["deleted"])]
     failed, running = [], []
+    # The capture's segmentation uploads (this job's background step, the clean-plate masks): each
+    # stays listed until the provider confirms its deletion; one with no recorded id is listed apart.
+    meta_deleted, meta_failed, unknown = _clean_meta_uploads(job_dir.parent)
+    cleanup = {**cleanup, "deleted": sorted({*cleanup["deleted"], *meta_deleted}),
+               **({"unknown_copies": unknown} if unknown else {})}
+    failed.extend(meta_failed)
     if operations or assets:
         try:
             from . import website_atlas_pose as pose
@@ -502,12 +540,14 @@ def _clean_provider(job: dict[str, Any], *, job_dir: Path, now: Callable[[], flo
                     running.append(operation_id)
                 else:
                     assets.extend(asset for asset in outputs if asset not in set(cleanup["deleted"]))
-            deleted, failed = _delete_assets(client, sorted(set(assets)))
+            deleted, atlas_failed = _delete_assets(client, sorted(set(assets)))
+            failed.extend(atlas_failed)
         except Exception as error:  # noqa: BLE001 - e.g. no key on this host yet; retried with backoff
             from .bounded_error import error_description
 
             # Every asset stays to delete; keep why the attempt could not start or finish.
-            deleted, failed, running = [], sorted(set(assets)), operations
+            deleted, running = [], operations
+            failed.extend(sorted(set(assets)))
             cleanup = {**cleanup, "last_error": error_description(error)}
         cleanup = {**cleanup, "deleted": sorted({*cleanup["deleted"], *deleted})}
     attempts = cleanup["attempts"] + 1
