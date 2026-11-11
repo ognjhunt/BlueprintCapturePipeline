@@ -29,9 +29,6 @@ from typing import Any
 UNAVAILABLE = "website_job_ceiling_unavailable"
 #: The website's picks for the job, read beside its ceiling (``beta_policy_screening_known_good_control``).
 PREFERENCE_FIELD = "preferred_robot_model_ids"
-#: The site's agreement to tests after the job's window, read beside its ceiling
-#: (``beta_policy_screening_standing_test.PERMISSION_FIELD``): only ``true`` is yes.
-STANDING_PERMISSION_FIELD = "standing_tests_allowed"
 LOGGER = logging.getLogger(__name__)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
@@ -44,8 +41,7 @@ def read_job_ceiling_summary(*, context: Mapping[str, Any], capture_root: str | 
     preview retained with its own configuration. Every failure holds alike.
     ``extras``, when given, receives the same read's ``preferred_robot_model_ids``
     (the website's picks for the job, when it sends them). It is kept out of the
-    summary, so no ceiling, plan or task digest changes with it. ``standing_tests_allowed``
-    (the site's agreement to tests after the job's window) is passed on the same way.
+    summary, so no ceiling, plan or task digest changes with it.
     """
     from .beta_policy_screening_plan import JOB_CEILING_SUMMARY_SCHEMA
     from .website_task_context import load_atlas_configuration
@@ -57,9 +53,8 @@ def read_job_ceiling_summary(*, context: Mapping[str, Any], capture_root: str | 
             raise ValueError(UNAVAILABLE)
         configuration = load_atlas_configuration(context, source, create=False)
         summary = configuration.get("job_ceiling")
-        for field in (PREFERENCE_FIELD, STANDING_PERMISSION_FIELD):
-            if extras is not None and field in configuration:
-                extras[field] = configuration[field]
+        if extras is not None and PREFERENCE_FIELD in configuration:
+            extras[PREFERENCE_FIELD] = configuration[PREFERENCE_FIELD]
     except Exception:  # noqa: BLE001 - a missing file, an old WebApp, a refusal or the network hold planning alike
         raise ValueError(UNAVAILABLE) from None
     if not isinstance(summary, Mapping) or summary.get("schema_version") != JOB_CEILING_SUMMARY_SCHEMA:
@@ -78,8 +73,6 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
     being re-planned (``superseding``) is skipped for those unreserved rows:
     the re-plan closes them in the same write that enqueues the new plan, so
     counting them would charge the job twice. What it committed still counts.
-    A standing test is paid from its own allowance, never the job's
-    (``beta_policy_screening_standing_test``), so it is never counted here.
 
     Commitments count as funding does (``_budget``): a settled attempt at its
     settled cost. The WebApp's figure may still carry it at its whole cap (a
@@ -88,7 +81,6 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
     """
     from .beta_policy_screening_coordinator import _amount, _budget, _ledger, _lock, _plan, _root
     from .beta_policy_screening_plan import money
-    from .beta_policy_screening_standing_test import is_standing
 
     root = _root(queue_root)
     with _lock(root):
@@ -101,7 +93,7 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
             # An unreserved known-good control is not held here: it runs only on money left over.
             unfunded = {key for key, row in state["candidates"].items()
                         if row["status"] in {"pending", "waitlisted"} and not row.get("known_good_control")}
-            if state["site_id"] != site_id or not unfunded or campaign_id == superseding or is_standing(state):
+            if state["site_id"] != site_id or not unfunded or campaign_id == superseding:
                 continue
             plan = _plan(root, campaign_id, state["plan_digest"])
             unreserved = sum((money(row["max_cost_usd"]) for row in plan["candidates"]

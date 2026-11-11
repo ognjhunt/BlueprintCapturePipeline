@@ -70,14 +70,7 @@ TRANSIENT_PROVISIONING_BLOCKERS = frozenset(f"{TRANSIENT_PROVISIONING_PREFIX}:{n
 MEDIA_TOOLCHAIN_CODES = frozenset({"policy_canary_media_toolchain_unavailable",
                                    "g1_beta_media_toolchain_unavailable"})
 #: A G1 run closes with every cell void and this reason when its entrypoint refused before any cell.
-#: A session-served policy's own server that was gone before any try was scored closes the same way
-#: (``team_policy_episode_outcome.SERVER_UNAVAILABLE_REASON``): the machine-fault class, so it spends no
-#: harness retry and holds no sibling, and it is run again only ``SERVER_LOST_RETRY_LIMIT`` times.
-SERVER_LOST_VOID_REASON = "policy_server_unavailable"
-TRANSIENT_VOID_REASONS = frozenset({"g1_beta_media_toolchain_unavailable", SERVER_LOST_VOID_REASON})
-#: A row whose every try was void because its own policy server was gone gets one paid re-run, then ends
-#: with that reason (its published row says it: no try scored, ``session_policy_server_lost``).
-SERVER_LOST_RETRY_LIMIT = 1
+TRANSIENT_VOID_REASONS = frozenset({"g1_beta_media_toolchain_unavailable"})
 BUNDLE_DOWNLOAD_PREFIX = "provider_remote_blocker:download_failed:"
 #: The bundle never reported an end, and no output archive reached the host.
 _NO_OUTPUT_CODES = frozenset({"provider_bundle_completion_marker_missing",
@@ -166,17 +159,6 @@ def transient_void_run(row: Mapping[str, Any]) -> bool:
                     and outcome.get("reason") in TRANSIENT_VOID_REASONS for outcome in outcomes))
 
 
-def server_lost_void_run(row: Mapping[str, Any]) -> bool:
-    """A closed run whose every try was void because its own policy server was gone."""
-    outcomes = (row.get("summary") or {}).get("episode_outcomes")
-    return transient_void_run(row) and all(outcome.get("reason") == SERVER_LOST_VOID_REASON for outcome in outcomes)
-
-
-def server_lost_retry_allowed(rows: Iterable[Mapping[str, Any]]) -> bool:
-    """One site's rows of one candidate: planned again while at most ``SERVER_LOST_RETRY_LIMIT`` lost their server."""
-    return sum(1 for row in rows if server_lost_void_run(row)) <= SERVER_LOST_RETRY_LIMIT
-
-
 def transient_provisioning_failed(row: Mapping[str, Any]) -> bool:
     """A spent row that failed on transient infrastructure: blocked only by such a code, or void for one."""
     blockers = set(_codes(row.get("blockers")))
@@ -192,9 +174,7 @@ def candidate_specific_failure(row: Mapping[str, Any]) -> bool:
 
 __all__ = [
     "CANDIDATE_SPECIFIC_BLOCKERS", "LOG_SILENT_BREAK_REASONS", "MEDIA_TOOLCHAIN_CODES", "POLICY_PROVISIONING_BLOCKER",
-    "POLICY_PROVISIONING_STAGE_CODE", "SERVER_LOST_RETRY_LIMIT", "SERVER_LOST_VOID_REASON",
-    "TRANSIENT_PROVISIONING_BLOCKERS", "TRANSIENT_PROVISIONING_PREFIX",
+    "POLICY_PROVISIONING_STAGE_CODE", "TRANSIENT_PROVISIONING_BLOCKERS", "TRANSIENT_PROVISIONING_PREFIX",
     "TRANSIENT_VOID_REASONS", "candidate_specific_failure", "provider_log_break_reason",
-    "server_lost_retry_allowed", "server_lost_void_run", "transient_provisioning_blocker",
-    "transient_provisioning_failed", "transient_void_run", "unscored_run_blockers",
+    "transient_provisioning_blocker", "transient_provisioning_failed", "transient_void_run", "unscored_run_blockers",
 ]

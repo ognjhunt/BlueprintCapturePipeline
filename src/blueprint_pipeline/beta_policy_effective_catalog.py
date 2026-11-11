@@ -24,7 +24,6 @@ from .beta_policy_screening_files import _bound_path, _read
 from .beta_policy_screening_g1_catalog import catalog_for_profile as g1_catalog_for_profile
 from .decision_evidence_contracts import canonical_digest
 from .policy_interface_binding import TEAM_ROBOT_INTERFACES, TEAM_LOCAL_INTERFACES, TEAM_SCRIPTED_INTERFACES
-from .session_served_policy_catalog import catalog_for_profile as session_catalog_for_profile
 from .team_candidate_credential_file import credential_file_blockers
 from .team_candidate_rights import validate_candidate_rights
 from .team_embodiment import camera_names, validate_embodiment_manifest
@@ -102,8 +101,6 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
     """
     base = dict(base_catalog) if base_catalog is not None else load_default_catalog()
     base = g1_catalog_for_profile(profile, base)
-    # A policy served on the session's machine over the standard contract (``session_served_policy``).
-    base = session_catalog_for_profile(profile, base)
     configured = profile.get("screening_candidates") or {}
     registered = {key: row for key, row in configured.items() if isinstance(row, Mapping) and row.get("robot_policy")}
     if not registered:

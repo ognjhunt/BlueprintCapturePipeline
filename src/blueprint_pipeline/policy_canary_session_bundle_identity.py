@@ -156,10 +156,6 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
               and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid",
                                     *BETA_POLARIS_VARIANT_CANDIDATE_IDS])
              or ((openwam or molmoact2 or molmoact2_droid or trlc or scripted) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
-             # A session-served policy: its contract server runs on the session, with a token made there.
-             or (payload.get("team_policy_interface_id") == "openpi_droid_https.v1"
-                 and isinstance(payload.get("session_policy_server"), Mapping)
-                 and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
              or (payload.get("team_policy_interface_id") in {
                      "openpi_droid_https.v1", "blueprint_policy_https.v1", "dreamlabs_dream1.v1"}
                  and _SECRET_FILE_ENV.fullmatch(str(payload.get("team_credential_env") or "")) is not None
@@ -258,15 +254,6 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
                              "provider_runtime/adp009d_policy_server_worker.py",
                              "provider_runtime/openpi_droid_policy_runtime.py",
                              f"provider_runtime/{CHECKPOINT_INVENTORY_STAGED_NAME}"})
-        if isinstance(manifest.get("session_policy_server"), Mapping):
-            from .adp009d_policy_provisioning import CHECKPOINT_INVENTORY_STAGED_NAME
-            from .session_served_policy_bundle import SESSION_RUNTIME_MODULES
-            required.update("provider_runtime/blueprint_pipeline/" + name for name in (
-                *SESSION_RUNTIME_MODULES, "team_candidate_policy_client.py", "droid_https_policy_client.py",
-                "openpi_droid_policy_runtime.py", "core/security_controls.py"))
-            required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
-                             "provider_runtime/adp009d_policy_server_worker.py",
-                             f"provider_runtime/{CHECKPOINT_INVENTORY_STAGED_NAME}"})
         if candidate in {"cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
             from .cosmos_droid_bundle import RUNTIME_MODULES, validate_runtime_contract
             contract = validate_runtime_contract(manifest.get("cosmos_runtime") or {})
@@ -319,9 +306,6 @@ def run_kind_entrypoint_blockers(manifest: Mapping[str, Any], entrypoint_text: s
                                and '--terminate-ready-server' in entrypoint_text)
         if manifest.get("team_policy_interface_id") in {"molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1", "pi05_trlc_joint14.v1"}:
             valid = valid and '--terminate-ready-server' in entrypoint_text
-        if isinstance(manifest.get("session_policy_server"), Mapping):
-            valid = valid and ('--terminate-ready-server' in entrypoint_text
-                               and "export BLUEPRINT_SESSION_POLICY_TOKEN_FILE=" in entrypoint_text)
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             valid = valid and 'export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"' in entrypoint_text
     elif _shape(manifest) is not TEAM_SHAPE:

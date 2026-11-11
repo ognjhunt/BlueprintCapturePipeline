@@ -56,12 +56,10 @@ from .account_monthly_spend import LIMIT_REACHED as ACCOUNT_LIMIT_REACHED_BLOCKE
 from .account_monthly_spend import REPORT_INVALID, REPORT_STALE
 from .beta_policy_screening_failure_scope import (
     CANDIDATE_SPECIFIC_BLOCKERS, POLICY_PROVISIONING_BLOCKER, TRANSIENT_PROVISIONING_BLOCKERS,
-    candidate_specific_failure, server_lost_retry_allowed, transient_provisioning_failed, transient_void_run,
+    candidate_specific_failure, transient_provisioning_failed, transient_void_run,
 )
 from .beta_policy_screening_settlement import settled_cost
 from .beta_policy_screening_known_good_control import CONTROL_FIELD, control_gate, is_control
-from .beta_policy_screening_standing_test import POLICY_CAP_INSUFFICIENT, funding_fields, is_standing, policy_cap_reached
-from .beta_policy_screening_tested_pairs import require_new_pairs
 from .decision_evidence_contracts import canonical_digest
 from .job_retry_policy import hard_stop_kind, refusal_retry_delay
 from .policy_execution_evidence import SCRIPTED
@@ -241,11 +239,12 @@ def _read(path: Path) -> dict[str, Any]:
 def _budget(ledger: Mapping[str, Any], site_id: str, *, campaign_id: str | None = None) -> dict[str, Any]:
     """What the site (or one campaign) holds, as funding counts it.
 
-    A committed attempt counts at its recorded settlement, else at its whole maximum; a reserved one at
-    its maximum. A site's figure leaves out standing tests (``beta_policy_screening_standing_test``)."""
+    A committed attempt counts at its recorded settlement, else at its whole
+    maximum; a reserved one at its maximum.
+    """
     reserved, spent = Decimal(0), Decimal(0)
     for key, campaign in ledger["campaigns"].items():
-        if campaign["site_id"] != site_id or (key != campaign_id if campaign_id is not None else is_standing(campaign)):
+        if campaign["site_id"] != site_id or campaign_id is not None and key != campaign_id:
             continue
         for row in campaign["candidates"].values():
             attempts = [*row.get("attempt_history", []), *([row["attempt"]] if row.get("attempt") else [])]
@@ -366,7 +365,6 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
             if old["plan_digest"] != value["plan_digest"]:
                 raise ScreeningCoordinatorError("beta_screening_campaign_identity_changed")
             return {"campaign_id": campaign_id, "status": "already_enqueued", "plan_digest": value["plan_digest"]}
-        require_new_pairs(root, ledger, value)  # never a pair finished or in flight elsewhere, never one twice
         path = root / "plans" / f"{campaign_id}.json"
         if path.exists():
             if _read(path) != value:
@@ -377,7 +375,7 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
         ledger["campaigns"][campaign_id] = {
             "plan_digest": value["plan_digest"], "site_id": value["site_id"],
             "revision": 1, "created_at": timestamp, "updated_at": timestamp,
-            "published_revision": 0, "published_digest": None, **funding_fields(value),
+            "published_revision": 0, "published_digest": None,
             "candidates": {candidate["candidate_id"]: _initial_state(candidate) for candidate in value["candidates"]},
         }
         _save(root, ledger)
@@ -448,8 +446,9 @@ def _held_for_deploy(row: Mapping[str, Any]) -> bool:
 
 
 def _machine_fault_retry_allowed(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> bool:
-    rows = [state["candidates"].get(candidate_id) or {} for state in ledger["campaigns"].values() if state["site_id"] == site_id]
-    return 0 < sum(map(_machine_faulted, rows)) <= MACHINE_FAULT_RETRY_LIMIT and server_lost_retry_allowed(rows)
+    faults = sum(1 for state in ledger["campaigns"].values()
+                 if state["site_id"] == site_id and _machine_faulted(state["candidates"].get(candidate_id) or {}))
+    return 0 < faults <= MACHINE_FAULT_RETRY_LIMIT
 
 
 def _measured_nothing(row: Mapping[str, Any]) -> bool:
@@ -879,10 +878,15 @@ def latest_campaign(campaign_id: str, *, queue_root: str | Path | None = None) -
 
 def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementation_commit: str,
                        queue_root: str | Path | None = None) -> dict[str, Any]:
-    """Atomically enqueue a re-plan and close the old campaign's unprepared rows: one ledger write, rechecking
-    under the lock that the old campaign holds no reservation and that the new plan covers only unspent
-    candidates of the same site and source (the site's budget is shared). Admitted for a changed commit, or
-    a scene half the new plan froze that differs from the old plan's (both plans' sealed scene inputs)."""
+    """Atomically enqueue a re-plan and close the old campaign's unprepared rows.
+
+    One ledger write does both, rechecking under the lock that the old campaign
+    holds no reservation and that the new plan covers only unspent candidates
+    of the same site and source. The site's budget is shared, so the new plan
+    can never spend what the old one committed. A re-plan is admitted for a
+    changed commit, or for a scene half the new plan froze that differs from
+    the old plan's (read from both plans' own sealed scene inputs).
+    """
     from .beta_policy_screening_plan import validate_screening_plan
     from .beta_policy_screening_scene_half import planned_half
 
@@ -909,7 +913,6 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
                 or value["source"] != previous["source"]
                 or not {row["candidate_id"] for row in value["candidates"]} <= set(scope)):
             raise ScreeningCoordinatorError("beta_screening_replan_not_admitted")
-        require_new_pairs(root, ledger, value, superseding=campaign_id)
         path = root / "plans" / f"{successor}.json"
         if path.exists():
             if _read(path) != value:
@@ -1202,9 +1205,9 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         blocker = None
         if not _quote_current(candidate):
             blocker = QUOTE_EXPIRED_BLOCKER
-        elif cap <= 0 or is_standing(state) and policy_cap_reached(root, ledger, plan, candidate):
-            blocker = "beta_screening_cost_bound_invalid" if cap <= 0 else POLICY_CAP_INSUFFICIENT
-        elif (not is_standing(state) and _amount(site["committed_upper_bound_usd"]) + cap > SITE_LIMIT
+        elif cap <= 0:
+            blocker = "beta_screening_cost_bound_invalid"
+        elif (_amount(site["committed_upper_bound_usd"]) + cap > SITE_LIMIT
               or _amount(campaign["committed_upper_bound_usd"]) + cap > _amount(plan["budget_usd"])):
             # Another attempt holds the money it needs. That attempt may still
             # release it before spend, so wait for the refill to decide. The
@@ -1227,13 +1230,15 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
 
 
 def _refill_waitlist(root: Path) -> int:
-    """Fund waitlisted candidates from money released before spend; returns the number of rows changed.
+    """Fund waitlisted candidates from money released before spend.
 
-    Plan order decides who is funded first. A row is funded only if its whole cap fits under both the site
-    allowance and its plan's budget, after every reservation, commitment and already pending (funded,
-    unreserved) row. A standing test's rows never count against or draw on the site allowance, pending or
-    not: only its own plan's budget. Once nothing can release money any more (no reservation and no
-    pending row), every row that still does not fit closes as ``deferred``."""
+    Plan order decides who is funded first. A row is funded only if its whole
+    cap fits under both the site allowance and its plan's budget, after every
+    reservation, commitment and already pending (funded, unreserved) row. Once
+    the site holds no reservation and no pending row, nothing can release money
+    any more: every row that still does not fit closes as ``deferred``.
+    Returns the number of rows changed.
+    """
     changed = 0
     with _lock(root):
         ledger = _ledger(root)
@@ -1264,17 +1269,15 @@ def _refill_waitlist(root: Path) -> int:
                          key=lambda key: (campaigns[key]["created_at"], key))
             site = _budget(ledger, site_id)
             pending = {key: pending_caps(key) for key in ids}
-            site_pending = [value for key, value in pending.items() if not is_standing(campaigns[key])]
-            site_used = _amount(site["committed_upper_bound_usd"]) + sum(site_pending, Decimal(0))
-            site_in_flight = _amount(site["reserved_usd"]) > 0 or any(site_pending)
+            site_used = _amount(site["committed_upper_bound_usd"]) + sum(pending.values(), Decimal(0))
+            in_flight = _amount(site["reserved_usd"]) > 0 or any(pending.values())
             for campaign_id in ids:
                 state = campaigns[campaign_id]
                 if not any(row["status"] == "waitlisted" for row in state["candidates"].values()):
                     continue
-                plan, standing = plan_for(campaign_id), is_standing(state)
-                held = _budget(ledger, site_id, campaign_id=campaign_id)
-                campaign_used = _amount(held["committed_upper_bound_usd"]) + pending[campaign_id]
-                in_flight = (_amount(held["reserved_usd"]) > 0 or pending[campaign_id] > 0) if standing else site_in_flight
+                plan = plan_for(campaign_id)
+                campaign_used = (_amount(_budget(ledger, site_id, campaign_id=campaign_id)["committed_upper_bound_usd"])
+                                 + pending[campaign_id])
                 touched = False
                 for candidate in plan["candidates"]:
                     row = state["candidates"][candidate["candidate_id"]]
@@ -1286,12 +1289,11 @@ def _refill_waitlist(root: Path) -> int:
                         row.update(status="deferred", blockers=[BUDGET_EXHAUSTED_BLOCKER])
                     elif not _quote_current(candidate):
                         row.update(status="deferred", blockers=[QUOTE_EXPIRED_BLOCKER])
-                    elif (standing or site_used + cap <= SITE_LIMIT) and campaign_used + cap <= _amount(plan["budget_usd"]):
+                    elif site_used + cap <= SITE_LIMIT and campaign_used + cap <= _amount(plan["budget_usd"]):
                         row.update(status="pending", blockers=[])
-                        site_used += 0 if standing else cap
+                        site_used += cap
                         campaign_used += cap
                         in_flight = True
-                        site_in_flight = site_in_flight or not standing
                     elif not in_flight:
                         row.update(status="deferred", blockers=[BUDGET_EXHAUSTED_BLOCKER])
                     else:

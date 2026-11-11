@@ -249,8 +249,8 @@ def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene:
                      site_remaining_usd: str | None, now: Any) -> dict[str, Any]:
     """The control row a new website campaign's plan appends after every candidate row."""
     from .beta_policy_screening_plan import (
-        BetaPolicyScreeningPlanError, _candidate_blockers, _scene, execution_cost_floor, fit_run_to_cap, money,
-        validate_cost_quote,
+        _HOSTED_COST_FIELDS, BetaPolicyScreeningPlanError, _candidate_blockers, _scene, _site_fitted_quote,
+        execution_cost_floor, fitted_headroom_usd, money, validate_cost_quote,
     )
     from .task_family_policy_execution import FAMILY_BACKEND
 
@@ -315,12 +315,20 @@ def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene:
     # that keeps half the original headroom inside the cap. Never raised.
     admission = binding["admission_digest"]
     if money(quote["maximum_cost_usd"]) > REFERENCE_CAP_USD:
-        fitted = fit_run_to_cap(spec, quote, REFERENCE_CAP_USD, reason="fitted_to_scripted_reference_cap",
-                                suffix="-reference-cap")
+        if _HOSTED_COST_FIELDS & set(spec):
+            return _unavailable("budget", match)
+        original_floor = execution_cost_floor(spec)
+        bound = REFERENCE_CAP_USD - fitted_headroom_usd(quote, floor=original_floor)
+        ttl = min(spec["hard_ttl_seconds"], int(bound * 3600 / money(spec["max_hourly_rate_usd"]))) if bound > 0 else 0
+        fitted = None
+        if ttl >= MIN_HARD_TTL_SECONDS:
+            spec = {**spec, "hard_ttl_seconds": ttl}
+            fitted = _site_fitted_quote(quote, REFERENCE_CAP_USD, floor=execution_cost_floor(spec),
+                                        original_floor=original_floor, reason="fitted_to_scripted_reference_cap",
+                                        suffix="-reference-cap")
         if fitted is None:
             return _unavailable("budget", match)
-        spec, quote = fitted
-        admission = canonical_digest(spec)
+        admission, quote = canonical_digest(spec), fitted
     quote = {**quote, "episode_count": EPISODES, "quote_digest": ""}
     quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
     cap = money(quote["maximum_cost_usd"])

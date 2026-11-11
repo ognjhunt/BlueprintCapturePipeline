@@ -335,14 +335,9 @@ CHECKPOINT_INVENTORY_STAGED_NAME = "adp009d_openpi_checkpoint_inventory.json"
 
 
 def build_provisioning_script(
-    candidate_id: str, *, stop_after_handshake: bool = False, server_block: str | None = None
+    candidate_id: str, *, stop_after_handshake: bool = False
 ) -> str:
-    """Emit the worker-side provisioning script for one candidate.
-
-    ``server_block`` replaces only the final server start: a session-served
-    candidate (``session_policy_server_start``) keeps this candidate's venv,
-    source and verified checkpoint and starts its contract server instead.
-    """
+    """Emit the worker-side provisioning script for one candidate."""
 
     if (candidate_id not in EXPECTED_CANDIDATES
             and candidate_id not in BETA_POLARIS_VARIANT_CANDIDATE_IDS):
@@ -430,15 +425,6 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_gated_backbone:completed"
 '''
-    server_start = server_block if server_block is not None else f"""echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_server:started"
-"{venv_root}/bin/python" "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
-  --candidate-id "{candidate_id}" \
-  --source-root "{POLICY_SOURCE_ROOT}/{candidate_id}" \
-  --checkpoint-root "{server_checkpoint_root}" \
-  --python "{venv_root}/bin/python" \
-  --host {POLICY_HOST} \
-  --log "$OUT_DIR/adp009d_policy_server.{candidate_id}.log" \
-  --receipt "$OUT_DIR/adp009d_policy_server_receipt.{candidate_id}.json"{server_identity_arg}{server_lifecycle_arg}"""
     return f"""#!/usr/bin/env bash
 # ADP-009D policy provisioning for {candidate_id}.  Generated, not hand-written.
 set -euo pipefail
@@ -524,7 +510,15 @@ echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_checkpoint:co
 # worker starts the server, verifies the exact identity and modality surface
 # without inference, and leaves it running. The first policy query is made only
 # after the episode has sealed its exact lossless observation.
-{server_start}
+echo "BLUEPRINT_WAM_RUNTIME_PHASE:adp009d:provision_{candidate_id}_server:started"
+"{venv_root}/bin/python" "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
+  --candidate-id "{candidate_id}" \
+  --source-root "{POLICY_SOURCE_ROOT}/{candidate_id}" \
+  --checkpoint-root "{server_checkpoint_root}" \
+  --python "{venv_root}/bin/python" \
+  --host {POLICY_HOST} \
+  --log "$OUT_DIR/adp009d_policy_server.{candidate_id}.log" \
+  --receipt "$OUT_DIR/adp009d_policy_server_receipt.{candidate_id}.json"{server_identity_arg}{server_lifecycle_arg}
 
 echo "BLUEPRINT_ADP009D_POLICY_PROVISIONED:{candidate_id}"
 """

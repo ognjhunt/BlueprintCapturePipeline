@@ -323,41 +323,6 @@ def _scene_budget_properties(config: DoorConfig, _request: dict[str, Any]) -> tu
             "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane " + str(Path(config.spool_root) / "results"))
 
 
-def _job_test_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
-    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-            "DOOR_SERVICE_USER": "blueprint",
-            "DOOR_JOB_TEST_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
-
-
-def _launch_run_restore_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
-    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-            "DOOR_SITE_ID": request["site_id"]}
-
-
-def _launch_run_restore_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
-    """Writes the restored run under the control-plane state, its disk reservation and its result. It reads
-    the object store, so the network and the artifact-store key files stay reachable."""
-    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
-            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes",
-            "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER",
-            "AmbientCapabilities=CAP_DAC_OVERRIDE",
-            f"ReadWritePaths={config.control_plane_state} {Path(config.spool_root) / 'results'}")
-
-
-def _served_registration_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
-    return {"DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-            "DOOR_SESSION_SERVED_REQUEST": json.dumps(request["request"], sort_keys=True, allow_nan=False)}
-
-
-def _served_registration_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
-    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
-            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "PrivateNetwork=yes",
-            "RestrictAddressFamilies=AF_UNIX", "UMask=0077", "CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER",
-            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
-            "ReadWritePaths=/etc/blueprint /var/lib/blueprint-operator-door/session-served-registrations "
-            + str(Path(config.spool_root) / "results"))
-
-
 def _owner_success_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
             "DOOR_SERVICE_USER": "blueprint",
@@ -571,20 +536,6 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         lambda request: hashlib.sha256((request["capture"] + ("/apply" if request["apply"] else "/plan"))
                                        .encode("utf-8")).hexdigest()[:12],
         _parked_delivery_environment, _parked_delivery_properties),
-    # Named by a hash of the site and the request; it plans and enqueues, and reserves nothing.
-    "test-policy-on-job": _LaunchSpec(
-        "blueprint-operator-door-job-test", "door-test-policy-on-job.sh", "15min",
-        lambda request: hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()[:12],
-        _job_test_environment, _scene_window_properties),
-    # One archive download and its extraction (2.28 GB for capture-447): at most 2 h.
-    "restore-launch-run": _LaunchSpec(
-        "blueprint-operator-door-launch-run-restore", "door-restore-launch-run.sh", "2h",
-        lambda request: hashlib.sha256(request["site_id"].encode("utf-8")).hexdigest()[:12],
-        _launch_run_restore_environment, _launch_run_restore_properties),
-    "register-session-served-policy": _LaunchSpec(
-        "blueprint-operator-door-session-served-policy", "door-register-session-served-policy.sh", "5min",
-        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
-        _served_registration_environment, _served_registration_properties),
     "lane-scratch": _LaunchSpec("blueprint-operator-door-scratch", "door-lane-scratch.sh", "2min",
                                 lambda request: hashlib.sha256((request["lane"] + "/" + request.get("name", ""))
                                                                 .encode("utf-8")).hexdigest()[:12],

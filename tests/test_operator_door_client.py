@@ -1215,23 +1215,3 @@ def test_scene_window_outcomes_finish_a_wait() -> None:
                             ("failed", False), ("refused", False)):
         state = {"request": {"kind": "extend-scene-execution-window"}, "outcome": {"status": status}}
         assert client._terminal(state) is verdict
-
-
-def test_client_submits_the_evaluation_service_operations(door: dict[str, Any]) -> None:
-    pending = door["state"] / "requests" / "pending"
-    code, out = _run("test-policy-on-job", "site-job1", "--candidate", "pi05_droid", "--candidate", "groot_n17_droid",
-                     "--funding", "standing_test", "--authorization-reference", "owner approval fixture")
-    spooled = json.loads((pending / f"{json.loads(out)['id']}.json").read_text())
-    assert code == 0 and spooled["request"] == {
-        "kind": "test-policy-on-job", "site_id": "site-job1", "candidate_ids": ["pi05_droid", "groot_n17_droid"],
-        "funding": "standing_test", "authorization_reference": "owner approval fixture"}
-    code, out = _run("restore-launch-run", "site-job1")
-    spooled = json.loads((pending / f"{json.loads(out)['id']}.json").read_text())
-    assert code == 0 and spooled["request"] == {"kind": "restore-launch-run", "site_id": "site-job1"}
-    entry = {"schema_version": "blueprint.session_served_policy.v1", "server": "openpi_droid_contract_server.v1",
-             "native_candidate_id": "pi05_droid"}
-    code, out = _run("register-session-served-policy", "add", "pi05_droid_served", "--entry-json", json.dumps(entry),
-                     "--expected-registry-digest", "sha256:" + "a" * 64, "--authorization-reference", "owner fixture")
-    spooled = json.loads((pending / f"{json.loads(out)['id']}.json").read_text())
-    from operator_door.session_served_registration import validate_request as validate_registration
-    assert code == 0 and validate_registration(spooled["request"]["request"])["entry"] == entry

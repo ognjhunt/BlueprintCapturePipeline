@@ -806,19 +806,18 @@ def normalize_openpi_inference_response(response: Any) -> Any:
     return response["actions"]
 
 
-def load_identity_bound_policy(
+def serve_identity_bound_policy(
     *,
     spec: OpenPIDroidPolicySpec,
     checkpoint_dir: str | Path,
     checkpoint_inventory_path: str | Path,
-) -> tuple[Any, dict[str, Any]]:
-    """Verify the local checkpoint and load the pinned OpenPI policy in-process.
-
-    The one loader for every server that serves an OpenPI DROID checkpoint: the
-    websocket server below and the HTTPS-contract server
-    (``openpi_droid_contract_server``) call it, so both serve the same object.
-    """
+    host: str,
+    port: int,
+) -> None:
+    """Load the pinned OpenPI config/checkpoint and serve identity metadata."""
     spec.validate()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("openpi_policy_server_must_be_loopback_only")
     checkpoint = Path(checkpoint_dir).expanduser().resolve()
     local_verification = verify_local_checkpoint(
         spec=spec,
@@ -827,6 +826,7 @@ def load_identity_bound_policy(
     )
     try:
         from openpi.policies import policy_config
+        from openpi.serving import websocket_policy_server
         from openpi.training import config as training_config
     except ImportError as exc:  # pragma: no cover - exercised on GPU runtime
         raise RuntimeError("openpi_server_runtime_not_installed") from exc
@@ -853,27 +853,7 @@ def load_identity_bound_policy(
     configured_rows = int(config.model.action_horizon)
     if configured_rows != spec.action_chunk_rows:
         raise ValueError("openpi_config_action_horizon_mismatch")
-    return policy_config.create_trained_policy(config, checkpoint), local_verification
-
-
-def serve_identity_bound_policy(
-    *,
-    spec: OpenPIDroidPolicySpec,
-    checkpoint_dir: str | Path,
-    checkpoint_inventory_path: str | Path,
-    host: str,
-    port: int,
-) -> None:
-    """Load the pinned OpenPI config/checkpoint and serve identity metadata."""
-    spec.validate()
-    if host not in {"127.0.0.1", "localhost", "::1"}:
-        raise ValueError("openpi_policy_server_must_be_loopback_only")
-    policy, local_verification = load_identity_bound_policy(
-        spec=spec, checkpoint_dir=checkpoint_dir, checkpoint_inventory_path=checkpoint_inventory_path)
-    try:
-        from openpi.serving import websocket_policy_server
-    except ImportError as exc:  # pragma: no cover - exercised on GPU runtime
-        raise RuntimeError("openpi_server_runtime_not_installed") from exc
+    policy = policy_config.create_trained_policy(config, checkpoint)
     server = websocket_policy_server.WebsocketPolicyServer(
         policy=policy,
         host=host,
@@ -925,7 +905,6 @@ __all__ = [
     "OpenPIDroidPolicySpec",
     "OpenPIWebsocketDroidPolicyClient",
     "load_policy_spec",
-    "load_identity_bound_policy",
     "load_policy_spec_from_execution_spec",
     "serve_identity_bound_policy",
     "validate_server_metadata",
