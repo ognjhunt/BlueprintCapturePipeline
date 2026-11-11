@@ -133,7 +133,9 @@ def _completed(kwargs):
     bundle = root / "downloads/atlas-scene-0123.zip"
     bundle.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(bundle, "w") as archive:
-        archive.writestr("manifest.json", "{}")
+        # A fixed entry time. Named by a string, the entry takes the wall clock at two-second
+        # resolution, so the same run repeated across a tick produced other bytes and another digest.
+        archive.writestr(zipfile.ZipInfo("manifest.json", date_time=(2026, 10, 22, 0, 0, 0)), "{}")
     digest = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
     return {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input", "digest": "sha256:" + "d" * 64,
             "splat_available": True, "mesh_available": True,
