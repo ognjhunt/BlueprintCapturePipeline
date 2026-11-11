@@ -36,11 +36,25 @@ def _partial_then_too_large(args, monkeypatch, root, *, failing="object 1"):
     return holds, provider
 
 
+def _prefix_then_too_large(args, monkeypatch, root):
+    """The probe's state: a run bought every answer under the original binding, a stopped worker kept
+    only the first (no refusal, no resend), and the retained clip no longer fits."""
+    holds = _reservations(monkeypatch)
+    provider = Provider()
+    sam.run_meta_sam31(**args, opener=provider)
+    for index in (1, 2):
+        for name in (f"response-{index}.json", f"parsed-response-{index}.json", f"intent-{index}.json"):
+            (root / name).unlink(missing_ok=True)
+    body = sam._inline_body_bytes(root / "retained-frames.mp4", args["prompts"])
+    monkeypatch.setattr(sam, "INLINE_REQUEST_CEILING_BYTES", body - 1)
+    return holds, provider
+
+
 # --- point 1: the re-buy is recorded before anything moves ------------------------------------
 
 def test_a_refused_re_buy_reservation_never_falls_back_to_the_original_binding(tmp_path, monkeypatch):
     args, digest, root = _job(tmp_path, monkeypatch)
-    holds, provider = _partial_then_too_large(args, monkeypatch, root)
+    holds, provider = _prefix_then_too_large(args, monkeypatch, root)
     reserve = website_task_context.reserve_website_sam_spend
 
     def refused(**kwargs):
@@ -58,7 +72,7 @@ def test_a_refused_re_buy_reservation_never_falls_back_to_the_original_binding(t
 @pytest.mark.parametrize("crash_after", ["mkdir", "record", "first_move", "all_moves"])
 def test_a_crash_at_any_step_of_the_set_aside_is_finished_and_re_bought_once(tmp_path, monkeypatch, crash_after):
     args, digest, root = _job(tmp_path, monkeypatch)
-    holds, provider = _partial_then_too_large(args, monkeypatch, root)
+    holds, provider = _prefix_then_too_large(args, monkeypatch, root)
     real_replace, real_mkdir, moves = os.replace, Path.mkdir, []
 
     def replace(src, dst):
