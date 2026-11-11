@@ -11,6 +11,12 @@ and returns a bounded estimate of what works, or "held — we can't simulate thi
 kind of job yet". Blueprint runs the candidates itself, then works alongside a
 deployment company on the real site. WebApp owns the customer side.
 
+Owner direction, 2026-11-11: the site's answer leads, and this repo's
+simulation is its proof. The WebApp composes the answer from the video and
+published robot specifications; the simulation ranks the policies and checks the
+robot in the scene. The plan for one fast, validated lane is
+[`docs/launch-readiness/2026-11-11-simulation-proof-fast-lane-plan.md`](docs/launch-readiness/2026-11-11-simulation-proof-fast-lane-plan.md).
+
 Shared doctrine is generated from `doctrine/` (see `doctrine/README.md`).
 
 ## The Only Hard Stops

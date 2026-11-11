@@ -5,6 +5,11 @@ Read-only audit of `BlueprintCapturePipeline` and `Blueprint-WebApp`, done
 evidence snapshot, not roadmap authority; its recommendations wait for the
 owner.
 
+Owner direction given after this audit, on the same day: build the simple
+answer, and keep simulation as its core proof, made accurate, cheap and quick,
+not demoted to one line of evidence as this audit recommended. See
+[the fast-lane plan](../launch-readiness/2026-11-11-simulation-proof-fast-lane-plan.md).
+
 The question it tests, in the owner's words: *are we creating a service that
 answers the question of a site that wants to know which robot or policy will
 most likely work best in real life on its task at its site, in the easiest and
