@@ -1,14 +1,17 @@
-"""Hold a deploy while a paid stage of a website job is live on the running release.
+"""Hold a deploy while work already in flight on the running release would be discarded.
 
-Every deploy makes scene progression retire the in-flight attempt and rebuild it
-(about 15 min of preparation, then about an hour of activation), because each
-later stage refuses work bound to an older release. So a deploy that lands while
-a paid stage runs throws away work that was already paid for. This holds the
-deploy, never the job: the stage keeps going, and the deploy goes out as soon as
-it ends, when the hold reaches its cap, or at once with an override. It only
+A deploy must not discard work in flight. Every scene attempt is bound to the
+commit of the release that created it, and each later stage refuses work bound
+to another release, so a deploy makes scene progression retire the in-flight
+attempt and rebuild it (the factory and about 15 min of preparation, then about
+an hour of activation). A deploy kills none of these processes (it restarts only
+intake); what it discards is their output. Paid work was the most expensive case
+and was held first; unpaid CPU work in flight is held the same way. This holds
+the deploy, never the job: the work keeps going, and the deploy goes out as soon
+as it ends, when the hold reaches its cap, or at once with an override. It only
 reads; it never stops, retries or changes a job, queue entry, lock or ledger.
 
-Live means bound to the running release, and one of:
+Live means bound to the running release, and one of these paid stages:
 
 - a scene-configuration activation (lane ``task_evaluation_scene_configuration``):
   - pending in the activation queue, while the queue's path unit can claim it (a
@@ -24,10 +27,38 @@ Live means bound to the running release, and one of:
 - a paid-launch slot lock (``provider-locks/*.lock``, not the deploy gate) whose
   flock is held by a process running from this release's tree (``/proc/<pid>/cwd``);
 - a beta-screening candidate ``launching`` or ``running`` in the screening ledger
-  whose plan froze this release's commit (``implementation_commit``).
+  whose plan froze this release's commit (``implementation_commit``);
 
-Anything unreadable or unexpected counts as not live. One cap (``CAP_SECONDS``)
-bounds the hold, whichever stages are live and however one hands over to the next.
+or one of these unpaid stages (CPU work the next release would refuse and redo):
+
+- a scene attempt preparing (factory, publication, submission) whose progression
+  state (``<intent>/progression.json``) names this release's commit, while its
+  ``progression.lock`` is held by a process running from this release's tree, or
+  entered that phase recently (``PROGRESSION_GAP_SECONDS``) while the progression
+  timer can run it;
+- a scene preparation request bound to this release, pending in the preparation
+  queue while its path unit or timer can claim it, or claimed in processing/ while
+  a worker from this release's tree that started before the claim still runs (the
+  rule ``task_evaluation_preparation_claim_recovery`` uses), or finished for the
+  scene-configuration lane recently (``SUBMIT_WINDOW_SECONDS``) with no activation
+  queued for it yet;
+- a beta-screening candidate ``preparing`` (staging its bundle, not waiting on a
+  blocker) under a plan frozen at this release, while the screening timer can run.
+
+Anything unreadable or unexpected counts as not live. Two bounds, so unpaid work
+never weakens the paid guarantee and never parks a deploy for hours:
+
+- paid: ``CAP_SECONDS`` (the activation's time limit plus the submit window) from the
+  first check in this hold that saw a paid stage, so a hold that began in the factory
+  or the preparation still outlives the activation it hands over to;
+- unpaid: while only unpaid stages are live, ``UNPAID_CAP_SECONDS`` in all for the
+  hold, shared by every unpaid stretch (one after paid work ended gets only what is
+  left, never a fresh hour);
+- and no hold outlives its start plus both, whatever the order of hand-overs.
+
+A hold an older door started keeps one ``CAP_SECONDS`` from its start. The hold
+record names which live stages are paid and which are not, the bound in force
+(``bound``) and its end (``cap_at_epoch``).
 
 Run by door-deploy.sh with ``python3 -I -S``, so standard library only. The
 runner cannot do this itself: it has no capabilities and these files are the
@@ -35,8 +66,8 @@ runner cannot do this itself: it has no capabilities and these files are the
 
 Exit codes:
     0  deploy now (nothing live, override given, cap reached, or unknown)
-    5  a paid stage is live; stay parked (the hold file says until when to recheck).
-       A second stdout line then says when to retry and when the cap lets it go:
+    5  work is live; stay parked (the hold file says until when to recheck).
+       A second stdout line then says when to retry and when the bound in force lets it go:
        ``<retry ISO> <retry epoch> <cap ISO> <cap epoch>``, for a deploy that cannot park.
 
 ``activation_hold.py park`` turns a direct deploy into a parked one, writing the
@@ -72,6 +103,8 @@ ACTIVATION_TIMEOUT_SECONDS = 255 * 60
 # not been submitted by then is blocked on something a deploy will not change.
 SUBMIT_WINDOW_SECONDS = 30 * 60
 CAP_SECONDS = ACTIVATION_TIMEOUT_SECONDS + SUBMIT_WINDOW_SECONDS
+# Unpaid CPU work never parks a deploy for hours: one hour in all per hold.
+UNPAID_CAP_SECONDS = 60 * 60
 RECHECK_SECONDS = 5 * 60
 HOLD_FILE = ".activation-hold"
 HOLD_SCHEMA = "blueprint_operator_door_activation_hold.v1"
@@ -87,6 +120,34 @@ STAGE_ACTIVATION = "scene_configuration_activation"
 STAGE_LAUNCH = "scene_configuration_launch"
 STAGE_PAID_LOCK = "paid_launch_lock"
 STAGE_SCREENING = "beta_screening"
+STAGE_SCENE_ATTEMPT = "scene_attempt_preparation"
+STAGE_PREPARATION = "scene_configuration_preparation"
+STAGE_SCREENING_PREPARATION = "beta_screening_preparation"
+PAID_STAGES = frozenset({STAGE_ACTIVATION, STAGE_LAUNCH, STAGE_PAID_LOCK, STAGE_SCREENING})
+# Scene progression, under the control-plane state root.
+INTENT_ROOT = "task-evaluation-scene-intents"
+PROGRESSION_STATE = "progression.json"
+PROGRESSION_LOCK = "progression.lock"
+PROGRESSION_TIMER_UNIT = "blueprint-task-evaluation-scene-progression.timer"
+# The progression unit's TimeoutStartSec: no tick holds an intent's lock longer.
+PROGRESSION_TIMEOUT_SECONDS = 90 * 60
+# The timer ticks each minute; a preparing phase entered this recently is still moving.
+PROGRESSION_GAP_SECONDS = 10 * 60
+# The scene preparation queue, its worker units, and the entrypoints that can hold a claim
+# (task_evaluation_preparation_claim_recovery.WORKER_MODULES).
+PREPARATION_QUEUE = "task-evaluation-launch-preparations"
+PREPARATION_PATH_UNIT = "blueprint-task-evaluation-launch-preparation.path"
+PREPARATION_TIMER_UNIT = "blueprint-task-evaluation-launch-preparation.timer"
+PREPARATION_WORKERS = (
+    "blueprint_pipeline.task_evaluation_scene_progression",
+    "blueprint_pipeline.task_evaluation_scene_preparation_service",
+    "blueprint_pipeline.task_evaluation_launch_preparation_worker",
+)
+PREPARED_STATUS = "queued_for_production_scene_configuration"
+# task_evaluation_launch_activation_queue.QUEUE_STATES, and its results.
+ACTIVATION_STATES = ("pending", "processing", "prepared", "blocked", "results")
+SCREENING_TIMER_UNIT = "blueprint-beta-policy-screening.timer"
+MAX_PROC_SCAN = 65536
 # Under the control-plane state root, as door status reads them.
 LAUNCH_QUEUE = "task-evaluation-launches"
 LAUNCH_PATH_UNIT = "blueprint-task-evaluation-launch-dispatcher.path"
@@ -254,8 +315,9 @@ def _row(stage: str, state: str, identifier: Any, activation_id: Any = None) -> 
     return row
 
 
-def _launch_states(directory: Path) -> list[Path]:
-    """``<preparation>/launch_progression.json`` files, newest first, at most ``MAX_SCAN``."""
+def _launch_states(directory: Path, name: str = LAUNCH_STATE, *,
+                   modified_since: float | None = None) -> list[Path]:
+    """``<preparation>/launch_progression.json`` files (or ``name``), newest first, at most ``MAX_SCAN``."""
 
     found: list[tuple[float, str, Path]] = []
     try:
@@ -264,11 +326,11 @@ def _launch_states(directory: Path) -> list[Path]:
                 try:
                     if not entry.is_dir(follow_symlinks=False):
                         continue
-                    path = Path(entry.path) / LAUNCH_STATE
+                    path = Path(entry.path) / name
                     info = path.lstat()
                 except OSError:
                     continue
-                if stat.S_ISREG(info.st_mode):
+                if stat.S_ISREG(info.st_mode) and (modified_since is None or info.st_mtime >= modified_since):
                     found.append((info.st_mtime, entry.name, path))
     except OSError:
         return []
@@ -370,8 +432,23 @@ def live_paid_locks(
     return live, notes
 
 
-def live_screening(*, screening_root: Path, active: str) -> tuple[list[dict[str, Any]], list[str]]:
-    """Beta-screening candidates launching or running under a plan frozen at this release."""
+def _screening_staging(row: Any) -> bool:
+    """A ``preparing`` row staging its bundle now: no blocker (a capacity, offer, control or
+    billing wait has one) and no retry set for later."""
+
+    if not isinstance(row, dict) or row.get("status") != "preparing" or row.get("blockers"):
+        return False
+    attempt = row.get("attempt")
+    return isinstance(attempt, dict) and attempt.get("retry_not_before") is None
+
+
+def live_screening(*, screening_root: Path, active: str,
+                   preparing: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
+    """Beta-screening candidates launching or running under a plan frozen at this release.
+
+    With ``preparing`` (the screening timer can run), candidates staging their bundle
+    count too, as unpaid work: the next release refuses that bundle and replans it.
+    """
 
     ledger = _read_json(screening_root / SCREENING_LEDGER)
     campaigns = (ledger or {}).get("campaigns")
@@ -386,7 +463,8 @@ def live_screening(*, screening_root: Path, active: str) -> tuple[list[dict[str,
         if not isinstance(rows, dict):
             continue
         busy = sorted(str(candidate) for candidate, row in rows.items()
-                      if isinstance(row, dict) and row.get("status") in SCREENING_LIVE)
+                      if isinstance(row, dict) and row.get("status") in SCREENING_LIVE
+                      or preparing and _screening_staging(row))
         if not busy or not isinstance(campaign_id, str) or not _IDENT.fullmatch(campaign_id):
             continue
         scanned += 1
@@ -400,10 +478,147 @@ def live_screening(*, screening_root: Path, active: str) -> tuple[list[dict[str,
                 frozen[str(candidate.get("candidate_id"))] = candidate["execution_spec"].get("implementation_commit")
         for candidate_id in busy:
             if frozen.get(candidate_id) == active:
-                live.append(_row(STAGE_SCREENING, f"screening_{rows[candidate_id]['status']}",
-                                 f"{campaign_id}/{candidate_id}"))
+                status = rows[candidate_id]["status"]
+                live.append(_row(STAGE_SCREENING if status in SCREENING_LIVE else STAGE_SCREENING_PREPARATION,
+                                 f"screening_{status}", f"{campaign_id}/{candidate_id}"))
             else:
                 notes.append(f"screening_candidate_of_other_or_unknown_release:{campaign_id}/{candidate_id}")
+    return live, notes
+
+
+def live_scene_attempts(
+    *, intent_root: Path, active: str, now: float, holders: dict[int, set[int]], proc_root: Path,
+    claimable: bool = True,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Scene attempts of this release preparing (factory, publication, submission).
+
+    The next release retires such an attempt and builds its factory again. A tick
+    holds the intent's ``progression.lock`` while it runs, so a lock held by a process
+    of this release is the work itself; between ticks a phase entered within
+    ``PROGRESSION_GAP_SECONDS`` counts while the progression timer can run it.
+    """
+
+    live: list[dict[str, Any]] = []
+    notes: list[str] = []
+    for path in _launch_states(intent_root, PROGRESSION_STATE, modified_since=now - PROGRESSION_TIMEOUT_SECONDS):
+        projection = _read_json(path)
+        state = (projection or {}).get("state")
+        phase = (projection or {}).get("phase")
+        if (not projection or projection.get("status") != "preparing" or not isinstance(state, dict)
+                or state.get("attempt_commit") != active or not isinstance(phase, str) or not _IDENT.fullmatch(phase)):
+            continue
+        intent = path.parent.name
+        try:
+            info = (path.parent / PROGRESSION_LOCK).lstat()
+            inode = info.st_ino if stat.S_ISREG(info.st_mode) else None
+        except OSError:
+            inode = None
+        if inode in holders and active in {process_release(pid, proc_root) for pid in sorted(holders[inode])[:16]}:
+            live.append(_row(STAGE_SCENE_ATTEMPT, f"attempt_{phase}_running", intent))
+            continue
+        entered = _epoch(projection.get("updated_at_epoch"), now)
+        if entered is None or now - entered > PROGRESSION_GAP_SECONDS:
+            notes.append(f"scene_attempt_preparing_but_idle:{intent}")
+        elif not claimable:
+            notes.append(f"scene_attempt_while_progression_timer_held:{intent}")
+        else:
+            live.append(_row(STAGE_SCENE_ATTEMPT, f"attempt_{phase}", intent))
+    return live, notes
+
+
+def worker_starts(proc_root: Path, active: str, modules: tuple[str, ...] = PREPARATION_WORKERS) -> list[float]:
+    """When each live process running one of ``modules`` from this release's tree started.
+
+    Read from the process table (``/proc/<pid>/cmdline``, ``cwd`` and ``stat``). Anything
+    unreadable is left out, so a claim then has no live worker and holds nothing.
+    """
+
+    try:
+        boot = next(int(line.split()[1]) for line in (proc_root / "stat").read_text(encoding="ascii").splitlines()
+                    if line.startswith("btime "))
+        ticks = os.sysconf("SC_CLK_TCK")
+        with os.scandir(proc_root) as entries:
+            pids = [entry.name for entry in entries if entry.name.isdigit()][:MAX_PROC_SCAN]
+    except (OSError, ValueError, IndexError, StopIteration):
+        return []
+    needles = [module.encode() for module in modules]
+    starts: list[float] = []
+    for pid in pids:
+        try:
+            with open(proc_root / pid / "cmdline", "rb") as stream:
+                command = stream.read(65536)
+            if not any(needle in command for needle in needles) or process_release(int(pid), proc_root) != active:
+                continue
+            fields = (proc_root / pid / "stat").read_text(encoding="utf-8", errors="replace").rsplit(")", 1)[1].split()
+            starts.append(boot + int(fields[19]) / ticks)
+        except (OSError, ValueError, IndexError):
+            continue
+    return starts
+
+
+def live_preparations(
+    *, queue_root: Path, activation_queue_root: Path, active: str, now: float, proc_root: Path,
+    pending_claimable: bool = True,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Scene preparation requests of this release: queued, running, or done and not yet activated.
+
+    The next release's worker closes a pending request ``blocked``, and progression
+    retires an attempt whose preparation names another release, so each is redone.
+    """
+
+    def bound(path: Path) -> str | None:
+        request = (_read_json(path) or {}).get("request")
+        if isinstance(request, dict) and request.get("expected_production_commit") == active:
+            preparation = request.get("preparation_id")
+            if isinstance(preparation, str) and _IDENT.fullmatch(preparation):
+                return preparation
+        return None
+
+    live: list[dict[str, Any]] = []
+    notes: list[str] = []
+    for path in _json_files(queue_root / "pending"):
+        preparation = bound(path)
+        if preparation is None:
+            continue
+        if pending_claimable:
+            live.append(_row(STAGE_PREPARATION, "preparation_pending", preparation))
+        else:
+            notes.append(f"preparation_pending_while_worker_units_held:{path.name}")
+    starts: list[float] | None = None
+    for path in _json_files(queue_root / "processing"):
+        preparation = bound(path)
+        if preparation is None:
+            continue
+        try:
+            claimed_at = path.lstat().st_ctime  # the rename into processing/ is the claim
+        except OSError:
+            continue
+        if starts is None:
+            starts = worker_starts(proc_root, active)
+        if any(started <= claimed_at for started in starts):
+            live.append(_row(STAGE_PREPARATION, "preparation_processing", preparation))
+        else:
+            notes.append(f"stuck_preparation_claim_without_worker:{path.name}")
+    since = now - SUBMIT_WINDOW_SECONDS
+    finished = []
+    for path in _json_files(queue_root / "results", modified_since=since):
+        result = _read_json(path)
+        preparation = (result or {}).get("preparation_id")
+        if (result and result.get("status") == PREPARED_STATUS and result.get("source_commit") == active
+                and isinstance(preparation, str) and _IDENT.fullmatch(preparation)):
+            finished.append(preparation)
+    if finished:
+        activated: set[Any] = set()
+        for state_name in ACTIVATION_STATES:
+            for path in _json_files(activation_queue_root / state_name, modified_since=since):
+                document = _read_json(path) or {}
+                request = document.get("request")
+                preparation = (request.get("preparation") if isinstance(request, dict) else None) or {}
+                activated.add(document.get("preparation_id"))
+                activated.add(preparation.get("preparation_id") if isinstance(preparation, dict) else None)
+        for preparation in finished:
+            if preparation not in activated:
+                live.append(_row(STAGE_PREPARATION, "preparation_awaiting_activation", preparation))
     return live, notes
 
 
@@ -450,6 +665,9 @@ def decide(
     launch_queue_root: Path | None = None, launch_pending_claimable: bool = True,
     lock_dir: Path | None = None, holders: dict[int, set[int]] | None = None,
     proc_root: Path = Path("/proc"), screening_root: Path | None = None, request_id: str = "",
+    screening_preparing_claimable: bool = True,
+    intent_root: Path | None = None, progression_claimable: bool = True,
+    preparation_queue_root: Path | None = None, preparation_pending_claimable: bool = True,
 ) -> tuple[int, str]:
     """Whether to deploy now, and the reason. Writes or clears the hold file.
 
@@ -476,7 +694,16 @@ def decide(
         sources.append(("paid_launch_locks", lambda: live_paid_locks(
             lock_dir=lock_dir, active=active, holders=holders or {}, proc_root=proc_root)))
     if screening_root is not None:
-        sources.append(("beta_screening", lambda: live_screening(screening_root=screening_root, active=active)))
+        sources.append(("beta_screening", lambda: live_screening(
+            screening_root=screening_root, active=active, preparing=screening_preparing_claimable)))
+    if intent_root is not None:
+        sources.append(("scene_attempts", lambda: live_scene_attempts(
+            intent_root=intent_root, active=active, now=now, holders=holders or {}, proc_root=proc_root,
+            claimable=progression_claimable)))
+    if preparation_queue_root is not None:
+        sources.append(("scene_preparations", lambda: live_preparations(
+            queue_root=preparation_queue_root, activation_queue_root=queue_root, active=active, now=now,
+            proc_root=proc_root, pending_claimable=preparation_pending_claimable)))
     for name, reader in sources:
         rows, more = _collect(name, reader)
         live.extend(rows)
@@ -491,13 +718,15 @@ def decide(
     first = _episode_start(previous, active=active, live=live, now=now, request_id=request_id)
     names = ",".join(sorted(f"{row['state']}:{row['id']}" for row in live))
     stages = sorted({row["stage"] for row in live})
-    capped = now - first >= CAP_SECONDS
+    bound = _bound(previous, active=active, first=first, now=now, paid=bool(set(stages) & PAID_STAGES))
+    deadline = bound["cap_at_epoch"]
+    capped = now >= deadline
     if parked_dir is not None:
         # Kept past the cap, so a retry, or a deploy after a capped one failed before
         # switching, still finds the cap spent instead of starting a new hold.
         _write_hold(parked_dir, {
             "schema": HOLD_SCHEMA, "active_release": active, "first_held_at_epoch": first,
-            "cap_at_epoch": first + CAP_SECONDS, "last_checked_at_epoch": now,
+            "last_checked_at_epoch": now, **bound,
             "recheck_after_epoch": now if capped else now + RECHECK_SECONDS,
             "live": live, "activation_ids": sorted({str(row["activation_id"]) for row in live
                                                     if "activation_id" in row}),
@@ -505,14 +734,52 @@ def decide(
             # deploy request was first held.
             "stages": stages, "live_ids": sorted(_keys(live)),
             "requests": _requests(previous, active=active, request_id=request_id, first=first),
+            # Which of those stages spend money and which are CPU work only.
+            "paid_stages": [stage for stage in stages if stage in PAID_STAGES],
+            "unpaid_stages": [stage for stage in stages if stage not in PAID_STAGES],
         })
     if capped:
         return EXIT_DEPLOY, f"activation_hold_cap_reached:{names}"
     if times is not None:
-        times.update(retry_after_epoch=now + RECHECK_SECONDS, cap_at_epoch=first + CAP_SECONDS)
+        times.update(retry_after_epoch=now + RECHECK_SECONDS, cap_at_epoch=deadline)
     if stages == [STAGE_ACTIVATION]:
         return EXIT_HOLD, f"scene_configuration_activation_live:{names}"
-    return EXIT_HOLD, f"paid_stage_live:{names}"
+    if set(stages) <= PAID_STAGES:
+        return EXIT_HOLD, f"paid_stage_live:{names}"
+    return EXIT_HOLD, f"in_flight_work_live:{names}"
+
+
+def _bound(previous: dict[str, Any] | None, *, active: str, first: float, now: float, paid: bool) -> dict[str, Any]:
+    """The bound in force for this check, and the fields that carry it to the next one.
+
+    Paid work keeps ``CAP_SECONDS`` from the first check in this hold that saw a paid
+    stage (``paid_since_epoch``). Unpaid-only work gets ``UNPAID_CAP_SECONDS`` in all,
+    across every unpaid stretch of the hold (``unpaid_used_seconds``; the gap before a
+    check belongs to the stretch before it). Nothing outlives ``first`` plus both. A hold
+    an older door started has no ``paid_since_epoch``: it keeps one cap from its start.
+    """
+
+    ceiling = first + UNPAID_CAP_SECONDS + CAP_SECONDS
+    same = (bool(previous) and previous.get("schema") == HOLD_SCHEMA and previous.get("active_release") == active
+            and _epoch(previous.get("first_held_at_epoch"), now) == first)
+    if same and ("paid_since_epoch" not in previous or previous.get("bound") == "single"):
+        return {"cap_at_epoch": first + CAP_SECONDS, "bound": "single"}
+    paid_since = _epoch(previous.get("paid_since_epoch"), now) if same else None
+    unpaid_since = _epoch(previous.get("unpaid_since_epoch"), now) if same else None
+    used = previous.get("unpaid_used_seconds") if same else 0.0
+    used = float(used) if isinstance(used, (int, float)) and not isinstance(used, bool) and math.isfinite(used) else 0.0
+    if paid:
+        if unpaid_since is not None:
+            used, unpaid_since = used + max(0.0, now - unpaid_since), None
+        paid_since = now if paid_since is None else paid_since
+        cap, kind = paid_since + CAP_SECONDS, "paid"
+    else:
+        unpaid_since = (first if not same else now) if unpaid_since is None else unpaid_since
+        cap, kind = unpaid_since + max(0.0, UNPAID_CAP_SECONDS - used), "unpaid"
+    if cap >= ceiling:
+        cap, kind = ceiling, "ceiling"
+    return {"cap_at_epoch": cap, "bound": kind, "paid_since_epoch": paid_since,
+            "unpaid_since_epoch": unpaid_since, "unpaid_used_seconds": used}
 
 
 def _keys(live: list[dict[str, Any]]) -> set[str]:
@@ -635,6 +902,13 @@ def main(argv: list[str]) -> int:
         lock_dir=state / PROVIDER_LOCKS, holders=holders,
         screening_root=state / SCREENING_ROOT,
         request_id=os.environ.get("DOOR_REQUEST_ID", ""),
+        screening_preparing_claimable=not activation_path_held(holds_dir, SCREENING_TIMER_UNIT),
+        intent_root=state / INTENT_ROOT,
+        progression_claimable=not activation_path_held(holds_dir, PROGRESSION_TIMER_UNIT),
+        preparation_queue_root=state / PREPARATION_QUEUE,
+        # Either unit starts the worker; only a hold on both leaves pending work unclaimed.
+        preparation_pending_claimable=not (activation_path_held(holds_dir, PREPARATION_PATH_UNIT)
+                                           and activation_path_held(holds_dir, PREPARATION_TIMER_UNIT)),
     )
     print(reason)
     if code == EXIT_HOLD and times:
@@ -649,7 +923,7 @@ if __name__ == "__main__":
         if sys.argv[1:] == ["park"]:
             print(f"activation_hold_park_failed:{type(error).__name__}")
             raise SystemExit(EXIT_CANNOT_PARK) from None
-        # This hold protects paid work in flight, not privacy, rights or money limits: a
+        # This hold protects work in flight, not privacy, rights or money limits: a
         # failure to read it never blocks a deploy.
         print(f"activation_hold_check_failed:{type(error).__name__}")
         raise SystemExit(EXIT_DEPLOY) from None

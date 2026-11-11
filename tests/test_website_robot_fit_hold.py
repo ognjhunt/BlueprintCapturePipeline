@@ -301,3 +301,32 @@ def test_a_recheck_that_stops_short_stays_owed_and_bounded(site):
         hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4], process_args=args,
                                        now=now + 4000 * step)
     assert len(failures) == hold.MAX_RECHECKS
+
+
+def test_a_recheck_whose_ledger_moved_before_its_claim_is_a_retryable_result(site, monkeypatch):
+    """The ledger changes between the reconciler's read and its claim: retryable, no exception, no attempt."""
+    _held(site)
+    site.catalogs["current"] = _shipped_catalog()
+    real = listener.process_handoff_payload
+    results = []
+
+    def moved_then_processed(payload, **kwargs):
+        with listener._locked_job_ledger(site.root, create=False) as current:
+            listener._commit_job_ledger(site.root, {**current, "updated_at": "2026-11-11T00:00:00Z"},
+                                        previous_revision=int(current["revision"]))
+        results.append(real(payload, **kwargs))
+        return results[-1]
+
+    monkeypatch.setattr(listener, "process_handoff_payload", moved_then_processed)
+    before = listener._read_job_ledger(site.root)
+    counts = hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4],
+                                            process_args={"provider": "openai", "run_e2e": site.run_e2e})
+    assert counts["rechecked"] == 1 and len(site.runs) == 1
+    [result] = results
+    assert result["status"] == "robot_fit_recheck_changed" and result["queue_disposition"] == "retryable"
+    assert result["blockers"] == ["website_robot_fit_recheck_changed"]
+    ledger = listener._read_job_ledger(site.root)
+    # No attempt recorded and no lease taken: only the change made under the test.
+    assert ledger["attempt_count"] == before["attempt_count"] and ledger["status"] == "completed"
+    assert ledger["attempt_history"] == before["attempt_history"] and ledger["revision"] == before["revision"] + 1
+    assert not ledger.get("lease_token")

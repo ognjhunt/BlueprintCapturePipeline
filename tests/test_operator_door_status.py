@@ -785,12 +785,30 @@ def test_status_says_which_paid_stage_holds_the_deploy(host_tree: dict[str, Path
         "first_held_at_epoch": 1.0, "cap_at_epoch": 2.0, "recheck_after_epoch": 3.0, "live": live,
         "stages": ["beta_screening"], "requests": {}}), encoding="utf-8")
     hold = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})["deploy_activation_hold"]
-    assert hold == {"active_release": "a" * 40, "first_held_at_epoch": 1.0, "cap_at_epoch": 2.0,
-                    "recheck_after_epoch": 3.0, "live": live, "stages": ["beta_screening"]}
-    # A record an older door wrote names no stage: it was an activation.
+    assert hold == {"active_release": "a" * 40, "first_held_at_epoch": 1.0, "cap_at_epoch": 2.0, "bound": None,
+                    "recheck_after_epoch": 3.0, "live": live, "stages": ["beta_screening"],
+                    "paid_stages": ["beta_screening"], "unpaid_stages": []}
+    # A record an older door wrote names no stage: it was an activation, which is paid.
     (parked / ".activation-hold").write_text(json.dumps({
         "active_release": "a" * 40, "live": [{"activation_id": "act-1", "state": "pending"}]}), encoding="utf-8")
     hold = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})["deploy_activation_hold"]
     assert hold["stages"] == ["scene_configuration_activation"] and hold["live"][0]["activation_id"] == "act-1"
+    assert hold["paid_stages"] == ["scene_configuration_activation"] and hold["unpaid_stages"] == []
     (parked / ".activation-hold").unlink()
     assert build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})["deploy_activation_hold"] is None
+
+
+def test_status_says_whether_the_work_holding_the_deploy_is_paid(host_tree: dict[str, Path]) -> None:
+    parked = host_tree["base"] / "door" / "requests" / "parked"
+    parked.mkdir(exist_ok=True)
+    live = [{"stage": "scene_configuration_preparation", "state": "preparation_processing", "id": "prep-1"},
+            {"stage": "paid_launch_lock", "state": "paid_launch_lock_held", "id": "vast_paid_launch.lock"}]
+    (parked / ".activation-hold").write_text(json.dumps({
+        "schema": "blueprint_operator_door_activation_hold.v1", "active_release": "a" * 40, "live": live,
+        "stages": ["paid_launch_lock", "scene_configuration_preparation"],
+        "paid_stages": ["paid_launch_lock"], "unpaid_stages": ["scene_configuration_preparation"],
+        "cap_at_epoch": 9.0, "bound": "paid"}), encoding="utf-8")
+    hold = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})["deploy_activation_hold"]
+    assert hold["paid_stages"] == ["paid_launch_lock"]
+    assert hold["unpaid_stages"] == ["scene_configuration_preparation"]
+    assert (hold["bound"], hold["cap_at_epoch"]) == ("paid", 9.0)

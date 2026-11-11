@@ -86,7 +86,8 @@ def retry_delay(kind: str, failures: int, *, deadline: bool = True) -> int | Non
 
     An outage or a money wait runs until the job's deadline, the grant's expiry. A job with no
     grant has no deadline, so every failure of it takes the six timed retries instead, and is
-    then left: nothing else on the host ends it (``end_expired_preparation`` needs a grant).
+    then left. The silence sweep ends it once the WebApp says the job ended with no grant
+    (``end_no_grant_preparation``); ``end_expired_preparation`` needs a grant.
     """
     from .job_retry_policy import MONEY, outage_retry_delay, refusal_retry_delay
     if kind in (OUTAGE, MONEY) and deadline:

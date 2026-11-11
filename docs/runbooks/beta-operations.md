@@ -647,14 +647,18 @@ Before you deploy:
 3. Do not redeploy an older commit before you read that list. If it removes
    work of another session, ask the owner first.
 4. A revert merged on `main` is a newer commit. It removes only what it names.
-5. Read `door status` (`deploy_activation_hold`). While a paid stage of a
-   website job is live on the running release, the door holds the deploy (it
+5. Read `door status` (`deploy_activation_hold`). While a website or screening
+   job has work in flight on the running release, the door holds the deploy (it
    parks; the job is never touched). `deploy_activation_hold.stages` and each
-   `live` row's `stage` say which: `scene_configuration_activation`,
-   `scene_configuration_launch`, `paid_launch_lock` or `beta_screening`
-   (section 6). The hold ends when the stage ends, or after at most 285 min in
-   all, however the stages hand over (`CAP_SECONDS` in
-   `deploy/operator-door/operator_door/activation_hold.py`).
+   `live` row's `stage` say which. Paid: `scene_configuration_activation`,
+   `scene_configuration_launch`, `paid_launch_lock` or `beta_screening`. Not
+   paid yet: `scene_attempt_preparation`, `scene_configuration_preparation` or
+   `beta_screening_preparation` (section 6). The hold ends when the work ends,
+   or at its bound: 285 min for paid work, counted from when a paid stage was
+   first live; 60 min in all for work that is not paid yet (`CAP_SECONDS` and
+   `UNPAID_CAP_SECONDS` in
+   `deploy/operator-door/operator_door/activation_hold.py`; `bound` says which
+   applies).
 6. `--activation-hold-override <reason>` deploys at once. Use it only for
    money, privacy, rights or a fix to the stuck paid stage itself.
 7. Request the rollback when no other deploy runs. A rollback that waits behind
@@ -695,9 +699,15 @@ Before you deploy:
    - a paid-launch slot lock (`paid_launch_locks`, not the `.gate.lock`) held by
      a process running from this release;
    - a beta-screening candidate `launching` or `running` whose plan froze this
-     release's commit.
+     release's commit;
+   - work that is not paid yet and that the new release would refuse and
+     rebuild: a scene attempt in its factory, publication or submission; a
+     scene-configuration preparation pending, claimed by a live worker, or
+     finished and not yet named by an activation; a beta-screening candidate
+     `preparing` with no blocker.
 
-   It goes out when they end, or after 285 min in all, or at once with
+   It goes out when they end, at its bound (285 min for paid work from when it
+   was first live, 60 min in all for work not paid yet), or at once with
    `--activation-hold-override <reason>`. Anything it cannot read counts as not
    live. While it waits, `door status` `deploy_activation_hold` (its `stages` and
    `live` rows) says why; that read replaces the old hand check of

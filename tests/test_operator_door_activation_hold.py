@@ -691,3 +691,479 @@ def test_main_reads_every_stage_from_the_state_root(state, tmp_path: Path, monke
     assert _record(state)["requests"] == {DEPLOY_ID: _record(state)["first_held_at_epoch"]}
     monkeypatch.setenv("DOOR_ACTIVATION_HOLD_OVERRIDE", "fixes_live_activation")
     assert hold.main(["activation_hold.py"]) == hold.EXIT_DEPLOY
+
+
+# --- Unpaid work in flight: a deploy waits for it too, under the same cap ---
+
+
+@pytest.fixture()
+def cpu(state: dict[str, Path]) -> dict[str, Path]:
+    preparations = state["root"] / hold.PREPARATION_QUEUE
+    for name in ("pending", "processing", "results", "materialized", "blocked"):
+        (preparations / name).mkdir(parents=True)
+    for name in ("prepared", "blocked"):
+        (state["queue"] / name).mkdir()
+    (state["root"] / hold.INTENT_ROOT).mkdir()
+    (state["proc"] / "stat").write_text("cpu  1 2 3\nbtime 1000\n", encoding="ascii")
+    return {**state, "preparations": preparations, "intents": state["root"] / hold.INTENT_ROOT}
+
+
+def _cpu(state: dict[str, Path], *, holders: dict[int, set[int]] | None = None, now: float | None = None,
+         override: str = "", progression_claimable: bool = True, preparation_pending_claimable: bool = True,
+         screening_preparing_claimable: bool = True, active: str = ACTIVE, held: set[int] | None = None,
+         request_id: str = "", times: dict[str, float] | None = None) -> tuple[int, str]:
+    holders = holders or {}
+    return hold.decide(
+        queue_root=state["queue"], progression_root=state["progression"], active=active,
+        parked_dir=state["parked"], override=override, now=time.time() if now is None else now,
+        held=set(holders) | (held or set()), launch_queue_root=state["launches"], lock_dir=state["locks"],
+        holders=holders, proc_root=state["proc"], screening_root=state["screening"], request_id=request_id,
+        times=times, screening_preparing_claimable=screening_preparing_claimable,
+        intent_root=state["intents"], progression_claimable=progression_claimable,
+        preparation_queue_root=state["preparations"],
+        preparation_pending_claimable=preparation_pending_claimable)
+
+
+def _attempt(state: dict[str, Path], *, commit: str = ACTIVE, status: str = "preparing", phase: str = "factory",
+             entered: float | None = None, intent: str = "scene-1") -> int:
+    """An intent's progression projection; returns its progression.lock inode."""
+    directory = state["intents"] / intent
+    directory.mkdir(exist_ok=True)
+    (directory / hold.PROGRESSION_STATE).write_text(json.dumps({
+        "schema_version": "task_evaluation_scene_progression.v1", "intent_id": intent, "status": status,
+        "phase": phase, "state": {"attempt_id": "source-1", "attempt_commit": commit},
+        "updated_at_epoch": time.time() if entered is None else entered}), encoding="utf-8")
+    lock = directory / hold.PROGRESSION_LOCK
+    lock.write_text("", encoding="utf-8")
+    return lock.stat().st_ino
+
+
+def _preparation(state: dict[str, Path], where: str, *, commit: str = ACTIVE, preparation: str = "prep-1") -> Path:
+    path = state["preparations"] / where / f"{preparation}-{'c' * 64}.json"
+    path.write_text(json.dumps({"schema_version": "task_evaluation_launch_preparation_envelope.v1",
+                                "request": {"preparation_id": preparation, "expected_production_commit": commit}}),
+                    encoding="utf-8")
+    return path
+
+
+def _worker(state: dict[str, Path], pid: int, *, started: float, commit: str = ACTIVE,
+            module: str = "blueprint_pipeline.task_evaluation_launch_preparation_worker") -> None:
+    """A process in the fake /proc: its command line, release tree and start time."""
+    _runs_from(state, pid, commit)
+    command = ["python", "-m", "blueprint_pipeline.task_evaluation_scene_retirement_supervisor", "--worker", module]
+    (state["proc"] / str(pid) / "cmdline").write_bytes(b"\0".join(part.encode() for part in command) + b"\0")
+    ticks = round((started - 1000) * os.sysconf("SC_CLK_TCK"))
+    fields = ["S"] + ["0"] * 18 + [str(ticks)] + ["0"] * 10
+    (state["proc"] / str(pid) / "stat").write_text(f"{pid} (python (x)) {' '.join(fields)}\n", encoding="utf-8")
+
+
+def _prepared(state: dict[str, Path], *, commit: str = ACTIVE, age: float = 0.0, status: str = hold.PREPARED_STATUS,
+              preparation: str = "prep-1") -> Path:
+    path = state["preparations"] / "results" / f"{preparation}-{'c' * 64}.json"
+    path.write_text(json.dumps({"schema_version": "task_evaluation_launch_preparation_result.v1", "status": status,
+                                "source_commit": commit, "preparation_id": preparation}), encoding="utf-8")
+    if age:
+        moment = time.time() - age
+        os.utime(path, (moment, moment))
+    return path
+
+
+def _staging(state: dict[str, Path], *, commit: str = ACTIVE, blockers: list[str] | None = None,
+             attempt: dict | None = None) -> None:
+    _screening(state, status="preparing", commit=commit)
+    ledger = json.loads((state["screening"] / hold.SCREENING_LEDGER).read_text(encoding="utf-8"))
+    ledger["campaigns"]["camp-1"]["candidates"]["cand-1"].update(
+        blockers=blockers or [], attempt=attempt or {"attempt_id": "screen-1", "reservation_status": "reserved"})
+    (state["screening"] / hold.SCREENING_LEDGER).write_text(json.dumps(ledger), encoding="utf-8")
+
+
+def test_a_scene_attempt_building_its_factory_on_this_release_parks_the_deploy(cpu) -> None:
+    inode = _attempt(cpu, entered=time.time() - 3600)  # a long factory: the tick still holds the lock
+    _runs_from(cpu, 4242, ACTIVE)
+    code, reason = _cpu(cpu, holders={inode: {4242}})
+    assert code == hold.EXIT_HOLD and reason == "in_flight_work_live:attempt_factory_running:scene-1"
+    record = _record(cpu)
+    assert record["stages"] == [hold.STAGE_SCENE_ATTEMPT]
+    assert record["paid_stages"] == [] and record["unpaid_stages"] == [hold.STAGE_SCENE_ATTEMPT]
+
+
+def test_a_scene_attempt_that_just_entered_a_preparing_phase_parks_the_deploy(cpu) -> None:
+    _attempt(cpu, phase="submission_reconciliation")
+    code, reason = _cpu(cpu)
+    assert code == hold.EXIT_HOLD and reason == "in_flight_work_live:attempt_submission_reconciliation:scene-1"
+
+
+def test_a_scene_attempt_of_another_release_or_not_preparing_lets_the_deploy_go(cpu) -> None:
+    inode = _attempt(cpu, commit=OTHER)
+    _runs_from(cpu, 4242, ACTIVE)
+    assert _cpu(cpu, holders={inode: {4242}})[0] == hold.EXIT_DEPLOY
+    for status in ("running", "awaiting_execution", "blocked", "needs_input", "completed"):
+        _attempt(cpu, status=status)
+        assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+
+
+def test_an_idle_scene_attempt_lets_the_deploy_go(cpu) -> None:
+    """No tick of this release holds its lock, and it entered the phase long ago: nothing runs it."""
+    inode = _attempt(cpu, entered=time.time() - hold.PROGRESSION_GAP_SECONDS - 60)
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+    _runs_from(cpu, 4242, OTHER)  # a lock held by another release's tick
+    assert _cpu(cpu, holders={inode: {4242}})[0] == hold.EXIT_DEPLOY
+    assert _cpu(cpu, holders={inode: {777}})[0] == hold.EXIT_DEPLOY  # an unknown process
+
+
+def test_a_held_progression_timer_releases_a_waiting_attempt_but_not_a_running_tick(cpu) -> None:
+    inode = _attempt(cpu)
+    assert _cpu(cpu, progression_claimable=False)[0] == hold.EXIT_DEPLOY
+    _runs_from(cpu, 4242, ACTIVE)
+    assert _cpu(cpu, holders={inode: {4242}}, progression_claimable=False)[0] == hold.EXIT_HOLD
+
+
+def test_unreadable_progression_files_do_not_hold_the_deploy(cpu) -> None:
+    directory = cpu["intents"] / "scene-1"
+    directory.mkdir()
+    for document in ("not json", "[]", json.dumps({"status": "preparing", "phase": "factory", "state": []}),
+                     json.dumps({"status": "preparing", "phase": "../x", "state": {"attempt_commit": ACTIVE},
+                                 "updated_at_epoch": time.time()}),
+                     json.dumps({"status": "preparing", "phase": "factory", "state": {"attempt_commit": ACTIVE},
+                                 "updated_at_epoch": "now"})):
+        (directory / hold.PROGRESSION_STATE).write_text(document, encoding="utf-8")
+        assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+    (directory / hold.PROGRESSION_STATE).unlink()
+    (directory / hold.PROGRESSION_STATE).symlink_to(cpu["root"] / "elsewhere.json")
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+
+
+def test_a_pending_preparation_of_this_release_parks_the_deploy(cpu) -> None:
+    _preparation(cpu, "pending")
+    code, reason = _cpu(cpu)
+    assert code == hold.EXIT_HOLD and reason == "in_flight_work_live:preparation_pending:prep-1"
+    assert _record(cpu)["unpaid_stages"] == [hold.STAGE_PREPARATION]
+
+
+def test_a_pending_preparation_of_another_release_or_nothing_can_claim_lets_the_deploy_go(cpu) -> None:
+    _preparation(cpu, "pending", commit=OTHER)
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+    _preparation(cpu, "pending", preparation="prep-2")
+    assert _cpu(cpu, preparation_pending_claimable=False)[0] == hold.EXIT_DEPLOY
+
+
+def test_a_preparation_claimed_by_a_live_worker_of_this_release_parks_the_deploy(cpu) -> None:
+    claim = _preparation(cpu, "processing")
+    _worker(cpu, 4242, started=claim.lstat().st_ctime - 30)
+    code, reason = _cpu(cpu)
+    assert code == hold.EXIT_HOLD and reason == "in_flight_work_live:preparation_processing:prep-1"
+
+
+@pytest.mark.parametrize("module", ["blueprint_pipeline.task_evaluation_scene_progression",
+                                    "blueprint_pipeline.task_evaluation_scene_preparation_service"])
+def test_every_entrypoint_that_claims_preparations_counts_as_the_worker(cpu, module: str) -> None:
+    claim = _preparation(cpu, "processing")
+    _worker(cpu, 4242, started=claim.lstat().st_ctime - 30, module=module)
+    assert _cpu(cpu)[0] == hold.EXIT_HOLD
+
+
+def test_a_preparation_claim_whose_worker_is_gone_lets_the_deploy_go(cpu) -> None:
+    claim = _preparation(cpu, "processing")
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY  # no worker at all
+    # A worker started after the claim never moved it; one of another release does not own it.
+    _worker(cpu, 4242, started=claim.lstat().st_ctime + 120)
+    _worker(cpu, 4243, started=claim.lstat().st_ctime - 30, commit=OTHER)
+    _worker(cpu, 4244, started=claim.lstat().st_ctime - 30, module="blueprint_pipeline.something_else")
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+
+
+def test_an_unreadable_process_table_holds_no_claim(cpu) -> None:
+    claim = _preparation(cpu, "processing")
+    _worker(cpu, 4242, started=claim.lstat().st_ctime - 30)
+    (cpu["proc"] / "stat").write_text("no boot time here\n", encoding="ascii")
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+
+
+def test_a_finished_preparation_not_yet_activated_parks_the_deploy(cpu) -> None:
+    _prepared(cpu)
+    code, reason = _cpu(cpu)
+    assert code == hold.EXIT_HOLD and reason == "in_flight_work_live:preparation_awaiting_activation:prep-1"
+
+
+def test_a_finished_preparation_hands_over_to_its_activation(cpu) -> None:
+    _prepared(cpu)
+    envelope = cpu["queue"] / "pending" / "act-1-abc.json"
+    envelope.write_text(json.dumps({"request": {"activation_id": "act-1", "lane": hold.LANE,
+                                                "expected_production_commit": ACTIVE,
+                                                "preparation": {"preparation_id": "prep-1"}}}), encoding="utf-8")
+    code, reason = _cpu(cpu)
+    assert code == hold.EXIT_HOLD and reason == "scene_configuration_activation_live:pending:act-1"
+    # A refused activation names its preparation in its result: the preparation is not waiting any more.
+    envelope.unlink()
+    (cpu["queue"] / "results" / "act-1-abc.json").write_text(json.dumps(
+        {"status": "blocked", "activation_id": "act-1", "preparation_id": "prep-1"}), encoding="utf-8")
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+
+
+def test_an_old_failed_or_other_release_preparation_result_lets_the_deploy_go(cpu) -> None:
+    _prepared(cpu, age=hold.SUBMIT_WINDOW_SECONDS + 60)
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+    _prepared(cpu, status="blocked")
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+    _prepared(cpu, commit=OTHER)
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+
+
+def test_unreadable_preparation_files_do_not_hold_the_deploy(cpu) -> None:
+    for where in ("pending", "processing", "results"):
+        (cpu["preparations"] / where / "junk.json").write_text("not json", encoding="utf-8")
+        (cpu["preparations"] / where / "list.json").write_text("[1]", encoding="utf-8")
+    (cpu["preparations"] / "pending" / "bad-id.json").write_text(json.dumps(
+        {"request": {"preparation_id": "../x", "expected_production_commit": ACTIVE}}), encoding="utf-8")
+    (cpu["preparations"] / "pending" / "link.json").symlink_to(_preparation(cpu, "materialized"))
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+
+
+def test_a_screening_candidate_staging_its_bundle_parks_the_deploy(cpu) -> None:
+    _staging(cpu)
+    code, reason = _cpu(cpu)
+    assert code == hold.EXIT_HOLD and reason == "in_flight_work_live:screening_preparing:camp-1/cand-1"
+    record = _record(cpu)
+    assert record["stages"] == [hold.STAGE_SCREENING_PREPARATION]
+    assert record["unpaid_stages"] == [hold.STAGE_SCREENING_PREPARATION] and record["paid_stages"] == []
+
+
+def test_a_screening_candidate_waiting_or_of_another_release_lets_the_deploy_go(cpu) -> None:
+    _staging(cpu, blockers=["beta_screening_capacity_wait"])
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+    _staging(cpu, attempt={"attempt_id": "screen-1", "retry_not_before": "2099-01-01T00:00:00Z"})
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+    _staging(cpu, commit=OTHER)
+    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
+    _staging(cpu)
+    assert _cpu(cpu, screening_preparing_claimable=False)[0] == hold.EXIT_DEPLOY
+    # The paid screening rule is unchanged by the held timer.
+    _screening(cpu)
+    assert _cpu(cpu, screening_preparing_claimable=False)[0] == hold.EXIT_HOLD
+
+
+def test_paid_and_unpaid_work_together_is_named_as_both(cpu) -> None:
+    _preparation(cpu, "pending")
+    _screening(cpu)
+    code, reason = _cpu(cpu)
+    assert code == hold.EXIT_HOLD
+    assert reason == "in_flight_work_live:preparation_pending:prep-1,screening_running:camp-1/cand-1"
+    record = _record(cpu)
+    assert record["paid_stages"] == [hold.STAGE_SCREENING]
+    assert record["unpaid_stages"] == [hold.STAGE_PREPARATION]
+
+
+def _make_live(cpu: dict[str, Path], stage: str) -> dict[int, set[int]]:
+    if stage == "scene_attempt":
+        inode = _attempt(cpu, entered=time.time() - 7200)
+        _runs_from(cpu, 4242, ACTIVE)
+        return {inode: {4242}}
+    if stage == "preparation_pending":
+        _preparation(cpu, "pending")
+    elif stage == "preparation_processing":
+        claim = _preparation(cpu, "processing")
+        _worker(cpu, 4243, started=claim.lstat().st_ctime - 30)
+    elif stage == "screening_preparing":
+        _staging(cpu)
+    return {}
+
+
+@pytest.mark.parametrize("stage", ["scene_attempt", "preparation_pending", "preparation_processing",
+                                   "screening_preparing"])
+def test_unpaid_work_alone_holds_for_the_unpaid_cap_and_the_override_goes_at_once(cpu, stage: str) -> None:
+    holders = _make_live(cpu, stage)
+    start = time.time() - hold.CAP_SECONDS - 60
+    times: dict[str, float] = {}
+    assert _cpu(cpu, holders=holders, now=start, times=times)[0] == hold.EXIT_HOLD
+    assert times["cap_at_epoch"] == start + hold.UNPAID_CAP_SECONDS
+    assert _record(cpu)["bound"] == "unpaid" and _record(cpu)["cap_at_epoch"] == start + hold.UNPAID_CAP_SECONDS
+    assert _cpu(cpu, holders=holders, now=start + hold.UNPAID_CAP_SECONDS - 60)[0] == hold.EXIT_HOLD
+    code, reason = _cpu(cpu, holders=holders, now=start + hold.UNPAID_CAP_SECONDS)
+    assert code == hold.EXIT_DEPLOY and reason.startswith("activation_hold_cap_reached:")
+    code, reason = _cpu(cpu, holders=holders, override="money")
+    assert code == hold.EXIT_DEPLOY and reason == "activation_hold_overridden:money"
+
+
+def _checks(cpu: dict[str, Path], start: float, end: float, *, step: float = hold.RECHECK_SECONDS,
+            **kwargs: object) -> int:
+    """A parked deploy's rechecks from ``start`` to ``end``; the last exit code."""
+    moment, code = start, hold.EXIT_HOLD
+    while moment <= end:
+        code = _cpu(cpu, now=moment, **kwargs)[0]
+        moment += step
+    return code
+
+
+def test_unpaid_then_an_activation_keeps_the_full_paid_cap(cpu) -> None:
+    """20 min of preparation, then a 255 min activation: held to its end, released at paid-since + 285 min."""
+    start = time.time() - 10 * 3600
+    pending = _preparation(cpu, "pending")
+    assert _checks(cpu, start, start + 1200 - hold.RECHECK_SECONDS) == hold.EXIT_HOLD
+    pending.unlink()
+    _envelope(cpu["queue"] / "pending" / "act-1-abc.json")
+    paid_since = start + 1200
+    times: dict[str, float] = {}
+    assert _cpu(cpu, now=paid_since, times=times)[0] == hold.EXIT_HOLD
+    assert times["cap_at_epoch"] == paid_since + hold.CAP_SECONDS
+    record = _record(cpu)
+    assert (record["bound"], record["paid_since_epoch"], record["first_held_at_epoch"]) == ("paid", paid_since, start)
+    # Still held as the activation reaches its time limit, past where one cap from the start would end.
+    assert _checks(cpu, paid_since, paid_since + hold.ACTIVATION_TIMEOUT_SECONDS) == hold.EXIT_HOLD
+    assert _cpu(cpu, now=paid_since + hold.CAP_SECONDS - 60)[0] == hold.EXIT_HOLD
+    code, reason = _cpu(cpu, now=paid_since + hold.CAP_SECONDS)
+    assert code == hold.EXIT_DEPLOY and reason.startswith("activation_hold_cap_reached:")
+
+
+def test_a_hold_that_starts_paid_is_unchanged(cpu) -> None:
+    start = time.time() - 10 * 3600
+    _envelope(cpu["queue"] / "pending" / "act-1-abc.json")
+    times: dict[str, float] = {}
+    assert _cpu(cpu, now=start, times=times)[0] == hold.EXIT_HOLD
+    assert times == {"retry_after_epoch": start + hold.RECHECK_SECONDS, "cap_at_epoch": start + hold.CAP_SECONDS}
+    assert _record(cpu)["cap_at_epoch"] == start + hold.CAP_SECONDS
+    assert _checks(cpu, start, start + hold.CAP_SECONDS - 60) == hold.EXIT_HOLD
+    assert _cpu(cpu, now=start + hold.CAP_SECONDS)[0] == hold.EXIT_DEPLOY
+
+
+def test_unpaid_work_after_paid_work_gets_only_the_unpaid_time_left(cpu) -> None:
+    start = time.time() - 10 * 3600
+    pending = _preparation(cpu, "pending")
+    assert _checks(cpu, start, start + 1500) == hold.EXIT_HOLD  # 30 min unpaid (gap included)
+    pending.unlink()
+    activation = _envelope(cpu["queue"] / "pending" / "act-1-abc.json")
+    assert _checks(cpu, start + 1800, start + 3600) == hold.EXIT_HOLD
+    activation.unlink()
+    _preparation(cpu, "pending", preparation="prep-2")  # a new attempt's unpaid work
+    resumed = start + 3900
+    times: dict[str, float] = {}
+    assert _cpu(cpu, now=resumed, times=times)[0] == hold.EXIT_HOLD
+    record = _record(cpu)
+    assert record["bound"] == "unpaid" and record["unpaid_used_seconds"] == 1800
+    assert times["cap_at_epoch"] == resumed + hold.UNPAID_CAP_SECONDS - 1800
+    assert _cpu(cpu, now=resumed + 1740)[0] == hold.EXIT_HOLD
+    code, reason = _cpu(cpu, now=resumed + 1800)
+    assert code == hold.EXIT_DEPLOY and reason.startswith("activation_hold_cap_reached:")
+    assert _cpu(cpu, now=resumed + 1800, override="rights")[1] == "activation_hold_overridden:rights"
+
+
+def test_no_hold_outlives_the_absolute_ceiling(cpu) -> None:
+    """Unpaid, paid, unpaid, paid, ...: nothing past start + unpaid cap + paid cap."""
+    start = time.time() - 12 * 3600
+    ceiling = start + hold.UNPAID_CAP_SECONDS + hold.CAP_SECONDS
+    moment, index, code = start, 0, hold.EXIT_HOLD
+    while code == hold.EXIT_HOLD:
+        assert moment < ceiling
+        for path in [*cpu["preparations"].glob("pending/*.json"), *cpu["queue"].glob("pending/*.json")]:
+            path.unlink()
+        if (moment - start) // 1500 % 2 == 0:
+            _preparation(cpu, "pending", preparation=f"prep-{index}")
+        else:
+            _envelope(cpu["queue"] / "pending" / f"act-{index}-abc.json", activation_id=f"act-{index}")
+        code, reason = _cpu(cpu, now=moment)
+        if code == hold.EXIT_HOLD:
+            assert _record(cpu)["cap_at_epoch"] <= ceiling
+            assert _cpu(cpu, now=moment, override="privacy")[0] == hold.EXIT_DEPLOY
+        moment += hold.RECHECK_SECONDS
+        index += 1
+    assert reason.startswith("activation_hold_cap_reached:")
+    assert _record(cpu)["first_held_at_epoch"] == start
+
+
+def test_the_ceiling_bounds_paid_work_that_began_late(cpu) -> None:
+    start = time.time() - 12 * 3600
+    _preparation(cpu, "pending")
+    assert _checks(cpu, start, start + 3000) == hold.EXIT_HOLD  # 50 min unpaid, within its hour
+    _envelope(cpu["queue"] / "pending" / "act-1-abc.json")  # paid joins while the preparation is still live
+    times: dict[str, float] = {}
+    assert _cpu(cpu, now=start + 3300, times=times)[0] == hold.EXIT_HOLD
+    assert times["cap_at_epoch"] == start + 3300 + hold.CAP_SECONDS
+    assert _record(cpu)["bound"] == "paid"
+
+
+def test_a_record_from_an_older_door_keeps_one_cap_from_its_start(cpu) -> None:
+    start = time.time() - 3600
+    (cpu["parked"] / hold.HOLD_FILE).write_text(json.dumps({
+        "schema": hold.HOLD_SCHEMA, "active_release": ACTIVE, "first_held_at_epoch": start,
+        "last_checked_at_epoch": time.time() - 60, "activation_ids": ["act-1"], "live_ids": [],
+        "cap_at_epoch": start + hold.CAP_SECONDS}), encoding="utf-8")
+    _preparation(cpu, "pending")  # unpaid only, an hour in: no unpaid cap for an older hold
+    times: dict[str, float] = {}
+    assert _cpu(cpu, times=times)[0] == hold.EXIT_HOLD
+    assert times["cap_at_epoch"] == start + hold.CAP_SECONDS and _record(cpu)["bound"] == "single"
+    assert _cpu(cpu, now=start + hold.CAP_SECONDS - 60)[0] == hold.EXIT_HOLD
+    assert _cpu(cpu, now=start + hold.CAP_SECONDS)[0] == hold.EXIT_DEPLOY
+
+
+def test_the_retry_line_states_the_bound_in_force(cpu) -> None:
+    start = 1_800_000_000.0
+    _preparation(cpu, "pending")
+    times: dict[str, float] = {}
+    assert _cpu(cpu, now=start, times=times)[0] == hold.EXIT_HOLD
+    assert hold.retry_line(times) == (
+        "2027-01-15T08:05:00+00:00 1800000300 2027-01-15T09:00:00+00:00 1800003600")
+
+
+def test_one_hold_from_the_factory_to_the_launch(cpu) -> None:
+    """Factory, preparation queued, running, done, activation: one hold, from the first check."""
+    start = time.time() - hold.CAP_SECONDS - 3600
+    inode = _attempt(cpu, entered=start)
+    _runs_from(cpu, 4242, ACTIVE)
+    assert _cpu(cpu, holders={inode: {4242}}, now=start)[0] == hold.EXIT_HOLD
+    # The tick ends (lock released) with the preparation queued.
+    _attempt(cpu, status="running", phase="source_preparation", entered=start + 300)
+    pending = _preparation(cpu, "pending")
+    assert _cpu(cpu, now=start + 300)[0] == hold.EXIT_HOLD
+    claim = pending.rename(cpu["preparations"] / "processing" / pending.name)
+    _worker(cpu, 4243, started=claim.lstat().st_ctime - 5)
+    assert _cpu(cpu, now=start + 600)[0] == hold.EXIT_HOLD
+    claim.rename(cpu["preparations"] / "materialized" / claim.name)
+    _prepared(cpu)
+    assert _cpu(cpu, now=start + 900)[0] == hold.EXIT_HOLD
+    _envelope(cpu["queue"] / "pending" / "act-1-abc.json")
+    assert _cpu(cpu, now=start + 1200)[0] == hold.EXIT_HOLD
+    assert _record(cpu)["first_held_at_epoch"] == start
+    assert _record(cpu)["paid_since_epoch"] == start + 1200
+    code, reason = _cpu(cpu, now=start + 1200 + hold.CAP_SECONDS)
+    assert code == hold.EXIT_DEPLOY and reason.startswith("activation_hold_cap_reached:")
+
+
+def test_main_reads_the_unpaid_stages_from_the_state_root(cpu, tmp_path: Path, monkeypatch, capsys) -> None:
+    release = tmp_path / "releases" / ACTIVE
+    release.mkdir(parents=True)
+    link = tmp_path / "active"
+    link.symlink_to(release)
+    _preparation(cpu, "pending")
+    monkeypatch.setenv("DOOR_STATE_ROOT", str(cpu["root"]))
+    monkeypatch.setenv("DOOR_ACTIVE_RELEASE_LINK", str(link))
+    monkeypatch.setenv("DOOR_ACTIVATION_HOLD_PARKED_DIR", str(cpu["parked"]))
+    monkeypatch.setenv("DOOR_REQUEST_ID", DEPLOY_ID)
+    monkeypatch.delenv("DOOR_ACTIVATION_HOLD_OVERRIDE", raising=False)
+    assert hold.main(["activation_hold.py"]) == hold.EXIT_HOLD
+    assert capsys.readouterr().out.splitlines()[0] == "in_flight_work_live:preparation_pending:prep-1"
+    # Both of the worker's units held: nothing will claim it.
+    holds = cpu["parked"].parent / "holds"
+    holds.mkdir()
+    for unit in (hold.PREPARATION_PATH_UNIT, hold.PREPARATION_TIMER_UNIT):
+        (holds / f"{unit}.json").write_text(json.dumps({"unit": unit, "status": "active"}), encoding="utf-8")
+    assert hold.main(["activation_hold.py"]) == hold.EXIT_DEPLOY
+    (holds / f"{hold.PREPARATION_TIMER_UNIT}.json").unlink()
+    assert hold.main(["activation_hold.py"]) == hold.EXIT_HOLD
+    monkeypatch.setenv("DOOR_ACTIVATION_HOLD_OVERRIDE", "fixes_live_activation")
+    assert hold.main(["activation_hold.py"]) == hold.EXIT_DEPLOY
+
+
+def test_the_ceiling_binds_when_paid_work_begins_late_in_the_hold(cpu) -> None:
+    """A held request keeps its first hold across a gap; paid work found late still ends by the ceiling."""
+    start = time.time() - 12 * 3600
+    _preparation(cpu, "pending")
+    assert _cpu(cpu, now=start, request_id=DEPLOY_ID)[0] == hold.EXIT_HOLD
+    for path in cpu["preparations"].glob("pending/*.json"):
+        path.unlink()
+    _envelope(cpu["queue"] / "pending" / "act-1-abc.json")
+    late = start + 2 * 3600  # unrelated paid work, after a gap: the same request's hold
+    times: dict[str, float] = {}
+    assert _cpu(cpu, now=late, request_id=DEPLOY_ID, times=times)[0] == hold.EXIT_HOLD
+    ceiling = start + hold.UNPAID_CAP_SECONDS + hold.CAP_SECONDS
+    assert times["cap_at_epoch"] == ceiling and _record(cpu)["bound"] == "ceiling"
+    assert _cpu(cpu, now=ceiling - 60, request_id=DEPLOY_ID)[0] == hold.EXIT_HOLD
+    assert _cpu(cpu, now=ceiling, request_id=DEPLOY_ID)[0] == hold.EXIT_DEPLOY
