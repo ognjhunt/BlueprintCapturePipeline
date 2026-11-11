@@ -20,7 +20,7 @@ from blueprint_pipeline import beta_policy_screening_known_good_control as contr
 from blueprint_pipeline import beta_policy_screening_worker as worker
 from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
 from blueprint_pipeline.beta_policy_screening_plan import (
-    JOB_CEILING_DEFERRED, WAITLIST_BLOCKER, BetaPolicyScreeningPlanError, build_job_ceiling_screening_plan,
+    WAITLIST_BLOCKER, BetaPolicyScreeningPlanError, build_job_ceiling_screening_plan,
     job_ceiling_record, validate_screening_plan,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -65,7 +65,8 @@ def test_a_new_website_campaign_plans_one_control_after_every_candidate():
     assert row["candidate_id"] == "blueprint_scripted_test_arm" and row["status"] == "selected"
     assert row["display_name"] == control.DISPLAY_NAME and row["execution_evidence_kind"] == control.SCRIPTED
     assert row["known_good_control"] == {"schema_version": control.SCHEMA, "role": "reference_only", "episodes": 3,
-                                         "pass_at_successes": 1, "for_candidate_id": candidates[0]["candidate_id"]}
+                                         "pass_at_successes": 1, "for_candidate_id": candidates[0]["candidate_id"],
+                                         "chosen_by": "candidate_robot"}
     # Exactly what runs: three nominal (canonical anchor) episodes under the scripted profile's own hard cap.
     assert row["episode_count"] == 3 and len(row["scenario_cells"]) == 3
     assert {cell["family"] for cell in row["scenario_cells"]} == {"canonical_anchor"}
@@ -238,24 +239,32 @@ def _rows(publication):
     return {row["candidate_id"]: row for row in publication["candidates"]}
 
 
-def test_the_control_launches_first_and_no_candidate_waits_for_its_result(tmp_path, summaries):
-    value = with_control(queue_plan(count=2))
-    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+LEARNED_DONE = closed(_summary(10, 4, scripted=False, planned=10))
+CONTROL = "blueprint_scripted_test_arm"
+
+
+def done(*keys, control_result=None):
+    """Observations: each learned key completes; the control completes with ``control_result`` if given."""
+    observations = {key: LEARNED_DONE for key in keys}
+    if control_result is not None:
+        observations[CONTROL] = control_result
+    return observations
+
+
+def test_the_control_runs_last_once_every_learned_row_has_ended(tmp_path, summaries):
+    coordinator.enqueue_screening_campaign(with_control(queue_plan(count=2)), queue_root=tmp_path)
     backend = PerRow({})
-    [publication] = run(tmp_path, backend)
-    assert backend.order == ["blueprint_scripted_test_arm"]
-    rows = _rows(publication)
-    assert rows["blueprint_scripted_test_arm"]["setup_quality_flags"] == ["known_good_control_pending"]
-    # The control is still running: the next slots go to the candidates all the same.
-    [publication] = run(tmp_path, backend, passes=2)
-    assert backend.order == ["blueprint_scripted_test_arm", "candidate-000", "candidate-001"]
+    [publication] = run(tmp_path, backend, passes=4)
+    # The learned rows run; the control waits for them, never for money.
+    assert backend.order == ["candidate-000", "candidate-001"]
+    assert _rows(publication)[CONTROL]["setup_quality_flags"] == ["known_good_control_pending"]
     Draft202012Validator(json.loads(PUBLICATION_SCHEMA.read_text())).validate(publication)
-    # When the candidates finish first, the running control keeps the campaign running.
-    backend.observations = {key: closed(_summary(10, 4, scripted=False, planned=10)) for key in ("candidate-000", "candidate-001")}
-    [publication] = run(tmp_path, backend)
-    assert publication["status"] == "running"
-    assert {key: row["status"] for key, row in _rows(publication).items()} == {
-        "candidate-000": "completed", "candidate-001": "completed", "blueprint_scripted_test_arm": "running"}
+    backend.observations = done("candidate-000", "candidate-001",
+                                control_result=closed(_summary(3, 1, scripted=True, planned=3)))
+    [publication] = run(tmp_path, backend, passes=4)
+    assert backend.order == ["candidate-000", "candidate-001", CONTROL]
+    assert publication["status"] == "completed"
+    assert _rows(publication)[CONTROL]["setup_quality_flags"] == ["known_good_control_passed"]
 
 
 @pytest.mark.parametrize("scored, succeeded, outcome", [(3, 1, "known_good_control_passed"),
@@ -265,16 +274,16 @@ def test_every_control_outcome_is_a_flag_and_the_candidates_are_unchanged(tmp_pa
                                                                          outcome):
     reference = tmp_path / "reference"
     coordinator.enqueue_screening_campaign(queue_plan(count=2), queue_root=reference)
-    plain = PerRow({key: closed(_summary(10, 4, scripted=False, planned=10)) for key in ("candidate-000", "candidate-001")})
+    plain = PerRow(done("candidate-000", "candidate-001"))
     [without] = run(reference, plain, passes=4)
 
     root = tmp_path / "with-control"
     coordinator.enqueue_screening_campaign(with_control(queue_plan(count=2)), queue_root=root)
-    backend = PerRow({**plain.observations,
-                      "blueprint_scripted_test_arm": closed(_summary(scored, succeeded, scripted=True, planned=3))})
-    [publication] = run(root, backend, passes=5)
+    backend = PerRow(done("candidate-000", "candidate-001",
+                          control_result=closed(_summary(scored, succeeded, scripted=True, planned=3))))
+    [publication] = run(root, backend, passes=8)
     rows = _rows(publication)
-    assert rows.pop("blueprint_scripted_test_arm")["setup_quality_flags"] == [outcome]
+    assert rows.pop(CONTROL)["setup_quality_flags"] == [outcome]
     # A failed control holds nothing, blocks nothing and takes no candidate's reservation or run.
     assert publication["status"] == "completed" and rows == _rows(without)
     ledger = json.loads((root / coordinator.LEDGER_FILENAME).read_text())
@@ -285,63 +294,175 @@ def test_every_control_outcome_is_a_flag_and_the_candidates_are_unchanged(tmp_pa
 
 def test_a_control_harness_failure_holds_no_candidate(tmp_path, summaries):
     coordinator.enqueue_screening_campaign(with_control(queue_plan(count=2)), queue_root=tmp_path)
-    backend = PerRow({"blueprint_scripted_test_arm": {"status": "blocked", "provider_allocation_performed": True,
-                                                       "provider_zero_verified": True,
-                                                       "blockers": ["beta_screening_native_result_missing_or_invalid"]}})
-    run(tmp_path, backend, passes=1)
-    [publication] = run(tmp_path, backend, passes=3)
+    backend = PerRow(done("candidate-000", "candidate-001", control_result={
+        "status": "blocked", "provider_allocation_performed": True, "provider_zero_verified": True,
+        "blockers": ["beta_screening_native_result_missing_or_invalid"]}))
+    [publication] = run(tmp_path, backend, passes=8)
     rows = _rows(publication)
-    assert rows["blueprint_scripted_test_arm"]["setup_quality_flags"] == ["known_good_control_interrupted"]
-    assert backend.order == ["blueprint_scripted_test_arm", "candidate-000", "candidate-001"]
-    assert {rows[key]["status"] for key in ("candidate-000", "candidate-001")} == {"running"}
+    assert rows[CONTROL]["setup_quality_flags"] == ["known_good_control_interrupted"]
+    assert backend.order == ["candidate-000", "candidate-001", CONTROL]
+    assert {rows[key]["status"] for key in ("candidate-000", "candidate-001")} == {"completed"}
     # A re-plan never takes the control up again.
     assert coordinator.replan_scope("campaign-1", implementation_commit="b" * 40, queue_root=tmp_path) is None
 
 
-def test_the_control_never_reserves_ahead_of_a_queued_candidate_the_money_cannot_also_hold(tmp_path, summaries,
-                                                                                        monkeypatch):
+def test_a_control_whose_cap_no_longer_fits_ends_at_once_for_budget(tmp_path, summaries, monkeypatch):
     monkeypatch.setattr(coordinator, "SITE_LIMIT", Decimal("25"))
-    # Another campaign at the site holds $15 of $25: $10 is left, enough for both $5 candidates but
-    # not for them and the $5 control as well. The candidates go first; the control waits.
+    # Another campaign at the site holds $15 of $25. Both $5 candidates run ($25 held); the $5 control
+    # then cannot fit and ends at once: it never waits on money, so the campaign completes.
     other = queue_plan(campaign_id="campaign-0", cost="5.00", count=3)
     coordinator.enqueue_screening_campaign(other, queue_root=tmp_path)
     for row in other["candidates"]:
         assert coordinator._reserve(tmp_path, other, row) is not None
     coordinator.enqueue_screening_campaign(with_control(queue_plan(count=2, cost="5.00"), cost="5.00"),
                                            queue_root=tmp_path)
-    backend = PerRow({})
-    run(tmp_path, backend, passes=6, max_launches=2)
+    backend = PerRow(done("candidate-000", "candidate-001"))
+    run(tmp_path, backend, passes=8, max_launches=2)
     assert [key for campaign, key in backend.launched if campaign == "campaign-1"] == ["candidate-000", "candidate-001"]
     publication = next(row for row in coordinator.pending_publications(queue_root=tmp_path)
                        if row["campaign_id"] == "campaign-1")
     rows = _rows(publication)
-    assert {rows[key]["status"] for key in ("candidate-000", "candidate-001")} == {"running"}
-    assert rows["blueprint_scripted_test_arm"]["status"] in {"pending", "waitlisted"}
+    assert {rows[key]["status"] for key in ("candidate-000", "candidate-001")} == {"completed"}
+    assert rows[CONTROL]["status"] == "deferred"
+    assert rows[CONTROL]["setup_quality_flags"] == ["known_good_control_unavailable:budget"]
+    assert publication["status"] in {"completed", "blocked"}
 
 
 def test_a_pass_or_fail_is_reused_for_the_same_check_and_never_paid_twice(tmp_path, summaries):
     first = with_control(queue_plan(count=1))
     coordinator.enqueue_screening_campaign(first, queue_root=tmp_path)
-    backend = PerRow({"blueprint_scripted_test_arm": closed(_summary(3, 0, scripted=True, planned=3)),
-                      "candidate-000": closed(_summary(10, 0, scripted=False, planned=10))})
-    run(tmp_path, backend, passes=4)
+    backend = PerRow(done("candidate-000", control_result=closed(_summary(3, 0, scripted=True, planned=3))))
+    run(tmp_path, backend, passes=6)
     second = with_control(queue_plan(count=1), campaign_id="campaign-2")
     coordinator.enqueue_screening_campaign(second, queue_root=tmp_path)
-    publications = {row["campaign_id"]: row for row in run(tmp_path, backend, passes=3)}
-    assert backend.order.count("blueprint_scripted_test_arm") == 1
-    row = _rows(publications["campaign-2"])["blueprint_scripted_test_arm"]
+    publications = {row["campaign_id"]: row for row in run(tmp_path, backend, passes=6)}
+    assert backend.order.count(CONTROL) == 1
+    row = _rows(publications["campaign-2"])[CONTROL]
     assert row["status"] == "unavailable" and row["setup_quality_flags"] == ["known_good_control_failed:reused"]
     # Another scene revision is another check.
     third = with_control(queue_plan(count=1), campaign_id="campaign-3", scene_digest="sha256:" + "d" * 64)
     coordinator.enqueue_screening_campaign(third, queue_root=tmp_path)
-    run(tmp_path, backend, passes=1)
-    assert backend.order.count("blueprint_scripted_test_arm") == 2
+    run(tmp_path, backend, passes=6)
+    assert backend.order.count(CONTROL) == 2
+
+
+def test_waiting_for_the_same_check_elsewhere_ends_when_that_run_ends(tmp_path, summaries):
+    coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1)), queue_root=tmp_path)
+    coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1), campaign_id="campaign-2"),
+                                           queue_root=tmp_path)
+    backend = PerRow(done("candidate-000"))  # the first control keeps running
+    run(tmp_path, backend, passes=8, max_launches=3)
+    assert backend.order.count(CONTROL) == 1
+    ledger = json.loads((tmp_path / coordinator.LEDGER_FILENAME).read_text())
+    statuses = sorted(state["candidates"][CONTROL]["status"] for state in ledger["campaigns"].values())
+    assert statuses == ["pending", "running"]
+    backend.observations[CONTROL] = closed(_summary(3, 1, scripted=True, planned=3))
+    publications = {row["campaign_id"]: row for row in run(tmp_path, backend, passes=6)}
+    assert backend.order.count(CONTROL) == 1
+    flags = sorted(_rows(value)[CONTROL]["setup_quality_flags"][0] for value in publications.values())
+    assert flags == ["known_good_control_passed", "known_good_control_passed:reused"]
+    assert {value["status"] for value in publications.values()} == {"completed"}
+
+
+# ---- the control never changes how a learned row is funded, and the campaign always completes -------------
+
+def shaped(*, control_row, waiting=None, count=3):
+    """Learned rows at $4.00 (the last one waitlisted at ``waiting`` when given), with or without the control."""
+    value = deepcopy(queue_plan(count=count, cost="4.00"))
+    if control_row:
+        value = deepcopy(with_control(value, cost="3.00"))
+    if waiting is not None:
+        row = value["candidates"][count - 1]
+        row.update(status="waitlisted", blockers=[WAITLIST_BLOCKER], max_cost_usd=waiting)
+        row["cost_quote"]["maximum_cost_usd"] = waiting
+        row["cost_quote"]["quote_digest"] = canonical_digest(row["cost_quote"], digest_field="quote_digest")
+    value["maximum_planned_cost_usd"] = f"{sum(Decimal(item['max_cost_usd']) for item in value['candidates'] if item['status'] == 'selected'):.2f}"
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    return validate_screening_plan(value)
+
+
+class FirstPreparationFails(PerRow):
+    """``candidate-000``'s preparation fails before any spend, so its reservation is released."""
+
+    def prepare_candidate(self, **kwargs):
+        if kwargs["candidate"]["candidate_id"] == "candidate-000":
+            raise RuntimeError("preparation failed")
+        return super().prepare_candidate(**kwargs)
+SHAPES = {
+    "all_selected": dict(count=2, waiting=None, refuse=False),
+    "waitlisted_never_fundable": dict(count=3, waiting="7.50", refuse=False),
+    "waitlisted_funded_by_a_release": dict(count=3, waiting="8.50", refuse=True),
+    "waitlisted_funded_with_room_left_after": dict(count=3, waiting="4.00", refuse=True),
+}
+
+
+def drive(root, value, *, refuse, passes=20, max_launches=2):
+    coordinator.enqueue_screening_campaign(value, queue_root=root)
+    learned = [row["candidate_id"] for row in value["candidates"] if not control.is_control(row)]
+    observations = done(*learned, control_result=closed(_summary(3, 1, scripted=True, planned=3)))
+    backend = (FirstPreparationFails if refuse else PerRow)(observations)
+    run(root, backend, passes=passes, max_launches=max_launches)
+    return json.loads((root / coordinator.LEDGER_FILENAME).read_text())["campaigns"]["campaign-1"], backend
+
+
+def _learned_money(state):
+    """Each learned row's final state and money: status, blockers and every attempt's reservation and cap."""
+    return {key: (row["status"], sorted(row.get("blockers") or []),
+                  [(item["reservation_status"], item["maximum_cost_usd"])
+                   for item in [*row.get("attempt_history", []), *([row["attempt"]] if row.get("attempt") else [])]])
+            for key, row in state["candidates"].items() if not row.get("known_good_control")}
+
+
+@pytest.mark.parametrize("shape", sorted(SHAPES))
+def test_every_learned_row_ends_exactly_as_without_the_control(tmp_path, summaries, shape):
+    settings = dict(SHAPES[shape])
+    refuse = settings.pop("refuse")
+    without, plain = drive(tmp_path / "without", shaped(control_row=False, **settings), refuse=refuse)
+    with_row, backend = drive(tmp_path / "with", shaped(control_row=True, **settings), refuse=refuse)
+    assert _learned_money(with_row) == _learned_money(without)
+    assert [key for key in backend.order if key != CONTROL] == plain.order
+    # The control ran last, if at all, after every learned launch.
+    if CONTROL in backend.order:
+        assert backend.order[-1] == CONTROL and backend.order.count(CONTROL) == 1
+
+
+@pytest.mark.parametrize("shape", sorted(SHAPES))
+def test_no_state_leaves_the_control_pending_while_nothing_else_can_move(tmp_path, summaries, shape):
+    settings = dict(SHAPES[shape])
+    refuse = settings.pop("refuse")
+    state, _backend = drive(tmp_path, shaped(control_row=True, **settings), refuse=refuse)
+    # Quiescent: every row has ended, the control included, and the campaign is no longer queued.
+    assert all(row["status"] not in {"pending", "waitlisted", "preparing", "launching", "running",
+                                     "reconciliation_required"} for row in state["candidates"].values())
+    assert coordinator.campaign_status(state["candidates"]) not in {"queued", "running"}
+    configured = next(row for row in shaped(control_row=True, **settings)["candidates"] if control.is_control(row))
+    assert control.control_outcome(configured, state["candidates"][CONTROL]) in {
+        control.PASSED, f"{control.UNAVAILABLE}:budget"}
+
+
+def test_the_reviewers_deadlock_shape_now_completes_and_funds_the_waiting_row(tmp_path, summaries):
+    # 2026-11-11 review: three $4 rows, the third waitlisted at $8.50, the $3 control planned. A release
+    # funds the waiting row ($4 + $8.50 of $15) exactly as without the control; the control then cannot
+    # fit and ends for budget, so the campaign completes instead of waiting until its quotes expire.
+    state, backend = drive(tmp_path, shaped(control_row=True, count=3, waiting="8.50"), refuse=True)
+    assert state["candidates"]["candidate-002"]["status"] == "completed"
+    assert state["candidates"][CONTROL]["status"] == "deferred" and CONTROL not in backend.order
+
+
+def test_an_unreserved_control_is_not_a_hold_on_the_jobs_ceiling(tmp_path):
+    from blueprint_pipeline import beta_policy_screening_job_ceiling as job_ceiling
+
+    coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1)), queue_root=tmp_path)
+    plain = tmp_path / "plain"
+    coordinator.enqueue_screening_campaign(queue_plan(count=1), queue_root=plain)
+    assert (job_ceiling.local_screening_holds(tmp_path, site_id="site-job-1", published_usd=Decimal(0))
+            == job_ceiling.local_screening_holds(plain, site_id="site-job-1", published_usd=Decimal(0)))
 
 
 def test_a_failed_control_alerts_the_owner_once(tmp_path, summaries, monkeypatch):
     coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1)), queue_root=tmp_path)
-    backend = PerRow({"blueprint_scripted_test_arm": closed(_summary(3, 0, scripted=True, planned=3))})
-    run(tmp_path, backend, passes=2)
+    backend = PerRow(done("candidate-000", control_result=closed(_summary(3, 0, scripted=True, planned=3))))
+    run(tmp_path, backend, passes=6)
     posts = []
     monkeypatch.setenv("BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL", "https://alerts.invalid/hook")
     from blueprint_pipeline import control_plane_capacity_controller as capacity
@@ -355,7 +476,8 @@ def test_a_failed_control_alerts_the_owner_once(tmp_path, summaries, monkeypatch
 
 def test_a_passed_control_alerts_nobody(tmp_path, summaries, monkeypatch):
     coordinator.enqueue_screening_campaign(with_control(queue_plan(count=1)), queue_root=tmp_path)
-    run(tmp_path, PerRow({"blueprint_scripted_test_arm": closed(_summary(3, 2, scripted=True, planned=3))}), passes=2)
+    run(tmp_path, PerRow(done("candidate-000", control_result=closed(_summary(3, 2, scripted=True, planned=3)))),
+        passes=6)
     monkeypatch.setenv("BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL", "https://alerts.invalid/hook")
     assert worker.alert_known_good_controls(tmp_path)["posted_now"] == []
 
@@ -417,7 +539,9 @@ def test_with_no_scripted_row_for_a_selected_robot_the_fit_table_chooses_one_bod
     # It stands for the spec-catalog model, not for any candidate; no own station recorded: the packet's.
     assert row["known_good_control"] == {"schema_version": control.SCHEMA, "role": "reference_only", "episodes": 3,
                                          "pass_at_successes": 1, "for_model_id": model,
-                                         "flags": ["scene_packet_station"]}
+                                         "flags": ["scene_packet_station"],
+                                         # The FR3 is the body nearest the candidates' DROID Franka.
+                                         "chosen_by": "nearest_body" if model == "franka_research_3" else "fit_table"}
     assert row["episode_count"] == control.EPISODES and row["max_cost_usd"] == "1.50"
     assert validate_screening_plan(value) == value
     Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(value)
@@ -430,7 +554,7 @@ def test_a_body_bound_to_its_own_station_carries_no_station_flag():
     value = website_plan(catalog, capabilities, quotes)
     assert value["candidates"][-1]["known_good_control"] == {
         "schema_version": control.SCHEMA, "role": "reference_only", "episodes": 3, "pass_at_successes": 1,
-        "for_model_id": "universal_robots_ur10e"}
+        "for_model_id": "universal_robots_ur10e", "chosen_by": "fit_table"}
     assert validate_screening_plan(value) == value
     Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(value)
 
@@ -440,7 +564,7 @@ def test_a_selected_candidates_own_robot_still_comes_first():
     table = fit(("universal_robots_ur10e", "universal_robots_ur10e", "fits"))
     value = website_plan(catalog, {**capabilities, control.FIT_CAPABILITY: table}, quotes)
     marker = value["candidates"][-1]["known_good_control"]
-    assert set(marker) - {"schema_version", "role", "episodes", "pass_at_successes"} == {"for_candidate_id"}
+    assert set(marker) - {"schema_version", "role", "episodes", "pass_at_successes"} == {"for_candidate_id", "chosen_by"}
 
 
 @pytest.mark.parametrize("case", ["no_table", "unregistered", "doesnt_fit", "no_recipe"])
@@ -479,49 +603,19 @@ def test_a_leftover_too_small_for_any_waiting_row_funds_the_control():
     Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(value)
 
 
-@pytest.mark.parametrize("status, blocker, cost, quoted, planned", [
-    ("waitlisted", WAITLIST_BLOCKER, "14.50", None, True),
-    ("waitlisted", WAITLIST_BLOCKER, "1.00", None, False),
-    ("waitlisted", JOB_CEILING_DEFERRED, "1.00", None, False),
-    # A money-deferred row keeps no cost of its own: its quote says what it would cost.
-    ("deferred", WAITLIST_BLOCKER, None, "14.50", True),
-    ("deferred", WAITLIST_BLOCKER, None, "1.00", False),
-    ("deferred", JOB_CEILING_DEFERRED, None, "1.00", False),
-    # Nothing states its cost: counted as fundable, so the control never runs ahead of it.
-    ("deferred", WAITLIST_BLOCKER, None, None, False),
-])
-def test_the_control_is_funded_only_when_the_leftover_could_fund_no_waiting_row(status, blocker, cost, quoted,
-                                                                                   planned):
-    catalog, capabilities, quotes = catalog_with_scripted(2)
-    learned = [row["candidate_id"] for row in catalog["candidates"] if row["policy"]["kind"] != "scripted"]
-    waiting = {"candidate_id": learned[1], "status": status, "blockers": [blocker],
-               **({"max_cost_usd": cost} if cost is not None else {})}
-    quotes = {key: value for key, value in quotes.items() if key != learned[1]}
-    if quoted is not None:
-        quotes[learned[1]] = {"maximum_cost_usd": quoted}
-    # $1 selected of $15: $14 is left, which holds the $1.50 control.
-    plan_value = {"budget_usd": "15.00", "candidates": [
-        {"candidate_id": learned[0], "status": "selected", "blockers": [], "max_cost_usd": "1.00"}, waiting]}
-    row = control.plan_control_row(plan_value, catalog, scene(), capabilities=capabilities, cost_quotes=quotes,
-                                   site_remaining_usd=None, now=NOW)
-    assert row["status"] == ("selected" if planned else "unavailable")
-    if not planned:
-        assert row["known_good_control"]["unavailable"] == "budget"
-
-
-def test_the_site_allowance_bounds_the_leftover_too():
+def test_at_planning_the_control_needs_only_its_cap_to_fit_what_the_selected_rows_leave():
     catalog, capabilities, quotes = catalog_with_scripted(2)
     learned = [row["candidate_id"] for row in catalog["candidates"] if row["policy"]["kind"] != "scripted"]
     plan_value = {"budget_usd": "15.00", "candidates": [
         {"candidate_id": learned[0], "status": "selected", "blockers": [], "max_cost_usd": "1.00"},
-        {"candidate_id": learned[1], "status": "waitlisted", "blockers": [WAITLIST_BLOCKER], "max_cost_usd": "3.00"}]}
-    # The site has $3.50 left: $2.50 after the selected row holds the control and cannot fund the $3 row.
+        {"candidate_id": learned[1], "status": "waitlisted", "blockers": [WAITLIST_BLOCKER], "max_cost_usd": "1.00"}]}
+    # A waiting row does not refuse it: at run time it is reserved only after every learned row has ended.
     row = control.plan_control_row(plan_value, catalog, scene(), capabilities=capabilities, cost_quotes=quotes,
-                                   site_remaining_usd="3.50", now=NOW)
+                                   site_remaining_usd=None, now=NOW)
     assert row["status"] == "selected"
-    # With $5 left, the $4 leftover could fund the waiting row: the control waits its turn.
+    # The site's allowance bounds it too: $2.40 left, $1.40 after the selected row, under its $1.50 cap.
     row = control.plan_control_row(plan_value, catalog, scene(), capabilities=capabilities, cost_quotes=quotes,
-                                   site_remaining_usd="5.00", now=NOW)
+                                   site_remaining_usd="2.40", now=NOW)
     assert row["known_good_control"]["unavailable"] == "budget"
 
 
@@ -672,8 +766,11 @@ def test_a_typical_job_now_plans_the_reference_row_at_three_dollars():
     assert all(item["max_cost_usd"] == "4.00" for item in candidates)
     assert row["status"] == "selected" and row["max_cost_usd"] == row["cost_quote"]["maximum_cost_usd"] == "3.00"
     assert control.REFERENCE_CAP_USD == Decimal("3.00")
-    # $0.80/h x 4 h = $3.20 would not fit: the row's TTL is 3.75 h, so $0.80 x 3.75 h = $3.00.
-    assert row["execution_spec"]["hard_ttl_seconds"] == 13_500
+    # Fitted like a site-fitted quote: the $4.00 quote kept $0.80 above $0.80/h x 4 h; the $3.00 row keeps
+    # half of that, $0.40, so its bound is $2.60: 3.25 h at $0.80/h.
+    assert row["execution_spec"]["hard_ttl_seconds"] == 11_700
+    assert Decimal(row["max_cost_usd"]) - Decimal("2.60") == Decimal("0.40")
+    assert "fitted_to_scripted_reference_cap" in row["cost_quote"]["price_source"]
     assert row["admission_digest"] == canonical_digest(row["execution_spec"])
     assert row["cost_quote"]["quote_digest"] == canonical_digest(row["cost_quote"], digest_field="quote_digest")
     assert value["maximum_planned_cost_usd"] == "15.00"
@@ -696,21 +793,14 @@ def test_the_launch_check_accepts_the_capped_row(monkeypatch):
     launch._check_quote(value, row)
 
 
-@pytest.mark.parametrize("case", ["leftover_short", "waiting_row_fundable", "ttl_too_short"])
+@pytest.mark.parametrize("case", ["leftover_short", "ttl_too_short"])
 def test_the_capped_row_is_still_refused_when_the_money_or_the_ttl_does_not_hold(case):
     catalog, capabilities, quotes = catalog_with_scripted(7, maximum="4.00", scripted_maximum="4.00")
     capabilities = rerated(capabilities, "blueprint_scripted_test_arm", rate="0.80", ttl=14_400)
-    learned = [row["candidate_id"] for row in catalog["candidates"] if row["policy"]["kind"] != "scripted"]
     if case == "leftover_short":
         # The site has $14.50 left: $2.50 after the three selected rows, under the $3.00 cap.
         value = website_plan(catalog, capabilities, quotes, site_remaining_usd="14.50")
         row = value["candidates"][-1]
-    elif case == "waiting_row_fundable":
-        plan_value = {"budget_usd": "15.00", "candidates": [
-            {"candidate_id": learned[0], "status": "selected", "blockers": [], "max_cost_usd": "4.00"},
-            {"candidate_id": learned[1], "status": "waitlisted", "blockers": [WAITLIST_BLOCKER], "max_cost_usd": "2.00"}]}
-        row = control.plan_control_row(plan_value, catalog, scene(), capabilities=capabilities, cost_quotes=quotes,
-                                       site_remaining_usd=None, now=NOW)
     else:
         # At $10/h the $3.00 cap holds only 18 minutes, under the 30-minute shortest TTL.
         capabilities = rerated(capabilities, "blueprint_scripted_test_arm", rate="10.00", ttl=14_400)
@@ -721,3 +811,61 @@ def test_the_capped_row_is_still_refused_when_the_money_or_the_ttl_does_not_hold
 def test_a_four_dollar_row_planned_before_the_cap_still_validates():
     older = with_control(queue_plan(count=2), cost="4.00")
     assert older["candidates"][-1]["max_cost_usd"] == "4.00" and validate_screening_plan(deepcopy(older)) == older
+
+
+# ---- the default body: the one nearest the learned candidates' own robot --------------------------------------
+
+FR3_FIT = ("franka_research_3", FRANKA_BODY)
+
+
+@pytest.mark.parametrize("verdicts, preferred, expected", [
+    # Nearest body first within the fitting tier, ahead of the website's pick and the table's order.
+    (("fits", "fits_spec"), ["universal_robots_ur5e"], ("franka_research_3", "nearest_body")),
+    (("fits", "fits"), None, ("franka_research_3", "nearest_body")),
+    # Never an unknown nearest body over a fitting model: the website's pick, then the table.
+    (("fits", "unknown"), ["universal_robots_ur5e"], ("universal_robots_ur5e", "preferred")),
+    (("fits", "unknown"), None, ("universal_robots_ur5e", "fit_table")),
+    # Never doesnt_fit, nearest or not.
+    (("fits_spec", "doesnt_fit"), None, ("universal_robots_ur5e", "fit_table")),
+    # Among unknowns only, the nearest body still goes first.
+    (("unknown", "unknown"), None, ("franka_research_3", "nearest_body")),
+])
+def test_the_body_nearest_the_candidates_robot_is_the_default(verdicts, preferred, expected):
+    catalog, capabilities, quotes = catalog_with_bodies([UR5E, FRANKA_BODY])
+    table = fit((*UR5E_FIT, verdicts[0]), (*FR3_FIT, verdicts[1]))
+    extra = {control.PREFERENCE_CAPABILITY: preferred} if preferred else {}
+    value = website_plan(catalog, {**capabilities, control.FIT_CAPABILITY: table, **extra}, quotes)
+    marker = value["candidates"][-1]["known_good_control"]
+    assert (marker["for_model_id"], marker["chosen_by"]) == expected
+    assert validate_screening_plan(value) == value
+    Draft202012Validator(json.loads(PLAN_SCHEMA.read_text())).validate(value)
+
+
+def test_the_nearest_body_map_names_real_catalog_models_and_a_registered_body():
+    from blueprint_pipeline.droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
+
+    spec = json.loads((ROOT / "src/blueprint_pipeline/_catalog_data/robot_spec_catalog.v1.json").read_text())
+    recipes = {model["model_id"]: model.get("recipe_id") for model in spec["models"]}
+    assert set(control.NEAREST_BODY_MODELS) == {DROID_POLICY_CANARY_PRESET_ID}
+    models = control.NEAREST_BODY_MODELS[DROID_POLICY_CANARY_PRESET_ID]
+    assert all(model in recipes for model in models)
+    # The FR3's recipe is itself a registered scripted body; the Panda's (the DROID asset) is not one.
+    catalog = json.loads((ROOT / "config/beta_policy_candidates.v1.json").read_text())
+    scripted = {row["candidate_id"] for row in catalog["candidates"] if row["policy"]["kind"] == "scripted"}
+    assert "blueprint_scripted_" + recipes["franka_research_3"] in scripted
+    assert "blueprint_scripted_" + recipes["franka_emika_panda"] + "_robotiq_2f85_sim" not in scripted
+
+
+@pytest.mark.parametrize("change", ["candidate_with_other_rule", "model_with_candidate_rule", "unknown_rule"])
+def test_a_chosen_by_rule_is_validated(change):
+    value = with_control(queue_plan(count=2))
+    marker = value["candidates"][-1]["known_good_control"]
+    if change == "candidate_with_other_rule":
+        marker["chosen_by"] = "fit_table"
+    else:
+        del marker["for_candidate_id"]
+        marker.update(for_model_id="universal_robots_ur10e",
+                      chosen_by="candidate_robot" if change == "model_with_candidate_rule" else "guess")
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    with pytest.raises(BetaPolicyScreeningPlanError):
+        validate_screening_plan(value)

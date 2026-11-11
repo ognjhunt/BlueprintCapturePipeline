@@ -268,17 +268,28 @@ on the body of a selected learned candidate, and every learned candidate a rigid
 job selects today is on the DROID Franka, which has no scripted body, so the row always said
 `known_good_control_unavailable:embodiment`. Now, when no selected candidate's
 robot has a scripted body, the row takes a registered scripted body for a model
-the job's own robot fit table says fits: `fits` before `fits_spec`, `unknown`
-only if neither has a body, never `doesnt_fit`, ties in the table's order. The
-row records the spec-catalog model (`for_model_id`) and, when the body has no
-station of its own in the scene and stands at the scene's robot station,
-the code `scene_packet_station`. Its money rule is now the one its docstring
-promised: it runs only when its cap fits in what the selected rows leave of the
-plan budget and the site's allowance, and that leftover could not pay for any
-row still waiting for money. Its own cap is $3.00 (step 4); no other cap,
-limit or budget value changed. The
-publication carries the check's outcome flag and its `episodes_succeeded` of
-`episodes_scored` on the row `blueprint_scripted_<body>`.
+the job's own robot fit table says fits (`fits` or `fits_spec`; `unknown` only
+if none of those has a body; never `doesnt_fit`). Within that, the body nearest
+the candidates' own robot comes first: for the DROID Franka, the Franka FR3
+with the same Robotiq 2F-85 gripper (a different asset from the DROID arm, the
+nearest one registered). Then the website's picks, if it sends them (step 2),
+then the table's order. The row records the spec-catalog model
+(`for_model_id`), which rule chose it (`chosen_by`) and, when the body stands at
+the scene's robot station rather than its own, the code `scene_packet_station`.
+
+**Money: it runs last, on what is left over.** It is planned when its cap fits
+what the selected candidates leave of the plan budget and the site's allowance.
+At run time nothing that funds, waitlists, refills or closes a learned
+candidate counts it while it is unreserved, so every learned row ends exactly
+as it would without it (a test runs the same queue with and without the row
+and compares every learned row's end and money). It is reserved only after
+every learned row of its campaign has ended, through the ordinary reservation,
+so the plan budget, the site limit, the job ceiling and the account limit
+bound it. If its cap does not fit then, it ends at once as
+`known_good_control_unavailable:budget`; it never waits on money, so the
+campaign always completes. Once reserved, its money counts against the site
+limit like any row's. The publication carries the check's outcome flag and its
+`episodes_succeeded` of `episodes_scored` on the row `blueprint_scripted_<body>`.
 
 **It is not inert.** The host registry (`/etc/blueprint/team-evaluation-registry.json`,
 unchanged since 2026-10-31) registers all 24 scripted bodies, and the effective
@@ -286,10 +297,11 @@ catalog of the newest campaign (2026-11-10) lists every one enabled, the UR10e
 (`universal_robots_ur10e_robotiq_2f85_sim`) among them, with its model file
 present. So the first new rigid job after a deploy can plan this row.
 
-**Steps to the first real check, on the UR10e body for example.**
+**Steps to the first real check (by default on the FR3 body).**
 
 1. *Host operation:* merge, then deploy in the daily window (D-08). Nothing to
-   prepare for the UR10e: it was imported by batch `public-robot-imports-20261031-11`.
+   prepare: the FR3 body (`franka_research_3_robotiq_2f85_sim`) is registered,
+   enabled and its model is on the host, as is every other scripted body.
 2. *WebApp change (optional):* the check's body can follow the robots the
    website names, which only picks which fitting body the simulation check
    runs on. The WebApp's
@@ -299,24 +311,27 @@ present. So the first new rigid job after a deploy can plan this row.
    runner-up. Among fitting models (`fits` and `fits_spec` together) a
    preferred one goes first; it never beats a fitting model with an `unknown`
    one and never picks `doesnt_fit`. The marker records `preferred: true|false`.
-   An unusable value is ignored and logged. Until the WebApp sends the field,
-   the fit table's order applies, and the table lists the UR5e before the UR10e.
+   An unusable value is ignored and logged. The body nearest the candidates'
+   robot (the FR3 today) still comes before the website's picks. Without
+   either, the fit table's order applies.
 3. *Host operation (none to start):* a new rigid pick-and-place website job.
    Its scene handoff must carry a robot fit table bound to the job; capture-447's
    handoff has none, so a re-plan of that job gets no fallback body.
 4. *Money:* the scripted body is quoted at the per-candidate cap, $4.00
-   (`DEFAULT_CANDIDATE_CAP_USD`; $0.80/h for 4 h). The reference row lowers that
-   to its own cap, $3.00 (`REFERENCE_CAP_USD`, owner approval 2026-11-11), and
-   shortens its hard TTL to 3.75 h so $0.80/h x 3.75 h = $3.00 still fits. That
-   is the $3.00 a typical rigid job leaves after three learned policies at
-   $4.00 of the $15 plan, so the row is planned there. It is still refused when
-   less is left or the leftover could pay for a waiting row. No other cap,
-   budget or limit changed. Whether 3.75 h is enough for three scripted tries
-   has never been measured. On 2026-11-11 the month stood at $147.16 of $200,
-   forecast to reach the limit on 2026-11-15.
+   (`DEFAULT_CANDIDATE_CAP_USD`; $0.80/h for 4 h, $0.80 of headroom). The
+   reference row lowers that to its own cap, $3.00 (`REFERENCE_CAP_USD`, owner
+   approval 2026-11-11), by the plan's existing rule for fitting a quote to a
+   smaller amount: it keeps at least half the original headroom, $0.40, so its
+   hard time limit is 3.25 h ($0.80/h x 3.25 h = $2.60). That fits the $3.00 a
+   typical rigid job leaves after three learned policies at $4.00 of the $15
+   plan. No other cap, budget or limit changed. On 2026-11-11 the month stood
+   at $147.16 of $200, forecast to reach the limit on 2026-11-15.
 5. What one scripted run costs and how long it takes has never been measured.
+   Learned runs measured 11–19 min to the first episode and 4.3–8.5 min per
+   episode; three tries at those rates would take about 25–45 min of the
+   3.25 h limit, if a scripted run behaves like a learned one.
 
-Not needed for the UR10e, but for any new body: an import needs 24 GiB free on
+Not needed for the registered bodies, but for any new one: an import needs 24 GiB free on
 `/mnt/blueprint-work` above its floor; on 2026-11-11 it had 8.2 GiB, so new
 imports are refused until about 16 GiB is freed (host operation). The stuck
 grant `public-robot-imports-20261030-01` spent nothing, expired on 2026-10-31 and is
