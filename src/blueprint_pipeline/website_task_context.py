@@ -310,6 +310,13 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
 # grant's digest, policy, purpose and context.
 _SPONSORSHIP_EXPIRED = "website_control_scene-sponsorship_http_409:consent_expired"
 _SPONSORSHIP_MISSING = "website_control_scene-sponsorship_http_409:website_scene_sponsorship_missing"
+# The same read's answer once the WebApp has ended a job that never received a grant
+# (websiteJobWindowSweep; WEBSITE_JOB_NO_GRANT_ENDED_CODE). A later creating request would issue
+# the job a first grant and revive what the site was told had ended.
+NO_GRANT_ENDED_CODE = "website_scene_job_no_grant_ended"
+_NO_GRANT_ENDED = "website_control_scene-sponsorship_http_409:" + NO_GRANT_ENDED_CODE
+#: Where a capture's delivery retains the grant it ran under (website_task_evidence).
+RETAINED_GRANT_FILE = "pipeline/website_scene_sponsorship.json"
 
 
 def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: float,
@@ -331,14 +338,16 @@ def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: 
 
 
 def read_scene_sponsorship_ending(*, task_context: Mapping[str, Any]) -> ValueError | None:
-    """The WebApp's ``consent_expired`` refusal of this context's retained grant, or None.
+    """The WebApp's ``consent_expired`` or ``website_scene_job_no_grant_ended`` refusal, or None.
 
     The ``create: false`` scene-sponsorship read: the WebApp never creates,
     renews or writes a grant for it, applies a verified owner window extension
     (``honour_execution_window``), and answers ``website_scene_sponsorship_missing``
+    (or, once it has ended the grantless job, ``website_scene_job_no_grant_ended``)
     rather than issuing one. A confirmed context carries no ``purpose`` field but
     is read under the scene_preparation scope it was loaded with. A returned grant,
-    or any other refusal, is None. Transport errors propagate.
+    or any other refusal, is None. Transport errors propagate. Callers check which
+    of the two codes they act on.
     """
     payload = {"request_id": task_context["request_id"], "scene_id": task_context["scene_id"],
                "purpose": "scene_preparation", "expected_task_context_digest": task_context["context_digest"],
@@ -347,8 +356,31 @@ def read_scene_sponsorship_ending(*, task_context: Mapping[str, Any]) -> ValueEr
         website_webapp_request(capture_id=task_context["capture_id"], operation="scene-sponsorship",
                                payload=payload)
     except ValueError as exc:
-        return exc if str(exc) == _SPONSORSHIP_EXPIRED else None
+        return exc if str(exc) in {_SPONSORSHIP_EXPIRED, _NO_GRANT_ENDED} else None
     return None
+
+
+def no_grant_ending(*, capture_root: str | Path | None, task_context: Mapping[str, Any]) -> ValueError | None:
+    """Asked before a capture's FIRST grant: the WebApp's typed no-grant ending of its job, or None.
+
+    A capture that retains a grant is never asked (no read at all), nor is a withdrawn one, whose
+    withdrawal keeps its own ending. Otherwise one non-creating read (``read_scene_sponsorship_ending``),
+    and only its exact ``website_scene_job_no_grant_ended`` refusal is returned: the caller raises it,
+    and the listener ends the job through its one terminal path. ``website_scene_sponsorship_missing``,
+    ``consent_expired`` (the creating request meets it as before), any other answer, an outage or an
+    unreadable reply is None, and the flow asks for the grant exactly as before. Creates, reserves,
+    releases and settles nothing. ``capture_root`` None: a capture with no local state at all.
+    """
+    try:
+        if capture_root is not None:
+            from .website_atlas_preview_store import capture_withdrawn
+            grant = Path(capture_root) / RETAINED_GRANT_FILE
+            if grant.exists() or grant.is_symlink() or capture_withdrawn(Path(capture_root)):
+                return None
+        refusal = read_scene_sponsorship_ending(task_context=task_context)
+    except Exception:  # noqa: BLE001 - nothing but the exact typed answer may end a job
+        return None
+    return refusal if refusal is not None and str(refusal) == _NO_GRANT_ENDED else None
 
 
 def enqueue_website_prepared_scene(*, task_context: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:

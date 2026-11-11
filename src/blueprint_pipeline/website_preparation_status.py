@@ -143,6 +143,13 @@ def _read(path: Path) -> dict[str, Any]:
 #: its revision, never due, retried or counted; a newer producer revision starts a new delivery.
 RETIRED_STATE = "retired"
 RETIRED_REASON = "owner_retired_parked_delivery"
+#: A job the WebApp ended itself because its grant never arrived (``website_scene_job_no_grant_ended``):
+#: the WebApp recorded and shows that ending, so no status report is owed for it. Its delivery record
+#: is written retired at the ending's revision, superseding any earlier undelivered report, and is
+#: never due, retried or counted. Every other ending and status is reported as before.
+NOT_OWED_REASON = "webapp_recorded_this_ending"
+NOT_OWED_EXPLANATION = ("no preparation status report is owed: the WebApp recorded this job's "
+                        "no-grant ending itself (website_scene_job_no_grant_ended) and already shows it")
 MAX_RETIREMENT_EVIDENCE = 500
 
 
@@ -154,9 +161,12 @@ def _read_delivery(path: Path) -> dict[str, Any]:
              and type(value.get("revision")) is int and value["revision"] > 0)
     if value["state"] == RETIRED_STATE:
         retired_at, evidence = value.get("retired_at_epoch"), value.get("retirement_approval_evidence")
-        _require(type(retired_at) in (int, float) and math.isfinite(retired_at) and retired_at >= 0
-                 and value.get("retired_reason") == RETIRED_REASON
-                 and isinstance(evidence, str) and 1 <= len(evidence) <= MAX_RETIREMENT_EVIDENCE)
+        _require(type(retired_at) in (int, float) and math.isfinite(retired_at) and retired_at >= 0)
+        if value.get("retired_reason") == NOT_OWED_REASON:
+            _require(value.get("report_not_owed") == NOT_OWED_EXPLANATION)
+        else:
+            _require(value.get("retired_reason") == RETIRED_REASON
+                     and isinstance(evidence, str) and 1 <= len(evidence) <= MAX_RETIREMENT_EVIDENCE)
     validate_selectors(value.get("selectors"))
     for field in ("delivery_attempt_count", "delivery_failure_count"):
         counter = value.get(field, 0)
@@ -462,6 +472,17 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
             # The owner retired this revision's delivery: it stays retired, and its hint stays gone.
             update_index(root, old)
             return
+        from .website_task_context import NO_GRANT_ENDED_CODE
+        if ledger.get("status") == "terminal_authority_ended" and ledger.get("terminal_code") == NO_GRANT_ENDED_CODE:
+            # Owed nothing: the WebApp declared this ending. Supersede any earlier report, retired at once.
+            retired = {"schema_version": "website_preparation_status_delivery.v1", "state": RETIRED_STATE,
+                       "selectors": selected, "revision": revision, "retired_at_epoch": time.time(),
+                       "retired_reason": NOT_OWED_REASON, "report_not_owed": NOT_OWED_EXPLANATION,
+                       **({"superseded_delivery": {key: old.get(key) for key in ("state", "revision")}}
+                          if old else {})}
+            write_json(path, retired)
+            update_index(root, retired)
+            return
         if old.get("selectors") == selected and old.get("revision") == revision:
             if old.get("state") == "pending" and "pending_since_epoch" not in old:
                 old = {**old, "pending_since_epoch": time.time(), "next_attempt_at_epoch": 0.0}
@@ -502,11 +523,12 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
     """Existing listener tick retries delivery independently of provider work.
 
     With the running listener module, a silent job the WebApp refuses as expired
-    is also ended (``end_expired_preparation``).
+    is also ended (``end_expired_preparation``), and so is a silent job with no
+    retained grant that the WebApp ended without one (``end_no_grant_preparation``).
     """
     from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .website_preparation_terminal import (
-        end_expired_preparation, note_sweep_liveness, record_unretried_preparation,
+        end_expired_preparation, end_no_grant_preparation, note_sweep_liveness, record_unretried_preparation,
     )
     from .website_preparation_delivery_index import due, defer_unavailable, update as update_index, METRICS_FILE
     from .website_task_context import website_webapp_request
@@ -537,7 +559,9 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
             if alive_since is not None:
                 # An expired grant ends the job; anything else silent is only overdue.
                 if listener is not None:
-                    end_expired_preparation(root, alive_since=alive_since, listener=listener)
+                    # Exclusive: one needs a retained grant, the other none. At most one read per visit.
+                    if end_expired_preparation(root, alive_since=alive_since, listener=listener) is None:
+                        end_no_grant_preparation(root, alive_since=alive_since, listener=listener)
                 record_unretried_preparation(root, alive_since=alive_since)
             retain_preparation_wakeup(root)
         except Exception:

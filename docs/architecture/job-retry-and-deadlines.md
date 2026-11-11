@@ -107,6 +107,14 @@ extension. The WebApp half landed as WebApp #1257.
 - On the Pipeline, the same window already ends an Atlas job
   (`atlas_preview_expired`), a scene intent (`authority_expired`) and a silent
   preparation whose grant the WebApp refuses as expired (WP-03).
+- A job that never received a grant is ended by the WebApp after the same
+  length of time (WebApp #1260), and the host then ends its own preparation.
+  Before the host would ask for a capture's first grant it asks without
+  creating one, and the answer `website_scene_job_no_grant_ended` ends the
+  job through the one terminal path. The silence sweep asks the same question
+  for a preparation that has stopped retrying, at most once per silence window.
+  The host sends the WebApp no status report for this ending: the WebApp
+  recorded it itself.
 
 ## 5. Not covered
 
@@ -144,6 +152,6 @@ extension. The WebApp half landed as WebApp #1257.
    Pipeline ledger stays as it was.
 4. **Refusals cached by a revision constant** (Atlas levelling). A timed retry
    of the same inputs and code gives the same answer.
-5. **A website job that never received a grant has no deadline.** The WebApp
-   sweep reads the grant's window, and such a job has none, so it is not
-   ended.
+5. **A job that ended with no grant stays ended on the host.** If the owner
+   later issues a grant, the WebApp shows the job live again, but the host
+   does not run that delivery again. It needs a new handoff.

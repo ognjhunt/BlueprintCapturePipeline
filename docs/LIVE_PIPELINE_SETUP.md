@@ -547,7 +547,8 @@ the handoff from staged raw sidecars, writes a `robot_eval_job_request.v1`
 envelope into `BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX`, and records the staged
 request path in `pipeline_job_ledger.json`. Terminal output is committed through
 `pipeline_job_output_commit.json`. When the WebApp has ended a website scene's
-authority (a 409 `consent_expired` or `source_revoked`), the job finishes as
+authority (a 409 `consent_expired` or `source_revoked`), or ended a job that
+never received a grant (`website_scene_job_no_grant_ended`), the job finishes as
 `terminal_authority_ended` with `pipeline_job_terminal_receipt.json` and the
 message is acknowledged; a redelivery of the same payload is acknowledged without
 staging, and only a different payload reopens the job. Retryable/blocked outcomes

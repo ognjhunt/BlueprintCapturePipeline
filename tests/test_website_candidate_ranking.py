@@ -223,3 +223,69 @@ def test_preparation_ranks_once_grounded_targets_exist_and_before_the_native_han
     call = events[0][1]
     assert call["task_masks"] == MASKS and call["pipeline_dir"] == pipeline
     assert call["task_context"]["context_digest"] == context()["context_digest"]
+
+
+def _resend_layout(answer_text, *, other_text=None, own_completed=False):
+    """``retained_gemini_call`` as #3555 lays out a resent call: the request's own file stays unanswered,
+    the result lives in ``<stem>.resend-1.json``; optionally a completed file with another result."""
+    def call(*, output_root, binding, task_context, maximum_cost_usd, **_):
+        request = {"binding": dict(binding), "task_context_digest": task_context["context_digest"],
+                   "maximum_cost_usd": maximum_cost_usd}
+        digest = canonical_digest(request)
+        stem = digest[7:]
+        output_root.mkdir(parents=True, exist_ok=True)
+        result = {"finish_reason": "STOP", "text": answer_text}
+        dispatch = canonical_digest({"kind": "website_gemini_resend_v1", "request_digest": digest, "resend_index": 1})
+        (output_root / f"{stem}.json").write_text(json.dumps(
+            {"status": "submitting", "request_digest": digest, "request": request} if not own_completed else
+            {"status": "completed", "request_digest": digest, "request": request, "result": result,
+             "result_digest": canonical_digest(result)}))
+        (output_root / f"{stem}.unanswered-1.json").write_text(json.dumps(
+            {"schema_version": "website_gemini_unanswered.v1", "status": "counted_as_spent", "request_digest": digest}))
+        if other_text is not None:
+            other = {"finish_reason": "STOP", "text": other_text}
+            (output_root / f"{stem}.replacement-{'0' * 16}.json").write_text(json.dumps(
+                {"status": "completed", "request_digest": "sha256:" + "e" * 64, "request": request,
+                 "result": other, "result_digest": canonical_digest(other)}))
+        (output_root / f"{stem}.resend-1.json").write_text(json.dumps(
+            {"status": "completed", "request_digest": dispatch, "request": request, "result": result,
+             "result_digest": canonical_digest(result), "original_request_digest": digest, "resend_index": 1}))
+        return result
+    return call
+
+
+def test_ranking_names_the_resent_receipt_that_holds_the_result(tmp_path, monkeypatch):
+    calls = []
+    text = json.dumps(partial_answer(""))
+    monkeypatch.setattr(ranking, "retained_gemini_call", _resend_layout(text, other_text='{"rankings": []}'))
+    value = rank(tmp_path, calls)
+    receipt = json.loads((tmp_path / "pipeline" / "website_candidate_ranking" / "receipts" /
+                          value["receipt_path"].rsplit("/", 1)[1]).read_text())
+    # The resend holds the answer; the unanswered own file and the replacement with another result are not named.
+    assert value["receipt_path"].endswith(".resend-1.json") and receipt["status"] == "completed"
+    assert value["request_digest"] == receipt["request_digest"] != receipt["original_request_digest"]
+    assert receipt["result"]["text"] == text and value["status"] == "ranked"
+
+
+def test_ranking_prefers_the_requests_own_receipt_when_it_holds_the_result(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ranking, "retained_gemini_call", _resend_layout(json.dumps(partial_answer("")),
+                                                                        own_completed=True))
+    value = rank(tmp_path, calls)
+    assert value["receipt_path"].endswith(value["request_digest"][7:] + ".json")
+
+
+def test_a_completed_receipt_with_another_result_is_never_named(tmp_path, monkeypatch):
+    calls = []
+    layout = _resend_layout('{"rankings": []}')
+
+    def returns_another(**kwargs):
+        layout(**kwargs)  # Every completed file on disk holds a different result than the one returned.
+        return {"finish_reason": "STOP", "text": json.dumps(partial_answer(""))}
+    monkeypatch.setattr(ranking, "retained_gemini_call", returns_another)
+    value = rank(tmp_path, calls)
+    # Nothing matches: today's values, the request's own file and digest.
+    stem = value["receipt_path"].rsplit("/", 1)[1]
+    assert stem == value["request_digest"][7:] + ".json"
+    own = json.loads((tmp_path / "pipeline" / "website_candidate_ranking" / "receipts" / stem).read_text())
+    assert own["request_digest"] == value["request_digest"] and own["status"] == "submitting"
