@@ -307,7 +307,10 @@ def test_every_section_the_capacity_controller_writes_reaches_door_status() -> N
     report = {"level": "ok", "alerts": [], "mounts": [], "usage": {"status": "complete"},
               "volume_resize": {"status": "not_needed"}, "reclaim_outlook": {"reclaimable_bytes": 0},
               "stall": {"observed_at_epoch": 1.0, "checks": {}},
-              "provider_spend": {"observed_at_epoch": 1.0, "lines": {}, "providers": {}}}
+              "provider_spend": {"observed_at_epoch": 1.0, "lines": {}, "providers": {}},
+              "website_withdrawal_deletion": {"status": "observed", "approval_status": "absent",
+                                              "withdrawals": {"awaiting_owner_approval": 1}}}
+    assert "website_withdrawal_deletion" in capacity_summary(report)
     assert set(capacity_summary(report)) <= set(_CAPACITY_KEYS)
 
 

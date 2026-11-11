@@ -721,8 +721,15 @@ def test_a_review_recorded_before_composites_keeps_its_candidates_and_is_never_b
     assert not (whole / native.CANDIDATE_RECORD).exists()
 
 
-def test_an_interrupted_legacy_review_keeps_its_candidates_and_reserves_no_new_call(tmp_path, reviewer, monkeypatch):
-    """An earlier release's review intent survived a stop before ``whole_view_review.json`` was written."""
+@pytest.mark.parametrize("intent", ["reserved", "no_reservation_on_record"])
+def test_an_interrupted_review_is_asked_again_only_under_one_new_reservation(tmp_path, reviewer, monkeypatch, intent):
+    """A review call stopped mid-flight left its intent ``submitting``: it may have been billed.
+
+    Every release wrote that intent with the reservation it was admitted under. Such a dispatch is
+    counted as spent (its hold kept) and the review is asked once more under exactly one new
+    reservation (``retained_gemini_call``). An intent with no reservation on record proves nothing
+    about what it spent: nothing is reserved or asked, and the review stays unresolved.
+    """
     from blueprint_pipeline import atlas_whole_view_review as review
     frames, calls = [*three_views(), gap_view(keep(slice(20, None)))], []
     reviewer.admit = {"candidate-0003"}
@@ -738,12 +745,27 @@ def test_an_interrupted_legacy_review_keeps_its_candidates_and_reserves_no_new_c
     intents = list((whole / "whole_view_review/receipts").glob("*.json"))
     assert len(intents) == 1 and json.loads(intents[0].read_text())["status"] == "submitting"
     assert not (whole / "whole_view_review.json").exists() and len(reviewer.reserved) == 1
+    if intent == "no_reservation_on_record":
+        stored = json.loads(intents[0].read_text())
+        stored.pop("admission")
+        intents[0].unlink()
+        intents[0].write_text(json.dumps(stored))
     monkeypatch.setattr(review, "_ask", answer)
     done = refined(frames, tmp_path / "draft-refined", ["completed"], calls)
-    # The same binding finds the uncertain call: nothing is admitted and nothing more is reserved.
-    assert len(reviewer.reserved) == 1 and len(reviewer.asked) == 0
     record = json.loads((whole / "whole_view_review.json").read_text())
-    assert record["status"] == "unresolved" and "candidate_basis" not in record
-    assert not (whole / native.CANDIDATE_RECORD).exists()
-    assert [call["output_root"] for call in calls] == [tmp_path / "draft-refined-minimal/native"]
-    assert done["refined_splat"]["request_form"] == "documented_minimal"
+    if intent == "reserved":
+        # One new reservation, distinct from the first, paid for the one new question.
+        reserved = [row["binding_digest"] for row in reviewer.reserved]
+        assert len(reserved) == len(set(reserved)) == 2 and len(reviewer.asked) == 1
+        assert record["status"] == "reviewed"
+        assert len(list((whole / "whole_view_review/receipts").glob("*.unanswered-1.json"))) == 1
+        # A restart buys nothing again.
+        refined(frames, tmp_path / "draft-refined", [], calls)
+        assert len(reviewer.reserved) == 2 and len(reviewer.asked) == 1
+    else:
+        # Never a dispatch without a reservation: nothing admitted, reserved or asked.
+        assert len(reviewer.reserved) == 1 and len(reviewer.asked) == 0
+        assert record["status"] == "unresolved" and "candidate_basis" not in record
+        assert not (whole / native.CANDIDATE_RECORD).exists()
+        assert [call["output_root"] for call in calls] == [tmp_path / "draft-refined-minimal/native"]
+        assert done["refined_splat"]["request_form"] == "documented_minimal"

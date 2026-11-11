@@ -186,15 +186,88 @@ has been stuck and how many there are (`count`, `targets`).
   `/var/lib/blueprint-operator-door/requests/holds/`. Start it through the
   door, or place an owned hold if it is off on purpose.
 
+Four job stores had no check until 2026-11-10. The unit names each root as
+that store's own worker unit does. A root that does not exist is "nothing to
+check"; a store whose own trigger has a door hold is not read (`status: held`).
+Each default is one of the two waits above: 90 minutes where the job waits on
+the pipeline itself, 8 hours where a worker may hold it for whole runs. A team
+scene request, a rigid probe or a screening campaign pages only while its
+capture still has a scene intent with an open execution window (not revoked,
+extensions included), the rule the progression check applies to an intent's own
+row. After that the row is history (`execution_window` in the check's
+`dispositions`): it cannot be funded or run again, and a refusal from months ago
+does not page for good. Every listed intent is read for this. When the intent
+store cannot be read in full (unreadable, more than 10,000 entries, or the
+tick's deadline), every row stays watched and the tick reports
+`stall_check_incomplete` with `execution_window_scan_incomplete`.
+
+- `atlas_preview_stalled` (`BLUEPRINT_STALL_ATLAS_MINUTES`, 90): a website
+  Atlas preview job
+  (`pubsub-handoffs/<bucket>/scenes/site-*/captures/*/pipeline/atlas/preview_job.json`)
+  made no progress for 90 minutes and is not in a scheduled wait that is still
+  ahead. Progress is `updated_at_epoch` (every step that returns). The next
+  attempt is the later of `next_attempt_at_epoch` and `retry_at_epoch`: an
+  outage's backoff (`transient_failures`, `last_transient_reason`), the six
+  timed refusal retries (`refusal_retries`, `last_refusal_reason`, also used
+  for a killed step) or a `needs_input` recheck. A wait still ahead is quiet;
+  one overdue by 90 minutes pages (`status: retry_overdue`, or
+  `recheck_overdue` for `needs_input`), because the worker is not taking it.
+  A `processing` job with no wait and no progress pages as `status: silent`,
+  and a `step_in_flight` mark 90 minutes old as `status: step_unreturned`.
+  `phase` is the job's stage. The worker steps a job every minute and a deploy
+  pauses its timer for 30-40 minutes, so 90 minutes is past both. `ready`,
+  `failed` and `withdrawn` jobs, `needs_input` jobs with no recheck, and any
+  refusal that names privacy, rights, consent or money (the worker's own
+  `hard_stop_kind` reading included) never page. An outage that keeps failing
+  is quiet while its backoff is ahead (at most 1 hour); its 7-day expiry ends
+  it. The job does not record when an outage or refusal streak began, so the
+  page cannot say how long it has been retrying.
+- `team_scene_packet_stalled` (`BLUEPRINT_STALL_TEAM_SCENE_MINUTES`, 480): a
+  request in `team-scene-packets/pending/` or `processing/` for 8 hours (by
+  its ctime there), or a `status/<key>.json` that has said `blocked` for 8
+  hours and is not back in a queue directory. A block whose next timed retry
+  (`automatic_retry.not_before`, or `refusal_retry.not_before` on the six timed
+  refusal retries) is still ahead is quiet; once it falls due the age counts
+  from then (`status: retry_overdue`).
+  A block on the site owner's confirmation
+  (`team_scene_owner_contract_invalid:*`), or one that names a withdrawn
+  capture, consent, rights or an approval, never pages.
+- `rigid_probe_stalled` (`BLUEPRINT_STALL_RIGID_PROBE_MINUTES`, 480): an entry
+  in `rigid-robot-free-probes/pending/` 8 hours after it was queued or after
+  its latest attempt last wrote a record, whichever is later (two funded
+  attempts last at most an hour each). The page's `status` is the `state` of
+  the latest attempt's `rigid_robot_free_probe_ingest.json`;
+  `attempt_unsettled` when that attempt has no such record yet (its allocator
+  is still running or its fate is unknown), or `no_attempt_recorded`.
+  `website_grant_refused` (the WebApp refused the capture's grant; the runner
+  asks again every 3 hours) never pages. A retired entry in `done/` whose
+  `staging_refused` terminal waits for its next timed retry (sealed time plus
+  the schedule step its `refusal_retry` supersession markers reach) is quiet
+  until due and pages once overdue by 8 hours (`status: retry_overdue`).
+- `screening_campaign_stalled` (`BLUEPRINT_STALL_SCREENING_MINUTES`, 480): a
+  campaign in `beta-policy-screening/screening_ledger.v1.json` has rows that
+  are `pending`, `preparing`, `launching`, `running` or
+  `reconciliation_required`, and its `updated_at` is 8 hours old (a run's hard
+  TTL is at most 4 hours). A campaign whose remaining rows are `waitlisted`, or
+  whose rows all name consent, rights or an approval, never pages. A `blocked`
+  row waiting for the coordinator's timed re-plan is not a row still to run,
+  so it is quiet; the ledger records no due time for that re-plan, so an
+  overdue one is not seen.
+- `screening_publication_stalled` (`BLUEPRINT_STALL_PUBLICATION_MINUTES`, 90):
+  a campaign's `revision` differs from its `published_revision` on every tick
+  for 90 minutes. The ledger does not record since when, so the age counts
+  from the first tick that saw it (`age_is_lower_bound`), and one tick that
+  sees it published forgets it.
+
 A persisting stall repeats hourly; a newly stuck target posts at once.
 `stall_check_incomplete` (warn) means a check could not look, for example an
-unreadable root or a failed `systemctl show`. The `stall` section of
-`capacity/summary.json` lists what each check examined and why rows were
-skipped. Thresholds are minutes in the environment file:
+unreadable root, job or ledger, or a failed `systemctl show`. The `stall`
+section of `capacity/summary.json` lists what each check examined and why rows
+were skipped. Thresholds are minutes in the environment file:
 `BLUEPRINT_STALL_PROGRESSION_MINUTES`, `BLUEPRINT_STALL_HANDOFF_MINUTES`,
-`BLUEPRINT_STALL_LAUNCH_GRACE_MINUTES` and `BLUEPRINT_STALL_TRIGGER_MINUTES`;
-`BLUEPRINT_STALL_ALARM=0` turns the alarm off. It never changes a queue, a
-progression, a provider or a unit.
+`BLUEPRINT_STALL_LAUNCH_GRACE_MINUTES`, `BLUEPRINT_STALL_TRIGGER_MINUTES` and
+the five named above; `BLUEPRINT_STALL_ALARM=0` turns the alarm off. It never
+changes a queue, a job, a progression, a provider or a unit.
 
 ## Preparation status callbacks
 

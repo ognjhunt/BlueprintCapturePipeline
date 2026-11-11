@@ -52,8 +52,9 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   refuses a row whose record lies outside the site directory;
 - with a source bucket, the existing exact GCS plan for ``scenes/site-<id>/``.
 
-The plan reads every run's JSON records once (streamed, any size), so it is an
-operator tool for a quiet host, not a timer. Anything it cannot resolve fails
+The plan reads every run's JSON records once (streamed, any size), so it runs on a
+quiet host: by hand, or in its own bounded unit (``website_capture_withdrawal_automatic``,
+one site per hourly pass, nothing while a paid stage is live). Anything it cannot resolve fails
 closed into ``unresolved`` (a link or special
 file in a run, an unreadable record, a run that also names another site, an
 offloaded run whose binding is unknown, an object outside the artifact bucket or
@@ -84,6 +85,9 @@ from . import website_capture_withdrawal as withdrawal
 from . import website_capture_withdrawal_native_g1 as native_g1
 from . import website_capture_withdrawal_screening as screening
 from . import website_capture_withdrawal_team_scene as team_scene
+from . import website_capture_withdrawal_provider_copies as provider_copy
+from . import website_capture_withdrawal_unclaimed as unclaimed
+from . import website_withdrawal_site_index as site_index
 from .control_plane_storage_roots import roots_of_class
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 # The object-version client and the typed refusal live in a light module (re-exported, the same objects).
@@ -513,7 +517,10 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                              team_registry: Path | None = team_scene.DEFAULT_REGISTRY,
                              team_scene_packet_queue_root: Path | None = team_scene.DEFAULT_PACKET_QUEUE_ROOT,
                              rigid_probe_queue_root: Path | None = team_scene.DEFAULT_PROBE_QUEUE_ROOT,
-                             rigid_probe_work_root: Path | None = team_scene.DEFAULT_PROBE_WORK_ROOT
+                             rigid_probe_work_root: Path | None = team_scene.DEFAULT_PROBE_WORK_ROOT,
+                             unclaimed_handoff_root: Path | None = None,
+                             site_index_root: Path | None = None, provider_copies: bool = False,
+                             provider_deleters: Mapping[str, Any] | None = None
                              ) -> dict[str, Any]:
     """Resolve every Pipeline-controlled copy of the site; reads only (the GCS plan is the existing one)."""
 
@@ -578,6 +585,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
         registry=team_registry, packet_queue_root=team_scene_packet_queue_root,
         probe_queue_root=rigid_probe_queue_root, probe_work_root=rigid_probe_work_root, unresolved=unresolved,
         site_root=site)
+    # Handoffs no run has claimed yet (the preparation retry's store): identifiers only, matched by scene and capture.
+    unclaimed_section = unclaimed.plan_unclaimed(identity, root=unclaimed_handoff_root, unresolved=unresolved)
     uris = sorted({uri for run in runs for uri in run["object_uris"]}
                   | {uri for attempt in screened["attempts"] for uri in attempt["object_uris"]}
                   | ({workspace["archive_uri"]} if workspace["archive_uri"] else set())
@@ -605,6 +614,22 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
         if cloud_storage is not None else None
     local = withdrawal._cleanup_files(site, site / "website_withdrawal")
     present_uncovered = sorted(str(root) for root in uncovered_roots if Path(root).exists())
+    # The nine roots with no per-site binding, through their ownership index (website_withdrawal_site_index).
+    indexed = None
+    if site_index_root is not None:
+        indexed = site_index.lookup(site_index_root, uncovered_roots, seeds=seeds,
+                                    site_tokens={identity["scene_id"], identity["capture_id"]})
+        for row in indexed:
+            for entry in row["owned"]:
+                try:
+                    entry["inventory_digest"] = canonical_digest({"rows": _inventory(Path(entry["path"]))}) \
+                        if Path(entry["path"]).is_dir() and not Path(entry["path"]).is_symlink() \
+                        else canonical_digest({"rows": [[entry["name"], _regular(Path(entry["path"])).st_size]]})
+                except (WithdrawalDeletionError, OSError) as error:
+                    entry["inventory_digest"] = None
+                    unresolved.append({"path": entry["path"], "reason": str(error)
+                                       if isinstance(error, WithdrawalDeletionError)
+                                       else "website_withdrawal_deletion_record_unreadable"})
     plan: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA, **{key: identity[key] for key in ("request_id", "scene_id", "capture_id",
                                                                        "tombstone_digest")},
@@ -612,6 +637,7 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
         "scene_files": {"count": len(local), "digest": canonical_digest({"rows": [
             [row["path"], row["size"], row["inode"], row["mtime_ns"]] for row in local]})},
         "scene_workspace": workspace, "runs": runs, "screening": screened, "native_g1": g1, "team_scene": team,
+        "unclaimed_handoffs": unclaimed_section,
         "objects": objects,
         "object_bucket": getattr(object_store, "bucket", None),
         "cloud_plan_digest": cloud["digest"] if cloud else None,
@@ -619,6 +645,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
         "lineage": lineage, "run_roots": [str(root) for root in run_roots],
         "providers_named_in_run_evidence": sorted(providers),
         "uncovered_pipeline_roots": present_uncovered,
+        "indexed_roots": indexed,
+        "provider_copies": provider_copy.plan_providers(site) if provider_copies else None,
         "unresolved": sorted(unresolved, key=lambda row: json.dumps(row, sort_keys=True)),
         "scan_offloaded_archives": bool(scan_offloaded_archives),
     }
@@ -634,11 +662,17 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
     if not cloud_deleted:
         remaining.append({"holder": "capture_source_bucket", "prefix": f"scenes/{plan['scene_id']}/",
                           "reason": "no source bucket was named for this deletion; use --bucket"})
-    remaining.extend({"holder": "pipeline_root_not_covered", "path": path,
-                      "reason": "not scanned by withdrawal deletion v1; may hold derived copies"
-                                + (f" ({UNCOVERED_ROOT_HOLDS[Path(path).name]}; no per-site binding on disk is "
-                                   "verified for it)" if Path(path).name in UNCOVERED_ROOT_HOLDS else "")}
-                     for path in plan["uncovered_pipeline_roots"])
+    if plan.get("indexed_roots") is None:
+        remaining.extend({"holder": "pipeline_root_not_covered", "path": path,
+                          "reason": "not scanned by withdrawal deletion v1; may hold derived copies"
+                                    + (f" ({UNCOVERED_ROOT_HOLDS[Path(path).name]}; no per-site binding on disk is "
+                                       "verified for it)" if Path(path).name in UNCOVERED_ROOT_HOLDS else "")}
+                         for path in plan["uncovered_pipeline_roots"])
+    else:
+        remaining.extend(site_index.blocking(plan["indexed_roots"]))
+    if plan.get("provider_copies") is not None:
+        remaining.extend({"holder": "not_deleted_at_provider", **row}
+                         for row in plan["provider_copies"]["not_deleted_at_provider"])
     remaining.append({"holder": "retained_audit_and_lineage_metadata",
                       "paths": [str(Path(plan["site_root"]) / "website_withdrawal"),
                                 *plan["lineage"]["registrations"]],
@@ -648,6 +682,7 @@ def _remaining(plan: Mapping[str, Any], cloud_deleted: bool) -> list[dict[str, A
     remaining.extend(screening.remaining(plan["screening"]))
     remaining.extend(native_g1.remaining(plan["native_g1"]))
     remaining.extend(team_scene.remaining(plan["team_scene"]))
+    remaining.extend(unclaimed.remaining(plan.get("unclaimed_handoffs") or {"root": None}))
     return remaining
 
 
@@ -668,8 +703,13 @@ def policy_copy_classes(plan: Mapping[str, Any], *, cloud_deleted: bool, applied
 
 
 def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
-                              authorize_complete_deletion: bool = False, **resolution: Any) -> dict[str, Any]:
+                              authorize_complete_deletion: bool = False,
+                              authorization: Mapping[str, Any] | None = None, **resolution: Any) -> dict[str, Any]:
     """Delete exactly a reviewed plan's copies; refuse anything unresolved, held or changed.
+
+    ``authorization`` (optional) is sealed into the receipt as who authorized the deletion: the
+    automatic pass (``website_capture_withdrawal_automatic``) names the owner's standing approval
+    and its digest there. It never replaces ``authorize_complete_deletion`` or any refusal below.
 
     It holds every same-site Atlas preview lock throughout, so no preview step can
     publish a new copy between this plan's object listing and its deletion; a step
@@ -734,10 +774,11 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
         team_scene.hold_packet_queue(locks, resolution.get("team_scene_packet_queue_root",
                                                            team_scene.DEFAULT_PACKET_QUEUE_ROOT))
         return _apply_withdrawal_deletion(capture_root=capture_root, expected_plan_digest=expected_plan_digest,
-                                          **resolution)
+                                          authorization=authorization, **resolution)
 
 
-def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str, **resolution: Any) -> dict[str, Any]:
+def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
+                               authorization: Mapping[str, Any] | None = None, **resolution: Any) -> dict[str, Any]:
     _require(re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_plan_digest)), "plan_digest_invalid")
     plan = plan_withdrawal_deletion(capture_root=capture_root, **resolution)
     _require(plan["digest"] == expected_plan_digest, "plan_changed")
@@ -777,6 +818,14 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     g1_deleted = native_g1.apply_native_g1(plan["native_g1"])
     # After the G1 namespaces inside them: each half is then checked whole before it goes.
     team_deleted = team_scene.apply_team_scene(plan["team_scene"])
+    deleted["unclaimed_handoffs"] = unclaimed.apply_unclaimed(plan["unclaimed_handoffs"])
+    deleted["indexed_root_entries"], indexed_refused = _apply_indexed(
+        plan.get("indexed_roots") or [],
+        seeds={plan["scene_id"], plan["capture_id"], *plan["lineage"]["intents"]},
+        site_tokens={plan["scene_id"], plan["capture_id"]})
+    # Recorded ids are already in the journal's ledger: a failed provider delete is retried by the next run.
+    provider_results = (provider_copy.apply_providers(plan["provider_copies"], resolution.get("provider_deleters"))
+                        if plan.get("provider_copies") is not None else None)
     workspace = plan["scene_workspace"]
     for path in workspace["retiring_leftovers"]:
         shutil.rmtree(path)
@@ -796,6 +845,15 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
         withdrawal.apply_cloud_cleanup(capture_root=Path(capture_root), storage=cloud_storage,
                                        expected_plan_digest=plan["cloud_plan_digest"], authorize_cloud_deletion=True)
     remaining = _remaining(plan, cloud_storage is not None)
+    if plan.get("provider_copies") is not None:
+        remaining.extend(provider_copy.blocking(plan["provider_copies"], provider_results))
+    incomplete = completion_blockers(plan, cloud_deleted=cloud_storage is not None, provider_results=provider_results)
+    if indexed_refused:
+        incomplete.append({"holder": "pipeline_root_entry_not_confirmed", "entries": indexed_refused,
+                           "reason": "a fresh read of these entries did not show them to be only this site's; "
+                                     "they were kept and the index reads them again"})
+    retention = (provider_copy.retention_remains(plan["provider_copies"])
+                 if plan.get("provider_copies") is not None else [])
     receipt: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA, "plan_digest": plan["digest"],
         **{key: plan[key] for key in ("request_id", "scene_id", "capture_id", "tombstone_digest")},
@@ -812,14 +870,108 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
         "pipeline_controlled_deletion_complete": (not plan["uncovered_pipeline_roots"] and cloud_storage is not None
                                                   and not screening.incomplete(plan["screening"])
                                                   and not native_g1.incomplete(plan["native_g1"])
-                                                  and not team_scene.incomplete(plan["team_scene"])),
+                                                  and not team_scene.incomplete(plan["team_scene"])
+                                                  and not unclaimed.remaining(plan["unclaimed_handoffs"])),
         "provider_copies_deleted": False, "physical_erasure_proven": False,
         "applied_at_iso": datetime.now(timezone.utc).isoformat(),
+        # "complete": every root is indexed for this site and every copy found is gone, at the providers
+        # too where they offer a delete; otherwise "incomplete" with each remaining holder and reason.
+        "deletion_status": deletion_status(incomplete, retention),
+        "incomplete_reasons": incomplete,
+        "provider_retention_remains": retention,
     }
+    if provider_results is not None:
+        receipt["provider_copies"] = {
+            "copies": [{key: row.get(key) for key in ("provider", "kind", "id", "status", "last_error", "attempts",
+                                                      "answered_at")}
+                       for row in provider_copy.plan_providers(Path(plan["site_root"]))["copies"]],
+            "unknown": plan["provider_copies"]["unknown"],
+            "not_deleted_at_provider": plan["provider_copies"]["not_deleted_at_provider"]}
+    if authorization is not None:
+        receipt["authorization"] = json.loads(json.dumps(dict(authorization)))
     receipt["digest"] = canonical_digest(receipt, digest_field="digest")
     withdrawal._persist(Path(plan["site_root"]) / "website_withdrawal" / "deletion_receipts"
                         / f"{plan['digest'][7:]}.json", receipt)
     return receipt
+
+
+def _apply_indexed(rows: Sequence[Mapping[str, Any]], *, seeds: set[str], site_tokens: set[str]
+                   ) -> tuple[list[str], list[dict[str, Any]]]:
+    """Delete each indexed entry only after a fresh read of its records shows it is only this site's.
+
+    The index is a cache: a nested record can change without the entry's own mtime changing. An entry
+    whose fresh read differs, is shared, names nothing, cannot be read or exceeds the read budget, or whose
+    files changed since the plan, is kept, queued for the index to read again, and reported.
+    """
+
+    deleted, refused = [], []
+    for row in rows:
+        for entry in row["owned"]:
+            path = Path(entry["path"])
+            if not os.path.lexists(path):
+                continue
+            reason = None if entry.get("inventory_digest") is not None else "entry_unreadable_at_plan"
+            if reason is None:
+                reason = site_index.confirm_owned(path, seeds=seeds, site_tokens=site_tokens)
+            if reason is None:
+                try:
+                    current = (canonical_digest({"rows": _inventory(path)}) if path.is_dir() and not path.is_symlink()
+                               else canonical_digest({"rows": [[entry["name"], _regular(path).st_size]]}))
+                except (WithdrawalDeletionError, OSError):
+                    current = None
+                reason = None if current == entry["inventory_digest"] else "entry_changed_since_plan"
+            if reason is not None:
+                site_index.mark_unscanned(Path(row["index_root"]), Path(row["root"]), entry["name"])
+                refused.append({"path": str(path), "reason": reason})
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            deleted.append(str(path))
+    return deleted, refused
+
+
+COMPLETE = "complete"
+COMPLETE_PROVIDER_RETENTION_REMAINS = "complete_provider_retention_remains"
+INCOMPLETE = "incomplete"
+# The statuses after which nothing this system can delete is left; passes end on either.
+FINISHED_STATUSES = frozenset({COMPLETE, COMPLETE_PROVIDER_RETENTION_REMAINS})
+
+
+def deletion_status(incomplete: Sequence[Mapping[str, Any]], retention: Sequence[Mapping[str, Any]]) -> str:
+    """``complete``: nothing known remains, here or at any provider. ``complete_provider_retention_remains``:
+    everything this system can delete is gone, and the copies in ``provider_retention_remains`` stay at their
+    providers under the providers' own retention. ``incomplete``: something could still be deleted or read."""
+
+    if incomplete:
+        return INCOMPLETE
+    return COMPLETE_PROVIDER_RETENTION_REMAINS if retention else COMPLETE
+
+
+def completion_blockers(plan: Mapping[str, Any], *, cloud_deleted: bool,
+                        provider_results: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """What this system could still delete or has not read; empty when nothing is. Copies a provider offers no
+    delete for are not here: they make the status ``complete_provider_retention_remains``."""
+
+    rows: list[dict[str, Any]] = []
+    if plan.get("indexed_roots") is None:
+        rows.extend({"holder": "pipeline_root_not_indexed", "path": path, "reason": "no ownership index was read"}
+                    for path in plan["uncovered_pipeline_roots"])
+    else:
+        rows.extend(site_index.blocking(plan["indexed_roots"]))
+    if not cloud_deleted:
+        rows.append({"holder": "capture_source_bucket", "reason": "no source bucket was named for this deletion"})
+    for name, module in (("screening", screening), ("native_g1", native_g1), ("team_scene", team_scene)):
+        if module.incomplete(plan[name]):
+            rows.append({"holder": "beta_screening" if name == "screening" else name,
+                         "reason": "copies may remain; see remaining"})
+    rows.extend(unclaimed.remaining(plan.get("unclaimed_handoffs") or {"root": None}))
+    if plan.get("provider_copies") is None:
+        rows.append({"holder": "provider_copies_not_checked", "reason": "provider copies were not looked up"})
+    else:
+        rows.extend(provider_copy.blocking(plan["provider_copies"], provider_results))
+    return rows
 
 
 def run_cli(args: Any) -> dict[str, Any]:
@@ -835,7 +987,10 @@ def run_cli(args: Any) -> dict[str, Any]:
                   "team_scene_halves_root": args.team_scene_halves_root, "team_registry": args.team_registry,
                   "team_scene_packet_queue_root": args.team_scene_packet_queue_root,
                   "rigid_probe_queue_root": args.rigid_probe_queue_root,
-                  "rigid_probe_work_root": args.rigid_probe_work_root}
+                  "rigid_probe_work_root": args.rigid_probe_work_root,
+                  "unclaimed_handoff_root": args.unclaimed_handoff_root,
+                  "site_index_root": args.site_index_root, "provider_copies": args.provider_copies,
+                  "provider_deleters": provider_copy.production_deleters() if args.provider_copies else None}
     if not args.apply:
         return {"mode": "dry_run", "plan": plan_withdrawal_deletion(capture_root=args.capture_root, **resolution)}
     return apply_withdrawal_deletion(capture_root=args.capture_root, expected_plan_digest=args.expected_plan_digest
@@ -866,6 +1021,13 @@ def add_cli_arguments(parser: Any) -> None:
                         help="The rigid robot-free probe queue holding each capture's probe entries and jobs")
     parser.add_argument("--rigid-probe-work-root", type=Path, default=team_scene.DEFAULT_PROBE_WORK_ROOT,
                         help="The rigid robot-free probe bulk volume holding each attempt's bundle and run output")
+    parser.add_argument("--site-index-root", type=Path,
+                        help="The ownership index of the roots with no per-site binding (the hourly unit keeps it "
+                             "under its report root, site-index/)")
+    parser.add_argument("--provider-copies", action="store_true",
+                        help="Look up the site's provider copies and, with --apply, delete them at the provider")
+    parser.add_argument("--unclaimed-handoff-root", type=Path, default=unclaimed.DEFAULT_ROOT,
+                        help="The preparation retry's store of handoffs no run has claimed yet")
     parser.add_argument("--scan-offloaded-archives", action="store_true",
                         help="Read offloaded run archives whose pointer cannot show their site")
     parser.add_argument("--apply", action="store_true", help="Delete; without it the deletion is a dry run")

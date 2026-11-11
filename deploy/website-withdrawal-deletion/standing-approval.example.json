@@ -1,0 +1,9 @@
+{
+  "schema_version": "website_withdrawal_deletion_standing_approval.v1",
+  "approved_by": "REPLACE WITH THE OWNER'S NAME ",
+  "approved_at": "REPLACE-WITH-UTC-TIME-LIKE-2026-11-10T15:00:00Z",
+  "expires_at": "REPLACE-WITH-UTC-TIME-OR-null",
+  "policy_class": "website_withdrawal_deletion.acknowledged_unheld_resolved_settled_cooled.v1",
+  "cool_off_hours": 72,
+  "note": "EXAMPLE ONLY. No deploy step installs this file and it does not validate as shipped (the placeholders fail). The owner installs a filled-in copy once, by hand, as root, mode 0644, at /etc/blueprint/website-withdrawal-deletion-approval.json. See docs/runbooks/beta-operations.md section 8."
+}

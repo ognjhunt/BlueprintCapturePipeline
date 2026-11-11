@@ -199,18 +199,19 @@ def test_an_unreadable_account_report_waits_and_is_read_again_holding_the_reserv
     assert backend.launches == 1
 
 
-def test_the_account_report_wait_shares_the_stale_locks_bound_and_then_keeps_the_refusal(tmp_path, monkeypatch):
-    monkeypatch.setattr(coordinator, "SPEND_LOCK_RETRY_CAP", 2)
+def test_the_account_report_wait_shares_the_stale_locks_counter_and_never_closes_the_row(tmp_path, monkeypatch):
     _due_now(monkeypatch)
     coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
     _pass(tmp_path, {**REFUSED, "blockers": ["spend_admission_lock_stale"]})
     backend = Backend({**REFUSED, "blockers": [REPORT_STALE]})
-    for _ in range(3):
+    for _ in range(7):
         coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
-    assert backend.launches == 2  # one wait was left under the shared cap, then the refusal stands
+    assert backend.launches == 7
     row = publication(tmp_path)["candidates"][0]
-    assert (row["status"], row["blockers"]) == ("blocked", [REPORT_STALE])
-    assert publication(tmp_path)["budget"]["committed_upper_bound_usd"] == "0"
+    assert (row["status"], row["blockers"]) == (
+        "preparing", [coordinator.CAPACITY_WAIT_BLOCKER, coordinator.CONTROL_WAIT_BLOCKER])
+    assert _row(tmp_path)["spend_lock_retries"] == coordinator.SPEND_LOCK_RETRY_CAP
+    assert publication(tmp_path)["budget"]["spent_upper_bound_usd"] == "0"
 
 
 @pytest.mark.parametrize("blockers", [

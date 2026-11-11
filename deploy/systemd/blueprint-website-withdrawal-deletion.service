@@ -1,0 +1,78 @@
+[Unit]
+Description=Plan a withdrawn site's deletion, one site per run, and apply it only under the owner's standing approval
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline/blob/main/docs/runbooks/beta-operations.md#8-consent-withdrawal
+# A failed or killed run is recorded and reported (blueprint-unit-failure@.service).
+# A plan that fails is not a unit failure: the run records it beside the tombstone,
+# backs off and alerts on its own (website_capture_withdrawal_automatic).
+OnFailure=blueprint-unit-failure@%n.service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The service account owns the site journals the intake writes and the run, queue and
+# screening records the workers write, so every file this writes stays readable by them.
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+# B2 version listing and deletion, the optional source bucket, the provider deletes (Gemini Files,
+# Meta files, World Labs assets) under the standing approval, and the alert webhook.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Only what a withdrawal deletion removes or records: its own state, the site workspaces, the
+# run roots it scans (the evidence_cold roots and task-evaluation-inputs), the screening,
+# G1, team scene and rigid probe stores, the two work-volume attempt roots, and the three control-plane
+# roots of the nine the ownership index reads (the other six are under task-evaluation-inputs); it deletes
+# there only entries the index found to be only the withdrawn site's. The approval
+# under /etc/blueprint, scene intents, source bindings and every spend ledger stay read-only.
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/website-withdrawal-deletion /var/lib/blueprint/pubsub-handoffs /var/lib/blueprint/task-evaluation-inputs /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs /var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs -/var/lib/blueprint/production-gpu-artifacts -/var/lib/blueprint/pipeline-control-plane/episode-interpretation-backfills -/var/lib/blueprint/pipeline-control-plane/policy-canary-preprovider-audits -/var/lib/blueprint/pipeline-control-plane/beta-policy-screening -/var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations -/var/lib/blueprint/pipeline-control-plane/team-scene-packets -/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes -/mnt/blueprint-work/beta-policy-screening-work -/mnt/blueprint-work/rigid-robot-free-probe-work -/var/lib/blueprint/pipeline-control-plane/result-artifact-cache -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived -/var/lib/blueprint/pipeline-control-plane/scene-configuration-diagnostics
+TasksMax=32
+# Host memory (8.3 GB, no swap): its own cap, below the host, so a runaway plan is killed in
+# this unit (and recorded as interrupted by the next run), never host-wide. Not measured on
+# the host yet; the same 1G as the owner-approved deletion units, which walk trees alike.
+# Housekeeping, retried: +200.
+MemoryMax=1G
+OOMScoreAdjust=200
+# Low priority: it waits behind every job that moves work. Best-effort 7 rather than idle,
+# so a busy disk slows it but cannot starve it past its start timeout every hour.
+CPUQuota=50%
+CPUWeight=10
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+IOWeight=10
+# One site's plan and, under the approval, its apply. A run killed here is recorded by the
+# next run as interrupted and backs off like any failure.
+TimeoutStartSec=45min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_WEBSITE_WITHDRAWAL_SITE_ROOTS=/var/lib/blueprint/pubsub-handoffs
+Environment=BLUEPRINT_WEBSITE_WITHDRAWAL_DELETION_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/website-withdrawal-deletion
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
+# The webhook (BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL, the capacity controller's route), the store
+# roots the workers use, and the optional BLUEPRINT_WEBSITE_WITHDRAWAL_SOURCE_BUCKET.
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.website_capture_withdrawal_automatic'

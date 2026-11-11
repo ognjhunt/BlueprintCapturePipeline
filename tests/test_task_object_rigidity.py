@@ -217,8 +217,12 @@ def test_the_classification_rides_the_existing_call_and_earlier_requests_stay_ex
 RETAINED_BEFORE_RIGIDITY = "70b0d68dcf3886ecc0f767a0bbae1a2fb25f6b070751c6a9f17feb8433b06b1f"
 
 
-@pytest.mark.parametrize("status", ["completed", "submitting"])
+@pytest.mark.parametrize("status", ["completed", "submitting", "submitting_no_reservation_on_record"])
 def test_an_analysis_bought_before_rigidity_is_never_bought_again(tmp_path, monkeypatch, status):
+    """An answer bought before rigidity is reused as it stands. An unanswered earlier dispatch is counted
+    as spent and never resent under its old form: the current form is bought under its own one new
+    reservation. An intent with no reservation on record is a money wait: nothing is reserved or sent."""
+    from blueprint_pipeline import website_gemini_receipts as receipts
     from tests.test_website_gemini_receipts import context, setup_call
     _args, calls = setup_call(tmp_path / "receipts", monkeypatch)
     video = tmp_path / "video.mov"
@@ -228,14 +232,24 @@ def test_an_analysis_bought_before_rigidity_is_never_bought_again(tmp_path, monk
     result = {"status": "completed", "targets": ["box"]}
     root = tmp_path / "receipts"
     root.mkdir()
+    digest = "sha256:" + RETAINED_BEFORE_RIGIDITY
     (root / f"{RETAINED_BEFORE_RIGIDITY}.json").write_text(json.dumps(
-        {"status": status, "request_digest": "sha256:" + RETAINED_BEFORE_RIGIDITY,
-         **({"result": result, "result_digest": canonical_digest(result)} if status == "completed" else {})}))
+        {"status": status.split("_")[0], "request_digest": digest,
+         **({"result": result, "result_digest": canonical_digest(result)} if status == "completed"
+            else {"admission": {"status": "admitted", "allocation_binding_digest": digest}} if status == "submitting"
+            else {})}))
     kwargs = dict(video_path=video, task_context=context(), output_root=root)
     if status == "completed":
         # Reused as it stands, unclassified: the word list backstops its task object.
         assert analysis.analyze_removal_targets(**kwargs) == result
-    else:
-        with pytest.raises(ValueError, match="requires_reconciliation"):
+        assert [path.name for path in root.glob("*.json")] == [f"{RETAINED_BEFORE_RIGIDITY}.json"]
+    elif status == "submitting":
+        # Counted spent; the current form needs its own new reservation, which first needs the runtime
+        # (not configured here): refused before anything is reserved or sent.
+        with pytest.raises(ValueError, match="runtime_not_configured"):
             analysis.analyze_removal_targets(**kwargs)
-    assert calls == [] and [path.name for path in root.glob("*.json")] == [f"{RETAINED_BEFORE_RIGIDITY}.json"]
+        assert (root / f"{RETAINED_BEFORE_RIGIDITY}.unanswered-1.json").is_file()
+    else:
+        with pytest.raises(ValueError, match=receipts.UNRESERVED):
+            analysis.analyze_removal_targets(**kwargs)
+    assert calls == []

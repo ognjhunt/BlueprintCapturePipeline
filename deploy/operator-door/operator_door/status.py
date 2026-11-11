@@ -32,6 +32,8 @@ _RECEIPT_KEYS = ("schema", "status", "source_commit", "commit", "mode", "finishe
 _CAPACITY_KEYS = (
     "schema_version", "observed_at_epoch", "level", "report_digest", "alerts", "mounts", "usage",
     "volume_resize", "truncated", "reclaim_outlook", "stall", "provider_spend",
+    # Withdrawals the automatic deletion pass is waiting on (counts only), e.g. the owner's approval.
+    "website_withdrawal_deletion",
 )
 _MAX_JSON_BYTES = 256 * 1024
 _MAX_BREAK_GLASS_LEDGER_BYTES = 16 * 1024 * 1024
