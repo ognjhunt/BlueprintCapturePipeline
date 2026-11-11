@@ -246,17 +246,25 @@ jobs:
         run: |
           set -euo pipefail
           task_node="$(command -v node)"
-          # The Azure archive drip-fed font/runtime packages until both bounded
-          # cgroups expired (run 39768835541). Use Ubuntu's primary HTTPS mirror
-          # for that exact source on these disposable runners; keep every
+          # The two attempts use different mirrors, so one mirror that is down or
+          # slow cannot fail the step alone. Attempt 1 uses Ubuntu's primary HTTPS
+          # mirror: the Azure archive drip-fed font/runtime packages until both
+          # bounded cgroups expired (run 39768835541). Attempt 2 restores the
+          # runner's own mirror file: archive.ubuntu.com did not resolve for the
+          # whole of both attempts in runs 43032464587 and 43058399390. Keep every
           # dependency, installation check and cgroup deadline in place.
+          apt_mirrors_original="${RUNNER_TEMP}/apt-mirrors.original.txt"
           if test -f /etc/apt/apt-mirrors.txt; then
+            cp /etc/apt/apt-mirrors.txt "$apt_mirrors_original"
             sudo --non-interactive sed -i \
               's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
               /etc/apt/apt-mirrors.txt
           fi
           task_deps_ready=0
           for attempt in 1 2; do
+            if test "$attempt" = 2 && test -f "$apt_mirrors_original"; then
+              sudo --non-interactive cp "$apt_mirrors_original" /etc/apt/apt-mirrors.txt
+            fi
             task_unit="blueprint-ci-browser-deps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${FULL_TEST_LANE_SHARD_INDEX}-${attempt}"
             if sudo --non-interactive systemd-run --unit="$task_unit" --wait --collect --pipe \
                 --property=Type=exec --property=User=root --property=KillMode=control-group \

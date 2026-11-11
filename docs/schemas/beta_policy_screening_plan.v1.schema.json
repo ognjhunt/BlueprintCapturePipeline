@@ -942,14 +942,71 @@
                   "for_candidate_id": {
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
                     "type": "string"
+                  },
+                  "for_model_id": {
+                    "description": "The spec-catalog model whose body runs when no selected candidate's robot has a scripted profile (the job's robot fit table chose it).",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                    "type": "string"
+                  },
+                  "flags": {
+                    "description": "Only with for_model_id: the body stands at the scene packet's station, not its own.",
+                    "items": {
+                      "const": "scene_packet_station"
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "preferred": {
+                    "description": "Only with for_model_id, and only when the website sent preferred_robot_model_ids: whether this body's model was one of them.",
+                    "type": "boolean"
+                  },
+                  "chosen_by": {
+                    "description": "Which rule chose the body: a selected candidate's own robot (only with for_candidate_id), the body nearest the candidates' robot, the website's pick, or the fit table's order. Absent in markers written before it.",
+                    "enum": ["candidate_robot", "nearest_body", "preferred", "fit_table"]
                   }
                 },
                 "required": [
                   "schema_version",
                   "role",
                   "episodes",
-                  "pass_at_successes",
-                  "for_candidate_id"
+                  "pass_at_successes"
+                ],
+                "oneOf": [
+                  {
+                    "required": [
+                      "for_candidate_id"
+                    ],
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "for_model_id"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "flags"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "preferred"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "required": [
+                      "for_model_id"
+                    ],
+                    "not": {
+                      "required": [
+                        "for_candidate_id"
+                      ]
+                    }
+                  }
                 ],
                 "type": "object"
               }

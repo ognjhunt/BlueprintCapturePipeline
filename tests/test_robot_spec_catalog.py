@@ -27,7 +27,8 @@ def _figure(value, unit, quote, conversion=None):
 
 def _model(model_id="arm_a", body_type="fixed_arm", *, recipe_id=None, **figures):
     """A fixed arm with every figure but a length-and-width footprint, unless overridden; each
-    figure left null gets a reason, except a fixed arm's base speed."""
+    figure left null gets a reason, except a fixed arm's base speed. A robot that moves also carries
+    the two hand heights, null with a reason unless given."""
     row = {"max_reach_m": _figure(0.9, "m", "Reach 900 mm", "900 mm = 0.9 m"),
            "rated_payload_kg": _figure(5, "kg", "Payload 5 kg"),
            "max_tcp_speed_m_s": _figure(1.0, "m/s", "Maximum TCP speed 1 m/s"),
@@ -37,6 +38,8 @@ def _model(model_id="arm_a", body_type="fixed_arm", *, recipe_id=None, **figures
            "repeatability_mm": _figure(0.05, "mm", "Repeatability 0.05 mm"),
            "degrees_of_freedom": _figure(6, "count", "Degrees of freedom 6"),
            "max_base_speed_m_s": None}
+    if body_type != "fixed_arm":
+        row.update(max_hand_height_m=None, min_hand_height_m=None)
     row.update(figures)
     unknown = {name: "The sheet does not give it." for name, figure in row.items() if figure is None
                and not (name == "max_base_speed_m_s" and body_type == "fixed_arm")}
@@ -143,6 +146,45 @@ def test_a_stated_conversion_or_reason_and_a_fixed_arm_base_speed_are_accepted()
     assert catalog["models"][0]["unknown_figures"] == {"base_footprint_l_w_m": "The sheet does not give it.",
                                                        "robot_mass_kg": "The sheet does not give it."}
     assert catalog["models"][0]["figures"]["max_base_speed_m_s"] is None
+
+
+def _height(metres, quote=None):
+    return _figure(metres, "m", quote or f"Hand height {metres * 1000:g} mm", f"{metres * 1000:g} mm = {metres:g} m")
+
+
+def test_a_wheeled_humanoid_with_hand_heights_from_the_floor_is_accepted():
+    # "Floor to 2.2 m": the lowest hand height may be the floor itself, 0 m; no other figure may be zero.
+    floor = _figure(0, "m", "Reach Floor to 7 ft 2 in (2.2 m)", "'Floor' = 0 m")
+    rover = _model("rover", "wheeled_humanoid", max_hand_height_m=_height(2.2), min_hand_height_m=floor)
+    catalog = sealed(rover)
+    assert catalog["models"][0]["body_type"] == "wheeled_humanoid"
+    assert catalog["models"][0]["figures"]["min_hand_height_m"]["value"] == 0
+    assert "max_hand_height_m" not in catalog["models"][0]["unknown_figures"]
+
+
+def test_hand_heights_are_refused_by_name_when_inverted_negative_or_unexplained():
+    cases = {
+        "inverted": (_model("rover", "wheeled_humanoid", max_hand_height_m=_height(0.4), min_hand_height_m=_height(0.9)),
+                     "robot_spec_catalog_hand_heights_inverted:rover"),
+        "negative": (_model("rover", "wheeled_humanoid", min_hand_height_m=_height(-0.1, "Lowest -100 mm")),
+                     "robot_spec_catalog_value_invalid:rover.min_hand_height_m"),
+        "zero_top": (_model("rover", "wheeled_humanoid", max_hand_height_m=_height(0, "Highest 0 mm")),
+                     "robot_spec_catalog_value_invalid:rover.max_hand_height_m"),
+    }
+    unexplained = _model("rover", "mobile_manipulator")
+    del unexplained["unknown_figures"]["min_hand_height_m"]
+    cases["unexplained"] = (unexplained, "robot_spec_catalog_null_figure_reason_missing:rover.min_hand_height_m")
+    for name, (model, code) in cases.items():
+        with pytest.raises(RobotSpecCatalogError) as refused:
+            sealed(model)
+        assert code in refused.value.errors, name
+
+
+def test_a_fixed_arm_may_leave_hand_heights_out_and_an_unknown_body_type_is_refused():
+    assert "max_hand_height_m" not in sealed(_model())["models"][0]["figures"]
+    with pytest.raises(RobotSpecCatalogError) as refused:
+        sealed(_model("rover", "rolling_humanoid"))
+    assert "robot_spec_catalog_body_type_invalid:rover" in refused.value.errors
 
 
 def test_recipe_ids_default_to_the_asset_recipe_catalog():

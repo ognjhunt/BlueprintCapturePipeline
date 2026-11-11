@@ -97,19 +97,20 @@ def validate_original(value):
 def test_recording_rights_statement_versions_are_a_closed_set():
     from blueprint_pipeline.capture_original_owner_observer import RECORDING_RIGHTS_STATEMENT_VERSIONS
 
-    # WebApp `client/src/lib/recordingRightsStatement.ts` names the same two.
-    assert RECORDING_RIGHTS_STATEMENT_VERSIONS == frozenset({"2026-09-18.v1", "2026-11-02.v2"})
+    # WebApp `client/src/lib/recordingRightsStatement.ts` names the same three.
+    assert RECORDING_RIGHTS_STATEMENT_VERSIONS == frozenset({"2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3"})
 
 
-@pytest.mark.parametrize("version", ["2026-09-18.v1", "2026-11-02.v2"])
+@pytest.mark.parametrize("version", ["2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3"])
 def test_owner_observation_admits_each_recording_statement_a_site_can_attest(version):
-    # v1 records stay valid; v2 is the sentence the site now sees where it attests.
+    # v1 and v2 records stay valid; v3 is the short sentence on the start form.
     value = attested_under(version)
     assert validate_original(value) == value
 
 
 @pytest.mark.parametrize("version", [
-    "2026-11-02.v3", "2026-09-18.v2", "2026-11-02.V2", " 2026-11-02.v2", "2026-11-02.v2 ", "",
+    "2026-11-02.v3", "2026-11-11.v4", "2026-11-11.V3", "2026-09-18.v2", "2026-11-02.V2", " 2026-11-02.v2",
+    "2026-11-02.v2 ", "",
     None, 2, ["2026-11-02.v2"], {"version": "2026-11-02.v2"},
 ])
 def test_owner_observation_refuses_a_recording_statement_outside_the_closed_set(version):
@@ -121,6 +122,7 @@ def test_owner_observation_refuses_a_recording_statement_outside_the_closed_set(
 
 @pytest.mark.parametrize("attested,rights", [
     ("2026-09-18.v1", "2026-11-02.v2"), ("2026-11-02.v2", "2026-09-18.v1"), ("2026-11-02.v2", None),
+    ("2026-11-11.v3", "2026-11-02.v2"), ("2026-11-11.v3", None),
 ])
 def test_owner_observation_refuses_rights_recorded_under_another_statement(attested, rights):
     from blueprint_pipeline.capture_original_owner_observer import CaptureOwnerObservationError

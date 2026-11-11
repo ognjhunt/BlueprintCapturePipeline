@@ -506,12 +506,16 @@
         "robot_mass_kg": {"value": 35, "unit": "kg", "source_url": "https://www.unitree.com/g1", "quote": "Weight (With Battery) About 35kg", "conversion": null},
         "repeatability_mm": null,
         "degrees_of_freedom": {"value": 23, "unit": "count", "source_url": "https://www.unitree.com/g1", "quote": "Total Degrees of Freedom（Joint Freedom） 23", "conversion": null},
-        "max_base_speed_m_s": {"value": 2, "unit": "m/s", "source_url": "https://www.elektor.com/products/unitree-g1-humanoid-robot", "quote": "Moving speed of 2 m/s", "conversion": null}
+        "max_base_speed_m_s": {"value": 2, "unit": "m/s", "source_url": "https://www.elektor.com/products/unitree-g1-humanoid-robot", "quote": "Moving speed of 2 m/s", "conversion": null},
+        "max_hand_height_m": null,
+        "min_hand_height_m": null
       },
       "unknown_figures": {
         "max_tcp_speed_m_s": "Unitree publishes no arm or end-effector speed.",
         "base_footprint_diameter_m": "Humanoid; the standing envelope is given as width x thickness instead.",
-        "repeatability_mm": "Unitree publishes no repeatability figure."
+        "repeatability_mm": "Unitree publishes no repeatability figure.",
+        "max_hand_height_m": "Not recorded: this row was researched on 2026-11-02, before the catalog had hand heights.",
+        "min_hand_height_m": "Not recorded: this row was researched on 2026-11-02, before the catalog had hand heights."
       },
       "notes": "Unitree G1 page (columns G1 and G1 EDU; base G1 values used). Reach is doubtful: Unitree publishes only 'Arm Span: About 0.45M' (approximate, not described as a reach), recorded here as per-arm reach. Arm payload is per arm: about 2 kg (G1) or about 3 kg (G1 EDU); Unitree notes it 'varies greatly under different arm extension postures'. DoF: 23 total for the G1 ('23 - 43' for the G1 EDU), 5 per arm. Footprint is the standing width x thickness (450 x 200 mm); standing height 1320 mm. Mass about 35 kg ('About 35kg+' for EDU). Walking speed: no Unitree page publishes one; 2 m/s is from the Elektor reseller listing ('Moving speed of 2 m/s'), not attributed to Unitree there. Recipe: none; the asset catalog's unitree_g1_dex3_v1 is the 29-DoF body with hands, not the base 23-DoF G1 these figures describe."
     },
@@ -531,16 +535,328 @@
         "robot_mass_kg": {"value": 24.5, "unit": "kg", "source_url": "https://docs-arch.hello-robot.com/0.3/hardware/images/Stretch_3_Datasheet_2.2024.png", "quote": "Weight 24.5 Kg", "conversion": null},
         "repeatability_mm": null,
         "degrees_of_freedom": null,
-        "max_base_speed_m_s": null
+        "max_base_speed_m_s": null,
+        "max_hand_height_m": null,
+        "min_hand_height_m": null
       },
       "unknown_figures": {
         "max_tcp_speed_m_s": "Hello Robot publishes no end-effector speed for Stretch 3.",
         "base_footprint_diameter_m": "Rectangular base; size is given as length x width x height.",
         "repeatability_mm": "Hello Robot publishes no repeatability figure for Stretch 3.",
         "degrees_of_freedom": "No total DoF count in the Stretch 3 datasheet or archived hardware guide.",
-        "max_base_speed_m_s": "No base speed in Hello Robot's Stretch 3 datasheet or archived docs; only forum posts give figures, which were not used."
+        "max_base_speed_m_s": "No base speed in Hello Robot's Stretch 3 datasheet or archived docs; only forum posts give figures, which were not used.",
+        "max_hand_height_m": "Not recorded: this row was researched on 2026-11-02, before the catalog had hand heights.",
+        "min_hand_height_m": "Not recorded: this row was researched on 2026-11-02, before the catalog had hand heights."
       },
       "notes": "Stretch 3 has been superseded by Stretch 4 (hello-robot.com now shows Stretch 4 only). Figures come from Hello Robot's archived Stretch 3 docs on docs-arch.hello-robot.com: the 'Stretch 3 - Datasheet' image (Revision 2.14.2024) and the Stretch 3 hardware guide. Reach 0.52 m is the telescoping arm's reach ('Reach: 0.52m'); the guide also says 'Recommended Max payload - 2kg'. Size 33 x 34 x 141 cm is the overall L x W x H; the guide says the retracted arm and wrist fit within the base footprint. The datasheet does not say which of 33 cm and 34 cm is the length. The guide lists base, lift, telescoping arm, a 3-DoF wrist (yaw, pitch, roll), gripper and 2-DoF head but gives no total."
+    },
+    {
+      "model_id": "hello_robot_stretch_4",
+      "recipe_id": null,
+      "manufacturer": "Hello Robot",
+      "name": "Stretch 4",
+      "body_type": "mobile_manipulator",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": {"value": 0.55, "unit": "m", "source_url": "https://hello-robot.com/stretch-4", "quote": "Reach 55 cm + 6 cm wrist", "conversion": "55 cm = 0.55 m; the 6 cm wrist is not added"},
+        "rated_payload_kg": {"value": 2.5, "unit": "kg", "source_url": "https://hello-robot.com/stretch-4", "quote": "Payload (Arm extended) 2.5 kg", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": {"value": 0.45, "unit": "m", "source_url": "https://hello-robot.com/stretch-4", "quote": "Height / Footprint 160 cm Height / 45 cm Diameter", "conversion": "45 cm = 0.45 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 46, "unit": "kg", "source_url": "https://hello-robot.com/stretch-4", "quote": "Total Weight 46 kg / 33 kg ballast off for transport", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": {"value": 9, "unit": "count", "source_url": "https://hello-robot.com/wp-content/uploads/2026/05/HelloRobot-DataSheet-Stretch-4-Rev5_AsLaunched.pdf", "quote": "Degrees of Freedom (9): 3-wheel omnidirectional base, 1 lift, 1 telescoping", "conversion": null},
+        "max_base_speed_m_s": {"value": 0.6, "unit": "m/s", "source_url": "https://hello-robot.com/wp-content/uploads/2026/05/HelloRobot-DataSheet-Stretch-4-Rev5_AsLaunched.pdf", "quote": "Top Speed: 60 cm/s.", "conversion": "60 cm/s = 0.6 m/s"},
+        "max_hand_height_m": null,
+        "min_hand_height_m": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "Datasheet gives joint speeds ('Dynamic Speed: 50 cm/s (Lift), 70 cm/s (Arm)'), not an end-effector speed.",
+        "base_footprint_l_w_m": "Round base; a diameter is given.",
+        "repeatability_mm": "The maker publishes no repeatability figure.",
+        "max_hand_height_m": "Hello Robot gives the lift's travel (120 cm), not the highest gripper height above the floor.",
+        "min_hand_height_m": "Hello Robot does not give the lowest gripper height above the floor."
+      },
+      "notes": "Hello Robot Stretch 4 product page and datasheet ('Rev5_AsLaunched'). Footprint disagrees between sources: page '45 cm Diameter', datasheet '43 cm Diameter'; the larger page value is recorded. Reach is the telescoping arm ('55 cm (Arm Extension)') plus a 6 cm wrist, recorded without the wrist. Payload 2.5 kg arm extended, 4 kg arm retracted. Lift range of motion 120 cm, but the lowest and highest gripper heights are not given. 9 DoF counts the base (3), lift, arm, 3-axis wrist and the optional tool. Stretch Gripper 4 '200mm aperture'. Up to 20 mm step/threshold. Datasheet FCC notice: 'currently intended for research, development, and laboratory use only. It has not yet been certified for compliance with FCC Class A limits.' Successor of the catalog's hello_robot_stretch_3."
+    },
+    {
+      "model_id": "pal_robotics_tiago",
+      "recipe_id": null,
+      "manufacturer": "PAL Robotics",
+      "name": "TIAGo",
+      "body_type": "mobile_manipulator",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": {"value": 0.87, "unit": "m", "source_url": "https://pal-robotics.com/wp-content/uploads/2024/04/Datasheet-TIAGo.pdf", "quote": "Arm reach 87 cm (without end-effector)", "conversion": "87 cm = 0.87 m"},
+        "rated_payload_kg": {"value": 3, "unit": "kg", "source_url": "https://pal-robotics.com/wp-content/uploads/2024/04/Datasheet-TIAGo.pdf", "quote": "Arm payload (at full extension) 3kg (without end-effector)", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": {"value": 0.54, "unit": "m", "source_url": "https://pal-robotics.com/robot/tiago/", "quote": "Footprint ø 54 cm", "conversion": "54 cm = 0.54 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 70, "unit": "kg", "source_url": "https://pal-robotics.com/wp-content/uploads/2024/04/Datasheet-TIAGo.pdf", "quote": "110 - 145 cm 70 kg Ø54 cm", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": null,
+        "max_base_speed_m_s": {"value": 1.5, "unit": "m/s", "source_url": "https://pal-robotics.com/wp-content/uploads/2024/04/Datasheet-TIAGo.pdf", "quote": "Max. speed 1.5 m/s", "conversion": null},
+        "max_hand_height_m": null,
+        "min_hand_height_m": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "The maker publishes no arm or end-effector (TCP) speed.",
+        "base_footprint_l_w_m": "Round base; a diameter is given.",
+        "repeatability_mm": "The maker publishes no repeatability figure.",
+        "degrees_of_freedom": "No total; the datasheet lists DoF per part (torso lift 1, mobile base 2, arm 7, head 2).",
+        "max_hand_height_m": "PAL gives torso lift (35 cm) and overall height (110-145 cm), not a gripper height above the floor.",
+        "min_hand_height_m": "PAL does not give the lowest gripper height above the floor."
+      },
+      "notes": "PAL Robotics TIAGo page and datasheet (uploaded 2024/04). Mass quote is the datasheet's GENERAL FEATURES value row, under the header 'Height Weight Footprint'. Payload is at full extension, without end-effector. Torso lift 35 cm; overall height 110-145 cm; the lowest and highest gripper heights are not given. Battery autonomy '4 - 5 h / 8 - 10 h' (1 / 2 batteries); the lower one-battery figure is recorded. Differential drive standard, omnidirectional optional. TIAGo++ has two arms. Default end-effector: parallel gripper (Robotiq 2F-85/140 and EPick options). A research platform ('Write TIAGo into your grant!')."
+    },
+    {
+      "model_id": "robotnik_rb_kairos_plus_ur12e",
+      "recipe_id": null,
+      "manufacturer": "Robotnik",
+      "name": "RB-KAIROS+ with UR12e",
+      "body_type": "mobile_manipulator",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": {"value": 1.3, "unit": "m", "source_url": "https://drive.google.com/file/d/1lHFHk1OoQJGcwZ2O_ZWO1GloQJnmRG2G/view", "quote": "Arm reach (mm) 850 1.300 900", "conversion": "columns UR7e, UR12e, UR16e; '1.300' uses a point as thousands separator: 1300 mm = 1.3 m"},
+        "rated_payload_kg": {"value": 12.5, "unit": "kg", "source_url": "https://drive.google.com/file/d/1lHFHk1OoQJGcwZ2O_ZWO1GloQJnmRG2G/view", "quote": "Arm payload (kg) 7,5 12,5 16", "conversion": "UR12e column '12,5' (decimal comma) = 12.5 kg"},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": {"value": [0.978, 0.776], "unit": "m", "source_url": "https://drive.google.com/file/d/1lHFHk1OoQJGcwZ2O_ZWO1GloQJnmRG2G/view", "quote": "Dimensions (mm) 978 x 776 x 1.010 978 x 776 x 1.542", "conversion": "UR12e column 978 x 776 x 1.542 mm; 978 mm = 0.978 m, 776 mm = 0.776 m (order not labelled; 978 read as length)"},
+        "robot_mass_kg": {"value": 150, "unit": "kg", "source_url": "https://drive.google.com/file/d/1lHFHk1OoQJGcwZ2O_ZWO1GloQJnmRG2G/view", "quote": "Weight (kg) 135 150 150", "conversion": "UR12e column = 150 kg"},
+        "repeatability_mm": null,
+        "degrees_of_freedom": null,
+        "max_base_speed_m_s": {"value": 1.5, "unit": "m/s", "source_url": "https://drive.google.com/file/d/1lHFHk1OoQJGcwZ2O_ZWO1GloQJnmRG2G/view", "quote": "Speed (m/s) 1,5 1,5 1,5", "conversion": "'1,5' (decimal comma) = 1.5 m/s"},
+        "max_hand_height_m": null,
+        "min_hand_height_m": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "Not in the RB-KAIROS+ datasheet (would be the UR12e's own figure, which is not quoted here).",
+        "base_footprint_diameter_m": "Rectangular base.",
+        "repeatability_mm": "Not in the RB-KAIROS+ datasheet.",
+        "degrees_of_freedom": "Not in the RB-KAIROS+ datasheet.",
+        "max_hand_height_m": "The RB-KAIROS+ datasheet gives no height of the hand above the floor.",
+        "min_hand_height_m": "The RB-KAIROS+ datasheet gives no height of the hand above the floor."
+      },
+      "notes": "Robotnik RB-KAIROS+ (UR+ approved mobile manipulator: omnidirectional mecanum base plus a Universal Robots e-Series arm). Figures from the RB-KAIROS+ datasheet (footer 'AF: 07.26') linked as DATASHEET DOWNLOAD from the RB-KAIROS+ section of robotnik.eu; the file is hosted on Google Drive, not on robotnik.eu (doubt: hosting). Three variants: UR7e (reach 850 mm, payload 7.5 kg, 135 kg), UR12e (1300 mm, 12.5 kg, 150 kg), UR16e (900 mm, 16 kg, 150 kg). The UR12e variant is recorded; the other two could be added the same way. Overall height 1542 mm (UR12e column, arm stowed presumably; not stated). Base payload 215 kg (UR12e), autonomy 12 h, max slope 15%, IP42, indoor. Grippers optional (OnRobot VGC10/RG6/RG2/2FG7, Robotiq 2F-85/2F-140). The UR12e itself is not in the current catalog."
+    },
+    {
+      "model_id": "boston_dynamics_stretch",
+      "recipe_id": null,
+      "manufacturer": "Boston Dynamics",
+      "name": "Stretch",
+      "body_type": "mobile_manipulator",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": {"value": 1.95, "unit": "m", "source_url": "https://bostondynamics.com/wp-content/uploads/2024/01/Stretch-Brochure-2025-compressed.pdf", "quote": "Maximum vertical and horizontal reach 10.5 feet (3.2 m) | 6.4 feet (1.95 m)", "conversion": "second figure is the horizontal reach: 6.4 feet (1.95 m)"},
+        "rated_payload_kg": {"value": 23, "unit": "kg", "source_url": "https://bostondynamics.com/wp-content/uploads/2024/01/Stretch-Brochure-2025-compressed.pdf", "quote": "Maximum case weight 50 pounds (23 kg)", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": {"value": [1.25, 1.0], "unit": "m", "source_url": "https://bostondynamics.com/wp-content/uploads/2024/01/Stretch-Brochure-2025-compressed.pdf", "quote": "Footprint 40 x 48 inches (1 x 1.25 m)", "conversion": "brochure states 1 x 1.25 m (40 x 48 in); the longer side, 1.25 m, recorded as length; the brochure does not label which is which"},
+        "robot_mass_kg": {"value": 1300, "unit": "kg", "source_url": "https://bostondynamics.com/wp-content/uploads/2024/01/Stretch-Brochure-2025-compressed.pdf", "quote": "Weight 2,866 pounds (1,300 kg)", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": null,
+        "max_base_speed_m_s": null,
+        "max_hand_height_m": null,
+        "min_hand_height_m": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "The maker publishes no arm or end-effector (TCP) speed.",
+        "base_footprint_diameter_m": "Rectangular base; footprint given as 40 x 48 in.",
+        "repeatability_mm": "The maker publishes no repeatability figure.",
+        "degrees_of_freedom": "Not published.",
+        "max_base_speed_m_s": "Not published.",
+        "max_hand_height_m": "The brochure's 'Maximum vertical ... reach 10.5 feet (3.2 m)' states no reference point, so it is not a height above the floor.",
+        "min_hand_height_m": "The brochure gives no lowest height of the gripper."
+      },
+      "notes": "Boston Dynamics Stretch brochure (PDF created 2025-03-13), SPECIFICATIONS table. A truck/container-unloading and case-picking robot with a vacuum gripper ('Its vacuum gripper can handle'); it handles 'Rectangular cardboard boxes with taped or glued flaps', any surface 6 to 36 inches (15 to 91 cm). Payload is the maximum case weight. Unloading rate 600-800 cases per hour. Battery 'Lasts up to 16 hours'. Weight 1,300 kg. The product page carries no figures. Two-column PDF layout: the reach quote is matched across an interleaved column. Reach is the brochure's maximum horizontal reach (1.95 m); like the catalog's other reach figures it states no reference point. The maximum vertical reach (3.2 m) states none either, so it is not recorded as a hand height."
+    },
+    {
+      "model_id": "boston_dynamics_spot_with_arm",
+      "recipe_id": null,
+      "manufacturer": "Boston Dynamics",
+      "name": "Spot with Spot Arm",
+      "body_type": "mobile_manipulator",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": {"value": 0.984, "unit": "m", "source_url": "https://bostondynamics.com/wp-content/uploads/2020/10/spot-arm.pdf", "quote": "Length (at full extension) = 984 mm (38.7 in)", "conversion": "984 mm = 0.984 m (arm length at full extension)"},
+        "rated_payload_kg": {"value": 5, "unit": "kg", "source_url": "https://bostondynamics.com/wp-content/uploads/2020/10/spot-arm.pdf", "quote": "Continuous Lift Capacity* (at 0.5 m extension) = 5 kg (11 lbs)", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 10, "unit": "m/s", "source_url": "https://bostondynamics.com/wp-content/uploads/2020/10/spot-arm.pdf", "quote": "Max. Endpoint Speed = 10 m/s", "conversion": null},
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": {"value": [1.1, 0.5], "unit": "m", "source_url": "https://bostondynamics.com/products/spot/", "quote": "Length 1100mm (43.3 in) Width 500 mm (19.7 in)", "conversion": "1100 mm = 1.1 m; 500 mm = 0.5 m (Spot body, arm stowed not stated)"},
+        "robot_mass_kg": {"value": 39.7, "unit": "kg", "source_url": "https://bostondynamics.com/wp-content/uploads/2020/10/spot-arm.pdf", "quote": "Total Mass/Weight = 39.7 kg (87.5 lbs)", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://bostondynamics.com/wp-content/uploads/2020/10/spot-arm.pdf", "quote": "Degrees of freedom = 6 + gripper", "conversion": null},
+        "max_base_speed_m_s": {"value": 1.6, "unit": "m/s", "source_url": "https://bostondynamics.com/products/spot/", "quote": "Max Speed 1.6 m/s", "conversion": null},
+        "max_hand_height_m": {"value": 1.8, "unit": "m", "source_url": "https://bostondynamics.com/wp-content/uploads/2020/10/spot-arm.pdf", "quote": "Max. Reach Height= 1800 mm (70.9 in)", "conversion": "1800 mm = 1.8 m"},
+        "min_hand_height_m": null
+      },
+      "unknown_figures": {
+        "base_footprint_diameter_m": "Rectangular body; length x width given.",
+        "repeatability_mm": "The maker publishes no repeatability figure.",
+        "min_hand_height_m": "Boston Dynamics gives the highest gripper point ('Max. Reach Height') but no lowest."
+      },
+      "notes": "Quadruped (Spot) with the Spot Arm. Arm figures from the Spot Arm datasheet (PDF created 2024-05-02); body figures from the Spot product page. Boston Dynamics calls the combination 'mobile manipulation'; it is filed as mobile_manipulator here, though the base is legged (a 'quadruped_manipulator' type could be proposed instead). Reach is the arm's 'Length (at full extension)'; 'Max. Reach Height= 1800 mm' is the highest gripper point. Payload: continuous 5 kg at 0.5 m extension; max lift up to 11 kg; drag up to 25 kg on carpet; '*Payload capacities measured at 22°C'. DoF counts the arm only (6 + gripper). Total mass with arm 39.7 kg (Spot alone 33.8 kg). Footprint and max speed (1.6 m/s) are Spot's own figures; whether speed changes with the arm fitted is not stated. Gripper: max aperture 175 mm, depth 90 mm, peak clamp force 130 N. Average runtime 90 mins ('*Runtime may vary depending on payloads'). Walking body height 520-700 mm. Does not need flat floor: max slope ±30°, max step 300 mm."
+    },
+    {
+      "model_id": "galbot_g1",
+      "recipe_id": null,
+      "manufacturer": "Galbot",
+      "name": "G1",
+      "body_type": "wheeled_humanoid",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": {"value": 0.71, "unit": "m", "source_url": "https://www.galbot.com/g1/", "quote": "手臂长（肩部中心到腕部中心） 710 mm", "conversion": "'arm length (shoulder centre to wrist centre)' 710 mm = 0.71 m; hand not included"},
+        "rated_payload_kg": {"value": 5, "unit": "kg", "source_url": "https://www.galbot.com/g1/", "quote": "负载能力（腕部中心） 单臂 5 kg 合计 10 kg", "conversion": "'payload (at wrist centre): single arm 5 kg, total 10 kg'"},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": {"value": 0.625, "unit": "m", "source_url": "https://www.galbot.com/g1/", "quote": "4 轮全向移动底盘 600 / 600 / 625 mm（长/宽/投影圆直径）", "conversion": "'4-wheel omnidirectional chassis 600 / 600 / 625 mm (length/width/projected circle diameter)'; 625 mm = 0.625 m"},
+        "base_footprint_l_w_m": {"value": [0.6, 0.6], "unit": "m", "source_url": "https://www.galbot.com/g1/", "quote": "4 轮全向移动底盘 600 / 600 / 625 mm（长/宽/投影圆直径）", "conversion": "length 600 mm = 0.6 m, width 600 mm = 0.6 m"},
+        "robot_mass_kg": {"value": 92.5, "unit": "kg", "source_url": "https://www.galbot.com/g1/", "quote": "机身重量 92.5 kg", "conversion": "'body weight'"},
+        "repeatability_mm": null,
+        "degrees_of_freedom": {"value": 21, "unit": "count", "source_url": "https://www.galbot.com/g1/", "quote": "合计 21 颈部 2 · 手臂 7×2 · 腰部 3 · 腿部 2", "conversion": "'total 21: neck 2, arms 7x2, waist 3, legs 2' (excluding chassis and end effector)"},
+        "max_base_speed_m_s": {"value": 1.5, "unit": "m/s", "source_url": "https://www.galbot.com/g1/", "quote": "最大速度 1.5 m/s", "conversion": "'maximum speed'"},
+        "max_hand_height_m": {"value": 2.1, "unit": "m", "source_url": "https://www.galbot.com/g1/", "quote": "工作空间（腕部中心） 垂直方向 0–2100 mm 水平方向 1900 mm", "conversion": "upper end 2100 mm = 2.1 m (wrist centre)"},
+        "min_hand_height_m": {"value": 0, "unit": "m", "source_url": "https://www.galbot.com/g1/", "quote": "工作空间（腕部中心） 垂直方向 0–2100 mm 水平方向 1900 mm", "conversion": "'workspace (wrist centre): vertical 0-2100 mm' - lower end 0 m"}
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "The maker publishes no arm or end-effector (TCP) speed.",
+        "repeatability_mm": "The maker publishes no repeatability figure."
+      },
+      "notes": "Galbot G1 Chinese product page (Chinese labels translated in each conversion field). Workspace at the wrist centre: '垂直方向 0–2100 mm 水平方向 1900 mm' (vertical 0-2100 mm, horizontal 1900 mm), recorded as hand heights 0 to 2.1 m although the range is for the wrist centre, not the hand; the page does not say 'above the floor'; a vertical workspace published as starting at 0 is read as measured from the floor (the catalog's rule). Payload at the wrist centre: 5 kg per arm, 10 kg both. Arm length 710 mm from shoulder centre to wrist centre, recorded as reach (hand excluded). Max overall height 1730 mm; leg lift height difference 650 mm. Chassis 600 x 600 mm, projected circle 625 mm. 8 h working time; 3.5 h adapter charge. IP54. End effector exchangeable between dexterous hand, suction cup and gripper. DoF 21 excludes chassis and end effector. Page has 'Buy Now'."
+    },
+    {
+      "model_id": "dexmate_vega_1_pro",
+      "recipe_id": null,
+      "manufacturer": "Dexmate",
+      "name": "Vega 1 Pro",
+      "body_type": "wheeled_humanoid",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": null,
+        "rated_payload_kg": {"value": 5, "unit": "kg", "source_url": "https://www.dexmate.com/product/vega-1-pro", "quote": "Payload 10+ lbs (5 kg) per arm", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": {"value": [0.66, 0.56], "unit": "m", "source_url": "https://www.dexmate.com/product/vega-1-pro", "quote": "Folded (L × W × H) 26 × 23 × 26 in", "conversion": "the same line gives the maker's metric '(0.66 × 0.56 × 0.66 m)'; folded envelope L 0.66 m x W 0.56 m"},
+        "robot_mass_kg": {"value": 135, "unit": "kg", "source_url": "https://www.dexmate.com/product/vega-1-pro", "quote": "Weight 298 lbs (135 kg)", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": {"value": 24, "unit": "count", "source_url": "https://www.dexmate.com/product/vega-1-pro", "quote": "Degrees of Freedom 24 Arms 14 (7 each)", "conversion": null},
+        "max_base_speed_m_s": null,
+        "max_hand_height_m": {"value": 2.2, "unit": "m", "source_url": "https://www.dexmate.com/product/vega-1-pro", "quote": "Reach Floor to 7 ft 2 in (2.2 m)", "conversion": null},
+        "min_hand_height_m": {"value": 0, "unit": "m", "source_url": "https://www.dexmate.com/product/vega-1-pro", "quote": "Reach Floor to 7 ft 2 in (2.2 m)", "conversion": "'Floor' = 0 m"}
+      },
+      "unknown_figures": {
+        "max_reach_m": "No arm reach published; 'Reach Floor to 7 ft 2 in (2.2 m)' is a height range, recorded as the hand heights.",
+        "max_tcp_speed_m_s": "The maker publishes no arm or end-effector (TCP) speed.",
+        "base_footprint_diameter_m": "Rectangular envelope given.",
+        "repeatability_mm": "The maker publishes no repeatability figure.",
+        "max_base_speed_m_s": "Not published on the page or spec sheet."
+      },
+      "notes": "Dexmate Vega 1 Pro product page and 'Vega 1 Pro Full Spec Sheet' (PDF on the maker's CMS host). Maker's type: 'General-purpose wheeled humanoid'. Reach 'Floor to 7 ft 2 in (2.2 m)'; the page says 'A 3-DoF torso lifts the arms up to 7 ft 2 in (2.2 m) high'; which point of the hand the height refers to is not stated. Payload 5 kg per arm; the page adds 'in any pose'. Footprint is the folded envelope (L x W x H 0.66 x 0.56 x 0.66 m); the operating footprint is not stated; the page says folded it 'fits through a standard doorway'. Max height arms raised 2.50 m. Runtime 20 h. Omnidirectional base (2 steering, 2 drive). End effectors ordered separately (DexGripper S/D or third-party). Sold 'as a robot platform for developers and researchers'."
+    },
+    {
+      "model_id": "galaxea_r1_pro",
+      "recipe_id": null,
+      "manufacturer": "Galaxea Dynamics",
+      "name": "R1 Pro",
+      "body_type": "wheeled_humanoid",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": {"value": 0.86, "unit": "m", "source_url": "https://galaxea-dynamics.com/products/galaxea-r1-series-pioneering-wheeled-dual-arm-robotics", "quote": "Gripper-Equipped Arm Radius 860 mm (33.9 in)", "conversion": "860 mm = 0.86 m (includes the gripper)"},
+        "rated_payload_kg": {"value": 3.5, "unit": "kg", "source_url": "https://galaxea-dynamics.com/products/galaxea-r1-series-pioneering-wheeled-dual-arm-robotics", "quote": "Single-Arm Payload Rated: 3.5 kg (7.7 lb) Maximum: 5 kg (11.0 lb)", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 7.5, "unit": "m/s", "source_url": "https://galaxea-dynamics.com/products/galaxea-r1-series-pioneering-wheeled-dual-arm-robotics", "quote": "Maximum End-Effector Linear Velocity 7.5 m/s (16.8 mph)", "conversion": null},
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 126, "unit": "kg", "source_url": "https://galaxea-dynamics.com/products/galaxea-r1-series-pioneering-wheeled-dual-arm-robotics", "quote": "Weight 126 kg (277.8 lb) - including battery", "conversion": null},
+        "repeatability_mm": {"value": 0.5, "unit": "mm", "source_url": "https://galaxea-dynamics.com/products/galaxea-r1-series-pioneering-wheeled-dual-arm-robotics", "quote": "Repeatability ±0.5 mm (±0.02 in)", "conversion": null},
+        "degrees_of_freedom": {"value": 26, "unit": "count", "source_url": "https://galaxea-dynamics.com/products/galaxea-r1-series-pioneering-wheeled-dual-arm-robotics", "quote": "Total Degree of Freedom (DOF) 26", "conversion": null},
+        "max_base_speed_m_s": {"value": 1.5, "unit": "m/s", "source_url": "https://galaxea-dynamics.com/products/galaxea-r1-series-pioneering-wheeled-dual-arm-robotics", "quote": "Chassis Speed 1.5 m/s (3.4 mph)", "conversion": null},
+        "max_hand_height_m": {"value": 2.0, "unit": "m", "source_url": "https://galaxea-dynamics.com/products/galaxea-r1-series-pioneering-wheeled-dual-arm-robotics", "quote": "Vertical Workspace 0–2000 mm (0–78.7 in)", "conversion": "2000 mm = 2.0 m"},
+        "min_hand_height_m": {"value": 0, "unit": "m", "source_url": "https://galaxea-dynamics.com/products/galaxea-r1-series-pioneering-wheeled-dual-arm-robotics", "quote": "Vertical Workspace 0–2000 mm (0–78.7 in)", "conversion": "lower end 0 m"}
+      },
+      "unknown_figures": {
+        "base_footprint_diameter_m": "Not published.",
+        "base_footprint_l_w_m": "Doubtful, not recorded: the page gives 'Dimensions (H × W × D) 1700 * 675 * 126 mm'; a 126 mm depth is implausible for a 126 kg wheeled robot and looks like a typo."
+      },
+      "notes": "Galaxea R1 series shop page, R1 Pro column ('R1 Pro 7-DOF Dual-Arm Wheeled Humanoid Robot'). Reach is 'Gripper-Equipped Arm Radius'. Payload per arm: rated 3.5 kg, maximum 5 kg. Vertical workspace 0-2000 mm, recorded as hand heights 0 to 2.0 m: the page does not say 'above the floor'; a vertical workspace published as starting at 0 is read as measured from the floor (the catalog's rule). 7-DoF arms, 4-DoF torso, 6-DoF omnidirectional chassis. Force-controlled parallel gripper, gripping range 0-100 mm, length 145 mm. Price $69,999.00, but the page also says: 'This product is not currently available for direct purchase from Galaxea Dynamics. For business or education purchases and enquiries, please contact product@galaxea-dynamics.com'. The cheaper R1 Lite ($39,999: 1281 × 596 × 670 mm, 96 kg, 6-DoF arms, arm radius 600 mm, rated 3 kg, vertical workspace 0-1700 mm, 1.5 m/s) is on the same page and could be added the same way."
+    },
+    {
+      "model_id": "robot_com_r_noid",
+      "recipe_id": null,
+      "manufacturer": "Robot.com",
+      "name": "R-noid",
+      "body_type": "wheeled_humanoid",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": null,
+        "rated_payload_kg": {"value": 4, "unit": "kg", "source_url": "https://lp.robot.com/rnoid/specs.pdf", "quote": "4 kg per arm Arm payload", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 90, "unit": "kg", "source_url": "https://lp.robot.com/rnoid/specs.pdf", "quote": "90 kg Total weight", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": null,
+        "max_base_speed_m_s": {"value": 2, "unit": "m/s", "source_url": "https://lp.robot.com/rnoid/specs.pdf", "quote": "2 m/s Top speed", "conversion": null},
+        "max_hand_height_m": {"value": 1.9, "unit": "m", "source_url": "https://lp.robot.com/rnoid/specs.pdf", "quote": "0 – 1.9 m Vertical workspace", "conversion": null},
+        "min_hand_height_m": {"value": 0, "unit": "m", "source_url": "https://lp.robot.com/rnoid/specs.pdf", "quote": "0 – 1.9 m Vertical workspace", "conversion": "lower end 0 m"}
+      },
+      "unknown_figures": {
+        "max_reach_m": "No reach published; Robot.com gives 'Arm length' 0.82 m, which is not a reach.",
+        "max_tcp_speed_m_s": "The maker publishes no arm or end-effector (TCP) speed.",
+        "base_footprint_diameter_m": "Not published.",
+        "base_footprint_l_w_m": "Not published; the only base figure is 'Wheel base' 0.55 m (axle spacing, not a footprint).",
+        "repeatability_mm": "The maker publishes no repeatability figure.",
+        "degrees_of_freedom": "No total; the spec sheet lists Dual 7-DOF arms, 4-DOF torso, 2-DOF neck."
+      },
+      "notes": "Robot.com R-noid product page and 'Product specs' PDF (revision 003, May 14 2026; values sit above their labels, so quotes read value then label). Maker: 'flagship full-body humanoid, 1.7 m tall, two highly articulate arms, smooth omnidirectional movement'. Vertical workspace 0-1.9 m, recorded as hand heights 0 to 1.9 m: the page does not say 'above the floor'; a vertical workspace published as starting at 0 is read as measured from the floor (the catalog's rule). Payload 4 kg per arm. Battery 3 hours, supports plug-in, 110 V. Modular end effector. Offered by demo request; the page says 'working on your floor in weeks'."
+    },
+    {
+      "model_id": "fanuc_m10id_12",
+      "recipe_id": null,
+      "manufacturer": "FANUC",
+      "name": "M-10iD/12",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling"],
+      "figures": {
+        "max_reach_m": {"value": 1.441, "unit": "m", "source_url": "https://www.fanucamerica.com/products/robot/m-10id-12", "quote": "Reach 1441 mm", "conversion": "1441 mm = 1.441 m"},
+        "rated_payload_kg": {"value": 12, "unit": "kg", "source_url": "https://www.fanucamerica.com/docs/default-source/fanuc-robot-datasheets-new/flyer-m-10id-12-en.pdf", "quote": "Max. load capacity at wrist: 12 kg", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 145, "unit": "kg", "source_url": "https://www.fanucamerica.com/products/robot/m-10id-12", "quote": "Mechanical Weight 145 kg", "conversion": null},
+        "repeatability_mm": {"value": 0.02, "unit": "mm", "source_url": "https://www.fanucamerica.com/products/robot/m-10id-12", "quote": "Repeatability ±0.02 mm", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.fanucamerica.com/products/robot/m-10id-12", "quote": "Axes 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "FANUC publishes only per-axis maximum speeds (deg/s), no TCP speed.",
+        "base_footprint_diameter_m": "No base footprint figure in the page or datasheet text.",
+        "base_footprint_l_w_m": "No base footprint figure in the page or datasheet text."
+      },
+      "notes": "fanucamerica.com M-10iD/12 product page and datasheet PDF ('Max. load capacity at wrist: 12 kg', 'Max. reach: 1441 mm'). Product page Mounting Method: 'Floor / Angle / Inverted' (mapped to floor and ceiling as the catalog's other FANUC entries do). The datasheet does not say where reach is measured to in its text layer. The fanuc.eu product URL returned 404."
+    },
+    {
+      "model_id": "almond_axol",
+      "recipe_id": null,
+      "manufacturer": "Almond",
+      "name": "Axol (dual-arm)",
+      "body_type": "fixed_arm",
+      "mounting": ["table"],
+      "figures": {
+        "max_reach_m": {"value": 0.86, "unit": "m", "source_url": "https://www.almond.bot/axol", "quote": "Arm Reach 860mm", "conversion": "860 mm = 0.86 m (per arm)"},
+        "rated_payload_kg": {"value": 4, "unit": "kg", "source_url": "https://www.almond.bot/axol", "quote": "Nominal Payload 4kg per arm", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 19.5, "unit": "kg", "source_url": "https://www.almond.bot/axol", "quote": "Weight 19.5kg", "conversion": null},
+        "repeatability_mm": {"value": 1, "unit": "mm", "source_url": "https://www.almond.bot/axol", "quote": "Repeatability 1mm", "conversion": null},
+        "degrees_of_freedom": {"value": 7, "unit": "count", "source_url": "https://www.almond.bot/axol", "quote": "Degrees of Freedom 7 per arm", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "The maker publishes no arm or end-effector (TCP) speed.",
+        "base_footprint_diameter_m": "Not published (a mounting hole diagram PDF exists; not read).",
+        "base_footprint_l_w_m": "Not published (a mounting hole diagram PDF exists; not read)."
+      },
+      "notes": "Almond Axol product page ('From $10,999', 'In stock', 'Ships from San Francisco'). Two 7-DoF arms; per arm: reach 860 mm, nominal payload 4 kg, peak payload 6.5 kg; repeatability 1 mm; weight 19.5 kg (standalone). The home page calls Axol 'a wheeled humanoid robot for physical AI', but the robot is sold standalone ('No base. Bolt Axol to your own table or fixture') with optional mounts: Owl Mount column, Ox Cart manual-lift cart, or Jelly Mobile powered base ('2.4 kWh battery, 610mm lift, and 1m/s drive'). Disagreement: the home page shows 'Lift680 mm' for Axol on Jelly vs '610mm lift' in the product text. Filed as a fixed dual arm on a table; an Axol-on-Jelly entry could be added as a wheeled humanoid with those base figures."
     }
   ]
 }

@@ -254,3 +254,102 @@ These counts are by name and are an upper bound.
 - A real arm for paired trials, or a partner who has one.
 - Stopping the humanoid and navigation work while this lane is built. Two
   other sessions are driving those jobs today.
+
+## Scripted reference check on a fitting body
+
+**What the code change does.** Each new website campaign already plans one
+scripted reference row (`beta_policy_screening_known_good_control`):
+Blueprint's own pick-and-place script, three nominal tries, reference only,
+never a candidate or part of the estimate, never a gate. It checks only
+Blueprint's own simulation: whether this scene, task and scorer can register a
+success at all. It is not a test of any robot, the one the website names
+included, and is never described as one. Until now it ran only
+on the body of a selected learned candidate, and every learned candidate a rigid
+job selects today is on the DROID Franka, which has no scripted body, so the row always said
+`known_good_control_unavailable:embodiment`. Now, when no selected candidate's
+robot has a scripted body, the row takes a registered scripted body for a model
+the job's own robot fit table says fits (`fits` or `fits_spec`; `unknown` only
+if none of those has a body; never `doesnt_fit`). Within that, the body nearest
+the candidates' own robot comes first: for the DROID Franka, the Franka FR3
+with the same Robotiq 2F-85 gripper (a different asset from the DROID arm, the
+nearest one registered). Then the website's picks, if it sends them (step 2),
+then the table's order. The row records the spec-catalog model
+(`for_model_id`), which rule chose it (`chosen_by`) and, when the body stands at
+the scene's robot station rather than its own, the code `scene_packet_station`.
+
+**Money: it runs last, on what is left over.** It is planned when its cap fits
+what the selected candidates leave of the plan budget and the site's allowance.
+At run time nothing that funds, waitlists, refills or closes a learned
+candidate counts it while it is unreserved, so every learned row ends exactly
+as it would without it (tests run the same queue with and without the row,
+through harness failures, settlements, a deploy's re-plan, a successor, an
+owner-closed run and a binding site limit, and compare every learned row's end
+and money, the re-plan and the successor's money). It is reserved only when
+its campaign, read as if the row did not exist, has finished `completed` for
+good: nothing would be retried, held for a deploy or planned again (learned
+policies closed because the plan budget, the site's allowance or the job's
+ceiling could not pay for them count as finished, owner decision 2026-11-11), the job's
+source is still current (the owner did not close the run, consent holds), and
+its own harness has not just failed there. Otherwise it closes at once without
+running or holding money, as "did not finish"
+(`known_good_control_interrupted`); it also closes that way when the same check
+is running for another campaign. It never waits on money or on another
+campaign. Then it goes through the ordinary reservation, so the plan budget,
+the site limit, the job ceiling and the account limit bound it; if its cap
+does not fit, it ends as `known_good_control_unavailable:budget`. Once
+reserved, its money counts against the site limit like any row's. What this
+costs: if a later deploy plans the policies that were closed for money again in
+a new campaign, the site has less left for them by what the check actually
+spent, at most $3.00, and that re-plan waits while the check is running (its
+time limit is 3.25 hours; longer only if its run needs reconciling, as for any
+row). A re-plan or a successor campaign carries no reference
+row, so a job whose first campaign did not finish cleanly for any other reason
+gets no check.
+The publication carries the check's outcome flag and its
+`episodes_succeeded` of `episodes_scored` on the row `blueprint_scripted_<body>`.
+
+**It is not inert.** The host registry (`/etc/blueprint/team-evaluation-registry.json`,
+unchanged since 2026-10-31) registers all 24 scripted bodies, and the effective
+catalog of the newest campaign (2026-11-10) lists every one enabled, the UR10e
+(`universal_robots_ur10e_robotiq_2f85_sim`) among them, with its model file
+present. So the first new rigid job after a deploy can plan this row.
+
+**Steps to the first real check (by default on the FR3 body).**
+
+1. *Host operation:* merge, then deploy in the daily window (D-08). Nothing to
+   prepare: the FR3 body (`franka_research_3_robotiq_2f85_sim`) is registered,
+   enabled and its model is on the host, as is every other scripted body.
+2. *WebApp change (optional):* the check's body can follow the robots the
+   website names, which only picks which fitting body the simulation check
+   runs on. The WebApp's
+   non-creating Atlas configuration read (the one that already returns
+   `job_ceiling` to screening planning) may add `preferred_robot_model_ids`: up
+   to 3 distinct spec-catalog model ids, the answer's pick first, then its
+   runner-up. Among fitting models (`fits` and `fits_spec` together) a
+   preferred one goes first; it never beats a fitting model with an `unknown`
+   one and never picks `doesnt_fit`. The marker records `preferred: true|false`.
+   An unusable value is ignored and logged. The body nearest the candidates'
+   robot (the FR3 today) still comes before the website's picks. Without
+   either, the fit table's order applies.
+3. *Host operation (none to start):* a new rigid pick-and-place website job.
+   Its scene handoff must carry a robot fit table bound to the job; capture-447's
+   handoff has none, so a re-plan of that job gets no fallback body.
+4. *Money:* the scripted body is quoted at the per-candidate cap, $4.00
+   (`DEFAULT_CANDIDATE_CAP_USD`; $0.80/h for 4 h, $0.80 of headroom). The
+   reference row lowers that to its own cap, $3.00 (`REFERENCE_CAP_USD`, owner
+   approval 2026-11-11), by the plan's existing rule for fitting a quote to a
+   smaller amount: it keeps at least half the original headroom, $0.40, so its
+   hard time limit is 3.25 h ($0.80/h x 3.25 h = $2.60). That fits the $3.00 a
+   typical rigid job leaves after three learned policies at $4.00 of the $15
+   plan. No other cap, budget or limit changed. On 2026-11-11 the month stood
+   at $147.16 of $200, forecast to reach the limit on 2026-11-15.
+5. What one scripted run costs and how long it takes has never been measured.
+   Learned runs measured 11–19 min to the first episode and 4.3–8.5 min per
+   episode; three tries at those rates would take about 25–45 min of the
+   3.25 h limit, if a scripted run behaves like a learned one.
+
+Not needed for the registered bodies, but for any new one: an import needs 24 GiB free on
+`/mnt/blueprint-work` above its floor; on 2026-11-11 it had 8.2 GiB, so new
+imports are refused until about 16 GiB is freed (host operation). The stuck
+grant `public-robot-imports-20261030-01` spent nothing, expired on 2026-10-31 and is
+re-read every pass because the queue only clears completed grants; it blocks nothing here.

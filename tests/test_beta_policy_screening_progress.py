@@ -162,8 +162,11 @@ def run_to_completion(root):
     observations[control["candidate_id"]] = closed(session_result(value, control, [7, 7, 6], scripted=True))
     coordinator.enqueue_screening_campaign(value, queue_root=root)
     backend = PerRow(observations)
-    for _ in range(3 * len(value["candidates"])):
-        coordinator.process_screening_queue(require_publication_ack=False, queue_root=root, executor=backend)
+    with pytest.MonkeyPatch.context() as patch:
+        # The job's source stays current, so the known-good control may run once every candidate has ended.
+        patch.setattr(coordinator, "_source_still_current", lambda _plan: True)
+        for _ in range(3 * len(value["candidates"])):
+            coordinator.process_screening_queue(require_publication_ack=False, queue_root=root, executor=backend)
     [publication] = coordinator.pending_publications(queue_root=root)
     return value, publication
 

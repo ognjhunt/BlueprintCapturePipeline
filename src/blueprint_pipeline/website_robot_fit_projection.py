@@ -31,43 +31,73 @@ def _projection(route: str, **fields: Any) -> dict[str, Any]:
             "table_digest": None, **fields}
 
 
+def _verified_table(root: Path, task_context_digest: str) -> tuple[str, Any] | None:
+    """The handoff's route and its bound fit table; ``(route, reason)`` when a geometry-only check did not
+    run; None when there is no table or it cannot be verified. Raises on unreadable evidence."""
+    path = root / "pipeline" / "website_scene_preparation" / "handoff.json"
+    if not path.exists():
+        return None
+    handoff = _load(path, root, "digest")
+    if (handoff.get("schema_version") != "website_scene_handoff.v1"
+            or handoff.get("capture_id") != root.name or handoff.get("scene_id") != root.parent.parent.name):
+        return None
+    route = handoff.get("atlas_route", "full")
+    if route == "geometry_only":
+        fit = handoff.get("fit_check")
+        if not isinstance(fit, Mapping):
+            return None
+        if fit.get("status") == "not_run":
+            reason = fit.get("reason")
+            return (route, reason) if reason in NOT_RUN_REASONS else None
+        reference = fit.get("robot_fit_table")
+    elif route == "full":
+        reference = handoff.get("robot_fit_table")
+    else:
+        return None
+    if not isinstance(reference, Mapping) or type(reference.get("path")) is not str:
+        return None
+    preparation = _load(Path(handoff["preparation_path"]), root, "digest")
+    table = _load(Path(reference["path"]), root, "table_digest")
+    if ((preparation.get("binding") or {}).get("task_context_digest") != task_context_digest
+            or handoff.get("preparation_digest") != preparation["digest"]
+            or table.get("schema_version") != "website_robot_fit_table.v1"
+            or table.get("preparation_digest") != preparation["digest"]
+            or table["table_digest"] != reference.get("digest")
+            or table.get("evidence_label") != "spec_bounded_estimate"
+            or table.get("physical_world_truth_claimed") is not False
+            or any(row.get("verdict") not in VERDICTS for row in table["rows"])):
+        return None
+    return route, table
+
+
+def robot_fit_rows(*, capture_root: Path, task_context_digest: str) -> list[dict[str, Any]] | None:
+    """Each spec-catalog model's verdict for the current job, in the table's own order, or None.
+
+    The screening planner's input for the known-good control's body
+    (``beta_policy_screening_known_good_control``): ``model_id``, ``recipe_id`` and ``verdict`` only,
+    from the same bound table the site reads. Anything it cannot verify is None, never a guess.
+    """
+    try:
+        found = _verified_table(Path(capture_root).absolute(), task_context_digest)
+        if found is None or not isinstance(found[1], Mapping):
+            return None
+        return [{"model_id": str(row["model_id"]),
+                 "recipe_id": row["recipe_id"] if isinstance(row.get("recipe_id"), str) else None,
+                 "verdict": row["verdict"]} for row in found[1]["rows"]]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 def read_robot_fit(*, capture_root: Path, task_context_digest: str) -> dict[str, Any] | None:
     """The current job's robot fit table for the site, or None when there is none to show."""
     root = capture_root.absolute()
-    path = root / "pipeline" / "website_scene_preparation" / "handoff.json"
     try:
-        if not path.exists():
+        found = _verified_table(root, task_context_digest)
+        if found is None:
             return None
-        handoff = _load(path, root, "digest")
-        if (handoff.get("schema_version") != "website_scene_handoff.v1"
-                or handoff.get("capture_id") != root.name or handoff.get("scene_id") != root.parent.parent.name):
-            return None
-        route = handoff.get("atlas_route", "full")
-        if route == "geometry_only":
-            fit = handoff.get("fit_check")
-            if not isinstance(fit, Mapping):
-                return None
-            if fit.get("status") == "not_run":
-                reason = fit.get("reason")
-                return _projection(route, reason=reason) if reason in NOT_RUN_REASONS else None
-            reference = fit.get("robot_fit_table")
-        elif route == "full":
-            reference = handoff.get("robot_fit_table")
-        else:
-            return None
-        if not isinstance(reference, Mapping) or type(reference.get("path")) is not str:
-            return None
-        preparation = _load(Path(handoff["preparation_path"]), root, "digest")
-        table = _load(Path(reference["path"]), root, "table_digest")
-        if ((preparation.get("binding") or {}).get("task_context_digest") != task_context_digest
-                or handoff.get("preparation_digest") != preparation["digest"]
-                or table.get("schema_version") != "website_robot_fit_table.v1"
-                or table.get("preparation_digest") != preparation["digest"]
-                or table["table_digest"] != reference.get("digest")
-                or table.get("evidence_label") != "spec_bounded_estimate"
-                or table.get("physical_world_truth_claimed") is not False
-                or any(row.get("verdict") not in VERDICTS for row in table["rows"])):
-            return None
+        route, table = found
+        if not isinstance(table, Mapping):
+            return _projection(route, reason=table)
         counts = {verdict: table["counts"][verdict] for verdict in VERDICTS}
         if any(type(count) is not int or count < 0 for count in counts.values()):
             return None
