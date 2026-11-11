@@ -24,7 +24,7 @@ from .beta_policy_screening_files import _bound_path, _read
 from .beta_policy_screening_g1_catalog import catalog_for_profile as g1_catalog_for_profile
 from .decision_evidence_contracts import canonical_digest
 from .policy_interface_binding import TEAM_ROBOT_INTERFACES, TEAM_LOCAL_INTERFACES, TEAM_SCRIPTED_INTERFACES
-from .session_served_policy import catalog_for_profile as session_catalog_for_profile
+from .session_served_policy_catalog import catalog_for_profile as session_catalog_for_profile
 from .team_candidate_credential_file import credential_file_blockers
 from .team_candidate_rights import validate_candidate_rights
 from .team_embodiment import camera_names, validate_embodiment_manifest

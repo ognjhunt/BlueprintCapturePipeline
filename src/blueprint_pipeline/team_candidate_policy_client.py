@@ -83,6 +83,11 @@ def canary_policy_client(spec: Mapping[str, Any], *,
         client = MolmoAct2YAMPolicyClient(binding=policy_binding(spec["policy_spec"]))
         client.execution_binding_digest = spec["execution_spec_digest"]
         return client
+    if spec.get("session_policy_server") is not None:
+        # The standard contract, served on this machine (``session_policy_client``).
+        from .session_policy_client import session_policy_client
+
+        return session_policy_client(spec, _bearer_token(str(spec["policy_endpoint"]["credential_env"])))
     if interface == "task_family_policy_https.v1":
         from .task_family_policy_https_client import TaskFamilyPolicyHttpsClient, TaskFamilyPolicySpec
 

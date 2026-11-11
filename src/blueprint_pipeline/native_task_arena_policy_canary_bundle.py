@@ -34,6 +34,7 @@ from .native_task_arena_bundle import (
 )
 from .native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
 from .provider_runtime_import_closure import assert_provider_runtime_import_closure
+from .session_served_policy_bundle import SESSION_RUNTIME_MODULES
 from .native_task_arena_policy_canary_session import (
     BETA_RUN_KIND,
     CLAIM_CEILING,
@@ -80,7 +81,8 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "rigid_robot_free_probe_recorder.py", "rigid_robot_free_probe_plan.py",
     "rigid_robot_free_readiness_score.py",
 )
-TEAM_RUNTIME_MODULE_NAMES = tuple(dict.fromkeys((*TEAM_RUNTIME_MODULE_NAMES, *OPENWAM_RUNTIME_MODULES, *MOLMOACT2_RUNTIME_MODULES, *TRLC_RUNTIME_MODULES, *MOLMOACT2_DROID_RUNTIME_MODULES, *COSMOS_RUNTIME_MODULES, "team_local_policy.py")))
+TEAM_RUNTIME_MODULE_NAMES = tuple(dict.fromkeys((*TEAM_RUNTIME_MODULE_NAMES, *OPENWAM_RUNTIME_MODULES, *MOLMOACT2_RUNTIME_MODULES, *TRLC_RUNTIME_MODULES, *MOLMOACT2_DROID_RUNTIME_MODULES, *COSMOS_RUNTIME_MODULES, "team_local_policy.py",
+    *SESSION_RUNTIME_MODULES)))
 
 
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
@@ -252,7 +254,8 @@ def _family_operator_inputs(
 
 def _entrypoint(*, local_candidates: tuple[str, ...] = ("pi05_droid", "groot_n17_droid"),
                 run_kind: str = RUN_KIND, credential_env: str | None = None,
-                family_runtime_catalog_staged: bool = False, openwam_local: bool = False) -> str:
+                family_runtime_catalog_staged: bool = False, openwam_local: bool = False,
+                session_policy_setup: str = "") -> str:
     if credential_env is not None and re.fullmatch(r"[A-Z][A-Z0-9_]{2,58}_FILE", credential_env) is None:
         raise ValueError("beta_robolab_https_credential_binding_invalid")
     credential_check = "" if credential_env is None else f'''/isaac-sim/python.sh - {shlex.quote(credential_env)} <<'PYCREDENTIAL'
@@ -365,6 +368,7 @@ fi
 echo "BLUEPRINT_WAM_RUNTIME_PHASE:native_task_arena:media_toolchain:completed"
 
 {credential_check}
+{session_policy_setup}
 {control_check}
 /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \
   --source-receipt "$SOURCE_RECEIPT" --source-packet "$SOURCE_PACKET" \
@@ -489,6 +493,8 @@ def build_policy_canary_session_bundle(
     if construction_result_path is None and not family_pending:
         raise ValueError("policy_canary_construction_result_record_invalid")
     from .policy_interface_binding import TEAM_HTTPS_INTERFACES, resolve_policy_interface
+    from .session_served_policy_bundle import bundle_contract, entrypoint_setup, provisioning_script as served_provisioning_script
+    from .session_served_policy import is_session_served, validate_session_served_spec
     from .beta_robolab_runtime import stage_robolab_source
     from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .task_family_policy_execution import FAMILY_BACKEND, validate_task_family_policy_execution_spec
@@ -521,7 +527,13 @@ def build_policy_canary_session_bundle(
     scripted_candidates = []
     for candidate, spec in specs.items():
         interface = resolve_policy_interface(spec)
-        if interface == "blueprint_scripted_pick_place.v1":
+        if is_session_served(spec):
+            # Served on this machine over the standard contract: provisioned and torn down like a local policy.
+            validate_session_served_spec(spec)
+            if inputs.get("run_kind") != "blueprint_beta_screening":
+                raise ValueError("session_served_policy_requires_beta_run")
+            local_candidates.append(candidate)
+        elif interface == "blueprint_scripted_pick_place.v1":
             from .scripted_robot_runtime_dispatch import runtime_for_policy
             runtime_for_policy(spec["policy_spec"]).validate_execution_spec(spec)
             if inputs.get("run_kind") != "blueprint_beta_screening":
@@ -559,7 +571,11 @@ def build_policy_canary_session_bundle(
                 )
             else:
                 validate_robolab_policy_execution_spec(spec, candidate_id=candidate)
-    remote_specs = [spec for spec in specs.values() if resolve_policy_interface(spec) in TEAM_HTTPS_INTERFACES]
+    remote_specs = [spec for spec in specs.values()
+                    if resolve_policy_interface(spec) in TEAM_HTTPS_INTERFACES and not is_session_served(spec)]
+    served_specs = [spec for spec in specs.values() if is_session_served(spec)]
+    if served_specs and len(specs) != 1:
+        raise ValueError("session_served_policy_session_invalid")  # One contract server per session, like a remote one.
     credential_env = None
     if remote_specs:
         if inputs.get("run_kind") != "blueprint_beta_screening" or len(remote_specs) != 1 or len(specs) != 1:
@@ -569,7 +585,8 @@ def build_policy_canary_session_bundle(
     if pi05_checkpoint_inventory_path is not None:
         inventory_paths.setdefault("pi05_droid", pi05_checkpoint_inventory_path)
     # Every OpenPI server verifies its checkpoint against the one staged inventory.
-    openpi_local = [candidate for candidate in local_candidates if candidate in ARENA_CANDIDATE_POLICY_IDS]
+    openpi_local = [candidate for candidate in local_candidates
+                    if candidate in ARENA_CANDIDATE_POLICY_IDS or is_session_served(specs[candidate])]
     if any(candidate not in inventory_paths for candidate in openpi_local):
         raise ValueError("policy_canary_openpi_inventory_missing")
     if len({_sha256(Path(inventory_paths[candidate])) for candidate in openpi_local}) > 1:
@@ -709,6 +726,8 @@ def build_policy_canary_session_bundle(
                 from .cosmos_droid_bundle import stage_runtime as stage_cosmos, provisioning_script as cosmos_script
                 cosmos_contract = stage_cosmos(runtime, candidate)
                 provisioning_script = cosmos_script()
+            elif is_session_served(specs[candidate]):
+                provisioning_script = served_provisioning_script(specs[candidate])
             else:
                 provisioning_script = build_provisioning_script(candidate)
             script.write_text(provisioning_script, encoding="utf-8")
@@ -729,7 +748,8 @@ def build_policy_canary_session_bundle(
         entrypoint.write_text(_entrypoint(local_candidates=tuple(local_candidates), run_kind=inputs["run_kind"],
                                          credential_env=credential_env,
                                          family_runtime_catalog_staged=operator_inputs is not None,
-                                         openwam_local=openwam_contract is not None), encoding="utf-8")
+                                         openwam_local=openwam_contract is not None,
+                                         session_policy_setup=entrypoint_setup() if served_specs else ""), encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         manifest_path = runtime / "adp_arena_provider_manifest.json"
         manifest = _read(manifest_path)
@@ -800,6 +820,9 @@ def build_policy_canary_session_bundle(
                 **({"team_credential_env": credential_env,
                     "team_policy_interface_id": resolve_policy_interface(remote_specs[0]),
                     "secret_material_bundled": False} if credential_env is not None else {}),
+                **({"team_policy_interface_id": served_specs[0]["policy_interface_id"],
+                    "session_policy_server": bundle_contract(served_specs[0]),
+                    "secret_material_bundled": False} if served_specs else {}),
                 "static_startup_preflight": static_preflight,
                 "input_digest": "",
             }

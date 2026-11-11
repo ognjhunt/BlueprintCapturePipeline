@@ -158,7 +158,9 @@ def _write_episode_failure_gap(
         native_policy_failure or action_rejected
         or (query_attempted and progress.get("policy_inference_failed") is True
             and progress.get("policy_request_retention_failed") is not True
-            and not raw_message.startswith(("droid_https_policy_observation_", "team_policy_https_observation_")))
+            # A session-served policy's server that cannot be reached is the session's infrastructure.
+            and not raw_message.startswith(("droid_https_policy_observation_", "team_policy_https_observation_",
+                                            "session_policy_server_unavailable")))
         or (candidate_action_returned and not (
             progress.get("candidate_action_shape_validated") is True
             and progress.get("candidate_action_finite_validated") is True))

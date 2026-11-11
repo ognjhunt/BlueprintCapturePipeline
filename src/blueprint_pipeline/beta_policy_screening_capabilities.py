@@ -348,7 +348,8 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                         load_catalog(repo / "config" / "beta_policy_candidates.v1.json")["candidates"]
                         if row["candidate_id"] == key)):
                 raise ValueError("beta_screening_policy_identity_changed")
-            from .session_served_policy import interface_matches as served_matches, is_session_served
+            from .session_served_policy import is_session_served
+            from .session_served_policy_catalog import interface_matches as served_matches
             served = is_session_served(spec)
             if family:
                 from .beta_policy_screening_family import family_interface_matches
