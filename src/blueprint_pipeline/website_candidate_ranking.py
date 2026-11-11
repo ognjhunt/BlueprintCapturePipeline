@@ -30,7 +30,7 @@ from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as
 from .decision_evidence_contracts import canonical_digest
 from .website_task_context_lineage import accepts_bound_digest
 from .website_paid_work_stop import TaskPreparationHeld
-from .website_gemini_receipts import gemini_quote, retained_gemini_call
+from .website_gemini_receipts import answering_receipt, gemini_quote, retained_gemini_call
 
 SCHEMA_VERSION = "website_candidate_ranking.v1"
 RANKING_FILENAME = "website_candidate_ranking.json"
@@ -312,12 +312,13 @@ def rank_website_candidates(*, task_context: Mapping[str, Any], task_masks: Mapp
                    "business_context": {key: brief[key] for key in ("source_file", "section", "sha256")}}
         preflight, invoke = (model_call or _gemini)(prompt)
         quote = gemini_quote(model=MODEL, input_tokens=len(prompt.encode()), max_output_tokens=MAX_OUTPUT_TOKENS)
-        request_digest = canonical_digest({"binding": binding, "task_context_digest": task_context["context_digest"],
-                                           "maximum_cost_usd": quote})
         receipts = pipeline_dir / RECEIPT_DIRECTORY / "receipts"
         handoff_lease_checkpoint("website_candidate_ranking_call")
         result = retained_gemini_call(output_root=receipts, binding=binding, task_context=task_context,
                                       preflight=preflight, invoke=invoke, maximum_cost_usd=quote)
+        # The receipt that holds this result: the request's own, or its resend's.
+        request_digest, receipt_path = answering_receipt(output_root=receipts, binding=binding,
+                                                         task_context=task_context, maximum_cost_usd=quote)
         try:
             response = json.loads(result.get("text") or "")
         except (TypeError, ValueError):
@@ -338,7 +339,7 @@ def rank_website_candidates(*, task_context: Mapping[str, Any], task_masks: Mapp
                      task_kind=kind, facts=facts, facts_digest=canonical_digest(facts),
                      business_context={key: brief[key] for key in ("source_file", "section", "markers", "sha256")},
                      model=MODEL, maximum_cost_usd=quote, request_digest=request_digest,
-                     receipt_path=str(receipts / (request_digest[7:] + ".json")), candidates=listed,
+                     receipt_path=str(receipt_path), candidates=listed,
                      priority_order=[row["candidate_id"] for row in listed],
                      # Highest priority first: what the site ledger would prepare once a hook exists.
                      preparation_requested=[{"candidate_id": row["candidate_id"],

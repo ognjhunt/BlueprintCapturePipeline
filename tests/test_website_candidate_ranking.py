@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -127,6 +128,7 @@ def test_ranking_call_is_admitted_once_and_a_restart_never_buys_it_again(tmp_pat
     assert receipt["status"] == "completed" and receipt["admission"]["status"] == "admitted"
     assert receipt["request"]["binding"]["business_context"]["source_file"] == "PLATFORM_CONTEXT.md"
     assert first["receipt_path"].endswith(first["request_digest"][7:] + ".json")
+    assert first["request_digest"] == receipt["request_digest"] and "resend_of" not in receipt
     count = len(calls)
     # Restart: the retained ranking is reused before any model or admission step.
     assert rank(tmp_path, calls) == first and len(calls) == count
@@ -139,16 +141,31 @@ def test_ranking_call_is_admitted_once_and_a_restart_never_buys_it_again(tmp_pat
         == first["priority_order"]
 
 
-def test_uncertain_call_is_flagged_and_never_bought_again(tmp_path, monkeypatch):
+@pytest.mark.parametrize("resend_answered", [True, False])
+def test_uncertain_call_is_flagged_resent_once_and_never_bought_a_third_time(tmp_path, monkeypatch, resend_answered):
+    # Owner decision 2026-11-10 ("same rule for Gemini"): counted as spent, sent once more.
     calls = []
     monkeypatch.setattr(receipts, "reserve_website_preparation_spend", admitted(calls))
     value = rank(tmp_path, calls, answer=TimeoutError("provider may have charged"))
     assert value["status"] == "not_ranked" and value["priority_order"] == []
-    again = rank(tmp_path, calls, answer=partial_answer)
-    assert again["status"] == "not_ranked" and again["reason"] == "website_gemini_requires_reconciliation"
-    assert [kind for kind, _ in calls].count("reserve") == 1
-    assert [kind for kind, _ in calls].count("invoke") == 1
-    assert ranking.retained_priority(tmp_path / "pipeline", task_context_digest=context()["context_digest"]) == []
+    again = rank(tmp_path, calls, answer=partial_answer if resend_answered else TimeoutError("again"))
+    assert again["status"] == ("ranked" if resend_answered else "not_ranked")
+    third = rank(tmp_path, calls, answer=partial_answer)
+    if resend_answered:
+        assert third == again
+    else:
+        assert third["status"] == "not_ranked" and third["reason"] == "website_gemini_requires_reconciliation"
+    reserved = [kwargs["binding_digest"] for kind, kwargs in calls if kind == "reserve"]
+    assert len(reserved) == 2 and len(set(reserved)) == 2
+    assert [kind for kind, _ in calls].count("invoke") == 2
+    assert ranking.retained_priority(tmp_path / "pipeline", task_context_digest=context()["context_digest"]) == (
+        again["priority_order"] if resend_answered else [])
+    if resend_answered:
+        # The ranking names the receipt that holds its result: the resend, never the unanswered first call.
+        answering = json.loads(Path(again["receipt_path"]).read_text())
+        assert again["request_digest"] == answering["request_digest"] == reserved[1]
+        assert answering["status"] == "completed" and answering["resend_of"] == reserved[0]
+        assert again["receipt_path"].endswith(reserved[1][7:] + ".json")
 
 
 def test_refused_admission_is_recorded_and_the_job_keeps_its_default_order(tmp_path, monkeypatch):

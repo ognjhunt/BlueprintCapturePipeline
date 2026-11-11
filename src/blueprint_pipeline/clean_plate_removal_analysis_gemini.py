@@ -1013,7 +1013,7 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
 
     # The same decision bought before rigidity, or before the destination region, was asked
     # for is reused as it stands (unclassified, or region-free), by its exact request:
-    # never bought again.
+    # never bought again. One left unanswered is counted as spent and this form is its one resend.
     return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
         maximum_cost_usd=maximum_cost_usd, preflight=preflight, invoke=invoke,
         earlier_requests=[request(REGION_PROMPT_INSTRUCTION, REGION_RESPONSE_SCHEMA),

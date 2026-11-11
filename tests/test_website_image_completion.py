@@ -670,6 +670,84 @@ def test_background_review_preserves_or_supersedes_exact_prior_receipt(
                                               .read_text())["status"] == prior_status
 
 
+@pytest.mark.parametrize("v1_status", [None, "submitting"])
+def test_background_review_gets_one_resend_unless_it_already_supersedes_an_incomplete_one(
+        tmp_path, monkeypatch, v1_status):
+    # Owner decision 2026-11-10 ("same rule for Gemini"): a review left without a result is
+    # counted as spent and sent once more. A revision that already supersedes an incomplete
+    # review is that decision's resend, so the decision never gets two.
+    import sys
+    from hashlib import sha256
+    from types import SimpleNamespace as NS
+    import google
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    answers = ["MAX_TOKENS", "MAX_TOKENS" if v1_status else "STOP", "STOP"]
+    sent = []
+    def generate(**kwargs):
+        sent.append(kwargs)
+        return NS(candidates=[NS(finish_reason=answers[len(sent) - 1])], text=json.dumps({
+            "consistent_background": True, "task_objects_removed": True, "people_absent": False,
+            "unrelated_objects_preserved": True, "unrelated_object_loss_frame_ids": [],
+            "remaining_task_object_frame_ids": []}))
+    class Client:
+        def __init__(self, **_):
+            self.models = NS(generate_content=generate)
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+    fake = NS(Client=Client, types=NS(Part=NS(from_bytes=lambda **kw: kw), GenerateContentConfig=NS,
+                                      HttpOptions=NS, HttpRetryOptions=NS))
+    monkeypatch.setattr(google, "genai", fake, raising=False)
+    monkeypatch.setitem(sys.modules, "google.genai", fake)
+    monkeypatch.setattr(completion, "_api_key", lambda: ("fixture-key", "fixture"))
+    reserved = []
+    def reserve(**kwargs):
+        reserved.append(kwargs["binding_digest"])
+        admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+                     "resource_class": kwargs["resource_class"], "allocation_binding_digest": kwargs["binding_digest"]}
+        return admission, _grant(admission)
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", reserve)
+    frames, _ = _inputs(tmp_path)
+    task = {"schema_version": "website_site_task_context.v1", "request_id": "req", "scene_id": "scene",
+            "capture_id": "capture", "confirmed": True, "confirmed_at": "2026-09-19", "description": "Move box"}
+    task["context_digest"] = canonical_digest(task, digest_field="context_digest")
+    plan = {"task_context_sha256": sha256(json.dumps(task, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "targets": []}
+    if v1_status:
+        image_digests = [digest for frame in frames for digest in (frame["image_digest"], frame["image_digest"])]
+        v1_binding = {"kind": "background_review", "revision": 1, "model": completion.DEFAULT_MODEL,
+            "max_output_tokens": 2048, "image_digests": image_digests, "frame_ids": [frame["frame_id"] for frame in frames],
+            "targets": [], "prompt": completion.REVIEW_PROMPT, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
+        text_bytes = len((completion.REVIEW_PROMPT + json.dumps([], sort_keys=True)).encode()) + 2048
+        text_bytes += sum(len(str(frame["frame_id"]).encode()) * 2 + 32 for frame in frames)
+        v1_request = {"binding": v1_binding, "task_context_digest": task["context_digest"],
+            "maximum_cost_usd": receipts.gemini_quote(model=completion.DEFAULT_MODEL,
+                input_tokens=text_bytes + 1120 * len(image_digests), max_output_tokens=2048)}
+        v1_digest = canonical_digest(v1_request)
+        (tmp_path / "review" / "gemini_reviews").mkdir(parents=True)
+        (tmp_path / "review" / "gemini_reviews" / f"{v1_digest[7:]}.json").write_text(json.dumps({
+            "status": "submitting", "request_digest": v1_digest, "request": v1_request,
+            "admission": {"allocation_binding_digest": v1_digest}}))
+    args = dict(frames=frames, original_frames=frames, plan=plan, output_root=tmp_path / "review", task_context=task)
+    with pytest.raises(ValueError, match="review_incomplete"):
+        completion.verify_completed_background(**args)
+    if v1_status:
+        # Revision 3 already resent the incomplete v1: its own incomplete answer stops for review.
+        for _ in range(2):
+            with pytest.raises(ValueError, match="website_gemini_requires_reconciliation"):
+                completion.verify_completed_background(**args)
+        assert len(sent) == len(reserved) == 1
+        assert not (tmp_path / "review" / "gemini_reviews" / receipts.UNANSWERED).exists()
+    else:
+        assert completion.verify_completed_background(**args)["status"] == "passed"
+        assert completion.verify_completed_background(**args)["status"] == "passed"
+        assert len(sent) == len(reserved) == len(set(reserved)) == 2
+        assert sent[0]["config"].max_output_tokens == sent[1]["config"].max_output_tokens == 8192
+
+
 @pytest.mark.parametrize("finish_reason", ["MAX_TOKENS", "STOP"])
 def test_review_retains_incomplete_reason_and_accepts_a_guided_single_target_only_after_review(
         tmp_path, monkeypatch, finish_reason):
