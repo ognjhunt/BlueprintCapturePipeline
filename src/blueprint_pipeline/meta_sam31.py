@@ -667,7 +667,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             raise ValueError("meta_sam_encoded_frame_mapping_invalid")
     clip_digest = _sha256_file(clip)
     answered = [index for index in range(len(prompts)) if index not in pending]
-    if (video_artifact is None and answered and not require_retained_video
+    if (video_artifact is None and not image_request and answered and not require_retained_video
             and any(json.loads((root / f"response-{index}.json").read_text()).get("clip_digest") != clip_digest
                     for index in answered)):
         # The clip changed since those answers were bought (a new encoding, an encoder update): they

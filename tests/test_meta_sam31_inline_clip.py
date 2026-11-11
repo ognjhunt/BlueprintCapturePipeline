@@ -20,7 +20,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.paid_resource_admission import build_paid_lane_admission, require_paid_resource_admission
 
-MASK = '<0f>0<|box;x1=1;y1=0;x2=2;y2=1;w=4;h=4|><|mask;x=0;y=0;data=2,2,!!!!!&T:u9`|>'
+MASK = '<0f>0<|box;x1=1;y1=0;x2=2;y2=1;w=64;h=64|><|mask;x=0;y=0;data=2,2,!!!!!&T:u9`|>'
 CONTEXT = {"request_id": "req1", "scene_id": "site-req1", "capture_id": "walkthrough-req1",
            "context_digest": "sha256:" + "c" * 64}
 

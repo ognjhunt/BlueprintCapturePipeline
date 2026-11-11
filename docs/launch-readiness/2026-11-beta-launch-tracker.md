@@ -113,6 +113,17 @@ An end-to-end audit of both repos on 2026-11-10 asked one question of every step
 - No automatic check finds a test that breaks when the date moves. A run with the clock shifted forward would.
 - The default local test run deselects tests marked `slow`. Two failures on #3556 reached CI for that reason.
 
+## Segmentation upload path: open faults (2026-11-11)
+
+**not started.** The clean-plate and robot-access steps send a whole video to the hosted segmentation provider by upload (`meta_sam31._upload_video`); that stores a copy at the provider. Two independent reviews on 2026-11-11 established these faults of the path as it is on `main`:
+
+- A delete that fails at the end of a run is not tried again unless a later run of the same request happens.
+- An upload with no clear answer (no answer, a server error, an unusable file id) stops every later run for reconciliation by a person, and the reservation made before it stays held.
+- A 404 is read as "the uploaded file is gone", whether or not that is what the provider meant.
+- Nothing sweeps a copy left by a process that was killed between its upload and its delete.
+
+Intended design: every upload is written to one record before it is sent and stays there until the provider confirms its delete. One periodic sweep empties that record, skipping runs that still hold their lock. The Atlas background step does not upload: it sends its frames inline, in an encoding that keeps each request under 8 MB (`meta_sam31.INLINE_CLIP_LADDER`).
+
 ## Deploy on 2026-11-11 (15:00 UTC window, D-08)
 
 - **Before, 15:00Z (door status and requests):** active release `a0a6360` (#3558). No activation hold, no paid-launch lock held, no screening candidate launching or running, no deploy pending. The last deploy had finished at 04:32Z.
