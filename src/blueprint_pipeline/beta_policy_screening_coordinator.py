@@ -1210,8 +1210,10 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         elif (_amount(site["committed_upper_bound_usd"]) + cap > SITE_LIMIT
               or _amount(campaign["committed_upper_bound_usd"]) + cap > _amount(plan["budget_usd"])):
             # Another attempt holds the money it needs. That attempt may still
-            # release it before spend, so wait for the refill to decide.
-            row.update(status="waitlisted", blockers=[WAITLIST_BLOCKER])
+            # release it before spend, so wait for the refill to decide. The
+            # known-good control never waits on money: it ends here.
+            row.update(status="deferred" if is_control(candidate) else "waitlisted",
+                       blockers=[BUDGET_EXHAUSTED_BLOCKER if is_control(candidate) else WAITLIST_BLOCKER])
             _changed(state)
             _save(root, ledger)
             return None
@@ -1253,11 +1255,14 @@ def _refill_waitlist(root: Path) -> int:
             return plans[campaign_id]
 
         def pending_caps(campaign_id: str) -> Decimal:
+            # A pending known-good control is neither used money nor in flight here: it is reserved only
+            # after every learned row of its campaign has ended, from what is left then.
             rows = campaigns[campaign_id]["candidates"]
-            if not any(row["status"] == "pending" for row in rows.values()):
+            if not any(row["status"] == "pending" and not is_control(row) for row in rows.values()):
                 return Decimal(0)
             return sum((_amount(candidate["max_cost_usd"]) for candidate in plan_for(campaign_id)["candidates"]
-                        if rows[candidate["candidate_id"]]["status"] == "pending"), Decimal(0))
+                        if rows[candidate["candidate_id"]]["status"] == "pending" and not is_control(candidate)),
+                       Decimal(0))
 
         for site_id in sites:
             ids = sorted((key for key, state in campaigns.items() if state["site_id"] == site_id),
@@ -1279,7 +1284,10 @@ def _refill_waitlist(root: Path) -> int:
                     if row["status"] != "waitlisted":
                         continue
                     cap = _amount(candidate["max_cost_usd"])
-                    if not _quote_current(candidate):
+                    if is_control(candidate):
+                        # Never funded from the waitlist (a ledger written before it ran last): it ends.
+                        row.update(status="deferred", blockers=[BUDGET_EXHAUSTED_BLOCKER])
+                    elif not _quote_current(candidate):
                         row.update(status="deferred", blockers=[QUOTE_EXPIRED_BLOCKER])
                     elif site_used + cap <= SITE_LIMIT and campaign_used + cap <= _amount(plan["budget_usd"]):
                         row.update(status="pending", blockers=[])
@@ -1802,7 +1810,7 @@ def _control_may_reserve(root: Path, plan: Mapping[str, Any]) -> bool:
                                 committed=lambda site, campaign_id=None: _amount(
                                     _budget(ledger, site, campaign_id=campaign_id)["committed_upper_bound_usd"]),
                                 site_limit=SITE_LIMIT)
-        if decision == "reused":
+        if decision in {"reused", "closed"}:
             _changed(ledger["campaigns"][plan["campaign_id"]])
         if json.dumps(ledger, sort_keys=True) != before:
             _save(root, ledger)
@@ -1852,7 +1860,8 @@ def process_screening_queue(
                 plan = _plan(root, campaign_id, state["plan_digest"])
                 # Reconcile allocated/uncertain work before reserving another
                 # candidate; new work follows the plan's (ranked) priority order.
-                position = {row["candidate_id"]: -1 if is_control(row) else index
+                # The known-good control goes last: it is reserved only once every learned row has ended.
+                position = {row["candidate_id"]: len(plan["candidates"]) if is_control(row) else index
                             for index, row in enumerate(plan["candidates"])}
                 waits = _scarce_retry_waits(ledger, state, plan)
                 ordered = sorted(plan["candidates"], key=lambda value: (

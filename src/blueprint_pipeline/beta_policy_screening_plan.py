@@ -535,7 +535,16 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
     return sorted(set(blockers))
 
 
-def _site_fitted_quote(quote: Mapping[str, Any], available: Decimal, *, floor: Decimal) -> dict[str, Any] | None:
+def fitted_headroom_usd(quote: Mapping[str, Any], *, floor: Decimal) -> Decimal:
+    """Half the headroom ``quote`` keeps above its resource bound ``floor``, rounded up to cents: what a
+    fitted quote must still keep for startup transfer, storage and teardown (``_site_fitted_quote``)."""
+    return ((money(quote["maximum_cost_usd"]) - floor) / 2).quantize(_CENT, rounding=ROUND_CEILING)
+
+
+def _site_fitted_quote(quote: Mapping[str, Any], available: Decimal, *, floor: Decimal,
+                       original_floor: Decimal | None = None,
+                       reason: str = "fitted_to_site_remaining_screening_budget",
+                       suffix: str = "-site-fit") -> dict[str, Any] | None:
     """The quote re-sealed at what the site has left, when that still bounds the run; else ``None``.
 
     Only ever lower: the fitted maximum is the site's remaining money rounded down
@@ -543,13 +552,16 @@ def _site_fitted_quote(quote: Mapping[str, Any], available: Decimal, *, floor: D
     hard time limit) plus at least half the headroom the original quote kept above
     it for startup transfer, storage and teardown. The allocator's own all-in
     admission still refuses, before any spend, a run it cannot fit.
+    ``original_floor``: the original run's resource bound, when the fitted run's
+    (``floor``) is shorter; the headroom kept is still half the original's.
     """
     original = money(quote["maximum_cost_usd"])
     fitted = available.quantize(_CENT, rounding=ROUND_FLOOR)
-    if not floor < fitted < original or (fitted - floor) * 2 < original - floor:
+    kept = fitted_headroom_usd(quote, floor=floor if original_floor is None else original_floor)
+    if not floor < fitted < original or fitted - floor < kept:
         return None
-    value = {**dict(quote), "quote_id": str(quote["quote_id"]) + "-site-fit",
-             "price_source": str(quote["price_source"]) + ";fitted_to_site_remaining_screening_budget",
+    value = {**dict(quote), "quote_id": str(quote["quote_id"]) + suffix,
+             "price_source": str(quote["price_source"]) + ";" + reason,
              "maximum_cost_usd": f"{fitted:.2f}", "quote_digest": ""}
     value["quote_digest"] = canonical_digest(value, digest_field="quote_digest")
     return value

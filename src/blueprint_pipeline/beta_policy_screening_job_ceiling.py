@@ -90,7 +90,9 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
         for campaign_id, state in ledger["campaigns"].items():
             # Waitlisted rows count too: money a selected row releases before
             # spend can fund them, up to what the plan's budget still allows.
-            unfunded = {key for key, row in state["candidates"].items() if row["status"] in {"pending", "waitlisted"}}
+            # An unreserved known-good control is not held here: it runs only on money left over.
+            unfunded = {key for key, row in state["candidates"].items()
+                        if row["status"] in {"pending", "waitlisted"} and not row.get("known_good_control")}
             if state["site_id"] != site_id or not unfunded or campaign_id == superseding:
                 continue
             plan = _plan(root, campaign_id, state["plan_digest"])
