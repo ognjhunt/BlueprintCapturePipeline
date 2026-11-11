@@ -3,8 +3,10 @@
 Written 2026-11-11. It follows the
 [first-principles audit](../audits/2026-11-11-first-principles-audit.md) and
 the owner's direction of the same day: simulation is the core proof in the
-site's answer, and it must be accurate, cheap and quick. This is a plan. Only
-step 1 has code on a branch; nothing here has been deployed or paid for.
+site's answer, and it must be accurate, cheap and quick. This is a plan.
+Step 1 is merged (#3560). Step 2 is being built. The section "What the host
+showed on 2026-11-11" records what was measured that day and corrects three
+statements this plan first made.
 
 ## The outcome
 
@@ -45,7 +47,7 @@ Read from the papers on 2026-11-11.
 | True scale | Estimated from reference objects by a model. No scale board or marker detection. Site-entered dimensions exist in the WebApp catalog and are not read on the website path. | `website_atlas_scene_source.py:38`; no `charuco`/`aruco` in `src/`; `contracts/pipeline/site-task-measurement-catalog.v1.json` (WebApp) |
 | Calibrated controller | The DROID profile and the vendored RoboLab loop are in use. A gripper-state fault was fixed on 11-05. | `beta_policy_screening_plan.py:39-52` |
 | Co-trained policies | In place: the four PolaRiS checkpoints are enabled. | `config/beta_policy_candidates.v1.json` |
-| Graded score | Absent. Only pass or fail is published, though each episode already records closest approach, contact, lift, carry distance and placement. | `adp_rigid_task_scoring.py:314`; `task_predicates.py:436-466`; `beta_policy_screening_result.py:158-180` |
+| Graded score | A grader exists (`policy_episode_graded_report.py`: contact, moved, lifted, carried, placed, released) but is wired only to the older operator publication. Website screening publishes pass or fail only. Step 2 wires the grader in. | `policy_episode_graded_report.py`; `adp_rigid_task_scoring.py:314`; `task_predicates.py:395-466`; `beta_policy_screening_result.py:87-184` |
 
 Two more facts shape the plan.
 
@@ -54,17 +56,18 @@ Two more facts shape the plan.
   at the put-down was 1.086 m away against a 0.990 m reach. The code computes
   that distance and does not use it (`robot_arm_path_clearance.py`,
   `task_contact_beyond`). The run cost about $27 and scored 0 of 39.
-- **When nothing fails, a job costs about $34 and each policy takes about two
-  hours.** $17 is a language model authoring the object, about $9.50 is
-  reconstruction, and each policy's ten episodes cost $1.40–$1.70 on a GPU for
-  about four minutes of simulated time (tracker lines 425-447; cost model).
+- **Each policy takes about two hours and costs $1.40–$1.70 on a GPU** for
+  about four minutes of simulated time. The finished job spent $26.63 in all.
+  This plan first said a language model authoring the object costs $17; that
+  was an older run. The recorded authoring run cost $4.21 of a $12 cap
+  (tracker; cost model).
 
 ## Steps, in order of value for effort
 
 Each step is useful by itself and is proved before the next one starts.
 
 1. **Place the robot where it can do the job, or hold before spending.**
-   Built on the branch `claude/fervent-noether-5qvel0`. Not merged or deployed.
+   Merged as #3560. Not deployed when this was written.
    - The rule: a stance counts as in reach only when the grasp contact is
      within the arm's bound at both the pick-up and the put-down. Stances that
      reach the nominal put-down rank first.
@@ -81,40 +84,100 @@ Each step is useful by itself and is proved before the next one starts.
    - An independent review found five faults in the first version and one in
      the second, and passed the third: no over-estimate in 205,000 sampled
      poses, 710 related tests passing.
-   - Before it merges, replay capture-447 on the branch, as `AGENTS.md`
-     requires. The stage replay does not reach this code; the downstream
-     replay does:
-     `python -m blueprint_pipeline.task_evaluation_downstream_replay --launch-run "$L" --intent-dir "$I" --capture-dir "$C" --registry "$R" --webapp-snapshots ./webapp --mirror ./mirror --until screening_plan --replay-root ./replays`,
-     with the inputs pulled as `docs/OPERATOR_DOOR.md` describes. Check the
-     chosen stance and its contact distances in `robot_station_search`.
-   - Two things to know. The recorded job is held because its nearest accepted
-     put-down is 1.024 m from the shoulder against 0.990 m, with the website's
-     5 cm tolerance; a tolerance of about 9 cm or more would turn that hold
-     into a flag. And the proof rests on the task's sealed grasp contact: a
-     policy that holds the object somewhere else is not modelled.
-2. **Score progress, not only success.** Add a 0-to-1 progress score per
-   episode: reached, touched, grasped, lifted, carried, placed. Compute it
-   first offline from retained traces with
-   `task_evaluation_policy_canary_rescore.py`, at no GPU cost, starting with
-   capture-447's 39 episodes. If it ranks the four policies, publish it beside
-   the counts. Missing today: the final distance to the target, and sealed
-   thresholds for each stage.
-3. **Run a known-answer control in every scene.** A scripted pick and place on
-   the same arm and stance, using the simulator's own positions, scored by the
-   same contract. If it fails, the scene is at fault and no policy is blamed.
-   The WebApp already reads `known_good_control_*` flags; nothing here writes
-   them. It needs a scripted row for the DROID profile and a flag writer.
-4. **Check the scale against something measured.** Read the site's entered
-   distance or a reference sheet from the WebApp's measurement catalog and
-   compare it with the estimated scale. Disagreement is flagged on the result;
-   agreement lets the result say the scale was checked.
-5. **Make a box a box.** For cartons, totes and trays, build the object from
-   its estimated dimensions instead of asking a language model to author it.
-   That removes most of the $17 for the commonest objects.
-6. **Cut the two hours.** Ten 24-second episodes should not take two hours.
-   Measure where the time goes (image pull, model load, start-up, rendering)
-   and remove the largest part: a warm image, and all policies for one scene on
-   one GPU session.
+   - The documented replay could not run: the job's launch run was moved off
+     the host on 2026-11-06, and nothing was restored. Instead the merged
+     stance search was run on 2026-11-11 on the job's real retained inputs (the
+     team half's task request, object box and scene collider, and the DROID
+     profile), offline and read-only. A check first showed the rebuild matches
+     the recorded search: 947 clear stances, the same refusal counts, and the
+     old choice at the same rank, 54.
+   - What the new search does on that scene: it proves 945 of the 947 clear
+     stances out of reach and chooses one of the two left. From there the
+     pick-up grasp contact is 0.9901 m against a 0.9903 m bound, the task's own
+     put-down point is 1.076 m away (beyond), and the nearest put-down the
+     success contract accepts is 0.978 m (within). No hold fires. The job
+     continues with two flags: `robot_reach_nominal_contact_beyond_bound` and
+     `scripted_carry_path_not_found`.
+   - This corrects the pull request, which said the recorded job would be
+     held. That was true of the recorded station, not of a fresh search.
+   - What it means: the rule holds only on proof, so a scene the arm can
+     barely reach still goes to a paid run it will almost certainly fail. See
+     "Two rules this suggests" below.
+   - The proof rests on the task's sealed grasp contact: a policy that holds
+     the object somewhere else is not modelled.
+2. **Score progress, not only success.** In progress on 2026-11-11.
+   - The existing grader gives each episode ordered stages; a stage counts
+     only when every earlier one did. Website screening will publish, per
+     policy, how many episodes reached each stage, plus the closest the grasp
+     point came to the object (publication schema v4, optional, with a
+     downgrade to v3). The WebApp says how far each policy got when none
+     completed the job. No winner is named on progress.
+   - Checked first on real data, at no cost. The grader was run on the 39
+     retained episodes of capture-447:
+
+     | Policy | Graded | Touched | Moved | Lifted | Closest approach, median |
+     |---|---|---|---|---|---|
+     | pi05_droid | 9 | 1 | 0 | 0 | 4.3 cm |
+     | groot_n17_droid | 10 | 2 | 1 | 0 | 6.5 cm |
+     | molmoact2_droid | 10 | 0 | 0 | 0 | 8.3 cm |
+     | pi0_droid_jointpos_100k_polaris | 10 | 0 | 0 | 0 | 20.0 cm |
+
+     The stages separate two of the four policies. The closest approach
+     separates all four, so it is published too. The recorded scores of that
+     job carry no closest-approach measurement; it was recomputed from the
+     recorded traces with the scorer's own function.
+   - Thresholds are fixed by a published grader version. Nothing is tuned per
+     job.
+3. **Run a known-answer control in every scene.** Partly built by another
+   change (#3556): `beta_policy_screening_known_good_control.py` plans a
+   scripted control row and writes the `known_good_control_*` flags the WebApp
+   reads. This plan first said nothing writes them; that was wrong. For the
+   DROID arm it can only write `known_good_control_unavailable:embodiment`,
+   because no scripted row targets the DROID profile. What is missing is a
+   scripted runtime for that profile and a GPU run to show it succeeds. The
+   older native control gate stays paused (owner, 2026-09-21).
+4. **Check the scale against something measured.** Waiting on an input. The
+   site's own measurements do not reach the website path (the WebApp keeps
+   them out of the task context on purpose, so its digest does not move), and
+   since 2026-11-11 the product no longer asks a site to measure anything.
+   This step needs a scale reference in the video first.
+5. **Make a box a box.** Smaller than first thought. A primitive path
+   already exists (`website_synthetic_subject.py`, authored by the no-spend
+   `provided_mesh_rigid_authoring` adapter) and is used today only for a
+   designed object. Routing an observed carton or tote to it would save the
+   authoring run, which cost $4.21 on the recorded job, not $17. A solid box is
+   not a tray: an open container needs walls. Needs a GPU run to prove.
+6. **Cut the two hours.** Measured on the four recorded runs (2026-11-11):
+   - One GPU instance per policy. From launch to settled: 101 to 160 minutes
+     (from the provider phase log and the screening ledger, read through the
+     operator door).
+   - From instance creation to the first episode: 11 to 19 minutes (same
+     source). No timestamps are recorded inside that span (image pull, model
+     load, environment start).
+   - 39 timed episodes (the fortieth was blocked and has no timing). One
+     24-second episode (360 control steps at 15 Hz, then 16 settle steps)
+     takes 4.3 to 8.5 minutes of wall time; the median per policy is 258 to
+     489 s.
+   - Instrumented, per episode, as the range of the four policies' means:
+     reset and initial state 47 to 89 s, environment step including render
+     46 to 70 s, saving media 36 to 54 s, policy inference 9 to 14 s (one
+     policy: 62 s), object state sampling 2.7 to 5.5 s, settle steps 2 to 3 s,
+     everything else under 1 s. Together 144 to 281 s.
+   - Those items explain 53 to 58% of a policy's mean episode wall time; the
+     other 42 to 47% (41 to 50% for single episodes) falls between the
+     instrumented intervals and is not explained by the record.
+   - The runtime's coarser `env_step_s` reads 87 to 133 s. For every policy it
+     equals, within 0.2 s, the step, settle, media, state-sampling and
+     observation-read buckets added together; the 46 to 70 s above is the step
+     alone.
+   - Source: each episode's `episode.performance_diagnostics.timings_seconds`
+     (`time.monotonic` buckets), `episode.evaluation_backend.timing.env_step_s`
+     and the row's `telemetry.wall_time_ns`, in the four retained
+     `native_task_arena_policy_canary_session_result.v1.json` files.
+   - So the first change is to record where the unexplained time goes. Then:
+     one GPU session for all policies of a scene, a warm image, and cheaper
+     resets and media. `native_task_arena_policy_canary_worker.py` is two lines
+     under its size cap, so timing has to be added from outside it.
 7. **More, and more varied, episodes.** Twenty to thirty per policy needs two
    shards under today's four-hour limit. Do this after step 6, so it stays
    inside the per-candidate cap. Raising any cap is the owner's decision.
@@ -123,6 +186,37 @@ Each step is useful by itself and is proved before the next one starts.
    method (structure from motion, surface splats, a fused mesh, USD) instead
    of the current eight paid sub-steps. This is the largest change and comes
    last, when steps 1–7 show the lane ranks policies.
+
+## Two rules this suggests
+
+Not built. Each changes what is paid for, so each is the owner's call.
+
+- **When the scene is flagged as probably out of reach, pay for one policy
+  first.** If no stance reaches the task's put-down point and the scripted
+  carry finds no path, run one policy, read its progress, and run the others
+  only if it touched the object. That saves the other runs only when the first
+  policy did not touch the object, and on the recorded job two of the four
+  policies touched it.
+- **When the job's two spots are further apart than the research arm can
+  span, test the skill within its reach.** Reach is the robot's question, and
+  the fit check and the scene check answer it for the site's pick. What the
+  policy comparison can add is whether a policy can pick this object up from
+  this surface and put it down again. Place the arm where it reaches the
+  pick-up, set the put-down at a distance it can reach on the same surface,
+  and say so on the page.
+
+## What the host showed on 2026-11-11
+
+Read through the operator door, read-only.
+
+- The host ran `a0a6360` (#3558). Three merged commits were not live,
+  #3560 among them. Nothing was in flight and no paid lock was held.
+- Month to date: $146.28 of the $200 monthly limit. One full job costs about
+  $27, so there is room for one, not two.
+- Disk was at the critical level: `/mnt/blueprint-work` 92% used, below its
+  free-space floor, with reclaim ineffective.
+- The recorded job's launch run had been moved to cold storage, so the
+  documented downstream replay cannot run on it without a restore.
 
 ## How we will know it is right
 
@@ -150,8 +244,10 @@ These counts are by name and are an upper bound.
 
 ## What needs the owner
 
-- A paid run to try steps 1–3 on capture-447 again (about $6 for four policies
-  at today's prices), and any change to a spend value.
+- A paid run on a scene the research arm can comfortably reach (about $6 for
+  four policies at today's prices, plus about $20 of preparation for a new
+  scene), and any change to a spend value. The recorded scene is at the edge
+  of the arm's reach, so it is a poor test of whether policies can be ranked.
 - Whether to ask sites for a scale reference in the video. The phone capture
   app is no longer in use (owner, 2026-11-11), so its depth data is not
   available; the site films on its own phone in the browser.

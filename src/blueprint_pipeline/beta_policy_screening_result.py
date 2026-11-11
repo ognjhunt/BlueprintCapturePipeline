@@ -28,6 +28,11 @@ Publication v2 is still written, as the same result without those fields, for
 a revision the website already holds as v2 and for one whose v3 form it did not
 accept (``goes_out_as_v2``). A ledger written before v3 publishes as it did.
 
+A learned-policy candidate's summary also keeps ``progress``: how far its graded
+episodes got through the pick-and-place ladder, from the episodes the result
+already embeds (``beta_policy_screening_progress``). Publication v4 carries it on
+the candidate; a publication without any is v3 as before (``goes_out_as_v3``).
+
 A run's retained episode review videos (``beta_screening_review_videos``) are
 referenced from its summary as ``review_videos``: the manifest's path and digest
 and one row per video, or ``not_retained`` with typed blockers. They never
@@ -106,6 +111,7 @@ def _counted_summary(
     if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
         from .beta_policy_screening_g1 import summarize_result
         return summarize_result(value, plan=plan, candidate=candidate)
+    from .beta_policy_screening_progress import summary_progress
     from .native_task_arena_policy_canary_session import BETA_RUN_KIND, validate_session_result
 
     result = validate_session_result(value)
@@ -181,6 +187,9 @@ def _counted_summary(
         # Validated as typed codes by ``validate_session_result``; ledger only.
         **({"observation_quality_flags": list(result["observation_quality_flags"])}
            if result.get("observation_quality_flags") else {}),
+        # How far a learned policy got, from the embedded episodes (``beta_policy_screening_progress``):
+        # absent when nothing could be graded, so such a summary keeps its bytes.
+        **(summary_progress(result, candidate=candidate, outcomes=outcomes) if kind != SCRIPTED else {}),
     }
 
 
@@ -244,11 +253,15 @@ def screening_publication(
 ) -> dict[str, Any]:
     """Customer-safe progress: no endpoint, local path, credential or prompt bytes.
 
-    Publication v3, or its v2 form for a revision the website holds or was sent as v2
-    (``beta_policy_screening_publication_flags.goes_out_as_v2``). Which one is read from
-    ``state`` alone, so every caller computes the same bytes for a revision.
+    Publication v4 when a learned-policy candidate carries ``progress``, else v3 (the same bytes as before
+    v4); its v3 form for a revision the website holds or was sent as v3 (``goes_out_as_v3``), and its v2
+    form for one it holds or was sent as v2 (``beta_policy_screening_publication_flags.goes_out_as_v2``).
+    Which one is read from ``state`` alone, so every caller computes the same bytes for a revision.
     """
-    from .beta_policy_screening_publication_flags import as_v2, goes_out_as_v2, row_flags, scene_feasibility
+    from .beta_policy_screening_progress import publication_progress
+    from .beta_policy_screening_publication_flags import (
+        PUBLICATION_SCHEMA_V4, as_v2, as_v3, goes_out_as_v2, goes_out_as_v3, row_flags, scene_feasibility,
+    )
     from .beta_screening_review_videos import publication_entry
     from .beta_policy_screening_known_good_control import control_flags
 
@@ -272,12 +285,15 @@ def screening_publication(
             **row_flags(configured, summary),
             # The known-good control's outcome, as its own one flag (never part of the estimate).
             **control_flags(configured, row),
+            # How far a learned policy got (publication v4); absent for every other row.
+            **publication_progress(configured, row, summary),
         })
         entry = publication_entry(candidates[-1], summary) if row["status"] == "completed" else None
         if entry is not None:
             review_videos.append(entry)
+    progressed = any("progress" in row for row in candidates)
     value = {
-        "schema_version": PUBLICATION_SCHEMA,
+        "schema_version": PUBLICATION_SCHEMA_V4 if progressed else PUBLICATION_SCHEMA,
         "campaign_id": plan["campaign_id"], "site_id": plan["site_id"],
         "plan_digest": plan["plan_digest"], "catalog_digest": plan["catalog_digest"],
         "scenario_plan_digest": plan["scenario_plan_digest"],
@@ -292,4 +308,8 @@ def screening_publication(
     }
     value["publication_digest"] = cross_runtime_canonical_digest(value, digest_field="publication_digest")
     legacy = as_v2(value)
-    return legacy if goes_out_as_v2(state, legacy["publication_digest"]) else value
+    if goes_out_as_v2(state, legacy["publication_digest"]):
+        return legacy
+    if progressed and goes_out_as_v3(state, (current := as_v3(value))["publication_digest"]):
+        return current
+    return value

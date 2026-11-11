@@ -25,6 +25,13 @@ number is published. Flags inform: nothing here refuses, reorders or funds.
 v2 stays writable. ``as_v2`` is the same publication without these fields, with
 exactly the bytes the v2 writer produced, for a website that does not accept v3
 yet (``beta_policy_screening_worker.deliver_publications``).
+
+Publication v4 is v3 plus one optional field on a learned-policy candidate,
+``progress`` (``beta_policy_screening_progress``): how far its graded episodes got.
+A publication with no ``progress`` on any candidate stays v3, byte for byte. One
+with progress goes out as v4, or as ``as_v3`` (``progress`` removed) for a revision
+the website holds as v3 or did not accept as v4 (``goes_out_as_v3``); the v3 to v2
+step is unchanged.
 """
 from __future__ import annotations
 
@@ -38,12 +45,16 @@ from .website_candidate_feasibility import scene_check
 
 PUBLICATION_SCHEMA_V2 = "beta_policy_screening_publication.v2"
 PUBLICATION_SCHEMA_V3 = "beta_policy_screening_publication.v3"
+PUBLICATION_SCHEMA_V4 = "beta_policy_screening_publication.v4"
+#: The one v4 field, on a candidate row (``beta_policy_screening_progress.PROGRESS_FIELD``).
+PROGRESS_FIELD = "progress"
 #: One flag on the wire: a lowercase code with at most three typed qualifiers.
 FLAG_CODE = re.compile(r"[a-z][a-z0-9_]{0,127}(?::[a-z0-9_]{1,96}){0,3}")
 MAX_FLAGS = 64
 ROW_FLAG_FIELDS = ("observation_quality_flags", "setup_quality_flags", "scene_check_flags")
 CAMPAIGN_FLAG_FIELD = "scene_feasibility"
-#: The ledger's record that a revision went out as v2 because the website did not accept its v3 form.
+#: The ledger's record that a revision went out in an earlier form (v2, or v3 from v4) because the website did
+#: not accept the newer one. A record without ``to_schema_version`` predates v4 and means v2.
 DOWNGRADE_FIELD = "publication_downgrade"
 
 
@@ -98,14 +109,47 @@ def publication_flags_valid(publication: Mapping[str, Any]) -> bool:
                     if isinstance(row, Mapping) for key in ROW_FLAG_FIELDS if key in row))
 
 
-def as_v2(publication: Mapping[str, Any]) -> dict[str, Any]:
-    """The same result as publication v2: the v3 fields removed and the digest taken again."""
-    value = {key: item for key, item in publication.items() if key != CAMPAIGN_FLAG_FIELD}
-    value["schema_version"] = PUBLICATION_SCHEMA_V2
-    value["candidates"] = [{key: item for key, item in row.items() if key not in ROW_FLAG_FIELDS}
+def as_v3(publication: Mapping[str, Any]) -> dict[str, Any]:
+    """The same result as publication v3: ``progress`` removed and the digest taken again.
+
+    A publication that carries no ``progress`` gives back exactly its own bytes as v3.
+    """
+    value = dict(publication)
+    value["schema_version"] = PUBLICATION_SCHEMA_V3
+    value["candidates"] = [{key: item for key, item in row.items() if key != PROGRESS_FIELD}
                            for row in publication["candidates"]]
     value["publication_digest"] = cross_runtime_canonical_digest(value, digest_field="publication_digest")
     return value
+
+
+def as_v2(publication: Mapping[str, Any]) -> dict[str, Any]:
+    """The same result as publication v2: the v3 fields (and any v4 ``progress``) removed and the digest taken again."""
+    value = {key: item for key, item in publication.items() if key != CAMPAIGN_FLAG_FIELD}
+    value["schema_version"] = PUBLICATION_SCHEMA_V2
+    value["candidates"] = [{key: item for key, item in row.items()
+                            if key not in ROW_FLAG_FIELDS and key != PROGRESS_FIELD}
+                           for row in publication["candidates"]]
+    value["publication_digest"] = cross_runtime_canonical_digest(value, digest_field="publication_digest")
+    return value
+
+
+def _downgraded_to(state: Mapping[str, Any]) -> str | None:
+    """The form this revision was recorded as going out in, when the website refused a newer one."""
+    downgrade = state.get(DOWNGRADE_FIELD)
+    if isinstance(downgrade, Mapping) and downgrade.get("revision") == state.get("revision"):
+        return str(downgrade.get("to_schema_version") or PUBLICATION_SCHEMA_V2)
+    return None
+
+
+def goes_out_as_v3(state: Mapping[str, Any], v3_digest: str) -> bool:
+    """Whether a revision with ``progress`` goes out as its v3 form: held as v3, or refused as v4.
+
+    The same rule as ``goes_out_as_v2``, one step up: bytes the website acknowledged stand, and a revision
+    whose v4 form it did not accept stays v3 for good; the next revision is offered as v4 again.
+    """
+    if _downgraded_to(state) == PUBLICATION_SCHEMA_V3:
+        return True
+    return state.get("published_revision") == state.get("revision") and state.get("published_digest") == v3_digest
 
 
 def goes_out_as_v2(state: Mapping[str, Any], legacy_digest: str) -> bool:
@@ -116,13 +160,12 @@ def goes_out_as_v2(state: Mapping[str, Any], legacy_digest: str) -> bool:
     next revision. A revision whose v3 form the website did not accept goes out as v2 for good
     (``DOWNGRADE_FIELD``); the next revision is offered as v3 again.
     """
-    revision = state.get("revision")
-    downgrade = state.get(DOWNGRADE_FIELD)
-    if isinstance(downgrade, Mapping) and downgrade.get("revision") == revision:
+    if _downgraded_to(state) == PUBLICATION_SCHEMA_V2:
         return True
-    return state.get("published_revision") == revision and state.get("published_digest") == legacy_digest
+    return state.get("published_revision") == state.get("revision") and state.get("published_digest") == legacy_digest
 
 
-__all__ = ["CAMPAIGN_FLAG_FIELD", "DOWNGRADE_FIELD", "FLAG_CODE", "MAX_FLAGS", "PUBLICATION_SCHEMA_V2",
-           "PUBLICATION_SCHEMA_V3", "ROW_FLAG_FIELDS", "UNTYPED", "as_v2", "flags_valid", "goes_out_as_v2",
-           "publication_flags_valid", "row_flags", "scene_feasibility", "typed_flags"]
+__all__ = ["CAMPAIGN_FLAG_FIELD", "DOWNGRADE_FIELD", "FLAG_CODE", "MAX_FLAGS", "PROGRESS_FIELD", "PUBLICATION_SCHEMA_V2",
+           "PUBLICATION_SCHEMA_V3", "PUBLICATION_SCHEMA_V4", "ROW_FLAG_FIELDS", "UNTYPED", "as_v2", "as_v3",
+           "flags_valid", "goes_out_as_v2", "goes_out_as_v3", "publication_flags_valid", "row_flags",
+           "scene_feasibility", "typed_flags"]
