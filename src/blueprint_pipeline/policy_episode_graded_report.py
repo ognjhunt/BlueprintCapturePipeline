@@ -268,6 +268,82 @@ def _ladder(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return stages
 
 
+# ------------------------------------------------- progress (beta result)
+
+#: The published grader version behind a beta result's ``progress``. Changing a threshold, a stage or the
+#: ladder's order changes this string; nothing is tuned per job.
+PROGRESS_GRADER_VERSION = "policy_episode_progress.v1"
+#: ``approached``: the grasp frame came this close to the object's bounds (the score's own closest approach).
+APPROACHED_DISTANCE_M = 0.02
+#: The pick-and-place ladder, in order. ``approached`` leads only when every graded episode measured it.
+PROGRESS_STAGE_IDS = ("approached", "contact", "moved", "lifted", "translated", "placed", "released_and_settled")
+
+
+def closest_approach_m(score: Mapping[str, Any]) -> float | None:
+    """The score's closest approach of the grasp frame to the object's bounds, when it measured one.
+
+    ``task_predicates.episode_behaviour`` records it under ``behaviour.gripper`` only when the samples and
+    the task spec allow it; otherwise it is unknown, never guessed.
+    """
+    behaviour = score.get("behaviour")
+    gripper = behaviour.get("gripper") if isinstance(behaviour, Mapping) else None
+    approach = gripper.get("closest_approach_to_subject_bounds") if isinstance(gripper, Mapping) else None
+    distance = approach.get("distance_m") if isinstance(approach, Mapping) else None
+    if isinstance(distance, bool) or not isinstance(distance, (int, float)):
+        return None
+    distance = float(distance)
+    return distance if math.isfinite(distance) and distance >= 0 else None
+
+
+def progress_episode(*, score: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """One episode's pick-and-place stages (``_subtasks``) and its closest approach; ``None`` off this ladder.
+
+    Gradable exactly as ``grade_episode`` grades: a ``scored`` report with state samples. Only a report that
+    names the ``pick_and_place`` strategy and carries its criteria is on this ladder.
+    """
+    if not isinstance(score, Mapping):
+        raise GradedReportError("graded_report_score_invalid")
+    samples = [sample for sample in samples if isinstance(sample, Mapping)]
+    if (score.get("status") != "scored" or not samples or score.get("manipulation_strategy") != "pick_and_place"
+            or not isinstance(score.get("criteria_satisfied"), Mapping)):
+        return None
+    stages = _subtasks(score=score, samples=samples, object_points=_positions(samples, _OBJECT_POSE_FIELDS),
+                       movement_epsilon_m=DEFAULT_MOVEMENT_EPSILON_M)
+    if [stage["id"] for stage in stages] != list(PROGRESS_STAGE_IDS[1:]):
+        raise GradedReportError("graded_report_progress_ladder_invalid")
+    return {"stages": [{"id": stage["id"], "condition_met": stage["condition_met"]} for stage in stages],
+            "approach_distance_m": closest_approach_m(score)}
+
+
+def summarize_progress(episodes: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """A candidate's ``progress`` from its graded episodes (``progress_episode``); ``None`` when none.
+
+    ``approached`` leads the ladder only when every episode measured its closest approach, and then
+    ``closest_approach_m`` gives that distance's median and minimum over the episodes. Each stage counts the
+    episodes that achieved it in ladder order (``_ladder``), so the counts never increase down the list.
+    """
+    if not episodes:
+        return None
+    approach = all(item.get("approach_distance_m") is not None for item in episodes)
+    counts = dict.fromkeys(PROGRESS_STAGE_IDS if approach else PROGRESS_STAGE_IDS[1:], 0)
+    fractions = []
+    for item in episodes:
+        stages = [dict(stage) for stage in item["stages"]]
+        if approach:
+            stages.insert(0, {"id": "approached",
+                              "condition_met": item["approach_distance_m"] <= APPROACHED_DISTANCE_M})
+        for stage in _ladder(stages):
+            counts[stage["id"]] += int(stage["achieved"])
+        fractions.append(sum(stage["achieved"] for stage in stages) / len(stages))
+    distances = [item["approach_distance_m"] for item in episodes] if approach else []
+    return {"grader_version": PROGRESS_GRADER_VERSION, "episodes_graded": len(episodes),
+            "stages": [{"stage": stage, "episodes": count} for stage, count in counts.items()],
+            "mean_score": round(statistics.fmean(fractions), 4),
+            # A fact beside the ladder, present exactly when it has ``approached``: how near the grasp frame came.
+            **({"closest_approach_m": {"median": round(float(statistics.median(distances)), 4),
+                                       "min": round(min(distances), 4)}} if approach else {})}
+
+
 # ---------------------------------------------------------- failure events
 
 
@@ -761,12 +837,18 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 __all__ = [
+    "APPROACHED_DISTANCE_M",
     "CANDIDATE_SUMMARY_SCHEMA_VERSION",
     "EPISODE_SCHEMA_VERSION",
     "GradedReportError",
+    "PROGRESS_GRADER_VERSION",
+    "PROGRESS_STAGE_IDS",
     "SIDECAR_SCHEMA_VERSION",
     "build_policy_canary_graded_report_sidecar",
+    "closest_approach_m",
     "grade_episode",
+    "progress_episode",
     "sparc",
     "summarize_candidate",
+    "summarize_progress",
 ]
