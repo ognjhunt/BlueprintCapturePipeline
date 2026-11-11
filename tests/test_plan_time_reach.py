@@ -14,7 +14,10 @@ import numpy as np
 import pytest
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan, validate_screening_plan
+from blueprint_pipeline.beta_policy_screening_plan import (
+    build_screening_plan,
+    validate_screening_plan,
+)
 from blueprint_pipeline.robot_arm_path_clearance import (
     SCRIPTED_CARRY_FLAG,
     arm_reach_bound,
@@ -47,6 +50,7 @@ def _plan(station=STATION, strategy="pick_and_place"):
             "objects": [{"semantic_role": "task_object", "object_type": "RIGID", "task_subject": True}],
             "task_spec": {"manipulation_strategy": strategy, "start_pose_world": START,
                           "target_position_world_m": TARGET, "subject_collision_bounds_scoring_frame_m": TRAY,
+                          "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
                           "interaction_affordance": {"contact_point_scoring_frame_m": CONTACT}}}
 
 
@@ -349,6 +353,7 @@ CODE_447 = "robot_reach_insufficient:place:1.086m_vs_0.990m"
 def _wide_spec(start=WIDE_START, target=WIDE_TARGET, contact=WIDE_CONTACT, bounds=WIDE_TRAY):
     return {"manipulation_strategy": "pick_and_place", "start_pose_world": list(start),
             "target_position_world_m": list(target), "subject_collision_bounds_scoring_frame_m": bounds,
+            "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
             "interaction_affordance": {"contact_point_scoring_frame_m": list(contact),
                                        "approach_unit_scoring_frame": [0.0, 0.0, 1.0],
                                        "gripper_orientation_scoring_frame_xyzw": [0.0, 1.0, 0.0, 0.0],
@@ -448,7 +453,8 @@ def test_with_no_stance_bringing_the_contact_to_the_place_the_gate_holds_the_job
     plan_path = packet / "native_task_arena_scene_plan.v1.json"
     plan = json.loads(plan_path.read_text())
     plan["task_spec"].update({key: spec[key] for key in (
-        "start_pose_world", "target_position_world_m", "subject_collision_bounds_scoring_frame_m")})
+        "start_pose_world", "target_position_world_m", "subject_collision_bounds_scoring_frame_m",
+        "destination_orientation_xyzw")})
     plan["task_spec"]["interaction_affordance"]["contact_point_scoring_frame_m"] = WIDE_CONTACT
     plan_path.write_text(json.dumps(plan))
     with pytest.raises(RobotArmPathAdmissionBlocked) as refused:
@@ -601,9 +607,117 @@ def test_without_the_objects_box_a_contact_beyond_the_bound_is_unassessed_and_fl
 
 
 def test_the_recorded_capture_447_numbers_are_still_held_by_name():
-    from blueprint_pipeline.robot_arm_path_clearance import object_reach_inputs, reach_refusal_code, reach_refused
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        object_reach_inputs,
+        reach_refusal_code,
+        reach_refused,
+    )
 
     reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION,
                                   **object_reach_inputs(_wide_spec()))
     assert reach_refused(reach) and reach_refusal_code(reach) == CODE_447 == (
         "robot_reach_insufficient:place:1.086m_vs_0.990m")
+
+
+def test_the_put_down_bound_never_exceeds_the_true_contact_distance_for_any_accepted_pose():
+    from scipy.spatial.transform import Rotation
+
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        _place_contact_distance,
+        _place_contact_offset,
+    )
+
+    rng = np.random.default_rng(447)
+    shoulder = np.array([0.0, 0.0, 0.333])
+    for _ in range(300):
+        target = rng.uniform([-1.2, -1.2, 0.0], [1.2, 1.2, 1.0])
+        half = rng.uniform(0.0, 0.15, 3) * (rng.random() < 0.7)
+        region = (target - half, target + half)
+        contact = rng.uniform(-0.3, 0.3, 3)
+        reference = Rotation.random(random_state=rng)
+        angle = float(rng.choice([0.0, rng.uniform(0.0, math.pi), math.pi]))
+        offset, grow = _place_contact_offset(contact, reference.as_quat().tolist(), angle)
+        bound = _place_contact_distance(shoulder, target, offset, grow, region if half.any() else None)
+        axes = rng.normal(size=(200, 3))
+        turns = Rotation.from_rotvec(axes / np.linalg.norm(axes, axis=1, keepdims=True)
+                                     * rng.uniform(0.0, angle, (200, 1)))
+        origins = rng.uniform(region[0], region[1], (200, 3))
+        for order in ((reference * turns), (turns * reference)):
+            true = np.linalg.norm(origins + order.apply(contact) - shoulder, axis=1)
+            assert bound <= true.min() + 1e-9
+
+
+def _tilt_spec(tolerance_rad):
+    # The contact 0.10 m above the object's origin; its nominal put-down 1.000 m from the shoulder, beyond the
+    # bound. Tilting the object 0.3 rad toward the arm, which the contract accepts, brings it to 0.970 m.
+    spec = _wide_spec(start=[0.6, 0.0, SHOULDER_Z - 0.1, 0.0, 0.0, 0.0, 1.0], target=[1.0, 0.0, SHOULDER_Z - 0.1],
+                      contact=[0.0, 0.0, 0.1], bounds=SMALL_BOX)
+    target = spec["target_position_world_m"]
+    criteria = {"destination_containment": {"mode": "required",
+                                            "position_bounds_world_m": {"minimum": target, "maximum": target}},
+                "orientation": {"mode": "required", "reference_xyzw": [0.0, 0.0, 0.0, 1.0],
+                                "tolerance_rad": tolerance_rad}}
+    return {**spec, "task_success_contract": {"criteria": criteria}}
+
+
+def test_a_put_down_a_tilt_the_contract_accepts_brings_into_reach_is_flagged_not_held():
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        contact_reach_status,
+        object_reach_inputs,
+        reach_refused,
+    )
+
+    tilted = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION,
+                                   **object_reach_inputs(_tilt_spec(0.3)))
+    place = next(row for row in tilted["phases"] if row["phase"] == "place")
+    assert place["distance_m"] == pytest.approx(1.0, abs=5e-4) and tilted["task_contact_beyond"] == ["place"]
+    # The horizontal-only swing measured 1.000 m here and held it; any axis moves it 2 * 0.1 * sin(0.15).
+    assert place["contact_admissible_distance_m"] == pytest.approx(1.0 - 2 * 0.1 * math.sin(0.15), abs=2e-4)
+    assert not reach_refused(tilted) and contact_reach_status(tilted) == "flagged"
+    # No tilt accepted: the nominal put-down is the only one, and it is beyond the bound.
+    upright = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION,
+                                    **object_reach_inputs(_tilt_spec(0.0)))
+    assert reach_refused(upright)
+
+
+def test_the_put_down_contact_is_turned_by_the_destination_orientation_or_proves_nothing():
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        contact_reach_status,
+        object_reach_inputs,
+        reach_refused,
+    )
+
+    # Picked up facing +x, put down turned half a turn: the contact 0.10 m along the object's x then faces the arm.
+    spec = _wide_spec(start=[0.6, 0.0, SHOULDER_Z, 0.0, 0.0, 0.0, 1.0], target=[1.0, 0.0, SHOULDER_Z],
+                      contact=[0.1, 0.0, 0.0], bounds=SMALL_BOX)
+    turned = {**spec, "destination_orientation_xyzw": [0.0, 0.0, 1.0, 0.0]}
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(turned))
+    place = next(row for row in reach["phases"] if row["phase"] == "place")
+    assert place["distance_m"] == pytest.approx(1.10, abs=5e-4)  # turned as it started: the nominal figure
+    assert place["contact_admissible_distance_m"] == pytest.approx(0.90, abs=5e-4)
+    assert not reach_refused(reach) and contact_reach_status(reach) == "flagged"
+    # Held as it started, the same contact is 1.10 m away at the put-down: refused.
+    same = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(spec))
+    assert reach_refused(same)
+    # With no destination orientation the contact cannot be located at the put-down: no proof there.
+    unknown = {key: value for key, value in spec.items() if key != "destination_orientation_xyzw"}
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(unknown))
+    place = next(row for row in reach["phases"] if row["phase"] == "place")
+    assert place["place_contact_unlocated"] is True and "contact_admissible_distance_m" not in place
+    assert not reach_refused(reach) and contact_reach_status(reach) == "flagged"
+
+
+def test_capture_447_with_the_websites_planar_tolerance_is_held_at_its_least_accepted_distance():
+    from blueprint_pipeline.robot_arm_path_clearance import (
+        object_reach_inputs,
+        reach_refusal_code,
+        reach_refused,
+    )
+
+    target = np.asarray(WIDE_TARGET)
+    spec = {**_wide_spec(), "destination_position_bounds_world_m": {
+        "minimum": (target - [0.05, 0.05, 0.0]).tolist(), "maximum": (target + [0.05, 0.05, 0.0]).tolist()}}
+    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(spec))
+    # The nearest accepted put-down, 5 cm nearer on each planar axis: sqrt(0.05^2 + 1.0314^2) = 1.0326 m.
+    assert reach_refused(reach)
+    assert reach_refusal_code(reach) == "robot_reach_insufficient:place:1.032m_vs_0.990m"

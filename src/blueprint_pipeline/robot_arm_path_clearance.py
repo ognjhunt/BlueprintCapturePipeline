@@ -844,23 +844,44 @@ def _place_nearest_distance(shoulder: np.ndarray, target: np.ndarray, held: np.n
     return distance
 
 
-def _place_contact_distance(shoulder: np.ndarray, target: np.ndarray, contact: np.ndarray,
-                            region: tuple[np.ndarray, np.ndarray] | None, yaw_free_rad: float) -> float:
+def _place_contact_distance(shoulder: np.ndarray, target: np.ndarray, offset: np.ndarray, grow: float,
+                            region: tuple[np.ndarray, np.ndarray] | None) -> float:
     """A lower bound on the distance from ``shoulder`` to the task's contact wherever the task accepts the object.
 
-    ``contact`` is the contact's offset from the object's origin, held at the start's orientation. The origin
-    may be anywhere in ``region`` (with ``target``); a turn of up to ``yaw_free_rad`` about the vertical moves
-    the offset's horizontal part by at most the chord ``2 r sin(yaw / 2)`` on each axis. The box covering all of
-    it is measured, so the true least distance is never smaller: a contact beyond this is beyond every place.
-    Without a region or a turn it is the exact distance at ``target``.
+    ``offset`` is the contact's offset from the object's origin at the reference orientation; any accepted
+    rotation moves it by at most ``grow`` (``_place_contact_offset``) in any direction, so on every axis. The
+    origin may be anywhere in ``region`` (with ``target``). The box covering all of it is measured, so the true
+    least distance is never smaller: a contact beyond this is beyond every accepted place. Without a region or
+    a rotation it is the exact distance at ``target``.
     """
-    if region is None and yaw_free_rad <= 0.0:
-        return float(np.linalg.norm(target + contact - shoulder))
+    if region is None and grow <= 0.0:
+        return float(np.linalg.norm(target + offset - shoulder))
     origin_low, origin_high = (target, target) if region is None else (
         np.minimum(region[0], target), np.maximum(region[1], target))
-    grow = 2.0 * math.hypot(contact[0], contact[1]) * math.sin(min(yaw_free_rad, math.pi) / 2.0)
-    swing = np.array([grow, grow, 0.0])
-    return _box_gap(shoulder, origin_low + contact - swing, origin_high + contact + swing)
+    swing = np.full(3, grow)
+    return _box_gap(shoulder, origin_low + offset - swing, origin_high + offset + swing)
+
+
+def _place_contact_offset(contact_point_m: Sequence[float], orientation_xyzw: Sequence[float] | None,
+                          angle_rad: float) -> tuple[np.ndarray, float] | None:
+    """The contact's offset at the put-down and how far an accepted rotation can move it, or ``None``.
+
+    A rotation by at most ``angle_rad`` about any axis moves a point at distance ``|c|`` from the origin by
+    at most ``2 |c| sin(angle / 2)``; any rotation at all (``angle`` of pi or more) keeps it within ``|c|`` of
+    the origin. The offset is the contact turned by the destination's ``orientation_xyzw``. With a contact off
+    the origin and no destination orientation the contact cannot be located at the put-down: ``None``, no proof.
+    """
+    body = np.asarray(contact_point_m, dtype=float)
+    length = float(np.linalg.norm(body))
+    if length == 0.0:
+        return np.zeros(3), 0.0
+    if angle_rad >= math.pi:
+        return np.zeros(3), length
+    if orientation_xyzw is None:
+        return None
+    turned = _pose_matrix({"position_world_m": [0.0, 0.0, 0.0],
+                           "orientation_xyzw": [float(v) for v in orientation_xyzw]})[:3, :3] @ body
+    return turned, 2.0 * length * math.sin(angle_rad / 2.0)
 
 
 def object_reach_inputs(task_spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -878,6 +899,9 @@ def object_reach_inputs(task_spec: Mapping[str, Any]) -> dict[str, Any]:
         yaw = float(orientation["tolerance_rad"])
     else:
         yaw = float(task_spec.get("destination_orientation_tolerance_rad") or 0.0)
+    # The orientation the put-down's rotation is measured from: the contract's reference, else the spec's.
+    reference = (orientation.get("reference_xyzw") if orientation is not None and orientation.get("mode") == "required"
+                 else None) or task_spec.get("destination_orientation_xyzw")
     # The contract's own containment region counts too: the union of it and the spec's bounds holds every
     # accepted place. A contract that ignores containment accepts the object anywhere: no place is proved.
     region = task_spec.get("destination_position_bounds_world_m")
@@ -895,6 +919,7 @@ def object_reach_inputs(task_spec: Mapping[str, Any]) -> dict[str, Any]:
             "contact_point_m": task_spec["interaction_affordance"]["contact_point_scoring_frame_m"],
             "subject_bounds_m": task_spec.get("subject_collision_bounds_scoring_frame_m"),
             "destination_bounds_world_m": region, "place_yaw_free_rad": yaw,
+            "destination_orientation_xyzw": reference,
             **({"place_unbounded": True} if unbounded else {})}
 
 
@@ -903,7 +928,8 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
                           contact_point_m: Sequence[float],
                           subject_bounds_m: Mapping[str, Sequence[float]] | None = None,
                           destination_bounds_world_m: Mapping[str, Sequence[float]] | None = None,
-                          place_yaw_free_rad: float = 0.0, place_unbounded: bool = False) -> dict[str, Any]:
+                          place_yaw_free_rad: float = 0.0, place_unbounded: bool = False,
+                          destination_orientation_xyzw: Sequence[float] | None = None) -> dict[str, Any]:
     """Whether every point of the object lies beyond the arm's reach bound at its start or at its place.
 
     The hard reach rule: a learned policy chooses its own grasp, so the task is out of reach from a base
@@ -948,12 +974,17 @@ def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequen
             row["object_nearest_distance_m"] = round(nearest, 4)
         # The least distance to the task's contact wherever the task accepts the object (a lower bound, so a
         # contact beyond it is beyond at every accepted place); none when any place is accepted.
-        if phase == "place" and place_unbounded:
+        # Rounded down, so the recorded figure stays a lower bound.
+        if phase == "pick":
+            row["contact_admissible_distance_m"] = math.floor(
+                float(np.linalg.norm(centre + contact - shoulder)) * 1e4) / 1e4
+        elif place_unbounded:
             row["place_unbounded"] = True
+        elif (placed := _place_contact_offset(contact_point_m, destination_orientation_xyzw, yaw)) is None:
+            row["place_contact_unlocated"] = True
         else:
-            row["contact_admissible_distance_m"] = round(
-                float(np.linalg.norm(centre + contact - shoulder)) if phase == "pick" else
-                _place_contact_distance(shoulder, centre, contact, region, yaw), 4)
+            row["contact_admissible_distance_m"] = math.floor(
+                _place_contact_distance(shoulder, centre, placed[0], placed[1], region) * 1e4) / 1e4
         phases.append(row)
     measured = subject_bounds_m is not None
     beyond = sorted((row for row in phases if measured and not row.get("place_unbounded")
