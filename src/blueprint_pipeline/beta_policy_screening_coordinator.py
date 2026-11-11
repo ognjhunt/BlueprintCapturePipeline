@@ -59,6 +59,7 @@ from .beta_policy_screening_failure_scope import (
     candidate_specific_failure, transient_provisioning_failed, transient_void_run,
 )
 from .beta_policy_screening_settlement import settled_cost
+from .beta_policy_screening_known_good_control import CONTROL_FIELD, control_gate, is_control
 from .decision_evidence_contracts import canonical_digest
 from .job_retry_policy import hard_stop_kind, refusal_retry_delay
 from .policy_execution_evidence import SCRIPTED
@@ -511,7 +512,8 @@ def _dropped_harness_retries(ledger: Mapping[str, Any], state: Mapping[str, Any]
         seen.add(previous)
         earlier = ledger["campaigns"][previous]
         for candidate_id, row in earlier["candidates"].items():
-            latest.setdefault(candidate_id, row)
+            if not is_control(row):
+                latest.setdefault(candidate_id, row)
         previous = earlier.get("supersedes")
     return sorted(candidate_id for candidate_id, row in latest.items()
                   if candidate_id not in listed and (
@@ -526,7 +528,7 @@ def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any
     would hit every candidate already launched, each spending a bounded retry, so the next
     one waits (still pending, nothing reserved) for the active one's result.
     """
-    rows = state["candidates"]
+    rows = {key: row for key, row in state["candidates"].items() if not is_control(row)}
     if any(row["status"] == "completed" and not _measured_nothing(row) for row in rows.values()):
         return False
     if not any(_harness_failures(ledger, state["site_id"], key) for key in rows):
@@ -595,7 +597,8 @@ def _dropped_results_not_counted(ledger: Mapping[str, Any], state: Mapping[str, 
         seen.add(previous)
         earlier = ledger["campaigns"][previous]
         for candidate_id, row in earlier["candidates"].items():
-            latest.setdefault(candidate_id, (row, previous))
+            if not is_control(row):
+                latest.setdefault(candidate_id, (row, previous))
         previous = earlier.get("supersedes")
     dropped = []
     for candidate_id, (row, campaign_id) in sorted(latest.items()):
@@ -725,6 +728,8 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
     if _amount(_budget(ledger, state["site_id"], campaign_id=plan["campaign_id"])["reserved_usd"]) > 0:
         return None
     stale = machine = False
+    # The known-good control is never planned again: a re-plan carries none.
+    plan = {**plan, "candidates": [row for row in plan["candidates"] if not is_control(row)]}
     for candidate in plan["candidates"]:
         row = rows[candidate["candidate_id"]]
         frozen = (candidate.get("execution_spec") or {}).get("implementation_commit")
@@ -932,6 +937,10 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
 
 
 def _initial_state(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    if is_control(candidate):
+        # The known-good control: never a candidate in retries, holds or re-plans.
+        return {**_initial_state({key: value for key, value in candidate.items() if key != CONTROL_FIELD}),
+                CONTROL_FIELD: True}
     status = candidate["status"]
     blockers = candidate["blockers"]
     if status == "infeasible":
@@ -1182,7 +1191,8 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         backend = {item["candidate_id"]: (item.get("execution_spec") or {}).get("backend")
                    for item in plan["candidates"]}
         if any(_holds_siblings(other) and backend.get(key) == backend.get(candidate_id)
-               for key, other in state["candidates"].items() if key != candidate_id):
+               for key, other in state["candidates"].items()
+               if key != candidate_id and not is_control(other) and not is_control(row)):
             # Never pay for a run this commit's harness already failed on a sibling, in a stage
             # this candidate's backend shares with it.
             row.update(status="blocked", blockers=[HARNESS_HOLD_BLOCKER])
@@ -1312,7 +1322,7 @@ def _switch_off_website_scripted(root: Path) -> int:
             touched = False
             for candidate in plan["candidates"]:
                 row = state["candidates"][candidate["candidate_id"]]
-                if (row["status"] in QUEUED_STATUSES and "attempt" not in row
+                if (row["status"] in QUEUED_STATUSES and "attempt" not in row and not is_control(candidate)
                         and candidate.get("execution_evidence_kind") == SCRIPTED):
                     row.update(status="unavailable", blockers=[DISABLED_BLOCKER])
                     touched = True
@@ -1580,8 +1590,9 @@ def campaign_hold_detail(campaign_id: str, *, queue_root: str | Path | None = No
         state = _ledger(root)["campaigns"].get(campaign_id)
     if state is None:
         return None
-    rows = list(state["candidates"].values())
-    status = campaign_status(state["candidates"])
+    candidates = {key: row for key, row in state["candidates"].items() if not is_control(row)}
+    rows = list(candidates.values())
+    status = campaign_status(candidates)
     if (status in {"completed", "blocked"} and not any((row.get("summary") or {}).get("episodes_scored") for row in rows)
             and any(row["status"] == "blocked" and ACCOUNT_LIMIT_REACHED_BLOCKER in (row.get("blockers") or [])
                     for row in rows)):
@@ -1782,6 +1793,22 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
     return True
 
 
+def _control_may_reserve(root: Path, plan: Mapping[str, Any]) -> bool:
+    """Whether the campaign's pending known-good control may reserve now (``control_gate``)."""
+    with _lock(root):
+        ledger = _ledger(root)
+        before = json.dumps(ledger, sort_keys=True)
+        decision = control_gate(ledger, plan["campaign_id"], plan, plans=lambda key, digest: _plan(root, key, digest),
+                                committed=lambda site, campaign_id=None: _amount(
+                                    _budget(ledger, site, campaign_id=campaign_id)["committed_upper_bound_usd"]),
+                                site_limit=SITE_LIMIT)
+        if decision == "reused":
+            _changed(ledger["campaigns"][plan["campaign_id"]])
+        if json.dumps(ledger, sort_keys=True) != before:
+            _save(root, ledger)
+    return decision == "proceed"
+
+
 def process_screening_queue(
     *, queue_root: str | Path | None = None, max_campaigns: int = 4,
     max_launches: int = 1, executor: Any = None, require_publication_ack: bool = True,
@@ -1825,7 +1852,8 @@ def process_screening_queue(
                 plan = _plan(root, campaign_id, state["plan_digest"])
                 # Reconcile allocated/uncertain work before reserving another
                 # candidate; new work follows the plan's (ranked) priority order.
-                position = {row["candidate_id"]: index for index, row in enumerate(plan["candidates"])}
+                position = {row["candidate_id"]: -1 if is_control(row) else index
+                            for index, row in enumerate(plan["candidates"])}
                 waits = _scarce_retry_waits(ledger, state, plan)
                 ordered = sorted(plan["candidates"], key=lambda value: (
                     state["candidates"][value["candidate_id"]]["status"] not in ACTIVE_STATUSES,
@@ -1837,6 +1865,8 @@ def process_screening_queue(
                     if current == "pending" and launches >= max_launches:
                         continue
                     if current == "preparing" and launches >= max_launches:
+                        continue
+                    if current == "pending" and is_control(candidate) and not _control_may_reserve(root, plan):
                         continue
                     launches += _advance_candidate(root, plan, candidate, executor=executor,
                                                    require_publication_ack=require_publication_ack)

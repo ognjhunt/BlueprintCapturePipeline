@@ -19,6 +19,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
+from .paid_api_account_precheck import account_limit_blockers
 from .agent_operator_runtime import (
     CODEX_CLI_HOST_OAUTH_ENV,
     LIVE_AGENTS_SDK_ENV,
@@ -1769,7 +1770,7 @@ def _live_agents_blockers(allow_live_agents_sdk: bool) -> List[str]:
         blockers.append("missing_openai_api_key")
     if not _module_available(("agents", "openai_agents")):
         blockers.append("missing_openai_agents_sdk")
-    return blockers
+    return blockers or account_limit_blockers()  # the account-wide monthly limit, asked last
 
 
 def _live_codex_blockers(allow_live_codex_sdk: bool) -> List[str]:
@@ -1787,7 +1788,7 @@ def _live_codex_blockers(allow_live_codex_sdk: bool) -> List[str]:
         blockers.append("missing_codex_cli")
     if not sdk_available and cli_available and not cli_host_oauth_allowed:
         blockers.append(f"missing_env_{CODEX_CLI_HOST_OAUTH_ENV}")
-    return blockers
+    return blockers or account_limit_blockers()  # the account-wide monthly limit, asked last
 
 
 def _run_agents_sdk_operator(output_dir: Path, timeout_seconds: int) -> Dict[str, Any]:

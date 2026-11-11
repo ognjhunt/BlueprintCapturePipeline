@@ -528,7 +528,8 @@ _PROVIDER_STATUS_FIELD_NAMES = {
 # Retrying the same handoff cannot revive an expired consent or a revoked
 # source. Other 409 codes (task_brief_missing, idempotency_conflict, ...) can be
 # fixed by a person, so they stay retryable.
-AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked"})
+# website_scene_job_no_grant_ended: the WebApp recorded the ending of a job that never got a grant.
+AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked", "website_scene_job_no_grant_ended"})
 # The same token boundary on both sides: no identifier character or hyphen may
 # touch the typed refusal, so "...:source_revokedX" is not "source_revoked".
 # Group 1 is the refusing operation (e.g. scene-sponsorship), group 2 the code.

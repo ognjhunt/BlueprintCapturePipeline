@@ -32,6 +32,7 @@ Before you act:
 | [6. Deploy policy (D-08)](#6-deploy-policy-d-08) | You are about to deploy the Pipeline. |
 | [7. Triggers that are off on purpose (D-06)](#7-triggers-that-are-off-on-purpose-d-06) | `door units` shows an enabled timer or path watcher as `inactive`. |
 | [8. Consent withdrawal](#8-consent-withdrawal) | A site owner withdraws consent, or you run the withdrawal drill (G-02). |
+| [9. After a deploy: what happened to preparations in flight](#9-after-a-deploy-what-happened-to-preparations-in-flight) | A deploy landed while a scene intent was preparing or launching. |
 
 ## 1. A job stops moving
 
@@ -964,6 +965,36 @@ For a withdrawn site:
 
 Entries naming only this site are deleted, checked unchanged first.
 
+### Shared content stores
+
+`prepared-references`, `completed-scene-preparation-inputs` and
+`compiled-episodes` keep digest-named blobs under `content-addressed/`. A blob
+names no site; the owner-scoped directories beside the store refer to it by a
+hard link. The ownership index records each entry's links and each blob's
+inode and link count (`website_withdrawal_content_blobs.py`), in the same
+bounded, resumable pass.
+
+- A blob whose every link is in the withdrawing site's entries is deleted,
+  after a fresh check that its link count is still exactly that. It is written
+  to `<site>/website_withdrawal/content_blobs.json` first, and deleted before
+  the site's entries, so an interrupted pass finishes it next time.
+- A blob another site, an entry of unknown owner, or a link outside the root
+  also refers to is kept and named under `remaining` as
+  `content_blobs_shared`. Once the site's entries are gone it is not the
+  site's, so it does not keep the deletion from finishing.
+- A blob nobody refers to is never deleted by a withdrawal. Every receipt
+  (`content_stores`) and every pass summary (`content_gc`) counts them, with
+  bytes. If any predates the withdrawal, the receipt is `incomplete`
+  (`unreferenced_content_blobs`) until it is gone.
+
+Garbage collection of blobs nobody refers to only plans, unless the approval
+file also has `"garbage_collection_policy_class":
+"website_withdrawal_unreferenced_content_blob_gc.v1"`. It then deletes a blob
+older than 72 hours, once every store is fully read, after a fresh check
+(one link, the same inode, bytes match its name), at most 1 GiB a pass.
+The storage reaper already removes one-link blobs in two of these stores after
+its own grace period (`BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS`).
+
 ### Provider copies
 
 The pass reads the ids each job recorded when it created a copy and keeps them
@@ -1073,3 +1104,43 @@ A drill on a fresh synthetic job on the host:
 6. Only with the owner's standing approval installed does a pass apply it.
    Then read the receipt with `door cat`, and record its `authorization`,
    `remaining` and `policy_copy_classes` in G-02.
+
+## 9. After a deploy: what happened to preparations in flight
+
+Read-only. Run it after a deploy for each scene intent that was in flight
+(`<intent>` is its `scene-...` directory). Paths are under
+`/var/lib/blueprint/pipeline-control-plane/`.
+
+1. `door status`. `active_release` names the new commit.
+2. `door cat .../task-evaluation-scene-intents/<intent>/progression.json`.
+   - Launch submitted before the deploy: `status` `running`, `phase`
+     `previous_release`, and `state.attempt_commit` is still the old commit.
+     Nothing is rebuilt; the job closes from that launch.
+   - Launch not yet submitted: on the first tick, `state.release_predecessors`
+     gains one entry. Its `new_source_commit` is the new commit and its
+     `basis` says why it could be retired. `state.attempt_commit` is the new
+     commit.
+3. `door ls .../task-evaluation-scene-intents/<intent>/preparation-attempts --sort mtime`.
+   One new `source-*.json` per deploy means the preparation was rebuilt. None
+   means it was held or adopted.
+4. `door journal blueprint-task-evaluation-scene-progression.service -n 200 --since -1h`.
+   The row for `<intent>` shows the same status and phase.
+5. With adoption on (below): `progression.json` shows `state.release_adoption`
+   with `prepared_commit` (old) and `adopting_commit` (new), and no `refused`.
+   `door ls .../task-evaluation-owned-scene-preparations/release-adoptions`
+   (the owned queue, `preparation_queue_root` in the scene progression config)
+   holds one record for the intent's request and the new commit. The worker result in
+   `results/` keeps the old `source_commit` and adds `release_adoption`.
+
+Adoption across a deploy is off by default (`docs/architecture/release-binding.md`,
+"Adoption across a deploy"). Run steps 1 to 4 once on the host after a
+deploy before you turn it on.
+
+- Turn it on: add `BLUEPRINT_RELEASE_PREPARATION_ADOPTION=enabled` to
+  `/etc/blueprint/pipeline-control-plane.env`. Only SSH from the owner's Mac
+  can edit this file (section 3, "Automatic growth"); record a break-glass note. Each service run
+  reads it when it starts, so the next deploy is the first to adopt.
+- Turn it off: delete that line, or set any other value. A job adopted earlier
+  then follows today's rule on its next tick: it is held if its launch was
+  submitted, otherwise it is rebuilt on the live release. The new release's
+  workers refuse its old request by commit again, before any provider call.

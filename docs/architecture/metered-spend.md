@@ -369,3 +369,33 @@ not touch them.
    versioned.
 6. Keep every runaway guard listed as *Keep* above. Revisit the $5,000 cohort
    stop with the owner.
+
+## Scene ceiling as an expected budget (2026-11-10)
+
+Owner decision 2026-11-10. A website scene's spend ceiling is its expected
+budget. The account monthly limit is the one hard money stop.
+
+- **Standing extension.** The WebApp may set `automatic_budget_extension: true`
+  on a newly issued grant. A reservation that does not fit such a job's
+  ceiling then raises the ceiling by exactly the shortfall, when all of these
+  hold:
+  - the account's fresh report has the headroom, after counting every
+    standing extension issued since that report;
+  - the job has paid attempts left;
+  - the new ceiling stays within the $1,000 schema bound.
+
+  Records go in `<intent>/standing-budget-extensions/`
+  (`scene_budget_standing_extension`). That store is separate from the owner's
+  `execution-budget-extensions/` and keeps its own sealed chain under the same
+  intake lock. An older release ignores it. Otherwise the job waits, and its
+  next timed re-ask asks again. Every paid launch is still checked at
+  `require_paid_resource_admission`. A flagged job sizes each attempt at its
+  full standard allowance instead of shrinking compute into what is left.
+- **Settling at the bill.** A settled GPU run keeps its final Vast charge
+  instead of its whole GPU allowance, capped at the reservation
+  (`scene_attempt_measured_compute`). A charge is final when the teardown is
+  complete, the spend snapshot is at least 48 h newer than the teardown, and
+  the instance's rows cover every day of the run.
+- **Early warning.** `scene_budget_doubled` pages once per job per whole
+  multiple of the grant's original figure (`scene_budget_alert`, in the stall
+  tick). It gates nothing.

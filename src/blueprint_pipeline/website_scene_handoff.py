@@ -826,7 +826,15 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             # Preserve finished CPU outputs when a later handoff is held.
             result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])
     except (ValueError, KeyError, TypeError, OSError) as exc:
-        result.update(status="awaiting_inputs", blockers=[str(exc)])
+        from .website_recapture_required import CODES as RECAPTURE_CODES, FIELD as RECAPTURE_FIELD, record
+        stopped_context = metadata.get("site_task_context") or {}
+        if (isinstance(exc, ValueError) and str(exc) in RECAPTURE_CODES
+                and isinstance(stopped_context.get("context_digest"), str)):
+            # Only a new video clears it: the stage ends as a hold that asks the site for one, never retried.
+            result.update(status="needs_input", blockers=[str(exc)], **{RECAPTURE_FIELD: record(
+                str(exc), task_context_digest=stopped_context["context_digest"])})
+        else:
+            result.update(status="awaiting_inputs", blockers=[str(exc)])
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(handoff_path, result)
     return result

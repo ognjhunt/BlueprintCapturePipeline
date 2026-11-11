@@ -18,19 +18,26 @@ a set runs and each record's copy is removed afterwards. The tool reads only tha
 under ``--replay-root`` (a temporary directory unless given).
 
 Tools: ``task_evaluation_downstream_replay`` (completion -> readiness -> team packet -> probe enqueue ->
-screening plan). The other replay tools need host-pulled inputs no synthetic record stands for yet.
+screening plan); ``atlas_preview_replay`` (the Atlas preview controller, from upload accepted to its
+first stop, run in this process on a working copy at the record's own path while the materialized
+copy is set aside and digested); ``atlas_reconstruction_stage_replay`` (levelling and mesh
+registration on their own retained inputs; the controller reaches them only after paid stages whose
+outputs no synthetic record carries). The other replay tools need host-pulled inputs no synthetic
+record stands for yet.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime
 import gzip
 import json
 import shutil
 import sys
 import tempfile
 import time
+import types
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -45,6 +52,9 @@ DEFAULT_MATERIALIZE_ROOT = "/tmp/blueprint-replay-set-v1"  # nosec B108 - fixed 
 CLOCK_FIELD = "replay_clock_epoch"
 GZIP_SUFFIX = ".gz"
 STOP_FIELDS = ("kind", "stage", "code")
+#: Compared only where a record's expected stop names it: the job's state once the replay stopped
+#: (``final_job.state``), which tells a job that ends at once from one that waits or retries.
+FINAL_STATE = "final_state"
 
 
 def _downstream(inputs: Mapping[str, str], *, host: Path, until: str, replay_root: Path) -> dict[str, Any]:
@@ -54,7 +64,47 @@ def _downstream(inputs: Mapping[str, str], *, host: Path, until: str, replay_roo
     return replay(**paths, until=until, replay_root=replay_root)
 
 
-TOOLS: dict[str, Callable[..., dict[str, Any]]] = {"task_evaluation_downstream_replay": _downstream}
+def _atlas_preview(inputs: Mapping[str, str], *, host: Path, until: str, replay_root: Path) -> dict[str, Any]:
+    """The Atlas preview controller until its first stop, on a working copy standing at ``host``.
+
+    Retained records name absolute paths under ``host``, so the copy stands there (as the replay's own
+    private bind mount would put it) and the materialized record is set aside while it runs. This
+    stays in this process, so the replay clock reaches the controller; ``evidence`` digests the
+    set-aside record before and after.
+    """
+    from .atlas_preview_replay import _source_state, _tree_digest, run_steps
+    from .common import write_json
+
+    if until != "first_stop":
+        raise ValueError(f"atlas_preview_replay runs until first_stop, not {until}")
+    job = host / inputs["job"]
+    evidence = host.with_name(host.name + ".evidence")
+    host.rename(evidence)
+    try:
+        before = _tree_digest(evidence)
+        shutil.copytree(evidence, host, symlinks=True)
+        core = run_steps(job_path=job, capture_root=job.parents[2], workspace=job.parents[2],
+                         commit=_source_state(Path(__file__).resolve().parents[2])[0])
+    finally:
+        shutil.rmtree(host, ignore_errors=True)
+        evidence.rename(host)
+    after = _tree_digest(host)
+    report = {**core, "evidence": {"digest_before": before, "digest_after": after, "unchanged": before == after}}
+    write_json(replay_root / "atlas_preview_replay_report.v1.json", report)
+    return report
+
+
+def _reconstruction_stage(inputs: Mapping[str, str], *, host: Path, until: str,
+                          replay_root: Path) -> dict[str, Any]:
+    from .atlas_reconstruction_stage_replay import replay
+
+    return replay(stage=until, inputs={name: host / relative for name, relative in inputs.items()},
+                  replay_root=replay_root)
+
+
+TOOLS: dict[str, Callable[..., dict[str, Any]]] = {"task_evaluation_downstream_replay": _downstream,
+                                                   "atlas_preview_replay": _atlas_preview,
+                                                   "atlas_reconstruction_stage_replay": _reconstruction_stage}
 
 
 @contextlib.contextmanager
@@ -92,35 +142,74 @@ def materialize(record_dir: Path, target: Path, *, empty_dirs: list[str]) -> Non
 
 
 def _expected(stop: Mapping[str, Any], host: Path) -> dict[str, Any]:
+    fields = (*STOP_FIELDS, *((FINAL_STATE,) if FINAL_STATE in stop else ()))
     return {field: str(stop.get(field)).replace("{host}", str(host)) if stop.get(field) is not None else None
-            for field in STOP_FIELDS}
+            for field in fields}
 
 
-def _actual(report: Mapping[str, Any]) -> dict[str, Any]:
+def _actual(report: Mapping[str, Any], expected: Mapping[str, Any]) -> dict[str, Any]:
     stop = report.get("first_stop") or {}
-    return {field: stop.get(field) for field in STOP_FIELDS}
+    actual = {field: stop.get(field) for field in STOP_FIELDS}
+    if FINAL_STATE in expected:
+        actual[FINAL_STATE] = (report.get("final_job") or {}).get("state")
+    return actual
+
+
+class _ReplayDatetime(datetime.datetime):
+    """``datetime.now`` on the replay clock. (``date.today`` already reads ``time.time``.)"""
+
+    @classmethod
+    def now(cls, tz: datetime.tzinfo | None = None) -> Any:
+        return cls.fromtimestamp(time.time(), tz)
+
+    @classmethod
+    def utcnow(cls) -> Any:
+        return cls.fromtimestamp(time.time(), datetime.timezone.utc).replace(tzinfo=None)
 
 
 @contextlib.contextmanager
 def _replay_clock(epoch: float | None) -> Iterator[None]:
     """Run the replayed chain at the instant the records were taken.
 
-    A record carries real times (a grant's consent and its expiry), and the
-    replayed chain compares them with ``time.time()``. At today's clock every
-    record fails once its grant window has passed: the first committed set
-    stopped passing a day after it was built. So the wall clock the chain reads
-    starts at the manifest's ``replay_clock_epoch`` and advances with elapsed
-    time. A manifest without one (an older set) is replayed at the real clock.
+    A record carries real times (a grant's consent and its expiry, a price review's date), and the
+    replayed chain compares them with the clock. At today's clock every record fails once its window
+    has passed: the first committed set stopped passing a day after it was built. So the clock the
+    chain reads (``time.time``, ``datetime.now``, a ``now=time.time`` default bound at import, a
+    ``from time import time``) starts at the manifest's ``replay_clock_epoch`` and advances with
+    elapsed time. A manifest without one (an older set) is replayed at the real clock.
     """
     if epoch is None:
         yield
         return
-    real, origin = time.time, time.monotonic()
-    time.time = lambda: epoch + (time.monotonic() - origin)
+    real_time, real_datetime, origin = time.time, datetime.datetime, time.monotonic()
+    clock = time.time = lambda: epoch + (time.monotonic() - origin)
+    datetime.datetime = _ReplayDatetime  # type: ignore[misc]
+    _rebind(real_time, clock)
+    _rebind(real_datetime, _ReplayDatetime)
     try:
         yield
     finally:
-        time.time = real
+        time.time, datetime.datetime = real_time, real_datetime  # type: ignore[misc]
+        # Also in a module first imported during the replay, which bound the replay clock.
+        _rebind(clock, real_time)
+        _rebind(_ReplayDatetime, real_datetime)
+
+
+def _rebind(old: Any, new: Any) -> None:
+    """Point every loaded package module's global, and its functions' defaults, that is ``old`` at ``new``."""
+    for name, module in list(sys.modules.items()):
+        if module is None or name == __name__ or not (
+                name == "blueprint_pipeline" or name.startswith("blueprint_pipeline.")):
+            continue
+        for key, value in list(vars(module).items()):
+            if value is old:
+                setattr(module, key, new)
+            elif isinstance(value, types.FunctionType) and value.__module__ == name:
+                if value.__defaults__ and any(item is old for item in value.__defaults__):
+                    value.__defaults__ = tuple(new if item is old else item for item in value.__defaults__)
+                if value.__kwdefaults__ and any(item is old for item in value.__kwdefaults__.values()):
+                    value.__kwdefaults__ = {field: new if item is old else item
+                                            for field, item in value.__kwdefaults__.items()}
 
 
 def _boundary_breaches(report: Mapping[str, Any]) -> list[str]:
@@ -138,7 +227,8 @@ def _boundary_breaches(report: Mapping[str, Any]) -> list[str]:
 
 def _short(stop: Mapping[str, Any], host: Path) -> str:
     code = str(stop.get("code")).replace(str(host), "{host}")
-    return f"{stop.get('kind')}/{stop.get('stage')}/{code}"
+    ending = f" ({FINAL_STATE}={stop[FINAL_STATE]})" if FINAL_STATE in stop else ""
+    return f"{stop.get('kind')}/{stop.get('stage')}/{code}{ending}"
 
 
 def run_set(set_dir: str | Path, *, replay_root: str | Path | None = None, records: list[str] | None = None,
@@ -176,7 +266,7 @@ def run_set(set_dir: str | Path, *, replay_root: str | Path | None = None, recor
                         with _replay_clock(clock):
                             report = runner(tool["inputs"], host=host, until=tool["until"],
                                             replay_root=scratch / record_id)
-                        actual, breaches, error = _actual(report), _boundary_breaches(report), None
+                        actual, breaches, error = _actual(report, expected), _boundary_breaches(report), None
                     passed = error is None and not breaches and actual == expected
                     row = {"record_id": record_id, "job_kind": entry["job_kind"], "tool": tool["tool"],
                            "synthetic": entry.get("synthetic", False), "expected": expected, "actual": actual,
@@ -213,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if result["passed"] else 1
 
 
-__all__ = ["CLOCK_FIELD", "DEFAULT_MATERIALIZE_ROOT", "MANIFEST_FILENAME", "MANIFEST_SCHEMA", "TOOLS", "main",
+__all__ = ["CLOCK_FIELD", "DEFAULT_MATERIALIZE_ROOT", "FINAL_STATE", "MANIFEST_FILENAME", "MANIFEST_SCHEMA", "TOOLS", "main",
            "materialize", "run_set"]
 
 if __name__ == "__main__":

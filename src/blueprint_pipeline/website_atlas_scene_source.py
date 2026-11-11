@@ -468,6 +468,13 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                       **({"walked_floor": level["walked_floor"]} if "walked_floor" in level else {})},
         "operation_id": background_pose["operation"]["id"], "atlas_result_digest": result["digest"],
     }
+    # Every estimate the scene rests on, named for the site's result (``atlas_scene_estimates``).
+    from .atlas_scene_estimates import FIELD as ESTIMATES_FIELD, scene_estimates
+    estimates = scene_estimates(levelling=level, registration=registration,
+                                review=_read(job_dir / "atlas_scene_review.json"),
+                                selection=_read(pose_root / "atlas_view_selection.json"))
+    if estimates:
+        base[ESTIMATES_FIELD] = estimates
     if completion_admission is not None:
         base['content_provenance'] = {'basis': 'captured_scene_with_bounded_generated_estimates',
             'completion_admission_digest': completion_admission['digest'], 'generated_geometry_is_estimate': True}

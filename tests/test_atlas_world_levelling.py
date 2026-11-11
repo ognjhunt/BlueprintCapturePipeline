@@ -74,11 +74,19 @@ def test_a_retry_reuses_the_receipt_and_a_changed_copy_is_refused(tmp_path):
         level(tmp_path)
 
 
-def test_a_world_with_no_level_surface_is_refused(tmp_path):
+def test_a_world_with_no_level_surface_continues_on_the_providers_up_flagged(tmp_path):
+    # Before 2026-11-10 this refused (website_atlas_scene_level_unobserved), and every timed retry refused again.
     value, _ = level(tmp_path, floor=False, counter=False)
-    assert value["status"] == "needs_input" and value["reason"] == "website_atlas_scene_level_unobserved"
-    assert value["outputs"] == []
-    # The refusal says what the search found, so it can be read without the mesh.
+    assert value["status"] == "levelled" and value["up_basis"] == "provider_up_unverified"
+    assert value["tilt_degrees"] == 0.0 and value["level_direction_basis"] == "provider_up_unverified"
+    estimate = value["level_estimate"]
+    assert estimate["code"] == levelling.LEVEL_ESTIMATE_FLAG and estimate["claim"] == "development_only_estimate"
+    assert set(estimate["up_estimates"]) == {"floor_band_tilt_degrees", "face_normal_mode_tilt_degrees"}
+    # A floor is declared only as the flagged flat stand-in under cameras standing above it.
+    assert estimate["floor_declared"] is ("fallback_floor" in value)
+    assert value["ground_plane_offset_m"] == (0.0 if estimate["floor_declared"] else None)
+    assert {row["role"] for row in value["outputs"]} == {"splat_ply", "supported_mesh_glb"}
+    # The record says what the search found, so it can be read without the mesh.
     search = value["level_search"]
     assert search["largest_level_plane_share"] < search["minimum_level_plane_share"] == levelling.MIN_LEVEL_SHARE
     assert search["parallel_level_share"] == 0.0
@@ -87,7 +95,7 @@ def test_a_world_with_no_level_surface_is_refused(tmp_path):
 def test_a_refusal_keeps_the_height_profiles_around_the_cameras(tmp_path):
     value, _ = level(tmp_path, floor=False, counter=False)
     profiles = value["level_search"]["height_profiles"]
-    assert value["status"] == "needs_input" and profiles[0]["source"] == "plus_y"
+    assert "level_estimate" in value and profiles[0]["source"] == "plus_y"
     for profile in profiles:
         assert profile["band_m"] == levelling.PROFILE_BAND_M
         assert len(profile["shares"]) == round((profile["to_m"] - profile["from_m"]) / profile["band_m"])
@@ -109,9 +117,9 @@ def test_a_candidate_refitted_past_the_tilt_bound_never_levels(tmp_path):
     assert search["parallel_candidates"][0]["tilt_degrees"] > levelling.MAX_TILT_DEGREES
 
 
-def test_rough_open_ground_is_still_refused(tmp_path):
+def test_rough_open_ground_is_levelled_on_the_providers_up_flagged(tmp_path):
     value, _ = level(tmp_path, terrain=True, cameras=[(0.0, 1.8, 0.0), (1.0, 1.9, 0.5), (-1.0, 1.7, -0.5)])
-    assert value["status"] == "needs_input" and value["reason"] == "website_atlas_scene_level_unobserved"
+    assert value["status"] == "levelled" and value["level_estimate"]["code"] == levelling.LEVEL_ESTIMATE_FLAG
     search = value["level_search"]
     assert search["largest_level_plane_share"] < levelling.MIN_LEVEL_SHARE
     assert search["parallel_level_share"] < levelling.MIN_LEVEL_SHARE / 2
@@ -195,15 +203,18 @@ def test_an_uneven_floor_agreeing_with_the_surfaces_levels_the_world_but_is_not_
     assert value["floor"] is None
 
 
-def test_an_uneven_floor_that_disagrees_with_the_surfaces_is_refused(tmp_path, monkeypatch):
+def test_an_uneven_floor_that_disagrees_with_the_surfaces_continues_with_both_tilts_recorded(tmp_path, monkeypatch):
     _no_plane_found(monkeypatch)
     value, _ = level(tmp_path, degrees=13.0, aisle=True, floor_wave_m=0.08, floor_tilt_degrees=3.0, cameras=AISLE)
-    assert value["status"] == "needs_input" and value["reason"] == "website_atlas_scene_level_unobserved"
     assert value["level_search"]["direction_agreement_degrees"] > levelling.DIRECTION_AGREEMENT_DEGREES
-    # The provider's +Y is 13 degrees off as well, so the fallback floor does not stand in either.
+    # The provider's +Y is 13 degrees off as well: it stands in, unverified, with both observed tilts named.
     estimates = value["level_search"]["fallback_estimates"]
     assert max(estimates["floor_band_tilt_degrees"], estimates["face_normal_mode_tilt_degrees"]) \
         > levelling.FALLBACK_MAX_TILT_DEGREES
+    assert value["status"] == "levelled" and value["up_basis"] == "provider_up_unverified"
+    recorded = value["level_estimate"]["up_estimates"]
+    assert recorded["floor_band_tilt_degrees"] == pytest.approx(estimates["floor_band_tilt_degrees"])
+    assert recorded["face_normal_mode_tilt_degrees"] == pytest.approx(estimates["face_normal_mode_tilt_degrees"])
 
 
 def test_the_flagged_fallback_floor_stands_in_for_an_uneven_one_near_the_providers_up(tmp_path, monkeypatch):
@@ -267,10 +278,24 @@ def test_a_floor_the_cameras_stand_below_is_not_declared(tmp_path):
     assert value["up_basis"] == "dominant_level_surface"
 
 
-def test_a_view_dependent_splat_is_refused_rather_than_tilted(tmp_path):
+def test_a_view_dependent_splat_is_levelled_with_its_base_colour_only_and_flagged(tmp_path):
     value, _ = level(tmp_path, sh_rest=True)
-    assert value["status"] == "needs_input"
-    assert value["reason"] == "website_atlas_scene_level_splat_view_dependent"
+    assert value["status"] == "levelled" and value["up_basis"] == "observed_floor"
+    estimate = value["appearance_estimate"]
+    assert estimate["code"] == levelling.APPEARANCE_ESTIMATE_FLAG and estimate["dropped_coefficients_per_gaussian"] > 0
+    assert read_standard_3dgs_ply(outputs(value)["splat_ply"]).sh_rest is None
+
+
+def test_a_receipt_of_a_refusal_no_longer_made_is_derived_again(tmp_path):
+    first, _ = level(tmp_path, floor=False, counter=False)
+    receipt = Path(first["outputs"][0]["path"]).parent / "levelling.json"
+    import json
+    # What v13 wrote for this binding before 2026-11-10.
+    receipt.write_text(json.dumps({"schema_version": levelling.REVISION, "binding": first["binding"],
+                                   "status": "needs_input", "reason": "website_atlas_scene_level_unobserved",
+                                   "outputs": [], "digest": "sha256:" + "0" * 64}))
+    again, _ = level(tmp_path, floor=False, counter=False)
+    assert again["status"] == "levelled" and again["digest"] == first["digest"]
 
 
 def _faces_over(mesh_path: Path, xz) -> int:

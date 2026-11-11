@@ -19,6 +19,7 @@ from blueprint_pipeline import beta_policy_screening_worker as worker
 from blueprint_pipeline import team_candidate_quick10_registry as registry
 from blueprint_pipeline.beta_policy_screening_scene_half import current_half, half_identity, planned_half
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from tests.test_beta_policy_screening_plan import candidate_rows
 from blueprint_pipeline.team_scene_packet import (
     CLAIM_CEILING, EXECUTION_AUTHORITY, PENDING_CONTROLS, RECORD_FILENAME, SCHEMA, _record, read_team_scene_inputs,
 )
@@ -146,7 +147,8 @@ def test_a_finished_campaign_whose_half_was_compiled_again_is_planned_again_once
     [adopted] = worker.enqueue_prepared_scenes(**world["kwargs"])["sources"]
     first = adopted["campaign_id"]
     before = finish_without_spend(world)
-    rows = {row["candidate_id"]: row for row in before["candidates"]}
+    # The known-good control is never planned again; every candidate is.
+    rows = {row["candidate_id"]: row for row in candidate_rows(before)}
     # The stance search finds another station: the half is compiled again, completed.
     recompile(world, tmp_path, station=[0.3, -0.6, 0.0], attempt="second")
     [replanned] = worker.enqueue_prepared_scenes(**world["kwargs"])["sources"]

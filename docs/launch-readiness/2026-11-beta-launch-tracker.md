@@ -13,6 +13,57 @@ Readiness plan (2026-11-09): [`2026-11-beta-readiness-plan.md`](2026-11-beta-rea
 
 From the readiness plan's waves 1 and 2 (2026-11-09, merged to `main`, shipping with the next deploy): [#3517](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3517) runs the import-closure tests on every pull request; [#3520](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3520) normalizes each NEW website clip to at most 1920 px and 30 fps before preparation (jobs in flight keep their original clip; an owner row in `BLUEPRINT_WEBSITE_ATLAS_AUTHORIZATIONS_JSON` for a new job must name the normalized digest from `pipeline/source_video/normalization.json`). WebApp [#1245](https://github.com/ognjhunt/Blueprint-WebApp/pull/1245) adds an invitee allowlist that does nothing until `BLUEPRINT_INVITEE_ALLOWLIST` is set. Merged on 2026-11-10 16:33Z on the owner's "merge it": [#3516](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3516). **After the next Pipeline deploy, a website preparation that has been silent for the silence window and whose grant the WebApp refuses as expired is ended permanently by the hourly sweep** (`terminal_authority_ended`); no door mode resumes an ended job. The WebApp stays the only authority: a grant that is extended or renewed there is not ended, and a job running under a live lease is not touched. Library-aisle and G1 sessions: if your job's grant is close to its end, renew it BEFORE it expires (`scripts/renew-website-scene-sponsorship.ts` in the WebApp), not after.
 
+## Autonomy audit and fixes (2026-11-10)
+
+An end-to-end audit of both repos on 2026-11-10 asked one question of every step: does the job move, or end, with no person? This section lists what merged to `main` from it. **None of the Pipeline changes is deployed**; the Pipeline deploys only through the operator door. The WebApp deploys from `main` after green CI when automatic deployment is enabled.
+
+**Merged, Pipeline**
+
+- [#3547](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3547): the Bandit finding that kept `main` red since #3515, which blocked every deploy.
+- [#3550](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3550): screening re-plans and ends by itself; the monthly limit file must exist in production; a failed billing read is carried forward for 24 hours; the replay set runs at its own recorded clock.
+- [#3552](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3552): no wait for the site to confirm Blueprint's own thresholds; one memory bound for batch units (`MemoryHigh=5G`, `MemoryMax=5.5G`); start timeouts; unit-failure alerts.
+- [#3554](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3554): set-up flags published as publication v3; a deploy leaves a job alone while its paid launch is in flight; the host retries a website preparation; a scene launch that spent nothing recovers on the timed schedule; one paid retry after a lost machine when the grant allows it; `max_paid_attempts` counts scene-configuration rows.
+- [#3555](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3555): withdrawal deletion planned hourly and run under one standing approval file; a per-site index of nine roots and a receipt that says complete, complete with provider retention, or incomplete; the stall alarm covers Atlas, team scene packets, rigid probes and screening; a Gemini call never stops for an operator; Vast credit held across launch slots; a $0 drill of the monthly limit; a spend forecast and a ledger-to-billing reconciliation.
+- The pull request that adds this section: a job's scene ceiling extends by itself when its grant allows it and the monthly limit admits it; kept holds settle at the final billed charge; one scripted reference check per website campaign that never blocks a job; a reconstruction refusal continues on a named estimate or waits on a key instead of a timer; a new release can adopt a $0 preparation of the previous release (off by default).
+
+**Merged, WebApp**
+
+- [WebApp #1255](https://github.com/ognjhunt/Blueprint-WebApp/pull/1255): outbox email is retried after a failed send and deduplicated by an idempotency key; `/health/outbox`; ops pages for undelivered email.
+- [WebApp #1257](https://github.com/ognjhunt/Blueprint-WebApp/pull/1257): a job ends by itself when its grant window closes; the result page names screening set-up flags.
+- [WebApp #1258](https://github.com/ognjhunt/Blueprint-WebApp/pull/1258): wording for unconfirmed thresholds.
+- [WebApp #1259](https://github.com/ognjhunt/Blueprint-WebApp/pull/1259): a new grant allows one retry after a lost machine.
+- [WebApp #1260](https://github.com/ognjhunt/Blueprint-WebApp/pull/1260): a job that never receives a grant ends by itself.
+- [WebApp #1261](https://github.com/ognjhunt/Blueprint-WebApp/pull/1261): a new grant names `automatic_budget_extension: true`; the job's own dollar figures become a warning for reservations the host asks for.
+- [WebApp #1262](https://github.com/ognjhunt/Blueprint-WebApp/pull/1262): sentences for the scripted reference check and for estimated parts of a scene; four refusals now ask the site for a new video and say what to film.
+
+**Owner actions before any of this takes effect**
+
+1. Deploy the Pipeline through the door. The WebApp must be live first (it is, if automatic deployment is on).
+2. Decide the monthly account limit. It is $200; the door read $141.08 spent on 11-10 at 15:10Z.
+3. To turn on automatic deletion after a withdrawal: install `/etc/blueprint/website-withdrawal-deletion-approval.json` with a cool-off of 0 to 720 hours. Until then the unit only plans.
+4. To let a deploy adopt an in-flight $0 preparation: run the read-only checks in `docs/runbooks/beta-operations.md` once after a deploy, then set `BLUEPRINT_RELEASE_PREPARATION_ADOPTION=enabled` in `/etc/blueprint/pipeline-control-plane.env`. It has not run on a host.
+5. `BLUEPRINT_WEBSITE_AUTOMATIC_BUDGET_EXTENSION=false` on Render turns the automatic extension off for new grants. It is on by default.
+
+**Changed owner decisions, for the record**
+
+- The 2026-11-04 decision that a website job never runs a scripted baseline is narrowed: one scripted row per website campaign runs as a reference check. It is never a candidate, never part of the estimate, and never stops a job. `CONTROLS_PAUSED` (2026-09-21) is unchanged.
+- A job's dollar ceiling no longer waits for a person on a grant issued after these changes. The account's monthly limit is the one hard money stop.
+
+**Not done**
+
+- Six API-priced call sites are still not behind the account check: the three capture-enrichment runners, the two World Labs preview calls and the Gemini capture review. They run in the Cloud Run capture job, which cannot read the host's account spend report, so a check there would always pass. It needs a design decision (an admission the Cloud Run job can ask, or the job refusing with no limit). Of the other 38 sites: 17 are not reachable from an automatic job, 5 run only inside an admitted rental or session, and 16 now check the account limit at the start of their step (WP-23). The WebApp route `/creator-captures/:id/world/reconstruct` has no account check; its caller is in the BlueprintCapture repo.
+- `website_registration_anchor_frame_missing`, `_anchor_frame_invalid` and `_scale_conflicts_declared` are a mismatch inside Blueprint's own records. The site is not asked for anything; the stage takes its timed retries, the stall alarm pages the owner once per capture and code, and the job's window ends it.
+- The replay set covers five stops before scene preparation (level estimate, view-dependent colour, mesh registration, coverage gap, deterministic wait). It has no record for the scale review (it follows a paid pose no synthetic record carries), dropped review citations or dropped surrounding views.
+- Content-store blobs that nothing links to are never deleted by a withdrawal. Their clean-up only plans until the approval file names `garbage_collection_policy_class`; while such a blob predates a withdrawal, that withdrawal's receipt stays incomplete.
+- A provider upload with no recorded id keeps its withdrawal incomplete until the owner records the provider's answer with `python -m blueprint_pipeline.website_capture_withdrawal_provider_copies resolve`.
+- Host backup and rebuild, an off-host GPU reaper, lint and security checks before merge, and an audit of the BlueprintCapture upload hand-off.
+
+**Fixed after the first list was written (same day)**
+
+- A job whose object's facing or position cannot be found ends at once and asks the site for a new video; the email for every new-video stop now says what the job page says ([WebApp #1264](https://github.com/ognjhunt/Blueprint-WebApp/pull/1264)).
+- A preparation whose job never received a grant is ended on the host once the WebApp has ended the job ([WebApp #1263](https://github.com/ognjhunt/Blueprint-WebApp/pull/1263) and the Pipeline half).
+- Shared content stores: a blob linked only from the withdrawing site's own directories is deleted with them; one another site also links is kept and named.
+
 ## Library-aisle navigation run (2026-11-06)
 
 The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.

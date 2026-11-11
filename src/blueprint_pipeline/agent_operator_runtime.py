@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Sequence
 
 from .common import utc_now_iso
+from .paid_resource_admission import require_paid_resource_budget
 from .openai_prompt_cache import supports_explicit_prompt_caching
 
 
@@ -172,6 +173,9 @@ def _summarize_result_items(result: Any) -> list[Dict[str, Any]]:
 def run_agents_sdk_operator(config: OperatorRunConfig) -> Dict[str, Any]:
     if config.executor is not None:
         return normalize_operator_output(config.executor(config.prompt, config.plan_context))
+    # The account-wide monthly limit, before the live model call (``PaidResourceAdmissionBlocked`` is a
+    # RuntimeError: callers record it as a blocker and spend nothing).
+    require_paid_resource_budget(resource_class="openai_api_candidate")
     try:
         from agents import Agent, Runner
     except ImportError as exc:
@@ -257,6 +261,7 @@ def run_codex_sdk_operator(config: OperatorRunConfig) -> Dict[str, Any]:
 def run_codex_cli_operator(config: OperatorRunConfig) -> Dict[str, Any]:
     if config.executor is not None:
         return normalize_operator_output(config.executor(config.prompt, config.plan_context))
+    require_paid_resource_budget(resource_class="openai_api_candidate")  # before ``codex exec`` starts
     prefix = tuple(string(item) for item in config.codex_command_prefix)
     if prefix:
         if any(not item for item in prefix):

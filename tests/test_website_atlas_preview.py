@@ -1359,3 +1359,37 @@ def test_a_retried_authority_check_does_not_retract_the_bundle_it_then_publishes
     assert _rerun_when_due(world, site) == "ready"
     job = _job(site)
     assert job["archive_retraction"] is None and "archive_retraction_error" not in job
+
+
+def test_a_deterministic_refusal_waits_without_running_until_a_release_decides_it_differently(monkeypatch, site):
+    # The same mesh, splat and code repeat it: no timed schedule, no re-run, nothing bought again.
+    from blueprint_pipeline import atlas_mesh_registration
+    from blueprint_pipeline.deterministic_refusal import DeterministicRefusal
+    _enqueue(site)
+    refusal = DeterministicRefusal("atlas_mesh_not_registered_to_splat", step="atlas_mesh_registration",
+                                   inputs={"source_glb_sha256": "sha256:" + "1" * 64})
+    world = World(monkeypatch, site, [refusal, _completed])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert job["reason"] == "atlas_mesh_not_registered_to_splat" and job["deterministic_refusal"] == refusal.record()
+    assert "refusal_retries" not in job and job["retry_at_epoch"] is not None
+    revision = job["revision"]
+    for _ in range(12):
+        world.clock = _job(site)["retry_at_epoch"]
+        assert world.advance() == "needs_input"
+    assert len(world.runs) == 1 and _job(site)["revision"] == revision
+    monkeypatch.setattr(atlas_mesh_registration, "REGISTRATION_REVISION", "atlas_mesh_registration.r2")
+    world.clock = _job(site)["retry_at_epoch"]
+    assert world.advance() == "ready" and len(world.runs) == 2
+    assert "deterministic_refusal" not in _job(site)
+
+
+def test_a_deterministic_refusal_still_ends_at_the_jobs_deadline(monkeypatch, site):
+    from blueprint_pipeline.deterministic_refusal import DeterministicRefusal
+    _enqueue(site)
+    refusal = DeterministicRefusal("atlas_scene_planner_intervals_invalid", step="atlas_proposal_review",
+                                   inputs={"proposal_digest": "sha256:" + "2" * 64})
+    world = World(monkeypatch, site, [refusal])
+    world.advance()
+    world.clock += preview.MAXIMUM_JOB_SECONDS + 1
+    assert world.advance() == "failed" and _job(site)["reason"] == "atlas_preview_expired" and len(world.runs) == 1

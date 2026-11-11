@@ -394,6 +394,7 @@ def test_capacity_summary_carries_the_counts_for_door_status(harness, tmp_path, 
     assert section == report["website_withdrawal_deletion"]
     assert section["withdrawals"]["awaiting_owner_approval"] == 1 and section["approval_status"] == "absent"
     assert set(section) == {"status", "observed_at_epoch", "approval_status", "host_quiet", "scan_complete",
+                            "unreferenced_content_blobs",
                             "withdrawals", "alert_codes"}
 
 
@@ -514,7 +515,7 @@ def test_a_root_read_only_part_way_reads_unknown_never_nothing_found(harness):
 
 
 def test_an_entry_whose_owner_is_unknown_or_shared_is_never_deleted(harness):
-    unknown = harness.uncovered / "content-addressed"
+    unknown = harness.uncovered / "anonymous"
     unknown.mkdir()
     (unknown / "blob.bin").write_bytes(b"shared bytes")
     shared = harness.uncovered / "both-entry"
@@ -526,7 +527,7 @@ def test_an_entry_whose_owner_is_unknown_or_shared_is_never_deleted(harness):
     assert receipt["deletion_status"] == "incomplete"
     holders = {row["holder"]: row for row in receipt["incomplete_reasons"]}
     assert holders["pipeline_root_owner_unknown"]["examples"] == [
-        {"name": "content-addressed", "reason": "no_site_named"}]
+        {"name": "anonymous", "reason": "no_site_named"}]
     assert holders["pipeline_root_shared_entries"]["entries"] == ["both-entry"]
     assert (unknown / "blob.bin").is_file() and (shared / "record.json").is_file()
     assert not (harness.uncovered / "site-entry").exists()
@@ -749,3 +750,156 @@ def test_an_unrecorded_provider_copy_is_still_reported_after_the_local_files_are
     ledger = json.loads((harness.site() / "website_withdrawal/provider_copies.json").read_text())
     assert ledger["copies"][key]["status"] == "owner_resolved"
     assert ledger["copies"][key]["owner_answer"] == "Meta's file list holds no such file"
+
+
+
+# ---- the shared content-addressed stores -------------------------------------------------------------------
+
+
+def _blob(harness, payload: bytes, *, links: tuple[str, ...] = (), age: float = 0.0) -> Path:
+    import hashlib
+
+    store = harness.uncovered / "content-addressed/sha256"
+    store.mkdir(parents=True, exist_ok=True)
+    blob = store / hashlib.sha256(payload).hexdigest()
+    blob.write_bytes(payload)
+    blob.chmod(0o440)  # the store's read-only mode
+    for name in links:
+        target = harness.uncovered / name / ("ref-" + blob.name[:8])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.link(blob, target)
+    if age:
+        stamp = time.time() - age
+        os.utime(blob, (stamp, stamp))
+    return blob
+
+
+def _refresh(harness) -> None:
+    """Every re-read in these tests: the index is a cache, and a test changing disk re-reads it."""
+    from blueprint_pipeline import website_withdrawal_site_index as site_index
+    import shutil as _shutil
+    _shutil.rmtree(harness.index_root, ignore_errors=True)
+    site_index.advance(harness.index_root, [harness.uncovered], now=harness.now)
+
+
+def test_a_blob_referred_to_only_by_the_site_is_deleted_and_a_shared_one_is_kept_and_named(harness):
+    mine = _blob(harness, b"site only", links=("site-entry",))
+    shared = _blob(harness, b"shared", links=("site-entry", "other-entry"))
+    harness.approve()
+    harness.run()
+    receipt = _receipt(harness)
+    assert not mine.exists() and receipt["deleted"]["content_blobs"] == [str(mine)]
+    assert shared.is_file() and (harness.uncovered / "other-entry" / ("ref-" + shared.name[:8])).is_file()
+    named = next(row for row in receipt["remaining"] if row["holder"] == "content_blobs_shared")
+    assert named["blobs"] == [{"path": str(shared), "size": 6, "referrers": ["other-entry", "site-entry"],
+                               "reason": "also referred to by another site's entry"}]
+    # Once the site's entry is gone the shared blob is only the other site's: the deletion is finished.
+    assert receipt["deletion_status"] == "complete_provider_retention_remains"
+    assert receipt["content_stores"][0]["site_blobs"] == 1 and receipt["content_stores"][0]["shared_blobs"] == 1
+
+
+def test_an_unreferenced_blob_is_never_deleted_by_a_withdrawal_and_keeps_it_incomplete(harness):
+    old = _blob(harness, b"nobody", age=30 * 86400.0)
+    harness.approve()
+    summary = harness.run()
+    receipt = _receipt(harness)
+    assert old.is_file()
+    # Unreferenced blobs that predate the withdrawal may be its leftover: without garbage collection, incomplete.
+    assert receipt["deletion_status"] == "incomplete"
+    reason = next(row for row in receipt["incomplete_reasons"] if row["holder"] == "unreferenced_content_blobs")
+    assert reason["count"] == 1 and reason["bytes"] == 6
+    assert receipt["content_stores"][0]["unreferenced"] == {"count": 1, "bytes": 6, "possible_leftover_count": 1,
+                                                           "possible_leftover_bytes": 6}
+    assert summary["content_gc"]["unreferenced_blobs"] == {"count": 1, "bytes": 6}
+    assert summary["content_gc"]["approved"] is False and summary["content_gc"]["applied"] is None
+
+
+def test_an_unreferenced_blob_written_after_the_withdrawal_cannot_be_its_leftover(harness):
+    young = _blob(harness, b"later")
+    stamp = harness.now + 60
+    os.utime(young, (stamp, stamp))
+    harness.approve()
+    harness.run(offset=120)
+    receipt = _receipt(harness)
+    assert young.is_file() and receipt["deletion_status"] == "complete_provider_retention_remains"
+    assert receipt["content_stores"][0]["unreferenced"]["count"] == 1
+    assert receipt["content_stores"][0]["unreferenced"]["possible_leftover_count"] == 0
+
+
+def test_garbage_collection_only_plans_without_its_own_policy_class(harness):
+    from blueprint_pipeline import website_withdrawal_content_blobs as content_blobs
+
+    old = _blob(harness, b"nobody", age=30 * 86400.0)
+    harness.approve()  # the withdrawal approval alone
+    summary = harness.run()
+    assert summary["content_gc"]["candidates"] == 1 and summary["content_gc"]["applied"] is None and old.is_file()
+    harness.approve(garbage_collection_policy_class="website_withdrawal.everything.v1")
+    assert harness.run(offset=10.0)["approval"]["reason"] == "approval_garbage_collection_policy_class_mismatch"
+    assert old.is_file()
+    harness.approve(garbage_collection_policy_class=content_blobs.GC_POLICY_CLASS)
+    summary = harness.run(offset=20.0)
+    assert summary["content_gc"]["applied"] == {"deleted": 1, "kept": 0, "bytes_deleted": 6}
+    assert not old.exists()
+
+
+def test_garbage_collection_rechecks_each_blob_before_deleting(harness):
+    from blueprint_pipeline import website_withdrawal_content_blobs as content_blobs
+
+    old = _blob(harness, b"nobody", age=30 * 86400.0)
+    _refresh(harness)
+    plan = content_blobs.plan_gc(harness.index_root, [harness.uncovered], now=harness.now)
+    assert [row["path"] for row in plan["candidates"]] == [str(old)]
+    os.link(old, harness.uncovered / "other-entry" / "late-ref")  # a referrer appears after the plan
+    result = content_blobs.apply_gc(plan, now=harness.now)
+    assert result["deleted"] == [] and result["kept"] == [{"path": str(old), "reason": "referred_to_now"}]
+    assert old.is_file()
+
+
+def test_garbage_collection_waits_until_every_store_is_fully_read(harness):
+    from blueprint_pipeline import website_withdrawal_content_blobs as content_blobs
+
+    _blob(harness, b"nobody", age=30 * 86400.0)
+    plan = content_blobs.plan_gc(harness.index_root, [harness.uncovered], now=harness.now)
+    assert plan["complete"] is False and plan["candidates"] == []
+
+
+def test_a_referrer_added_between_plan_and_delete_stops_the_delete(harness):
+    from blueprint_pipeline import website_withdrawal_site_index as site_index
+
+    mine = _blob(harness, b"site only", links=("site-entry",))
+    site_index.advance(harness.index_root, [harness.uncovered], now=harness.now)
+    plan = deletion.plan_withdrawal_deletion(capture_root=harness.captures["req1"], **harness.resolution)
+    assert [row["path"] for row in plan["indexed_roots"][0]["content_store"]["site_blobs"]] == [str(mine)]
+    os.link(mine, harness.uncovered / "other-entry" / "late-ref")
+    receipt = deletion.apply_withdrawal_deletion(capture_root=harness.captures["req1"],
+                                                 expected_plan_digest=plan["digest"],
+                                                 authorize_complete_deletion=True, **harness.resolution)
+    assert mine.is_file() and receipt["deletion_status"] == "incomplete"
+    refused = next(row for row in receipt["incomplete_reasons"] if row["holder"] == "content_blob_not_confirmed")
+    assert refused["blobs"] == [{"path": str(mine), "reason": "blob_has_another_referrer_now"}]
+    # The other site's new link still holds the bytes; the site's own entry went after the blob decision.
+    assert (harness.uncovered / "other-entry/late-ref").read_bytes() == b"site only"
+
+
+def test_a_pass_interrupted_after_the_sites_entries_went_finishes_the_blob_next_pass(harness):
+    import shutil as _shutil
+
+    from blueprint_pipeline import website_withdrawal_content_blobs as content_blobs
+    from blueprint_pipeline import website_withdrawal_site_index as site_index
+
+    mine = _blob(harness, b"site only", links=("site-entry",))
+    site_index.advance(harness.index_root, [harness.uncovered], now=harness.now)
+    rows = site_index.lookup(harness.index_root, [harness.uncovered], seeds={"site-req1"},
+                             site_tokens={"site-req1", "walkthrough-req1"})
+    blobs = rows[0]["content_store"]["site_blobs"]
+    assert [row["path"] for row in blobs] == [str(mine)]
+    # The interrupted pass: the decision is in the journal and the site's entry is gone, the blob is not.
+    content_blobs.record_decision(harness.site() / "website_withdrawal", blobs)
+    _shutil.rmtree(harness.uncovered / "site-entry")
+    assert os.stat(mine).st_nlink == 1
+    harness.approve()
+    harness.run()
+    receipt = _receipt(harness)
+    assert not mine.exists() and str(mine) in receipt["deleted"]["content_blobs"]
+    journal = json.loads((harness.site() / "website_withdrawal/content_blobs.json").read_text())
+    assert journal["blobs"][str(mine)]["status"] == "deleted"

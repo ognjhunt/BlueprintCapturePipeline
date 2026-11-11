@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping
 from .common import utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
+from .paid_api_account_precheck import account_limit_blockers
 
 
 SCHEMA_VERSION = "hosted_model_inference_preflight.v2"
@@ -192,8 +193,11 @@ def materialize_hosted_model_inference_preflight(
     probe_performed = False
     probe_png = _probe_png()
     probe_image_sha256 = "sha256:" + hashlib.sha256(probe_png).hexdigest()
+    account_blockers = account_limit_blockers() if key else []
     if not key:
         blockers.append("hosted_model_api_key_missing")
+    elif account_blockers:
+        blockers.extend(account_blockers)  # refused before the request: nothing sent or spent
     else:
         request_document: dict[str, Any] = {
             "model": resolved_model,

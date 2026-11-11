@@ -234,6 +234,16 @@ def _extract_openai_text(response: Any) -> str:
     return ""
 
 
+def _account_limit_refuses(runner: Any) -> bool:
+    """The account-wide monthly limit, before an optional paid skill call; a refusal skips the skill."""
+    from ..paid_api_account_precheck import account_limit_blockers
+
+    blockers = account_limit_blockers()
+    if blockers:
+        runner._last_provider_call = {"account_limit_blockers": blockers, "provider_call_performed": False}
+    return bool(blockers)
+
+
 class _OpenAISDKRunner:
     def __init__(self, *, config: OpenAIPhase2Config) -> None:
         self._config = config
@@ -265,7 +275,7 @@ class _OpenAISDKRunner:
 
     def __call__(self, skill_name: str, payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
         api_key = _string_env("OPENAI_API_KEY")
-        if not api_key:
+        if not api_key or _account_limit_refuses(self):
             return None
         try:
             from openai import OpenAI  # type: ignore
@@ -341,7 +351,7 @@ class CodexOpenAIPhase2Runner:
         }
 
     def __call__(self, skill_name: str, payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
-        if self._config.normalized_mode() != "codex_cli":
+        if self._config.normalized_mode() != "codex_cli" or _account_limit_refuses(self):
             return None
         codex_path = shutil.which(self._config.codex_bin)
         if not codex_path:

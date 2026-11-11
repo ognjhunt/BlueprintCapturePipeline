@@ -254,10 +254,17 @@ def test_a_tilted_background_is_levelled_and_the_source_still_lands_in_it(tmp_pa
     assert np.abs(vertices[:floor_count, 1]).max() < 1e-4
 
 
-def test_a_background_with_no_level_surface_waits_for_input(tmp_path):
+def test_a_background_with_no_level_surface_continues_with_its_estimate_named_on_the_base_scene(tmp_path):
+    # Before 2026-11-10 this waited for input (website_atlas_scene_level_unobserved) and refused on every retry.
+    from blueprint_pipeline import atlas_scene_estimates as estimates
     job_fixture(tmp_path, room={"floor": False, "counter": False})
     value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
-    assert value == {"status": "needs_input", "reason": "website_atlas_scene_level_unobserved"}
+    assert value["status"] == "ready"
+    base = value["base_scene"]
+    assert base["levelling"]["up_basis"] == "provider_up_unverified"
+    assert estimates.LEVEL in estimates.base_scene_flags(base)
+    row = next(row for row in base[estimates.FIELD] if row["code"] == estimates.LEVEL)
+    assert set(row["evidence"]["up_estimates"]) == {"floor_band_tilt_degrees", "face_normal_mode_tilt_degrees"}
 
 
 def completed_bundle(job_dir: Path, *, retained_views=False):

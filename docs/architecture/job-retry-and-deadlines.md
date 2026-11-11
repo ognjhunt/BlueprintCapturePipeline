@@ -135,10 +135,58 @@ extension. The WebApp half landed as WebApp #1257.
    Pipeline ledger stays as it was.
 4. **Refusals cached by a revision constant** (Atlas levelling). A timed retry
    of the same inputs and code gives the same answer.
-5. **A website job that never received a grant has no deadline.** The WebApp
-   sweep reads the grant's window, and such a job has none, so it is not
-   ended. On the Pipeline, `end_expired_preparation` needs a grant too, so
-   nothing ends such a preparation; the host retry therefore gives every
-   failure of a grant-less job, an outage included, only the six timed retries
-   (`has_deadline` in `website_preparation_retry.py`) and then leaves it. Its
-   ledger is not marked ended.
+5. **A website job that never received a grant: now ended on both sides.**
+   The WebApp's no-grant sweep ends such a job one window after its wait
+   started (`websiteJobWindowSweep.ts`, `website_job_no_grant_ending`), and
+   from then on answers the host's non-creating grant read and its spend
+   reservations with `website_scene_job_no_grant_ended` (409) instead of
+   `website_scene_sponsorship_missing`. On the Pipeline, the host retry gives
+   every failure of a grant-less job only the six timed retries
+   (`has_deadline`); `end_expired_preparation` asks the WebApp about a silent
+   grant-less preparation as it does about an expired grant, once per sweep
+   visit, and on that answer writes the listener's terminal authority ending
+   (stage `website_preparation_no_grant_ending`) once. A grant issued later
+   still reopens the job on the WebApp. Not ended: a job the WebApp keeps on
+   file, or does not treat as a website job; the host keeps asking about it
+   (one read per visit, nothing paid). Either side may deploy first: an older
+   WebApp answers "missing" and nothing ends; an older host takes the new
+   code as an ordinary retryable 409.
+
+## 6. Reconstruction refusals: continue on an estimate, or wait on a key (2026-11-10)
+
+A reconstruction quality refusal decided only by retained inputs and code repeats on every timed
+retry: the same video and release give the same answer. Two changes answer it.
+
+- **Continue on a labelled estimate.** Levelling with nothing observed to level on takes the
+  provider's +Y, unverified, with both observed tilts recorded (`scene_estimate:level`); a splat with
+  view-dependent colour keeps its base colour (`scene_estimate:splat_view_dependence_dropped`). A
+  mesh that fits no declared frame, or two, takes the frame of smallest median residual and keeps
+  only faces near observed geometry (`scene_estimate:collider_registration`; no splat-aligned
+  collider exists at $0 today). A scene review's citation of an unusable frame is dropped
+  (`scene_estimate:review_citations_dropped`); a surrounding view past the frame budget is left out
+  and reported uncaptured (`scene_estimate:surrounding_views_dropped`). Each estimate is named on the
+  base scene (`atlas_scene_estimates`), copied into the screening plan, and published in v3
+  `scene_feasibility.flags`; the website names each in its own sentence. Counts and intervals are
+  shown as measured: no estimate adjusts them.
+- **Wait on a key, not a timer.** What still refuses on retained inputs alone raises
+  `DeterministicRefusal` (`deterministic_refusal.py`): its key binds the code, the step's revision
+  constant and the input digests. The Atlas controller and the preparation retry keep the record and
+  do not run the step again while the running release computes the same key, so nothing is bought or
+  redone; a release that changes the step's revision runs it once. The job's deadline still ends it.
+- **End with a site ask.** A video that never connects or sharply shows the task area
+  (`atlas_task_and_scene_coverage_gap`, `atlas_insufficient_overlapping_distinct_views`,
+  `atlas_coverage_anchor_quality_insufficient`), and a scale no reference supports
+  (`atlas_scale_review_unresolved`), already end at once; the website now tells the site what to film.
+
+This replaces item 4 of section 5 for the refusals named here.
+
+## 7. Preparation stops only a new video can clear (2026-11-11)
+
+`website_front_normal_undetermined` and five `website_registration_*` fit codes (`ambiguous`,
+`poor_fit`, `conflicts_provider_anchor`, `anchor_deviation`, `ground_plane_inconsistent`) are decided
+by the video alone. The handoff keeps the stop (`website_recapture_required`), the stage completes as
+a hold, so Pub/Sub acknowledges it and the preparation retry never arms, and preparation status v7
+names the code as the outcome; the website asks the site to film again. A new video is a new
+capture (the owner's "update video" issues a replacement capture, which becomes the active one) and
+runs from the start. `website_registration_anchor_frame_missing`, `..._anchor_frame_invalid` and
+`..._scale_conflicts_declared` are not video faults and keep their earlier handling.

@@ -618,50 +618,12 @@ def test_admitted_api_call_site_must_name_a_reachable_admission():
 #: explicit, reviewed edit to this test. Removing an entry (once the site is
 #: admitted or gone) passes; the verifier's set must stay within this one.
 PINNED_UNADMITTED_API_CALL_SITES = frozenset({
-    "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>::openai_codex_cli",
-    "src/blueprint_pipeline/agent_execution/openai_transport.py::OpenAIAgentsHTTP.request::openai_api_url",
-    "src/blueprint_pipeline/agent_operator_runtime.py::run_agents_sdk_operator._run::openai_agents_sdk_runner",
-    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_cli_operator::openai_codex_cli",
-    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator::openai_codex_client_construction",
-    "src/blueprint_pipeline/agent_runtime/openai_phase2.py::CodexOpenAIPhase2Runner.__call__::openai_codex_cli",
-    "src/blueprint_pipeline/agent_runtime/openai_phase2.py::_OpenAISDKRunner.__call__::openai_client_construction",
-    "src/blueprint_pipeline/arena_result_ingest.py::_run_agents_sdk_operator._run::openai_agents_sdk_runner",
-    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_cli",
-    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_client_construction",
     "src/blueprint_pipeline/capture_enrichment_llm.py::_ClaudeHTTPRunner.__call__::anthropic_api_url",
     "src/blueprint_pipeline/capture_enrichment_llm.py::_CodexRunner.__call__::openai_codex_cli",
     "src/blueprint_pipeline/capture_enrichment_llm.py::_OpenAISDKRunner.__call__::openai_client_construction",
-    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_agentic_video::gemini_client_construction",
-    "src/blueprint_pipeline/clean_plate_removal_analysis_gemini.py::_invoke_text_repair::gemini_client_construction",
-    "src/blueprint_pipeline/dreamlabs_policy_client.py::<module>::dreamlabs_api_url",
-    "src/blueprint_pipeline/hosted_image_generation_preflight.py::<module>::openai_api_url",
-    "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::nvidia_nim_api_url",
-    "src/blueprint_pipeline/hosted_model_inference_preflight.py::<module>::openai_api_url",
-    "src/blueprint_pipeline/nvidia_nim_model_preflight.py::<module>::nvidia_nim_api_url",
-    "src/blueprint_pipeline/openai_prompt_cache_canary.py::run_mechanics_canary::openai_client_construction",
-    "src/blueprint_pipeline/palatial_physready.py::<module>::palatial_api_url",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini.py::run_canary::gemini_client_construction",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::submit_pilot::gemini_client_construction",
     "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider._upload_video_as_media_asset::world_labs_marble_request",
     "src/blueprint_pipeline/provider_preview.py::WorldLabsPreviewProvider.submit::world_labs_marble_request",
-    "src/blueprint_pipeline/render_visual_qc.py::_gemini_review_image::gemini_client_construction",
-    "src/blueprint_pipeline/rollout_vision_label_openai.py::_openai_label::openai_client_construction",
-    "src/blueprint_pipeline/scene_placement/target_resolver.py::_gemini_resolve_text::gemini_client_construction",
     "src/blueprint_pipeline/scene_semantics.py::_infer_capture_review_with_gemini_video::gemini_client_construction",
-    "src/blueprint_pipeline/scene_semantics.py::_infer_with_gemini_video::gemini_client_construction",
-    "src/blueprint_pipeline/simulation_automation.py::CodexSdkSimulationAutomationAgentAdapter.build_ledger::openai_codex_cli",
-    "src/blueprint_pipeline/site_eval_director.py::CodexSdkCodeMaintainerAdapter.build_request_manifest::openai_codex_cli",
-    "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_agents_sdk_runner",
-    "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_credentials",
-    "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_provider",
-    "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_sdk_runner",
-    "src/blueprint_pipeline/task_object_artisan_bridge.py::main::openai_client_construction",
-    "src/blueprint_pipeline/wam_compute_providers.py::_deepinfra_api_base_url::deepinfra_api_url",
-    "src/blueprint_pipeline/wam_episode_consistency_label_gemini.py::build_gemini_wam_episode_consistency_labels::gemini_client_construction",
-    "src/blueprint_pipeline/wam_episode_consistency_label_openai.py::_openai_score_one::openai_client_construction",
-    "src/blueprint_pipeline/wam_generated_video_success_label_gemini.py::build_gemini_wam_success_labels::gemini_client_construction",
-    "src/blueprint_pipeline/wam_generated_video_success_label_openai.py::_openai_label_one::openai_client_construction",
-    "src/blueprint_pipeline/website_image_completion.py::_verify_completed_background::gemini_client_construction",
 })
 
 
@@ -694,3 +656,83 @@ def test_anthropic_codex_cli_and_agents_provider_sites_are_detected():
         assert next(iter(verifier._api_call_sites("scripts/x.py", source).values()))[0] == provider
     # ``docker exec`` is not the Codex CLI.
     assert verifier._api_call_sites("scripts/x.py", "def f(n):\n    return ['docker', 'exec', n]\n") == {}
+
+
+def _fixture_tree(root: Path, worker_body: str) -> str:
+    """A tiny repository: one automatic unit runs ``worker``, which reaches a paid OpenAI call in ``paid``."""
+
+    package = root / "src/blueprint_pipeline"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "paid.py").write_text("from openai import OpenAI\n\n\ndef call():\n    return OpenAI()\n")
+    (package / "operator_tool.py").write_text("from .paid import call\n\n\ndef main():\n    call()\n")
+    (package / "worker.py").write_text(worker_body)
+    (root / "scripts").mkdir()
+    (root / "deploy/systemd").mkdir(parents=True)
+    (root / "deploy/systemd/fixture.service").write_text(
+        "[Service]\nExecStart=python -m blueprint_pipeline.worker\n")
+    sites = verifier._api_call_sites("src/blueprint_pipeline/paid.py", (package / "paid.py").read_text())
+    assert list(sites) == ["src/blueprint_pipeline/paid.py::call::openai_client_construction"]
+    return next(iter(sites))
+
+
+def _table(key: str, row: dict) -> dict:
+    return {"schema_version": "paid_api_call_sites.v1", "sites": {key: row}}
+
+
+def test_a_new_unclassified_fixture_call_site_fails_the_verifier(tmp_path):
+    key = _fixture_tree(tmp_path, "def main():\n    pass\n")
+    blockers = verifier._api_call_site_blockers({key: ("openai", 5)}, _table("other::x::y", {"class": "not_paid"}),
+                                                root=tmp_path)
+    assert blockers and blockers[0].startswith(f"unclassified_paid_api_call_site:{key}")
+
+
+def test_not_automatic_is_checked_on_the_call_graph(tmp_path):
+    row = {"provider": "openai", "class": "not_automatic", "reason": "operator tool",
+           "entry_point": "src/blueprint_pipeline/operator_tool.py::main"}
+    quiet = tmp_path / "quiet"
+    quiet.mkdir()
+    key = _fixture_tree(quiet, "def main():\n    pass\n")
+    assert verifier._api_call_site_blockers({key: ("openai", 5)}, _table(key, row), root=quiet) == []
+    reached = tmp_path / "reached"
+    reached.mkdir()
+    _fixture_tree(reached, "from .paid import call\n\n\ndef main():\n    call()\n")
+    blockers = verifier._api_call_site_blockers({key: ("openai", 5)}, _table(key, row), root=reached)
+    assert len(blockers) == 1 and blockers[0].startswith(
+        f"paid_api_call_site_not_automatic_claim_refuted:{key}: an automatic entry reaches it unguarded")
+
+
+def test_a_guard_claim_holds_only_when_every_automatic_path_passes_the_check(tmp_path):
+    row = {"provider": "openai", "class": "admitted", "guards": ["require_paid_resource_budget"],
+           "via": "src/blueprint_pipeline/worker.py::main",
+           "admission": "src/blueprint_pipeline/worker.py::require_paid_resource_budget"}
+    guarded = tmp_path / "guarded"
+    guarded.mkdir()
+    key = _fixture_tree(guarded, (
+        "from .paid import call\nfrom .paid_resource_admission import require_paid_resource_budget\n\n\n"
+        "def main():\n    require_paid_resource_budget(resource_class='openai_api_candidate')\n    call()\n"))
+    assert verifier._api_call_site_blockers({key: ("openai", 5)}, _table(key, row), root=guarded) == []
+    bypass = tmp_path / "bypass"
+    bypass.mkdir()
+    _fixture_tree(bypass, (
+        "from .paid import call\nfrom .paid_resource_admission import require_paid_resource_budget\n\n\n"
+        "def main():\n    require_paid_resource_budget(resource_class='openai_api_candidate')\n    call()\n\n\n"
+        "def other():\n    call()\n\n\nother()\n"))
+    blockers = verifier._api_call_site_blockers({key: ("openai", 5)}, _table(key, row), root=bypass)
+    assert any(item.startswith(f"paid_api_call_site_admitted_claim_refuted:{key}") for item in blockers)
+    named = {**row, "guards": ["looks_like_a_guard"]}
+    blockers = verifier._api_call_site_blockers({key: ("openai", 5)}, _table(key, named), root=guarded)
+    assert f"paid_api_call_site_guard_unproven:{key}:looks_like_a_guard" in blockers
+
+
+def test_reachable_only_through_names_every_way_in(tmp_path):
+    key = _fixture_tree(tmp_path, "def main():\n    pass\n")
+    row = {"provider": "openai", "class": "admitted", "via": "src/blueprint_pipeline/operator_tool.py::main",
+           "admission": "src/blueprint_pipeline/operator_tool.py::main", "enclosing_admission": "a rental",
+           "bound": "its cap", "reachable_only_through": ["src/blueprint_pipeline/operator_tool.py"]}
+    assert verifier._api_call_site_blockers({key: ("openai", 5)}, _table(key, row), root=tmp_path) == []
+    (tmp_path / "src/blueprint_pipeline/side_door.py").write_text("from .paid import call\n\n\ndef go():\n    call()\n")
+    from paid_call_site_reachability import graph
+    graph.cache_clear()
+    blockers = verifier._api_call_site_blockers({key: ("openai", 5)}, _table(key, row), root=tmp_path)
+    assert any(item.startswith(f"paid_api_call_site_reachable_only_through_refuted:{key}") for item in blockers)

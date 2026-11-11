@@ -1,0 +1,23 @@
+{
+  "schema_version": "website_atlas_preview_job.v1",
+  "request_id": "req-coverage",
+  "scene_id": "site-req-coverage",
+  "capture_id": "walkthrough-req-coverage",
+  "source_video": "raw/walkthrough.mov",
+  "routing_mode": "consented",
+  "enqueued_at_epoch": 1794348447,
+  "state": "processing",
+  "reason": null,
+  "stage": "queued",
+  "revision": 1,
+  "revised_at_epoch": 1794348447,
+  "updated_at_epoch": 1794348447,
+  "next_attempt_at_epoch": 1794348447,
+  "retry_at_epoch": null,
+  "transient_failures": 0,
+  "archive": null,
+  "provider_cleanup": null,
+  "delivered_revision": 0,
+  "delivery_attempts": 0,
+  "delivery_next_at_epoch": 0
+}

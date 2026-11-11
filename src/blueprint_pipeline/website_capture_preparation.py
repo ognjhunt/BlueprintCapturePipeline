@@ -176,6 +176,7 @@ def run_website_capture_preparation(
             return held
         raise StageError("website_scene_preparation", "website_task_preparation_held")
     handoff_lease_checkpoint("website_preparation_after_native_handoff")
+    from .website_recapture_required import retains_recapture_required
     write_json(pipeline_dir / "provider_run_manifest.json", {
         "schema_version": "v1", "provider_name": None, "status": "not_requested",
         "website_scene_preparation": preparation,
@@ -187,7 +188,8 @@ def run_website_capture_preparation(
             and not retains_task_family_preparation(preparation, context)
             and not retains_navigation_preparation(preparation, context)
             and not retains_geometry_only_fit(preparation, context)
-            and not retains_robot_fit_hold(preparation, context)):
+            and not retains_robot_fit_hold(preparation, context)
+            and not retains_recapture_required(preparation, context)):
         raise StageError("website_scene_preparation", ",".join(
             preparation.get("blockers")
             or (preparation.get("runtime_inputs") or {}).get("blockers")

@@ -339,6 +339,9 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
 # grant's digest, policy, purpose and context.
 _SPONSORSHIP_EXPIRED = "website_control_scene-sponsorship_http_409:consent_expired"
 _SPONSORSHIP_MISSING = "website_control_scene-sponsorship_http_409:website_scene_sponsorship_missing"
+# A job that never received a grant and whose no-grant ending the WebApp recorded
+# (``websiteJobWindowSweep``): the WebApp's own ending, as consent_expired is for a grant.
+_SPONSORSHIP_NO_GRANT_ENDED = "website_control_scene-sponsorship_http_409:website_scene_job_no_grant_ended"
 
 
 def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: float,
@@ -353,14 +356,20 @@ def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: 
     except ValueError as exc:
         if str(exc) == _SPONSORSHIP_EXPIRED:
             return "expired"
-        if allow_missing and str(exc) == _SPONSORSHIP_MISSING:
+        # Still no grant either way; whether the job has ended is end_expired_preparation's question.
+        if allow_missing and str(exc) in {_SPONSORSHIP_MISSING, _SPONSORSHIP_NO_GRANT_ENDED}:
             return "missing"
         raise
     return "current"
 
 
 def read_scene_sponsorship_ending(*, task_context: Mapping[str, Any]) -> ValueError | None:
-    """The WebApp's ``consent_expired`` refusal of this context's retained grant, or None.
+    """The WebApp's refusal that says this job ended, or None.
+
+    ``consent_expired`` for a retained grant whose window has passed, and
+    ``website_scene_job_no_grant_ended`` for a job that never received a grant
+    and whose no-grant ending the WebApp recorded (an older WebApp answers
+    ``website_scene_sponsorship_missing`` instead, which is None).
 
     The ``create: false`` scene-sponsorship read: the WebApp never creates,
     renews or writes a grant for it, applies a verified owner window extension
@@ -376,7 +385,7 @@ def read_scene_sponsorship_ending(*, task_context: Mapping[str, Any]) -> ValueEr
         website_webapp_request(capture_id=task_context["capture_id"], operation="scene-sponsorship",
                                payload=payload)
     except ValueError as exc:
-        return exc if str(exc) == _SPONSORSHIP_EXPIRED else None
+        return exc if str(exc) in {_SPONSORSHIP_EXPIRED, _SPONSORSHIP_NO_GRANT_ENDED} else None
     return None
 
 

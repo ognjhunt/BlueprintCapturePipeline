@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .beta_policy_candidate_catalog import CANDIDATE_ID_PATTERN, DIGEST_PATTERN, ID_PATTERN, validate_catalog
+from .beta_policy_screening_known_good_control import CONTROL_FIELD, append_control_row, validate_control_row
 from .decision_evidence_contracts import canonical_digest
 from .team_evaluation_plan import scored_cells
 from .website_candidate_feasibility import REACH_RANK_FIELDS, REACH_TIERS, reach_rank
@@ -751,10 +752,17 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         "budget_usd": budget_usd, "maximum_planned_cost_usd": f"{budget - remaining:.2f}",
         "purpose": "screening", "claim_ceiling": CLAIM_CEILING,
         HARNESS_REVISION_FIELD: SCREENING_HARNESS_REVISION,
+        # Optional: plans of a scene built on no estimate, and every plan written before 2026-11-10, carry none.
+        **({SCENE_ESTIMATE_FLAGS_FIELD: list(scene[SCENE_ESTIMATE_FLAGS_FIELD])}
+           if scene.get(SCENE_ESTIMATE_FLAGS_FIELD) else {}),
         "candidates": candidates, "plan_digest": "",
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return validate_screening_plan(plan)
+
+
+#: The scene's estimate codes (``atlas_scene_estimates``), published in ``scene_feasibility``.
+SCENE_ESTIMATE_FLAGS_FIELD = "scene_estimate_flags"
 
 
 def plan_harness_revision(plan: Mapping[str, Any]) -> int:
@@ -776,7 +784,13 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     # ``recommendation_eligible: false``; they stay valid and publish alike.
     # Plans made before harness revisions carry none (revision 0) and stay valid.
     revision = plan.get(HARNESS_REVISION_FIELD, 0)
-    if (set(plan) - {"recommendation_eligible", HARNESS_REVISION_FIELD} - _JOB_CEILING_FIELDS != required
+    estimate_flags = plan.get(SCENE_ESTIMATE_FLAGS_FIELD)
+    if SCENE_ESTIMATE_FLAGS_FIELD in plan:
+        from .beta_policy_screening_publication_flags import flags_valid
+        if not flags_valid(estimate_flags):
+            raise BetaPolicyScreeningPlanError("beta_screening_plan_schema_invalid")
+    if (set(plan) - {"recommendation_eligible", HARNESS_REVISION_FIELD, SCENE_ESTIMATE_FLAGS_FIELD}
+            - _JOB_CEILING_FIELDS != required
             or plan["schema_version"] != PLAN_SCHEMA_VERSION
             or plan["purpose"] != "screening" or plan["claim_ceiling"] != CLAIM_CEILING
             or plan.get("recommendation_eligible", False) is not False
@@ -857,6 +871,13 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     for row in rows:
         if not isinstance(row, dict) or not {"candidate_id", "display_name", "configuration_digest", "status", "blockers"} <= set(row):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_invalid")
+        if CONTROL_FIELD in row:
+            # The campaign's one known-good control, after every candidate row (owner approval 2026-11-10).
+            if row is not rows[-1]:
+                raise BetaPolicyScreeningPlanError("beta_screening_known_good_control_invalid")
+            candidates.append(row["candidate_id"])
+            committed += validate_control_row(row, plan)
+            continue
         candidates.append(_id(row["candidate_id"], "beta_screening_candidate_invalid"))
         evidence_fields = {"execution_evidence_kind"} if "execution_evidence_kind" in row else set()
         if evidence_fields and row["execution_evidence_kind"] != "scripted_simulator_state_baseline" and not (
@@ -1020,9 +1041,11 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
                 # Still fundable within the ceiling-sized budget from money a
                 # selected candidate releases; the ceiling is what holds it back.
                 row["blockers"] = [JOB_CEILING_DEFERRED]
+    plan.update(budget_usd=f"{budget:.2f}", budget_basis=JOB_CEILING_BASIS, website_job_ceiling=job_ceiling)
+    # A new website campaign's known-good control, planned after every candidate and never ahead of one.
+    append_control_row(plan, catalog, scene, {"now": dt.datetime.now(dt.timezone.utc), **options})
     planned = sum((money(row["max_cost_usd"]) for row in plan["candidates"] if row["status"] == "selected"), Decimal(0))
-    plan.update(budget_usd=f"{budget:.2f}", maximum_planned_cost_usd=f"{planned:.2f}",
-                budget_basis=JOB_CEILING_BASIS, website_job_ceiling=job_ceiling)
+    plan["maximum_planned_cost_usd"] = f"{planned:.2f}"
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return validate_screening_plan(plan)
 

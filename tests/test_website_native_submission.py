@@ -646,6 +646,36 @@ def test_retry_is_sized_within_what_existing_holds_leave(tmp_path, monkeypatch):
     assert spend["maximum_hourly_rate_usd"] * spend["hard_ttl_seconds"] / 3600 <= 5
 
 
+@pytest.mark.parametrize("holds", [5, 20])
+def test_a_grant_with_automatic_extension_sizes_each_attempt_at_its_full_allowance(tmp_path, monkeypatch, holds):
+    """Owner decision 2026-11-10: a shrunk compute cap finds no qualifying GPU offer.
+
+    A flagged grant (read from the job's retained source registration, stood in
+    for here) keeps the full $6 compute and $0.80/h offer cap; the reservation
+    extends the ceiling by the shortfall or the job waits. The same holds under
+    an unflagged grant still shrink compute (the tests above).
+    """
+    from blueprint_pipeline import website_preparation_authority
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+        MAX_HOURLY_RATE_USD, MAX_PROVIDER_COMPUTE_SPEND_USD,
+    )
+    from blueprint_pipeline.task_evaluation_scene_intake import reserve_scene_attempt
+    monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")
+    monkeypatch.setenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", "15")
+    kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20,
+                             authoring_backend="artisan_v1")
+    reserve_scene_attempt(queue_root=tmp_path / "intents", intent_id=accepted["intent_id"],
+        attempt_id="earlier-gpu-attempt", source_commit="d" * 40, runtime_digest="sha256:" + "e" * 64,
+        input_digest="sha256:" + "f" * 64, provider="vast", maximum_spend_usd=holds)
+    monkeypatch.setattr(website_preparation_authority, "_retained_sources",
+                        lambda **_: ({}, {"automatic_budget_extension": True}, None))
+    materialize_website_submission(**kwargs)
+    spend = json.loads((kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())["spend"]
+    assert spend["provider_compute_spend_cap_usd"] == MAX_PROVIDER_COMPUTE_SPEND_USD
+    assert spend["maximum_hourly_rate_usd"] == MAX_HOURLY_RATE_USD
+    assert spend["hard_cap_usd"] == MAX_PROVIDER_COMPUTE_SPEND_USD + 15
+
+
 def test_no_attempt_is_built_when_existing_holds_leave_no_compute(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_intake import reserve_scene_attempt
     monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")
@@ -698,7 +728,7 @@ def test_publication_rechecks_owner_revocation(tmp_path, monkeypatch):
         _validated_inventory(kwargs["staging_root"], SHA)
 
 
-def prepare_website_construction(tmp_path, monkeypatch, development, authoring_backend=None):
+def prepare_website_construction(tmp_path, monkeypatch, development, authoring_backend=None, run_worker=True):
     import os
     import pwd
     from blueprint_pipeline import task_evaluation_scene_progression as engine
@@ -771,6 +801,8 @@ def prepare_website_construction(tmp_path, monkeypatch, development, authoring_b
         data = store.objects[urlsplit(uri).path.lstrip("/")]
         assert len(data) <= maximum_bytes
         destination.write_bytes(data)
+    if not run_worker:  # The caller runs the owned worker itself (a deploy lands first).
+        return {"config_path": config_path, "queue": queue, "fetch": fetch, "publish": publish}
     consumed = process_launch_preparation_queue(queue_root=queue, input_root=tmp_path / "worker-inputs",
         allowed_uri_prefixes=["s3://blueprint/task-evaluation/production-inputs/"],
         service_account=pwd.getpwuid(os.geteuid()).pw_name, source_commit=SHA, fetcher=fetch,

@@ -99,6 +99,21 @@ class TaskRecord(BaseModel):
     controller_recoveries: tuple[ControllerRecoveryBinding, ...] = ()
 
 
+#: A task not started because the account-wide monthly limit refused new spend. Nothing was admitted
+#: or sent; ``autostart`` asks again on its next pass, and a client's enqueue may be sent again.
+ACCOUNT_LIMIT_WAIT = "agent_account_monthly_limit_wait"
+
+
+def _require_account_limit() -> None:
+    """Before a task starts (never between the steps of one already started)."""
+    from ..paid_resource_admission import PaidResourceAdmissionBlocked, require_paid_resource_budget
+
+    try:
+        require_paid_resource_budget(resource_class="openai_api_candidate")
+    except PaidResourceAdmissionBlocked as exc:
+        raise AgentExecutionError(ACCOUNT_LIMIT_WAIT) from exc
+
+
 def _read_private(path: Path, *, limit: int = 4_000_000, secret: bool = False) -> bytes:
     """Read a local configuration file once, refusing links and public writes."""
     try:
@@ -355,6 +370,7 @@ class ProductionAgentService:
                 or record.supervision.watch_digest != owner["watch_digest"]):
             raise AgentExecutionError("agent_run_owned_by_persistent_supervisor")
         self.validate_admission(record.task)
+        _require_account_limit()
         self.journal.record_event("server_admission_" + digest(record.task.task_id)[7:], self._ownership(record))
         return self.service.enqueue(record.task)
 

@@ -989,6 +989,15 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
     """Website calls retain one paid decision; legacy diagnostics keep their gate."""
     args = dict(video_path=video_path, model=model, processing=processing, task_context=task_context)
     if not (task_context or {}).get("capture_id"):
+        # No website job to reserve under (a diagnostic run): the account-wide monthly limit still applies.
+        # A refusal blocks this stage by name and spends nothing; the next run of the stage asks again.
+        from .paid_resource_admission import PaidResourceAdmissionBlocked, require_paid_resource_budget
+        try:
+            require_paid_resource_budget(resource_class="evaluator_api")
+        except PaidResourceAdmissionBlocked as exc:
+            return empty_removal_plan(status="blocked", model=model or _string_env(MODEL_ENV, DEFAULT_MODEL),
+                                      processing=processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING),
+                                      blockers=list(exc.blockers))
         return _analyze_removal_targets(**args)
     if not admits_scene_preparation(task_context) or not _string(task_context.get("description")):
         # Refuse before any reservation: a task gate is not a paid decision to retain.

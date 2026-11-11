@@ -47,6 +47,10 @@ _MINIMUM_SILENCE_SECONDS = 30 * 60
 # The grant the job's latest delivery ran under (website_task_evidence).
 GRANT_FILE = "pipeline/website_scene_sponsorship.json"
 EXPIRY_STAGE = "website_preparation_grant_expiry"
+# A job that never received a grant: the WebApp ends it by its own no-grant clock (one window).
+NO_GRANT_STAGE = "website_preparation_no_grant_ending"
+# The ending each case accepts: consent_expired for a retained grant, the no-grant ending without one.
+_ENDINGS = {True: ("consent_expired", EXPIRY_STAGE), False: ("website_scene_job_no_grant_ended", NO_GRANT_STAGE)}
 # Listener ticks run about a minute apart; a longer gap (an outage, or one tick
 # busy processing) means this listener could not have received a redelivery.
 LIVENESS_GAP_SECONDS = 15 * 60
@@ -297,7 +301,11 @@ def end_expired_preparation(capture_root: Path, *, alive_since: datetime, listen
     for a full window of continuous listening) and the retained grant's own
     expiry has passed. Then the sweep asks the WebApp, once per tick, and ends
     the job only on its ``consent_expired`` refusal; a still-valid, extended or
-    renewed grant, or any other answer, leaves the job as it is. A live lease,
+    renewed grant, or any other answer, leaves the job as it is. A job that never
+    received a grant (no retained grant file) is asked the same way and ends only
+    on the WebApp's ``website_scene_job_no_grant_ended``, which the WebApp answers
+    once its no-grant clock (one job window) has run; an older WebApp's
+    ``website_scene_sponsorship_missing`` leaves it as it is. A live lease,
     a completed or ended job and the assessment wait are never asked about. The
     ending is the listener's ``_finish_terminal_authority_ending`` on a claim of
     the revision read here, so it is written once. Nothing is retried, bought,
@@ -316,12 +324,15 @@ def end_expired_preparation(capture_root: Path, *, alive_since: datetime, listen
         if (silent is None or type(ledger.get("revision")) is not int
                 or any(type(ledger.get(key)) is not str or not ledger[key] for key in
                        ("scene_id", "capture_id", "producer_delivery_key", "source_payload_sha256"))
-                or max(silent, alive_since) + timedelta(seconds=silence_seconds()) > current
-                or not _grant_may_have_ended(root, ledger, current.timestamp())):
+                or max(silent, alive_since) + timedelta(seconds=silence_seconds()) > current):
+            return None
+        granted = (root / GRANT_FILE).exists() or (root / GRANT_FILE).is_symlink()
+        if granted and not _grant_may_have_ended(root, ledger, current.timestamp()):
             return None
     refusal = _webapp_ended(root, ledger)  # No network under the ledger lock.
     ending = listener.authority_ending(refusal) if refusal is not None else None
-    if ending is None or ending[1] != "consent_expired":
+    expected_code, stage = _ENDINGS[granted]
+    if ending is None or ending[1] != expected_code:
         return None
     claim, claimed = listener._claim_job_lease(
         root, scene_id=ledger["scene_id"], capture_id=ledger["capture_id"], owner=listener._lease_owner(),
@@ -338,7 +349,7 @@ def end_expired_preparation(capture_root: Path, *, alive_since: datetime, listen
     result = listener._finish_terminal_authority_ending(
         root, handoff=handoff, owner=claimed["lease_owner"], token=claimed["lease_token"],
         operation=ending[0], code=ending[1], error=refusal,
-        stage=EXPIRY_STAGE, attempt_count=claimed["attempt_count"],
+        stage=stage, attempt_count=claimed["attempt_count"],
         attempt_started_at=claimed["last_attempt_started_at"],
         previous_history=listener._attempt_history(claimed),
         payload_digest=ledger["source_payload_sha256"], producer_delivery_key=ledger["producer_delivery_key"])

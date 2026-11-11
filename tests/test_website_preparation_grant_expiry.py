@@ -30,6 +30,8 @@ pytest_plugins = ["tests.test_website_preparation_terminal_status"]  # the websi
 
 EXPIRED = "website_control_scene-sponsorship_http_409:consent_expired"
 PENDING = "website_control_scene-sponsorship_http_409:website_assessment_preparation_pending"
+NO_GRANT_ENDED = "website_control_scene-sponsorship_http_409:website_scene_job_no_grant_ended"
+MISSING = "website_control_scene-sponsorship_http_409:website_scene_sponsorship_missing"
 
 
 def _grant(source, *, expires_at, **change):
@@ -162,7 +164,7 @@ def test_a_running_preparation_is_untouched(website_capture, monkeypatch, grant_
 
 
 @pytest.mark.parametrize("damage", ["other_capture", "other_scene", "unsealed", "malformed", "not_object",
-                                    "string_expiry", "missing", "symlink"])
+                                    "string_expiry", "symlink"])
 def test_a_grant_file_not_for_this_capture_never_triggers(website_capture, monkeypatch, tmp_path, damage):
     stopped, webapp = _silent(website_capture, monkeypatch, grant_expires=-timedelta(minutes=1),
                               answer=ValueError(EXPIRED))
@@ -182,8 +184,6 @@ def test_a_grant_file_not_for_this_capture_never_triggers(website_capture, monke
         path.write_text("[]")
     elif damage == "string_expiry":
         _grant(website_capture, expires_at=datetime.now(timezone.utc), expires_at_epoch="0")
-    elif damage == "missing":
-        path.unlink()
     else:
         outside = tmp_path / "grant.json"
         outside.write_text(json.dumps(grant))
@@ -271,3 +271,52 @@ def test_without_the_running_listener_the_sweep_only_observes(website_capture, m
     status_reader.reconcile_preparation_wakeups(website_capture.storage_root)
     assert webapp.reads == [] and _ledger(website_capture)["status"] == "failed_retryable"
     assert terminal.OVERDUE_FIELD in _ledger(website_capture)
+
+
+# Owner ask 2026-11-10: a preparation whose job never received a grant ends on the host too, once the
+# WebApp's own no-grant clock has ended the job (websiteJobWindowSweep) and it answers so.
+def _no_grant(source, monkeypatch, answer):
+    stopped, webapp = _silent(source, monkeypatch, grant_expires=-timedelta(minutes=1), answer=answer)
+    (source.root / "pipeline/website_scene_sponsorship.json").unlink()
+    return stopped, webapp
+
+
+def test_a_job_with_no_grant_ends_once_the_webapp_says_its_no_grant_ending_is_recorded(website_capture, monkeypatch):
+    stopped, webapp = _no_grant(website_capture, monkeypatch, ValueError(NO_GRANT_ENDED))
+    status_reader.reconcile_preparation_wakeups(website_capture.storage_root, listener=listener)
+    ended = _ledger(website_capture)
+    assert ended["status"] == "terminal_authority_ended"
+    assert ended["terminal_code"] == "website_scene_job_no_grant_ended" and ended["last_error"] == NO_GRANT_ENDED
+    assert ended["attempt_history"][-1]["stage"] == terminal.NO_GRANT_STAGE
+    assert ended["revision"] == stopped["revision"] + 2 and ended["lease_token"] is None
+    # Written once: a second ask never happens and nothing more is written.
+    status_reader.reconcile_preparation_wakeups(website_capture.storage_root, listener=listener)
+    assert _end(website_capture) is None and _ledger(website_capture) == ended and len(webapp.reads) == 1
+    # The host's own retry never runs an ended job again.
+    from blueprint_pipeline import website_preparation_retry as retry
+    assert retry.armed(ended) is None
+
+
+@pytest.mark.parametrize("answer", [
+    ValueError(MISSING),  # an older WebApp, or a job the WebApp has not ended: as today
+    ValueError(EXPIRED),  # an expired-grant answer is no ending for a job that never had a grant
+    TimeoutError("timed out"),
+], ids=["older_webapp_missing", "expired_code_without_grant", "timeout"])
+def test_a_job_with_no_grant_is_left_as_it_is_on_any_other_answer(website_capture, monkeypatch, answer):
+    stopped, webapp = _no_grant(website_capture, monkeypatch, answer)
+    assert _end(website_capture) is None and len(webapp.reads) == 1
+    assert _ledger(website_capture) == stopped
+
+
+def test_an_older_host_keeps_the_new_refusal_retryable():
+    # The listener before this change knew only these two codes: the new one was any other 409.
+    old = __import__("re").compile(r"(?<![A-Za-z0-9_-])website_control_([a-z0-9-]+)_http_409:(consent_expired|source_revoked)(?![A-Za-z0-9_-])")
+    assert old.search(NO_GRANT_ENDED) is None
+    assert listener.authority_ending(ValueError(NO_GRANT_ENDED)) == ("scene-sponsorship", "website_scene_job_no_grant_ended")
+
+
+def test_a_grant_read_counts_the_no_grant_ending_as_still_missing(website_capture, monkeypatch):
+    monkeypatch.setattr(context_reader, "load_website_scene_sponsorship",
+                        lambda **_: (_ for _ in ()).throw(ValueError(NO_GRANT_ENDED)))
+    assert context_reader.website_scene_sponsorship_standing(task_context=website_capture.context, now=0.0,
+                                                            allow_missing=True) == "missing"

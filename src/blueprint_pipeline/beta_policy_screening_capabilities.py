@@ -220,6 +220,11 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
              "scene_inputs": _record(normalized)}
     if profile.get("nominal_dynamic_friction") is not None:
         scene["nominal_dynamic_friction"] = profile["nominal_dynamic_friction"]
+    # The estimates the capture's base scene rests on, carried to the result as flags (``atlas_scene_estimates``).
+    from .atlas_scene_estimates import capture_scene_flags
+    estimate_flags = capture_scene_flags(Path(capture_root))
+    if estimate_flags:
+        scene["scene_estimate_flags"] = estimate_flags
     repo = Path(__file__).resolve().parents[2]
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
                             capture_output=True, text=True).stdout.strip()

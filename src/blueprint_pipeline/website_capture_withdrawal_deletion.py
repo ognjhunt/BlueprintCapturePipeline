@@ -617,8 +617,13 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
     # The nine roots with no per-site binding, through their ownership index (website_withdrawal_site_index).
     indexed = None
     if site_index_root is not None:
+        try:
+            acknowledged = os.lstat(site / "website_withdrawal" / "tombstone.json").st_mtime
+        except OSError:
+            acknowledged = None
         indexed = site_index.lookup(site_index_root, uncovered_roots, seeds=seeds,
-                                    site_tokens={identity["scene_id"], identity["capture_id"]})
+                                    site_tokens={identity["scene_id"], identity["capture_id"]},
+                                    acknowledged_at_epoch=acknowledged)
         for row in indexed:
             for entry in row["owned"]:
                 try:
@@ -819,10 +824,13 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     # After the G1 namespaces inside them: each half is then checked whole before it goes.
     team_deleted = team_scene.apply_team_scene(plan["team_scene"])
     deleted["unclaimed_handoffs"] = unclaimed.apply_unclaimed(plan["unclaimed_handoffs"])
-    deleted["indexed_root_entries"], indexed_refused = _apply_indexed(
+    indexed_result = _apply_indexed(
         plan.get("indexed_roots") or [],
         seeds={plan["scene_id"], plan["capture_id"], *plan["lineage"]["intents"]},
-        site_tokens={plan["scene_id"], plan["capture_id"]})
+        site_tokens={plan["scene_id"], plan["capture_id"]}, journal=Path(plan["site_root"]) / "website_withdrawal")
+    indexed_refused = indexed_result["refused"]
+    deleted["indexed_root_entries"] = indexed_result["entries"]
+    deleted["content_blobs"] = indexed_result["blobs"]
     # Recorded ids are already in the journal's ledger: a failed provider delete is retried by the next run.
     provider_results = (provider_copy.apply_providers(plan["provider_copies"], resolution.get("provider_deleters"))
                         if plan.get("provider_copies") is not None else None)
@@ -852,6 +860,19 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
         incomplete.append({"holder": "pipeline_root_entry_not_confirmed", "entries": indexed_refused,
                            "reason": "a fresh read of these entries did not show them to be only this site's; "
                                      "they were kept and the index reads them again"})
+    if indexed_result["blobs_refused"]:
+        incomplete.append({"holder": "content_blob_not_confirmed", "blobs": indexed_result["blobs_refused"],
+                           "reason": "at deletion, these blobs had a referrer other than this site's entries, or "
+                                     "had changed; they were kept and are planned again"})
+    shared_blobs = [{key: blob.get(key) for key in ("path", "size", "referrers", "reason")}
+                    for row in plan.get("indexed_roots") or [] for blob in (row.get("content_store") or {}).get(
+                        "shared") or [] if blob["path"] not in set(indexed_result["blobs"])
+                    and os.path.lexists(blob["path"])] + indexed_result["blobs_now_shared"]
+    if shared_blobs:
+        remaining.append({"holder": "content_blobs_shared", "blobs": shared_blobs,
+                          "reason": "kept: another site, an entry of unknown owner or a link outside the root "
+                                    "still refers to these blobs; once this site's entries are gone they are not "
+                                    "this site's"})
     retention = (provider_copy.retention_remains(plan["provider_copies"])
                  if plan.get("provider_copies") is not None else [])
     receipt: dict[str, Any] = {
@@ -879,6 +900,13 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
         "deletion_status": deletion_status(incomplete, retention),
         "incomplete_reasons": incomplete,
         "provider_retention_remains": retention,
+        # Every shared store, every receipt: what was the site's, what is shared, and the blobs nobody refers to
+        # (with those that predate the withdrawal and so may be a leftover of this site).
+        "content_stores": [{"store": row["content_store"]["store"], "fully_read": row["content_store"]["complete"],
+                            "site_blobs": len(row["content_store"]["site_blobs"]),
+                            "shared_blobs": len(row["content_store"]["shared"]),
+                            "unreferenced": row["content_store"]["unreferenced"]}
+                           for row in plan.get("indexed_roots") or [] if row.get("content_store")],
     }
     if provider_results is not None:
         receipt["provider_copies"] = {
@@ -895,16 +923,23 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     return receipt
 
 
-def _apply_indexed(rows: Sequence[Mapping[str, Any]], *, seeds: set[str], site_tokens: set[str]
-                   ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Delete each indexed entry only after a fresh read of its records shows it is only this site's.
+def _apply_indexed(rows: Sequence[Mapping[str, Any]], *, seeds: set[str], site_tokens: set[str], journal: Path
+                   ) -> dict[str, Any]:
+    """Delete the site's indexed entries and its content blobs, each only after a fresh read from disk.
 
-    The index is a cache: a nested record can change without the entry's own mtime changing. An entry
-    whose fresh read differs, is shared, names nothing, cannot be read or exceeds the read budget, or whose
-    files changed since the plan, is kept, queued for the index to read again, and reported.
+    The index is a cache: a nested record can change without the entry's own mtime changing, and a
+    blob can gain a referrer. First every owned entry is read again (its records must name only this
+    site, its files unchanged since the plan); an entry that fails is kept, queued for the index to
+    read again, and reported. Then, while the confirmed entries still hold their links, each blob the
+    plan found to be only the site's is written to the journal and deleted only if every one of its
+    links is in those entries (``website_withdrawal_content_blobs``); blobs an interrupted earlier pass
+    decided are finished the same way. Only then are the confirmed entries removed.
     """
 
-    deleted, refused = [], []
+    from . import website_withdrawal_content_blobs as content_blobs
+
+    refused: list[dict[str, Any]] = []
+    confirmed: list[Path] = []
     for row in rows:
         for entry in row["owned"]:
             path = Path(entry["path"])
@@ -924,12 +959,20 @@ def _apply_indexed(rows: Sequence[Mapping[str, Any]], *, seeds: set[str], site_t
                 site_index.mark_unscanned(Path(row["index_root"]), Path(row["root"]), entry["name"])
                 refused.append({"path": str(path), "reason": reason})
                 continue
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-            deleted.append(str(path))
-    return deleted, refused
+            confirmed.append(path)
+    site_blobs = [blob for row in rows for blob in (row.get("content_store") or {}).get("site_blobs") or []]
+    content_blobs.record_decision(journal, site_blobs)
+    blobs_deleted, blobs_refused, now_shared = content_blobs.apply_site_blobs(site_blobs, journal=journal,
+                                                                              confirmed_entries=confirmed)
+    deleted = []
+    for path in confirmed:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        deleted.append(str(path))
+    return {"entries": deleted, "refused": refused, "blobs": blobs_deleted, "blobs_refused": blobs_refused,
+            "blobs_now_shared": now_shared}
 
 
 COMPLETE = "complete"

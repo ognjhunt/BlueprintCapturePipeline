@@ -545,3 +545,37 @@ def test_a_job_with_no_grant_has_no_deadline_so_an_outage_takes_the_six_timed_re
     assert (_due(root) - _parse_utc(ledger["last_failed_at"])).total_seconds() == 3600
     assert retry.retry_delay(retry.OUTAGE, 7, deadline=False) is None
     assert retry.retry_delay(retry.OUTAGE, 7) == 3600
+
+
+def _deterministic(code="atlas_mesh_not_registered_to_splat"):
+    from blueprint_pipeline.deterministic_refusal import DeterministicRefusal
+
+    def run_e2e(**_):
+        refusal = DeterministicRefusal(code, step="atlas_mesh_registration",
+                                       inputs={"source_glb_sha256": "sha256:" + "1" * 64})
+        raise PipelineError(f"atlas: {code}") from refusal
+    return run_e2e
+
+
+def test_a_deterministic_refusal_is_not_retried_until_a_release_decides_its_step_differently(failed, monkeypatch):
+    from blueprint_pipeline import atlas_mesh_registration
+    root, raw, _ = failed
+    with pytest.raises(PipelineError):
+        listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai", run_e2e=_deterministic())
+    record = retry.armed(listener._read_job_ledger(root))
+    assert record["kind"] == retry.DETERMINISTIC and record["deterministic_refusal"]["step"] == "atlas_mesh_registration"
+    # Same inputs, same code: no run at any time, so nothing is bought or redone.
+    later = datetime.now(timezone.utc) + timedelta(days=30)
+    for days in (0, 1, 3, 30):
+        counts = _tick(root, lambda **_: pytest.fail("a deterministic refusal was re-run"), later + timedelta(days=days))
+        assert counts["redriven"] == 0 and counts["waiting"] == 1
+    # A release that changes how the step decides runs it once; refused again, it waits again.
+    monkeypatch.setattr(atlas_mesh_registration, "REGISTRATION_REVISION", "atlas_mesh_registration.r2")
+    runs = []
+
+    def again(**kwargs):
+        runs.append(kwargs)
+        return _deterministic()(**kwargs)
+    assert _tick(root, again, later)["redriven"] == 1 and len(runs) == 1
+    assert retry.armed(listener._read_job_ledger(root))["deterministic_refusal"]["revision"] == "atlas_mesh_registration.r2"
+    assert _tick(root, again, later + timedelta(days=2))["redriven"] == 0 and len(runs) == 1

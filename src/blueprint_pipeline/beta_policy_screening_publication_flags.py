@@ -14,7 +14,9 @@ Blueprint's own checks recorded, as typed codes only:
   that row at planning (``website_candidate_feasibility.scene_check``);
 - per campaign ``scene_feasibility``: ``clear``, ``flagged`` or ``unknown`` over
   its rows, with their flags. Unknown stays unknown: a plan that recorded no
-  verdict publishes ``unknown`` and no flag.
+  verdict publishes ``unknown`` and no flag. The plan's ``scene_estimate_flags``
+  join these flags (``scene_estimate:<kind>``, ``atlas_scene_estimates``): a value
+  the scene was built on that was estimated, not observed, flags the campaign.
 
 A list is present only when it has a code. Every code matches ``FLAG_CODE``; a
 value that does not is carried as ``UNTYPED``, so no message, path or measured
@@ -65,12 +67,18 @@ def row_flags(configured: Mapping[str, Any], summary: Mapping[str, Any]) -> dict
     return {key: value for key, value in flags.items() if value}
 
 
-def scene_feasibility(configured_rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """The campaign's free CPU scene verdict: flagged when any row is, clear when one cleared and none flagged."""
+def scene_feasibility(configured_rows: Iterable[Mapping[str, Any]], *, estimates: Any = None) -> dict[str, Any]:
+    """The campaign's scene verdict: flagged when any row is or the scene rests on an estimate, clear when one
+    row cleared and nothing is flagged.
+
+    ``estimates`` are the plan's ``scene_estimate_flags`` (``atlas_scene_estimates``): each names a value the
+    scene was built on that was estimated, not observed. A plan written without them publishes as before.
+    """
     verdicts = [scene_check(row) for row in configured_rows]
     statuses = {status for status, _ in verdicts}
-    return {"status": "flagged" if "flagged" in statuses else "clear" if "clear" in statuses else "unknown",
-            "flags": typed_flags({code for _, codes in verdicts for code in codes})}
+    flags = typed_flags({code for _, codes in verdicts for code in codes} | set(typed_flags(estimates)))
+    return {"status": "flagged" if "flagged" in statuses or flags else "clear" if "clear" in statuses else "unknown",
+            "flags": flags}
 
 
 def flags_valid(value: Any, *, empty: bool = False) -> bool:

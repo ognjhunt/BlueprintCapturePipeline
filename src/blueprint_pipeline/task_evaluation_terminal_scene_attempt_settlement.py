@@ -87,6 +87,11 @@ PROVEN_AUTHORING_SPEND_BASIS = "artisan_proven_authoring_with_native_allowance"
 PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS = "artisan_proven_authoring_without_allocation"
 # What ``_release_successor`` records under that basis, apart from an optional
 # ``preparation_failure``. It never records a ``reconciliation``.
+# A GPU run whose final Vast charge is known (``scene_attempt_measured_compute``)
+# keeps that charge instead of its GPU allowance, capped at the reservation.
+MEASURED_UNENTERED_BASIS = "native_billed_compute_with_unentered_authoring"
+MEASURED_PROVEN_AUTHORING_BASIS = "artisan_proven_authoring_with_billed_compute"
+MEASURED_COMPUTE_BASIS = "native_billed_compute_with_model_allowances"
 _PREPARATION_ONLY_LINEAGE_KEYS = frozenset({"attempt", "factory", "new_source_commit", "basis"})
 
 
@@ -332,17 +337,31 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                       and teardown.get("schema_version") == "vast_teardown_manifest.v1"
                       and teardown.get("status") == "completed"
                       and teardown.get("continuing_spend_from_this_run") is False)
+        billed = None
+        if native_run:
+            # Vast's own charge for the run's instances once it is final (owner decision
+            # 2026-11-10); a runtime estimate or a charge that may still post is not.
+            from .scene_attempt_measured_compute import final_billed_charge
+            billed = final_billed_charge(launch_receipt_path=Path(launch_ref["path"]), launch=launch,
+                                         teardown=teardown)
         if native_run and authoring_never_entered(result, request):
-            # Keep the entire native allowance; partial posted billing or a
-            # runtime estimate cannot establish a final provider charge.
+            # Keep the entire native allowance unless its final bill is known.
             bound = float(request["spend"]["provider_compute_spend_cap_usd"])
             if 0 <= bound <= hold["retained_spend_usd"]:
+                if billed is not None:
+                    return _billed_compute_hold(hold, Decimal(0), billed, MEASURED_UNENTERED_BASIS)
                 return {"basis": "native_allowance_with_unentered_authoring", "retained_spend_usd": bound,
                         "counts_as_attempt": hold["counts_as_attempt"]}
         if native_run:
             proof = artisan_proven_authoring_spend(result, request)
             if proof is not None:
-                return _proven_authoring_hold(hold, proof, request, compute_allocated=True)
+                return _proven_authoring_hold(hold, proof, request, compute_allocated=True, billed=billed)
+            if billed is not None:
+                # Every model allowance stays held; only the GPU allowance becomes its bill.
+                compute = Decimal(str(request["spend"]["provider_compute_spend_cap_usd"]))
+                others = Decimal(str(hold["retained_spend_usd"])) - compute
+                if others >= 0:
+                    return _billed_compute_hold(hold, others, billed, MEASURED_COMPUTE_BASIS)
             return hold
         if (result.get("schema_version") != "task_evaluation_scene_configuration_vast_result.v1"
                 or result.get("run_id") != request["run_id"]
@@ -393,14 +412,27 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
         return hold
 
 
+def _billed_compute_hold(hold: Mapping[str, Any], kept: Decimal, billed: Mapping[str, Any],
+                         basis: str) -> dict[str, Any]:
+    """``kept`` allowances plus the run's final Vast bill, never above the reservation."""
+    held = Decimal(str(hold["retained_spend_usd"]))
+    charge = Decimal(str(billed["billed_usd"]))
+    retained = min(held, (kept + charge).quantize(Decimal("0.000001"), rounding=ROUND_CEILING))
+    return {"basis": basis, "retained_spend_usd": float(retained), "counts_as_attempt": hold["counts_as_attempt"],
+            "evidence": {**billed, "billed_usd": float(charge), "kept_allowance_usd": float(kept)}}
+
+
 def _proven_authoring_hold(hold: Mapping[str, Any], proof: Mapping[str, Any],
-                           request: Mapping[str, Any], *, compute_allocated: bool) -> dict[str, Any]:
+                           request: Mapping[str, Any], *, compute_allocated: bool,
+                           billed: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The row's hold with its unspent authoring allowance released (B-04).
 
     Every other model allowance stays held. So does the whole GPU allowance of
-    a run that rented a GPU (a runtime estimate is not a Vast bill); a run whose
-    records prove no allocation (``compute_allocated`` false) releases it. The
-    figure is rounded up to the micro-dollar, so it never falls below the proof.
+    a run that rented a GPU (a runtime estimate is not a Vast bill) until its
+    final Vast charge is known (``billed``), which then replaces it, capped at
+    the reservation; a run whose records prove no allocation
+    (``compute_allocated`` false) releases it. The figure is rounded up to the
+    micro-dollar, so it never falls below the proof.
     """
     held = Decimal(str(hold["retained_spend_usd"]))
     compute = Decimal(str(request["spend"]["provider_compute_spend_cap_usd"]))
@@ -410,6 +442,11 @@ def _proven_authoring_hold(hold: Mapping[str, Any], proof: Mapping[str, Any],
     retained = (kept + proven).quantize(Decimal("0.000001"), rounding=ROUND_CEILING)
     if not (0 <= compute and 0 <= others and kept + proven <= retained <= held):
         return dict(hold)
+    if compute_allocated and billed is not None:
+        measured = _billed_compute_hold(hold, others + proven, billed, MEASURED_PROVEN_AUTHORING_BASIS)
+        measured["evidence"] = {**proof, **measured["evidence"], "compute_allowance_usd": float(compute),
+                                "compute_allowance_kept": False}
+        return measured
     return {"basis": PROVEN_AUTHORING_SPEND_BASIS if compute_allocated else PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS,
             "retained_spend_usd": float(retained), "counts_as_attempt": hold["counts_as_attempt"],
             "evidence": {**proof, "kept_allowance_usd": float(kept), "compute_allowance_usd": float(compute),

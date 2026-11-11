@@ -18,6 +18,7 @@ from .common import utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import _read_secret as _read_provider_secret
 from .openai_successor_models import OPENAI_IMAGE_MODEL
+from .paid_api_account_precheck import account_limit_blockers
 
 
 SCHEMA_VERSION = "hosted_image_generation_preflight.v1"
@@ -117,8 +118,11 @@ def materialize_hosted_image_generation_preflight(
         "size": SIZE,
         "quality": QUALITY,
     }
+    account_blockers = account_limit_blockers() if secret else []
     if not secret:
         blockers.append("hosted_image_generation_api_key_missing")
+    elif account_blockers:
+        blockers.extend(account_blockers)  # refused before the request: nothing sent or spent
     else:
         try:
             performed = True

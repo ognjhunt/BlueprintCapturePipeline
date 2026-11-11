@@ -8,7 +8,16 @@ stood on a slope. Compile, its support search and the simulator frame all take
 level surface of any built space (a floor, slab, deck, counter, bench or
 table: they are parallel) gives the up direction. The lowest such layer, with
 almost nothing below it and every camera standing above it, is the floor,
-declared at y = 0. A scene with no level surface (open terrain) waits for input.
+declared at y = 0.
+
+A scene where nothing observed gives the up direction (open terrain, a floor more than 3 degrees off
+the provider's +Y with no level surface agreeing) is levelled on the provider's +Y, unverified, and
+flagged (``LEVEL_ESTIMATE_FLAG``, with both observed tilt estimates). Before 2026-11-10 it waited for
+input with ``website_atlas_scene_level_unobserved``, and the same mesh and code refused it again on every
+timed retry (capture-5b067498, 2026-11-07). A splat with view-dependent colour is copied with its base
+colour only, since rotating higher-order terms is not implemented, and flagged
+(``APPEARANCE_ESTIMATE_FLAG``); it used to refuse with ``website_atlas_scene_level_splat_view_dependent``.
+A receipt written with either refusal is derived again: no other receipt changes.
 
 A single level plane holding a twentieth of the surface is the first test. A
 scene whose level surface is split across many parallel planes (an aisle's
@@ -37,6 +46,12 @@ from .local_reconstruction_adapters import _sha256_file
 #: v13 changes no levelling. It re-derives scenes whose route anchors were chosen under the old start rule
 #: (``website_locomotion_task.route_anchors``): a re-derive runs on a new levelling revision.
 REVISION = "atlas_world_levelling.v13"
+#: The flags a levelled copy carries when its up direction or appearance is an estimate.
+LEVEL_ESTIMATE_FLAG = "scene_estimate:level"
+APPEARANCE_ESTIMATE_FLAG = "scene_estimate:splat_view_dependence_dropped"
+#: Receipts of refusals this module no longer makes: derived again under the same binding.
+SUPERSEDED_REFUSALS = frozenset({"website_atlas_scene_level_unobserved",
+                                 "website_atlas_scene_level_splat_view_dependent"})
 #: Surfaces tilted further than this from the provider's +Y are not taken for
 #: gravity: compile's ground search bound, and walls stand at 90 degrees.
 MAX_TILT_DEGREES = 45.0
@@ -863,8 +878,8 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
                "meters_per_unit": float(meters_per_unit), "camera_centres": np.round(centres, 9).tolist()}
     root = output_root / canonical_digest(binding)[7:31]
     receipt_path = root / "levelling.json"
-    if receipt_path.is_file():
-        prior = json.loads(receipt_path.read_text())
+    prior = json.loads(receipt_path.read_text()) if receipt_path.is_file() else None
+    if prior is not None and not (prior.get("status") == "needs_input" and prior.get("reason") in SUPERSEDED_REFUSALS):
         if (prior.get("binding") != binding or prior.get("digest") != canonical_digest(prior, digest_field="digest")
                 or any(Path(row["path"]).parent != root or not Path(row["path"]).is_file()
                        or _sha256_file(Path(row["path"])) != row["sha256"] for row in prior.get("outputs", []))):
@@ -880,6 +895,8 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     sample = vertices[rng.choice(len(vertices), SAMPLE_CAP, replace=False)] if len(vertices) > SAMPLE_CAP else vertices
     search: dict[str, Any] = {"sampled_vertices": int(len(sample))}
     fallback: dict[str, Any] | None = None
+    level_estimate: dict[str, Any] | None = None
+    mode, fitted = None, []
     largest: list[np.ndarray] = []
     normal = _level_direction(sample, rng, search, largest) if len(sample) >= 3 else None
     basis = "single_level_plane"
@@ -895,7 +912,6 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
         # (a reconstructed world's shelves and floor need not be exactly parallel). Fit it on its own.
         mode = _normal_mode(*_face_normals_and_areas(vertices, faces)) if normal is None else None
         start = normal if normal is not None else mode
-        fitted: list[dict[str, Any]] = []
         floor = _band_floor(sample, start if start is not None else np.array([0.0, 1.0, 0.0]), search, fitted)
         camera_heights = _cameras_above(floor, centres * meters_per_unit)
         if camera_heights is None:
@@ -928,15 +944,34 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
                     fallback = {"basis": "flat_floor_at_uneven_band_median", "claim": "development_only_estimate",
                                 "up_estimates": estimates, "band_spread_m": candidate["band_spread_m"],
                                 "band_share": candidate["inlier_share"]}
+    if normal is None:
+        # Nothing observed levels the scene: the provider's +Y stands in, unverified and flagged, with
+        # what the search did find. A flat floor at the lowest band's median is declared only where the
+        # cameras stand above it as people do; otherwise no floor is declared.
+        estimates = {"floor_band_tilt_degrees": _tilt(fitted[0]["normal"]) if fitted else None,
+                     "face_normal_mode_tilt_degrees": _tilt(mode) if mode is not None else None}
+        normal, basis = np.array([0.0, 1.0, 0.0]), "provider_up_unverified"
+        candidate = _fallback_floor(sample)
+        heights = _cameras_above(candidate, centres * meters_per_unit)
+        if heights is not None:
+            floor, camera_heights = candidate, heights
+            fallback = {"basis": "flat_floor_at_uneven_band_median", "claim": "development_only_estimate",
+                        "up_estimates": estimates, "band_spread_m": candidate["band_spread_m"],
+                        "band_share": candidate["inlier_share"]}
+        level_estimate = {"code": LEVEL_ESTIMATE_FLAG, "basis": "provider_up_unverified",
+                          "reason": "website_atlas_scene_level_unobserved", "up_estimates": estimates,
+                          "floor_declared": floor is not None, "claim": "development_only_estimate"}
     value["level_search"] = search
-    splat = read_standard_3dgs_ply(splat_path) if normal is not None else None
-    if normal is None or splat.sh_rest is not None:
-        # Rotating view-dependent colour is not implemented; refuse rather than tilt it.
-        value.update(status="needs_input", reason="website_atlas_scene_level_unobserved" if normal is None
-                     else "website_atlas_scene_level_splat_view_dependent", outputs=[])
-        value["digest"] = canonical_digest(value, digest_field="digest")
-        write_json(receipt_path, value)
-        return value
+    splat = read_standard_3dgs_ply(splat_path)
+    appearance_estimate = None
+    if splat.sh_rest is not None:
+        # Rotating view-dependent colour is not implemented: the copy keeps the base colour only.
+        appearance_estimate = {"code": APPEARANCE_ESTIMATE_FLAG, "basis": "base_colour_only",
+                               "reason": "website_atlas_scene_level_splat_view_dependent",
+                               "dropped_coefficients_per_gaussian": int(np.asarray(splat.sh_rest).shape[1]),
+                               "claim": "development_only_estimate"}
+        splat = dataclasses.replace(splat, sh_rest=None, properties=tuple(
+            name for name in splat.properties if not name.startswith("f_rest_")))
     up = floor["normal"] if floor is not None else normal
     rotation = _rotation_to_up(up)
     transform = np.eye(4)
@@ -971,11 +1006,14 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     value.update(
         status="levelled", provider_to_levelled=transform.tolist(),
         tilt_degrees=math.degrees(math.acos(min(1.0, float(up[1])))),
-        up_basis=("fallback_fitted_floor" if fallback is not None else
+        up_basis=("provider_up_unverified" if level_estimate is not None else
+                  "fallback_fitted_floor" if fallback is not None else
                   "observed_floor" if floor is not None else "dominant_level_surface"),
         level_direction_basis=basis,
         **({"fallback_floor": fallback} if fallback is not None else {}),
         **({"walked_floor": walked} if walked is not None else {}),
+        **({"level_estimate": level_estimate} if level_estimate is not None else {}),
+        **({"appearance_estimate": appearance_estimate} if appearance_estimate is not None else {}),
         ground_plane_offset_m=0.0 if floor is not None else None,
         floor=None if floor is None else {
             "height_before_m": floor["height_m"], "inlier_share": floor["inlier_share"],

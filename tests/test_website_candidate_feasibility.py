@@ -536,9 +536,11 @@ def test_ranking_by_reach_makes_nothing_infeasible_or_unfunded_that_was_not():
         record = job_ceiling_record(ceiling_summary(remaining), local_holds_usd=Decimal(0), read_at=READ_AT)
         bounded = capture_447(learned=learned, ceiling=record, candidate_ids=every)
         fresh = capture_447(learned=learned, ceiling=record)
-        assert fresh["candidates"] == [row for row in bounded["candidates"]
-                                       if row.get("execution_evidence_kind") != "scripted_simulator_state_baseline"]
-        assert {row["status"] for row in fresh["candidates"]} == statuses - {"unavailable"}
+        from tests.test_beta_policy_screening_plan import candidate_rows
+
+        assert candidate_rows(fresh) == [row for row in bounded["candidates"]
+                                         if row.get("execution_evidence_kind") != "scripted_simulator_state_baseline"]
+        assert {row["status"] for row in candidate_rows(fresh)} == statuses - {"unavailable"}
         assert {row["status"] for row in bounded["candidates"]} == statuses
         assert {row["candidate_id"] for row in bounded["candidates"] if row["status"] == "unavailable"} == {
             row["candidate_id"] for row in bounded["candidates"]

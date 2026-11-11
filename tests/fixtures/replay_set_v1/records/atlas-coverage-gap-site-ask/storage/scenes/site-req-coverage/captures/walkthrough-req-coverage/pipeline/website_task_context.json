@@ -1,0 +1,1 @@
+{"schema_version": "website_site_task_context.v1", "request_id": "req-coverage", "scene_id": "site-req-coverage", "capture_id": "walkthrough-req-coverage", "purpose": "scene_preparation", "confirmed": false, "confirmed_at": null, "description": "Move the blue box to the tray", "context_digest": "sha256:324ea1064d85e5b0a31d2ccc5bc5a25172b860b4be0885681d1479e8492abc37"}

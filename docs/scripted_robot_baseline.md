@@ -89,3 +89,20 @@ consent, source revocation checks and site budget authority remain unchanged.
 The implementation tests use explicit development fixtures and fake physics
 to exercise transforms, measured TCP progression, motor mapping, independent
 scoring and sealed transport plumbing. They are not native GPU results.
+
+## Known-good control on a new website campaign (2026-11-10)
+
+Owner approval 2026-11-10: a new website campaign's plan lists this controller once more, after
+every candidate, as the campaign's known-good control
+(`beta_policy_screening_known_good_control`). It runs three nominal (canonical anchor) episodes in
+its own session, through the same harness and scorer, to show the simulated set-up can register a
+success; it never shows physical performance or safety. It is reference only: never a candidate,
+never part of the estimate, it never gates, never makes a candidate wait and never displaces one
+(it is planned only when every runnable candidate is funded and its cap still fits, and reserved
+through the unchanged reservation). Its outcome is the row's one set-up flag:
+`known_good_control_passed` (1 or more successes), `known_good_control_failed` (all three scored,
+none a success; the owner is paged once), `known_good_control_interrupted`, or
+`known_good_control_unavailable:<task_kind|embodiment|backend|budget>`; `known_good_control_pending`
+until it ends. A pass or fail is reused (`:reused`) for the same site, scene revision, task contract
+and harness revision. The controls-stage pause is unchanged. A plan made before this, a re-plan and
+a successor campaign carry no control.

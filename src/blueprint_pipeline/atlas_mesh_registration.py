@@ -4,10 +4,19 @@ The live splats2Mesh export is not in the frame of the cameras and splat it was
 given: its vertices match the splat only after a 180 degree rotation about X
 (an OpenCV-style Y-down world). It also closes unobserved regions with smooth
 sheets that no camera saw, which would become phantom collision walls. This
-stage measures which declared frame fits the splat, refuses a mesh that fits
-neither, keeps only faces near observed geometry, colours vertices from the
+stage measures which declared frame fits the splat, keeps only faces near observed geometry, colours vertices from the
 nearest observed Gaussian instead of the provider texture, and writes an
 untextured GLB in the Atlas world frame. Everything stays development_only.
+
+A mesh that fits no declared frame within the limit, or more than one, is not the end of the job
+(capture-5b067498, 2026-11-07, failed on ``atlas_mesh_not_registered_to_splat``). No collider aligned
+with the splat by construction exists at $0 today, so the frame whose median residual is smallest is
+taken and only the faces near observed geometry are kept: what stays lies on what the cameras saw.
+The record names the estimate (``registration_estimate``, with the residual and the limit), and the
+scene carries ``COLLIDER_ESTIMATE_FLAG``. A mesh whose estimated frame keeps no face near the splat
+still refuses with its own reason, as a ``DeterministicRefusal``: the same mesh, splat and
+code repeat it, so it is not re-run on a timer. A registered frame whose support or depth filter keeps
+no face keeps the registered faces before that filter instead, flagged (``support_estimate``).
 """
 
 from __future__ import annotations
@@ -25,6 +34,10 @@ from .gaussian_splat_decode import read_standard_3dgs_ply
 from .local_reconstruction_adapters import _sha256_file
 
 SCHEMA_VERSION = "atlas_mesh_registration.v2"
+#: The revision of how a mesh that fits no declared frame is refused (``deterministic_refusal``).
+REGISTRATION_REVISION = "atlas_mesh_registration.r1"
+#: The flag a collider carries when its frame or its faces are an estimate (``atlas_scene_estimates``).
+COLLIDER_ESTIMATE_FLAG = "scene_estimate:collider_registration"
 GLB_FRAMES = {"atlas_world": (1.0, 1.0, 1.0), "atlas_world_rotated_180_x": (1.0, -1.0, -1.0)}
 MAX_MEDIAN_RESIDUAL_VOXELS = 3.0
 SUPPORT_VOXELS = 4.0
@@ -204,6 +217,12 @@ def write_glb_triangles(path: Path, vertices: np.ndarray, faces: np.ndarray, col
     return path
 
 
+def _refusal(code: str, glb: Path, splat_manifest: Mapping[str, Any]) -> ValueError:
+    from .deterministic_refusal import DeterministicRefusal
+    return DeterministicRefusal(code, step="atlas_mesh_registration", inputs={
+        "source_glb_sha256": _sha256_file(glb), "splat_manifest_digest": str(splat_manifest.get("digest"))})
+
+
 def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
                         reference_frames: Sequence[Mapping[str, Any]] | None = None,
                         reference_pose_digest: str | None = None) -> dict[str, Any]:
@@ -258,6 +277,7 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
                              "source_supported_fraction": float(np.mean(source_distance <= limit))}
         if best <= limit:
             candidates.append(name)
+    registration_estimate = None
     if len(candidates) != 1:
         # Counts and distances only, so the refusal can be read without the mesh or the splat.
         failure = {"schema_version": "atlas_mesh_registration_failure.v1",
@@ -274,8 +294,22 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
         failure["digest"] = canonical_digest(failure, digest_field="digest")
         Path(output_root).mkdir(parents=True, exist_ok=True)
         (Path(output_root) / FAILURE_RECORD).write_text(json.dumps(failure, indent=2, sort_keys=True) + "\n")
-        raise ValueError(failure["reason"])
-    frame = candidates[0]
+        unbounded = {}
+        for name in (candidates or list(GLB_FRAMES)):
+            sign = np.array(GLB_FRAMES[name])
+            unbounded[name] = min(float(np.median(tree.query(sample * sign)[0])),
+                                  float(np.median(mesh_tree.query(source_sample * sign)[0])))
+        finite = {name: value for name, value in unbounded.items() if np.isfinite(value)}
+        if not finite:
+            raise _refusal(failure["reason"], glb, splat_manifest)
+        frame = min(finite, key=lambda name: (finite[name], name))
+        registration_estimate = {"code": COLLIDER_ESTIMATE_FLAG, "reason": failure["reason"], "glb_frame": frame,
+                                 "median_residual": finite[frame], "registration_distance_limit": limit,
+                                 "candidate_frames": sorted(candidates), "failure_record_digest": failure["digest"],
+                                 "basis": "smallest_median_residual_frame_supported_faces_only",
+                                 "claim": "development_only_estimate"}
+    else:
+        frame = candidates[0]
     del mesh_tree  # only the frame search reads it
     vertices = vertices * np.array(GLB_FRAMES[frame])
     support = max(SUPPORT_VOXELS * voxel, SUPPORT_MESH_EDGES * edge)
@@ -283,6 +317,7 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
     centroid_distance = per_face(faces, lambda tri: tree.query(
         tri.mean(axis=1), distance_upper_bound=np.nextafter(support, np.inf))[0])
     kept = faces[np.all(vertex_distance[faces] <= support, axis=1) & (centroid_distance <= support)]
+    supported = kept
     depth_filter = None
     if reference_frames is not None:
         mask, depth_filter = mesh_depth_free_space_filter(
@@ -290,8 +325,19 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
         depth_filter["reference_pose_digest"] = reference_pose_digest
         depth_filter["digest"] = canonical_digest(depth_filter, digest_field="digest")
         kept = kept[mask]
+    support_estimate = None
     if not len(kept):
-        raise ValueError("atlas_mesh_no_supported_faces")
+        if registration_estimate is not None:
+            # An estimated frame with nothing near observed geometry: no face of it can be trusted,
+            # and the mesh is as unregistered as it was.
+            raise _refusal(registration_estimate["reason"], glb, splat_manifest)
+        # A registered frame: its faces lie on the splat's frame. Keep those the support test kept,
+        # else every registered face, and say so.
+        kept = supported if len(supported) else faces
+        support_estimate = {"code": COLLIDER_ESTIMATE_FLAG, "reason": "atlas_mesh_no_supported_faces",
+                            "basis": ("support_filtered_faces_before_depth_filter" if len(supported)
+                                      else "every_registered_face"),
+                            "claim": "development_only_estimate"}
     used, remapped = np.unique(kept, return_inverse=True)
     nearest = vertex_nearest[used]
     colors = np.clip((0.5 + SH_C0 * splat.f_dc[nearest]) * 255.0, 0, 255).round()
@@ -317,6 +363,10 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
               "claim_scope": "development_only"}
     if depth_filter is not None:
         record["depth_free_space_filter"] = depth_filter
+    if registration_estimate is not None:
+        record["registration_estimate"] = registration_estimate
+    if support_estimate is not None:
+        record["support_estimate"] = support_estimate
     record["digest"] = canonical_digest(record, digest_field="digest")
     (output_root / "atlas_mesh_registration.json").write_text(json.dumps(record, indent=2) + "\n")
     return record

@@ -14,7 +14,10 @@ about ten minutes apart, then a dead-letter queue nothing reads. Now:
   job's deadline (the grant's expiry ends it as a delivery would, and
   ``end_expired_preparation`` ends a silent one); a failure nobody classified
   gets six timed retries (15 min to 24 h) and is then left as it is, so a
-  deterministic failure never occupies the serial listener for days.
+  deterministic failure never occupies the serial listener for days. A
+  ``DeterministicRefusal`` (``deterministic_refusal``: the same inputs and code
+  repeat it) gets no timed retry at all: it waits, and runs again once, only
+  when the running release decides its step differently.
 * An attempt whose process died holding its lease (an out-of-memory kill) is
   recorded as ``failed_retryable`` once its lease has expired and its process is
   provably gone, and is then retried the same way. A live lease is never touched.
@@ -65,7 +68,7 @@ _OPERATION = re.compile(r"website_control_[a-z0-9-]+_http_")
 _OUTAGE = re.compile(r"http_(?:429|5[0-9][0-9])(?![0-9])|timeout|timed out|connection|temporar|unavailable|quota"
                      r"|no space left|disk_budget|capacity_insufficient", re.IGNORECASE)
 _CHAIN_LIMIT = 16
-OUTAGE, REFUSAL = "outage", "refusal"
+OUTAGE, REFUSAL, DETERMINISTIC = "outage", "refusal", "deterministic"
 
 
 def classify(*texts: str) -> str:
@@ -90,6 +93,8 @@ def retry_delay(kind: str, failures: int, *, deadline: bool = True) -> int | Non
         return outage_retry_delay(failures)  # The job's deadline, not a count, ends these.
     if kind in (OUTAGE, MONEY, REFUSAL):
         return refusal_retry_delay(max(0, failures - 1))
+    if kind == DETERMINISTIC:
+        return 0  # Gated on its key (``deterministic_waiting``), never on a timer.
     return None
 
 
@@ -97,6 +102,13 @@ def has_deadline(capture_root: Path) -> bool:
     """Whether the job holds a grant, whose expiry is its deadline (``website_task_evidence``)."""
     from .website_preparation_terminal import GRANT_FILE
     return (Path(capture_root) / GRANT_FILE).is_file()
+
+
+def deterministic_waiting(record: Mapping[str, Any] | None) -> bool:
+    """A retry record of a deterministic refusal that the running release would decide the same way."""
+    from .deterministic_refusal import unchanged
+    return isinstance(record, Mapping) and record.get("kind") == DETERMINISTIC and unchanged(
+        record.get("deterministic_refusal"))
 
 
 def _now(now: datetime | None) -> datetime:
@@ -201,8 +213,12 @@ def failure_retry(*, exc: BaseException, capture_root: Path, payload_digest: str
                   owned_elsewhere: bool) -> dict[str, Any] | None:
     """The retry record for a failed attempt, or None when the host does not own its retry. Never raises."""
     try:
+        from .deterministic_refusal import find
         failures = max(1, consecutive_failures(history))
         kind = classify(*_texts(exc))
+        deterministic = find(exc) if kind == REFUSAL else None
+        if deterministic is not None:
+            kind = DETERMINISTIC
         delay = retry_delay(kind, failures, deadline=has_deadline(capture_root))
         if producer_delivery_key is None or owned_elsewhere or delay is None:
             return None
@@ -212,8 +228,9 @@ def failure_retry(*, exc: BaseException, capture_root: Path, payload_digest: str
             return None
         from .website_preparation_terminal import _parse_utc
         at = _parse_utc(failed_at) or _now(None)
-        return _record({"source_payload_sha256": payload_digest, "producer_delivery_key": producer_delivery_key},
-                       failures=failures, error=str(exc), due=at + timedelta(seconds=delay), kind=kind)
+        record = _record({"source_payload_sha256": payload_digest, "producer_delivery_key": producer_delivery_key},
+                         failures=failures, error=str(exc), due=at + timedelta(seconds=delay), kind=kind)
+        return record if deterministic is None else {**record, "deterministic_refusal": deterministic.record()}
     except Exception:  # noqa: BLE001 - the failure itself is recorded either way
         return None
 
@@ -494,7 +511,7 @@ def reconcile_preparation_retries(listener: Any, *, storage_root: Path, process_
                 counts["adopted"] += 1
                 ledger = committed
             when = _due(root, ledger, armed(ledger))
-            if when > current:
+            if when > current or deterministic_waiting(armed(ledger)):
                 counts["waiting"] += 1
             else:
                 due.append((when, "ledger", root))
