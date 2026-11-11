@@ -15,6 +15,11 @@ INTERFACE_FAILURE_REASONS = frozenset({"policy_service_did_not_answer", "policy_
 
 _POLICY_ERROR_PREFIXES = ("droid_https_policy_response_", "team_policy_https_response_",
                           "droid_https_policy_identity_mismatch")
+#: A session-served policy's server found gone before a try's first request (``session_policy_client``).
+SERVER_UNAVAILABLE = "session_policy_server_unavailable"
+SERVER_UNAVAILABLE_REASON = "policy_server_unavailable"
+#: The row flag that says why such tries were not counted (``not_counted_flags``).
+SERVER_LOST_FLAG = "session_policy_server_lost"
 
 
 def _scored(row: Mapping[str, Any]) -> bool | None:
@@ -62,7 +67,21 @@ def episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
         return "void", "episode_media_unavailable"
     if row.get("episode_failure_stage") == "after_first_observation":
         return "void", "simulator_failed_during_episode"
+    if str(episode_failure_fields(row).get("failure_code") or "").startswith(SERVER_UNAVAILABLE):
+        return "void", SERVER_UNAVAILABLE_REASON  # the policy's server was gone, not the simulator
     return "void", "simulator_failed_before_policy"
+
+
+def not_counted_flags(outcomes: Sequence[Mapping[str, Any]]) -> list[str]:
+    """A row's flag naming why tries were not counted, where its counts alone would not say it.
+
+    A session-served policy's server that stopped answering: the try it died serving is the policy's
+    failure, as the same crash is on the native path, and each later try finds nothing listening and is
+    void. The row still publishes its scored and void counts; this flag says the void ones were the
+    server's, so a one-try result reads as one try."""
+    return [SERVER_LOST_FLAG] if any(
+        isinstance(row, Mapping) and row.get("outcome") == "void" and row.get("reason") == SERVER_UNAVAILABLE_REASON
+        for row in outcomes) else []
 
 
 def failure_code(message: Any) -> str | None:

@@ -114,6 +114,9 @@ def start(*, spec: Mapping[str, Any], spec_path: Path, python: str, runtime: Pat
     factory = client_factory or session_policy_client
     started = monotonic()
     try:
+        # An identity record left by an earlier server on this output must never pass the readiness check:
+        # only the record the process started here writes may say it bound the port.
+        identity_out.unlink(missing_ok=True)
         with (output / f"adp009d_policy_server.{candidate}.log").open("wb") as log:
             process = popen(command, stdout=log, stderr=subprocess.STDOUT, env=child_env)
         receipt["server_pid"] = process.pid

@@ -48,7 +48,7 @@ import re
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from .team_policy_episode_outcome import episode_failure_fields, episode_outcome
+from .team_policy_episode_outcome import episode_failure_fields, episode_outcome, not_counted_flags
 from .policy_execution_evidence import (
     candidate_execution_kinds, evidence_kind, SCRIPTED, SCRIPTED_ACTION_SOURCE, scripted_episode_outcome,
 )
@@ -187,6 +187,9 @@ def _counted_summary(
         # Validated as typed codes by ``validate_session_result``; ledger only.
         **({"observation_quality_flags": list(result["observation_quality_flags"])}
            if result.get("observation_quality_flags") else {}),
+        # Why some tries were not counted, where the counts alone would not say (a session-served policy's
+        # server that stopped answering); published with the row's other run notes.
+        **({"setup_quality_flags": flags} if (flags := not_counted_flags(outcomes)) else {}),
         # How far a learned policy got, from the embedded episodes (``beta_policy_screening_progress``):
         # absent when nothing could be graded, so such a summary keeps its bytes.
         **(summary_progress(result, candidate=candidate, outcomes=outcomes) if kind != SCRIPTED else {}),

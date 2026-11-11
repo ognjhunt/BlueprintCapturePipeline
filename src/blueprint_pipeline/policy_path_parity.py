@@ -30,8 +30,13 @@ open-loop horizon and query limit, and the contract run's served runtime must
 wrap the native run's runtime identity (``run_identity``, read from each run's
 retained plan and its digest-bound policy spec). The native run must not have
 been served over the contract, and the contract run must have been; each try's
-runtime identity is checked against its run's. It reads retained files only:
-nothing is launched and nothing is spent.
+runtime identity is checked against its run's. The action-trace digest is
+never trusted on its own: each is taken again from the trace it covers, and an
+empty trace or a digest that does not match it is ``not_comparable``. Each
+request of the contract run must show, in its own transport evidence, that the
+session's server answered it (the contract's transport and the identity that
+server answers with on its loopback endpoint); otherwise ``not_comparable``. It
+reads retained files only: nothing is launched and nothing is spent.
 
 ``python -m blueprint_pipeline.policy_path_parity --native <result.json> --contract <result.json>
 --native-plan <plan.json> --contract-plan <plan.json> --native-candidate pi05_droid
@@ -97,15 +102,32 @@ def _numbers(value: Any) -> list[float] | None:
     return out
 
 
+def _trace(row: Mapping[str, Any]) -> Any:
+    """The action trace a try's ``returned_action_sequence_digest`` covers, as the run recorded it.
+
+    A finished try seals its commanded actions; a try that stopped seals the actions its queries returned
+    (``policy_canary_worker_evidence``)."""
+    episode = row.get("episode") if isinstance(row.get("episode"), Mapping) else {}
+    return episode.get("commanded_actions" if row.get("status") == "completed" else "candidate_policy_action_queries")
+
+
 def _actions(native: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
-    left = native.get("returned_action_sequence_digest")
-    right = contract.get("returned_action_sequence_digest")
-    if left is None or right is None:
+    """Compare the two traces, never the digest field alone: each digest is taken again from its trace."""
+    if native.get("returned_action_sequence_digest") is None or contract.get("returned_action_sequence_digest") is None:
         return {"compared": False, "reason": "action_trace_digest_missing"}
-    if left == right:
+    problems = []
+    for side, row in (("native", native), ("contract", contract)):
+        trace = _trace(row)
+        if not isinstance(trace, list) or not trace:
+            problems.append("action_trace_empty:" + side)
+        elif canonical_digest({"value": trace}) != row["returned_action_sequence_digest"]:
+            problems.append("action_trace_digest_mismatch:" + side)
+    if problems:
+        return {"compared": False, "reason": "action_trace_unproven", "problems": problems}
+    if native["returned_action_sequence_digest"] == contract["returned_action_sequence_digest"]:
         return {"compared": True, "identical": True}
     result: dict[str, Any] = {"compared": True, "identical": False}
-    sequences = [(row.get("episode") or {}).get("commanded_actions") for row in (native, contract)]
+    sequences = [_trace(row) for row in (native, contract)]
     if all(isinstance(value, list) for value in sequences):
         a, b = (_numbers(value) for value in sequences)
         if len(sequences[0]) != len(sequences[1]) or len(a) != len(b):
@@ -130,12 +152,20 @@ def run_identity(plan: Mapping[str, Any], candidate_id: str) -> dict[str, Any]:
         raise ValueError("policy_path_parity_policy_spec_unbound")
     spec = json.loads(raw)
     served = spec.get("session_policy_server") if is_session_served(spec) else None
+    served_identity = None
+    if served is not None:
+        # The identity the session's own server answers with, at an endpoint that must be its loopback.
+        from .droid_https_policy_client import _canonical
+        from .session_policy_client import LoopbackDroidPolicySpec
+
+        served_identity = _canonical(LoopbackDroidPolicySpec(**spec["policy_spec"]).expected_metadata())
     return {"implementation_commit": execution.get("implementation_commit"),
             "screening_harness_revision": plan_harness_revision(plan),
             "runtime_identity_digest": spec.get("runtime_identity_digest"),
             "native_runtime_identity_digest": (served or {}).get("native_runtime_identity_digest"),
             "checkpoint_digest": spec.get("checkpoint_digest"), "open_loop_horizon": spec.get("open_loop_horizon"),
-            "session_served": served is not None}
+            "session_served": served is not None,
+            **({"served_identity_sha256": served_identity} if served_identity is not None else {})}
 
 
 def _identity_reasons(native: Mapping[str, Any] | None, contract: Mapping[str, Any] | None) -> list[str]:
@@ -152,15 +182,47 @@ def _identity_reasons(native: Mapping[str, Any] | None, contract: Mapping[str, A
     if (native.get("runtime_identity_digest") is None
             or contract.get("native_runtime_identity_digest") != native["runtime_identity_digest"]):
         reasons.append("runtime_identity_differs")
+    if not contract.get("served_identity_sha256"):
+        reasons.append("contract_server_identity_missing")
     return reasons
+
+
+def _requests(row: Mapping[str, Any]) -> list[Any] | None:
+    """Each request's transport evidence for one try, or ``None`` when the try queried and kept none."""
+    episode = row.get("episode") if isinstance(row.get("episode"), Mapping) else {}
+    if row.get("status") == "completed":
+        queries = episode.get("queries")
+        evidence = [query.get("policy_inference_evidence") if isinstance(query, Mapping) else None
+                    for query in queries] if isinstance(queries, list) else []
+    else:
+        evidence = [row.get("policy_inference_evidence")] if row.get("policy_inference_evidence") is not None else []
+    queried = row.get("candidate_policy_queried") is True or bool(evidence)
+    return None if queried and not evidence else evidence
+
+
+def _transport_reasons(cell: str, contract: Mapping[str, Any], identity: Mapping[str, Any] | None) -> list[str]:
+    """The contract try's requests must each show they were answered by the session's own server."""
+    from .droid_https_policy_client import TRANSPORT
+
+    expected = (identity or {}).get("served_identity_sha256")
+    requests = _requests(contract)
+    if requests is None:
+        return ["contract_transport_evidence_missing:" + cell]
+    if any(not isinstance(item, Mapping) or item.get("transport") != TRANSPORT
+           or item.get("server_response_received") is not True or not expected
+           or item.get("server_identity_sha256") != expected for item in requests):
+        return ["contract_requests_not_from_session_server:" + cell]
+    return []
 
 
 def _evidence_reasons(cell: str, native: Mapping[str, Any], contract: Mapping[str, Any],
                       row: Mapping[str, Any], identities: Sequence[Mapping[str, Any] | None]) -> list[str]:
     """What this try lacks for a verdict to speak about it, or where its run's settings differ."""
-    reasons = []
-    if not row["actions"].get("compared"):
+    reasons = [f"{problem.rsplit(':', 1)[0]}:{cell}:{problem.rsplit(':', 1)[1]}"
+               for problem in row["actions"].get("problems") or []]
+    if not row["actions"].get("compared") and not reasons:
         reasons.append("action_trace_missing:" + cell)
+    reasons.extend(_transport_reasons(cell, contract, identities[1]))
     for side in ("native", "contract"):
         if row[side].get("not_graded"):
             reasons.append(f"not_graded:{cell}:{side}:{row[side]['not_graded']}")
