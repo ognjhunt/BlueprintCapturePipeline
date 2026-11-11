@@ -59,9 +59,24 @@ def test_the_dry_run_with_every_secret_plans_every_step_and_changes_nothing(tmp_
     result = _run("--root", str(host), "--secrets-from", str(secrets), "--work-volume-device", "/dev/disk/by-id/v")
     assert result.returncode == 0, result.stderr
     plans = [line for line in result.stdout.splitlines() if line.startswith("plan:")]
-    for needle in ("bootstrap_control_plane_host.sh", "mount_work_volume.sh", "control_plane_state_backup restore",
-                   "install_live_pipeline_control_plane.sh", "operator-door/install.sh", "systemctl enable --now"):
-        assert any(needle in line for line in plans), needle
+    order = ("bootstrap_control_plane_host.sh",
+             # The empty bulk roots first, so the volume script binds them, then the bind, then the proof.
+             "install -d -m 0750 -o blueprint -g blueprint " + str(host) + "/var/lib/blueprint/pubsub-handoffs",
+             "mount_work_volume.sh", "verify every bulk root is a mount point on the work volume",
+             "control_plane_state_backup restore", "install_live_pipeline_control_plane.sh",
+             "operator-door/install.sh",
+             # The release the units run from is published by the normal deploy tool before any unit starts.
+             "deploy_control_plane_commit.py", "systemctl enable --now")
+    positions = [next(index for index, line in enumerate(plans) if needle in line) for needle in order]
+    assert positions == sorted(positions), list(zip(order, positions))
+    deploy = next(line for line in plans if "deploy_control_plane_commit.py" in line)
+    assert f"--active-link {host}/opt/blueprint/task-evaluation-control-plane" in deploy
+    assert "--iteration --preserve-configured-controls-state" in deploy
+    roots = subprocess.run(["bash", str(REPO / "deploy/host/mount_work_volume.sh"), "--list-roots"],
+                           capture_output=True, text=True, check=True).stdout.split()
+    created = [line for line in plans if line.startswith("plan: install -d -m 0750 -o ") and "/etc/blueprint" not in line]
+    assert len(created) == len(roots) and all(any(line.endswith(str(host) + root) for line in created)
+                                              for root in roots)
     assert "rebuild planned" in result.stdout
     assert not host.exists()
 
@@ -97,3 +112,43 @@ def test_a_rebuild_without_the_work_volume_refuses(tmp_path):
     _supply(secrets, _names())
     result = _run("--root", str(tmp_path / "host"), "--secrets-from", str(secrets))
     assert result.returncode == 3 and "--work-volume-device is required" in result.stderr
+
+
+def _mountinfo(path: Path, host: Path, roots: list[str], *, device: str = "252:16") -> None:
+    lines = ["22 1 252:1 / / rw - ext4 /dev/vda1 rw",
+             f"30 22 {device} / {host}/mnt/blueprint-work rw - ext4 /dev/sda rw"]
+    lines += [f"{40 + index} 22 {device} /{root.lstrip('/')} {host}{root} rw - ext4 /dev/sda rw"
+              for index, root in enumerate(roots)]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _bulk_roots() -> list[str]:
+    return subprocess.run(["bash", str(REPO / "deploy/host/mount_work_volume.sh"), "--list-roots"],
+                          capture_output=True, text=True, check=True).stdout.split()
+
+
+def _verify(host: Path, mountinfo: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["bash", str(SCRIPT), "--root", str(host), "--verify-volume"], capture_output=True,
+                          text=True, timeout=60, env={"PATH": "/usr/bin:/bin", "BLUEPRINT_REBUILD_MOUNTINFO":
+                                                      str(mountinfo)})
+
+
+def test_the_rebuild_refuses_when_a_bulk_root_is_not_on_the_work_volume(tmp_path):
+    host, mountinfo = tmp_path / "host", tmp_path / "mountinfo"
+    roots = _bulk_roots()
+    _mountinfo(mountinfo, host, roots)
+    assert _verify(host, mountinfo).returncode == 0
+    # One root left on the root disk: named, and refused.
+    _mountinfo(mountinfo, host, [root for root in roots if root != "/var/lib/blueprint/pubsub-handoffs"])
+    result = _verify(host, mountinfo)
+    assert result.returncode == 4
+    assert "not bound to the work volume: /var/lib/blueprint/pubsub-handoffs" in result.stderr
+    # A root mounted from another device is not on the volume either.
+    lines = mountinfo.read_text().splitlines()
+    lines.append(f"99 22 252:1 /elsewhere {host}/var/lib/blueprint/pubsub-handoffs rw - ext4 /dev/vda1 rw")
+    mountinfo.write_text("\n".join(lines) + "\n")
+    assert _verify(host, mountinfo).returncode == 4
+    # No volume at all.
+    mountinfo.write_text("22 1 252:1 / / rw - ext4 /dev/vda1 rw\n")
+    result = _verify(host, mountinfo)
+    assert result.returncode == 4 and "is not mounted" in result.stderr

@@ -1204,10 +1204,24 @@ retires the hold. No operator step clears it.
 
 - It refuses and names every owner secret missing from
   `deploy/host/rebuild-owner-secrets.txt`, unless the owner waives one by name.
+- Before it binds the work volume, it creates each missing bulk root empty
+  (`mount_work_volume.sh --list-roots`; owner from `control_plane_storage_roots`, mode
+  0750, group `blueprint`). `mount_work_volume.sh` skips a root that does not exist,
+  so without this the volume would be mounted and nothing bound to it.
+- It then checks that every bulk root is a mount point on the work volume, and
+  refuses to restore or install anything until each one is
+  (`--verify-volume` runs that check alone).
 - It restores the standing approvals exactly as they were backed up.
-- It enables the units recorded in the backup.
-- The work-volume step reuses `deploy/host/mount_work_volume.sh`. That script has
-  not been run on a fresh, empty host (unknown).
+- It publishes the active release (`/opt/blueprint/task-evaluation-control-plane`)
+  by running the normal deploy tool, `scripts/deploy_control_plane_commit.py`, for
+  this checkout's commit, with the operator door's arguments (`--iteration
+  --preserve-configured-controls-state`). That tool also installs and arms the
+  deployed units.
+- Only after the release exists does it enable the units recorded in the backup.
+- None of this has been run on a fresh host (unproven): not the empty-root bind,
+  not the deploy tool on a host with no earlier release, and not
+  `mount_work_volume.sh` itself on a fresh, empty host. The volume step needs
+  `rsync` on the host; without it, the step refuses.
 
 **Owner steps** (none done; the repository states no price for the bucket):
 
