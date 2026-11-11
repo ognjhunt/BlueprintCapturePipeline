@@ -85,7 +85,10 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     )
     from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
     from .beta_policy_screening_scene_half import current_half
-    from .beta_policy_screening_tested_pairs import EVERY_PAIR_TESTED, finished_pair_keys
+    from .beta_policy_screening_tested_pairs import (
+        EVERY_PAIR_TESTED, every_pair_inputs_digest, every_pair_tested_recorded, excluded_pair_keys,
+        record_every_pair_tested,
+    )
     from .beta_policy_screening_team import catalog_for_profile
     from .rigid_robot_free_probe_runner import _running_release, source_commit
     from .task_evaluation_configured_controls_progression_worker import _validate_source
@@ -227,23 +230,35 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                         from .beta_policy_screening_default_priority import default_screening_priority
 
                         priority = default_screening_priority()
-                    inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
-                        source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
-                    # A new campaign (a catalog or registry change) plans only pairs the job has no finished
-                    # result for; with none, nothing is new and no campaign is made (plan 1.2).
-                    finished = finished_pair_keys(root, retained["scene_id"]) if superseded is None else None
-                    try:
-                        # The job's one dollar ceiling sizes the plan; unreadable, it holds and retries.
-                        plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id,
-                            queue_root=root, context=context, capture_root=capture,
-                            capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
-                            priority=inputs.get("candidate_priority"), candidate_ids=replan, superseding=superseded,
-                            intake_ranking=outcome["candidate_order"] == "intake_ranking", finished_pairs=finished)
-                    except ValueError as exc:
-                        if str(exc) != EVERY_PAIR_TESTED:
-                            raise
-                        plan = None
-                        outcome["status"] = "already_tested"
+                    # A new campaign (a catalog or registry change) plans only pairs the job has neither a
+                    # finished result for nor still queued or running (plan 1.2, the rule ``on_job`` uses); with
+                    # none, nothing is new and no campaign is made. That outcome is kept against what could
+                    # change it, so it is not planned again until one of them does. The consent read above
+                    # still runs on every pass first, so a withdrawal stops this job as before.
+                    finished = excluded_pair_keys(root, retained["scene_id"]) if superseded is None else None
+                    unchanged = None if finished is None else every_pair_inputs_digest(
+                        campaign_id=campaign_id, profile=profile, implementation_commit=implementation_commit(),
+                        excluded=finished)
+                    plan = None
+                    if unchanged is not None and every_pair_tested_recorded(root, campaign_id, unchanged):
+                        outcome["status"] = "already_tested"  # nothing it depends on changed since
+                    else:
+                        inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
+                            source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
+                        try:
+                            # The job's one dollar ceiling sizes the plan; unreadable, it holds and retries.
+                            plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id,
+                                queue_root=root, context=context, capture_root=capture,
+                                capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
+                                priority=inputs.get("candidate_priority"), candidate_ids=replan,
+                                superseding=superseded, finished_pairs=finished,
+                                intake_ranking=outcome["candidate_order"] == "intake_ranking")
+                        except ValueError as exc:
+                            if str(exc) != EVERY_PAIR_TESTED:
+                                raise
+                            outcome["status"] = "already_tested"
+                            if unchanged is not None:
+                                record_every_pair_tested(root, campaign_id, unchanged)
                     if plan is not None:
                         retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
                     if plan is not None and superseded is None:

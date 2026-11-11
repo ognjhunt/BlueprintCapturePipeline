@@ -5,8 +5,9 @@ money (the site's $30, ``SITE_LIMIT``, inside the job's one dollar ceiling) is p
 ends with the job's window. A later test of a newly released policy on a stored job is paid from this
 separate allowance instead:
 
-- **Per policy per job: ``POLICY_CAP_USD`` ($2.00, owner approval 2026-11-11).** What one candidate
-  may hold or spend on one job across every standing test, settled attempts at their settled cost.
+- **Per policy per job: ``POLICY_CAP_USD`` ($2.00, owner approval 2026-11-11).** What one policy (its
+  ``policy_identity``, under any candidate id) may hold or spend on one job across every standing test,
+  settled attempts at their settled cost.
   A run whose quote is above what is left is shortened to fit by the plan's own rule
   (``beta_policy_screening_plan.fit_run_to_cap``, the scripted reference row's rule), never raised.
 - **Monthly total across all jobs: required, unset by default.** The owner has not decided it. It is
@@ -174,26 +175,41 @@ def _row_usage(row: Mapping[str, Any], cap: Decimal) -> Decimal:
 
 
 def standing_usage(queue_root: str | Path | None, *, month: str) -> dict[str, Any]:
-    """What standing tests hold: ``month_usd`` for ``month`` and ``by_policy[(site_id, candidate_id)]``."""
+    """What standing tests hold: ``month_usd`` for ``month``, ``by_policy[(site_id, candidate_id)]`` and
+    ``rows``: each campaign row's ``(site_id, candidate_id, policy_identity, used)``. A row whose campaign
+    catalog was not kept has no identity (``None``) and is counted by its candidate id alone."""
     from .beta_policy_screening_coordinator import _ledger, _lock, _plan, _root
     from .beta_policy_screening_plan import money
+    from .beta_policy_screening_tested_pairs import campaign_catalog_rows, policy_identity
 
     root = _root(queue_root)
     with _lock(root):
         ledger = _ledger(root)
-    month_usd, by_policy = Decimal(0), {}
+    month_usd, by_policy, rows = Decimal(0), {}, []
     for campaign_id, state in ledger["campaigns"].items():
         if not is_standing(state):
             continue
         plan = _plan(root, campaign_id, state["plan_digest"])
+        catalog_rows = campaign_catalog_rows(root, plan)
         caps = {row["candidate_id"]: money(row["max_cost_usd"]) for row in plan["candidates"] if "max_cost_usd" in row}
         for candidate_id, row in state["candidates"].items():
             used = _row_usage(row, caps.get(candidate_id, Decimal(0)))
             key = (state["site_id"], candidate_id)
             by_policy[key] = by_policy.get(key, Decimal(0)) + used
+            source = catalog_rows.get(candidate_id)
+            rows.append((state["site_id"], candidate_id,
+                         None if source is None else policy_identity(source)["policy_identity"], used))
             if str(state["created_at"])[:7] == month:
                 month_usd += used
-    return {"month": month, "month_usd": month_usd, "by_policy": by_policy}
+    return {"month": month, "month_usd": month_usd, "by_policy": by_policy, "rows": rows}
+
+
+def policy_used(usage: Mapping[str, Any], *, site_id: str, candidate_id: str, identity: str) -> Decimal:
+    """What one policy holds on one job against ``POLICY_CAP_USD``: every standing row of the same policy
+    identity, under any candidate id, and every row under the same candidate id (so a row whose identity is
+    unknown is never left out). Each row counts once."""
+    return sum((used for row_site, row_candidate, row_identity, used in usage["rows"]
+                if row_site == site_id and (row_identity == identity or row_candidate == candidate_id)), Decimal(0))
 
 
 def _deferred(row: Mapping[str, Any], code: str) -> dict[str, Any]:
@@ -277,5 +293,5 @@ __all__ = ["ALLOWANCE_FILE_ENV", "ALLOWANCE_SCHEMA", "CANNOT_FIT", "DEFAULT_ALLO
            "MONTHLY_TOTAL_INSUFFICIENT", "MONTHLY_TOTAL_INVALID", "MONTHLY_TOTAL_UNSET", "NOT_ALLOWED",
            "PERMISSION_FIELD", "POLICY_CAP_DECISION", "POLICY_CAP_INSUFFICIENT", "POLICY_CAP_USD", "STANDING",
            "funding_fields", "is_standing", "month_of", "monthly_total_usd", "require_launch_authority",
-           "require_site_permission", "site_allows", "standing_deadline", "standing_plan", "standing_record",
+           "policy_used", "require_site_permission", "site_allows", "standing_deadline", "standing_plan", "standing_record",
            "standing_usage", "validate_standing_plan"]

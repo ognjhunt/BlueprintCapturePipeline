@@ -128,6 +128,28 @@ def launch_run_cold(request: Mapping[str, Any]) -> bool:
     return not launch.exists() and (launch.parent / f"{launch.name}{POINTER_SUFFIX}").exists()
 
 
+def current_consent(site_id: str, packet_request: Mapping[str, Any],
+                    capture: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The privacy stop every use of a stored job passes first: ``(source, context)``, or a typed refusal.
+
+    The site's withdrawal as ``_reserve`` reads it before any reservation (withdrawn or unreadable both
+    refuse), then consent, rights and the task as the WebApp has them now (the read every paid attempt
+    makes). Shared by this module and the launch-run restore, so neither can touch a withdrawn site's job."""
+    from .beta_policy_screening_worker import require_current_source
+    from .screening_site_withdrawal import site_withdrawal_state
+    from .team_scene_packet_worker import _read_json
+
+    withdrawal = site_withdrawal_state(site_id)
+    if withdrawal in {"withdrawn", "unknown"}:
+        raise JobTestRefused(SITE_WITHDRAWN if withdrawal == "withdrawn" else WITHDRAWAL_UNKNOWN)
+    retained = _read_json(capture / "pipeline" / "website_task_context.json") or {}
+    source = {"scene_intent_id": packet_request["intent_id"], "scene_intent_digest": packet_request["intent_digest"],
+              "capture_id": packet_request["capture_id"], "task_id": packet_request["task_id"],
+              "task_context_digest": retained.get("context_digest"),
+              "scene_revision_digest": packet_request["scene_revision_digest"]}
+    return source, require_current_source(source, site_id=site_id)
+
+
 def _receipt(root: Path, request_id: str, value: Mapping[str, Any]) -> dict[str, Any]:
     from .beta_policy_screening_coordinator import _write
 
@@ -169,9 +191,10 @@ def screen_policies_on_job(request: Mapping[str, Any], *, request_id: str, queue
 def _test(value: Mapping[str, Any], *, request_id: str, root: Path,
           packet_queue_root: str | Path | None) -> dict[str, Any]:
     from .beta_policy_screening_coordinator import _lock, _read, enqueue_screening_campaign
-    from .beta_policy_screening_tested_pairs import EVERY_PAIR_TESTED, record_tested_pairs, site_pairs
-    from .beta_policy_screening_worker import job_window_closed, require_current_source
-    from .screening_site_withdrawal import site_withdrawal_state
+    from .beta_policy_screening_tested_pairs import (
+        EVERY_PAIR_TESTED, planning_exclusions, policy_identity, record_tested_pairs, site_pairs,
+    )
+    from .beta_policy_screening_worker import job_window_closed
     from .team_scene_packet_worker import QUEUE_ROOT_ENV as PACKET_QUEUE_ENV
 
     site_id, funding = value["site_id"], value["funding"]
@@ -181,18 +204,7 @@ def _test(value: Mapping[str, Any], *, request_id: str, root: Path,
     packet_request, capture = job_source(Path(raw), site_id)
     if launch_run_cold(packet_request):
         raise JobTestRefused(LAUNCH_RUN_OFFLOADED, restore_operation=RESTORE_LAUNCH_RUN)
-    withdrawal = site_withdrawal_state(site_id)
-    if withdrawal in {"withdrawn", "unknown"}:  # as ``_reserve`` reads it before any reservation
-        raise JobTestRefused(SITE_WITHDRAWN if withdrawal == "withdrawn" else WITHDRAWAL_UNKNOWN)
-    from .team_scene_packet_worker import _read_json
-
-    retained = _read_json(capture / "pipeline" / "website_task_context.json") or {}
-    source = {"scene_intent_id": packet_request["intent_id"], "scene_intent_digest": packet_request["intent_digest"],
-              "capture_id": packet_request["capture_id"], "task_id": packet_request["task_id"],
-              "task_context_digest": retained.get("context_digest"),
-              "scene_revision_digest": packet_request["scene_revision_digest"]}
-    # Consent, rights and the task as the WebApp has them now (the read every paid attempt makes).
-    context = require_current_source(source, site_id=site_id)
+    source, context = current_consent(site_id, packet_request, capture)
     month = None
     if funding == SITE_ALLOWANCE:
         if job_window_closed(context):
@@ -228,7 +240,9 @@ def _test(value: Mapping[str, Any], *, request_id: str, root: Path,
         return {"campaign_id": campaign_id, **enqueue_screening_campaign(_read(existing), queue_root=root),
                 "funding": funding}
     pairs = site_pairs(root, site_id)
-    known = {**pairs["in_flight"], **pairs["finished"]}
+    # The rule the worker's re-plan uses too: never a pair already finished, queued or running.
+    known = planning_exclusions(pairs)
+    identities = {row["candidate_id"]: policy_identity(row)["policy_identity"] for row in catalog["candidates"]}
     from .beta_policy_screening_capabilities import build_planning_inputs
     from .website_candidate_ranking import retained_priority
 
@@ -242,7 +256,7 @@ def _test(value: Mapping[str, Any], *, request_id: str, root: Path,
                                    inputs_dir=root / "inputs" / campaign_id, priority=priority)
     options = {"capabilities": inputs["capabilities"], "cost_quotes": inputs["cost_quotes"],
                "priority": inputs.get("candidate_priority"), "candidate_ids": list(value["candidate_ids"]),
-               "intake_ranking": intake_ranking, "finished_pairs": frozenset(known)}
+               "intake_ranking": intake_ranking, "finished_pairs": known}
 
     def skipped(plan: Mapping[str, Any] | None) -> dict[str, list[str]]:
         planned = {row["candidate_id"] for row in plan["candidates"]} if plan else set()
@@ -250,7 +264,8 @@ def _test(value: Mapping[str, Any], *, request_id: str, root: Path,
         for candidate_id in value["candidate_ids"]:
             if candidate_id in planned:
                 continue
-            done = any(entry["candidate_id"] == candidate_id for entry in pairs["finished"].values())
+            done = any(entry["candidate_id"] == candidate_id or entry["policy_identity"] == identities[candidate_id]
+                       for entry in pairs["finished"].values())
             rows["already_tested" if done else "in_progress"].append(candidate_id)
         return {key: ids for key, ids in rows.items() if ids}
 
@@ -267,7 +282,7 @@ def _test(value: Mapping[str, Any], *, request_id: str, root: Path,
                 plan = _standing(catalog, inputs["scene"], campaign_id=campaign_id, root=root, month=month,
                                  request_id=request_id, reference=value["authorization_reference"],
                                  site_id=site_id, options=options, budget=SITE_BUDGET_USD,
-                                 build=build_screening_plan)
+                                 build=build_screening_plan, identities=identities)
         except BetaPolicyScreeningPlanError as exc:
             if str(exc) == EVERY_PAIR_TESTED:
                 raise JobTestRefused(ALREADY_TESTED, skipped=skipped(None)) from None
@@ -293,16 +308,20 @@ def _test(value: Mapping[str, Any], *, request_id: str, root: Path,
 
 def _standing(catalog: Mapping[str, Any], scene: Mapping[str, Any], *, campaign_id: str, root: Path, month: str,
               request_id: str, reference: str, site_id: str, options: Mapping[str, Any], budget: Decimal,
-              build: Any) -> dict[str, Any]:
-    """The limited plan, funded from the standing allowance (caller holds the standing lock)."""
+              build: Any, identities: Mapping[str, str]) -> dict[str, Any]:
+    """The limited plan, funded from the standing allowance (caller holds the standing lock).
+
+    The $2 cap is per policy per job: one policy identity (``policy_identity``), whatever candidate id it was
+    entered under, so the same checkpoint entered again never gets a second $2."""
     from .beta_policy_screening_standing_test import (
-        POLICY_CAP_USD, monthly_total_usd, standing_plan, standing_record, standing_usage,
+        POLICY_CAP_USD, monthly_total_usd, policy_used, standing_plan, standing_record, standing_usage,
     )
 
     total = monthly_total_usd(month=month)
     usage = standing_usage(root, month=month)
     plan = build(catalog, scene, campaign_id=campaign_id, budget_usd=f"{budget:.2f}", website=True, **options)
-    policy_left = {candidate_id: max(Decimal(0), POLICY_CAP_USD - usage["by_policy"].get((site_id, candidate_id), 0))
+    policy_left = {candidate_id: max(Decimal(0), POLICY_CAP_USD - policy_used(
+                       usage, site_id=site_id, candidate_id=candidate_id, identity=identities[candidate_id]))
                    for candidate_id in options["candidate_ids"]}
     return standing_plan(plan, policy_left=policy_left, month_left=max(Decimal(0), total - usage["month_usd"]),
                          record=standing_record(monthly_total=total, month=month, request_id=request_id,

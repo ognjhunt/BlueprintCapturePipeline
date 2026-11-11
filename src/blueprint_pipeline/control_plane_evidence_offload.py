@@ -184,9 +184,14 @@ def build_evidence_offload_manifest(
             if _has_result_registry(child):
                 retain("result_registry", "active_or_unsealed", walked_bytes(walk, child))
                 continue
+            archived = None
             if (root / f"{child.name}{POINTER_SUFFIX}").exists():
-                retain("already_offloaded", "already_offloaded", walked_bytes(walk, child))
-                continue
+                # A run restored beside its pointer is an ordinary tree again: once its hot window has
+                # passed it is removed again, with no second upload, while it still is the archive's copy.
+                archived = _archived_copy(child, root / f"{child.name}{POINTER_SUFFIX}")
+                if archived is None:
+                    retain("already_offloaded", "already_offloaded", walked_bytes(walk, child))
+                    continue
             receipt = _terminal_receipt(child)
             protection = protected_by(child)
             if protection is not None:
@@ -213,6 +218,7 @@ def build_evidence_offload_manifest(
                     "size_bytes": size,
                     "file_count": count,
                     "idle_seconds": int(observed_at - latest),
+                    **({"archived_pointer_digest": archived} if archived is not None else {}),
                 }
             )
     manifest: dict[str, Any] = {
@@ -450,6 +456,43 @@ def publish_archive(
             archive.unlink(missing_ok=True)
 
 
+def _sealed_pointer(pointer_path: Path, name: str) -> dict[str, Any] | None:
+    """The run's own offload pointer, sealed and naming this directory, or ``None``."""
+    try:
+        if pointer_path.is_symlink() or not pointer_path.is_file():
+            return None
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(pointer, dict) or pointer.get("schema_version") != POINTER_SCHEMA_VERSION
+            or pointer.get("status") != "offloaded" or pointer.get("directory") != name
+            or not isinstance(pointer.get("members"), list)
+            or pointer.get("pointer_digest") != canonical_digest(pointer, digest_field="pointer_digest")):
+        return None
+    return pointer
+
+
+def _archived_copy(directory: Path, pointer_path: Path) -> str | None:
+    """The pointer's digest when ``directory`` holds exactly its archived files (by path and size), else ``None``.
+
+    A cheap listing for the dry run; the bytes are hashed again (``_members_unchanged``) before removal."""
+    pointer = _sealed_pointer(pointer_path, directory.name)
+    if pointer is None:
+        return None
+    try:
+        expected = {row["relative_path"]: row["size_bytes"] for row in pointer["members"]}
+        actual = {}
+        for root, directories, files in os.walk(directory):
+            if any((Path(root) / name).is_symlink() for name in (*directories, *files)):
+                return None
+            for name in files:
+                path = Path(root) / name
+                actual[path.relative_to(directory).as_posix()] = path.stat().st_size
+    except (OSError, KeyError, TypeError):
+        return None
+    return pointer["pointer_digest"] if actual == expected and len(expected) == len(pointer["members"]) else None
+
+
 def _members_unchanged(directory: Path, members: Sequence[Mapping[str, Any]]) -> bool:
     """Reopen exact packed bytes immediately before local eviction."""
     try:
@@ -532,18 +575,36 @@ def apply_evidence_offload(
         name = str(row.get("name") or "")
         directory = root / name
         pointer = root / f"{name}{POINTER_SUFFIX}"
+        archived = row.get("archived_pointer_digest")
         if (
             not name
             or "/" in name
             or name.startswith(".")
             or directory.is_symlink()
             or not directory.is_dir()
-            or pointer.exists()
+            or pointer.exists() != (archived is not None)
             or _has_result_registry(directory)
             or not _candidate_still_sealed(directory, row, abandoned_after, now)
             or (protection_checker is not None and protection_checker(directory))
         ):
             skipped.append({"name": name, "reason": "candidate_changed"})
+            continue
+        if archived is not None:
+            # A restored run: its archive and pointer already stand, so only the local copy goes, and only
+            # while every byte is still the archive's.
+            recorded = _sealed_pointer(pointer, name)
+            if (recorded is None or recorded["pointer_digest"] != archived
+                    or not _members_unchanged(directory, recorded["members"])):
+                skipped.append({"name": name, "reason": "restored_tree_changed"})
+                continue
+            try:
+                shutil.rmtree(directory)
+            except OSError as exc:
+                skipped.append({"name": name, "reason": f"offload_failed:{type(exc).__name__}"})
+                continue
+            offloaded.append({"name": name, "uri": recorded["uri"], "digest": recorded["digest"],
+                              "size_bytes": int(row.get("size_bytes") or 0), "transfer_mode": "already_archived",
+                              "local_archive_bytes": 0})
             continue
         reservation = None
         try:

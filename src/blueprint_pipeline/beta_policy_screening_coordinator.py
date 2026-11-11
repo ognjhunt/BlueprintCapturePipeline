@@ -1230,15 +1230,13 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
 
 
 def _refill_waitlist(root: Path) -> int:
-    """Fund waitlisted candidates from money released before spend.
+    """Fund waitlisted candidates from money released before spend; returns the number of rows changed.
 
-    Plan order decides who is funded first. A row is funded only if its whole
-    cap fits under both the site allowance and its plan's budget, after every
-    reservation, commitment and already pending (funded, unreserved) row. Once
-    the site holds no reservation and no pending row, nothing can release money
-    any more: every row that still does not fit closes as ``deferred``.
-    Returns the number of rows changed.
-    """
+    Plan order decides who is funded first. A row is funded only if its whole cap fits under both the site
+    allowance and its plan's budget, after every reservation, commitment and already pending (funded,
+    unreserved) row. A standing test's rows never count against or draw on the site allowance, pending or
+    not: only its own plan's budget. Once nothing can release money any more (no reservation and no
+    pending row), every row that still does not fit closes as ``deferred``."""
     changed = 0
     with _lock(root):
         ledger = _ledger(root)
@@ -1269,15 +1267,17 @@ def _refill_waitlist(root: Path) -> int:
                          key=lambda key: (campaigns[key]["created_at"], key))
             site = _budget(ledger, site_id)
             pending = {key: pending_caps(key) for key in ids}
-            site_used = _amount(site["committed_upper_bound_usd"]) + sum(pending.values(), Decimal(0))
-            in_flight = _amount(site["reserved_usd"]) > 0 or any(pending.values())
+            site_pending = [value for key, value in pending.items() if not is_standing(campaigns[key])]
+            site_used = _amount(site["committed_upper_bound_usd"]) + sum(site_pending, Decimal(0))
+            site_in_flight = _amount(site["reserved_usd"]) > 0 or any(site_pending)
             for campaign_id in ids:
                 state = campaigns[campaign_id]
                 if not any(row["status"] == "waitlisted" for row in state["candidates"].values()):
                     continue
-                plan = plan_for(campaign_id)
-                campaign_used = (_amount(_budget(ledger, site_id, campaign_id=campaign_id)["committed_upper_bound_usd"])
-                                 + pending[campaign_id])
+                plan, standing = plan_for(campaign_id), is_standing(state)
+                held = _budget(ledger, site_id, campaign_id=campaign_id)
+                campaign_used = _amount(held["committed_upper_bound_usd"]) + pending[campaign_id]
+                in_flight = (_amount(held["reserved_usd"]) > 0 or pending[campaign_id] > 0) if standing else site_in_flight
                 touched = False
                 for candidate in plan["candidates"]:
                     row = state["candidates"][candidate["candidate_id"]]
@@ -1289,11 +1289,12 @@ def _refill_waitlist(root: Path) -> int:
                         row.update(status="deferred", blockers=[BUDGET_EXHAUSTED_BLOCKER])
                     elif not _quote_current(candidate):
                         row.update(status="deferred", blockers=[QUOTE_EXPIRED_BLOCKER])
-                    elif site_used + cap <= SITE_LIMIT and campaign_used + cap <= _amount(plan["budget_usd"]):
+                    elif (standing or site_used + cap <= SITE_LIMIT) and campaign_used + cap <= _amount(plan["budget_usd"]):
                         row.update(status="pending", blockers=[])
-                        site_used += cap
+                        site_used += 0 if standing else cap
                         campaign_used += cap
                         in_flight = True
+                        site_in_flight = site_in_flight or not standing
                     elif not in_flight:
                         row.update(status="deferred", blockers=[BUDGET_EXHAUSTED_BLOCKER])
                     else:

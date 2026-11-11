@@ -607,8 +607,9 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                          finished_pairs: Collection[str] | None = None) -> dict[str, Any]:
     """Every requested candidate gets a status and reason; the budget decides how many run.
 
-    ``finished_pairs``: the job's pairs that already hold a finished scored result
-    (``beta_policy_screening_tested_pairs``). A runnable row whose pair is among them is left out
+    ``finished_pairs``: the job's pairs that already hold a finished scored result, or are still queued
+    or running (``beta_policy_screening_tested_pairs.planning_exclusions``; a pair matches by its
+    policy-identity key or its old key). A runnable row whose pair is among them is left out
     of the plan, so it is never quoted or paid for again; every other row is planned exactly as
     without it, so a job with no earlier result gets the same bytes. When every requested row is
     left out that way, nothing is new and the plan is refused with ``EVERY_PAIR_TESTED``.
@@ -755,12 +756,11 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             candidates.append(row)
             continue
         if finished_pairs:
-            from .beta_policy_screening_tested_pairs import pair_key
+            from .beta_policy_screening_tested_pairs import candidate_keys
 
-            if pair_key(candidate_id=candidate_id, configuration_digest=candidate["configuration_digest"],
-                        scene_revision_digest=scene["scene_revision_digest"],
-                        harness_revision=SCREENING_HARNESS_REVISION,
-                        cells=g1_cells(cells, dropped) if g1_row else cells) in finished_pairs:
+            if candidate_keys(candidate, scene_revision_digest=scene["scene_revision_digest"],
+                              harness_revision=SCREENING_HARNESS_REVISION,
+                              cells=g1_cells(cells, dropped) if g1_row else cells) & set(finished_pairs):
                 already_tested += 1
                 continue
         maximum = money(quote["maximum_cost_usd"])
