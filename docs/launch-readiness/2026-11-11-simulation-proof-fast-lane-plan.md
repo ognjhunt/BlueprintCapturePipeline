@@ -300,7 +300,9 @@ does not fit, it ends as `known_good_control_unavailable:budget`. Once
 reserved, its money counts against the site limit like any row's. What this
 costs: if a later deploy plans the policies that were closed for money again in
 a new campaign, the site has less left for them by what the check actually
-spent, at most $3.00. A re-plan or a successor campaign carries no reference
+spent, at most $3.00, and that re-plan waits while the check is running (its
+time limit is 3.25 hours; longer only if its run needs reconciling, as for any
+row). A re-plan or a successor campaign carries no reference
 row, so a job whose first campaign did not finish cleanly for any other reason
 gets no check.
 The publication carries the check's outcome flag and its
