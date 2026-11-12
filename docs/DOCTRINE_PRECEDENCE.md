@@ -9,14 +9,14 @@ to *read* conflicts; it is not a license to ignore doctrine.
 
 ## Active Programs
 
-The owner decision of 2026-10-21 updates the free beta to a job-first
-automation service alongside Arm Decision Proof v1. It supersedes mandatory
-simulation, invited-team evaluation and one-click booking. Assessment requires
-retained job video (owner correction, 2026-10-21). Pipeline owns scientific
-results and authoritative Physical Outcome Joins; WebApp owns briefs, proposals,
-selection, agreement records and separately permitted reported outcomes.
-`doctrine/` is the canonical source synchronized across all three repos. The
-historical identifier `free-beta-evaluated-pilot` remains readable.
+The owner direction of 2026-11-12 makes the free beta's job packet the
+product, alongside Arm Decision Proof v1; it replaces every earlier frame. The
+shared block of `../PLATFORM_CONTEXT.md` states it. The Pipeline is the packet
+factory (the simulation of the site, the success rule and the early trial);
+WebApp owns the site side (the job page, the first look, the site's
+permissions and the responses of deployment companies). `doctrine/` is the
+canonical source synchronized across all three repos. The historical
+identifier `free-beta-evaluated-pilot` remains readable.
 
 For Arm Decision Proof,
 [`arm_decision_proof_v1/north_star_contract.json`](arm_decision_proof_v1/north_star_contract.json)
@@ -40,10 +40,13 @@ not wait for a completed proof. The explicit 2026-10-27 owner request
 authorizes beta task-coverage implementation, including deformables and
 humanoids; do not reapply an older focus-decision or program-freeze requirement
 to that work. `AGENTS.md` holds the current rule text. ADP's proof scope remains.
+Under the 2026-11-12 direction, hardening the automatic test for any kind of
+job, for several objects or for unattended scale, and standing re-tests of
+every robot on every open job, are paused: start no new work on them.
 
 Other documents remain useful as stable dependency contracts, compatibility
 instructions, or historical evidence. Their existence does not make their lane
-active. An agent must name the beta journey step, or the Arm Decision Proof item
+active. An agent must name the job-packet step, or the Arm Decision Proof item
 and gate, that a legacy document directly unblocks before using it as
 implementation direction.
 
@@ -73,9 +76,8 @@ Highest authority first:
 
 1. Current explicit owner direction and the shared active-program doctrine.
    For Arm Decision Proof work, its frozen north-star contract and backlog
-   still govern the scientific proof; the commercial journey does not widen it.
-2. The Practical Rule For Agents and product doctrine in
-   [`../PLATFORM_CONTEXT.md`](../PLATFORM_CONTEXT.md).
+   still govern the scientific proof; the job packet does not widen it.
+2. The shared block of [`../PLATFORM_CONTEXT.md`](../PLATFORM_CONTEXT.md).
 3. The strategy and build priorities in
    [`../WORLD_MODEL_STRATEGY_CONTEXT.md`](../WORLD_MODEL_STRATEGY_CONTEXT.md).
 4. [`../VISION.md`](../VISION.md) as bounded conditional direction.

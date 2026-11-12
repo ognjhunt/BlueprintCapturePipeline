@@ -1,6 +1,7 @@
 # Beta L5: retained site-task simulation qualification
 
-The beta recommendation needs a simulator score on the site's measured task.
+An early-trial result in the job packet needs a simulator score on the site's
+measured task.
 The existing scored team path remains diagnostic unless the operator registry
 pins an evidence-consuming qualification and the WebApp freezes that exact
 receipt in its execution admission. No numeric result, boolean, caller-supplied

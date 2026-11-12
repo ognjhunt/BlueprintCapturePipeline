@@ -1,3 +1,5 @@
+> **Superseded 2026-11-12.** This describes an earlier frame, which the owner replaced. Current frame: the shared block of PLATFORM_CONTEXT.md.
+
 # Invited-beta readiness plan (2026-11-09)
 
 This plan turns the exit criteria of the 2026-11-09 goal brief

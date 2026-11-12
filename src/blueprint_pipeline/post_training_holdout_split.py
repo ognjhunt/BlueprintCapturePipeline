@@ -1,6 +1,7 @@
 """Frozen held-out splits for Post-Training Data Packages.
 
-Blueprint sells captured clips as training data. Nothing in the package told a
+This serves the Post-Training Data Package of an earlier frame, which sold
+captured clips as training data. Nothing in the package told a
 buyer which clips to keep out of training, and nothing stopped their evaluation
 set from overlapping the clips they had just been sold. A model evaluated on its
 own training data reports a number that means nothing, and the buyer has no way

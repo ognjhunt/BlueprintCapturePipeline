@@ -10,50 +10,98 @@ file. It covers the free beta and Arm Decision Proof v1.
 Owner direction, 2026-10-28: simplify. This short block replaces the earlier
 long doctrine; git history keeps the old text for reference only.
 
-Owner direction, 2026-11-11: the site gets one answer, and the answer becomes a
-deployment opportunity. Later the same day the owner settled what the answer
-is: the result of Blueprint's own simulation test of AI robots on the site's
-job. The 2026-10-28 direction stands except where this changes it.
+Owner direction, 2026-11-12: the job packet is the product. It replaces the
+direction of 2026-11-11 about what the site's answer is. Where any other
+document disagrees with this block, this block is right and the other document
+is out of date.
 
 ### What Blueprint Does
 
-A site sends a video of one recurring job. Blueprint reads the video, turns it
-into a simulation of that site, and runs the top AI robots on the job in it
-itself. An AI robot here is a robot together with the learned, camera-driven
-software that controls it. Each gets about ten tries, with the set-up varied
-between tries. The site's answer is which did best and how far that result can
-be trusted. A pre-programmed (scripted) motion is never one of the contenders;
-Blueprint uses one only to check its own simulation.
+A site films one recurring job once. Blueprint turns the video into a **job
+packet** that any robot deployment company can evaluate without visiting,
+sends it to deployment companies Blueprint has approved, and tells the site
+who will take the job and on what evidence.
 
-Before a test result exists, and when no test can run, the answer is the first
-look on paper: real robot models checked against the job by their published
-specifications, with the robot that most likely fits, a runner-up, what was
-ruled out and why, who already uses those robots for work like it, and how sure
-Blueprint is. The paper check also decides what is worth entering in the test.
+Our edge is the site side: real jobs arriving as videos. The reconstruction
+and simulation technology and the openly available robot software are not our
+edge; others have them. The simulation is how a job becomes testable without a
+visit. It is a means, not the product.
 
-The site can then share an anonymised job card, with the answer, with
-deployment companies Blueprint has approved. Blueprint works alongside the
-company that takes the job on; the site and that company agree any pilot
-directly. Blueprint does not rely on robot teams to run evaluations; a
-technology provider supplies access or an integration only when Blueprint
-cannot run a policy itself.
+Who it is for:
 
-The journey is four steps:
+- **The site** is the user and pays nothing. It sends one video and gets a
+  first look on paper, a simulation of its site with the job in it, and the
+  responses of deployment companies: who will take the job, who will not, and
+  why.
+- **The deployment company** is the customer. It gets qualified jobs it would
+  not otherwise see, in one format, with a simulation attached, so it can
+  decide without a site visit. How deployment companies pay (per introduction,
+  or a fee on a signed deal) is not decided. No price is stated anywhere.
+- Later, and only if they show they want it: large multi-site buyers (an
+  independent comparison across deployment companies) and robot-software
+  makers (real commercial jobs to test against, only with the sites' rights).
 
-1. Email and video of the job. Blueprint drafts the brief from the video; the
-   site corrects it if needed.
-2. A first look on paper, as soon as the video is read: a fit check against
-   published specifications and a cited track record. It never waits on the
-   simulation.
-3. The simulation test: Blueprint prepares the site simulation and runs the AI
-   robots in it. The site sees which did best, with the published accuracy of
-   the method and its conditions, or a plain statement that none finished or
-   that there is no clear winner, or "held — we can't simulate this kind of
-   job yet", which is counted as demand for what to build next.
-4. A deployment company: the site chooses whether to share its job card.
+The job packet has one format for every job:
 
-The beta is free. Blueprint pays for preparation and evaluation inside a fixed
-per-site budget. No job is refused by task kind.
+1. The site's own sentence for the job, and its constraints.
+2. The video, with the site's rights and permissions recorded.
+3. The first look on paper: which kinds of robot most likely fit, from
+   published specifications and a cited track record.
+4. The simulation of the site, with the job's object in it.
+5. The success rule: what counts as the job done.
+6. Where one exists, the result and a clip of Blueprint's own early trial.
+
+The site's answer is who will take the job, and on what evidence: the
+responses of deployment companies. Until responses exist the site sees the
+first look and the simulation, and is told plainly where the job stands: not
+yet sent, sent and waiting, or no response yet. Nothing promises a response
+that has not been given.
+
+Blueprint's own trial of openly available robot software stays as supporting
+evidence inside the packet. It is labelled **an early trial of openly
+available robot software**. It is not the site's answer, and it does not
+predict what a deployment company's own robot would do. A zero is a valid
+result of the trial. A scripted run only checks Blueprint's own simulation.
+
+A site's video and simulation go to a deployment company only with the site's
+permission, and only to companies Blueprint has approved. Every approach to an
+outside company needs the owner's go-ahead first.
+
+As of 2026-11-12 no recorded permission covers sending a site's video or the
+simulation of its site to a deployment company: every statement a site has
+agreed to says they stay private. Until the owner sets a new permission and
+its wording, a deployment company receives a summary of the job only (the
+site's sentence, the first look, the success rule and the early trial's
+result), without the site's name or address. Nobody but the owner changes the
+wording of anything a site agrees to.
+
+V1 is by hand. One video becomes a packet; the Pipeline is the packet factory.
+Blueprint carries the packet to five to ten deployment companies and collects
+their responses, and the site sees them.
+
+Paused (keep the code, start no new work): hardening the automatic test for
+any kind of job, for several objects and for unattended scale; standing
+re-tests of every robot on every open job.
+
+Later, only after deployment companies show they want it: a deployment company
+runs its own software on the site's job in Blueprint's simulation; each new
+robot release is re-run against the open jobs; simulated results are compared
+with real outcomes across companies.
+
+If sites are hard to reach, the fallback is to offer the video intake to
+deployment companies for their own leads and, with the site's consent, pass on
+the jobs they decline.
+
+The long-term vision is an independent proving ground where every job is
+tested against every robot: a site posts once and is told the moment a robot
+can do its job, and the backlog of jobs is a live map of real demand. It is a
+direction, not current work.
+
+Words to use: "deployment company" (not vendor, integrator or OEM), "job
+packet", "first look", "simulation of your site", "early trial", "responses".
+
+The beta is free for sites. Blueprint pays for preparation and evaluation
+inside a fixed per-site budget. No job is refused by task kind.
 
 ### How Capture Works
 
@@ -88,10 +136,10 @@ readiness check unless it protects privacy, rights or money.
 
 ### Two Truths
 
-- Don't make things up: no invented results, figures, customers, readiness or
-  approvals. Unknown stays unknown.
-- The simulation test's result and the first look on paper are bounded
-  estimates.
+- Don't make things up: no invented results, figures, customers, readiness,
+  approvals or responses. Unknown stays unknown. A page, an email or a packet
+  says only what is true.
+- The first look on paper and the early trial's result are bounded estimates.
   They never certify physical performance or safety. A stated accuracy carries
   its source and its conditions.
 

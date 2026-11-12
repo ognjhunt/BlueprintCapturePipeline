@@ -1,6 +1,8 @@
 """Publish the facts a self-serve robot-team run needs from this Pipeline.
 
-A robot team buys a screening run in Blueprint-WebApp. Before it can pay, the
+This served the self-serve robot-team run of an earlier frame, in which a robot
+team bought a screening run in Blueprint-WebApp; no price is stated under the
+2026-11-12 frame. Before such a payment, the
 WebApp prepares an exact Task Evaluation Run request (the "payment setup
 record"), and three of its facts are known only here:
 

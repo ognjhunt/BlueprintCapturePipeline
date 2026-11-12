@@ -47,7 +47,7 @@ agent explanation cannot set proof booleans or upgrade a claim.
 | `site_eval_director.py` | Deterministic site/simulation planning plus optional advisory operators | Future registered non-spend tool surface after contract qualification |
 | `stance_configuration_agent.py` | Deterministic bounded recovery/search | Candidate deterministic recovery tool, despite its historical “agent” name |
 | `adaptive_task_stance_configurator.py` | Bounded candidate proposer with deterministic acceptance | Candidate non-spend proposal tool |
-| `policy_autoresearch.py` and `autoresearch/` | Development-time candidate mutation under frozen evaluation | Kept outside hidden evaluation and proof authority |
+| `policy_autoresearch.py` | Development-time candidate mutation under frozen evaluation | Kept outside hidden evaluation and proof authority |
 | `robot_eval_job_orchestrator.py` | Robot-evaluation job lifecycle, provider gates, and optional operator choice | Future pre-authorized runtime tool surface; never bypassed |
 | `run_e2e.py` | Required post-capture supervisor stage plus legacy optional agent review | Every completed capture build enters the new supervisor lifecycle; the old review remains a compatibility path |
 

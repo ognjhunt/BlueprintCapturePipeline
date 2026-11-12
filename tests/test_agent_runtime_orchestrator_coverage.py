@@ -472,3 +472,31 @@ def test_run_agent_review_propagates_hidden_zone_gap_offline(
     recapture_plan = json.loads((pipeline / "recapture_plan.json").read_text(encoding="utf-8"))
     step_details = {str(step.get("detail")) for step in recapture_plan.get("steps", [])}
     assert expected_detail in step_details
+
+
+@pytest.mark.parametrize("provider_name", ["local", "claude"])
+def test_review_runs_with_the_packs_as_they_are_now(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_name: str,
+) -> None:
+    # 2026-11-12: the industrial-readiness skills were removed from the packs.
+    # The review still names them as steps; with the real packs (copied, so the
+    # sync writes nowhere in the checkout) it must finish on its deterministic
+    # builders rather than fail on a missing skill.
+    import shutil
+
+    real_root = Path(__file__).resolve().parents[1]
+    repo = tmp_path / "repo"
+    shutil.copytree(real_root / "skillpacks", repo / "skillpacks")
+    monkeypatch.setattr(orch, "_repo_root", lambda: repo)
+    capture_root = _capture_root(tmp_path)
+
+    bundle = orch.run_agent_review(capture_root=capture_root, provider_name=provider_name)
+
+    synced = {path.name for path in (repo / ".claude" / "skills").iterdir()}
+    assert "humanoid_site_readiness_reviewer" not in synced
+    assert "oem_handoff_writer" not in synced
+    assert "blueprint_overview" in synced
+    assert {step["source"] for step in bundle["steps"]} == {"local_deterministic"}
+    assert "humanoid_site_readiness_reviewer" in {step["skill_name"] for step in bundle["steps"]}

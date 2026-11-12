@@ -4,9 +4,9 @@ Scripts are operational entrypoints. Classify a script before running it:
 read-only check, local artifact writer, external provider/API caller, GPU runner,
 cross-repo gate, or live deploy.
 
-Two programs are active: the free beta's evaluated, recommended pilot and Arm
-Decision Proof v1. Do not create or extend a script unless it removes a named
-beta journey blocker or ADP gate blocker. Legacy scripts remain
+Two programs are active: the free beta's job packet (owner direction
+2026-11-12) and Arm Decision Proof v1. Do not create or extend a script unless
+it removes a named job-packet blocker or ADP gate blocker. Legacy scripts remain
 compatibility entrypoints and do not authorize their former lanes.
 
 Safe checks include focused gate/test commands. Treat `setup_environment.py --check`
