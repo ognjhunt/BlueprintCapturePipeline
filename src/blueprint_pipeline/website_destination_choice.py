@@ -83,7 +83,9 @@ def place_candidates(*, choice: Mapping[str, Any], subject_min: Sequence[float],
         for kind, centre in found:
             if (_distance_to_box(centre, subject_min, subject_max) <= WEBSITE_TARGET_TOLERANCE_M
                     or (holds is not None and not holds(centre, WEBSITE_TARGET_TOLERANCE_M))
-                    or any(math.dist(centre, row["centre_xy"]) < DISTINCT_PLACE_M for row in rows)):
+                    or any(math.dist(centre, row["centre_xy"]) <= max(DISTINCT_PLACE_M, row["radius_m"],
+                                                                      WEBSITE_TARGET_TOLERANCE_M)
+                           for row in rows)):  # never a place whose centre lies in another's area
                 continue
             rows.append({"kind": kind, "centre_xy": [float(v) for v in centre], "radius_m": WEBSITE_TARGET_TOLERANCE_M})
     for row in rows:
@@ -320,10 +322,11 @@ def retain_place_view(*, pipeline_root: Path, preparation: Mapping[str, Any], fr
         if existing is not None and read_answer(Path(pipeline_root), existing) is not None:
             return existing  # answered: kept as it is, with its own picture, so the answer keeps binding
         question_path = folder / f"{TARGET_ID}.question.json"
-        question_path.unlink(missing_ok=True)  # a replaced question is no longer current, nor its picture
-        (folder / PICTURE_RECORD).unlink(missing_ok=True)
-        if len(candidates) < 2:
-            return None
+        for stale in (question_path, folder / PICTURE_RECORD, folder / PICTURE_FILE):
+            stale.unlink(missing_ok=True)  # a replaced question is no longer current, nor its picture
+        from .website_preparation_outcome import website_lists_place_question
+        if len(candidates) < 2 or not website_lists_place_question():
+            return None  # switch (iii) off: no picture and no question are written
         picture = draw_destination_picture(frames=frames, sim_to_source=sim_to_source,
                                            subject_min=envelope["minimum_xyz_m"], subject_max=envelope["maximum_xyz_m"],
                                            places=places, output=folder / PICTURE_FILE)

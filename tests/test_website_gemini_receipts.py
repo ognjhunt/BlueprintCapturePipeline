@@ -532,3 +532,40 @@ def test_an_older_answer_is_bought_again_exactly_once_across_retries(tmp_path, m
     results = [analysis.analyze_removal_targets(**kwargs) for _ in range(3)]
     assert len(invokes) == 1 and [row[0] for row in calls] == ["reserve"]
     assert results[0] == results[1] == results[2]
+
+
+def test_a_blocked_region_answer_is_bought_once_more_and_never_on_each_retry(tmp_path, monkeypatch):
+    """Review 2026-11-12: a region-revision answer that ended blocked is bought once more under the current
+    revision, then that purchase decides every later run: six timed retries, and again on a second release."""
+    import sys
+    import types
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+    from blueprint_pipeline.common import sha256_file
+    _args, calls = setup_call(tmp_path / "receipts", monkeypatch)
+    video = tmp_path / "video.mov"
+    video.write_bytes(b"original video")
+    monkeypatch.setattr(analysis, "_video_processing", lambda *a: ("static", 13.525))
+    monkeypatch.setattr(analysis, "_truthy", lambda value: True)
+    monkeypatch.setattr(analysis, "_api_key", lambda: ("fixture", "fixture"))
+    monkeypatch.setitem(sys.modules, "google.genai", types.ModuleType("google.genai"))
+    invokes = []
+
+    def answer(**_kwargs):
+        invokes.append(1)
+        return {"status": "blocked", "targets": [], "blockers": ["task_target_requires_clarification:x"],
+                "input_video_sha256": sha256_file(video)}
+    monkeypatch.setattr(analysis, "_analyze_removal_targets", answer)
+    root = tmp_path / "receipts"
+    kwargs = dict(video_path=video, task_context=context(), output_root=root)
+    # The region revision's own blocked answer, bought by an earlier release.
+    with monkeypatch.context() as earlier:
+        earlier.setattr(analysis, "PROMPT_INSTRUCTION", analysis.REGION_PROMPT_INSTRUCTION)
+        earlier.setattr(analysis, "RESPONSE_SCHEMA", analysis.REGION_RESPONSE_SCHEMA)
+        analysis.analyze_removal_targets(**kwargs)
+    assert len(invokes) == 1
+    for release in ("a" * 40, "b" * 40):
+        monkeypatch.setattr("blueprint_pipeline.team_scene_packet_worker.current_release_commit", lambda r=release: r)
+        for _ in range(6):  # the six timed retries of a refusal, on each release
+            analysis.analyze_removal_targets(**kwargs)
+    # Bought once more under the current revision, then reused: two purchases in all, never one per retry.
+    assert len(invokes) == 2 and [row[0] for row in calls].count("reserve") == 2

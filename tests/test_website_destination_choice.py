@@ -20,6 +20,13 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cro
 from tests.test_website_destination_area import SUBJECT_MAX, SUBJECT_MIN, SUPPORT_MAX, SUPPORT_MIN, _choose
 
 
+@pytest.fixture(autouse=True)
+def _place_question_listed(monkeypatch):
+    """The place question ships switched off (switch iii); these tests look at it switched on."""
+    from blueprint_pipeline.website_preparation_outcome import PLACE_QUESTION_ENV
+    monkeypatch.setenv(PLACE_QUESTION_ENV, "true")
+
+
 def _pipeline(tmp_path):
     pipeline = tmp_path / "scenes/site-x/captures/walkthrough-x/pipeline"
     pipeline.mkdir(parents=True)
@@ -250,3 +257,34 @@ def test_a_place_out_of_view_is_not_offered_and_one_place_publishes_no_question(
                                    source_geometry={"digest": "sha256:" + "d" * 64}, object_label="Tray") is None
     assert place.read_place_question(pipeline) is None
     assert not (pipeline / choice.QUESTION_DIR / place.PICTURE_RECORD).exists()
+
+
+def test_switched_off_no_picture_and_no_question_are_written(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_preparation_outcome import PLACE_QUESTION_ENV
+    monkeypatch.setenv(PLACE_QUESTION_ENV, "false")
+    pipeline, preparation, frame, _ = _view(tmp_path)
+    assert place.retain_place_view(pipeline_root=pipeline, preparation=preparation, frames=[frame],
+                                   source_geometry={"digest": "sha256:" + "d" * 64}, object_label="Tray") is None
+    assert not (pipeline / choice.QUESTION_DIR / place.PICTURE_FILE).exists()
+    assert not list((pipeline / choice.QUESTION_DIR).glob("*")) if (pipeline / choice.QUESTION_DIR).exists() else True
+
+
+def test_a_place_inside_another_places_area_is_not_offered():
+    """capture-39ecdc97 (review 2026-11-12): place C lay 0.15 m from A, inside A's 0.187 m area."""
+    record = {"basis": "named_region", "position_world_m": [0.0, 0.0, 0.8], "area_radius_m": 0.187}
+    rows = place.place_candidates(choice=record, subject_min=[-1.2, -0.2, 0.8], subject_max=[-0.9, 0.2, 0.85],
+                                  support_min=[-1.3, -0.4, 0.0], support_max=[0.2, 0.4, 0.8])
+    first = rows[0]
+    assert all(math.dist(row["centre_xy"], first["centre_xy"]) > first["radius_m"] for row in rows[1:])
+
+
+def test_a_replaced_question_takes_its_picture_with_it(tmp_path):
+    pipeline, preparation, frame, rows = _view(tmp_path)
+    assert place.retain_place_view(pipeline_root=pipeline, preparation=preparation, frames=[frame],
+                                   source_geometry={"digest": "sha256:" + "d" * 64}, object_label="Tray") is not None
+    one = {**preparation, "destination_choice": {**preparation["destination_choice"], "candidates": rows[:1]}}
+    assert place.retain_place_view(pipeline_root=pipeline, preparation=one, frames=[frame],
+                                   source_geometry={"digest": "sha256:" + "d" * 64}, object_label="Tray") is None
+    folder = pipeline / choice.QUESTION_DIR
+    assert not (folder / place.PICTURE_FILE).exists() and not (folder / place.PICTURE_RECORD).exists()
+    assert place.read_place_question(pipeline) is None

@@ -122,8 +122,8 @@ def website_accepts_place_question(value) -> bool:
 
 def test_the_place_question_matches_the_websites_place_contract(tmp_path, monkeypatch):
     from tests.test_website_destination_choice import test_the_picture_outlines_the_start_and_draws_the_area_clipped_to_the_surface as draw
-    draw(tmp_path)
     monkeypatch.setenv(outcome.PLACE_QUESTION_ENV, "true")
+    draw(tmp_path)
     public = choice.public_question(tmp_path / "scenes/site-x/captures/walkthrough-x")
     assert website_accepts_place_question(public) and re.fullmatch(r"sha256:[0-9a-f]{64}", public["picture"]["png_sha256"])
 
@@ -161,7 +161,9 @@ def test_the_picture_route_is_the_one_the_website_reads(tmp_path, monkeypatch):
     from blueprint_pipeline import website_atlas_preview_http as http
     from tests.test_website_destination_choice import test_the_picture_outlines_the_start_and_draws_the_area_clipped_to_the_surface as draw
     (tmp_path / "bucket").mkdir()
+    monkeypatch.setenv(outcome.PLACE_QUESTION_ENV, "true")
     draw(tmp_path / "bucket")
+    monkeypatch.delenv(outcome.PLACE_QUESTION_ENV)
     folder = tmp_path / "bucket/scenes/site-x/captures/walkthrough-x/pipeline/website_task_target_choices"
     (folder.parent.parent / "pipeline_job_ledger.json").write_text(json.dumps({"status": "completed"}))
     digest = json.loads((folder / "destination.place.picture.json").read_text())["png_sha256"]
@@ -189,8 +191,8 @@ def test_the_shared_contract_describes_the_place_question_and_its_picture(tmp_pa
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads((Path(__file__).resolve().parents[1] / "docs/schemas/website_task_target_choice.v1.schema.json").read_text())
     from tests.test_website_destination_choice import test_the_picture_outlines_the_start_and_draws_the_area_clipped_to_the_surface as draw
-    draw(tmp_path)
     monkeypatch.setenv(outcome.PLACE_QUESTION_ENV, "true")
+    draw(tmp_path)
     public = choice.public_question(tmp_path / "scenes/site-x/captures/walkthrough-x")
     jsonschema.validate(public, schema)
     without_picture = {key: value for key, value in public.items() if key != "picture"}
