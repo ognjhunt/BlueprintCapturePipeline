@@ -332,9 +332,12 @@ def preflight_candidate_capacity(*, plan: Mapping[str, Any], candidate: Mapping[
     # for: a launch that would not fit waits in line and costs nothing (``beta_screening_disk_admission``).
     from .beta_screening_disk_admission import WORK_DISK_WAIT_BLOCKER, work_disk_admission
 
+    from .task_family_policy_execution import FAMILY_BACKEND
+
     backend = (candidate.get("execution_spec") or {}).get("backend")
-    if backend != "robolab.v1":
-        # The G1 and task-family lanes keep their own collection holds; nothing is added for them here.
+    if backend not in {"robolab.v1", FAMILY_BACKEND}:
+        # G1 runs its own session (``native_g1_beta_paid``): no output-delivery question, and its collection
+        # hold refuses there before any rental. Both other lanes land through the policy-canary session.
         return {"capacity_available": True, "blockers": blockers}
     from .policy_canary_output_members import (
         STREAM, PolicyCanaryOutputDeliveryError, record_resolution, resolve_output_delivery,

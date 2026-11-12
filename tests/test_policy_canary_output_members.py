@@ -760,3 +760,56 @@ def test_a_screening_session_without_its_pre_launch_resolution_is_held_before_an
     monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
     result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
     assert result["blockers"] == [members.RESOLUTION_MISSING] and proves_no_provider_allocation(result)
+
+
+@pytest.mark.parametrize("backend", ["robolab.v1", "task_family_native.v1"])
+@pytest.mark.parametrize("room", [True, False])
+def test_each_policy_canary_lane_is_checked_before_launch_and_its_paid_run_uses_that_record(
+        context, tmp_path, monkeypatch, backend, room):
+    """Review 8d (1): both lanes that land through this session get their record; a paid run proceeds with
+    room and waits in line, unspent, without it. A task-family run is never shut out for want of a record."""
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
+    from blueprint_pipeline import beta_screening_disk_admission as disk_admission
+    from blueprint_pipeline import vast_launch_slots
+    from blueprint_pipeline.control_plane_disk_budget import floor_bytes
+
+    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
+    monkeypatch.setenv(disk_admission.RESERVATION_ROOT_ENV, str(tmp_path / "ledger"))
+    monkeypatch.delenv(disk_admission.LANDING_HOLD_ENV, raising=False)
+    total = 400 * 1024**3
+    free = floor_bytes(total, role=disk_admission.ROLE) + disk_admission.DEFAULT_LANDING_HOLD_BYTES + (
+        1024**3 if room else -1024**3)
+    monkeypatch.setattr(disk_admission, "measure_disk", lambda _p: SimpleNamespace(total=total, free=free, used=total - free))
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *_a: None)
+    monkeypatch.setattr(vast_launch_slots, "inspect_vast_launch_admission", lambda: {"status": "admitted", "blockers": []})
+    capacity = launch.preflight_candidate_capacity(plan={}, candidate={"execution_spec": {"backend": backend}},
+                                                   attempt_dir=tmp_path, prepared={})
+    assert members.resolved_for_attempt(tmp_path / "allocator") == members.OutputDelivery(members.DOWNLOAD, members.EXPLICIT)
+    if not room:
+        assert capacity["capacity_available"] is False and capacity["blockers"] == [disk_admission.WORK_DISK_WAIT_BLOCKER]
+        return  # the coordinator keeps it in line; nothing is launched or paid for
+    assert capacity == {"capacity_available": True, "blockers": []}
+    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
+    monkeypatch.setattr(native, "consume_session_authority_once", lambda *_a, **_kw: {"status": "consumed"})
+    _, _, binding = context
+    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
+    ran = []
+    _run_session(context, tmp_path, monkeypatch, lane=lambda **kwargs: ran.append(kwargs) or {"status": "completed"})
+    assert len(ran) == 1 and ran[0]["provider_output_delivery"] == members.DOWNLOAD
+
+
+def test_a_paid_screening_run_without_a_record_is_held_and_its_authority_never_consumed(context, tmp_path, monkeypatch):
+    """Un-faked: no pre-launch record beside the attempt, a paid run, the real lookup."""
+    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
+
+    _set_delivery(monkeypatch, tmp_path, "stream", configured=True, measured=True)
+    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
+    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
+    _, _, binding = context
+    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
+    assert not (tmp_path / members.RESOLVED_FILENAME).exists()
+    result = _run_session(context, tmp_path, monkeypatch, execute=True, lane=_forbidden)
+    assert result["blockers"] == [members.RESOLUTION_MISSING] and proves_no_provider_allocation(result)
