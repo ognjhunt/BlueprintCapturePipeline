@@ -1557,14 +1557,22 @@ def test_a_copied_file_that_names_the_site_or_a_path_is_refused_by_file_and_kind
         assert value not in str(refusal)
 
 
-@pytest.mark.parametrize("words", [NAME, STREET, EMAIL, PHONE, SENTENCE.split(" ", 2)[2].upper()])
-def test_the_sites_own_words_in_a_copied_file_refuse_the_packet_but_the_sheet_may_quote_it(tmp_path, job, words) -> None:
+@pytest.mark.parametrize("words", [NAME, STREET, EMAIL, PHONE, NAME.lower().replace("e", "e_", 1)])
+def test_the_sites_identity_in_a_copied_file_refuses_the_packet(tmp_path, job, words) -> None:
     inputs = job()
     _write(inputs.team_scene_dir / "native-task-packet" / "look.usda", f'#usda 1.0\n(doc = "made for {words}")\n')
     refusal = _refusal(inputs, tmp_path)
     assert refusal.code == "job_packet_file_names_the_site"
-    assert str(refusal).endswith("files/simulation/team-scene/native-task-packet/look.usda holds the site's own words")
+    assert str(refusal).endswith("files/simulation/team-scene/native-task-packet/look.usda holds the site's name or "
+                                 "contact details")
     assert words.lower() not in str(refusal).lower()
+
+
+def test_the_sites_description_in_a_copied_file_is_the_job_and_is_kept(tmp_path, job) -> None:
+    inputs = job()
+    _write(inputs.team_scene_dir / "native-task-packet" / "look.usda", f'#usda 1.0\n(doc = "{SENTENCE}")\n')
+    result = build_job_packet(inputs, output_root=_out(tmp_path))
+    assert SENTENCE in _sheet(result)
 
 
 def test_a_clip_sidecar_and_a_namespace_link_are_fine(tmp_path, job) -> None:

@@ -128,9 +128,12 @@ is in it.
 Read the whole sheet, `JOB_SHEET.md`, before the packet leaves. The tool
 removes email addresses, phone numbers and web links from the site's own words,
 and reads every copied file for ids, keys, paths, links, email and IP addresses,
-and for the site's own words (its description, labels, name, address and
-contacts as its records hold them). The sheet itself quotes the site's words on
-purpose, so a name or a street address the site typed into its description is
+and for the site's identity: its name, organisation, typed address (whole and
+each part), contact and submitter names, email and phone as its records hold
+them, in any case and in any spelling of separators (`Zebra Plant Foods` is also
+found as `ZebraPlant_Foods` or `zebraplantfoods`). The site's description of its
+job is not looked for: the site agreed to share it, and the sheet quotes it on
+purpose. So a name or a street address the site typed into its description is
 still there: take it out by hand.
 The packet holds no site name, address, contact, token, link or storage path
 from the records; an introduction is made only when the site asks for one on

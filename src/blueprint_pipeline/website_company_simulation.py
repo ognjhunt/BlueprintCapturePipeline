@@ -56,7 +56,7 @@ from . import company_share_permission as permission
 from . import website_company_clip as clip
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from .outbound_file_scan import capture_site_words
+from .outbound_file_scan import capture_site_identity
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
 
 logger = logging.getLogger(__name__)
@@ -911,7 +911,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
     if needs_build:
         try:
             built = build_package(source, candidate, literals=secret_literals(root, source),
-                                  words=capture_site_words(root), max_bytes=max_bytes,
+                                  words=capture_site_identity(root), max_bytes=max_bytes,
                                   deadline=time.monotonic() + build_seconds)
         except PackageRefused as error:
             outcome = {**base, "package": None, "refused": error.reason, "detail": error.detail,

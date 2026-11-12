@@ -1202,8 +1202,9 @@ def _scan_packet(packet: Path, secrets: list[tuple[bytes, str]], words: list[tup
 
     The scan is shared with the simulation package (``outbound_file_scan``): ids in both forms, host paths, storage,
     file and other links, bare web addresses, emails and IP addresses in text, tokens, and the text form of every
-    binary USD layer. The site's own words (``words``) are looked for under ``files/`` only: the job sheet quotes the
-    site's description on purpose.
+    binary USD layer. The site's identity (``words``: its name, organisation, address, contact names, email and
+    phone, in any spelling) is looked for under ``files/`` only, never in the composed stage Blueprint writes. The
+    site's description of its job is not looked for: the site agreed to share it, and the sheet quotes it.
     """
     from .outbound_file_scan import first_finding, literal_forms
     finding = first_finding(packet, [*literal_forms(secrets), *(words or [])], words_only_under="files/",
@@ -1469,9 +1470,9 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
             target = packet / "files" / "video" / f"video{video.suffix.lower()}"
             target.parent.mkdir(parents=True, exist_ok=True)
             sound = _copy_video(video, target)
-        from .outbound_file_scan import capture_site_words, record_site_words
+        from .outbound_file_scan import capture_site_identity, record_site_identity
         _scan_packet(packet, _secrets(capture_dir, context, pull),
-                     capture_site_words(capture_dir) + record_site_words([context]))
+                     capture_site_identity(capture_dir) + record_site_identity([context]))
         listed = []
         for relative in sorted([*written, *(row[2] for row in copies), *(row[2] for row in members),
                                 *([SIMULATION_STAGE] if stage is not None else []),

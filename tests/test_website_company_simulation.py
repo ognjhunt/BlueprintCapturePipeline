@@ -903,10 +903,12 @@ def test_a_rights_refusal_is_reported_in_the_simulations_own_name(job):
     assert result == {"status": "refused", "reason": "website_company_simulation_rights_refused"}
 
 
-# --- the site's own words -------------------------------------------------------------------------------------
+# --- the site's identity (its description of the job is shared by its own agreement) ---------------------------
 
-SITE_NAME, STREET, EMAIL, PHONE = "Harbourview Bakery", "17 Quayside Lane", "owner@harbourview.example", "+44 20 7946 0958"
-SENTENCE = "Move the blue tray from the counter to the back shelf every morning"
+SITE_NAME, STREET, EMAIL, PHONE = "Zebra Plant Foods", "17 Quayside Lane, Harbourton, UK", "owner@zebra.example", \
+    "+44 20 7946 0958"
+SENTENCE = "Move the wooden tray from the counter to the back shelf every morning"
+IDENTITY = "the site's name or contact details"
 
 
 def _site_records(job: Job) -> None:
@@ -918,26 +920,100 @@ def _site_records(job: Job) -> None:
     _write(job.capture / "capture_descriptor.json", descriptor)
 
 
-@pytest.mark.parametrize("words", [SITE_NAME.upper(), STREET, EMAIL, PHONE, "the counter to the back",
-                                   "jane placeholder"])
-def test_the_sites_own_words_in_a_scene_file_refuse_the_package(job, words):
+def _plant_identity(job: Job, where: str, value: str) -> str:
+    if where == "prim_name":
+        stage = Usd.Stage.Open(str(job.appearance))
+        UsdGeom.Xform.Define(stage, f"/Appearance/{value}")
+        stage.GetRootLayer().Save()
+        expected = "scene/room.usdc"
+    elif where == "string_attribute":
+        stage = Usd.Stage.Open(str(job.appearance))
+        stage.GetPrimAtPath("/Appearance").CreateAttribute("made_for", Sdf.ValueTypeNames.String).Set(value)
+        stage.GetRootLayer().Save()
+        expected = "scene/room.usdc"
+    else:  # a texture whose name carries it: the string naming the file is in the layer
+        _write(job.assets / f"textures/{value}.png", _png())
+        job.appearance = _stage(job.appearance, "Appearance", texture=f"./textures/{value}.png")
+        expected = "scene/room.usdc"
+    job.seal()
+    return expected
+
+
+@pytest.mark.parametrize("where", ["prim_name", "string_attribute", "texture_name"])
+@pytest.mark.parametrize("spelling", ["ZebraPlant_Foods", "zebra_plant_foods", "zebraplantfoods", "Zebra_Plant_Foods"])
+def test_the_sites_name_in_any_spelling_refuses_the_package(job, where, spelling):
+    _site_records(job)
+    expected = _plant_identity(job, where, spelling)
+    result = World(job).publish()
+    if where == "texture_name":
+        # A texture's own file name never ships: the package renames every file a part uses (scene/files/file-NNN).
+        assert result["status"] == "published", result
+        with zipfile.ZipFile(_package(job)) as archive:
+            assert not any("zebra" in name.lower() for name in archive.namelist())
+            assert all(b"zebra" not in archive.read(name).lower() for name in archive.namelist())
+        return
+    assert result["status"] == "refused", result
+    assert result["detail"] in {f"{expected} holds {IDENTITY}", f"{expected} holds {IDENTITY} inside a zip member"}
+    assert "zebra" not in json.dumps(result).lower()
+
+
+def test_the_sites_name_with_hyphens_refuses_in_text(job):
     _site_records(job)
     job.appearance.unlink()
-    job.appearance = _stage(job.assets / "appearance.usda", "Appearance", doc=f"made for {words} today",
+    job.appearance = _stage(job.assets / "appearance.usda", "Appearance", doc="made for zebra-plant-foods",
+                            texture="./textures/wood.png")
+    job.seal()
+    assert World(job).publish()["detail"] == f"scene/room.usda holds {IDENTITY}"
+
+
+@pytest.mark.parametrize("value", ["17 Quayside Lane", "Harbourton", EMAIL, PHONE, "442079460958"])
+def test_the_sites_address_email_and_phone_refuse_the_package(job, value):
+    _site_records(job)
+    job.appearance.unlink()
+    job.appearance = _stage(job.assets / "appearance.usda", "Appearance", doc=f"made at {value} today",
                             texture="./textures/wood.png")
     job.seal()
     result = World(job).publish()
-    assert result["status"] == "refused", result
-    assert result["detail"].startswith("scene/room.usda holds ")
-    assert words.lower() not in json.dumps(result).lower()
+    assert result["status"] == "refused" and result["detail"] == f"scene/room.usda holds {IDENTITY}", result
+    assert value.lower() not in json.dumps(result).lower()
 
 
-def test_the_sites_own_words_are_gathered_from_its_records(job):
+def test_the_job_itself_is_not_identity_a_tray_prim_and_the_description_are_published(job):
+    _site_records(job)
+    job.object.unlink()
+    layer = _stage(job.assets / "src/obj.usdc", "Asset")
+    stage = Usd.Stage.Open(str(layer))
+    UsdGeom.Xform.Define(stage, "/Asset/wooden_tray")
+    stage.GetPrimAtPath("/Asset").SetCustomDataByKey("note", SENTENCE)
+    stage.GetRootLayer().Save()
+    job.object = job.assets / "replacement.usdz"
+    assert UsdUtils.CreateNewUsdzPackage(str(layer), str(job.object))
+    job.seal()
+    assert World(job).publish()["status"] == "published"
+
+
+def test_identity_is_gathered_from_the_records_and_the_job_is_not(job):
     from blueprint_pipeline import outbound_file_scan
     _site_records(job)
-    found = {value.decode() for value, _kind in outbound_file_scan.capture_site_words(job.capture)}
-    assert {SITE_NAME.lower(), STREET.lower(), EMAIL.lower(), PHONE.lower(), "jane placeholder",
-            "move the blue tray", "the back shelf every"} <= found
+    found = {value for value, _kind in outbound_file_scan.capture_site_identity(job.capture)}
+    words = {value[3:].decode() for value in found if value.startswith(b"\x00w:")}
+    normal = {value[3:].decode() for value in found if value.startswith(b"\x00n:")}
+    assert {SITE_NAME.lower(), "17 quayside lane, harbourton, uk", "17 quayside lane", "harbourton", EMAIL,
+            PHONE} <= words
+    assert {"zebraplantfoods", "442079460958"} <= normal
+    assert "uk" not in words  # a part that is only a country
+    for job_words in ("move the wooden tray", "wooden tray", "jane placeholder", "back shelf"):
+        assert not any(job_words in value for value in words | normal)
+
+
+def test_a_short_common_word_never_matches_inside_another():
+    from blueprint_pipeline import outbound_file_scan
+    needles = outbound_file_scan.site_identity(["Bath"], addresses=["Bath"])
+    assert outbound_file_scan._match_window(b"def Xform bathroom_sink", needles, text=True) is None
+    assert outbound_file_scan._match_window(b"made in Bath today", needles, text=True) is not None
+    # A normalised needle under the minimum is not looked for in binary data at all.
+    assert outbound_file_scan._match_window(b"\x00zebraplant\x01", outbound_file_scan.site_identity(["Zebra"]),
+                                            text=False) is None
 
 
 def test_a_clean_package_does_not_trip_on_the_sites_words(job):

@@ -50,7 +50,19 @@ UNREADABLE = frozenset({UNREADABLE_ZIP, UNREADABLE_USD, UNREADABLE_FILE})
 
 STORAGE_LINK, HOST_PATH, FILE_LINK, WEB_LINK, WEB_ADDRESS, KEY = (
     "a storage link", "a host path", "a local file link", "a web link", "a web address", "a key or token")
-OTHER_LINK, IP_ADDRESS, EMAIL, SITE_WORDS = "a link", "an IP address", "an email address", "the site's own words"
+OTHER_LINK, IP_ADDRESS, EMAIL = "a link", "an IP address", "an email address"
+#: The site's identity: its name, organisation, typed address, contact and submitter names, email and phone. The
+#: site's description of its job is shared by its own agreement and is not looked for.
+SITE_IDENTITY = "the site's name or contact details"
+SITE_WORDS = SITE_IDENTITY  # the earlier name, kept for callers
+#: A normalised identity value (lower-case, every non-alphanumeric removed) is looked for in normalised text when it
+#: has at least ``NORMALISED_TEXT_MINIMUM`` characters, and in binary data only from ``NORMALISED_BINARY_MINIMUM``
+#: (a random 5-letter string would match about twice in 512 MiB of binary; 10 letters about 3e-8 times). A value of
+#: digits only (a phone) needs ``NORMALISED_DIGITS_MINIMUM`` digits: the text form of float geometry is mostly
+#: digits once its separators are removed.
+NORMALISED_TEXT_MINIMUM, NORMALISED_BINARY_MINIMUM, NORMALISED_DIGITS_MINIMUM = 5, 10, 11
+_WORD, _NORMALISED = b"\x00w:", b"\x00n:"
+_NOT_ALNUM = re.compile(rb"[^a-z0-9]+")
 #: A binary USD layer larger than this is read by walking its specs (every name, string, token, asset path and
 #: metadata value; numeric arrays skipped) instead of exporting all its geometry to text.
 SPEC_WALK_BYTES = 8 << 20
@@ -149,34 +161,60 @@ def _blank_allowed_links(window: bytes) -> bytes:
     return bytes(out)
 
 
-def site_words(values: Iterable[str], *, phrases: Iterable[str] = (), minimum: int = 8) -> list[tuple[bytes, str]]:
-    """The site's own words as needles, looked for without regard to case.
+def _normalised(text: str) -> bytes:
+    return _NOT_ALNUM.sub(b"", text.lower().encode("utf-8", "replace"))
 
-    Each value of at least ``minimum`` characters, or of two words or more, is looked for whole; each of
-    ``phrases`` (a description) also as every run of four consecutive words. Whitespace is folded to one space.
+
+#: An address part that is only a country says nothing about which site it is.
+_COUNTRIES = frozenset({"uk", "u.k.", "united kingdom", "england", "scotland", "wales", "northern ireland", "usa",
+                        "u.s.a.", "us", "united states", "united states of america", "america", "canada", "ireland",
+                        "france", "germany", "deutschland", "spain", "italy", "netherlands", "belgium", "australia",
+                        "new zealand", "india", "japan", "china", "mexico", "brazil"})
+
+
+def site_identity(values: Iterable[str], *, addresses: Iterable[str] = ()) -> list[tuple[bytes, str]]:
+    """The site's identity as needles: each value (and each address part) as whole words without regard to case,
+    and in its normalised form (lower-case, separators removed) so ``Zebra Plant Foods`` is also found as
+    ``ZebraPlant_Foods``, ``zebra-plant-foods`` or ``zebraplantfoods``.
+
+    A value shorter than three characters is not looked for. An address is looked for whole and by each line or
+    comma-separated part of three characters or more that is not just a country or a number.
     """
     found: dict[bytes, None] = {}
+
+    def add(text: str) -> None:
+        text = " ".join(str(text).split())
+        if len(text) < 3:
+            return
+        found[_WORD + text.lower().encode("utf-8", "replace")] = None
+        normal = _normalised(text)
+        # An email is looked for as written: its normalised form would also match a link to its domain.
+        if "@" not in text and len(normal) >= NORMALISED_TEXT_MINIMUM and (not normal.isdigit() or len(normal) >= NORMALISED_DIGITS_MINIMUM):
+            found[_NORMALISED + normal] = None
     for value in values:
-        text = " ".join(str(value).split())
-        if len(text) >= minimum or (" " in text and len(text) >= 6):
-            found[text.lower().encode()] = None
-    for phrase in phrases:
-        words = str(phrase).split()
-        found.update({" ".join(words[index:index + 4]).lower().encode(): None
-                      for index in range(0, max(0, len(words) - 3))})
-        if 0 < len(words) < 4 and len(" ".join(words)) >= 6:
-            found[" ".join(words).lower().encode()] = None
-    return [(value, SITE_WORDS) for value in found]
+        add(value)
+    for address in addresses:
+        add(address)
+        for part in re.split(r"[,\n;]+", str(address)):
+            part = " ".join(part.split())
+            if (len(part) >= 3 and part.lower() not in _COUNTRIES
+                    and not re.fullmatch(r"[0-9 #-]+", part)):
+                add(part)
+    return [(value, SITE_IDENTITY) for value in found]
 
 
-#: Record fields that hold what the site typed, or that name the site or a person there.
-_PHRASE_KEYS = frozenset({"description", "task_statement", "successDefinition", "success_definition", "sentence",
-                          "job_sentence", "notes"})
-_VALUE_KEYS = frozenset({"name", "site_name", "organisation", "organization", "company", "address", "street",
-                         "street_address", "email", "phone", "contact_name", "submitter_name", "visible_label",
-                         "label", "labels", "item_make_model", "title"})
-_WHOLE_BRANCHES = frozenset({"operator_answers", "operator_task_details", "site_identity", "contact", "submitter",
-                             "site_answers", "job_facts_text"})
+def site_words(values: Iterable[str], *, phrases: Iterable[str] = (), minimum: int = 8) -> list[tuple[bytes, str]]:
+    """The earlier name: identity values only (``phrases`` are no longer looked for)."""
+    return site_identity(values)
+
+
+#: Record fields that name the site or a person there, or say how to reach them.
+_IDENTITY_KEYS = frozenset({"site_name", "organisation", "organization", "company_name", "contact_name",
+                            "submitter_name", "owner_name", "email", "contact_email", "submitter_email", "phone",
+                            "contact_phone", "submitter_phone"})
+_ADDRESS_KEYS = frozenset({"address", "street", "street_address", "typed_address", "site_address"})
+#: Branches whose ``name`` is a site's or a person's (elsewhere ``name`` names an object or a part).
+_IDENTITY_BRANCHES = frozenset({"site_identity", "contact", "submitter", "site"})
 SITE_RECORDS = ("capture_descriptor.json", "raw/manifest.json", "pipeline/website_task_context.json",
                 "pipeline/website_scene_preparation/preparation.json")
 
@@ -185,41 +223,41 @@ def _strings(value: object) -> Iterator[str]:
     if isinstance(value, str):
         yield value
     elif isinstance(value, Mapping):
-        for key, item in value.items():
-            if isinstance(key, str) and " " in key.strip():
-                yield key
+        for item in value.values():
             yield from _strings(item)
     elif isinstance(value, list):
         for item in value:
             yield from _strings(item)
 
 
-def record_site_words(records: Iterable[object]) -> list[tuple[bytes, str]]:
-    """The site's own words from parsed records: its sentences, its labels, its name, address and contacts."""
+def record_site_identity(records: Iterable[object]) -> list[tuple[bytes, str]]:
+    """The site's identity from parsed records: its name, organisation, address, contact and submitter names,
+    email and phone. Never its description of the job, labels, the item or its free-text answers."""
     values: list[str] = []
-    phrases: list[str] = []
+    addresses: list[str] = []
 
-    def walk(value: object) -> None:
+    def walk(value: object, in_identity: bool = False) -> None:
         if isinstance(value, Mapping):
             for key, item in value.items():
-                if key in _WHOLE_BRANCHES:
-                    values.extend(_strings(item))
-                elif key in _PHRASE_KEYS and isinstance(item, str):
-                    phrases.append(item)
-                elif key in _VALUE_KEYS:
+                if key in _ADDRESS_KEYS:
+                    addresses.extend(_strings(item))
+                elif key in _IDENTITY_KEYS or (in_identity and key == "name"):
                     values.extend(_strings(item))
                 else:
-                    walk(item)
+                    walk(item, in_identity or key in _IDENTITY_BRANCHES)
         elif isinstance(value, list):
             for item in value:
-                walk(item)
+                walk(item, in_identity)
     for record in records:
         walk(record)
-    return site_words(values, phrases=phrases)
+    return site_identity(values, addresses=addresses)
 
 
-def capture_site_words(capture_root: Path) -> list[tuple[bytes, str]]:
-    """``record_site_words`` over the capture's records on disk (a record that does not read is skipped)."""
+record_site_words = record_site_identity  # the earlier name, kept for callers
+
+
+def capture_site_identity(capture_root: Path) -> list[tuple[bytes, str]]:
+    """``record_site_identity`` over the capture's records on disk (a record that does not read is skipped)."""
     import json
     records = []
     for relative in SITE_RECORDS:
@@ -228,16 +266,38 @@ def capture_site_words(capture_root: Path) -> list[tuple[bytes, str]]:
             records.append(json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else {})
         except (OSError, ValueError):
             continue
-    return record_site_words(records)
+    return record_site_identity(records)
+
+
+capture_site_words = capture_site_identity  # the earlier name, kept for callers
+
+
+def _whole_word(haystack: bytes, needle: bytes) -> int:
+    """The first place ``needle`` stands as whole words in ``haystack`` (no letter or digit either side), or -1."""
+    start = haystack.find(needle)
+    while start >= 0:
+        end = start + len(needle)
+        before = haystack[start - 1:start]
+        after = haystack[end:end + 1]
+        if not (before.isalnum() or after.isalnum()):
+            return start
+        start = haystack.find(needle, start + 1)
+    return -1
 
 
 def _match_window(window: bytes, literals: Sequence[tuple[bytes, str]], *, text: bool) -> tuple[str, int] | None:
-    lowered = None
+    lowered = normal = None
     for value, kind in literals:
-        if kind == SITE_WORDS:
-            if lowered is None:
-                lowered = window.lower()
-            position = lowered.find(value)
+        if value.startswith(_WORD):
+            lowered = window.lower() if lowered is None else lowered
+            position = _whole_word(lowered, value[len(_WORD):])
+        elif value.startswith(_NORMALISED):
+            needle = value[len(_NORMALISED):]
+            if len(needle) < (NORMALISED_TEXT_MINIMUM if text else NORMALISED_BINARY_MINIMUM):
+                continue
+            lowered = window.lower() if lowered is None else lowered
+            normal = _NOT_ALNUM.sub(b"", lowered) if normal is None else normal
+            position = 0 if needle in normal else -1  # the place in the original is not kept
         else:
             position = window.find(value)
         if position >= 0:
@@ -475,7 +535,7 @@ def _scan_zip(path: Path, relative: str, literals: Sequence[tuple[bytes, str]], 
 
 def _needles(relative: str, literals: Sequence[tuple[bytes, str]], words_only_under: str | None,
              words_except: Sequence[str] = ()):
-    """The needles for one file: the site's own words only where they could come from the site's scene or job,
+    """The needles for one file: the site's identity only where it could come from the site's scene or job,
     never in a file Blueprint writes with fixed text (``words_except``)."""
     if relative not in words_except and (words_only_under is None or relative.startswith(words_only_under)):
         return literals
@@ -487,7 +547,7 @@ def scan_tree(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Pat
               before_each: Callable[[], None] | None = None) -> list[Finding]:
     """Every file under ``root`` in name order, at most one finding per file.
 
-    ``words_only_under``: look for the site's own words only in files under this prefix. ``before_each`` is
+    ``words_only_under``: look for the site's identity only in files under this prefix. ``before_each`` is
     called before each file (a caller's deadline check, which may raise).
     """
     root = Path(root)
@@ -515,4 +575,5 @@ def first_finding(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch:
 
 
 __all__ = ["ALLOWED_LINK_PREFIXES", "Finding", "SITE_WORDS", "UNREADABLE", "UNREADABLE_USD", "UNREADABLE_ZIP",
-           "capture_site_words", "first_finding", "record_site_words", "literal_forms", "scan_file", "scan_stream", "scan_tree", "site_words"]
+           "capture_site_identity", "capture_site_words", "first_finding", "record_site_identity",
+           "record_site_words", "site_identity", "literal_forms", "scan_file", "scan_stream", "scan_tree", "site_words"]
