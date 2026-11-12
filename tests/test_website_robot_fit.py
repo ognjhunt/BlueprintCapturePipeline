@@ -466,11 +466,17 @@ def test_a_failing_table_never_blocks_the_handoff_or_changes_its_gating(handoff,
     assert not (native / "robot_fit_table.json").exists()
     admissible, result, _ = handoff(status)
     assert "path" in result["robot_fit_table"]
-    assert failed_admissible == admissible == (status == "clear")
+    # Owner decision, 2026-11-12 frame: the job packet needs the simulation for any job, so an abstained
+    # verdict (none of OUR robots can carry it here) no longer holds the job: it goes on to scene building,
+    # carrying the note ``scene_estimate:capability_unassessed``; nothing about a robot is promised.
+    assert failed_admissible is admissible is True
     assert {key: value for key, value in failed.items() if key != "robot_fit_table"} == {
         key: value for key, value in result.items() if key != "robot_fit_table"}
-    if status == "abstained":
-        assert (result["status"], result["blockers"]) == ("needs_input", [LIFT_BLOCKED])
+    assert result.get("status") != "needs_input" and LIFT_BLOCKED not in (result.get("blockers") or [])
+    assert result["capability_verdict"]["status"] == ("clear" if status == "clear" else "abstained")
+    from blueprint_pipeline.atlas_scene_estimates import CAPABILITY_UNASSESSED, preparation_flags
+    flags = preparation_flags(native.parent / "preparation.json")
+    assert (CAPABILITY_UNASSESSED in flags) is (status == "abstained")
 
 
 def test_a_broken_catalog_file_is_recorded_and_the_handoff_continues(handoff, monkeypatch, tmp_path):

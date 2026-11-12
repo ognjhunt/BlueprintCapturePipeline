@@ -167,3 +167,23 @@ def test_negative_answer_cannot_apply_to_a_different_current_task(tmp_path):
     context = {**context, 'context_digest': 'sha256:' + '9' * 64}
     assert retain_rejected_selection(capture_root=capture, task_context=context, source_video=video) is None
     assert not (capture / 'pipeline/website_scene_preparation/handoff.json').exists()
+
+
+def test_none_of_these_asks_for_a_video_that_shows_the_object(tmp_path, monkeypatch):
+    """Part 6 (2026-11-12): the site's "none of these" told it Blueprint would review the evidence; nothing
+    did. The video does not show the object the site means, so the site is asked to film it."""
+    from types import SimpleNamespace
+    from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
+    from blueprint_pipeline.website_preparation_outcome import NEW_REASONS_ENV, read_preparation_outcome
+    capture, context, video = rejected_job(tmp_path)
+    run_website_capture_preparation(descriptor=SimpleNamespace(metadata={'site_task_context': context}),
+        capture_root=capture, pipeline_dir=capture / 'pipeline', source_video=video,
+        derived_scene_generation_allowed=True, gates=[], prepare_media=None, check_privacy=None, make_gate=None)
+    def read(**extra):
+        return read_preparation_outcome(capture_root=capture, task_context_digest=context['context_digest'],
+                                        state='awaiting_inputs', **extra)['reason']
+    monkeypatch.setenv(NEW_REASONS_ENV, 'true')
+    assert read(recapture=True) == 'website_task_object_not_observed'
+    assert read() == 'task_evidence_incomplete'  # readers before v7 keep their vocabulary
+    monkeypatch.setenv(NEW_REASONS_ENV, 'false')
+    assert read(recapture=True) == 'task_evidence_incomplete'  # until the website lists it

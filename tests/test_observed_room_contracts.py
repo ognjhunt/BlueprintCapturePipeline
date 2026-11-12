@@ -33,6 +33,11 @@ def fixture(tmp_path):
                     'remote_verified_at': '2026-10-29T00:00:00Z'}}
     write_json(root / 'pipeline/atlas/result.json', result)
     write_json(root / 'pipeline/atlas/preview_job.json', job)
+    # The review abstained under the current instructions for a cause the video cannot get past.
+    from blueprint_pipeline.atlas_scene_planner import INSTRUCTIONS_REVISION
+    write_json(root / 'pipeline/atlas/observed_room/selection.json', {'planner_receipt': {
+        'status': 'completed', 'binding': {'instructions_revision': INSTRUCTIONS_REVISION},
+        'proposal': {'status': 'abstained', 'abstention_reasons': ['task_object_or_region_not_visible']}}})
     return root, source, context, result, job
 
 
@@ -48,10 +53,22 @@ def test_room_ready_task_limit_becomes_completed_preparation_without_reasking_ge
     assert output['status'] == 'completed' and output['native_execution_complete'] is False
     handoff = output['website_scene_preparation']
     assert handoff['visual_reconstruction_ready'] is True and handoff['simulator_ready'] is False
-    assert retains_observed_room_limit(handoff, context)
-    assert handoff['observed_room']['source_result_digest'] == result['digest']
-    assert read_preparation_outcome(capture_root=root, task_context_digest=context['context_digest'], state='awaiting_inputs') == {
-        'category': 'insufficient_evidence', 'reason': 'task_evidence_incomplete', 'basis': 'missing_evidence',
+    # A final abstention asks the site for a new video, naming what the video lacked; never a wait on Blueprint.
+    from blueprint_pipeline.website_recapture_required import NOT_OBSERVED_CODE, retains_recapture_required
+    assert handoff['blockers'] == [NOT_OBSERVED_CODE] and retains_recapture_required(handoff, context)
+    assert not retains_observed_room_limit(handoff, context)
+    assert handoff['observed_room_evidence']['source_result_digest'] == result['digest']
+    import os
+    from blueprint_pipeline.website_preparation_outcome import NEW_REASONS_ENV
+    os.environ[NEW_REASONS_ENV] = 'false'
+    assert read_preparation_outcome(capture_root=root, task_context_digest=context['context_digest'],
+                                    state='awaiting_inputs', recapture=True)['reason'] == 'task_evidence_incomplete'
+    os.environ[NEW_REASONS_ENV] = 'true'
+    outcome = read_preparation_outcome(capture_root=root, task_context_digest=context['context_digest'],
+                                       state='awaiting_inputs', recapture=True)
+    os.environ.pop(NEW_REASONS_ENV, None)
+    assert outcome == {
+        'category': 'insufficient_evidence', 'reason': NOT_OBSERVED_CODE, 'basis': 'missing_evidence',
         'robot_id': None, 'evidence_digest': handoff['digest']}
     assert not (root / 'pipeline/website_scene_preparation/preparation.json').exists()
     assert not (root / 'pipeline/website_scene_preparation/native_runtime_contract.json').exists()
@@ -94,3 +111,36 @@ def test_rejected_old_worker_cannot_publish_the_partial_outcome(tmp_path):
         retain_observed_room_limit(capture_root=root, task_context=context, source_video=source)
     assert context == before
     assert not (root / 'pipeline/website_scene_preparation/handoff.json').exists()
+
+
+@pytest.mark.parametrize('receipt', [
+    # capture-f88f1bd0 and capture-c33427c3: abstained under older instructions, naming no cause.
+    {'status': 'completed', 'binding': {}, 'proposal': {'status': 'abstained'}},
+    # A doubt the current instructions propose through.
+    {'status': 'completed', 'binding': {'instructions_revision': 'atlas_scene_planner.r2'},
+     'proposal': {'status': 'abstained', 'abstention_reasons': ['support_or_destination_not_visible']}}])
+def test_an_abstention_that_is_not_final_is_never_the_jobs_answer(tmp_path, receipt):
+    from blueprint_pipeline.atlas_observed_room import reopens_for_review
+    root, source, context, _, _ = fixture(tmp_path)
+    write_json(root / 'pipeline/atlas/observed_room/selection.json', {'planner_receipt': receipt, 'digest': 'sha256:' + 'e' * 64})
+    assert read_room_limit(root, context) is None
+    assert retain_observed_room_limit(capture_root=root, task_context=context, source_video=source) is None
+    assert reopens_for_review(root / 'pipeline/atlas') == 'sha256:' + 'e' * 64
+
+
+def test_a_final_abstention_asks_the_site_before_the_room_is_built(tmp_path):
+    from blueprint_pipeline.atlas_scene_planner import INSTRUCTIONS_REVISION
+    from blueprint_pipeline.website_recapture_required import FRAMES_UNUSABLE_CODE, retains_recapture_required
+    root, source, context, _, _ = fixture(tmp_path)
+    for name in ('result.json', 'preview_job.json'):
+        (root / 'pipeline/atlas' / name).unlink()
+    binding = {'instructions_revision': INSTRUCTIONS_REVISION, 'task_context_digest': context['context_digest'],
+               'source_video_digest': _sha256_file(source)}
+    write_json(root / 'pipeline/atlas/observed_room/selection.json', {
+        'task_context_digest': context['context_digest'], 'planner_receipt': {
+            'status': 'completed', 'binding': binding,
+            'proposal': {'status': 'abstained', 'abstention_reasons': ['frames_unusable']}}})
+    handoff = retain_observed_room_limit(capture_root=root, task_context=context, source_video=source)
+    assert handoff['blockers'] == [FRAMES_UNUSABLE_CODE] and retains_recapture_required(handoff, context)
+    assert handoff['observed_room_evidence']['room'] == 'not_yet_built'
+    assert read_room_limit(root, context) is None

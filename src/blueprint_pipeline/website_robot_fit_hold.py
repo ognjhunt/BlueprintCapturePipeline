@@ -32,6 +32,8 @@ RECHECK_MARK = "robot_fit_recheck"
 STATE_FILE = "robot_fit_recheck.json"
 #: Replays of one change of inputs, at most, before it waits for the next change.
 MAX_RECHECKS = 3
+#: The precheck rule now in force: recorded, never a hold.
+ROBOT_FIT_RULE = "precheck_never_holds.v1"
 _RECORD_FIELDS = frozenset({"schema_version", "payload_base64", "source_payload_sha256", "producer_delivery_key",
                             "recheck_inputs"})
 
@@ -55,7 +57,11 @@ def recheck_inputs() -> dict[str, Any]:
         catalog = load_default_catalog()["catalog_digest"]
     except (OSError, ValueError, KeyError, TypeError):
         catalog = "unreadable"
-    return {"catalog_digest": catalog, "team_registry_digest": team_registry_state()[1]}
+    # Since 2026-11-12 the precheck never holds a job (owner: the test runs even when no robot fits on
+    # paper). Naming the rule makes every hold decided under the old one differ from now, so each such
+    # job is rechecked once (bounded by ``MAX_RECHECKS``) and goes on.
+    return {"catalog_digest": catalog, "team_registry_digest": team_registry_state()[1],
+            "robot_fit_rule": ROBOT_FIT_RULE}
 
 
 def _handoff(pipeline_root: Path) -> dict[str, Any] | None:
@@ -162,12 +168,18 @@ def _note(pipeline: Path, digest: str, now: float) -> None:
         "next_at_epoch": now + min(1800, 60 * 2 ** min(replays - 1, 5))})
 
 
+def _rule_only(held: Mapping[str, Any] | None, inputs: Mapping[str, Any]) -> bool:
+    """A hold decided under the old rule whose robots and registry are unchanged: only the rule moved."""
+    return (isinstance(held, Mapping) and "robot_fit_rule" not in held
+            and {key: inputs.get(key) for key in held} == dict(held))
+
+
 def reconcile_robot_fit_holds(listener, *, storage_root: Path, process_args, limit=1,
                               now: float | None = None) -> dict[str, int]:
     """Rerun each held job whose catalog or team registry changed since it was held; at most ``limit`` per tick."""
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     from .website_assessment_resume import MAX_BYTES, _payload_bytes, _require
-    from .website_preparation_status import DELIVERY_FILE, _read, _root, read_preparation_status, validate_selectors
+    from .website_preparation_status import _root
 
     current = time.time() if now is None else now
     counts = {"rechecked": 0, "held": 0, "waiting": 0}
@@ -201,6 +213,18 @@ def reconcile_robot_fit_holds(listener, *, storage_root: Path, process_args, lim
             else:
                 continue
             digest = canonical_digest({"recheck_inputs": inputs})
+            rule_only = _rule_only(held, inputs)
+            if rule_only:
+                # Only the rule changed (robots and registry as when it was held): a job released by a new
+                # release, so only one that can still go on, once per release, recorded.
+                from .team_scene_packet_worker import current_release_commit
+                from .website_held_handoff_replay import _grant_live
+
+                release = current_release_commit()
+                digest = canonical_digest({"recheck_inputs": inputs, "release_commit": release})
+                if not release or not _grant_live(pipeline) or _state(pipeline).get("inputs_digest") == digest:
+                    counts["waiting"] += 1
+                    continue
             if (set(record) != _RECORD_FIELDS or record.get("schema_version") != SCHEMA
                     or record.get("recheck_inputs") != held or not _due(pipeline, digest, current)):
                 counts["waiting"] += 1
@@ -213,11 +237,12 @@ def reconcile_robot_fit_holds(listener, *, storage_root: Path, process_args, lim
                      and before.get("source_payload_sha256") == record["source_payload_sha256"]
                      and before.get("producer_delivery_key") == record["producer_delivery_key"])
             _require(handoff.source_finalize is not None and handoff.source_membership_selector is not None)
-            # The status reader re-checks the active birth and membership, fresh owner, local consent,
-            # current context and unchanged ledger; a withdrawn or ended job is never rerun.
-            selectors = validate_selectors((_read(root / DELIVERY_FILE) or {}).get("selectors"))
-            status = read_preparation_status(capture_root=root, selectors=selectors)
-            _require(status["revision"] == before["revision"] and status["state"] != "authority_ended")
+            # The same still-open check as every held replay: active birth and membership, fresh owner,
+            # local consent, the website's current context (a re-filmed capture or a closed run is refused)
+            # and the unchanged ledger; a withdrawn or ended job is never rerun.
+            from .website_held_handoff_replay import require_still_open
+
+            require_still_open(root, revision=before["revision"])
             birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
             _require(birth is not None and birth["source_membership_selector"] == handoff.source_membership_selector)
             _require(listener._read_job_ledger(root) == before)

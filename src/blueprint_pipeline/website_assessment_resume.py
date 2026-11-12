@@ -20,12 +20,12 @@ from pathlib import Path
 from .common import write_json
 from . import website_task_context as context_reader
 from .website_preparation_contracts import validate_preparation_proposal as _proposal_admitted
+# WebApp's PLACEHOLDER_TASK_SUMMARY: the brief of an upload whose site has not named the job.
+from .website_task_context_contracts import UNNAMED_TASK_DESCRIPTION
 
 PENDING_CODE = "website_control_scene-sponsorship_http_409:website_assessment_preparation_pending"
 SCHEMA = "website_assessment_resume.v1"
 MAX_BYTES = 65_536
-# WebApp's PLACEHOLDER_TASK_SUMMARY: the brief of an upload whose site has not named the job.
-UNNAMED_TASK_DESCRIPTION = "Your site task"
 # The fields a site's naming of its job may change in the same v1 projection.
 NAMED_TASK_FIELDS = frozenset({"context_digest", "description", "task_family", "unresolved", "confirmed", "confirmed_at"})
 
@@ -153,9 +153,12 @@ def _payload_bytes(listener, payload, digest):
 
 def admit_browser_preparation(listener, *, payload, handoff, capture_root, observation,
                               producer_delivery_key, payload_digest, allow_resume):
-    """Explicit current browser admission before run_e2e or any provider stage."""
+    """Explicit current browser admission before run_e2e or any provider stage.
+
+    Returns the job's grant as the WebApp read it, or None for a capture that is not a browser delivery.
+    """
     if observation["producer_delivery"]["kind"] != "website_browser_capture_delivery":
-        return
+        return None
     _require(handoff.source_finalize is not None and handoff.source_membership_selector is not None
              and producer_delivery_key == observation["producer_delivery"]["delivery_key"])
     context = context_reader.load_current_website_task_context(request_id=observation["request_id"],
@@ -200,6 +203,7 @@ def admit_browser_preparation(listener, *, payload, handoff, capture_root, obser
                 "task_context_digest": context["context_digest"]}
         raise AssessmentPreparationPending(record) from None
     _proposal_admitted(authority, context)
+    return authority
 
 
 def safe_to_arm(attempt_count, previous_history, recovered_expired_lease):

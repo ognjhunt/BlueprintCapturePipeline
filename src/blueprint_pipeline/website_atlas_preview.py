@@ -88,7 +88,10 @@ _AWAITING_AUTHORITY = frozenset({
     "provider_terms_not_configured_or_changed", "website_atlas_planner_consent_required",
     "website_atlas_runtime_policy_required", "website_atlas_authorization_invalid", "task_brief_missing",
     "website_atlas_api_key_missing", "website_atlas_api_base_url_missing",
-    "website_atlas_provider_retention_decision_required", "atlas_runtime_price_review_expired"})
+    "website_atlas_provider_retention_decision_required", "atlas_runtime_price_review_expired",
+    # The site names its job (or the website drafts the sentence from the footage): re-checked
+    # with the website's current context until the job's own deadline.
+    "website_task_not_named"})
 # A planner abstention can be re-examined after a source-review fix. It is not
 # proof that the recording must be replaced. Other selection failures keep
 # their existing non-retryable boundary.
@@ -237,8 +240,15 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     if code in _WITHDRAWN:
         return _transition(job, current, "withdrawn", "website_capture_withdrawn" if job.get("schema_version") == SCHEMA else code)
     if code in _AWAITING_AUTHORITY:
+        if code == "website_task_not_named":
+            # Until the released website lists it, the wait travels as the brief it already words as missing.
+            from .website_preparation_outcome import website_lists_new_reasons
+            if not website_lists_new_reasons():
+                code = "task_brief_missing"
         return _transition(job, current, "needs_input", code, retry_at_epoch=current + AUTHORITY_RECHECK_SECONDS)
-    if code in _NEEDS_NEW_CAPTURE or code in _NEEDS_TASK_INPUT or code == "atlas_scene_planner_abstained":
+    from .website_recapture_required import ABSTENTION_CODES
+    if (code in _NEEDS_NEW_CAPTURE or code in _NEEDS_TASK_INPUT or code == "atlas_scene_planner_abstained"
+            or code in ABSTENTION_CODES.values()):
         return _transition(job, current, "needs_input", code)
     if not isinstance(error, ValueError):
         # Typed refusals are ValueErrors with their own code. Anything else (transport, storage
@@ -583,11 +593,74 @@ def _deliver(job: dict[str, Any], *, now: Callable[[], float]) -> dict[str, Any]
             "delivery_next_at_epoch": current + min(3600, 30 * 2 ** attempts)}
 
 
+def _reopen_observed_room(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float]) -> dict[str, Any]:
+    """Reopen, once, a ready job whose observed room rests on an abstention that is not final.
+
+    Before 2026-11-11 a scene review could abstain for a doubt it is now told to propose through
+    (a destination end only partly filmed, an unclear subject origin); the room it then bought was
+    final and the site was told Blueprint would review it. The job's next step reviews the task once
+    more under the current instructions (``website_atlas_pipeline``); everything bought is reused.
+    """
+    from .atlas_observed_room import reopens_for_review
+    if job.get("state") != "ready" or job.get("observed_room_reopened"):
+        return job
+    current = int(now())
+    if not _may_reopen(job, capture_root=job_dir.parents[1], current=current):
+        # Expired, ended, closed, withdrawn or without a live grant: left exactly as it is, for ever.
+        return job
+    marker = reopens_for_review(job_dir)
+    if marker is None:
+        return job
+    return _transition(job, current, "processing", None, stage="observed_room_review",
+                       next_attempt_at_epoch=current, retry_at_epoch=None, observed_room_reopened=marker,
+                       reopened_from=dict(job))
+
+
+#: A reopened review needs room to finish inside the job's own window.
+REOPEN_MARGIN_SECONDS = 86_400
+
+
+def _may_reopen(job: Mapping[str, Any], *, capture_root: Path, current: int) -> bool:
+    """Only a job that can still finish is reopened (review 2026-11-12: a reopened job past its window
+    failed at once as ``atlas_preview_expired`` and lost its ready preview)."""
+    from .website_preparation_terminal import GRANT_FILE
+    enqueued = job.get("enqueued_at_epoch")
+    if not isinstance(enqueued, (int, float)) or current - enqueued > MAXIMUM_JOB_SECONDS - REOPEN_MARGIN_SECONDS:
+        return False
+    try:
+        if _withdrawn(capture_root):
+            return False
+        ledger_path, grant_path = capture_root / "pipeline_job_ledger.json", capture_root / GRANT_FILE
+        ledger = json.loads(ledger_path.read_text()) if ledger_path.is_file() and not ledger_path.is_symlink() else {}
+        if (ledger.get("status") == "terminal_authority_ended" or ledger.get("terminal_code")
+                or "website_run_closed_by_owner" in str(ledger.get("last_error") or "")):
+            return False
+        grant = json.loads(grant_path.read_text()) if grant_path.is_file() and not grant_path.is_symlink() else {}
+    except (OSError, ValueError):
+        return False
+    expiry = grant.get("expires_at_epoch") if isinstance(grant, dict) else None
+    return isinstance(expiry, (int, float)) and not isinstance(expiry, bool) and expiry > current
+
+
+def _restore_unfinished_reopen(job: dict[str, Any]) -> dict[str, Any]:
+    """A reopened review that cannot run never ends the job: it goes back to the ready job it was."""
+    before = job.get("reopened_from")
+    if job.get("state") == "ready" and before is not None:
+        # The review finished: the new result is the job's; nothing to go back to any more.
+        return {key: value for key, value in job.items() if key != "reopened_from"}
+    if not isinstance(before, dict) or job.get("state") not in {"failed", "needs_input"} or job.get("retry_at_epoch"):
+        return job
+    return {**before, "observed_room_reopened": job["observed_room_reopened"],
+            "observed_room_review_outcome": {"state": job["state"], "reason": job.get("reason")}}
+
+
 def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: Any = None) -> str:
     """One bounded step for one job: Atlas progress, provider cleanup, WebApp delivery."""
     return advance_preparation_job(path, reader=_read,
-        step=lambda job: _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now),
-        deliver=lambda job: _deliver(job, now=now), now=now, transport=transport)
+        step=lambda job: _restore_unfinished_reopen(
+            _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now)),
+        deliver=lambda job: _deliver(job, now=now),
+        refresh=lambda job: _reopen_observed_room(job, job_dir=path.parent, now=now), now=now, transport=transport)
 
 
 def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]],

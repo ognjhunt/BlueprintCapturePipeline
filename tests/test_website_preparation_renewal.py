@@ -416,19 +416,15 @@ def test_a_live_sibling_of_the_capture_blocks_the_reissue(site, monkeypatch):
     assert not site.registered and not site.enqueued
 
 
-def test_an_abstained_verdict_stops_before_registration(site, monkeypatch):
+def test_an_abstained_verdict_no_longer_stops_the_reissue(site, monkeypatch):
+    # A judgement about the outcome, recorded and flagged (scene_estimate:capability_unassessed), never a stop.
     def abstain(**_):
         return {"status": "abstained", "blockers": ["synthetic_no_enabled_embodiment"],
                 "verdict_digest": "sha256:" + "4" * 64}
 
     monkeypatch.setattr("blueprint_pipeline.website_rigid_feasibility.rigid_task_verdict", abstain)
-    with pytest.raises(ValueError, match="^website_preparation_renewal_capability_abstained$"):
-        run(site)
-    assert not site.registered and not site.enqueued
-    target = site.prior_path.parent / "renewals" / site.fresh["authority_digest"][7:]
-    held = json.loads((target / "reissue.json").read_text())
-    assert held["status"] == "held" and held["blockers"] == ["website_preparation_renewal_capability_abstained"]
-    assert held["capability_verdict"]["status"] == "abstained"
+    run(site)
+    assert site.registered
 
 
 def test_the_identity_builder_reproduces_the_shared_vector():

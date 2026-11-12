@@ -34,6 +34,24 @@ def _webapp_only(request: Request) -> None:
 
 
 def register_website_atlas_preview_routes(app: FastAPI, *, require_admission: Callable) -> None:
+    @app.get("/api/live-pipeline/website-destination-pictures/{capture_id}/destination.place.png",
+             dependencies=[Depends(require_admission)])
+    async def read_place_picture(request: Request, capture_id: str, request_id: str = "", digest: str = ""):
+        """The place picture (``website_destination_choice``), read like the scene preview; 404 while switch
+        (iii) is off."""
+        from fastapi.responses import Response
+
+        from .website_destination_choice import PlacePictureUnavailable, open_place_picture
+        _webapp_only(request)
+        try:
+            body = await run_in_threadpool(open_place_picture, request_id=request_id, capture_id=capture_id,
+                                           digest=digest, storage_root=_storage_root())
+        except PlacePictureUnavailable:
+            raise HTTPException(status_code=404, detail="website_place_picture_unavailable") from None
+        return Response(body, media_type="image/png", headers={
+            "X-Blueprint-Artifact-SHA256": digest, "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff"})
+
     @app.get("/api/live-pipeline/website-scene-previews/{capture_id}/scene.ply",
              dependencies=[Depends(require_admission)])
     async def read_scene_preview(request: Request, capture_id: str, request_id: str = "",

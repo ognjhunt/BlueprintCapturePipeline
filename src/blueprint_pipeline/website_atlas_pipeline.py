@@ -893,6 +893,20 @@ def _checkpoint_with_details(checkpoint):
     return check
 
 
+def _final_abstention_stop(receipt: dict) -> ValueError:
+    """The Atlas job's stop on a final scene-review abstention: the ask for a new video, never a room purchase.
+
+    The reason is the preparation's own recapture code once the website lists it
+    (``website_preparation_outcome.NEW_REASONS_ENV``); until then the review's existing abstention code.
+    """
+    from .website_preparation_outcome import sent_recapture_reason
+    from .website_recapture_required import ABSTENTION_CODES
+
+    reasons = (receipt.get('proposal') or {}).get('abstention_reasons') or []
+    code = next(ABSTENTION_CODES[reason] for reason in ABSTENTION_CODES if reason in reasons)
+    return ValueError(code if sent_recapture_reason(code) == code else 'atlas_scene_planner_abstained:final')
+
+
 def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, experimental=False,
                        invoker=None, max_polls=2, refinement_feedback: Path | None = None, checkpoint=None,
                        edit_scope: str | None = None):
@@ -915,10 +929,27 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # failed or refused hold World Labs never charged stops counting against the job.
     from .atlas_spend_settlement import settle_closed_atlas_attempts_under
     settle_closed_atlas_attempts_under(output_root, task_context=task_context)
+    from .website_task_context_contracts import TASK_NOT_NAMED, task_named
+    if "description" in task_context and not task_named(task_context):
+        # A job with no sentence has no task to review: nothing is configured, reviewed or bought.
+        # The preview job waits on it and re-reads the website's context (``website_atlas_preview``).
+        raise ValueError(TASK_NOT_NAMED)
     from .atlas_observed_room import SELECTION as ROOM_SELECTION, run_observed_room, retain_selection
     if (output_root / ROOM_SELECTION).is_file():
-        return run_observed_room(output_root=output_root, source_digest=source_digest, task_context=task_context,
-            max_polls=max_polls, checkpoint=checkpoint, experimental=experimental)
+        from .atlas_observed_room import final_room, set_aside_selection
+        # A room whose own paid step is in flight, or finished and not yet collected, is finished
+        # and collected first (review 2026-11-12); only then is its selection set aside.
+        in_flight = ((output_root / 'observed_room/pose').exists()
+                     and not (output_root / 'observed_room/result.json').is_file())
+        if final_room(output_root) and not in_flight and not (output_root / 'observed_room/result.json').is_file():
+            # A final abstention buys no room: the site is asked for a new video either way.
+            raise _final_abstention_stop((json.loads((output_root / ROOM_SELECTION).read_text()))['planner_receipt'])
+        if final_room(output_root) or in_flight:
+            return run_observed_room(output_root=output_root, source_digest=source_digest, task_context=task_context,
+                max_polls=max_polls, checkpoint=checkpoint, experimental=experimental)
+        # An abstention under older instructions, or for a doubt now proposed through: the task is
+        # reviewed once more under the current instructions; the room bought for it stays retained.
+        set_aside_selection(output_root)
     saved = output_root / "configuration.json"
     # Retained work may read its original allowance, never issue a new one.
     current = (load_configuration(task_context, source_digest, create=False) if saved.is_file()
@@ -1040,6 +1071,11 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                     'status': 'needs_input', 'reason': str(exc),
                     'task_planner_receipt_digest': canonical_digest(receipt), 'provider_mutation_performed': False})
             else:
+                from .atlas_review_abstention import final_abstention
+                if final_abstention(receipt):
+                    # The video cannot serve the task (no frame shows its object or region, or no frame is
+                    # usable): no room is bought for it. The selection stays retained as evidence, at $0.
+                    raise _final_abstention_stop(receipt)
                 return run_observed_room(output_root=output_root, source_digest=source_digest, task_context=task_context,
                     max_polls=max_polls, checkpoint=checkpoint, experimental=experimental)
         review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, feedback=feedback, reference_sources=receipt.get("reference_sources", []))

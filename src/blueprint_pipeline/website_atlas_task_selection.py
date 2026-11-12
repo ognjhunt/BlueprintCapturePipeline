@@ -69,6 +69,10 @@ def load_retained_uncertain_analysis(*, capture_root: Path, task_context: Mappin
                 or selection.get("original_analysis_digest") != canonical_digest(original)):
             raise ValueError("website_atlas_target_selection_original_changed")
         value = original
+    from .clean_plate_removal_analysis_gemini import binds_current_job
+    if not binds_current_job(value):
+        # Decided under an older revision of the instruction: bought once more under the current one.
+        return None
     blockers = value.get("blockers") or []
     if (value.get("status") != "blocked" or not blockers
             or not all(isinstance(code, str) and (code.startswith("task_target_requires_clarification:")
@@ -78,6 +82,70 @@ def load_retained_uncertain_analysis(*, capture_root: Path, task_context: Mappin
     from .clean_plate_removal_analysis_gemini import validate_removal_plan
     if validate_removal_plan(value):
         raise ValueError("website_atlas_target_selection_original_invalid")
+    return value
+
+
+def load_published_analysis(*, capture_root: Path, task_context: Mapping[str, Any],
+                            source_video: Path) -> dict[str, Any] | None:
+    """The retained analysis of a capture whose scene is already staged or published, or None.
+
+    Such a job keeps the answer it was built on: rerunning it never buys a newer analysis that could
+    move its object or destination (review 2026-11-12: capture-447ae4f4, capture-4b60431e).
+    """
+    pipeline_root = capture_root / "pipeline"
+    handoff_path = pipeline_root / "website_scene_preparation" / "handoff.json"
+    plan_path = pipeline_root / "clean_plate" / "removal_plan.json"
+    if (pipeline_root.is_symlink() or not handoff_path.is_file() or handoff_path.is_symlink()
+            or not plan_path.is_file() or plan_path.is_symlink()):
+        return None
+    handoff = json.loads(handoff_path.read_text())
+    if not isinstance(handoff, dict) or not (handoff.get("source_registration") or handoff.get("website_intake_outbox")):
+        return None
+    value = _read(pipeline_root / "clean_plate", "removal_plan.json")
+    if value.get("status") != "completed" or _source_binding(
+            value.get("original_uncertain_analysis") or value, task_context, source_video) is None:
+        return None
+    return value
+
+
+def rerun_at_no_cost(capture_root: Path) -> str | None:
+    """Which $0 re-run this capture is in, or None (review 2026-11-12).
+
+    ``registration_reevaluation``: the once-per-release look at a registration hold
+    (``website_held_handoff_replay``), recorded before its run against the handoff it reruns.
+    ``spent_retry``: the once-per-release run of a job whose timed retries are spent
+    (``website_preparation_retry.RETRIES_SPENT``). Both re-run what a release fixed, on what the job has.
+    """
+    pipeline_root = Path(capture_root) / "pipeline"
+    try:
+        state = json.loads((pipeline_root / "website_scene_preparation" / "held_handoff_replay.json").read_text())
+        handoff = json.loads((pipeline_root / "website_scene_preparation" / "handoff.json").read_text())
+        fact = state.get("fact") or {}
+        if fact.get("recapture_code") and state.get("handoff_digest") == handoff.get("digest"):
+            return "registration_reevaluation"
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        ledger = json.loads((Path(capture_root) / "pipeline_job_ledger.json").read_text())
+    except (OSError, ValueError):
+        return None
+    from .website_preparation_retry_record import FIELD, RETRIES_SPENT
+    return "spent_retry" if ((ledger.get(FIELD) or {}).get("kind") == RETRIES_SPENT) else None
+
+
+def load_rerun_analysis(*, capture_root: Path, task_context: Mapping[str, Any],
+                        source_video: Path) -> dict[str, Any] | None:
+    """The retained completed analysis a $0 re-run keeps, whatever revision bought it; else None."""
+    if rerun_at_no_cost(capture_root) is None:
+        return None
+    pipeline_root = Path(capture_root) / "pipeline"
+    plan_path = pipeline_root / "clean_plate" / "removal_plan.json"
+    if pipeline_root.is_symlink() or not plan_path.is_file() or plan_path.is_symlink():
+        return None
+    value = _read(pipeline_root / "clean_plate", "removal_plan.json")
+    if value.get("status") != "completed" or _source_binding(
+            value.get("original_uncertain_analysis") or value, task_context, source_video) is None:
+        return None
     return value
 
 
@@ -126,7 +194,9 @@ def resolve_retained_target_selection(
         raise ValueError("website_atlas_target_selection_source_changed")
     if job.get("state") == "processing":
         raise StageError("website_scene_preparation", "website_atlas_job_processing")
-    if job.get("state") != "ready":
+    if job.get("state") != "ready" or not (root / "selection_binding.json").is_file():
+        # Nothing selected to adopt: an observed-room job retains no selection binding
+        # (capture-c33427c3 raised FileNotFoundError here).
         return original
     result = _read(root, "result.json")
     result_digest = canonical_digest(result, digest_field="digest")

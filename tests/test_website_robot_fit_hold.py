@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -103,6 +104,8 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
     monkeypatch.setattr("blueprint_pipeline.website_robot_fit.robot_fit_table",
                         lambda **_: {"table_digest": "sha256:" + "5" * 64, "counts": {}})
 
+    state = {"legacy": True}
+
     def handoff(**_):
         # The handoff's own record around prepare_rigid_native_inputs; past it, registration and the
         # intake outbox are what the real handoff then writes.
@@ -111,11 +114,17 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
                   "capture_id": owner["capture_id"], "scene_id": owner["scene_id"],
                   "visual_reconstruction_ready": True, "preparation_path": str(work / "preparation.json"),
                   "preparation_digest": job["digest"]}
-        if prepare_rigid_native_inputs(result=result, preparation=job, preparation_path=work / "preparation.json",
+        ready = prepare_rigid_native_inputs(result=result, preparation=job, preparation_path=work / "preparation.json",
                 native_root=work / "native", task_context=context, now=0.0,
                 runtime_inputs={"status": "ready", "digest": "sha256:" + "3" * 64,
                                 "appearance": {"status": "native_appearance_authored"},
-                                "collision": {"path": str(collision)}}):
+                                "collision": {"path": str(collision)}})
+        precheck = result.get("robot_fit_precheck") or {}
+        if state["legacy"] and precheck.get("status") == "no_fit":
+            # A release before 2026-11-12 held a no-fit job here; jobs it held are still on the host.
+            result.update(status="needs_input", blockers=[precheck["hold_reason"]])
+            ready = False
+        if ready:
             result["source_registration"] = {"status": "registered"}
             result["website_intake_outbox"] = {"state": "forward_pending", "submission_id": owner["capture_id"]}
         result["digest"] = canonical_digest(result, digest_field="digest")
@@ -146,7 +155,7 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
                                                 run_e2e=run_e2e)
 
     return SimpleNamespace(root=root, raw=raw, runs=runs, deliver=deliver, catalogs=catalogs, run_e2e=run_e2e,
-                           selectors=None)
+                           selectors=None, state=state)
 
 
 def _held(site) -> dict[str, Any]:
@@ -156,7 +165,25 @@ def _held(site) -> dict[str, Any]:
     return listener._read_job_ledger(site.root)
 
 
-def test_a_no_fit_job_holds_as_a_completed_stage_and_reads_as_waiting(site):
+def test_a_no_fit_job_is_built_and_tested_with_its_paper_verdict_as_a_flag(site):
+    from blueprint_pipeline.atlas_scene_estimates import preparation_flags
+
+    site.state["legacy"] = False
+    ledger = _held(site)
+    work = site.root / "pipeline/website_scene_preparation"
+    handoff = json.loads((work / "handoff.json").read_text())
+    # The precheck is recorded as before, and the job goes on to registration and the tests.
+    assert handoff["robot_fit_precheck"]["status"] == "no_fit"
+    assert handoff["robot_fit_precheck"]["hold_reason"] == HOLD_PREFIX + "reach"
+    assert HOLD_PREFIX + "reach" not in handoff["blockers"] and handoff["website_intake_outbox"]
+    assert ledger["status"] == "completed" and hold.FIELD not in ledger
+    assert read_preparation_status(capture_root=site.root, selectors=site.selectors,
+                                   schema_version=STATUS_V6)["state"] == "handed_off"
+    # The cause travels with the job to its published result.
+    assert "scene_estimate:robot_fit_none:reach" in preparation_flags(work / "preparation.json")
+
+
+def test_a_job_held_under_the_old_rule_reads_as_waiting(site):
     ledger = _held(site)
     handoff = json.loads((site.root / "pipeline/website_scene_preparation/handoff.json").read_text())
     # Held, not failed: the stage completed and nothing was registered or enqueued.
@@ -183,20 +210,68 @@ def test_a_redelivery_never_reruns_the_hold(site):
     assert len(site.runs) == 1 and listener._read_job_ledger(site.root)["attempt_count"] == 1
 
 
-def test_a_hold_whose_robots_did_not_change_is_not_rechecked(site):
+def _new_release(site, monkeypatch, *, grant_ends_in: float = 86_400, release: str = "f" * 40):
+    """The new release on the host, and the job's retained grant ending ``grant_ends_in`` seconds from now."""
+    from blueprint_pipeline import team_scene_packet_worker
+
+    monkeypatch.setattr(team_scene_packet_worker, "current_release_commit", lambda: release)
+    write_json(site.root / "pipeline/website_scene_sponsorship.json", {"expires_at_epoch": time.time() + grant_ends_in})
+    site.state["legacy"] = False  # the new release: the precheck never holds
+
+
+def _reconcile(site):
+    return hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4],
+                                          process_args={"provider": "openai", "run_e2e": site.run_e2e})
+
+
+def test_a_job_held_under_the_old_rule_is_rechecked_once_per_release_and_goes_on(site, monkeypatch):
     _held(site)
-    process_args = {"provider": "openai", "run_e2e": lambda **_: pytest.fail("an unchanged hold was rerun")}
-    counts = hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4], process_args=process_args)
-    assert counts == {"rechecked": 0, "held": 1, "waiting": 0}
-    # Its preparation stage keeps its binding, so no stage reruns either.
-    assert hold.preparation_binding_digest(site.root / "pipeline", None) is None
+    _new_release(site, monkeypatch)
+    pending = hold.pending_recheck(site.root / "pipeline")
+    assert pending["robot_fit_rule"] == hold.ROBOT_FIT_RULE  # differs from the hold's inputs, robots unchanged
+    assert _reconcile(site)["rechecked"] == 1 and len(site.runs) == 2
+    handoff = json.loads((site.root / "pipeline/website_scene_preparation/handoff.json").read_text())
+    assert handoff["robot_fit_precheck"]["status"] == "no_fit" and handoff["website_intake_outbox"]
+    assert _reconcile(site) == {"rechecked": 0, "held": 0, "waiting": 0}
+
+
+def test_an_old_hold_that_held_again_waits_for_the_next_release(site, monkeypatch):
+    _held(site)
+    _new_release(site, monkeypatch)
+    site.state["legacy"] = True  # this release still held it (say, a second hold): once per release only
+    assert _reconcile(site)["rechecked"] == 1
+    assert _reconcile(site)["rechecked"] == 0 and len(site.runs) == 2
+    _new_release(site, monkeypatch, release="e" * 40)
+    assert _reconcile(site)["rechecked"] == 1 and len(site.runs) == 3
+
+
+@pytest.mark.parametrize("ending", ["expired", "no_release", "refilmed", "closed", "withdrawn"])
+def test_an_old_hold_the_site_cannot_go_on_with_is_left_exactly_as_it_is(site, monkeypatch, ending):
+    from tests.test_registration_recapture_reevaluation import _website_refuses, _withdraw
+
+    _held(site)
+    _new_release(site, monkeypatch, grant_ends_in=-1 if ending == "expired" else 86_400,
+                 release=None if ending == "no_release" else "f" * 40)
+    if ending == "refilmed":
+        _website_refuses(monkeypatch, "website_run_capture_superseded")
+    elif ending == "closed":
+        _website_refuses(monkeypatch, "website_run_closed_by_owner")
+    elif ending == "withdrawn":
+        _withdraw(site)
+    before = listener._read_job_ledger(site.root)
+    handoff = (site.root / "pipeline/website_scene_preparation/handoff.json").read_text()
+    assert _reconcile(site)["rechecked"] == 0 and len(site.runs) == 1
+    assert listener._read_job_ledger(site.root) == before
+    assert (site.root / "pipeline/website_scene_preparation/handoff.json").read_text() == handoff
 
 
 def test_a_catalog_change_reruns_the_held_job_once_and_it_goes_on(site):
     _held(site)
     site.catalogs["current"] = _shipped_catalog()  # the G1 lane on again
     pending = hold.pending_recheck(site.root / "pipeline")
-    assert pending == {"catalog_digest": site.catalogs["current"]["catalog_digest"], "team_registry_digest": None}
+    site.state["legacy"] = False
+    assert pending == {"catalog_digest": site.catalogs["current"]["catalog_digest"], "team_registry_digest": None,
+                       "robot_fit_rule": hold.ROBOT_FIT_RULE}
     # The preparation stage's input binding now names the changed inputs, so run_e2e reruns it.
     assert hold.preparation_binding_digest(site.root / "pipeline", None) == canonical_digest(
         {"corrections_binding": None, "robot_fit_recheck_inputs": pending})
@@ -214,23 +289,6 @@ def test_a_catalog_change_reruns_the_held_job_once_and_it_goes_on(site):
     assert hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4],
                                           process_args={"provider": "openai", "run_e2e": site.run_e2e}) == {
         "rechecked": 0, "held": 0, "waiting": 0}
-    assert len(site.runs) == 2
-
-
-def test_a_recheck_that_holds_again_records_its_new_inputs_and_stops(site):
-    _held(site)
-    changed = fixed_arm_catalog()
-    changed["revision"] = "synthetic-revision-2"
-    from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
-    site.catalogs["current"] = seal_catalog(changed)
-    args = {"provider": "openai", "run_e2e": site.run_e2e}
-    assert hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4], process_args=args)[
-        "rechecked"] == 1
-    ledger = listener._read_job_ledger(site.root)
-    assert ledger["status"] == "completed" and ledger["attempt_count"] == 2
-    assert ledger[hold.FIELD]["recheck_inputs"]["catalog_digest"] == site.catalogs["current"]["catalog_digest"]
-    assert hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4], process_args=args) == {
-        "rechecked": 0, "held": 1, "waiting": 0}
     assert len(site.runs) == 2
 
 

@@ -73,7 +73,9 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
     record_path = work / "navigation_scene_inputs" / "key" / "website_navigation_scene_inputs.v1.json"
     # ``gap``: this release cannot send the intake yet (the hook is missing), so the job holds on its
     # integration gap alone; ``release``: the running release's commit.
-    state = {"refuse_again": False, "receipt": None, "media": [], "gap": False, "release": None}
+    # ``registration``: the stage stops on this registration code and asks the site for a new video.
+    state = {"refuse_again": False, "receipt": None, "media": [], "gap": False, "release": None,
+             "registration": None}
     monkeypatch.setattr("blueprint_pipeline.team_scene_packet_worker.current_release_commit",
                         lambda: state["release"])
 
@@ -102,7 +104,11 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
             write_json(work / "base_scene.json", {"atlas_result_digest": built})
             # The real handoff's records change with its scene (its navigation record, specs and digests).
             result.update(base_scene_path=str(work / "base_scene.json"), scene_from_atlas_result=built)
-        if state["gap"]:
+        if state["registration"]:
+            from blueprint_pipeline.website_recapture_required import FIELD as RECAPTURE, record as recapture
+            result.update(status="needs_input", blockers=[state["registration"]], provider_mutation_performed=False,
+                          **{RECAPTURE: recapture(state["registration"], task_context_digest=current["context_digest"])})
+        elif state["gap"]:
             # The scene half is written but no intake is sent: the hold names the missing piece only.
             record = write_record(current)
             gap = runnable_policy_gap_from_options(task_context=current, requirements=need, spec_digest=spec,
