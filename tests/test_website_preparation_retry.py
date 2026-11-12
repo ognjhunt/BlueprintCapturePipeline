@@ -169,25 +169,43 @@ def test_a_money_refusal_waits_and_asks_again(failed, error):
     assert record["kind"] == "money" and record["retry_count"] == 2
 
 
-def test_an_unclassified_failure_gets_six_timed_retries_then_is_left_as_it_is(failed):
+def test_an_unclassified_failure_gets_six_timed_retries_then_runs_once_per_release(failed, monkeypatch):
+    """Part 6 (2026-11-12): after its six timed retries the job was left with no next run and the site was
+    told Blueprint would resolve it. Now it runs again once on each new release, never on a timer."""
+    release = {"commit": "a" * 40}
+    monkeypatch.setattr(retry, "_release", lambda: release["commit"])
     root, raw, _ = failed
     error = "clean_plate: meta_sam_submission_requires_reconciliation"
     with pytest.raises(PipelineError):
         listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
                                          run_e2e=_fail("meta_sam_submission_requires_reconciliation"))
     gaps = []
-    while (record := retry.armed(listener._read_job_ledger(root))) is not None:
+    while (record := retry.armed(listener._read_job_ledger(root))) is not None and record["kind"] == retry.REFUSAL:
         ledger = listener._read_job_ledger(root)
         gaps.append((_due(root) - _parse_utc(ledger["last_failed_at"])).total_seconds())
-        assert record["kind"] == retry.REFUSAL and ledger["last_error"] == error
+        assert ledger["last_error"] == error
         assert _tick(root, _fail("meta_sam_submission_requires_reconciliation"), _due(root))["redriven"] == 1
-    # The delivery's failure followed the outage before it (count 2), then five more retries; then none.
+    # The delivery's failure followed the outage before it (count 2), then five more retries.
     assert gaps == [3600, 10800, 21600, 43200, 86400]
     ledger = listener._read_job_ledger(root)
-    assert ledger["status"] == "failed_retryable" and retry.armed(ledger) is None
+    record = retry.armed(ledger)
+    # Never left with no next run: it waits for the next release.
+    assert ledger["status"] == "failed_retryable" and record["kind"] == retry.RETRIES_SPENT
+    assert record["release_commit"] == "a" * 40
     later = datetime.now(timezone.utc) + timedelta(days=30)
-    assert _tick(root, lambda **_: pytest.fail("retried past the schedule"), later) == {
-        "reclaimed": 0, "adopted": 0, "waiting": 0, "redriven": 0, "failed": 0}
+    assert _tick(root, lambda **_: pytest.fail("retried on the same release"), later)["redriven"] == 0
+    # A new release runs it once; refused again, it waits for the release after.
+    release["commit"] = "b" * 40
+    assert _tick(root, _fail("meta_sam_submission_requires_reconciliation"), later)["redriven"] == 1
+    record = retry.armed(listener._read_job_ledger(root))
+    assert record["kind"] == retry.RETRIES_SPENT and record["release_commit"] == "b" * 40
+    assert _tick(root, lambda **_: pytest.fail("retried on the same release"), later + timedelta(days=1))["redriven"] == 0
+    # A job left before this release with no next run (no retry record at all) is adopted and runs once.
+    before = listener._read_job_ledger(root)
+    retry._transition(listener, root, before, {key: value for key, value in before.items() if key != retry.FIELD})
+    counts = _tick(root, _fail("meta_sam_submission_requires_reconciliation"), later + timedelta(days=2))
+    assert counts["adopted"] == 1 and counts["redriven"] == 1
+    assert retry.armed(listener._read_job_ledger(root))["kind"] == retry.RETRIES_SPENT
 
 
 def test_an_authority_ending_is_terminal_and_never_retried(failed):
@@ -579,3 +597,14 @@ def test_a_deterministic_refusal_is_not_retried_until_a_release_decides_its_step
     assert _tick(root, again, later)["redriven"] == 1 and len(runs) == 1
     assert retry.armed(listener._read_job_ledger(root))["deterministic_refusal"]["revision"] == "atlas_mesh_registration.r2"
     assert _tick(root, again, later + timedelta(days=2))["redriven"] == 0 and len(runs) == 1
+
+
+def test_a_spent_job_with_no_readable_release_runs_on_the_last_timed_interval(monkeypatch, caplog):
+    """Review 2026-11-12: with the release unreadable a spent job waited for ever, silently."""
+    monkeypatch.setattr(retry, "_release", lambda: None)
+    record = {"kind": retry.RETRIES_SPENT, "release_commit": None}
+    with caplog.at_level("WARNING"):
+        assert retry.spent_waiting(record) is False
+    assert "release_unreadable_timed_fallback" in caplog.text
+    monkeypatch.setattr(retry, "_release", lambda: "a" * 40)
+    assert retry.spent_waiting({**record, "release_commit": "a" * 40}) is True

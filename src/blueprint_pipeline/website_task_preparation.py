@@ -42,17 +42,14 @@ from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear
                                        farthest_supported_destination, footprint_at, ground_on_observed_floor,
                                        nearest_supported_destination, same_support_surface,
                                        supported_destination_near_place, support_outline, support_under)
+from .website_registration_admissibility import (  # noqa: F401 - re-exported for callers and tests
+    CLOSE_POSE_DEGREES, CLOSE_POSE_METRES, CLOSE_POSE_SCALE, REGISTRATION_AMBIGUOUS_FLAG,
+    REGISTRATION_DECISIVE_RATIO, RegistrationRefusal, _close_runner_up,
+)
 from .website_surface_target_admission import (admit_surface_target, preparation_size_tolerance,
                                                replacement_size_tolerance, website_target_radius,
                                                website_target_reach)
 
-
-class RegistrationRefusal(ValueError):
-    """A registration refusal that carries the scores it was decided on."""
-
-    def __init__(self, code: str, evidence: Mapping[str, Any]):
-        super().__init__(code)
-        self.evidence = dict(evidence)
 
 SCHEMA_VERSION = "website_scene_preparation.v1"
 #: The revision of how an object's front normal is found (``deterministic_refusal``). With the camera above the
@@ -428,8 +425,13 @@ def _anchor_prior(source_geometry: Mapping[str, Any], anchor: Mapping[str, Any])
 
 def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_mesh_path: Path,
                                sample_cap: int = 20000, anchor: Mapping[str, Any] | None = None,
-                               focus_bounds: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                               focus_bounds: Mapping[str, Any] | None = None,
+                               up_axis: str | None = None) -> dict[str, Any]:
     """Similarity-register estimated source points to the reconstructed collider frame.
+
+    The pose is chosen by fit alone. An Atlas alignment (``source_world_alignment``) measures the source's
+    orientation, so its one candidate is that alignment, refined; a world anchored at a camera whose roll is
+    unknown tries the four rolls and refuses a near-tie between them, as before.
 
     With ``anchor`` (the provider's declared scale, ground plane and the source
     frame it was generated from), the prior pose is refined and its deviation
@@ -488,11 +490,16 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         best = rows[0]
         distinct = distinct_from(best, rows[1:])
         if not distinct:
-            raise ValueError("website_registration_ambiguous")
+            raise RegistrationRefusal("website_registration_ambiguous", {
+                "basis": "no_distinct_alternative_pose", "best_score_runtime_units": float(best[0]),
+                "candidate_count": len(rows)})
         ratio = distinct[0][0] / max(best[0], 1e-12)
-        if ratio < 1.2:
-            raise ValueError("website_registration_ambiguous")
+        runner_up = distinct[0]
+        # A runner-up nearly as good and nearly the same pose is a judgement: the best pose is kept and
+        # flagged with its ratio (owner direction 2026-11-11). One that would put the scene somewhere
+        # else (turned over, mirrored, another surface) stays the ask for a new video (``_close_runner_up``).
         metres_per_runtime_unit = 1.0 / best[1]
+        _close_runner_up(best, runner_up, ratio, metres_per_runtime_unit)
     else:
         mpu, camera_from_world = anchor_pose
         up = _UP_INDEX[anchor["up_axis"]]
@@ -513,16 +520,24 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
             level = _rotation_between(camera_from_world[:3, :3] @ floor, down)
             turn = lambda degrees: _about(up, degrees)  # noqa: E731
         anchored = []
-        for roll in _ROLLS:
+        # A measured alignment's orientation is known: its rolls would only turn the measured room over.
+        for roll in ((0.0,) if anchor.get("kind") == "source_world_alignment" else _ROLLS):
             rotation = turn(roll) @ level
             prior = (1.0 / mpu, rotation @ camera_from_world[:3, :3], (rotation @ camera_from_world[:3, 3]) / mpu)
             anchored.append((score(*_refine_registration(fit_source, target, *prior)), roll, prior))
+        considered = [{"roll_degrees": roll, "score_m": float(row[0] * mpu)} for row, roll, _ in anchored]
         anchored.sort(key=lambda row: row[0][0])
         best, roll, prior = anchored[0]
         distinct = distinct_from(best, [row[0] for row in anchored[1:]])
         ratio = distinct[0][0] / max(best[0], 1e-12) if distinct else math.inf
-        if ratio < 1.2:
-            raise ValueError("website_registration_ambiguous")
+        runner_up = distinct[0] if distinct else None
+        # A camera-anchored world refuses a near-tie between its rolls exactly as before (review 2026-11-12); a
+        # measured alignment has one candidate and no rival.
+        if ratio < REGISTRATION_DECISIVE_RATIO:
+            raise RegistrationRefusal("website_registration_ambiguous", {
+                "runner_up_ratio": float(ratio), "decisive_ratio": REGISTRATION_DECISIVE_RATIO, "roll_degrees": roll,
+                "runner_up_roll_degrees": next(row[1] for row in anchored[1:] if row[0] is runner_up),
+                "poses_considered": considered})
         def same_hypothesis(row):
             return (_rotation_degrees(row[2], best[2]) <= 10.0 and abs(math.log(row[1] / best[1])) <= math.log(1.1)
                     and float(np.linalg.norm(row[3] - best[3])) <= 0.1 * extent_norm)
@@ -574,6 +589,7 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         if same_pose:
             best = min(same_pose, key=lambda row: row[0])
         anchor_report = {"kind": anchor.get("kind"), "frame_id": anchor.get("frame_id"), "roll_degrees": roll,
+                         "poses_considered": considered,
                          "hypothesis_axis": "camera_optical" if floor is None else "declared_up",
                          "levelled_tilt_degrees": _rotation_degrees(level, np.eye(3)),
                          "rotation_deviation_degrees": _rotation_degrees(best[2], prior[1]),
@@ -584,7 +600,9 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
                          "two_way_only_unconstrained": two_way_only}
         if (anchor_report["rotation_deviation_degrees"] > ANCHOR_MAX_ROTATION_DEGREES
                 or not ANCHOR_SCALE_RATIO_BOUNDS[0] <= anchor_report["scale_ratio_to_declared"] <= ANCHOR_SCALE_RATIO_BOUNDS[1]):
-            raise ValueError("website_registration_anchor_deviation")
+            raise RegistrationRefusal("website_registration_anchor_deviation", {
+                "anchor": anchor_report, "maximum_rotation_degrees": ANCHOR_MAX_ROTATION_DEGREES,
+                "scale_ratio_bounds": list(ANCHOR_SCALE_RATIO_BOUNDS)})
         metres_per_runtime_unit = mpu
         if offset is not None:
             down = (1 if anchor["up_axis"] == "-Y" else -1) * moved_by(best)[:, up]
@@ -594,9 +612,12 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
                       "residual_m": abs(floor_raw * mpu - float(offset)), "floor_point_fraction": fraction,
                       "checked": fraction >= 0.03}
             if ground["checked"] and ground["residual_m"] > GROUND_PLANE_MAX_RESIDUAL_M:
-                raise ValueError("website_registration_ground_plane_inconsistent")
+                raise RegistrationRefusal("website_registration_ground_plane_inconsistent", {
+                    "ground_plane": ground, "maximum_residual_m": GROUND_PLANE_MAX_RESIDUAL_M})
     if best[0] > 0.1 * extent_norm:
-        raise ValueError("website_registration_poor_fit")
+        raise RegistrationRefusal("website_registration_poor_fit", {
+            "score_runtime_units": float(best[0]), "extent_runtime_units": extent_norm,
+            "maximum_share_of_extent": 0.1, "anchor": anchor_report})
     task_region = None
     if focus_bounds is not None:
         low, high = (np.asarray(focus_bounds[key], dtype=np.float64) for key in ("minimum", "maximum"))
@@ -613,6 +634,15 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
             "scale": best[1], "rotation": best[2].tolist(), "translation": best[3].tolist(),
             "trimmed_rmse_runtime_units": best[0], "trimmed_rmse_m": best[0] * metres_per_runtime_unit,
             "runner_up_ratio": ratio, "anchor": anchor_report, "ground_plane": ground, "task_region": task_region,
+            **({"ambiguity": {"runner_up_ratio": float(ratio), "decisive_ratio": REGISTRATION_DECISIVE_RATIO,
+                              "basis": "best_scoring_pose_kept", "flag": REGISTRATION_AMBIGUOUS_FLAG,
+                              # How far the runner-up would put the scene: a few centimetres, or another pose.
+                              "runner_up": {"score_m": float(runner_up[0] * metres_per_runtime_unit),
+                                            "scale_ratio_to_best": float(runner_up[1] / best[1]),
+                                            "rotation_from_best_degrees": _rotation_degrees(runner_up[2], best[2]),
+                                            "translation_from_best_m": float(np.linalg.norm(
+                                                np.asarray(runner_up[3]) - np.asarray(best[3])) * metres_per_runtime_unit)}}}
+               if ratio < REGISTRATION_DECISIVE_RATIO and runner_up is not None else {}),
             "source_geometry_digest": source_geometry["digest"],
             "collision_mesh_digest": _sha256_file(collision_mesh_path),
             "scale_status": "provider_declared_anchor" if anchor else "estimated_registration",
@@ -1114,7 +1144,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     try:
         registration = register_source_to_runtime(source_geometry=source_geometry,
             collision_mesh_path=Path(base_scene["collision_mesh_path"]),
-            anchor=anchor, focus_bounds=subject_target["estimated_visible_bounds"])
+            anchor=anchor, focus_bounds=subject_target["estimated_visible_bounds"], up_axis=base_scene["up_axis"])
     except ValueError as exc:
         if isinstance(exc, RegistrationRefusal):
             # A refusal is decided on scores; keep them, or it cannot be reviewed.
@@ -1245,6 +1275,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             if published is None:
                 (subject_min if up_sign == 1 else subject_max)[up] = grounding["top_runtime_units"]
     snap = 0.0
+    if support is None and collider is not None and synthetic is None and not independent_object:
+        from .website_support_geometry import nearest_support_under  # a recorded, flagged best guess
+        support = nearest_support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu,
+                                        up_sign=up_sign, placement_residual_m=residual)
     if support is None:
         blockers.append("support_surface_not_found_under_subject")
     else:
@@ -1263,6 +1297,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     size_tolerance = replacement_size_tolerance(dimension_authority=subject_dimension_authority,
                                                 relative_error=DIMENSION_RELATIVE_ERROR, development=False)
     destination = distinct_support = relocation = region_record = surface_target_admission = region_outline = None
+    destination_choice = None
     interior = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
@@ -1410,6 +1445,32 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                        "basis": "registered_reconstructed_container_interior" if interior is not None
                        else "registered_estimated_visible_bounds_and_collider_contact" if contact_bound
                        else "registered_estimated_visible_bounds"}
+        if interior is None and contact_bound and support is not None:
+            # The place the sentence names is where the object goes, and the area scored and marked
+            # (``website_destination_area``); a harness relocation never moves it away again.
+            from .website_destination_area import NAMED_REGION, choose_destination
+            def admitted(sealed: Mapping[str, Any]) -> bool:
+                # The sealer's own admission, run at preparation ($0), exactly as below.
+                try:
+                    admit_surface_target(destination=sealed, support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), sim_support)),
+                        subject_min=sim_min, subject_max=sim_max, development_support=False,
+                        placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
+                        relative_error=size_tolerance, support_outline=region_outline)
+                except ValueError:
+                    return False
+                return True
+            destination, destination_choice = choose_destination(
+                destination=destination, subject_min=sim_min, subject_max=sim_max, support_min=sim_support[0],
+                support_max=sim_support[1], region=region_record, relocation=relocation, admit=admitted,
+                holds=(None if region_outline is None else
+                       lambda centre, radius: region_outline.holds(centre, radius, tolerance=REGION_EDGE_ROUNDING_M)))
+            from .website_destination_choice import SITE_CHOICE, settle_place  # the places offered; the site's pick
+            destination, destination_choice = settle_place(output_root, destination, destination_choice,
+                subject_min=sim_min, subject_max=sim_max, support=sim_support, holds=(None if region_outline is None else
+                    lambda centre, radius: region_outline.holds(centre, radius, tolerance=REGION_EDGE_ROUNDING_M)),
+                surface_guessed=destination_rows[0].get("selection_basis") == "best_supported_guess", admit=admitted)
+            if destination_choice["basis"] in {NAMED_REGION, SITE_CHOICE}:
+                relocation = None
         if support is not None and len(blockers) == blockers_before:
             # A destination held above keeps its own code. Otherwise the region
             # evaluation will seal goes through the same admission, from the same
@@ -1428,6 +1489,37 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             except ValueError as exc:
                 surface_target_admission = {"status": "refused", "code": str(exc),
                                             "basis": "evaluation_admission_rule"}
+    elif (not destination_rows and not independent_object and synthetic is None and support is not None
+          and collider is not None):
+        # The job names no surface but the one the object starts on (capture-c33427c3: "an empty spot
+        # on the same shelf"): a recorded best guess, never a stop. The harness's farthest supported
+        # footprint on that surface, flagged ``destination_guessed`` (``website_destination_area``).
+        outline = support_outline(collider, support, up=up, meters_per_unit=mpu, placement_residual_m=residual)
+        moved = farthest_supported_destination(collider, subject_min, subject_max, support["aabb_min"],
+            support["aabb_max"], support, up=up, meters_per_unit=mpu, up_sign=up_sign,
+            clearance=website_target_reach(subject_min, subject_max, relative_error=size_tolerance, up=up,
+                                           meters_per_unit=mpu),
+            placement_residual_m=residual, outline=outline, radius=website_target_radius(meters_per_unit=mpu))
+        if moved is None:
+            blockers.append("task_destination_pose_required")
+        else:
+            relocation = {"reason": "no_destination_beyond_start_support",
+                          "rule": "farthest_supported_footprint_on_start_surface", "harness_choice": True}
+            destination = {"relation": "on", "visible_label": str(subject_entry.get("support_label")
+                                                                 or subject_target.get("support_label")
+                                                                 or "the surface it starts on"),
+                           "mode": "existing_support_surface",
+                           "position_world_m": (runtime_to_sim @ [*moved.centre, 1.0])[:3].tolist(),
+                           "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                           "basis": "registered_estimated_visible_bounds_and_collider_contact"}
+            from .website_destination_area import choose_destination
+            destination, destination_choice = choose_destination(
+                destination=destination, subject_min=sim_min, subject_max=sim_max, support_min=sim_support[0],
+                support_max=sim_support[1], region=None, relocation=relocation)
+            from .website_destination_choice import SITE_CHOICE, settle_place  # the places offered; the site's pick
+            destination, destination_choice = settle_place(output_root, destination, destination_choice,
+                                                           subject_min=sim_min, subject_max=sim_max, support=sim_support)
+            relocation = None if destination_choice["basis"] == SITE_CHOICE else relocation
     else:
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]
@@ -1721,7 +1813,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "aabb_min_xyz": sim_support[0], "aabb_max_xyz": sim_support[1]},
                  **({"articulation": mechanism, "success": dict(ARTICULATED_SUCCESS)} if articulated else
                     {"destination": destination or {"needs_input": "task_destination_pose_required"},
-                     "success": dict(SUCCESS)})},
+                     # The object's centre must end within the destination's area: its radius is the
+                     # scored tolerance, as the disc the robots see (``website_destination_area``).
+                     "success": {**SUCCESS, **({"maximum_final_planar_target_error_m": destination["radius_m"]}
+                                              if (destination or {}).get("radius_m") else {})}})},
         "execution": {"purpose": "scene_preparation", "max_total_spend_usd": spend["max_total_spend_usd"],
                       "max_paid_attempts": spend["max_paid_attempts"],
                       "max_retries": scene_configuration_max_retries(spend),
@@ -1778,6 +1873,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
+        **({"destination_choice": destination_choice} if destination_choice is not None else {}),
+        **({"registration_ambiguity": registration["ambiguity"]} if registration.get("ambiguity") else {}),
         **({"destination_region": region_record} if region_record is not None else {}),
         **({"surface_target_admission": surface_target_admission} if surface_target_admission is not None else {}),
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
@@ -1819,4 +1916,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     value["digest"] = canonical_digest(value, digest_field="digest")
     write_json(output_root / "preparation.json", value)
     (output_root / "thumbnail.b64").write_text(thumbnail["png_base64"])
+    from .website_destination_choice import pipeline_of, retain_place_view  # the picture and the optional question
+    if destination_choice is not None and pipeline_of(output_root) is not None:
+        retain_place_view(pipeline_root=pipeline_of(output_root), preparation=value, frames=source_geometry["frames"],
+                          source_geometry=source_geometry, object_label=str(subject_entry.get("semantic_label") or "object"),
+                          covers=None if region_outline is None else region_outline.covers)
     return value

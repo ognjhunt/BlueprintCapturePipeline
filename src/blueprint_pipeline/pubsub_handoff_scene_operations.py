@@ -350,10 +350,15 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                 from .website_assessment_resume import admit_browser_preparation, safe_to_arm
                 failure_stage = 'website_assessment_preparation'
                 lease.checkpoint(failure_stage)
-                admit_browser_preparation(_listener, payload=payload, handoff=handoff,
+                authority = admit_browser_preparation(_listener, payload=payload, handoff=handoff,
                     capture_root=capture_root, observation=observation,
                     producer_delivery_key=producer_delivery_key, payload_digest=digest,
                     allow_resume=safe_to_arm(attempt_count, previous_history, ledger.get('recovered_expired_lease')))
+                if authority is not None:
+                    # A job with no sentence yet starts nothing and buys nothing until the site's job is
+                    # named (``website_task_context_contracts.task_named``).
+                    from .website_capture_preparation import require_task_named
+                    require_task_named(capture_root)
             # Capture delivery prepares the site/task package. Retained team
             # requests are consumed only by the separate explicit evaluation action.
             if stage_control_plane and (not website_capture):

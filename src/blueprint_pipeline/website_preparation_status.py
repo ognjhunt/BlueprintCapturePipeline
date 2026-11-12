@@ -412,6 +412,17 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             outcome = read_preparation_outcome(capture_root=root,
                 task_context_digest=selected["task_context_digest"], state=state,
                 robot_fit_hold=schema_version in {STATUS_V6, STATUS_V7}, recapture=schema_version == STATUS_V7)
+            if schema_version == STATUS_V7:
+                from .website_preparation_outcome import awaiting_job_sentence
+                waiting = awaiting_job_sentence(before, task_context_digest=selected["task_context_digest"])
+                if waiting is not None:
+                    # Waiting on the site to name its job: not a failure, and not Blueprint's to review.
+                    state, outcome = "awaiting_inputs", waiting
+                from .website_preparation_outcome import retries_spent
+                spent = retries_spent(before, task_context_digest=selected["task_context_digest"])
+                if spent is not None and outcome is None:
+                    # Its timed retries are spent: said plainly, with the next run on the next release.
+                    outcome = spent
         if schema_version in {STATUS_V4, STATUS_V5, STATUS_V6, STATUS_V7} and state != "authority_ended":
             # Optional: the job continues on its guess whether or not this is answered.
             from .website_task_target_choice import public_question

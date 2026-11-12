@@ -286,13 +286,12 @@ def handoff(tmp_path, monkeypatch):
     return run
 
 
-def test_the_handoff_holds_a_no_fit_job_before_it_is_registered(tmp_path, handoff):
+def test_the_handoff_records_a_no_fit_and_the_job_goes_on(tmp_path, handoff):
     preparation, collision = shelf_scene(tmp_path)
     admissible, result, native = handoff(preparation, collision, catalog=fixed_arm_catalog())
     written = json.loads((native / precheck.FILENAME).read_text())
-    # Not admissible: nothing is registered or enqueued, so no ARTISAN authoring and no GPU follow. A hold.
-    assert admissible is False and result["status"] == "needs_input"
-    assert result["blockers"] == [HOLD_PREFIX + "reach"]
+    # Owner, 2026-11-11: the test runs even when no robot fits on paper. The record is kept as before.
+    assert admissible is True and result["status"] == "intake_ready" and result["blockers"] == []
     assert result["robot_fit_precheck"] == {"path": str(native / precheck.FILENAME),
                                             "digest": written["precheck_digest"], "status": "no_fit",
                                             "hold_reason": HOLD_PREFIX + "reach", "counts": written["counts"],
@@ -326,11 +325,18 @@ def test_a_failing_precheck_is_unknown_and_never_holds(tmp_path, handoff, monkey
                                                                    "error": "RuntimeError"}
 
 
-def test_an_abstained_verdict_keeps_its_own_blockers_beside_the_hold(tmp_path, handoff):
+def test_an_abstained_verdict_is_recorded_and_the_job_goes_on_with_its_flag(tmp_path, handoff):
+    from blueprint_pipeline.atlas_scene_estimates import CAPABILITY_UNASSESSED, preparation_flags
+
     preparation, collision = shelf_scene(tmp_path)
-    admissible, result, _ = handoff(preparation, collision, catalog=fixed_arm_catalog(), verdict_status="abstained")
-    assert admissible is False
-    assert result["blockers"] == ["robot_rigid_pick_place_unreachable:approach", HOLD_PREFIX + "reach"]
+    admissible, result, native = handoff(preparation, collision, catalog=fixed_arm_catalog(), verdict_status="abstained")
+    assert admissible is True and result["blockers"] == []
+    assert result["capability_verdict"]["status"] == "abstained"
+    assert result["capability_verdict"]["blockers"] == ["robot_rigid_pick_place_unreachable:approach"]
+    import json as _json
+    (native / "capability_verdict.json").write_text(_json.dumps({"status": "abstained"}))
+    (native.parent / "preparation.json").write_text("{}")
+    assert CAPABILITY_UNASSESSED in preparation_flags(native.parent / "preparation.json")
 
 
 def test_a_lost_handoff_lease_stops_the_precheck(tmp_path, handoff, monkeypatch):
@@ -472,3 +478,14 @@ def test_a_scripted_carry_miss_with_the_object_in_reach_fits_the_franka_with_the
     unknown = robot_fit_precheck(preparation=preparation, collision_path=collision, verdict=verdict,
                                  catalog=fixed_arm_catalog())
     assert by_embodiment(unknown, FRANKA)["verdict"] == "unknown" and unknown["hold_reason"] is None
+
+
+def test_a_no_fit_job_reaches_scene_building_with_its_note(tmp_path, handoff):
+    """Owner decision, 2026-11-12 frame: the job packet needs the simulation for any job, whether or not one of
+    OUR robots fits on paper (a deployment company's robot may). The handoff is admitted for scene building and
+    the job carries ``scene_estimate:robot_fit_none:<cause>``; nothing about a robot is promised."""
+    from blueprint_pipeline.atlas_scene_estimates import preparation_flags
+    preparation, collision = shelf_scene(tmp_path)
+    admissible, result, native = handoff(preparation, collision, catalog=fixed_arm_catalog())
+    assert admissible is True and result["status"] == "intake_ready"
+    assert "scene_estimate:robot_fit_none:reach" in preparation_flags(native.parent / "preparation.json")

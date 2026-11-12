@@ -30,6 +30,26 @@ def admits_scene_preparation(value: Mapping[str, Any] | None) -> bool:
         value.get("purpose") == "scene_preparation" and value.get("confirmed") is False))
 
 
+#: The description the website sends for a job its site has not named yet (WebApp
+#: ``PLACEHOLDER_TASK_SUMMARY``). The task context carries no other fact that says whether the job
+#: is named, so this is the one place that reads the placeholder as "no job sentence".
+UNNAMED_TASK_DESCRIPTION = "Your site task"
+#: Preparation waits, buying nothing, until the job has a sentence (``task_named``).
+TASK_NOT_NAMED = "website_task_not_named"
+
+
+def task_named(value: Mapping[str, Any] | None) -> bool:
+    """Whether the task context names the job in a sentence; the placeholder or an empty one does not.
+
+    No paid reading of the video is bought for a job that has no sentence: there is no task to
+    read it for (capture-98a79ce3 bought two of them, 2026-10-29). The website names the job from
+    the footage, or the site writes it; the next context then carries the sentence.
+    """
+    description = (value or {}).get("description")
+    text = description.strip() if isinstance(description, str) else ""
+    return bool(text) and text != UNNAMED_TASK_DESCRIPTION
+
+
 def sponsors_scene_preparation(metadata: Mapping[str, Any] | None) -> bool:
     """A loaded scene_preparation sponsorship requests the scene preview and geometry it funds."""
     return ((metadata or {}).get("website_scene_execution_authority") or {}).get("purpose") == "scene_preparation"

@@ -18,6 +18,19 @@ Codes, each ``scene_estimate:<kind>``:
 - ``review_citations_dropped``: the scene review cited frames that could not be inputs; those
   citations were left out.
 - ``surrounding_views_dropped``: surrounding views were left out to keep the frame budget.
+- ``task_object_guessed``: the analysis of the video could not tell which object the robot moves;
+  the job went on with its best supported candidate, which the site may correct.
+- ``target_role_kept``: the analysis could not decide a target's part in the task; it kept the
+  role the analysis gave it.
+- ``destination_guessed``: the job's sentence named no place to put the object; the destination
+  is the harness's choice on the support (``website_destination_area``).
+- ``destination_near_start``: the support left no spot at least the object's longest side away
+  from its start; the destination is nearer than that.
+- ``registration_ambiguous``: the object's observed shape fitted the scene almost as well in a second
+  pose; the best one is used and its runner-up ratio recorded (``registration_ambiguity``).
+- ``task_review_estimated``: the scene review proposed its selection while naming what it could
+  not see (a support or destination only partly filmed, the object's origin, the scene's state);
+  those parts are estimates.
 
 Pure apart from reading the retained JSON records named. Records written before these estimates
 existed carry none of their fields and give no code.
@@ -30,13 +43,28 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-__all__ = ["CODES", "FIELD", "base_scene_flags", "capture_scene_flags", "scene_estimates"]
+__all__ = ["CODES", "FIELD", "analysis_guess_flags", "base_scene_flags", "capture_scene_flags", "scene_estimates"]
 
 FIELD = "scene_estimates"
 LEVEL, APPEARANCE, FLOOR = "scene_estimate:level", "scene_estimate:splat_view_dependence_dropped", "scene_estimate:floor"
 COLLIDER = "scene_estimate:collider_registration"
 CITATIONS, SURROUNDING = "scene_estimate:review_citations_dropped", "scene_estimate:surrounding_views_dropped"
-CODES = frozenset({LEVEL, APPEARANCE, FLOOR, COLLIDER, CITATIONS, SURROUNDING})
+TASK_OBJECT_GUESSED, TARGET_ROLE_KEPT = "scene_estimate:task_object_guessed", "scene_estimate:target_role_kept"
+TASK_REVIEW_ESTIMATED = "scene_estimate:task_review_estimated"
+DESTINATION_GUESSED, DESTINATION_NEAR_START = "scene_estimate:destination_guessed", "scene_estimate:destination_near_start"
+REGISTRATION_AMBIGUOUS = "scene_estimate:registration_ambiguous"
+#: No surface lay within the search window under the object's estimated bottom; it rests on the nearest
+#: one under its footprint (``website_support_geometry.nearest_support_under``), moved by the recorded drop.
+SUPPORT_GUESSED = "scene_estimate:support_guessed"
+#: No catalog robot fits the job on paper (``website_robot_fit_precheck``): a note on the job, never a stop.
+#: Carried as ``scene_estimate:robot_fit_none:<cause>``, the cause that refused the most candidates.
+ROBOT_FIT_NONE = "scene_estimate:robot_fit_none"
+#: The capability verdict abstained (``website_rigid_feasibility``: no enabled arm, no clear stance found,
+#: or the object beyond reach from every stance found): the job's simulation is built anyway.
+CAPABILITY_UNASSESSED = "scene_estimate:capability_unassessed"
+CODES = frozenset({LEVEL, APPEARANCE, FLOOR, COLLIDER, CITATIONS, SURROUNDING, TASK_OBJECT_GUESSED,
+                   TARGET_ROLE_KEPT, TASK_REVIEW_ESTIMATED, DESTINATION_GUESSED, DESTINATION_NEAR_START,
+                   REGISTRATION_AMBIGUOUS, SUPPORT_GUESSED})
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -58,6 +86,10 @@ def scene_estimates(*, levelling: Mapping[str, Any], registration: Mapping[str, 
     for key in ("registration_estimate", "support_estimate"):
         if isinstance(registration.get(key), Mapping):
             rows.append({"code": COLLIDER, "source": "mesh_registration", "evidence": dict(registration[key])})
+    estimated = _mapping(review).get("estimated_aspects")
+    if isinstance(estimated, list) and estimated:
+        rows.append({"code": TASK_REVIEW_ESTIMATED, "source": "scene_review",
+                     "evidence": {"estimated_aspects": [str(item) for item in estimated]}})
     dropped = _mapping(review).get("automation_citations_dropped")
     if isinstance(dropped, list) and dropped:
         rows.append({"code": CITATIONS, "source": "scene_review", "evidence": {"frame_ids": list(dropped)}})
@@ -91,4 +123,57 @@ def capture_scene_flags(capture_root: Path) -> list[str]:
         value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
     except (OSError, ValueError):
         return []
-    return base_scene_flags(value) if isinstance(value, Mapping) else []
+    codes = set(base_scene_flags(value) if isinstance(value, Mapping) else [])
+    return sorted(codes | analysis_guess_flags(Path(capture_root)) | preparation_flags(path.parent / "preparation.json"))
+
+
+def preparation_flags(path: Path) -> set[str]:
+    """The estimate codes the preparation's own choices recorded (``destination_choice``)."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(value, Mapping):
+        return set()
+    choice = value.get("destination_choice")
+    flags = list(choice.get("flags") or []) if isinstance(choice, Mapping) else []
+    ambiguity = value.get("registration_ambiguity")
+    if isinstance(ambiguity, Mapping):
+        flags.append(REGISTRATION_AMBIGUOUS)
+    if _mapping(_mapping(value.get("support")).get("guess")).get("flag") == SUPPORT_GUESSED:
+        flags.append(SUPPORT_GUESSED)
+    codes = {code for code in flags if code in CODES}
+    fit = _robot_fit_none(path.parent / "native" / "robot_fit_precheck.json")
+    codes |= {fit} if fit else set()
+    try:
+        verdict = json.loads((path.parent / "native" / "capability_verdict.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        verdict = {}
+    if isinstance(verdict, Mapping) and verdict.get("status") == "abstained":
+        codes.add(CAPABILITY_UNASSESSED)
+    return codes
+
+
+def _robot_fit_none(path: Path) -> str | None:
+    """``scene_estimate:robot_fit_none:<cause>`` when the job's paper robot fit found no robot, else None."""
+    import re
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
+    except (OSError, ValueError):
+        return None
+    hold = value.get("hold_reason") if isinstance(value, Mapping) and value.get("status") == "no_fit" else None
+    match = re.fullmatch(r"website_robot_fit_none:([a-z][a-z0-9_]{0,95})", hold) if isinstance(hold, str) else None
+    return f"{ROBOT_FIT_NONE}:{match.group(1)}" if match else None
+
+
+def analysis_guess_flags(capture_root: Path) -> set[str]:
+    """The guesses the removal analysis's uncertain targets were resolved by (``resolve_uncertain_targets``)."""
+    path = Path(capture_root) / "pipeline" / "clean_plate" / "removal_plan.json"
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
+    except (OSError, ValueError):
+        return set()
+    rows = plan.get("uncertain_target_guesses") if isinstance(plan, Mapping) else None
+    known = {"task_object_guessed": TASK_OBJECT_GUESSED, "target_role_kept": TARGET_ROLE_KEPT}
+    return {known[row["code"]] for row in rows or [] if isinstance(row, Mapping) and row.get("code") in known}

@@ -466,11 +466,17 @@ def test_articulated_task_refuses_a_destination_row(tmp_path):
     assert "website_articulated_task_has_no_destination" in value["blockers"]
 
 
-def test_missing_destination_is_a_typed_blocker_not_a_default(tmp_path):
+def test_a_missing_destination_is_a_flagged_guess_on_the_start_surface(tmp_path):
+    # Owner direction 2026-11-11 (capture-c33427c3: "an empty spot on the same shelf"): with no surface
+    # named but the start's, the destination is the harness's farthest supported spot on it, recorded as
+    # a guess and flagged; never a stop and never a default the site is not told about.
     value = _compile(tmp_path, lambda geometry: {"task_masks": _masks(geometry, destination=False)})
-    assert value["status"] == "needs_input"
-    assert value["blockers"] == ["task_destination_pose_required"]
-    assert value["destination"] is None
+    choice = value["destination_choice"]
+    assert "task_destination_pose_required" not in value["blockers"]
+    assert value["destination"]["relation"] == "on" and choice["basis"] == "start_surface_farthest_spot"
+    assert "scene_estimate:destination_guessed" in choice["flags"]
+    assert value["destination_relocation"]["rule"] == "farthest_supported_footprint_on_start_surface"
+    assert value["intake_request"]["task"]["destination"] == value["destination"]
 
 
 def test_stale_execution_authority_holds_intake(tmp_path):
@@ -497,10 +503,25 @@ def test_anthropic_authoring_requires_explicit_matching_terms_in_new_authority(t
 
 
 def test_symmetric_geometry_cannot_register(tmp_path):
+    # A runner-up nearly as good that is materially another pose (here the shape's own symmetry) stays the
+    # ask for a new video, now with its evidence kept (capture-39ecdc97, 2026-11-12: the view turned over).
     geometry = _source_geometry(tmp_path)
     base = _base_scene(tmp_path, geometry, symmetric=True)
-    with pytest.raises(ValueError, match="website_registration_"):
+    with pytest.raises(preparation.RegistrationRefusal, match="website_registration_ambiguous") as raised:
         preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=Path(base["collision_mesh_path"]))
+    evidence = raised.value.evidence
+    assert evidence["runner_up_ratio"] < preparation.REGISTRATION_DECISIVE_RATIO
+    assert evidence["basis"] == "runner_up_is_materially_another_pose"
+
+
+def test_a_close_runner_up_is_a_flagged_best_guess():
+    best = (0.10, 1.0, np.eye(3), np.zeros(3))
+    near = (0.11, 1.01, preparation._about(1, 3.0), np.array([0.02, 0.0, 0.0]))
+    preparation._close_runner_up(best, near, 1.1, 1.0)  # a few degrees and centimetres: the guess stands
+    flipped = (0.11, 1.0, preparation._about(2, 180.0), np.zeros(3))
+    with pytest.raises(preparation.RegistrationRefusal, match="website_registration_ambiguous"):
+        preparation._close_runner_up(best, flipped, 1.1, 1.0, roll=180.0, runner_up_roll=0.0)
+    preparation._close_runner_up(best, flipped, 1.25, 1.0)  # decisive: no question of a guess
 
 
 @pytest.mark.parametrize("noise", [0.0, 0.001])
@@ -890,14 +911,17 @@ def test_pitched_first_camera_is_levelled_by_the_observed_declared_floor(tmp_pat
     assert value["runner_up_ratio"] >= 1.2
 
 
-def test_unlevelled_prior_from_a_pitched_camera_stays_a_typed_refusal(tmp_path, monkeypatch):
-    # Without an observed floor at the declared height, the camera's own axes are
-    # the only prior; the pitched view must refuse rather than guess a pose.
+def test_a_camera_anchored_world_keeps_its_four_rolls_and_chooses_by_fit(tmp_path, monkeypatch):
+    # Review 2026-11-12: a camera-anchored world chooses and refuses exactly as on main. Without an observed
+    # floor at the declared height the camera's own axes are the only prior, its roll is unknown, and the four
+    # rolls stay candidates; a near-tie between them refuses (the checker's 56 probe cases match main's).
     geometry, mesh_path, anchor = _levelled_room_seen_from_a_pitched_camera(tmp_path, monkeypatch, pitch_degrees=30)
     monkeypatch.setattr(preparation, "_observed_declared_ground", lambda *_args: None)
-    with pytest.raises(ValueError, match="website_registration_"):
-        preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path,
-                                               anchor=anchor)
+    with pytest.raises(preparation.RegistrationRefusal) as refused:
+        preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path, anchor=anchor)
+    assert str(refused.value) == "website_registration_ambiguous"
+    assert refused.value.evidence["roll_degrees"] == 180.0
+    assert refused.value.evidence["runner_up_roll_degrees"] == 0.0
 
 
 def _yaw(degrees):
@@ -1178,9 +1202,11 @@ def test_a_place_named_on_the_destination_surface_centres_the_destination_inside
     position = value["destination"]["position_world_m"]
     assert _inside(position, region["estimated_bounds_world_m"])
     assert not _inside(whole["destination"]["position_world_m"], region["estimated_bounds_world_m"])
-    # Projected onto the same surface by the same contact search; the WebApp keys and basis are unchanged.
+    # Projected onto the same surface by the same contact search; the WebApp keys and basis are unchanged,
+    # with the named place's scored area as ``radius_m``, a key the WebApp's intake already accepts (<= 0.5 m).
     assert position[2] == pytest.approx(whole["destination"]["position_world_m"][2], abs=1e-6)
-    assert set(value["destination"]) == set(whole["destination"])
+    assert set(value["destination"]) == set(whole["destination"]) | {"radius_m"}
+    assert 0.05 <= value["destination"]["radius_m"] <= 0.5
     assert value["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact"
     assert value["intake_request"]["task"]["destination"] == value["destination"]
     assert "destination_region" not in whole and "destination_relocation" not in value
@@ -1194,17 +1220,28 @@ def test_a_region_with_no_observed_frame_near_its_boxes_keeps_the_whole_surface(
     assert value["destination"] == whole["destination"] and value["blockers"] == whole["blockers"] == []
 
 
-def test_a_region_over_the_start_still_moves_by_the_same_surface_rule(tmp_path):
+def test_a_region_over_the_start_never_leaves_the_destination_on_the_start(tmp_path):
+    # The guarantee the same-surface rule gave, kept under the named-place rule (``website_destination_area``):
+    # the destination is never inside the start footprint. A named place that keeps a supported area off the
+    # start is used and the harness's move is replaced; one that cannot (here, a place lying over the start)
+    # leaves the harness's farthest supported spot, recorded as such.
     value = preparation.compile_website_scene_preparation(**_surface_arguments(
         tmp_path, first_row=23, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.5, 0.8, 0.15, 0.07]}]))
     assert value["status"] == "intake_ready", value["blockers"]
-    region, relocation = value["destination_region"], value["destination_relocation"]
-    assert relocation["reason"] == "grounded_destination_centre_overlapped_start"
-    assert _inside(relocation["grounded_centre_world_m"], region["estimated_bounds_world_m"])
-    subject = value["subject"]
+    region, choice, subject = value["destination_region"], value["destination_choice"], value["subject"]
+    position = value["destination"]["position_world_m"]
+    assert not all(subject["aabb_min_xyz"][axis] <= position[axis] <= subject["aabb_max_xyz"][axis] for axis in (0, 1))
+    assert choice["inside_start_footprint"] is False
     start = [(subject["aabb_min_xyz"][axis] + subject["aabb_max_xyz"][axis]) / 2 for axis in (0, 1)]
-    assert math.dist(start, value["destination"]["position_world_m"][:2]) > math.dist(
-        start, relocation["grounded_centre_world_m"][:2])
+    if choice["basis"] == "named_region":
+        harness = choice["replaced_harness_relocation"]
+        assert "destination_relocation" not in value and _inside(position, region["estimated_bounds_world_m"])
+    else:
+        harness = value["destination_relocation"]
+        assert choice["basis"] == "start_surface_farthest_spot" and "radius_m" not in value["destination"]
+    assert harness["reason"] == "grounded_destination_centre_overlapped_start"
+    assert _inside(harness["grounded_centre_world_m"], region["estimated_bounds_world_m"])
+    assert math.dist(start, position[:2]) > math.dist(start, harness["grounded_centre_world_m"][:2])
 
 
 def test_a_named_place_is_flattened_where_it_is_set_down(tmp_path, monkeypatch):
@@ -1252,7 +1289,10 @@ def test_without_a_region_the_existing_fixture_compiles_to_the_same_preparation(
     monkeypatch.chdir(tmp_path)
     value = preparation.compile_website_scene_preparation(**_arguments(Path(".")))
     assert "destination_region" not in value and "destination_region" not in REMOVAL
-    assert canonical_digest(_rounded({key: item for key, item in value.items() if key != "digest"})) == (
+    # So is the record of how the destination was chosen (2026-11-12): no field of the output changes.
+    assert value["destination_choice"]["basis"] in {"grounded_centre", "start_surface_farthest_spot"}
+    assert canonical_digest(_rounded({key: item for key, item in value.items()
+                                      if key not in {"digest", "destination_choice"}})) == (
         "sha256:54f20485d07a2fbf87311e1c5791f8cefc7d1675ba41a0c8ac06ad9e76938d43")
 
 
@@ -1506,3 +1546,5 @@ def test_a_relocated_region_that_fits_nowhere_on_its_surface_is_flagged_and_the_
         (args["output_root"] / name).write_text(json.dumps(record))
     moved = preparation.relocated_destination(value, args["output_root"] / "preparation.json")
     assert moved["relocation"] == {**value["destination_relocation"], "applied_at": "native_submission"}
+
+

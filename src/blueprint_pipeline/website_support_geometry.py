@@ -325,6 +325,66 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
                     window_m=window_m)
 
 
+#: How far below the object's estimated bottom the nearest surface under its footprint is looked for.
+NEAREST_SUPPORT_MAX_DROP_M = 0.5
+#: Surface heights closer than this are one candidate surface.
+NEAREST_SUPPORT_BIN_M = 0.03
+
+
+def nearest_support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
+                          up: int, meters_per_unit: float, up_sign: int = 1,
+                          placement_residual_m: float | None = None) -> dict[str, Any] | None:
+    """A recorded best guess when ``support_under`` finds nothing: the nearest surface under the footprint.
+
+    Part 5 (2026-11-12): the job rests its object on the highest gentle collider surface under its
+    footprint, from just above its estimated bottom (the search window) down to 0.5 m below it, judged
+    by ``support_under``'s own rules at that height. The drop is recorded and flagged
+    (``scene_estimate:support_guessed``); no surface under the footprint at all stays the stop.
+    """
+    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    horizontal = [axis for axis in range(3) if axis != up]
+    bottom = lower[up] if up_sign == 1 else upper[up]
+    window = search_window_m(placement_residual_m) / meters_per_unit
+    # Surfaces under the footprint: the collider's height under its centre, corners and edge midpoints.
+    triangles = np.asarray(mesh.triangles, dtype=float)
+    plan, height_of = triangles[:, :, horizontal], triangles[:, :, up]
+    found = []
+    for x in np.linspace(lower[horizontal[0]], upper[horizontal[0]], 3):
+        for y in np.linspace(lower[horizontal[1]], upper[horizontal[1]], 3):
+            a, b, c = plan[:, 0], plan[:, 1], plan[:, 2]
+            v0, v1, v2 = b - a, c - a, np.array([x, y]) - a
+            denominator = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                u = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) / denominator
+                v = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) / denominator
+            inside = (np.abs(denominator) > 1e-12) & (u >= 0) & (v >= 0) & (u + v <= 1)
+            found.append(height_of[inside, 0] + u[inside] * (height_of[inside, 1] - height_of[inside, 0])
+                         + v[inside] * (height_of[inside, 2] - height_of[inside, 0]))
+    heights = np.concatenate(found) if found else np.zeros(0)
+    below = (bottom - heights) * up_sign  # positive: under the bottom
+    heights = heights[(below >= -window) & (below <= NEAREST_SUPPORT_MAX_DROP_M / meters_per_unit)]
+    # Nearest first (the highest under an upright object), one try per 3 cm band.
+    tried: list[float] = []
+    for height in sorted(heights, key=lambda value: (bottom - value) * up_sign):
+        if any(abs(height - other) * meters_per_unit < NEAREST_SUPPORT_BIN_M for other in tried):
+            continue
+        tried.append(float(height))
+        if len(tried) > 8:
+            break
+        shift = float(height - bottom)
+        moved_lower, moved_upper = lower.copy(), upper.copy()
+        moved_lower[up] += shift
+        moved_upper[up] += shift
+        found = support_under(mesh, moved_lower, moved_upper, up=up, meters_per_unit=meters_per_unit,
+                              up_sign=up_sign, placement_residual_m=None)
+        if found is not None:
+            return {**found, "guess": {"basis": "nearest_surface_under_footprint",
+                                       "drop_m": float(-shift * up_sign * meters_per_unit),
+                                       "flag": "scene_estimate:support_guessed",
+                                       "maximum_drop_m": NEAREST_SUPPORT_MAX_DROP_M}}
+    return None
+
+
 def _support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
              meters_per_unit: float, window_m: float) -> dict[str, Any] | None:
     result = (_level_face_support(collider, lower, upper, up=up, meters_per_unit=meters_per_unit, window_m=window_m)

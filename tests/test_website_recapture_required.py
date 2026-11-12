@@ -107,8 +107,10 @@ def test_status_v7_names_the_stop_as_the_outcome_and_older_readers_keep_their_vo
     v7 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
                                               schema_version=status_reader.STATUS_V7)
     assert v7["state"] == "awaiting_inputs" and v7["terminal_reason"] is None
-    assert v7["outcome"] == {"category": "insufficient_evidence", "reason": code, "basis": "missing_evidence",
-                             "robot_id": None, "evidence_digest": handoff["digest"]}
+    # A reason the released website does not list yet travels as the nearest one it words (switch off).
+    from blueprint_pipeline.website_preparation_outcome import sent_recapture_reason
+    assert v7["outcome"] == {"category": "insufficient_evidence", "reason": sent_recapture_reason(code),
+                             "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
     v6 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
                                               schema_version=status_reader.STATUS_V6)
     assert v6["state"] == "awaiting_inputs" and v6["outcome"] is None

@@ -248,6 +248,28 @@ def _stage_uri(ctx: Any, filename: str) -> str:
 HELD_STATUS = "held_for_task_preparation"
 
 
+def _keep_superseded_plan(clean_plate_root: Path, plan: Mapping[str, Any]) -> None:
+    """Keep a replaced removal plan beside the new one, with its digest and why, so the change reads back."""
+    from .clean_plate_removal_analysis_gemini import analysis_revision
+    from .decision_evidence_contracts import canonical_digest
+    path = clean_plate_root / REMOVAL_PLAN_FILENAME
+    if not path.is_file() or path.is_symlink():
+        return
+    old = json.loads(path.read_text(encoding="utf-8"))
+    if old == plan:
+        return
+    digest = canonical_digest(old)
+    kept = clean_plate_root / "superseded" / f"{digest[7:]}.json"
+    if kept.is_file():
+        return
+    write_json(kept, {"schema_version": "clean_plate_removal_plan_superseded.v1", "plan": old,
+                      "plan_digest": digest, "superseded_at": utc_now_iso(),
+                      "previous_revision": analysis_revision(old), "replacing_revision": analysis_revision(plan),
+                      "replacing_status": plan.get("status"),
+                      "reason": ("analysis_bought_again_under_current_instructions"
+                                 if analysis_revision(old) != analysis_revision(plan) else "analysis_result_changed")})
+
+
 def run_clean_plate_stage(*, capture_root: str | Path, task_context: Mapping[str, Any] | None = None,
                           website_source_video: Path | None = None, **options: Any) -> dict[str, Any]:
     """Run (or no-op) the clean-plate stage for one capture.
@@ -348,6 +370,18 @@ def _run_clean_plate_stage(
             retained_analysis = load_retained_uncertain_analysis(
                 capture_root=ctx.capture_root, task_context=task_context, source_video=website_source_video,
             )
+            if retained_analysis is None:
+                # A scene already staged or published keeps the analysis it was built on: a rerun never
+                # re-analyses it under newer instructions (review 2026-11-12).
+                from .website_atlas_task_selection import load_published_analysis
+                retained_analysis = load_published_analysis(
+                    capture_root=ctx.capture_root, task_context=task_context, source_video=website_source_video)
+            if retained_analysis is None:
+                # A $0 re-run (a registration hold looked at again, a spent retry on a new release) keeps the
+                # analysis the job has: it re-runs what the release fixed, never a newer purchase.
+                from .website_atlas_task_selection import load_rerun_analysis
+                retained_analysis = load_rerun_analysis(
+                    capture_root=ctx.capture_root, task_context=task_context, source_video=website_source_video)
         plan = retained_analysis if retained_analysis is not None else analyze_removal_targets(
             video_path=website_source_video or input_video_path, task_context=task_context,
             output_root=clean_plate_root / "gemini_analysis",
@@ -359,6 +393,10 @@ def _run_clean_plate_stage(
                 plan=plan, capture_root=ctx.capture_root, task_context=task_context,
                 source_video=website_source_video,
             )
+            # An uncertain target the Atlas selection did not settle: the job goes on with a
+            # recorded guess, which the site may correct; it is never a stop.
+            from .clean_plate_removal_analysis_gemini import resolve_uncertain_targets
+            plan = resolve_uncertain_targets(plan)
         plan_errors = validate_removal_plan(plan)
         if plan_errors:
             blockers.extend(plan_errors)
@@ -489,6 +527,7 @@ def _run_clean_plate_stage(
         "claim_boundary": _boundary_flags(),
     }
 
+    _keep_superseded_plan(clean_plate_root, plan)
     write_json(clean_plate_root / REMOVAL_PLAN_FILENAME, plan)
     write_json(clean_plate_root / REMOVAL_MANIFEST_FILENAME, removal_manifest)
     write_json(clean_plate_root / STAGE_MANIFEST_FILENAME, stage_manifest)

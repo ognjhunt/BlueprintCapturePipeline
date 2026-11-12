@@ -12,6 +12,21 @@ from .core.handoff_lease import guarded_handoff_write_json as write_json
 from .core.handoff_lease import handoff_lease_checkpoint
 
 
+def require_task_named(capture_root: Path) -> None:
+    """Stop before any paid step when the retained context has no job sentence.
+
+    A job waiting for its sentence has started nothing and buys nothing (the retry re-reads the
+    website's context until it is named).
+    """
+    import json
+
+    from .website_task_context_contracts import TASK_NOT_NAMED, task_named
+    path = Path(capture_root) / "pipeline" / "website_task_context.json"
+    context = json.loads(path.read_text()) if path.is_file() and not path.is_symlink() else {}
+    if isinstance(context, dict) and "description" in context and not task_named(context):
+        raise StageError("website_scene_preparation", TASK_NOT_NAMED)
+
+
 def run_website_capture_preparation(
     *,
     descriptor: CaptureDescriptor,
@@ -97,6 +112,13 @@ def run_website_capture_preparation(
         str(value or "").strip().lower() in {"preview_simulation", "preview"}
         for value in descriptor.requested_outputs
     )
+    from .website_task_context_contracts import TASK_NOT_NAMED, task_named
+    stated = descriptor.metadata.get("site_task_context") or {}
+    if derived_scene_generation_allowed and "description" in stated and not task_named(stated):
+        # No job sentence yet (the website's placeholder): buy nothing. The host's retry runs the job
+        # again with the website's current context until it is named or the grant ends
+        # (``website_preparation_retry``); the Atlas job waits for the same sentence.
+        raise StageError("website_scene_preparation", TASK_NOT_NAMED)
     handoff_lease_checkpoint("website_preparation_before_media")
     clean_plate = prepare_media(
         capture_root=capture_root,
@@ -119,6 +141,16 @@ def run_website_capture_preparation(
         f"status={clean_plate.get('status')} mode={clean_plate.get('mode')}",
     ))
     if clean_plate.get("status") not in {"noop", "objects_removed"}:
+        if (clean_plate.get("blockers") == ["task_relevant_target_not_observed"]
+                and isinstance(stated.get("context_digest"), str)):
+            # The analysis found nothing the task is about in this video: the same video gives the same
+            # answer, so the job ends as a hold that asks the site to film again with the object in view.
+            from .website_recapture_required import NOT_OBSERVED_CODE, retain_recapture_hold
+            stop = retain_recapture_hold(capture_root=capture_root, task_context=stated, code=NOT_OBSERVED_CODE)
+            write_json(pipeline_dir / "provider_run_manifest.json", {"schema_version": "v1", "provider_name": None,
+                       "status": "not_requested", "website_scene_preparation": stop})
+            return {"status": "completed", "lane": "qualification", "website_scene_preparation": stop,
+                    "native_execution_complete": False}
         raise StageError("clean_plate", ",".join(clean_plate.get("blockers") or ["website_preparation_pending"]))
     privacy_processing.update(
         status=clean_plate.get("privacy_status"),

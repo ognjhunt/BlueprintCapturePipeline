@@ -46,7 +46,7 @@ from .common import sha256_file, utc_now_iso
 from .core.handoff_lease import HandoffLeaseError, handoff_lease_checkpoint
 from .clean_plate_removal_response_schema import (PRIOR_RESPONSE_SCHEMA, REGION_RESPONSE_SCHEMA, RESPONSE_SCHEMA,
                                                   SYNTHETIC_SHAPES, region_evidence, validate_destination_region)
-from .website_task_context_contracts import admits_scene_preparation
+from .website_task_context_contracts import TASK_NOT_NAMED, admits_scene_preparation, task_named
 
 GATE_ENV = "BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS"
 MODEL_ENV = "BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL"
@@ -208,6 +208,43 @@ REGION_PROMPT_INSTRUCTION = PROMPT_INSTRUCTION.replace(RIGIDITY_INSTRUCTION, "",
 #: The instruction before the destination region (2026-10-31). An analysis bought
 #: under it stays the capture's answer, region-free, and is never bought again.
 PRIOR_PROMPT_INSTRUCTION = REGION_PROMPT_INSTRUCTION.replace(DESTINATION_REGION_INSTRUCTION, "", 1)
+#: Each revision of the instruction by name. A plan records the one it was bought under
+#: (``prompt_revision``); a plan bought before names existed is known by its template digest.
+PROMPT_REVISION = "removal_analysis.r3"
+REGION_PROMPT_REVISION = "removal_analysis.r2"
+PRIOR_PROMPT_REVISION = "removal_analysis.r1"
+#: Any instruction older than these (before the choice rule): its digest is not one of them.
+OLDER_PROMPT_REVISION = "removal_analysis.r0"
+PROMPT_REVISIONS = {
+    PROMPT_TEMPLATE_SHA256: PROMPT_REVISION,
+    hashlib.sha256(REGION_PROMPT_INSTRUCTION.encode("utf-8")).hexdigest(): REGION_PROMPT_REVISION,
+    hashlib.sha256(PRIOR_PROMPT_INSTRUCTION.encode("utf-8")).hexdigest(): PRIOR_PROMPT_REVISION,
+    # Bought on 2026-10-29 (capture-98a79ce3, capture-f88f1bd0) under wording of the same revision: its
+    # retained prompt has the instance-choice rule and no destination region, as r1.
+    "81b37f534a4db29b622d7b7bc12031cc2815a43e0adb4c6f53340a729c8e853b": PRIOR_PROMPT_REVISION,
+}
+
+
+def analysis_revision(plan: Mapping[str, Any]) -> str:
+    """The instruction revision a plan was bought under."""
+    named = plan.get("prompt_revision")
+    if named in PROMPT_REVISIONS.values():
+        return named
+    return PROMPT_REVISIONS.get(str(plan.get("prompt_template_sha256") or ""), OLDER_PROMPT_REVISION)
+
+
+def binds_current_job(plan: Mapping[str, Any]) -> bool:
+    """Whether a retained analysis still decides the job, so it is never bought again.
+
+    One bought under the current revision always does. One bought under the destination-region
+    revision does when it completed: it was asked for the instance choice and the named place, and
+    lacks only the rigidity class, which the label backstop covers. Anything older, or an older one
+    that ended blocked, is bought once more under the current revision (capture-c33427c3: a box the
+    task let the analysis choose was left uncertain under an instruction without the choice rule).
+    """
+    revision = analysis_revision(plan)
+    return revision == PROMPT_REVISION or (
+        revision == REGION_PROMPT_REVISION and plan.get("status") == "completed" and not plan.get("blockers"))
 
 
 def build_removal_plan_prompt() -> str:
@@ -563,6 +600,7 @@ def build_removal_plan(
         "model": model,
         "processing": processing,
         "prompt_template_sha256": PROMPT_TEMPLATE_SHA256,
+        "prompt_revision": PROMPT_REVISION,
         "claim_ceiling": CLAIM_CEILING,
         "blockers": sorted({_string(item) for item in (blockers or []) if _string(item)}),
         "input_video_path": str(video_path) if video_path else None,
@@ -606,6 +644,93 @@ def empty_removal_plan(
         video_digest=video_digest,
         blockers=blockers,
     )
+
+
+#: Codes a guess made from an uncertain target carries to the site's result (``atlas_scene_estimates``).
+TASK_OBJECT_GUESSED = "task_object_guessed"
+TARGET_ROLE_KEPT = "target_role_kept"
+#: What an uncertain target in a role other than the object to move is kept as.
+_KEPT_EFFECT = {"support": "static_contact", "destination": "static_contact", "obstacle": "static_obstacle",
+                "background": "unrelated", "task_object": "unrelated"}
+_CLARIFICATION_PREFIX = "task_target_requires_clarification:"
+NOT_OBSERVED = "task_relevant_target_not_observed"
+
+
+def _boxed(target: Mapping[str, Any]) -> int:
+    return sum(1 for row in target.get("spatial_evidence") or []
+               if isinstance(row, Mapping) and row.get("box_xywh_normalized") is not None)
+
+
+def resolve_uncertain_targets(plan: Mapping[str, Any]) -> dict[str, Any]:
+    """Continue on a recorded guess where the analysis left a target uncertain; never a stop.
+
+    Owner rule: only privacy, rights and money stop a job. An analysis that could not decide is
+    flagged and the job goes on with the best supported reading:
+
+    - the object to move: with no manipulated target and no designed new object, the uncertain
+      ``task_object`` with the highest confidence, then the most boxes, then the smallest id, is
+      the object to move. Its instance is chosen in the masks by the same rule as any ambiguous
+      object to move (``website_task_target_choice.best_supported_guess``), and the site is asked,
+      optionally, whether it is the right one; an answer reruns the job;
+    - every other uncertain target keeps the role the analysis gave it (a support or destination
+      stays a contact surface, an obstacle an obstacle), kept in the scene, never removed.
+
+    Each guess records what it was made from: the analysis's own fields before the guess, and its
+    question. A plan with nothing task-relevant at all, uncertain or not, is left as it is: that is
+    the object not being in the video (``task_relevant_target_not_observed``).
+    """
+    blockers = [str(code) for code in plan.get("blockers") or []]
+    targets = [dict(row) for row in plan.get("targets") or [] if isinstance(row, Mapping)]
+    uncertain = [row for row in targets if row.get("task_effect") == "uncertain"]
+    if (plan.get("status") != "blocked" or not uncertain
+            or not all(code.startswith(_CLARIFICATION_PREFIX) or code == NOT_OBSERVED for code in blockers)):
+        return dict(plan)
+    # Any task object with a box is in the video, whatever class the analysis gave it (review 2026-11-12:
+    # a built-in drawer classed ``fixed_clutter`` was sent to "film again"). A movable one is preferred;
+    # one of another class becomes the whole assembly the task acts on, as the instructions report it.
+    candidates = [row for row in uncertain if row.get("target_role") == "task_object"
+                  and row.get("target_class") != "person" and _boxed(row)]
+    chosen = None
+    if candidates and not plan.get("synthetic_subject") and not any(
+            row.get("task_effect") == "manipulated" for row in targets):
+        chosen = min(candidates, key=lambda row: (row.get("target_class") != "movable_object",
+                                                   -float(row.get("confidence") or 0.0), -_boxed(row),
+                                                   str(row.get("target_id"))))
+    guesses = []
+    for row in uncertain:
+        before = {key: row.get(key) for key in ("task_effect", "disposition", "rebuild_intent", "confidence",
+                                                "clarification_question", "decision_reason", "target_class")}
+        if row is chosen:
+            row.update(task_effect="manipulated", disposition="remove", rebuild_intent="rebuild_and_compose",
+                       collision_required=True, target_class="movable_object")
+            kind, basis = TASK_OBJECT_GUESSED, "uncertain_task_object_best_supported"
+        else:
+            effect = _KEPT_EFFECT.get(str(row.get("target_role")), "unrelated")
+            row.update(task_effect=effect, disposition="keep", rebuild_intent="none",
+                       collision_required=effect in {"static_contact", "static_obstacle"})
+            kind, basis = TARGET_ROLE_KEPT, "uncertain_target_kept_in_its_role"
+        guess = {"code": kind, "basis": basis, "target_id": row.get("target_id"),
+                 "target_role": row.get("target_role"), "analysis_before_guess": before,
+                 "alternatives": sorted(str(other.get("target_id")) for other in candidates if other is not row)
+                 if row is chosen else [], "physical_evidence": False}
+        row["uncertain_guess"] = guess
+        guesses.append(guess)
+    # The job needs something to move when the analysis looked for one (an uncertain object to move)
+    # or found nothing at all: then a plan goes on only with an object to move that has a box the masks
+    # can start from, or a designed new object. Otherwise it is the object not being in the video,
+    # decided here, before frames or masks are bought (``website_task_object_not_observed``).
+    needs_subject = NOT_OBSERVED in blockers or any(row.get("target_role") == "task_object" for row in uncertain)
+    movable_subject = plan.get("synthetic_subject") or any(
+        row.get("task_effect") == "manipulated" and row.get("target_class") == "movable_object" and _boxed(row)
+        for row in targets)
+    relevant = (bool(movable_subject) if needs_subject else
+                any(row.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"} for row in targets))
+    movable = [row for row in targets if row.get("target_class") == "movable_object" and row.get("disposition") == "remove"]
+    return {**dict(plan), "targets": targets, "status": "completed" if relevant else "blocked",
+            "blockers": [] if relevant else [NOT_OBSERVED], "target_count": len(targets),
+            "movable_removal_count": len(movable),
+            "person_target_count": sum(1 for row in targets if row.get("target_class") == "person"),
+            "uncertain_target_guesses": guesses}
 
 
 def validate_removal_plan(plan: Mapping[str, Any]) -> list[str]:
@@ -1004,6 +1129,11 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
         return empty_removal_plan(status="blocked", model=model or _string_env(MODEL_ENV, DEFAULT_MODEL),
                                   processing=processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING),
                                   blockers=["confirmed_task_context_required"])
+    if not task_named(task_context):
+        # The website's placeholder is no job: nothing is reserved or bought until the job is named.
+        return empty_removal_plan(status="blocked", model=model or _string_env(MODEL_ENV, DEFAULT_MODEL),
+                                  processing=processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING),
+                                  blockers=[TASK_NOT_NAMED])
     from .website_gemini_receipts import gemini_quote, retained_gemini_call
     model_name = model or _string_env(MODEL_ENV, DEFAULT_MODEL)
     processing_mode = processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING)
@@ -1044,13 +1174,20 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
             raise ValueError("website_gemini_source_changed")
         return result
 
-    # The same decision bought before rigidity, or before the destination region, was asked
-    # for is reused as it stands (unclassified, or region-free), by its exact request:
-    # never bought again.
+    # The same decision bought before rigidity was asked for is reused as it stands (unclassified),
+    # by its exact request, when it completed. One bought before the destination region was asked
+    # for, or one that ended blocked, is bought once more under this revision (``binds_current_job``).
+    region_form = request(REGION_PROMPT_INSTRUCTION, REGION_RESPONSE_SCHEMA)
+    prior_form = request(PRIOR_PROMPT_INSTRUCTION, PRIOR_RESPONSE_SCHEMA)
+
+    def still_decides(earlier_binding: Mapping[str, Any], result: Mapping[str, Any]) -> bool:
+        # Only the region revision's completed answer is reused (``binds_current_job``).
+        return earlier_binding is region_form[0] and binds_current_job(
+            {**dict(result), "prompt_revision": REGION_PROMPT_REVISION})
+
     return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
-        maximum_cost_usd=maximum_cost_usd, preflight=preflight, invoke=invoke,
-        earlier_requests=[request(REGION_PROMPT_INSTRUCTION, REGION_RESPONSE_SCHEMA),
-                          request(PRIOR_PROMPT_INSTRUCTION, PRIOR_RESPONSE_SCHEMA)])
+        maximum_cost_usd=maximum_cost_usd, preflight=preflight, invoke=invoke, accept_earlier=still_decides,
+        earlier_requests=[region_form, prior_form])
 
 
 #: The analysis asked again, only for the movable furniture around the support, and only once the site owner

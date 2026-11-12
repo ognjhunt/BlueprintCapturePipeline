@@ -46,18 +46,21 @@ useful additional task/support anchors instead of arbitrary quotas. Before anyth
 generated, list in uncaptured_regions every area the task needs that no frame shows,
 such as floor, approach/access space, clearances or the far side of a support. Atlas
 generates those views from the observed context after reconstruction; they stay
-labelled estimates, never capture truth. An unseen floor, access space, clearance or
-surrounding area is never by itself a reason to abstain. Abstain only for these
-causes, and name each one in abstention_reasons: no frame shows a task object or task
-region (task_object_or_region_not_visible) or the support or destination it uses
-(support_or_destination_not_visible), the frames show different scene states
-(scene_state_inconsistent), no usable frames remain (frames_unusable), or the subject
-origin cannot be established (subject_origin_uncertain). Leave abstention_reasons
-empty when proposing.
+labelled estimates, never capture truth. Abstain only when the video itself cannot
+serve, and name each cause in abstention_reasons: no frame shows any task object or
+task region (task_object_or_region_not_visible), or no usable frames remain
+(frames_unusable). Anything else is not a reason to abstain: propose your best
+selection and name each doubt in estimated_aspects, in a short plain phrase. That
+includes a support or destination only partly seen, a place the task names that no
+frame shows clearly, a choice among several objects the task allows, an unclear
+subject origin (choose the most likely one), frames that show the scene in more than
+one state (choose the state the task starts from and mark the others unsafe), and an
+unseen floor, access space, clearance or surrounding area. Leave abstention_reasons
+empty when proposing, and estimated_aspects empty when abstaining.
 Never claim metric scale, hidden surfaces, physical fidelity or permission.
 All supplied frames must be considered; identify every unsafe frame explicitly.
-Images may be low-resolution review previews; abstain as frames_unusable if this
-prevents judgment.
+Images may be low-resolution review previews; abstain as frames_unusable only if no
+frame can be judged at all.
 Quality/overlap thresholds may adapt to the scene, never below 8 overlap inliers.
 Keep a sharp view of the overall room as well as task close-ups. No pricing or
 provider actions are available to you. Return only the structured proposal."""
@@ -76,8 +79,9 @@ automation objects must all have disposition keep and removal_instruction must
 be empty. Cover the intended source/destination interaction areas with role
 task_region instead of pretending the synthetic object was photographed.
 Select transient-free observations: this mode does not erase people or objects.
-Use captured for a task involving an observed manipulated object. Use uncertain
-and abstain if the task's subject origin cannot be established. This describes
+Use captured for a task involving an observed manipulated object. When the origin is
+unclear, choose the most likely one and name the doubt in estimated_aspects; never
+abstain for it. This describes
 the requested construction operation, not physical truth or new authority.
 """
 
@@ -107,6 +111,14 @@ class SelectionPolicy(BaseModel):
 # not one of these causes. Generated views stay labelled estimates.
 AbstentionReason = Literal["task_object_or_region_not_visible", "support_or_destination_not_visible",
                            "scene_state_inconsistent", "frames_unusable", "subject_origin_uncertain"]
+#: Owner direction 2026-11-11: a review abstains only when the video cannot serve at all. Every other
+#: doubt is proposed through and named in ``estimated_aspects``, which reach the site's result as flags.
+CurrentAbstentionReason = Literal["task_object_or_region_not_visible", "frames_unusable"]
+#: A current review always names the most likely origin; ``uncertain`` stays readable in retained receipts.
+CurrentSubjectOrigin = Literal["captured", "synthetic_design", "no_manipulated_subject"]
+# The instruction revision each new receipt records, the final causes and ``final_abstention`` live in
+# the leaf ``atlas_review_abstention`` so status readers can use them without importing the planner.
+from .atlas_review_abstention import FINAL_ABSTENTION_REASONS, INSTRUCTIONS_REVISION, final_abstention  # noqa: E402,F401
 
 
 class SceneProposal(BaseModel):
@@ -128,6 +140,8 @@ class SceneProposal(BaseModel):
     subject_origin: SubjectOrigin | None = None
     # None preserves retained receipts from before an abstention named its cause.
     abstention_reasons: list[AbstentionReason] | None = None
+    # None preserves retained receipts from before a proposal named its estimated aspects.
+    estimated_aspects: list[str] | None = None
 
     @model_validator(mode="after")
     def abstention_names_its_cause(self):
@@ -143,15 +157,18 @@ class RefinementProposal(SceneProposal):
 
 
 class CurrentSceneProposal(SceneProposal):
-    subject_origin: SubjectOrigin
-    abstention_reasons: list[AbstentionReason]
+    subject_origin: CurrentSubjectOrigin
+    abstention_reasons: list[CurrentAbstentionReason]
+    estimated_aspects: list[str] = Field(default_factory=list)
     automation: CurrentAutomationPlan | None = None
 
 
 class CurrentRefinementProposal(RefinementProposal):
-    subject_origin: SubjectOrigin
-    abstention_reasons: list[AbstentionReason]
+    subject_origin: CurrentSubjectOrigin
+    abstention_reasons: list[CurrentAbstentionReason]
+    estimated_aspects: list[str] = Field(default_factory=list)
     automation: CurrentAutomationPlan | None = None
+
 
 
 class SemanticSceneProposal(CurrentSceneProposal):
@@ -506,6 +523,8 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                if "cited_frames_added_to_coverage" in value else {}),
             # Flagged where the scene's estimates are collected (``atlas_scene_estimates``).
             **({"automation_citations_dropped": dropped} if dropped else {}),
+            # What the review proposed through without seeing it: flagged on the site's result.
+            **({"estimated_aspects": list(value["estimated_aspects"])} if value.get("estimated_aspects") else {}),
             "moving_people_excluded": True, "same_scene_state": True,
             "reviewed_by": "production_agents_sdk:" + policy["model"],
             "review_basis": "model_proposal_not_physical_or_privacy_proof",
@@ -1083,6 +1102,8 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
                "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": output_tokens,
                "maximum_cost_usd": maximum, "web_search": {"maximum_calls": search_calls, "per_call_usd": search_fee, "context": "low"}}
+    if all(value is None for value in (completion, scaling, recovery)):
+        binding["instructions_revision"] = INSTRUCTIONS_REVISION
     if source_review_recovery is not None:
         binding["source_review_recovery"] = source_review_recovery
         binding["source_preview_long_side"] = 1280

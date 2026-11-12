@@ -13,12 +13,15 @@ from tests.test_atlas_scene_planner import fixture
 
 def observed_case(tmp_path):
     path, survey, proposal, policy = fixture(tmp_path)
-    proposal.update(status='abstained', summary='No observed empty destination large enough for an observed box.')
+    # A final abstention under the current instructions: no frame shows the task object.
+    proposal.update(status='abstained', summary='No frame shows the box the task names.',
+                    abstention_reasons=['task_object_or_region_not_visible'])
     # The task region is unresolved; the separately reported room anchor is usable.
     proposal['coverage_requirements'][0]['required_frame_ids'] = []
     context = {'capture_id': 'source', 'context_digest': 'sha256:' + 'b' * 64, 'description': 'Move a box on the same shelf'}
+    from blueprint_pipeline.atlas_scene_planner import INSTRUCTIONS_REVISION
     binding = {'source_video_digest': survey['source_video_digest'], 'survey_digest': survey['digest'],
-               'task_context_digest': context['context_digest']}
+               'task_context_digest': context['context_digest'], 'instructions_revision': INSTRUCTIONS_REVISION}
     receipt = {'status': 'completed', 'binding': binding, 'binding_digest': canonical_digest(binding),
                'proposal': proposal, 'model': policy['model'], 'cost_usd': .14}
     config = {'authority': {'authorization_id': 'original', 'provider_retention': 'same-owner-policy'},
@@ -197,11 +200,12 @@ def test_stopped_job_adopts_actual_cached_detail_abstention_without_another_mode
     monkeypatch.setattr(pipeline, 'load_configuration', current)
     monkeypatch.setattr(website_atlas_pose, 'atlas_api_config', lambda: ('configured', 'test-non-secret'))
     monkeypatch.setattr(atlas_video_inputs, 'prepare_video_inputs', lambda **_: {'frames': []})
-    monkeypatch.setattr(pipeline, '_preserved_scene', lambda **_: {'status': 'processing', 'stage': 'source_pose'})
+    monkeypatch.setattr(pipeline, '_preserved_scene', lambda **_: pytest.fail('a final abstention buys no room'))
     options['invoker'].invoke = lambda *_: pytest.fail('cached task abstention must not be bought again')
-    result = pipeline.run_atlas_pipeline(output_root=root, source_video=video,
-        task_context=options['task_context'], invoker=options['invoker'])
-    assert result == {'status': 'processing', 'stage': 'source_pose'}
+    # A final abstention (part 6, 2026-11-12): the ask for a new video, with no room bought for it.
+    with pytest.raises(ValueError, match='website_capture_frames_unusable|website_task_object_not_observed'):
+        pipeline.run_atlas_pipeline(output_root=root, source_video=video,
+            task_context=options['task_context'], invoker=options['invoker'])
     assert len(calls['inputs']) == len(calls['reserved']) == len(calls['settled']) == 2
     assert {path: path.read_bytes() for path in before} == before
     assert json.loads((root / 'preview_job.json').read_text()) == historical_job
@@ -220,9 +224,19 @@ def test_visual_only_ready_can_never_enter_native_scene_or_scoring(tmp_path, ori
     result['digest'] = canonical_digest(result, digest_field='digest')
     write_json(root / 'result.json', result)
     write_json(root / 'preview_job.json', {'state': 'ready', 'result_digest': result['digest']})
+    (tmp_path / 'case').mkdir()
+    *_, receipt, _ = observed_case(tmp_path / 'case')
+    write_json(root / room.SELECTION, {'planner_receipt': receipt})
     value = atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / 'native')
     assert value == {'status': 'needs_input', 'reason': 'website_atlas_task_evidence_incomplete',
                      'observed_scene_available': True, 'simulation_qualified': False}
+    assert not (tmp_path / 'native').exists()
+    # An abstention that is not final is the job's usual wait while its task is reviewed once more.
+    older = {**receipt, 'binding': {key: value for key, value in receipt['binding'].items()
+                                    if key != 'instructions_revision'}}
+    write_json(root / room.SELECTION, {'planner_receipt': older})
+    assert atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / 'native') == {
+        'status': 'pending', 'reason': 'website_atlas_job_processing', 'stage': 'observed_room_review'}
     assert not (tmp_path / 'native').exists()
 
 
@@ -269,7 +283,7 @@ def test_actual_preserved_adapter_exports_raw_room_without_task_review_generatio
     assert result['simulation_qualified'] is False and result['native_preparation_eligible'] is False
 
 
-def test_automatic_controller_continues_room_work_and_resumes_without_reasking_task(tmp_path, monkeypatch):
+def _controller(tmp_path, monkeypatch):
     from datetime import datetime, timezone
     from blueprint_pipeline import atlas_video_inputs, paid_resource_allocator, website_atlas_pose
     from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
@@ -283,7 +297,7 @@ def test_automatic_controller_continues_room_work_and_resumes_without_reasking_t
     receipt['binding_digest'] = canonical_digest(receipt['binding'])
     config['policy']['reviewed_on'] = datetime.now(timezone.utc).date().isoformat()
     root = tmp_path / 'atlas'
-    calls, effects = [], []
+    calls, effects, planner = [], [], []
     def configuration(*args, **kwargs):
         calls.append(kwargs.get('create', True))
         return deepcopy(config)
@@ -291,7 +305,6 @@ def test_automatic_controller_continues_room_work_and_resumes_without_reasking_t
     monkeypatch.setattr(website_atlas_pose, 'atlas_api_config', lambda: ('configured', 'test-non-secret'))
     monkeypatch.setattr(atlas_video_inputs, 'survey_video', lambda **kw: write_json(kw['output_root'] / 'atlas_video_survey.json', survey))
     monkeypatch.setattr(atlas_video_inputs, 'prepare_video_inputs', lambda **_: {'frames': []})
-    planner = []
     monkeypatch.setattr(paid_resource_allocator, 'run_sponsored_website_atlas_plan', lambda **kw: planner.append(kw) or receipt)
     def preserve(**kwargs):
         assert kwargs['reconstruction_only'] is True
@@ -304,10 +317,152 @@ def test_automatic_controller_continues_room_work_and_resumes_without_reasking_t
                 'simulation_qualified': False, 'physical_evidence': False}
     monkeypatch.setattr(pipeline, '_preserved_scene', preserve)
     run = dict(output_root=root, source_video=video, task_context=context, max_polls=1)
+    return root, run, proposal, receipt, calls, effects, planner
+
+
+@pytest.mark.parametrize('website_lists_reason', [False, True])
+def test_a_final_abstention_buys_no_room_and_asks_for_a_new_video(tmp_path, monkeypatch, website_lists_reason):
+    """Part 6 (2026-11-12): a final abstention bought the observed room's pose although the site is asked
+    to film again either way. Now its selection is kept at $0 and no room is bought."""
+    from blueprint_pipeline.website_preparation_outcome import NEW_REASONS_ENV
+    monkeypatch.setenv(NEW_REASONS_ENV, 'true' if website_lists_reason else 'false')
+    root, run, _, _, _, effects, planner = _controller(tmp_path, monkeypatch)
+    for _ in range(2):  # The retained selection decides the second run too, without the review.
+        with pytest.raises(ValueError) as stop:
+            pipeline.run_atlas_pipeline(**run)
+        assert str(stop.value) == ('website_task_object_not_observed' if website_lists_reason
+                                   else 'atlas_scene_planner_abstained:final')
+    assert len(planner) == 1 and effects == [] and (root / room.SELECTION).is_file()
+    assert not (root / 'observed_room/pose').exists()
+    from blueprint_pipeline import website_atlas_preview as preview
+    job = {'state': 'processing', 'reason': None, 'revision': 1, 'stage': 'plan'}
+    assert preview._failed_step(job, stop.value, 10)['state'] == 'needs_input'
+
+
+def test_a_room_already_bought_for_a_final_abstention_is_still_collected(tmp_path, monkeypatch):
+    """A purchase made before this change is finished and collected, never abandoned."""
+    root, run, proposal, _, calls, effects, planner = _controller(tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        pipeline.run_atlas_pipeline(**run)
+    (root / 'observed_room/pose').mkdir(parents=True)  # bought under the earlier rule, in flight
     assert pipeline.run_atlas_pipeline(**run)['status'] == 'processing'
     result = pipeline.run_atlas_pipeline(**run)
     assert len(planner) == 1 and len(effects) == 2
-    assert calls[0] is True and all(value is False for value in calls[1:])
     assert result['task_evidence_limitation']['status'] == proposal['status'] == 'abstained'
     assert result['task_and_surrounding_scene_covered'] is False and result['observed_scene_only'] is True
     assert not (root / 'selection_binding.json').exists()
+
+
+def test_an_abstention_that_is_not_final_reviews_the_task_once_more(tmp_path, monkeypatch):
+    """capture-f88f1bd0: an abstention under older instructions was every later run's answer."""
+    from datetime import datetime, timezone
+    from blueprint_pipeline import atlas_video_inputs, paid_resource_allocator, website_atlas_pose
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    _, survey, proposal, context, receipt, config = observed_case(tmp_path)
+    video = tmp_path / 'video.mp4'
+    video.write_bytes(b'synthetic source; no provider calls')
+    survey['source_video_digest'] = _sha256_file(video)
+    survey['schema_version'] = 'atlas_video_survey.v1'
+    survey['digest'] = canonical_digest(survey, digest_field='digest')
+    config['policy']['reviewed_on'] = datetime.now(timezone.utc).date().isoformat()
+    root = tmp_path / 'atlas'
+    older = {**receipt, 'binding': {key: value for key, value in receipt['binding'].items()
+                                    if key != 'instructions_revision'}}
+    older['proposal'] = {**proposal, 'abstention_reasons': None}
+    selection = {'planner_receipt': older, 'digest': 'sha256:' + 'a' * 64}
+    write_json(root / room.SELECTION, selection)
+    write_json(root / 'configuration.json', config)
+    (root / 'scene_planner').mkdir()
+    monkeypatch.setattr(pipeline, 'load_configuration', lambda *a, **k: deepcopy(config))
+    monkeypatch.setattr(website_atlas_pose, 'atlas_api_config', lambda: ('configured', 'test-non-secret'))
+    monkeypatch.setattr(atlas_video_inputs, 'survey_video', lambda **kw: write_json(kw['output_root'] / 'atlas_video_survey.json', survey))
+    monkeypatch.setattr(room, 'run_observed_room', lambda **_: pytest.fail('a non-final room is not the answer'))
+
+    class Reviewed(Exception):
+        pass
+
+    def review(**kwargs):
+        raise Reviewed()
+    monkeypatch.setattr(paid_resource_allocator, 'run_sponsored_website_atlas_plan', review)
+    with pytest.raises(Reviewed):
+        pipeline.run_atlas_pipeline(output_root=root, source_video=video, task_context=context, max_polls=1)
+    # The retained room is kept beside the job, never deleted, and the task is reviewed again.
+    assert not (root / room.SELECTION).exists()
+    assert json.loads((root / 'observed_room/superseded' / ('a' * 64 + '.selection.json')).read_text()) == selection
+
+
+def _ready_observed_job(tmp_path, *, age_days, grant_seconds_left=86_400 * 3, ledger=None):
+    import time
+    *_, receipt, _ = observed_case(tmp_path)
+    capture = tmp_path / 'scenes/site-x/captures/walkthrough-x'
+    root = capture / 'pipeline/atlas'
+    older = {**receipt, 'binding': {}}  # Abstained under older instructions: not final.
+    write_json(root / room.SELECTION, {'planner_receipt': older, 'digest': 'sha256:' + 'f' * 64})
+    now = int(time.time())
+    if grant_seconds_left is not None:
+        write_json(capture / 'pipeline/website_scene_sponsorship.json', {'expires_at_epoch': now + grant_seconds_left})
+    write_json(capture / 'pipeline_job_ledger.json', ledger or {'status': 'retryable_blocked'})
+    job = {'schema_version': 'website_atlas_preview_job.v1', 'state': 'ready', 'stage': 'archived', 'reason': None,
+           'revision': 4, 'enqueued_at_epoch': now - int(age_days * 86_400), 'next_attempt_at_epoch': 0,
+           'retry_at_epoch': None, 'transient_failures': 0, 'request_id': 'x', 'scene_id': 'site-x',
+           'capture_id': 'walkthrough-x', 'source_video': 'raw/v.mp4'}
+    write_json(root / 'preview_job.json', job)
+    (root / 'preview.lock').touch()
+    return root / 'preview_job.json', job, now
+
+
+def _advance(monkeypatch, path, step):
+    from blueprint_pipeline import website_atlas_preview as preview
+    monkeypatch.setattr(preview, '_withdrawn', lambda root: False)
+    monkeypatch.setattr(preview, '_step', step)
+    monkeypatch.setattr(preview, '_deliver', lambda job, now: job)
+    monkeypatch.setattr(preview, '_clean_provider', lambda job, **_: job)
+    monkeypatch.setattr(preview, '_retract_archive', lambda job: job)
+    preview.advance_job(path)
+    return json.loads(path.read_text())
+
+
+@pytest.mark.parametrize('case', ['expired_window', 'no_grant', 'ended', 'closed_by_owner'])
+def test_an_observed_room_job_that_cannot_finish_is_never_touched(tmp_path, monkeypatch, case):
+    """Review 2026-11-12: a reopened job past its window failed at once and lost its ready preview."""
+    options = {'expired_window': dict(age_days=15), 'no_grant': dict(age_days=1, grant_seconds_left=None),
+               'ended': dict(age_days=1, ledger={'status': 'terminal_authority_ended', 'terminal_code': 'consent_expired'}),
+               'closed_by_owner': dict(age_days=1, ledger={'status': 'failed_retryable',
+                                                          'last_error': 'website_control_task-context_http_409:website_run_closed_by_owner'})}[case]
+    path, job, _ = _ready_observed_job(tmp_path, **options)
+    after = _advance(monkeypatch, path, lambda job, **_: pytest.fail('a ready job is never stepped'))
+    assert after == job
+
+
+def test_an_observed_room_job_inside_its_window_is_reviewed_once_and_never_ended_by_it(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_preview as preview
+    path, job, now = _ready_observed_job(tmp_path, age_days=1)
+    stepped = []
+
+    def refused(job, **_):
+        stepped.append(job['stage'])
+        return preview._transition(job, now, 'failed', 'atlas_runtime_budget_insufficient')
+    after = _advance(monkeypatch, path, refused)
+    # Reviewed once; the review could not run, so the job is the ready job it was, marked as reopened.
+    assert stepped == ['observed_room_review']
+    assert after['state'] == 'ready' and after['stage'] == 'archived' and after['revision'] == job['revision']
+    assert after['observed_room_reopened'] == 'sha256:' + 'f' * 64
+    assert after['observed_room_review_outcome'] == {'state': 'failed', 'reason': 'atlas_runtime_budget_insufficient'}
+    again = _advance(monkeypatch, path, lambda job, **_: pytest.fail('reopened only once'))
+    assert again == after
+
+
+def test_a_room_purchase_in_flight_is_collected_before_its_selection_is_set_aside(tmp_path, monkeypatch):
+    """Review 2026-11-12: a release landing while the room is being built must not abandon that purchase."""
+    _, _, proposal, context, receipt, config = observed_case(tmp_path)
+    root = tmp_path / 'atlas'
+    older = {**receipt, 'binding': {}}
+    write_json(root / room.SELECTION, {'planner_receipt': older, 'digest': 'sha256:' + 'a' * 64})
+    (root / 'observed_room/pose').mkdir(parents=True)
+    video = tmp_path / 'video.mp4'
+    video.write_bytes(b'synthetic source; no provider calls')
+    collected = []
+    monkeypatch.setattr(room, 'run_observed_room', lambda **kw: collected.append(kw) or {'status': 'processing'})
+    assert pipeline.run_atlas_pipeline(output_root=root, source_video=video, task_context=context,
+                                       max_polls=1)['status'] == 'processing'
+    assert len(collected) == 1 and (root / room.SELECTION).is_file()
