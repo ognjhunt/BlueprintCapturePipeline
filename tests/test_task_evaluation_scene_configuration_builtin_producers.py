@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 import subprocess
@@ -293,8 +294,11 @@ def test_expected_stage_roles_admit_the_destination_result_only_when_declared() 
 
 # The run's own toolchain copy: restoration at the start of a stage.
 #
-# These run as root in CI images and here, so a read-only mode protects
-# nothing: every assertion is on what the function did, not on EACCES.
+# These run as root here and as an unprivileged user in CI. A read-only mode
+# protects nothing from root, so every assertion is on what the function did,
+# not on EACCES; and every setup that plants something in the sealed tree
+# opens the parent for that moment only (``_unsealed``), so the tree the code
+# sees is the same for any user.
 
 _PACKAGE = "components/content_agents_rigid_replacement/package"
 _SEALED_CACHE = f"{_PACKAGE}/runtime/python/lib/__pycache__"
@@ -322,6 +326,29 @@ def _run_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, commit: str = "a"
     return module, root.resolve(), commit, digest
 
 
+@contextmanager
+def _unsealed(*paths: Path):
+    """Give the owner write access to ``paths`` for a setup step, then put each mode back.
+
+    What a process running as root does past read-only modes, done honestly by
+    the owner: the modes the code later sees are exactly the sealed ones.
+    """
+    import os
+    import stat as stat_module
+
+    saved = []
+    try:
+        for path in paths:
+            mode = stat_module.S_IMODE(os.lstat(path).st_mode)
+            saved.append((path, mode))
+            os.chmod(path, mode | (0o700 if stat_module.S_ISDIR(os.lstat(path).st_mode) else 0o600))
+        yield
+    finally:
+        for path, mode in reversed(saved):
+            if os.path.lexists(path) and not os.path.islink(path):
+                os.chmod(path, mode)
+
+
 def _own_inodes(root: Path) -> None:
     import os
 
@@ -331,9 +358,10 @@ def _own_inodes(root: Path) -> None:
             info = path.lstat()
             if info.st_nlink > 1:
                 data = path.read_bytes()
-                path.unlink()
-                path.write_bytes(data)
-                path.chmod(info.st_mode & 0o7777)
+                with _unsealed(Path(directory)):
+                    path.unlink()
+                    path.write_bytes(data)
+                    path.chmod(info.st_mode & 0o7777)
 
 
 def _restore(module, root, commit, digest):
@@ -378,7 +406,8 @@ def test_bundle_manifest_name_matches_what_the_bundle_builder_writes() -> None:
 def test_restore_removes_a_foreign_pycache_and_the_full_check_then_passes(tmp_path, monkeypatch):
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     cache = root / _PACKAGE / "__pycache__"
-    cache.mkdir()  # 0755 under the default umask, as container root leaves it
+    with _unsealed(root / _PACKAGE):
+        cache.mkdir()  # 0755 under the default umask, as container root leaves it
     (cache / "_render_driver.cpython-311.pyc").write_bytes(b"bytecode")
     with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
                        match=f"^scene_configuration_toolchain_not_read_only:{_PACKAGE}/__pycache__$"):
@@ -400,7 +429,8 @@ def test_restore_removes_a_foreign_pycache_and_the_full_check_then_passes(tmp_pa
 def test_restore_removes_a_foreign_file_in_a_sealed_directory(tmp_path, monkeypatch):
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     stray = root / "stages" / "stray.txt"
-    stray.write_text("left by a process", encoding="utf-8")
+    with _unsealed(root / "stages"):
+        stray.write_text("left by a process", encoding="utf-8")
     with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
                        match="^scene_configuration_toolchain_file_invalid:stages/stray.txt$"):
         _validate(module, root, commit)
@@ -453,8 +483,9 @@ def test_restore_unlinks_a_planted_link_and_leaves_its_target_alone(tmp_path, mo
     (outside / "nested").mkdir(parents=True)
     (outside / "nested" / "keep.txt").write_text("not ours", encoding="utf-8")
     (outside / "file.txt").write_text("not ours either", encoding="utf-8")
-    (root / "components" / "escape").symlink_to(outside, target_is_directory=True)
-    (root / "stages" / "escape.txt").symlink_to(outside / "file.txt")
+    with _unsealed(root / "components", root / "stages"):
+        (root / "components" / "escape").symlink_to(outside, target_is_directory=True)
+        (root / "stages" / "escape.txt").symlink_to(outside / "file.txt")
     before = _snapshot(outside)
     with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
                        match="^scene_configuration_toolchain_symlink_forbidden:"):
@@ -473,9 +504,11 @@ def test_restore_unlinks_a_planted_link_and_leaves_its_target_alone(tmp_path, mo
 def test_restore_never_repairs_a_changed_sealed_file(tmp_path, monkeypatch):
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     sealed = root / _PACKAGE / "run"
-    sealed.write_bytes(b"#!/bin/sh\nexit 0\n")  # root writes past 0555
+    with _unsealed(sealed):
+        sealed.write_bytes(b"#!/bin/sh\nexit 0\n")  # root writes past 0555
     cache = root / _PACKAGE / "__pycache__"
-    cache.mkdir()
+    with _unsealed(root / _PACKAGE):
+        cache.mkdir()
 
     record = _restore(module, root, commit, digest)
 
@@ -489,7 +522,8 @@ def test_restore_never_repairs_a_changed_sealed_file(tmp_path, monkeypatch):
 def test_restore_never_supplies_a_missing_sealed_file(tmp_path, monkeypatch):
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     missing = root / _SEALED_CACHE / "copy.cpython-311.pyc"
-    missing.unlink()
+    with _unsealed(root / _SEALED_CACHE):
+        missing.unlink()
 
     record = _restore(module, root, commit, digest)
 
@@ -505,9 +539,10 @@ def test_restore_touches_nothing_outside_the_toolchain(tmp_path, monkeypatch):
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "target.txt").write_text("x", encoding="utf-8")
-    (root / "stages" / "link").symlink_to(outside / "target.txt")
-    cache = root / _PACKAGE / "__pycache__"
-    cache.mkdir()
+    with _unsealed(root / "stages", root / _PACKAGE):
+        (root / "stages" / "link").symlink_to(outside / "target.txt")
+        cache = root / _PACKAGE / "__pycache__"
+        cache.mkdir()
     (cache / "inner-link").symlink_to(outside, target_is_directory=True)
     (root / "components").chmod(0o755)
     before = _snapshot(tmp_path, skip=root)
@@ -522,7 +557,8 @@ def test_restore_touches_nothing_outside_the_toolchain(tmp_path, monkeypatch):
 def test_restore_refuses_a_toolchain_that_is_not_the_runs_own_copy(tmp_path, monkeypatch):
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     cache = root / _PACKAGE / "__pycache__"
-    cache.mkdir()
+    with _unsealed(root / _PACKAGE):
+        cache.mkdir()
     # The deployed code is imported from the release checkout, not beside the tree.
     monkeypatch.setattr(module, "_loaded_runtime_root", lambda: tmp_path / "release" / "src")
     assert module.is_run_toolchain_copy(root) is False
@@ -543,7 +579,8 @@ def test_restore_refuses_a_toolchain_that_is_not_the_runs_own_copy(tmp_path, mon
 def test_restore_changes_nothing_when_the_manifest_is_not_the_stage_inputs(tmp_path, monkeypatch):
     module, root, commit, _digest = _run_copy(tmp_path, monkeypatch)
     cache = root / _PACKAGE / "__pycache__"
-    cache.mkdir()
+    with _unsealed(root / _PACKAGE):
+        cache.mkdir()
 
     record = _restore(module, root, commit, "sha256:" + "0" * 64)
 
@@ -552,12 +589,13 @@ def test_restore_changes_nothing_when_the_manifest_is_not_the_stage_inputs(tmp_p
 
 
 def test_restore_reseals_a_parent_it_opened_to_remove_an_entry(tmp_path, monkeypatch):
-    """Without root (the control-plane prestage) a sealed parent must be opened to unlink."""
+    """Without the override of file modes (the control-plane prestage) a sealed parent must be opened."""
     import os
 
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     cache = root / _PACKAGE / "__pycache__"
-    cache.mkdir()
+    with _unsealed(root / _PACKAGE):
+        cache.mkdir()
     (cache / "nested").mkdir()
     (cache / "nested" / "x.pyc").write_bytes(b"x")
     (cache / "nested").chmod(0o555)
@@ -569,8 +607,8 @@ def test_restore_reseals_a_parent_it_opened_to_remove_an_entry(tmp_path, monkeyp
         modes.append((os.fstat(handle).st_ino, mode))
         real_fchmod(handle, mode)
 
-    # Behave as an unprivileged owner would.
-    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    # The parent is opened whatever the user id: as the owner, and as root
+    # without the override of file modes, nothing else can remove the name.
     monkeypatch.setattr(os, "fchmod", fchmod)
 
     record = _restore(module, root, commit, digest)
@@ -607,7 +645,8 @@ def test_guard_accepts_a_root_reached_through_a_linked_ancestor(tmp_path, monkey
     workspace.symlink_to(tmp_path, target_is_directory=True)
     via_link = workspace / "provider_runtime" / "toolchain"
     cache = root / _PACKAGE / "__pycache__"
-    cache.mkdir()
+    with _unsealed(root / _PACKAGE):
+        cache.mkdir()
 
     assert module.is_run_toolchain_copy(via_link) is True
     record = _restore(module, via_link, commit, digest)
@@ -648,8 +687,9 @@ def test_a_link_at_a_kept_file_name_changes_nothing_outside(tmp_path, monkeypatc
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     outside = _writable_outside(tmp_path)
     sealed = root / _PACKAGE / "run"
-    sealed.unlink()
-    sealed.symlink_to(outside / "file.txt")
+    with _unsealed(root / _PACKAGE):
+        sealed.unlink()
+        sealed.symlink_to(outside / "file.txt")
     before = _outside_state(outside)
 
     _restore(module, root, commit, digest)
@@ -666,9 +706,10 @@ def test_a_link_at_a_kept_directory_name_changes_nothing_outside(tmp_path, monke
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     outside = _writable_outside(tmp_path)
     stages = root / "stages"
-    stages.chmod(0o755)
-    shutil.rmtree(stages)
-    stages.symlink_to(outside, target_is_directory=True)
+    with _unsealed(root):
+        stages.chmod(0o755)
+        shutil.rmtree(stages)
+        stages.symlink_to(outside, target_is_directory=True)
     before = _outside_state(outside)
 
     _restore(module, root, commit, digest)
@@ -687,8 +728,9 @@ def test_a_sealed_name_hard_linked_elsewhere_keeps_its_mode_and_is_refused(tmp_p
     victim = outside / "victim"
     victim.write_bytes(sealed.read_bytes())
     victim.chmod(0o775)
-    sealed.unlink()
-    os_link(victim, sealed)
+    with _unsealed(root / _PACKAGE):
+        sealed.unlink()
+        os_link(victim, sealed)
 
     record = _restore(module, root, commit, digest)
 
@@ -708,7 +750,8 @@ def test_sealed_files_linked_into_a_private_tree_still_pass(tmp_path, monkeypatc
     sealed = root / _PACKAGE / "run"
     os_link(sealed, private / "run")
     cache = root / _PACKAGE / "__pycache__"
-    cache.mkdir()
+    with _unsealed(root / _PACKAGE):
+        cache.mkdir()
 
     record = _restore(module, root, commit, digest)
 
@@ -730,7 +773,8 @@ def test_a_parent_swapped_for_a_link_mid_restore_never_reaches_outside(tmp_path,
     mirror = outside / Path(_PACKAGE).relative_to("components")
     mirror.mkdir(parents=True)
     (mirror / "planted.txt").write_text("OUTSIDE - must survive", encoding="utf-8")
-    (root / _PACKAGE / "planted.txt").write_text("foreign", encoding="utf-8")
+    with _unsealed(root / _PACKAGE):
+        (root / _PACKAGE / "planted.txt").write_text("foreign", encoding="utf-8")
     real_entries = module._entries
     swapped = []
 
@@ -759,7 +803,8 @@ def test_an_entry_on_another_filesystem_is_left_alone(tmp_path, monkeypatch):
 
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     mounted = root / "stages" / "mnt"
-    mounted.mkdir()
+    with _unsealed(root / "stages"):
+        mounted.mkdir()
     (mounted / "data.txt").write_text("other filesystem", encoding="utf-8")
     real_entries = module._entries
 
@@ -793,7 +838,8 @@ def test_a_real_mount_inside_the_tree_is_left_alone(tmp_path, monkeypatch):
     source.mkdir()
     (source / "data.txt").write_text("other filesystem", encoding="utf-8")
     mounted = root / "stages" / "mnt"
-    mounted.mkdir()
+    with _unsealed(root / "stages"):
+        mounted.mkdir()
     bound = subprocess.run(["mount", "--bind", str(source), str(mounted)], capture_output=True, text=True)
     if bound.returncode != 0:
         pytest.skip("no mount rights here: " + bound.stderr.strip()[:200])
@@ -813,7 +859,8 @@ def test_a_very_deep_planted_tree_is_removed_without_recursion(tmp_path, monkeyp
 
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     base = root / _PACKAGE / "__pycache__"
-    base.mkdir()
+    with _unsealed(root / _PACKAGE):
+        base.mkdir()
     here = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for _ in range(3000):
@@ -850,12 +897,14 @@ def test_without_a_mount_table_no_directory_is_removed(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "read_bytes", read_bytes)
     cache = root / _PACKAGE / "__pycache__"
-    cache.mkdir()
+    with _unsealed(root / _PACKAGE):
+        cache.mkdir()
     (cache / "data.txt").write_text("could be a bind mount's data", encoding="utf-8")
     stray = root / "stages" / "stray.txt"
-    stray.write_text("x", encoding="utf-8")
     link = root / "stages" / "link"
-    link.symlink_to(tmp_path)
+    with _unsealed(root / "stages"):
+        stray.write_text("x", encoding="utf-8")
+        link.symlink_to(tmp_path)
     (root / "components").chmod(0o755)
 
     record = _restore(module, root, commit, digest)
@@ -882,7 +931,8 @@ def test_a_mount_table_with_non_utf8_paths_is_still_read(tmp_path, monkeypatch):
 
     assert module._mount_points_under(root) == {"stages/m nt", os.fsdecode(b"stages/\xff")}
     mounted = root / "stages" / "m nt"
-    mounted.mkdir()
+    with _unsealed(root / "stages"):
+        mounted.mkdir()
     (mounted / "data.txt").write_text("other filesystem", encoding="utf-8")
     record = _restore(module, root, commit, digest)
     assert record["left"] == [{"relative_path": "stages/m nt", "reason": "other_filesystem"}]
@@ -891,7 +941,8 @@ def test_a_mount_table_with_non_utf8_paths_is_still_read(tmp_path, monkeypatch):
 
 def test_a_failed_listing_leaks_no_handle(tmp_path, monkeypatch):
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
-    (root / "stages" / "stray").write_text("x", encoding="utf-8")
+    with _unsealed(root / "stages"):
+        (root / "stages" / "stray").write_text("x", encoding="utf-8")
     real = module._entries
     calls = []
 
@@ -915,7 +966,8 @@ def test_a_kept_folder_swapped_for_an_outside_link_before_it_is_opened(tmp_path,
     mirror = outside / Path(_PACKAGE).relative_to("components")
     mirror.mkdir(parents=True)
     (mirror / "planted.txt").write_text("OUTSIDE", encoding="utf-8")
-    (root / _PACKAGE / "planted.txt").write_text("foreign", encoding="utf-8")
+    with _unsealed(root / _PACKAGE):
+        (root / _PACKAGE / "planted.txt").write_text("foreign", encoding="utf-8")
     real = module._open_at
     swapped = []
 

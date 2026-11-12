@@ -22,6 +22,7 @@ from scripts.build_task_evaluation_scene_configuration_toolchain import (
 from tests.test_build_task_evaluation_scene_configuration_toolchain import (
     _component_packages,
 )
+from tests.test_task_evaluation_scene_configuration_builtin_producers import _unsealed
 
 
 def _sha256(path: Path) -> str:
@@ -339,7 +340,8 @@ def test_stage_start_restores_the_runs_own_copy_flags_it_and_keeps_going(
     adapter_id = "artifixer3d_observed_object_removal"
     environment, result_path, toolchain = _run_copy_environment(tmp_path, monkeypatch, adapter_id)
     cache = toolchain / "components" / adapter_id / "package" / "__pycache__"
-    cache.mkdir()
+    with _unsealed(cache.parent):
+        cache.mkdir()
     (cache / "run.cpython-311.pyc").write_bytes(b"bytecode")
 
     result = execute_stage_tool(adapter_id=adapter_id, environment=environment, runner=_artifixer_component)
@@ -363,7 +365,8 @@ def test_stage_start_still_refuses_a_changed_sealed_file_by_name(
     adapter_id = "artifixer3d_observed_object_removal"
     environment, _result, toolchain = _run_copy_environment(tmp_path, monkeypatch, adapter_id)
     sealed = toolchain / "components" / adapter_id / "package" / "run"
-    sealed.write_bytes(b"#!/bin/sh\nexit 0\n")
+    with _unsealed(sealed):
+        sealed.write_bytes(b"#!/bin/sh\nexit 0\n")
     observed = []
 
     with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError,
@@ -386,7 +389,8 @@ def test_stage_start_outside_a_run_copy_refuses_by_name_and_deletes_nothing(
     environment, _result = _environment(tmp_path, adapter_id=adapter_id)
     toolchain = Path(environment[TOOLCHAIN_ROOT_ENV])
     cache = toolchain / "components" / adapter_id / "package" / "__pycache__"
-    cache.mkdir()
+    with _unsealed(cache.parent):
+        cache.mkdir()
 
     with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError,
                        match=f"^scene_configuration_toolchain_not_read_only:components/{adapter_id}/package/__pycache__$"):
@@ -406,7 +410,8 @@ def test_stage_start_restores_a_copy_reached_through_a_linked_ancestor(
     workspace.symlink_to(tmp_path, target_is_directory=True)
     environment[TOOLCHAIN_ROOT_ENV] = str(workspace / "provider_runtime" / "toolchain")
     cache = toolchain / "components" / adapter_id / "package" / "__pycache__"
-    cache.mkdir()
+    with _unsealed(cache.parent):
+        cache.mkdir()
 
     result = execute_stage_tool(adapter_id=adapter_id, environment=environment, runner=_artifixer_component)
 
@@ -425,7 +430,8 @@ def test_a_restore_that_raises_is_flagged_and_the_full_check_still_decides(
     adapter_id = "artifixer3d_observed_object_removal"
     environment, _result, toolchain = _run_copy_environment(tmp_path, monkeypatch, adapter_id)
     cache = toolchain / "components" / adapter_id / "package" / "__pycache__"
-    cache.mkdir()
+    with _unsealed(cache.parent):
+        cache.mkdir()
 
     def deep(**_kwargs):
         raise RecursionError("maximum recursion depth exceeded")

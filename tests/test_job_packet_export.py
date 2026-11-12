@@ -380,6 +380,18 @@ def _sheet(manifest: dict) -> str:
     return (Path(manifest["packet_dir"]) / "JOB_SHEET.md").read_text()
 
 
+def _without_packet_number(sheet: str) -> str:
+    """The sheet less its one ``Packet number:`` line.
+
+    The number is 16 random hex digits, so a short number such as "13" turns up
+    in it now and then; a test that says a count is absent must not read it.
+    """
+    lines = sheet.splitlines()
+    numbered = [line for line in lines if line.startswith("Packet number: ")]
+    assert len(numbered) == 1
+    return "\n".join(line for line in lines if line not in numbered)
+
+
 # --- the one packet --------------------------------------------------------------------------------------
 
 def test_the_packet_holds_the_whole_job(tmp_path, job, clip_with_sound) -> None:
@@ -573,7 +585,7 @@ def test_repeats_are_left_out_and_large_counts_are_capped(tmp_path, job) -> None
     sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
     assert sheet.count("| π0.5 DROID |") == 1 and sheet.count("| UR5e |") == 1 and sheet.count("| UR10e |") == 1
     assert "Some rows were left out (9)" in sheet and "Some rows were left out (more than 20)" in sheet
-    assert "48" not in sheet
+    assert "48" not in _without_packet_number(sheet)
 
 
 # --- who may get a packet -------------------------------------------------------------------------------
@@ -1150,7 +1162,8 @@ def test_a_scripted_run_is_a_check_of_the_simulation_never_robot_software(tmp_pa
     assert "| π0.5 DROID | completed | 10 | 0 of 10 |" in trial
     assert "Blueprint scripted" not in trial and "left out" not in trial
     assert packet.SCRIPTED_CHECK_SENTENCE in check and "| Blueprint scripted pick/place — kinova_gen3 | completed | 3 | 3 of 3 |" in check
-    assert "13" not in sheet and "3 of 13" not in sheet  # the two are never added together
+    body = _without_packet_number(sheet)
+    assert "13" not in body and "3 of 13" not in body  # the two are never added together
 
 
 def test_a_catalog_scripted_row_without_its_evidence_kind_is_still_not_robot_software(tmp_path, job) -> None:

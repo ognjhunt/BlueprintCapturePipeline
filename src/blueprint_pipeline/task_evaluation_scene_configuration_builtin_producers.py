@@ -448,10 +448,9 @@ class _Removal:
     full check), never followed.
     """
 
-    def __init__(self, *, device: int, mounts: frozenset[str], unprivileged: bool) -> None:
+    def __init__(self, *, device: int, mounts: frozenset[str]) -> None:
         self.device = device
         self.mounts = mounts
-        self.unprivileged = unprivileged
         self.count = 0
 
     def remove(self, parent: int, name: str, info: os.stat_result, relative: str) -> str | None:
@@ -461,8 +460,9 @@ class _Removal:
         stack: list[tuple[int, str | None, int | None, list[tuple[str, os.stat_result]], str]] = []
         stack.append((top, name, parent, [], relative))
         try:
-            if self.unprivileged:
-                os.fchmod(top, 0o700)
+            # Opened for its owner whoever we are: root without the override of
+            # file modes is no better off than the owner (see the main loop).
+            os.fchmod(top, 0o700)
             stack[-1][3].extend(_entries(top))
             while stack:
                 handle, own_name, own_parent, pending, own_relative = stack[-1]
@@ -482,8 +482,7 @@ class _Removal:
                     if opened is None:
                         return "entry_changed"
                     stack.append((opened, child, handle, [], child_relative))
-                    if self.unprivileged:
-                        os.fchmod(opened, 0o700)
+                    os.fchmod(opened, 0o700)
                     stack[-1][3].extend(_entries(opened))
                 else:
                     # Removes the name itself; a link's target is never touched.
@@ -582,7 +581,6 @@ def _restore_from_handle(
         parts = relative.split("/")
         keep.update("/".join(parts[:index]) for index in range(1, len(parts)))
     device = root_info.st_dev
-    unprivileged = os.geteuid() != 0
 
     def note(field: str, row: dict[str, Any]) -> None:
         record[f"{field}_count"] += 1
@@ -653,14 +651,17 @@ def _restore_from_handle(
                 # directory cannot be seen, so no directory is removed.
                 note("left", {"relative_path": relative, "reason": "mount_table_unavailable"})
                 continue
-            if unprivileged and not frame["opened"] and not frame["mode"] & 0o200:
-                # An unprivileged owner must open the parent to remove a name;
-                # it is sealed again when the directory is done.
+            if not frame["opened"] and not frame["mode"] & 0o200:
+                # Removing a name needs write access to the parent. Open it for
+                # its owner, whatever our user id: a user id of 0 is not proof of
+                # the override of file modes (a container can drop it), and the
+                # host prestage runs as the service user. It is sealed again when
+                # the directory is done.
                 os.fchmod(frame["handle"], frame["mode"] | 0o700)
                 frame["opened"] = True
             contained = 0
             if kind == "directory":
-                removal = _Removal(device=device, mounts=mounts or frozenset(), unprivileged=unprivileged)
+                removal = _Removal(device=device, mounts=mounts or frozenset())
                 reason = removal.remove(frame["handle"], name, info, relative)
                 if reason is not None:
                     note("left", {"relative_path": relative, "reason": reason})
