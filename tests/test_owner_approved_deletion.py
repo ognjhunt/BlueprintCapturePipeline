@@ -3,8 +3,9 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/owner_approved_deletion.py
 #   deploy/owner-approved-deletions/2026-11-04-arena-scratch.json
-#   deploy/owner-approved-deletions/2026-11-04-authority-ended-scenes.json
+#   deploy/owner-approved-deletions/held/2026-11-04-authority-ended-scenes.json
 #   deploy/owner-approved-deletions/2026-11-04-controlled-policy-integration.json
+#   deploy/owner-approved-deletions/2026-11-12-old-development-folders.json
 #   deploy/systemd/blueprint-owner-approved-deletion-plan.service
 #   deploy/systemd/blueprint-owner-approved-deletion.service
 
@@ -386,16 +387,42 @@ def test_a_queued_authority_ended_scene_is_kept(tmp_path, host):
 
 def test_the_shipped_manifests_validate_and_never_name_the_live_capture():
     manifests = oad.manifests(REPO_ROOT / "deploy" / "owner-approved-deletions")
-    assert [path.stem for path in manifests] == ["2026-11-04-arena-scratch", "2026-11-04-authority-ended-scenes",
-                                                 "2026-11-04-controlled-policy-integration"]
+    # The 2026-11-04 scenes manifest is held aside (deploy/owner-approved-deletions/held/README.md), unchanged.
+    assert not (REPO_ROOT / "deploy/owner-approved-deletions/2026-11-04-authority-ended-scenes.json").exists()
+    assert (REPO_ROOT / "deploy/owner-approved-deletions/held/2026-11-04-authority-ended-scenes.json").is_file()
+    assert [path.stem for path in manifests] == ["2026-11-04-arena-scratch",
+                                                 "2026-11-04-controlled-policy-integration",
+                                                 "2026-11-12-old-development-folders"]
     for path in manifests:
         manifest, _ = oad.load_manifest(path)
         assert not any("447ae4f4" in json.dumps(entry) for entry in manifest["entries"])
         for entry in manifest["entries"]:
             if entry["class"] == oad.FOLDER:
-                # Nothing written after 2026-09-01, except the separately approved 2026-09-28 integration folder.
-                limit = 1790812800 if "controlled-policy" in entry["path"] else 1788307200
+                # Nothing written after 2026-09-01, except the separately approved 2026-09-28 integration folder
+                # and the 2026-11-12 old development folders (nothing written since 2026-10-01).
+                limit = (1790812800 if "controlled-policy" in entry["path"] or path.stem.startswith("2026-11-12")
+                         else 1788307200)
                 assert entry["newest_mtime_epoch"] < limit, entry["path"]
+
+
+def test_a_manifest_held_aside_is_never_planned_or_applied(tmp_path, monkeypatch):
+    directory = tmp_path / "owner-approved-deletions"
+    (directory / "held").mkdir(parents=True)
+    (directory / "active.json").write_text("{}", encoding="utf-8")
+    (directory / "held" / "held-scenes.json").write_text("{}", encoding="utf-8")
+    assert oad.manifests(directory) == [directory / "active.json"]
+    seen = []
+    monkeypatch.setattr(oad, "plan_manifest", lambda path, **_: seen.append(("plan", path)) or {
+        "manifest_id": "m", "plan_digest": "d", "entry_count": 0, "eligible_count": 0,
+        "eligible_apparent_bytes": 0, "skipped_counts": {}})
+    monkeypatch.setattr(oad, "apply_manifest", lambda path, **_: seen.append(("apply", path)) or {
+        "manifest_id": "m", "result_digest": "d", "deleted_count": 0, "deleted_apparent_bytes": 0,
+        "outcome_counts": {}})
+    monkeypatch.setenv(oad.QUEUE_ROOTS_ENV, str(tmp_path / "queue"))
+    for action in (["plan"], ["apply", "--ack", oad.APPLY_ACK]):
+        assert oad.main([*action, "--manifest-dir", str(directory), "--report-root", str(tmp_path / "reports"),
+                         "--pins-root", str(tmp_path / "pins"), "--intent-root", str(tmp_path / "intents")]) == 0
+    assert seen == [("plan", directory / "active.json"), ("apply", directory / "active.json")]
 
 
 def test_the_units_run_by_hand_with_the_reclaim_timers_queues():

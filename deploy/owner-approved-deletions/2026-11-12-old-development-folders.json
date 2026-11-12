@@ -1,0 +1,2794 @@
+{
+ "schema_version": "owner_approved_deletion_manifest.v1",
+ "approved_by": "owner",
+ "approved_at": "2026-11-12T04:00:00Z",
+ "expires_at": "2026-11-19T04:00:00Z",
+ "manifest_id": "2026-11-12-old-development-folders",
+ "approval_evidence": "Owner, 2026-11-12, asked \"OK to clear the 354 old development folders (49 GiB). The host's work disk is about 4.6 GiB above its floor and falling; without this, nothing runs within about a day.\" and answered verbatim \"yes ok\": permanent deletion of the measured old development folders under task-evaluation-inputs, nothing written since 2026-10-01. Re-verified 2026-11-12: 348 of the 354 remain eligible, 48246939425 bytes (44.93 GiB) in all; 6 dropped because the released code, a unit or a sibling symlink names them. Not the folders that could not be measured, not g1-*, nothing newer.",
+ "entries": [
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/adp-new-scene-simple-relocation-839873-a099de6a970a41b62cfcfbcc185cc9d74ea9a2ff-20260827T001501Z-governance",
+   "newest_mtime_epoch": 1787854634,
+   "apparent_bytes": 19902,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/adp-new-scene-simple-relocation-839873-d99a24fab49a2cb1d2b78fd64615c93574165a1e-20260827T211738Z-governance",
+   "newest_mtime_epoch": 1787866745,
+   "apparent_bytes": 36474,
+   "file_count": 10,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/adp-new-scene-simple-relocation-839873-d99a24fab49a2cb1d2b78fd64615c93574165a1e-20260827T211738Z-publication-staging",
+   "newest_mtime_epoch": 1787865498,
+   "apparent_bytes": 80081239,
+   "file_count": 38,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/adp-new-scene-simple-relocation-839873-f1e07c7f2b583e33be573ee3de9a10184600388b-20260827T170803Z-governance",
+   "newest_mtime_epoch": 1787850586,
+   "apparent_bytes": 32984,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/adp-new-scene-simple-relocation-839873-f1e07c7f2b583e33be573ee3de9a10184600388b-20260827T170803Z-publication-staging",
+   "newest_mtime_epoch": 1787963759,
+   "apparent_bytes": 80080854,
+   "file_count": 38,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/adp009d-840313-interiorgs-sage-v1",
+   "newest_mtime_epoch": 1787963713,
+   "apparent_bytes": 157621500,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/appearance-campaign-840920-6867b864-r12",
+   "newest_mtime_epoch": 1786935267,
+   "apparent_bytes": 1114,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/appearance-campaign-840920-afc423d2-r12",
+   "newest_mtime_epoch": 1786932718,
+   "apparent_bytes": 557,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/appearance-campaign-840920-fad75e0c-r12",
+   "newest_mtime_epoch": 1786933949,
+   "apparent_bytes": 2234,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-launch-r5",
+   "newest_mtime_epoch": 1787085990,
+   "apparent_bytes": 26585,
+   "file_count": 8,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/arena-runtime-preflight-bb16b12e",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 1250919,
+   "file_count": 118,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer-candidate-840920-515c688c",
+   "newest_mtime_epoch": 1786862748,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer-candidate-840920-79520703",
+   "newest_mtime_epoch": 1786864862,
+   "apparent_bytes": 110191240,
+   "file_count": 94,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer-candidate-840920-8b325f8e",
+   "newest_mtime_epoch": 1786863861,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer-final-composite-840920-53b84015-r1",
+   "newest_mtime_epoch": 1786945358,
+   "apparent_bytes": 17806975,
+   "file_count": 33,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer-final-composite-review-840920-53b84015-r1",
+   "newest_mtime_epoch": 1786945382,
+   "apparent_bytes": 18006176,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer-handoff-840920-fad75e0c-r12",
+   "newest_mtime_epoch": 1786933322,
+   "apparent_bytes": 267272652,
+   "file_count": 122,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer3d-840920-53b84015-r1",
+   "newest_mtime_epoch": 1787963794,
+   "apparent_bytes": 403894244,
+   "file_count": 255,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer3d-840920-6867b864-r1",
+   "newest_mtime_epoch": 1787963794,
+   "apparent_bytes": 403900568,
+   "file_count": 261,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer3d-840920-fad75e0c-r1",
+   "newest_mtime_epoch": 1787963794,
+   "apparent_bytes": 403918687,
+   "file_count": 268,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer3d-840920-task-b-paired-v2-8980fe4e",
+   "newest_mtime_epoch": 1786654147,
+   "apparent_bytes": 84253665,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer3d-840920-task-b-paired-v3-40aaa535",
+   "newest_mtime_epoch": 1786688546,
+   "apparent_bytes": 84253711,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer3d-840920-task-b-paired-v4-00ff05a3",
+   "newest_mtime_epoch": 1786689864,
+   "apparent_bytes": 84253709,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/artifixer3d-840920-task-b-paired-v5-6a774232",
+   "newest_mtime_epoch": 1786693551,
+   "apparent_bytes": 84253710,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/aura-prerequisites",
+   "newest_mtime_epoch": 1786556912,
+   "apparent_bytes": 381430968,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/cache-publication-staging",
+   "newest_mtime_epoch": 1788359554,
+   "apparent_bytes": 255396281,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/compiled-episode-diagnostics",
+   "newest_mtime_epoch": 1789477283,
+   "apparent_bytes": 367774628,
+   "file_count": 9,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/compiled-episodes-attempt-history",
+   "newest_mtime_epoch": 1789477283,
+   "apparent_bytes": 183885332,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/compiled-episodes-diagnostics",
+   "newest_mtime_epoch": 1789477283,
+   "apparent_bytes": 367770664,
+   "file_count": 6,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-a-earthtojake-text-to-cad",
+   "newest_mtime_epoch": 1786599813,
+   "apparent_bytes": 50935443,
+   "file_count": 39,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-a-earthtojake-text-to-cad-v8",
+   "newest_mtime_epoch": 1786828708,
+   "apparent_bytes": 50774371,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-a-pan-chera-multi-agent-cad",
+   "newest_mtime_epoch": 1786590910,
+   "apparent_bytes": 50768394,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-a-pan-chera-multi-agent-cad-v8",
+   "newest_mtime_epoch": 1786624601,
+   "apparent_bytes": 50754075,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-a-pan-chera-multi-agent-cad-v8r1",
+   "newest_mtime_epoch": 1786624978,
+   "apparent_bytes": 50827518,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-a-pan-chera-multi-agent-cad-v8r2",
+   "newest_mtime_epoch": 1786628709,
+   "apparent_bytes": 50827520,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-a-pan-chera-multi-agent-cad-v8r3",
+   "newest_mtime_epoch": 1786651734,
+   "apparent_bytes": 50826213,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-a-pan-chera-multi-agent-cad-v8r4",
+   "newest_mtime_epoch": 1786653779,
+   "apparent_bytes": 50827837,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-a-pan-chera-multi-agent-cad-v8r5",
+   "newest_mtime_epoch": 1786828832,
+   "apparent_bytes": 50950104,
+   "file_count": 27,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad",
+   "newest_mtime_epoch": 1786590927,
+   "apparent_bytes": 50561854,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8",
+   "newest_mtime_epoch": 1786624601,
+   "apparent_bytes": 50546411,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r1",
+   "newest_mtime_epoch": 1786625145,
+   "apparent_bytes": 50635098,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r10",
+   "newest_mtime_epoch": 1786681027,
+   "apparent_bytes": 50636518,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r11",
+   "newest_mtime_epoch": 1786685242,
+   "apparent_bytes": 50636982,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r12",
+   "newest_mtime_epoch": 1786687241,
+   "apparent_bytes": 50636822,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r13",
+   "newest_mtime_epoch": 1786688661,
+   "apparent_bytes": 50637557,
+   "file_count": 15,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r14",
+   "newest_mtime_epoch": 1786690565,
+   "apparent_bytes": 50637555,
+   "file_count": 15,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r15",
+   "newest_mtime_epoch": 1786692927,
+   "apparent_bytes": 50637725,
+   "file_count": 15,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r16",
+   "newest_mtime_epoch": 1786840443,
+   "apparent_bytes": 51077737,
+   "file_count": 51,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r2",
+   "newest_mtime_epoch": 1786628866,
+   "apparent_bytes": 50634855,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r3",
+   "newest_mtime_epoch": 1786651869,
+   "apparent_bytes": 50635327,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r4",
+   "newest_mtime_epoch": 1786653904,
+   "apparent_bytes": 50635333,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r5",
+   "newest_mtime_epoch": 1786664167,
+   "apparent_bytes": 50635330,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r6",
+   "newest_mtime_epoch": 1786669323,
+   "apparent_bytes": 50635328,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r7",
+   "newest_mtime_epoch": 1786670634,
+   "apparent_bytes": 50635328,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r8",
+   "newest_mtime_epoch": 1786672011,
+   "apparent_bytes": 50635332,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-earthtojake-text-to-cad-v8r9",
+   "newest_mtime_epoch": 1786677685,
+   "apparent_bytes": 50635323,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad",
+   "newest_mtime_epoch": 1786590945,
+   "apparent_bytes": 50794087,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8",
+   "newest_mtime_epoch": 1786624601,
+   "apparent_bytes": 50774963,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r1",
+   "newest_mtime_epoch": 1786625298,
+   "apparent_bytes": 50891149,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r10",
+   "newest_mtime_epoch": 1786681157,
+   "apparent_bytes": 50892972,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r11",
+   "newest_mtime_epoch": 1786685442,
+   "apparent_bytes": 50893115,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r12",
+   "newest_mtime_epoch": 1786687392,
+   "apparent_bytes": 50893520,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r13",
+   "newest_mtime_epoch": 1786688661,
+   "apparent_bytes": 50894014,
+   "file_count": 15,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r14",
+   "newest_mtime_epoch": 1786690566,
+   "apparent_bytes": 50894012,
+   "file_count": 15,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r15",
+   "newest_mtime_epoch": 1786692927,
+   "apparent_bytes": 50894261,
+   "file_count": 15,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r16",
+   "newest_mtime_epoch": 1786699764,
+   "apparent_bytes": 50993718,
+   "file_count": 19,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r2",
+   "newest_mtime_epoch": 1786629012,
+   "apparent_bytes": 50891148,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r3",
+   "newest_mtime_epoch": 1786651996,
+   "apparent_bytes": 50891867,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r4",
+   "newest_mtime_epoch": 1786654055,
+   "apparent_bytes": 50891622,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r5",
+   "newest_mtime_epoch": 1786664342,
+   "apparent_bytes": 50891624,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r6",
+   "newest_mtime_epoch": 1786669467,
+   "apparent_bytes": 50891623,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r7",
+   "newest_mtime_epoch": 1786670773,
+   "apparent_bytes": 50891463,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r8",
+   "newest_mtime_epoch": 1786672146,
+   "apparent_bytes": 50891462,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/content-agents-840920-b-pan-chera-multi-agent-cad-v8r9",
+   "newest_mtime_epoch": 1786677826,
+   "apparent_bytes": 50891862,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/control-search-preparations",
+   "newest_mtime_epoch": 1788213843,
+   "apparent_bytes": 2432,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/diagnostic-preflight-79520703",
+   "newest_mtime_epoch": 1787963820,
+   "apparent_bytes": 110191336,
+   "file_count": 94,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-0b8e484c",
+   "newest_mtime_epoch": 1786824908,
+   "apparent_bytes": 130246701,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-2f1d6de8",
+   "newest_mtime_epoch": 1786849212,
+   "apparent_bytes": 130261664,
+   "file_count": 10,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-491c3619",
+   "newest_mtime_epoch": 1786771837,
+   "apparent_bytes": 359459860,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-89a01218",
+   "newest_mtime_epoch": 1786832948,
+   "apparent_bytes": 130246740,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-ba4fa518",
+   "newest_mtime_epoch": 1786825688,
+   "apparent_bytes": 130246701,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-be9ba935",
+   "newest_mtime_epoch": 1786838517,
+   "apparent_bytes": 130254333,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-c3e8b79a",
+   "newest_mtime_epoch": 1787963815,
+   "apparent_bytes": 631591737,
+   "file_count": 3269,
+   "door_unlisted_entries": 5
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-fe72a6a4",
+   "newest_mtime_epoch": 1787963815,
+   "apparent_bytes": 631598540,
+   "file_count": 3270,
+   "door_unlisted_entries": 5
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-live",
+   "newest_mtime_epoch": 1786636972,
+   "apparent_bytes": 130239756,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840796-live-r2",
+   "newest_mtime_epoch": 1786638167,
+   "apparent_bytes": 130239771,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840920-task-a-dd1bbdbd",
+   "newest_mtime_epoch": 1787963813,
+   "apparent_bytes": 334467607,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840920-task-a-dff628c1",
+   "newest_mtime_epoch": 1787963813,
+   "apparent_bytes": 334484409,
+   "file_count": 52,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840920-task-b-2d34f2a7",
+   "newest_mtime_epoch": 1787963813,
+   "apparent_bytes": 334419087,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840920-task-b-70402b4a",
+   "newest_mtime_epoch": 1787963813,
+   "apparent_bytes": 334443379,
+   "file_count": 53,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840920-task-b-aea0bb8c",
+   "newest_mtime_epoch": 1787963813,
+   "apparent_bytes": 334430395,
+   "file_count": 50,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/gaussian-excision-840920-task-b-dff628c1",
+   "newest_mtime_epoch": 1787963813,
+   "apparent_bytes": 334418769,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/interiorgs-841193-v1",
+   "newest_mtime_epoch": 1786554014,
+   "apparent_bytes": 158057083,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/interiorgs-shortlist-v1",
+   "newest_mtime_epoch": 1786554039,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/joint-agent-840796-live",
+   "newest_mtime_epoch": 1786638818,
+   "apparent_bytes": 379909952,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/joint-agent-840796-live-r2",
+   "newest_mtime_epoch": 1786639266,
+   "apparent_bytes": 379909964,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/joint-articulated-v1",
+   "newest_mtime_epoch": 1787012565,
+   "apparent_bytes": 70897,
+   "file_count": 8,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/joint-articulated-v2",
+   "newest_mtime_epoch": 1787020203,
+   "apparent_bytes": 759947698,
+   "file_count": 39,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/joint-composed-v1",
+   "newest_mtime_epoch": 1787059533,
+   "apparent_bytes": 67693,
+   "file_count": 6,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/joint-composed-v2",
+   "newest_mtime_epoch": 1787963678,
+   "apparent_bytes": 760566799,
+   "file_count": 37,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/joint-fff2beb2",
+   "newest_mtime_epoch": 1787003556,
+   "apparent_bytes": 5853,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/joint-fff2beb2-v3",
+   "newest_mtime_epoch": 1787963678,
+   "apparent_bytes": 763631048,
+   "file_count": 31,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/launch-activation-governance",
+   "newest_mtime_epoch": 1787954110,
+   "apparent_bytes": 8243,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/launch-activations-history",
+   "newest_mtime_epoch": 1788133381,
+   "apparent_bytes": 246949407,
+   "file_count": 82,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/launch-submissions",
+   "newest_mtime_epoch": 1787954972,
+   "apparent_bytes": 3425,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/native-construction-terminal-feedback",
+   "newest_mtime_epoch": 1788159550,
+   "apparent_bytes": 16432,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259",
+   "newest_mtime_epoch": 1787320430,
+   "apparent_bytes": 14161197,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/native-task-runtime-source-526c16f4-torch210-cu128",
+   "newest_mtime_epoch": 1787207275,
+   "apparent_bytes": 0,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/native-task-runtime-source-79ef9a8f-torch210-cu128",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 39973,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/native-task-runtime-source-bbc4e855-torch210-cu128",
+   "newest_mtime_epoch": 1787201037,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/native-task-runtime-source-c3e8b79a",
+   "newest_mtime_epoch": 1786765962,
+   "apparent_bytes": 152266561,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/native-task-runtime-source-e70f0962-torch210-cu128",
+   "newest_mtime_epoch": 1787401671,
+   "apparent_bytes": 74658,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/native-task-runtime-wheelhouse-g1-onnxruntime-20260926",
+   "newest_mtime_epoch": 1790389245,
+   "apparent_bytes": 4296437959,
+   "file_count": 65,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/native-task-runtime-wheelhouse-warp113-torch210-cu128",
+   "newest_mtime_epoch": 1787207667,
+   "apparent_bytes": 4279802773,
+   "file_count": 61,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/paired-target-native-import-live",
+   "newest_mtime_epoch": 1786640882,
+   "apparent_bytes": 4087672,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/policy-canary-runtime-source-rebind",
+   "newest_mtime_epoch": 1788281877,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-rebuild-840920-0b8e484c-v4",
+   "newest_mtime_epoch": 1788269284,
+   "apparent_bytes": 568548768,
+   "file_count": 2944,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-rebuild-840920-9384ef1b",
+   "newest_mtime_epoch": 1788269284,
+   "apparent_bytes": 244581773,
+   "file_count": 12,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-rebuild-840920-9384ef1b-v2",
+   "newest_mtime_epoch": 1788269284,
+   "apparent_bytes": 244581782,
+   "file_count": 12,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-rebuild-840920-e33d6806-v3",
+   "newest_mtime_epoch": 1788269294,
+   "apparent_bytes": 568531109,
+   "file_count": 2940,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-0b8e484c-rebuild-v3",
+   "newest_mtime_epoch": 1788269294,
+   "apparent_bytes": 568548937,
+   "file_count": 2944,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-515c688c-from-8b041da1",
+   "newest_mtime_epoch": 1788269284,
+   "apparent_bytes": 568555082,
+   "file_count": 2947,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-6f71a394",
+   "newest_mtime_epoch": 1786586018,
+   "apparent_bytes": 57467814,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-82855c78-rebuild-v2",
+   "newest_mtime_epoch": 1788269294,
+   "apparent_bytes": 568531192,
+   "file_count": 2940,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-8b041da1",
+   "newest_mtime_epoch": 1786586571,
+   "apparent_bytes": 57467812,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-9384ef1b-rebuild-v1",
+   "newest_mtime_epoch": 1788269294,
+   "apparent_bytes": 244581803,
+   "file_count": 12,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-aea0bb8c-from-8b041da1",
+   "newest_mtime_epoch": 1788269284,
+   "apparent_bytes": 317782408,
+   "file_count": 1467,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-ba4fa518-rebuild-v4",
+   "newest_mtime_epoch": 1788269294,
+   "apparent_bytes": 568556892,
+   "file_count": 2947,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-d268a396",
+   "newest_mtime_epoch": 1786585388,
+   "apparent_bytes": 57467716,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/retired-policy-canary-execution-setup-templates",
+   "newest_mtime_epoch": 1788290829,
+   "apparent_bytes": 3130,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-840920-task-a-00ff05a3",
+   "newest_mtime_epoch": 1787963819,
+   "apparent_bytes": 2303167,
+   "file_count": 6,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-840920-task-a-00ff05a3-v2",
+   "newest_mtime_epoch": 1786691437,
+   "apparent_bytes": 2309275,
+   "file_count": 9,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-840920-task-a-40aaa535",
+   "newest_mtime_epoch": 1786687461,
+   "apparent_bytes": 2302818,
+   "file_count": 6,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-840920-task-a-40aaa535-v2",
+   "newest_mtime_epoch": 1786689241,
+   "apparent_bytes": 2303167,
+   "file_count": 6,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-840920-task-a-6a774232",
+   "newest_mtime_epoch": 1786694333,
+   "apparent_bytes": 2298397,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-840920-task-a-9c5f9883-v3",
+   "newest_mtime_epoch": 1786698288,
+   "apparent_bytes": 2311038,
+   "file_count": 9,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-840920-task-b-9c5f9883-v1",
+   "newest_mtime_epoch": 1786698805,
+   "apparent_bytes": 2072862,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-ai-review-840920-8a0375a9-v1",
+   "newest_mtime_epoch": 1786842430,
+   "apparent_bytes": 17706295,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-ai-review-840920-fc388ae3-v1",
+   "newest_mtime_epoch": 1786847897,
+   "apparent_bytes": 48108569,
+   "file_count": 207,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-reimport-840920-8a0375a9-v1",
+   "newest_mtime_epoch": 1786842026,
+   "apparent_bytes": 1026938,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-reimport-840920-fc388ae3-v1",
+   "newest_mtime_epoch": 1786845433,
+   "apparent_bytes": 1026938,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-review-3b671992",
+   "newest_mtime_epoch": 1786827742,
+   "apparent_bytes": 1026922,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-review-89a01218",
+   "newest_mtime_epoch": 1787963818,
+   "apparent_bytes": 18733637,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-02f42675",
+   "newest_mtime_epoch": 1787963809,
+   "apparent_bytes": 59049063,
+   "file_count": 56,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-491c3619",
+   "newest_mtime_epoch": 1786771034,
+   "apparent_bytes": 5413,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-958031bd",
+   "newest_mtime_epoch": 1787964103,
+   "apparent_bytes": 43275199,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-b6972b33",
+   "newest_mtime_epoch": 1787964103,
+   "apparent_bytes": 43271010,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-c3e8b79a",
+   "newest_mtime_epoch": 1787964103,
+   "apparent_bytes": 43271098,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-c755b31c",
+   "newest_mtime_epoch": 1787964103,
+   "apparent_bytes": 61296120,
+   "file_count": 63,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-fe72a6a4",
+   "newest_mtime_epoch": 1787964103,
+   "apparent_bytes": 43263001,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-b-02f42675",
+   "newest_mtime_epoch": 1787963814,
+   "apparent_bytes": 37940760,
+   "file_count": 46,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-b-8a0375a9-front-left-v1",
+   "newest_mtime_epoch": 1786842740,
+   "apparent_bytes": 13695,
+   "file_count": 8,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-b-8a0375a9-front-left-v1-r2",
+   "newest_mtime_epoch": 1787963814,
+   "apparent_bytes": 24095142,
+   "file_count": 30,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-b-ad2adb5f",
+   "newest_mtime_epoch": 1787964103,
+   "apparent_bytes": 37939246,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-b-be9ba935",
+   "newest_mtime_epoch": 1787963814,
+   "apparent_bytes": 37928047,
+   "file_count": 43,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-b-c755b31c",
+   "newest_mtime_epoch": 1787964103,
+   "apparent_bytes": 37914833,
+   "file_count": 40,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-0db894c5-20260905",
+   "newest_mtime_epoch": 1788703375,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-205f1c73-20260905",
+   "newest_mtime_epoch": 1788640951,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-27cdaa68-20260905",
+   "newest_mtime_epoch": 1788647047,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-30b10e56-20260905",
+   "newest_mtime_epoch": 1788654876,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-563e2587-20260905",
+   "newest_mtime_epoch": 1788698046,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-5b4f9b88-20260905",
+   "newest_mtime_epoch": 1788644012,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-7362adb3-20260905",
+   "newest_mtime_epoch": 1788648099,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-8ed0931c-20260905",
+   "newest_mtime_epoch": 1788694895,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-ac689e03-20260905",
+   "newest_mtime_epoch": 1788650037,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-authorities-20260905",
+   "newest_mtime_epoch": 1788628547,
+   "apparent_bytes": 2772,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-b2c37b84-20260905",
+   "newest_mtime_epoch": 1788635621,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-b9a71995-20260905",
+   "newest_mtime_epoch": 1788628830,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-c6aad742-20260905",
+   "newest_mtime_epoch": 1788630948,
+   "apparent_bytes": 5406,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-track-selection-review-840920-task-a-02f42675-v1",
+   "newest_mtime_epoch": 1787963817,
+   "apparent_bytes": 9526837,
+   "file_count": 17,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-00ff05a3",
+   "newest_mtime_epoch": 1786691153,
+   "apparent_bytes": 306276,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-02f42675-r5",
+   "newest_mtime_epoch": 1786789300,
+   "apparent_bytes": 299770,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-40aaa535",
+   "newest_mtime_epoch": 1786689059,
+   "apparent_bytes": 306131,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-491c3619",
+   "newest_mtime_epoch": 1786771277,
+   "apparent_bytes": 239849,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-491c3619-r2",
+   "newest_mtime_epoch": 1786771931,
+   "apparent_bytes": 413128,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-658bdeba",
+   "newest_mtime_epoch": 1786686583,
+   "apparent_bytes": 430918,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-6a774232",
+   "newest_mtime_epoch": 1786692373,
+   "apparent_bytes": 218003,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-6a774232-v2",
+   "newest_mtime_epoch": 1786692421,
+   "apparent_bytes": 218003,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-6a774232-v3",
+   "newest_mtime_epoch": 1786693893,
+   "apparent_bytes": 223798,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-6a774232-v4",
+   "newest_mtime_epoch": 1786694034,
+   "apparent_bytes": 228134,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-8a0375a9-r10",
+   "newest_mtime_epoch": 1786840591,
+   "apparent_bytes": 241512,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-8a0375a9-r10-r2",
+   "newest_mtime_epoch": 1786842231,
+   "apparent_bytes": 418169,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-958031bd-r4",
+   "newest_mtime_epoch": 1786782876,
+   "apparent_bytes": 299928,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-ad2adb5f-r6",
+   "newest_mtime_epoch": 1786796240,
+   "apparent_bytes": 299912,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-b6972b33-r3",
+   "newest_mtime_epoch": 1786777329,
+   "apparent_bytes": 299730,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-be9ba935-r8",
+   "newest_mtime_epoch": 1786837591,
+   "apparent_bytes": 301146,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-c3e8b79a",
+   "newest_mtime_epoch": 1786766523,
+   "apparent_bytes": 309015,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-c755b31c",
+   "newest_mtime_epoch": 1786728395,
+   "apparent_bytes": 304262,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-c755b31c-r2",
+   "newest_mtime_epoch": 1786729985,
+   "apparent_bytes": 308672,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-fe72a6a4",
+   "newest_mtime_epoch": 1786760792,
+   "apparent_bytes": 309405,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-839873-activation-408f96a5-20260828T2049Z",
+   "newest_mtime_epoch": 1787950443,
+   "apparent_bytes": 7975,
+   "file_count": 6,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-839873-launch-dbc9b0ef-20260827T221855Z",
+   "newest_mtime_epoch": 1787869135,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-839873-launch-dbc9b0ef-20260827T221947Z",
+   "newest_mtime_epoch": 1787870299,
+   "apparent_bytes": 42257,
+   "file_count": 22,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-local-cpu-1359447d-20260905T0710Z",
+   "newest_mtime_epoch": 1788592061,
+   "apparent_bytes": 330729722,
+   "file_count": 15,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-0db894c5-20260905",
+   "newest_mtime_epoch": 1789477193,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-0db894c5-20260905.source-preparation",
+   "newest_mtime_epoch": 1788703401,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-1359447d-20260905",
+   "newest_mtime_epoch": 1789477193,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-1359447d-20260905.source-preparation",
+   "newest_mtime_epoch": 1788591434,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-205f1c73-20260905",
+   "newest_mtime_epoch": 1789477194,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-205f1c73-20260905.source-preparation",
+   "newest_mtime_epoch": 1788641244,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-27cdaa68-20260905",
+   "newest_mtime_epoch": 1789477194,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-27cdaa68-20260905.source-preparation",
+   "newest_mtime_epoch": 1788647076,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-2b85c921-20260905",
+   "newest_mtime_epoch": 1789477194,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-2b85c921-20260905.source-preparation",
+   "newest_mtime_epoch": 1788625704,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-30b10e56-20260905",
+   "newest_mtime_epoch": 1789477194,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-30b10e56-20260905.source-preparation",
+   "newest_mtime_epoch": 1788654902,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-524fe54b-20260905",
+   "newest_mtime_epoch": 1789477195,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-524fe54b-20260905.source-preparation",
+   "newest_mtime_epoch": 1788584301,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-563e2587-20260905",
+   "newest_mtime_epoch": 1789477195,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-563e2587-20260905.source-preparation",
+   "newest_mtime_epoch": 1788698071,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-5b4f9b88-20260905",
+   "newest_mtime_epoch": 1789477195,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-5b4f9b88-20260905.source-preparation",
+   "newest_mtime_epoch": 1788644349,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-7362adb3-20260905",
+   "newest_mtime_epoch": 1789477196,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-7362adb3-20260905.source-preparation",
+   "newest_mtime_epoch": 1788648216,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-8ed0931c-20260905",
+   "newest_mtime_epoch": 1789477197,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-8ed0931c-20260905.source-preparation",
+   "newest_mtime_epoch": 1788694918,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-9ae62694-20260905",
+   "newest_mtime_epoch": 1789477197,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-9ae62694-20260905.source-preparation",
+   "newest_mtime_epoch": 1788587544,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-a072f562-20260905",
+   "newest_mtime_epoch": 1789477198,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-a072f562-20260905.source-preparation",
+   "newest_mtime_epoch": 1788621148,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-ac689e03-20260905",
+   "newest_mtime_epoch": 1789477199,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-ac689e03-20260905.source-preparation",
+   "newest_mtime_epoch": 1788650060,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-b2c37b84-20260905",
+   "newest_mtime_epoch": 1789477199,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-b2c37b84-20260905.source-preparation",
+   "newest_mtime_epoch": 1788636015,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-b9a71995-20260905",
+   "newest_mtime_epoch": 1789477201,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-b9a71995-20260905.source-preparation",
+   "newest_mtime_epoch": 1788629247,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-c6aad742-20260905",
+   "newest_mtime_epoch": 1789477202,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-c6aad742-20260905.source-preparation",
+   "newest_mtime_epoch": 1788631354,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-d785ce09-20260905",
+   "newest_mtime_epoch": 1789477203,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-d785ce09-20260905.source-preparation",
+   "newest_mtime_epoch": 1788607512,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-f2be1036-20260905",
+   "newest_mtime_epoch": 1789477205,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-f2be1036-20260905.source-preparation",
+   "newest_mtime_epoch": 1788611377,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-fd925158-20260905",
+   "newest_mtime_epoch": 1789477206,
+   "apparent_bytes": 182854457,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-fd925158-20260905.source-preparation",
+   "newest_mtime_epoch": 1788617090,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-production-20260905",
+   "newest_mtime_epoch": 1789477207,
+   "apparent_bytes": 182854461,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-production-20260905.source-preparation",
+   "newest_mtime_epoch": 1788581740,
+   "apparent_bytes": 310956,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-sam-config-1359447d-20260905",
+   "newest_mtime_epoch": 1788591676,
+   "apparent_bytes": 8225,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-sam-config-9ae62694-20260905",
+   "newest_mtime_epoch": 1788588276,
+   "apparent_bytes": 8225,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-0db894c5-20260905",
+   "newest_mtime_epoch": 1789347570,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-1359447d-20260905",
+   "newest_mtime_epoch": 1789347571,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-205f1c73-20260905",
+   "newest_mtime_epoch": 1788641259,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-27cdaa68-20260905",
+   "newest_mtime_epoch": 1789335829,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-2b85c921-20260905",
+   "newest_mtime_epoch": 1789335830,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-30b10e56-20260905",
+   "newest_mtime_epoch": 1789335831,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-524fe54b-20260905",
+   "newest_mtime_epoch": 1788584453,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-563e2587-20260905",
+   "newest_mtime_epoch": 1789335832,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-5b4f9b88-20260905",
+   "newest_mtime_epoch": 1789335833,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-5e9ecc3be-20260906",
+   "newest_mtime_epoch": 1788722261,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-7362adb3-20260905",
+   "newest_mtime_epoch": 1789335835,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-8ed0931c-20260905",
+   "newest_mtime_epoch": 1789335836,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-9ae62694-20260905",
+   "newest_mtime_epoch": 1789335837,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-a072f562-20260905",
+   "newest_mtime_epoch": 1789335838,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-ac689e03-20260905",
+   "newest_mtime_epoch": 1789335839,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-b2c37b84-20260905",
+   "newest_mtime_epoch": 1789335840,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-b9a71995-20260905",
+   "newest_mtime_epoch": 1789335842,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-c6aad742-20260905",
+   "newest_mtime_epoch": 1789335843,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-d785ce09-20260905",
+   "newest_mtime_epoch": 1789335844,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-f2be1036-20260905",
+   "newest_mtime_epoch": 1789335845,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-fd925158-20260905",
+   "newest_mtime_epoch": 1789335846,
+   "apparent_bytes": 165381692,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-production-20260905",
+   "newest_mtime_epoch": 1789342334,
+   "apparent_bytes": 165381704,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-submission-1359447d-20260905T070412Z",
+   "newest_mtime_epoch": 1788591856,
+   "apparent_bytes": 183654645,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-submission-9ae62694-20260905T060543Z",
+   "newest_mtime_epoch": 1789477209,
+   "apparent_bytes": 183624180,
+   "file_count": 45,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-authoring-profile-d785ce09-20260905",
+   "newest_mtime_epoch": 1788607595,
+   "apparent_bytes": 2276,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-0db894c5-20260905",
+   "newest_mtime_epoch": 1789477208,
+   "apparent_bytes": 184301478,
+   "file_count": 63,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-1359447d-20260905",
+   "newest_mtime_epoch": 1788591689,
+   "apparent_bytes": 442959,
+   "file_count": 17,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-205f1c73-20260905",
+   "newest_mtime_epoch": 1789392396,
+   "apparent_bytes": 552012649,
+   "file_count": 162,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-27cdaa68-20260905",
+   "newest_mtime_epoch": 1788647445,
+   "apparent_bytes": 445230,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-2b85c921-20260905",
+   "newest_mtime_epoch": 1789392396,
+   "apparent_bytes": 184285095,
+   "file_count": 61,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-30b10e56-20260905",
+   "newest_mtime_epoch": 1789392396,
+   "apparent_bytes": 184301037,
+   "file_count": 63,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-524fe54b-20260905",
+   "newest_mtime_epoch": 1788585320,
+   "apparent_bytes": 12466,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-563e2587-20260905",
+   "newest_mtime_epoch": 1789477208,
+   "apparent_bytes": 184300971,
+   "file_count": 63,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-5b4f9b88-20260905",
+   "newest_mtime_epoch": 1789392397,
+   "apparent_bytes": 184301005,
+   "file_count": 63,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-7362adb3-20260905",
+   "newest_mtime_epoch": 1789392397,
+   "apparent_bytes": 184301413,
+   "file_count": 63,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-8ed0931c-20260905",
+   "newest_mtime_epoch": 1788694941,
+   "apparent_bytes": 418929,
+   "file_count": 10,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-9ae62694-20260905",
+   "newest_mtime_epoch": 1788588236,
+   "apparent_bytes": 74421,
+   "file_count": 21,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-a072f562-20260905",
+   "newest_mtime_epoch": 1789392397,
+   "apparent_bytes": 184111961,
+   "file_count": 61,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-ac689e03-20260905",
+   "newest_mtime_epoch": 1789392397,
+   "apparent_bytes": 184301413,
+   "file_count": 63,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-b2c37b84-20260905",
+   "newest_mtime_epoch": 1789392398,
+   "apparent_bytes": 184285119,
+   "file_count": 61,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-b9a71995-20260905",
+   "newest_mtime_epoch": 1789392398,
+   "apparent_bytes": 184285097,
+   "file_count": 61,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-c6aad742-20260905",
+   "newest_mtime_epoch": 1789392399,
+   "apparent_bytes": 552007238,
+   "file_count": 162,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-d785ce09-20260905",
+   "newest_mtime_epoch": 1789477209,
+   "apparent_bytes": 551500621,
+   "file_count": 172,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-f2be1036-20260905",
+   "newest_mtime_epoch": 1789477210,
+   "apparent_bytes": 367792771,
+   "file_count": 110,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-fd925158-20260905",
+   "newest_mtime_epoch": 1789477211,
+   "apparent_bytes": 184111961,
+   "file_count": 61,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene-render-diagnostics",
+   "newest_mtime_epoch": 1787752733,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-collision-shared-frame-3b671992-v1",
+   "newest_mtime_epoch": 1786827697,
+   "apparent_bytes": 17935645,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-53b84015-r1",
+   "newest_mtime_epoch": 1787963816,
+   "apparent_bytes": 2773138177,
+   "file_count": 575,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-rim-grasp-0a2e03d8-r6",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 313857748,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-rim-grasp-12b73159-r8",
+   "newest_mtime_epoch": 1787963771,
+   "apparent_bytes": 375620686,
+   "file_count": 21,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-rim-grasp-154f42b0-r7",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 313857618,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-rim-grasp-5609bfbf-r4",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 313856756,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-rim-grasp-59865d4c-r3",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 698388491,
+   "file_count": 63,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-rim-grasp-9bef569b-r5",
+   "newest_mtime_epoch": 1788269223,
+   "apparent_bytes": 313857052,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-rim-grasp-d01ec381-r1",
+   "newest_mtime_epoch": 1787319076,
+   "apparent_bytes": 698861,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-rim-grasp-d01ec381-r2",
+   "newest_mtime_epoch": 1787963771,
+   "apparent_bytes": 79043832,
+   "file_count": 61,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-surface-tcp-c7dc8461-c76",
+   "newest_mtime_epoch": 1787963771,
+   "apparent_bytes": 375640748,
+   "file_count": 24,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-rights-bound-host-input-8a0375a9-v1",
+   "newest_mtime_epoch": 1787963811,
+   "apparent_bytes": 17935686,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-sam-postprocess-3b671992",
+   "newest_mtime_epoch": 1786827658,
+   "apparent_bytes": 1026962,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-sam-postprocess-9384ef1b",
+   "newest_mtime_epoch": 1787963818,
+   "apparent_bytes": 19724797,
+   "file_count": 42,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-segment-cutout-c755b31c",
+   "newest_mtime_epoch": 1788269285,
+   "apparent_bytes": 502521204,
+   "file_count": 97,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-washer-v4-corrected-hinge",
+   "newest_mtime_epoch": 1786999619,
+   "apparent_bytes": 29936,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-washer-v4-hostauthored",
+   "newest_mtime_epoch": 1787007515,
+   "apparent_bytes": 26977,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/scene841757-provider-inputs-20260905",
+   "newest_mtime_epoch": 1788635761,
+   "apparent_bytes": 6561,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/segment-cutout-840920-aea0bb8c",
+   "newest_mtime_epoch": 1786859582,
+   "apparent_bytes": 364903655,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-0021d92f",
+   "newest_mtime_epoch": 1786870962,
+   "apparent_bytes": 36584989,
+   "file_count": 50,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-1be682a3-r2",
+   "newest_mtime_epoch": 1786903064,
+   "apparent_bytes": 18229923,
+   "file_count": 6,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-1c07f56c",
+   "newest_mtime_epoch": 1786894923,
+   "apparent_bytes": 36562260,
+   "file_count": 40,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-1c570362",
+   "newest_mtime_epoch": 1786884117,
+   "apparent_bytes": 18283735,
+   "file_count": 9,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-2d36ecdb-r2",
+   "newest_mtime_epoch": 1786904017,
+   "apparent_bytes": 18251876,
+   "file_count": 12,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-2eeef214-r2",
+   "newest_mtime_epoch": 1786902846,
+   "apparent_bytes": 5244,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-42f22ca5-r10",
+   "newest_mtime_epoch": 1786924455,
+   "apparent_bytes": 18251022,
+   "file_count": 10,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-42f22ca5-r9",
+   "newest_mtime_epoch": 1787963815,
+   "apparent_bytes": 36583875,
+   "file_count": 47,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-577320e0-r8",
+   "newest_mtime_epoch": 1786918606,
+   "apparent_bytes": 18222558,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-577320e0-r8b",
+   "newest_mtime_epoch": 1786918691,
+   "apparent_bytes": 18243110,
+   "file_count": 9,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-79520703",
+   "newest_mtime_epoch": 1787963815,
+   "apparent_bytes": 36565867,
+   "file_count": 45,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-8b03d0c5-r2",
+   "newest_mtime_epoch": 1786902237,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-8c555896-r3",
+   "newest_mtime_epoch": 1786908680,
+   "apparent_bytes": 18247296,
+   "file_count": 10,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-8c555896-r4",
+   "newest_mtime_epoch": 1787963802,
+   "apparent_bytes": 18239280,
+   "file_count": 9,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-8c555896-r5",
+   "newest_mtime_epoch": 1786914127,
+   "apparent_bytes": 18241202,
+   "file_count": 9,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-9af1fb72-r2",
+   "newest_mtime_epoch": 1786903748,
+   "apparent_bytes": 18250895,
+   "file_count": 11,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-acc466d1",
+   "newest_mtime_epoch": 1787963815,
+   "apparent_bytes": 36556301,
+   "file_count": 41,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-afc423d2-r10-cap10",
+   "newest_mtime_epoch": 1786926962,
+   "apparent_bytes": 18221847,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-afc423d2-r10-cap10b",
+   "newest_mtime_epoch": 1786927420,
+   "apparent_bytes": 18251268,
+   "file_count": 11,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-afc423d2-r10-cap10c",
+   "newest_mtime_epoch": 1787963792,
+   "apparent_bytes": 18251268,
+   "file_count": 11,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-afc423d2-r11-cap10",
+   "newest_mtime_epoch": 1786928608,
+   "apparent_bytes": 357,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-afc423d2-r11b-cap10",
+   "newest_mtime_epoch": 1786928638,
+   "apparent_bytes": 18221851,
+   "file_count": 4,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-afc423d2-r11c-cap10",
+   "newest_mtime_epoch": 1787963792,
+   "apparent_bytes": 18249073,
+   "file_count": 11,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-afc423d2-r12-cap10",
+   "newest_mtime_epoch": 1787963792,
+   "apparent_bytes": 18250267,
+   "file_count": 11,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-db8f82c5",
+   "newest_mtime_epoch": 1786886146,
+   "apparent_bytes": 18225391,
+   "file_count": 6,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-dd815625-r6",
+   "newest_mtime_epoch": 1786916576,
+   "apparent_bytes": 18239946,
+   "file_count": 8,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-dd815625-r7",
+   "newest_mtime_epoch": 1786916672,
+   "apparent_bytes": 18241203,
+   "file_count": 9,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-e1ebc71e",
+   "newest_mtime_epoch": 1787963815,
+   "apparent_bytes": 36607203,
+   "file_count": 47,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/semantic-teacher-840920-f6068f97",
+   "newest_mtime_epoch": 1786887230,
+   "apparent_bytes": 18233025,
+   "file_count": 9,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-fff2beb2",
+   "newest_mtime_epoch": 1787007460,
+   "apparent_bytes": 3,
+   "file_count": 1,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-0b8e484c",
+   "newest_mtime_epoch": 1786824349,
+   "apparent_bytes": 32704266,
+   "file_count": 6,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-3b671992",
+   "newest_mtime_epoch": 1786829975,
+   "apparent_bytes": 32704248,
+   "file_count": 6,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-491c3619",
+   "newest_mtime_epoch": 1786771793,
+   "apparent_bytes": 95867421,
+   "file_count": 32,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-82855c78",
+   "newest_mtime_epoch": 1786822773,
+   "apparent_bytes": 32705407,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-9384ef1b",
+   "newest_mtime_epoch": 1786820418,
+   "apparent_bytes": 32705405,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-ba4fa518",
+   "newest_mtime_epoch": 1786825657,
+   "apparent_bytes": 32684778,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-c3e8b79a",
+   "newest_mtime_epoch": 1787963733,
+   "apparent_bytes": 95867426,
+   "file_count": 32,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-c755b31c",
+   "newest_mtime_epoch": 1787963733,
+   "apparent_bytes": 159065730,
+   "file_count": 66,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-e33d6806",
+   "newest_mtime_epoch": 1786821728,
+   "apparent_bytes": 32705406,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-e33d6806-r2",
+   "newest_mtime_epoch": 1786821822,
+   "apparent_bytes": 32705416,
+   "file_count": 7,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-fe72a6a4",
+   "newest_mtime_epoch": 1787963733,
+   "apparent_bytes": 95867421,
+   "file_count": 32,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-live",
+   "newest_mtime_epoch": 1786626933,
+   "apparent_bytes": 32690333,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-live-r2",
+   "newest_mtime_epoch": 1786629171,
+   "apparent_bytes": 32690354,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-isaac-840313-trial",
+   "newest_mtime_epoch": 1786623714,
+   "apparent_bytes": 32684754,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_folder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/simready-retry-v2",
+   "newest_mtime_epoch": 1787963772,
+   "apparent_bytes": 144335415,
+   "file_count": 155,
+   "door_unlisted_entries": 0
+  }
+ ]
+}
