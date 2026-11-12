@@ -123,7 +123,11 @@ def test_status_v7_names_the_stop_as_the_outcome_and_older_readers_keep_their_vo
     assert status_reader.accepted_status_version(status_reader.validate_acceptance(acceptance, selected)) \
         == status_reader.STATUS_V7
     assert status_reader.requested_status_version("7") == status_reader.STATUS_V7
-    assert status_reader.requested_status_version("9") == status_reader.STATUS_V7
+    # v8 changes only the robot fit table's shape: it names the stop exactly as v7 does.
+    assert status_reader.requested_status_version("9") == status_reader.STATUS_V8
+    v8 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                              schema_version=status_reader.STATUS_V8)
+    assert {key: v8[key] for key in ("state", "outcome")} == {key: v7[key] for key in ("state", "outcome")}
 
 
 def test_a_stop_bound_to_another_task_context_is_not_a_hold(prepared_source):  # noqa: F811

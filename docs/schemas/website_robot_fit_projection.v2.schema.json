@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/website-robot-fit-projection.v2.schema.json",
+  "title": "The first look on paper: the website_preparation_status.v8 'robot_fit' field",
+  "description": "v1 (status v5 to v7) plus what each robot can do. Every completed projection is a spec-bounded estimate: every scene figure is estimated from the site's video (geometry_basis) and the item weight's origin is weight_basis; nothing is measured. verdict: fits (every check passed, its carry path-checked), fits_spec (every check passed on figures), fits_if (every check passed or is conditional on an estimate: it becomes verdict_if_conditions_hold when each of its conditions holds), doesnt_fit (failed_checks ruled it out), unknown (missing names each open check and why). A condition gives what the job seems to need (need_min to need_max, null when nothing estimates it) beside what the robot can do (limit), in the quantity's unit: item_mass_kg (kg, the payload check; limit is payload_limit_kg), reach_m (m, the reach check), cycle_time_s (s, the cycle_time check; limit is the owner's target), route_clear (the access check: the route from the entrance, never checked; no numbers, need and limit null, both bases not_checked). payload_limit_kg is the heaviest item that passes: the rated payload less the default tool on a fixed arm. models are ordered fits, fits_spec, fits_if by ascending payload_limit_kg, doesnt_fit, unknown; past 4096 bytes the last are dropped (models_truncated) while counts and unknown_causes stay those of the whole table.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "route",
+    "status",
+    "reason",
+    "evidence_label",
+    "counts",
+    "models",
+    "models_truncated",
+    "table_digest",
+    "geometry_basis",
+    "weight_basis",
+    "unknown_causes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "website_robot_fit_projection.v2"
+    },
+    "route": {
+      "enum": [
+        "full",
+        "geometry_only"
+      ]
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "not_run"
+      ]
+    },
+    "reason": {
+      "enum": [
+        null,
+        "preparation_blocked",
+        "task_strategy_not_modelled",
+        "subject_not_excised",
+        "task_family_not_modelled"
+      ]
+    },
+    "evidence_label": {
+      "enum": [
+        null,
+        "spec_bounded_estimate"
+      ]
+    },
+    "counts": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fits",
+            "fits_spec",
+            "fits_if",
+            "doesnt_fit",
+            "unknown"
+          ],
+          "properties": {
+            "fits": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "fits_spec": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "fits_if": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "doesnt_fit": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unknown": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "geometry_basis": {
+      "enum": [
+        null,
+        "estimated_from_video"
+      ]
+    },
+    "weight_basis": {
+      "enum": [
+        null,
+        "owner_stated",
+        "estimated",
+        "unavailable"
+      ]
+    },
+    "unknown_causes": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(stance|reach|payload|cycle_time|access):(estimate_straddles_limit|item_mass_missing|catalog_figure_missing|tool_figure_missing|no_clear_station|footprint_not_searched|arm_pose_search_inconclusive|carry_check_undecided|not_modelled|not_checked)$"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      ]
+    },
+    "models": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "manufacturer",
+          "verdict",
+          "verdict_if_conditions_hold",
+          "rated_payload_kg",
+          "payload_limit_kg",
+          "failed_checks",
+          "conditions",
+          "missing"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "manufacturer": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verdict": {
+            "enum": [
+              "fits",
+              "fits_spec",
+              "fits_if",
+              "doesnt_fit",
+              "unknown"
+            ]
+          },
+          "verdict_if_conditions_hold": {
+            "enum": [
+              null,
+              "fits",
+              "fits_spec"
+            ]
+          },
+          "rated_payload_kg": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number",
+                "minimum": 0
+              }
+            ]
+          },
+          "payload_limit_kg": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number",
+                "minimum": 0
+              }
+            ]
+          },
+          "failed_checks": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "stance",
+                "reach",
+                "payload",
+                "cycle_time",
+                "access"
+              ]
+            }
+          },
+          "conditions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "quantity",
+                "need_min",
+                "need_max",
+                "limit",
+                "need_basis",
+                "limit_basis"
+              ],
+              "properties": {
+                "quantity": {
+                  "enum": [
+                    "item_mass_kg",
+                    "reach_m",
+                    "cycle_time_s",
+                    "route_clear"
+                  ]
+                },
+                "need_min": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "need_max": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "limit": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "need_basis": {
+                  "enum": [
+                    "estimated_from_video",
+                    "owner_stated",
+                    "unavailable",
+                    "not_checked"
+                  ]
+                },
+                "limit_basis": {
+                  "enum": [
+                    "catalog",
+                    "owner_target",
+                    "not_checked"
+                  ]
+                }
+              }
+            }
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "check",
+                "cause"
+              ],
+              "properties": {
+                "check": {
+                  "enum": [
+                    "stance",
+                    "reach",
+                    "payload",
+                    "cycle_time",
+                    "access"
+                  ]
+                },
+                "cause": {
+                  "enum": [
+                    "estimate_straddles_limit",
+                    "item_mass_missing",
+                    "catalog_figure_missing",
+                    "tool_figure_missing",
+                    "no_clear_station",
+                    "footprint_not_searched",
+                    "arm_pose_search_inconclusive",
+                    "carry_check_undecided",
+                    "not_modelled",
+                    "not_checked"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "models_truncated": {
+      "type": "boolean"
+    },
+    "table_digest": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      ]
+    }
+  }
+}

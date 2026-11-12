@@ -264,6 +264,76 @@ def test_cycle_time_is_bounded_from_both_sides(tmp_path, target, result):
                                            "unknown": "unknown"}[result]
 
 
+def test_a_row_open_only_on_estimates_fits_if_its_conditions_hold(tmp_path):
+    # The estimated item is 0.084-2.370 kg; the place needs 0.49-0.83 m of reach across the scale band.
+    catalog = sealed(_model("light", rated_payload_kg=_payload(2)), _model("heavy", rated_payload_kg=_payload(12)),
+                     _model("both", rated_payload_kg=_payload(2), max_reach_m=_reach(0.6)),
+                     _model("short", rated_payload_kg=_payload(2), max_reach_m=_reach(0.4)),
+                     _model("unrated", rated_payload_kg=None),
+                     _model("mobile", "mobile_manipulator", rated_payload_kg=_payload(2),
+                            max_base_speed_m_s=_figure(1.0, "m/s", "Base speed 1 m/s")))
+    table = _table(tmp_path, catalog)
+    rows = _rows(table)
+    # The legacy verdict is unchanged for every reader that predates the first look.
+    assert {name: row["verdict"] for name, row in rows.items()} == {
+        "light": "unknown", "heavy": "fits_spec", "both": "unknown", "short": "doesnt_fit", "unrated": "unknown",
+        "mobile": "unknown"}
+    assert {name: row["first_look_verdict"] for name, row in rows.items()} == {
+        "light": "fits_if", "heavy": "fits_spec", "both": "fits_if", "short": "doesnt_fit", "unrated": "unknown",
+        "mobile": "fits_if"}
+    assert table["counts"] == {"fits": 0, "fits_spec": 1, "doesnt_fit": 1, "unknown": 4}
+    assert table["first_look_counts"] == {"fits": 0, "fits_spec": 1, "fits_if": 3, "doesnt_fit": 1, "unknown": 1}
+    light = rows["light"]
+    # The item limit is the rated payload less the 0.9 kg default tool on the flange.
+    assert (light["rated_payload_kg"], light["payload_limit_kg"], light["verdict_if_conditions_hold"]) == (2, 1.1,
+                                                                                                          "fits_spec")
+    assert light["conditions"] == [{"check": "payload", "quantity": "item_mass_kg", "unit": "kg", "need_min": 0.084375,
+                                    "need_max": 2.37037, "limit": 1.1, "need_basis": "estimated_from_video",
+                                    "limit_basis": "catalog"}]
+    assert light["first_look_reasons"] == ["payload: fits if the item weighs no more than 1.1 kg; this job seems to "
+                                           "need 0.084375 to 2.37037 kg, estimated from the video"]
+    assert _check(light, "payload")["cause"] == "estimate_straddles_limit" and light["missing"] == []
+    assert [entry["quantity"] for entry in rows["both"]["conditions"]] == ["reach_m", "item_mass_kg"]
+    assert rows["both"]["conditions"][0]["need_min"] == pytest.approx(0.491808) and (
+        rows["both"]["conditions"][0]["limit"] == 0.6)
+    # A pass on the band records that it rests on the video's estimate.
+    assert _check(rows["heavy"], "payload")["basis"] == _check(rows["heavy"], "reach")["basis"] == "estimated_from_video"
+    # A missing catalog figure is no condition: the row stays unknown and says which.
+    assert rows["unrated"]["missing"] == [{"check": "payload", "cause": "catalog_figure_missing"}]
+    assert rows["unrated"]["payload_limit_kg"] is None
+    # The route from the entrance is never checked: a condition with no numbers, beside its weight.
+    assert [entry["quantity"] for entry in rows["mobile"]["conditions"]] == ["item_mass_kg", "route_clear"]
+    assert rows["mobile"]["missing"] == []
+    assert rows["mobile"]["payload_limit_kg"] == 2.0  # its own hand: no tool is subtracted
+    # Most useful first: fits_spec, fits_if by ascending payload limit, doesnt_fit, unknown.
+    assert [row["model_id"] for row in table["rows"]] == ["heavy", "light", "both", "mobile", "short", "unrated"]
+
+
+def test_a_known_weight_that_straddles_a_rating_is_conditional_on_the_sites_word(tmp_path):
+    rows = _rows(_table(tmp_path, sealed(_model("close", rated_payload_kg=_payload(6)),
+                                         _model("strong", rated_payload_kg=_payload(7))), job=_job(weight="5 kg")))
+    assert (rows["strong"]["first_look_verdict"], rows["strong"]["conditions"]) == ("fits_spec", [])
+    assert rows["close"]["first_look_verdict"] == "fits_if"
+    assert rows["close"]["conditions"][0]["need_basis"] == "owner_stated"
+    assert rows["close"]["conditions"][0]["need_min"] == 4.5 and rows["close"]["payload_limit_kg"] == 5.1
+
+
+def test_no_weight_at_all_is_a_condition_the_site_can_answer(tmp_path):
+    job = _job()
+    job["physics"] = {}
+    rows = _rows(_table(tmp_path, sealed(_model("arm", rated_payload_kg=_payload(5)),
+                                         _model("toy", rated_payload_kg=_payload(0.5))), job=job))
+    assert rows["arm"]["first_look_verdict"] == "fits_if"
+    assert rows["arm"]["conditions"][0] == {"check": "payload", "quantity": "item_mass_kg", "unit": "kg",
+                                                 "need_min": None, "need_max": None, "limit": 4.1,
+                                                 "need_basis": "unavailable", "limit_basis": "catalog"}
+    assert rows["arm"]["first_look_reasons"] == ["payload: fits if the item weighs no more than 4.1 kg; not known "
+                                                 "for this job"]
+    # The default tool alone outweighs a 0.5 kg rating: no item weight fits with it, so no condition.
+    assert rows["toy"]["first_look_verdict"] == "unknown"
+    assert rows["toy"]["missing"] == [{"check": "payload", "cause": "item_mass_missing"}]
+
+
 def test_every_path_checked_profile_names_its_recipe():
     from blueprint_pipeline.robot_arm_path_clearance import ROBOT_PROFILE_ARMS
     from blueprint_pipeline.robot_spec_catalog import known_recipe_ids
@@ -323,7 +393,7 @@ def test_no_clear_station_is_unknown_never_a_failure(tmp_path, monkeypatch):
             "unknown", "unknown", "unknown")
 
 
-def test_mobile_bases_and_humanoids_are_never_cleared_for_access(tmp_path):
+def test_an_unchecked_route_is_a_condition_only_when_nothing_else_is_open(tmp_path):
     base_speed = _figure(1.0, "m/s", "Base speed 1 m/s")
     catalog = sealed(
         _model("fixed"),
@@ -334,10 +404,24 @@ def test_mobile_bases_and_humanoids_are_never_cleared_for_access(tmp_path):
                base_footprint_l_w_m=_figure([0.6, 0.5], "m", "600 x 500 mm", "600 mm = 0.6 m; 500 mm = 0.5 m")),
         _model("humanoid", "humanoid", max_base_speed_m_s=base_speed, base_footprint_diameter_m=None))
     rows = _rows(_table(tmp_path, catalog))
+    route = {"quantity": "route_clear", "unit": None, "need_min": None, "need_max": None, "limit": None,
+             "need_basis": "not_checked", "limit_basis": "not_checked"}
     for name in ("small_mobile", "large_mobile", "humanoid"):
+        # Access is never checked: the check stays unknown, naming its cause, with a no-number condition.
         assert _check(rows[name], "access") == {"check": "access", "result": "unknown",
-                                                "reason": "path from the entrance not checked", "values": {}}
-        assert rows[name]["verdict"] == "unknown"
+                                                "reason": "path from the entrance not checked", "values": {},
+                                                "cause": "not_checked", "condition": route}
+        assert rows[name]["verdict"] == "unknown"  # the legacy verdict is unchanged
+    # Only the route open: fits if it has a clear route to the job.
+    assert rows["small_mobile"]["first_look_verdict"] == "fits_if"
+    assert rows["small_mobile"]["conditions"] == [{"check": "access", **route}]
+    assert rows["small_mobile"]["first_look_reasons"] == [
+        "access: fits if it has a clear route to the job; the route was not checked"]
+    # Another check open for another cause: unknown, and the route is not listed as missing.
+    assert rows["large_mobile"]["first_look_verdict"] == rows["humanoid"]["first_look_verdict"] == "unknown"
+    assert rows["large_mobile"]["missing"] == [{"check": "stance", "cause": "footprint_not_searched"}]
+    assert rows["humanoid"]["missing"] == [{"check": "stance", "cause": "catalog_figure_missing"},
+                                           {"check": "reach", "cause": "not_modelled"}]
     assert "access" not in {check["check"] for check in rows["fixed"]["checks"]}
     assert rows["fixed"]["verdict"] == "fits_spec"
     # They stand at the same stations: a base inside the cleared 0.3 m square passes, a larger one is unknown.

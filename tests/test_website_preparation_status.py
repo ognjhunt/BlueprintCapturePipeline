@@ -497,6 +497,37 @@ def test_status_v5_carries_the_jobs_robot_fit_table_and_older_versions_do_not(pr
         == status_reader.STATUS_V5
 
 
+def test_status_v8_carries_the_first_look_and_v7_keeps_the_shape_the_website_on_main_parses(prepared_source):
+    from tests.test_website_robot_fit_projection import FIRST_LOOK_ROWS, write_fit_table
+
+    root, owner, context, selected, ledger, _ = prepared_source
+    handoff = write_fit_table(root, rows=FIRST_LOOK_ROWS, context=context["context_digest"],
+                              handoff={"website_intake_outbox": {"state": "forward_pending"}, "simulator_ready": False})
+    listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
+        attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
+            "website_scene_preparation": handoff}, owner="synthetic-worker", token=ledger["lease_token"],
+        ledger_update={"status": "completed"})
+    read = {version: status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                                           schema_version=version)
+            for version in (status_reader.STATUS_V7, status_reader.STATUS_V8)}
+    v7, v8 = read[status_reader.STATUS_V7], read[status_reader.STATUS_V8]
+    assert v7["robot_fit"]["schema_version"] == "website_robot_fit_projection.v1"
+    assert {row["verdict"] for row in v7["robot_fit"]["models"]} == {"fits_spec", "doesnt_fit", "unknown"}
+    assert v8["robot_fit"]["schema_version"] == "website_robot_fit_projection.v2"
+    assert [row["verdict"] for row in v8["robot_fit"]["models"]] == [
+        "fits_spec", "fits_if", "fits_if", "fits_if", "doesnt_fit", "unknown"]
+    # v8 is v7 but for the table's shape: the same keys, sealed the same way, within the WebApp's bound.
+    assert set(v8) == set(v7) and v8["state"] == v7["state"] == "handed_off"
+    assert v8["status_digest"] == cross_runtime_canonical_digest(
+        {key: value for key, value in v8.items() if key != "status_digest"})
+    assert len(json.dumps(v8)) < 8192
+    acceptance = {"schema_version": "website_preparation_status_acceptance.v8", **selected, "accepted": True,
+                  "state": v8["state"], "status_digest": v8["status_digest"], "native_execution_complete": False,
+                  "correlation_id": "bp-prep-" + v8["status_digest"][7:23]}
+    assert status_reader.accepted_status_version(status_reader.validate_acceptance(acceptance, selected)) \
+        == status_reader.STATUS_V8
+
+
 def test_status_v6_carries_the_robot_fit_precheck_and_its_hold_and_v5_does_not(prepared_source):
     from blueprint_pipeline.website_robot_fit_precheck import HOLD_PREFIX
     from tests.test_website_robot_fit_precheck import write_precheck
