@@ -46,9 +46,11 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from .scene_run_cold_storage import POINTER_SUFFIX, offload_pointer
+from .scene_run_cold_pointer import (  # noqa: F401 - ARCHIVE_INVALID and archive_invalid are re-exported
+    ARCHIVE_INVALID, POINTER_SUFFIX, RESTORE_STATE_SUFFIX as STATE_SUFFIX, archive_invalid, offload_pointer,
+    restore_state,
+)
 
-STATE_SUFFIX = ".restore.v1.json"
 #: The restore's own record beside the run (sealed, so a withdrawal deletion removes it with the run): its
 #: attempt count, times, last status and an error type/code. No content of the job.
 STATE_SCHEMA = "scene_run_restore_state.v1"
@@ -57,22 +59,10 @@ RETRY_FIRST_SECONDS = 900
 RETRY_CAP_SECONDS = 6 * 3600
 ROLE = "evidence_offload"
 RESTORED = "restored"
-#: The archive in the store does not match its pointer: tried again only for a changed pointer. Published as the
-#: hold's detail under ``team_scene_packet_blocked`` (``scene_run_cold_storage.cold_storage_hold``).
-ARCHIVE_INVALID = "scene_run_restore_archive_integrity_failed"
 #: ``control_plane_evidence_offload.restore_offloaded_evidence``'s refusals of the archive's own bytes.
 INTEGRITY_ERRORS = frozenset({"control_plane_evidence_restore_digest_mismatch",
                               "control_plane_evidence_restore_member_mismatch",
                               "control_plane_evidence_restore_symlink"})
-
-
-def archive_invalid(run_root: str | Path) -> bool:
-    """Whether the run's stored archive failed its integrity check for the pointer that stands now."""
-    run = Path(run_root)
-    pointer = offload_pointer(run)
-    state = _state(run)
-    return (pointer is not None and state.get("status") == ARCHIVE_INVALID
-            and state.get("pointer_digest") == pointer.get("pointer_digest"))
 
 
 def _integrity_failure(exc: BaseException) -> bool:
@@ -99,11 +89,7 @@ def _state_path(run: Path) -> Path:
 
 
 def _state(run: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(_state_path(run).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"attempts": 0}
-    return value if isinstance(value, dict) else {"attempts": 0}
+    return restore_state(run)
 
 
 def _touch(root: Path, moment: float) -> None:

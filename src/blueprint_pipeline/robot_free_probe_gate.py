@@ -146,7 +146,7 @@ def retained_probe_receipt(root: Path) -> dict[str, Any] | None:
         if Path(root).exists():
             return None
         # The launch run is in cold storage: its pointer may keep this receipt (stage 8, 2026-11-12).
-        from .control_plane_retained_receipt import retained_member
+        from .scene_run_cold_pointer import retained_member
 
         raw = retained_member(Path(root), RECEIPT_FILENAME)
         if raw is None:

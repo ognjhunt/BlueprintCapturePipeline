@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
+from .scene_run_cold_pointer import retained_member  # noqa: F401 - re-exported; the read-only leaf holds it
 
 RETAINED_RECEIPTS = frozenset({"launch_receipt.json"})
 #: Kept as well, so a website job's re-plan reads them without restoring the run (stage 8, 2026-11-12): the
@@ -33,27 +34,6 @@ def replan_members(directory: Path, members: list[dict]) -> set[str]:
         pass
     return {row["relative_path"] for row in members if row["relative_path"] in wanted
             and int(row.get("size_bytes", MAX_RECEIPT_BYTES + 1)) <= MAX_RECEIPT_BYTES}
-
-
-def retained_member(run_root: Path, relative: str) -> bytes | None:
-    """The retained bytes of ``relative`` from the run's sealed offload pointer, checked; None when not kept."""
-    pointer_path = run_root.parent / (run_root.name + ".offloaded.v1.json")
-    try:
-        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if (pointer_path.is_symlink() or not isinstance(pointer, dict) or pointer.get("status") != "offloaded"
-            or pointer.get("directory") != run_root.name
-            or pointer.get("pointer_digest") != canonical_digest(pointer, digest_field="pointer_digest")):
-        return None
-    encoded = (pointer.get("retained_receipt_bytes") or {}).get(relative)
-    rows = [row for row in pointer.get("members", []) if row.get("relative_path") == relative]
-    if not isinstance(encoded, str) or len(rows) != 1:
-        return None
-    raw = base64.b64decode(encoded, validate=True)
-    if rows[0].get("size_bytes") != len(raw) or rows[0].get("sha256") != "sha256:" + hashlib.sha256(raw).hexdigest():
-        return None
-    return raw
 
 
 def read_receipt_bytes(path: Path) -> bytes:

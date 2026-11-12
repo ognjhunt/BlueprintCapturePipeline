@@ -113,18 +113,15 @@ def validate_retained_source(run_root: Path) -> tuple[dict[str, Any], dict[str, 
     """
     import hashlib
 
-    from .control_plane_retained_receipt import read_receipt_bytes, retained_member
+    # The read-only leaf: the pointer's own checked bytes, the launch receipt among them; nothing here can
+    # reach a worker (``tests/test_controls_read_evidence.py``).
+    from .scene_run_cold_pointer import retained_member
 
     def raw(path: Path) -> bytes | None:
         try:
             relative = path.relative_to(run_root).as_posix()
         except ValueError:
             return None
-        if relative == "launch_receipt.json":
-            try:
-                return read_receipt_bytes(path)
-            except ValueError:
-                return None
         return retained_member(run_root, relative)
 
     def load(path: Path, *, blocker: str) -> dict[str, Any]:
