@@ -1,3 +1,5 @@
+> **Paused 2026-11-12.** No new work is started on this under the current frame (the shared block of PLATFORM_CONTEXT.md). Kept for reference.
+
 # G1 humanoid on any website job: plan
 
 Status: plan, 2026-11-06. The audit behind it is in the beta launch tracker,

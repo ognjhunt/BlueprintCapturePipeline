@@ -2,17 +2,19 @@
 
 This package contains materialization, package assembly, provider adapters,
 privacy and geometry lanes, runtime support, launch gates, and WebApp sync. Two
-programs are active, the free beta's job-first automation service and Arm
-Decision Proof v1; other lanes remain compatibility unless a recorded blocker in
+programs are active, the free beta's job packet (owner direction 2026-11-12)
+and Arm Decision Proof v1; other lanes remain compatibility unless a recorded blocker in
 one of them requires their smallest reusable component.
 
-Beta work serves an agreed job brief, drafted from retained job video, and
-supportable delivery options. Assessment waits for retained video; reuse
+Beta work builds the Pipeline's part of the job packet from retained job video:
+the simulation of the site with the job's object in it, the success rule and,
+where one exists, the early trial. Reuse
 existing evidence and run the supported configurations or the smallest
 qualified test that resolves material uncertainty. Existing licensed Blueprint-managed
 execution and approved team-supplied endpoints remain valid. Preserve
-independent scoring and controlled observations. Commercial proposal selection,
-both-party agreement and reported outcomes cannot create scientific authority.
+independent scoring and controlled observations. The early trial is supporting
+evidence, never the site's answer; responses of deployment companies cannot
+create scientific authority.
 ADP work converges on one
 partner-owned fixed-arm task, two frozen
 candidates, a qualified candidate MSER, complete condition-level receipts, a

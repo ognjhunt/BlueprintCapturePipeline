@@ -45,7 +45,6 @@ _TEXT_SUFFIXES = {
 }
 _GOVERNED_SOURCE_DIRS = (
     ".github",
-    "autoresearch",
     "deploy",
     "docs",
     "scripts",

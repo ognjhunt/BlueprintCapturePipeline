@@ -1,22 +1,22 @@
-# Blueprint Pipeline Site World
+# Blueprint Pipeline Packet Factory
 
-Use when work touches scene-memory artifacts, evaluation-prep manifests, site-world runtime records, legacy compatibility outputs, or cross-repo routing between evidence and operating state.
+Use when work touches how this repository turns a site's video into its part of the job packet: the simulation of the site with the job's object in it, the success rule, and, where one exists, the early trial.
 
 Primary references:
-- `BlueprintCapturePipeline/PLATFORM_CONTEXT.md`
-- `BlueprintCapturePipeline/README.md`
-- `Blueprint-WebApp/docs/integration-architecture.md`
+- The shared block of `BlueprintCapturePipeline/PLATFORM_CONTEXT.md`
+- `BlueprintCapturePipeline/AGENTS.md`
+- `BlueprintCapturePipeline/docs/SYSTEM_MAP.md`
 
 Required behavior:
-- Treat `BlueprintCapturePipeline` as the site-world assembly engine.
-- Keep the default output centered on scene memory, evaluation prep, and runtime launchability.
-- Preserve fail-closed behavior and human-review boundaries.
-- Preserve legacy qualification/readiness artifacts only when a consumer still depends on them.
+- Treat `BlueprintCapturePipeline` as the packet factory: video in, a simulation of the site with the job's object in it, and the success rule out.
+- Treat the simulation as a means, not the product.
+- Label Blueprint's own test "an early trial of openly available robot software". It is supporting evidence in the packet, never the site's answer.
+- Keep the only hard stops: privacy, rights and money. Flag everything else and keep going.
 
 Do not:
-- Let advanced geometry replace the capture-backed site world as the center of gravity.
-- Treat legacy qualification outputs as the repo's primary product.
-- Invent runtime or launchability claims without reference to actual pipeline artifacts.
+- Describe a scripted run as anything but a check of Blueprint's own simulation.
+- Invent results, readiness or approvals that the pipeline's own records do not show.
+- Start new work on what is paused: hardening the automatic test for any kind of job, several objects or unattended scale; standing re-tests of every robot on every open job.
 
 Output:
-- Site-world-grounded analysis, implementation notes, or operating guidance.
+- Analysis, implementation notes or operating guidance grounded in the pipeline's own records.

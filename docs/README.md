@@ -2,9 +2,9 @@
 
 ## Active Programs
 
-Two programs are active (owner decision 2026-10-14; see the shared doctrine in
-`../PLATFORM_CONTEXT.md`): the free beta's evaluated, recommended pilot, whose
-customer journeys live in `Blueprint-WebApp`, and the evidence program
+Two programs are active (see the shared block of `../PLATFORM_CONTEXT.md`):
+the free beta's job packet (owner direction 2026-11-12), whose site side lives
+in `Blueprint-WebApp`, and the evidence program
 [`Arm Decision Proof v1`](arm_decision_proof_v1/README.md). The documents below
 are Arm Decision Proof's.
 
@@ -35,8 +35,10 @@ Every other file under `docs/` is one of:
 - archived or paused research.
 
 Those files are not independent roadmap authority. Their existence does not
-authorize work. An agent may use one only after recording which Arm Decision
-Proof backlog item and gate it directly unblocks.
+authorize work. An agent may use one only after recording which job-packet
+step, or which Arm Decision Proof backlog item and gate, it directly unblocks.
+Documents describing Blueprint before 2026-11-12 are in
+[`archive/2026-11-12-pre-packet/`](archive/2026-11-12-pre-packet/README.md).
 
 Do not delete schemas, evidence snapshots, readers, or safety/paid-resource
 runbooks merely to make the tree look focused. De-promotion is enforced by the

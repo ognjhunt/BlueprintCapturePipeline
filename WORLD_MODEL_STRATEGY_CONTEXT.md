@@ -1,12 +1,7 @@
 # World Model Strategy Context
 
-> Owner direction 2026-10-27: implement beta evaluation support across task
-> families and robot forms, including deformables and humanoids. This supplies
-> the scope authorization requested by older freeze/focus wording below.
-> Preserve exact runtime, evidence, rights and spend requirements and ADP's
-> frozen physical-proof scope. See `AGENTS.md` for the current task-coverage rule.
-
-> Current owner direction (2026-10-05, recorded in AGENTS.md; owner record `gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`): **demand discovery is open.** Prospecting, screening, outreach, and partner discovery span every robot form (fixed arm, humanoid, wheeled, bimanual, and others) and task family, deformables included. Arm Decision Proof v1 stays as the first evaluation-proof track; its fixed-arm, rigid-object envelope is the current default build target, not a ban on other forms. Building evaluation support for a new form or task family needs a recorded owner focus decision based on demand evidence; it does not have to wait for a successful Arm Decision Proof. So the humanoid and deformable freeze in "Stop Rather Than Expand" below ends for a form or task family when the owner records that focus; the other frozen lanes there are unchanged. Spend stays inside approved allowances; sending and automatic first contact stay off. The canonical shared doctrine below incorporates the current owner direction through the three-repo sync.
+> What Blueprint does (owner direction 2026-11-12) is the shared block of
+> `PLATFORM_CONTEXT.md`. The block below covers technical strategy only.
 
 > Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
 
@@ -17,17 +12,15 @@
 ### Strategy
 
 All backend and infrastructure choices serve the two active programs: the
-**free beta's job-first automation service** and **Arm Decision Proof v1**.
-The owner direction of 2026-10-21 makes dependable work at an acceptable total
-cost the buying decision. The later same-day correction requires retained job
-video before assessment and automatic description drafting from the existing
-video analysis. Reuse capture, reconstruction, site-package and task-testbed
-paths; do not replace them with text-only advice or supplier matching. Identify
-a few complete, executable and supportable configurations and real delivery
-partners. Run matched independently scored policies within existing authority,
-reuse valid source-bound artifacts, and use physical trials when physical truth
-is needed. Missing inputs or capabilities stay explicit. Keep the separate
-prospective fixed-arm proof and its exactly two frozen candidates unchanged.
+**free beta's job packet** and **Arm Decision Proof v1**. The owner direction
+of 2026-11-12 makes the job packet the unit of the product. The simulation of
+the site is how a job becomes testable without a visit; it is a means, not the
+product. Reuse capture, reconstruction and site-package paths to build it.
+Blueprint's own test of openly available robot software is an early trial
+inside the packet, never the site's answer. Hardening the automatic test for
+every kind of job, several objects or unattended scale is paused. Keep the
+separate prospective fixed-arm proof and its exactly two frozen candidates
+unchanged.
 
 World models, classical simulators, reconstruction systems, 3DGS renderers,
 SimReady tools, analytic geometry, learned evaluators, and physical evidence are
@@ -55,15 +48,11 @@ The first exact fixed-arm/DROID-compatible route does not admit every robot,
 and a fidelity template is not a runtime adapter. Atlas and unavailable hosted
 APIs remain unavailable. Reuse existing intent/outbox/lease and reconciliation
 mechanisms for durable at-least-once delivery and restart recovery; an ambiguous
-timeout cannot justify another paid run. Scientific source revisions and
-commercial quote revisions have different applicability rules.
+timeout cannot justify another paid run.
 
-Commercial screening and proposal revision remain above bounded scientific
-evaluation. A regional delivery gap can remove an offer without inventing a
-scientific failure. Keep exact technical applicability separate from changing
-quote prices or buying budgets. Reuse cannot turn correlated prior evidence
-into independent repeated proof; reported pilot outcomes cannot recalibrate a
-method without an authoritative Physical Outcome Join.
+Reuse cannot turn correlated prior evidence into independent repeated proof;
+reported outcomes cannot recalibrate a method without an authoritative
+Physical Outcome Join.
 
 ### Arm Decision Proof: Public Evidence Ladder First, Fresh Partner Site Last
 

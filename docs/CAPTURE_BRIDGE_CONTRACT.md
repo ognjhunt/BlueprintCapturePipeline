@@ -2,9 +2,9 @@
 
 This document defines the kept product boundary for `BlueprintCapturePipeline`.
 
-`BlueprintCapturePipeline` is capture-first and real-site robot-evaluation/data-package first. It
-preserves raw capture truth, emits canonical site packages and hosted/provider
-support artifacts, and keeps qualification/readiness outputs as compatibility
+`BlueprintCapturePipeline` is the packet factory: it turns a site's video into
+the simulation of the site for the job packet. It preserves raw capture truth,
+emits canonical site packages and provider support artifacts, and keeps qualification/readiness outputs as compatibility
 and trust layers rather than the product center.
 
 ## Input Trigger

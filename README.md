@@ -1,13 +1,25 @@
 # BlueprintCapturePipeline
 
-> Current owner direction (2026-11-11, recorded in the shared doctrine): the site gets **one answer**, and that answer is **this repo's simulation test**: which AI robot (a robot together with its learned, camera-driven policy) did best on the site's job in a simulation of the site, and how far that can be trusted. Until a result exists the WebApp shows a first look on paper (the robot that most likely fits, from published specifications and a cited track record). A scripted run only checks the simulation; it is never a contender. The answer becomes a deployment opportunity. This repo's job is to make that test accurate, cheap and quick for one kind of job first: see the [fast-lane plan](docs/launch-readiness/2026-11-11-simulation-proof-fast-lane-plan.md) and the [audit](docs/audits/2026-11-11-first-principles-audit.md) that led to it.
+> Current owner direction (2026-11-12, recorded in the shared doctrine): a
+> site films a job once, and Blueprint turns the video into a **job packet**
+> that any robot deployment company can evaluate without visiting. This repo
+> is the packet factory: it builds the **simulation of the site** with the
+> job's object in it and carries the success rule. The simulation is a means,
+> not the product. Blueprint's own test of openly available robot software is
+> an **early trial** inside the packet; it is not the site's answer, and a
+> scripted run only checks the simulation. Hardening the automatic test for
+> any kind of job, several objects or unattended scale is paused. See
+> [`PLATFORM_CONTEXT.md`](PLATFORM_CONTEXT.md) and [`AGENTS.md`](AGENTS.md).
 
-> Current owner direction (2026-10-27, recorded in AGENTS.md): **implement beta task coverage across task families and robot forms**, including deformables and humanoids. The task kind cannot impose a program freeze. Execution requires the actual assets, reset, independent state measurements and compatible runtime; missing simulator support cannot establish that robots cannot do the job. Arm Decision Proof retains its fixed-arm, rigid-object scope. Spend stays inside approved allowances; sending and automatic first contact stay off.
+> Arm Decision Proof v1 is a separate evidence program with its own protocol
+> in [`docs/arm_decision_proof_v1/`](docs/arm_decision_proof_v1/README.md). Its
+> current appearance path (owner direction 2026-08-13) is **artifixer3D+ with
+> gpt-image-2**; see [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
 
-> Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
-
-
-> Current owner direction (2026-10-21, recorded in AGENTS.md and canonical shared doctrine): the free beta is a **job-first automation service** alongside Arm Decision Proof v1. The site records or uploads video of one recurring job; the existing video analysis drafts the brief and assessment cannot advance without retained video (owner correction, 2026-10-21). Blueprint agrees the brief, prepares the capture-backed simulation, runs supported configurations it can access, reports explicit capability gaps, and helps compare real delivery proposals. Customer selection, both-party pilot agreement and reported outcomes are separate records. ADP retains its frozen two-candidate scientific protocol and authoritative physical-proof boundary; the historical `sole_active_program` label does not override the owner direction.
+Beta task coverage is open across task families and robot forms (owner
+direction 2026-10-27); execution still needs the actual assets, reset,
+independent state measurements and a compatible runtime. Spend stays inside
+approved allowances.
 
 For capture-derived evaluations, the
 [supervised beta runbook](docs/runbooks/first-site-team-beta.md) covers exact
@@ -100,9 +112,10 @@ object volume, support, release and stability. A destination mask or the
 object's center alone cannot establish containment.
 
 A job assessment can use existing evidence without creating a capture,
-testbed or run. WebApp owns briefs, proposals, customer choice, pilot agreement
-records and permitted customer-reported outcomes. Pipeline owns scientific
-evidence planning and execution, normalized results, uncertainty and abstention.
+testbed or run. WebApp owns the site side: the job page, the first look on
+paper, the site's permissions and the responses of deployment companies.
+Pipeline owns the simulation of the site, the success rule, the early trial,
+normalized results, uncertainty and abstention.
 
 When new technical evidence is useful, reuse the Decision/Evidence Router and
 existing bounded **Task Evaluation Run**. Blueprint can operate supported
@@ -235,7 +248,7 @@ python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <ar
 
 Before accepting work, answer:
 
-1. Which beta journey step and observed blocker, or Arm Decision Proof backlog
+1. Which job-packet step and observed blocker, or Arm Decision Proof backlog
    item and day gate, does it unblock?
 2. What observed artifact proves the blocker is removed?
 3. Why is existing infrastructure insufficient?

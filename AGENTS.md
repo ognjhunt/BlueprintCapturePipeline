@@ -5,19 +5,30 @@ pointer to it.
 
 ## Mission
 
-A site sends a video of one recurring job. This repo turns it into a
-simulation of the site, runs the candidate robot policies and embodiments in it,
-and returns a bounded estimate of what works, or "held — we can't simulate this
-kind of job yet". Blueprint runs the candidates itself, then works alongside a
-deployment company on the real site. WebApp owns the customer side.
+A site films one recurring job once and uploads the video through the WebApp.
+Blueprint turns it into a **job packet** that any robot deployment company can
+evaluate without visiting, sends it to deployment companies Blueprint has
+approved, and tells the site who will take the job and on what evidence. This
+repo is the packet factory: it reads the video, builds the simulation of the
+site with the job's object in it, and carries the job's success rule. WebApp
+owns the site side: the job page, the first look on paper, the site's
+permissions and the responses of deployment companies.
 
-Owner direction, 2026-11-11: this repo's simulation test is the site's answer.
-It runs the AI robots (a robot together with its learned, camera-driven policy)
-on the job, about ten tries each with the set-up varied, and its result decides
-which did best. The WebApp shows that result and, until one exists, a first
-look it composes from the video and published robot specifications. A scripted
-run is only a check on this simulation, never a contender. The plan for one fast, validated lane is
-[`docs/launch-readiness/2026-11-11-simulation-proof-fast-lane-plan.md`](docs/launch-readiness/2026-11-11-simulation-proof-fast-lane-plan.md).
+Owner direction, 2026-11-12 (it replaces the direction of 2026-11-11): the
+simulation is how a job becomes testable without a visit. It is a means, not
+the product. The site's answer is the responses of deployment companies; see
+the shared block of `PLATFORM_CONTEXT.md`.
+
+Blueprint's own test of openly available robot software (a robot together
+with its learned, camera-driven policy) stays as supporting evidence inside the
+packet, labelled an early trial of openly available robot software. It is not
+the site's answer and does not predict what a deployment company's own robot
+would do. A zero is a valid result. A scripted run only checks this
+simulation, never a contender.
+
+Paused (keep the code, start no new work): hardening the automatic test for
+any kind of job, for several objects and for unattended scale, and standing
+re-tests of every robot on every open job.
 
 Shared doctrine is generated from `doctrine/` (see `doctrine/README.md`).
 

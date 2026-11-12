@@ -1,3 +1,5 @@
+> **Superseded 2026-11-12.** This describes an earlier frame, which the owner replaced. Current frame: the shared block of PLATFORM_CONTEXT.md.
+
 # Site Operator Proof Packet — Example
 
 > EXAMPLE DOCUMENT. All ids, URIs, and values below are illustrative. A real

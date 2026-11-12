@@ -1,3 +1,5 @@
+> **Superseded 2026-11-12.** This describes an earlier frame, which the owner replaced. Current frame: the shared block of PLATFORM_CONTEXT.md.
+
 # Goal brief: invited-beta readiness (one planner, many executors)
 
 This is the brief for one long Claude Code session, started with `/goal`. The

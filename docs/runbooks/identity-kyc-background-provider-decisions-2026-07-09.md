@@ -1,3 +1,5 @@
+> **Superseded 2026-11-12.** This describes an earlier frame, which the owner replaced. Current frame: the shared block of PLATFORM_CONTEXT.md.
+
 # Identity, KYC, and Background-Check Provider Decisions
 
 Date: 2026-07-09
