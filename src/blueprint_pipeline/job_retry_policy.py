@@ -22,9 +22,12 @@ import re
 
 __all__ = [
     "MONEY",
+    "OWNER_CLOSED_CODE",
     "PRIVACY_RIGHTS",
     "REFUSAL_RETRY_DELAYS_SECONDS",
     "hard_stop_kind",
+    "owner_closed",
+    "owner_closed_refusal",
     "outage_retry_delay",
     "RETRY_LATER_STATUSES",
     "provider_answer",
@@ -35,6 +38,18 @@ __all__ = [
 
 PRIVACY_RIGHTS = "privacy_rights"
 MONEY = "money"
+
+#: The WebApp's typed answer once the site's owner closed this capture's run
+#: (``websiteRunClosure.ts``: ``new_execution_authorized: false``,
+#: ``explicit_resume_required: true``). It is not a delay and not a guess: the
+#: run is closed for good, and only a new instruction from the site (a new
+#: delivery) starts work again. Every stage ends the job on this exact code and
+#: on nothing else; a 409 with any other code is handled as before.
+OWNER_CLOSED_CODE = "website_run_closed_by_owner"
+# The typed 409 as a whole token, as the listener reads authority endings (it may sit inside a longer
+# message that joins several blockers, but nothing may touch it on either side).
+_OWNER_CLOSED_REFUSAL = re.compile(r"(?<![A-Za-z0-9_-])website_control_([a-z0-9-]+)_http_409:"
+                                   + OWNER_CLOSED_CODE + r"(?![A-Za-z0-9_-])")
 
 # 15 min, 1 h, 3 h, 6 h, 12 h, 24 h: 166,500 s in all.
 REFUSAL_RETRY_DELAYS_SECONDS: tuple[int, ...] = (900, 3600, 10800, 21600, 43200, 86400)
@@ -86,6 +101,28 @@ def outage_retry_delay(failures: int, *, first: int = 120, cap: int = 3600) -> i
     # need not be computed.
     exponent = min(failures - 1, cap.bit_length())
     return min(cap, first * 2**exponent)
+
+
+def owner_closed(code: object) -> bool:
+    """Whether ``code`` is the WebApp's owner-closure answer: the bare code as the whole value, or
+    its typed ``website_control_<operation>_http_409:`` refusal as a whole token.
+
+    A longer token, another HTTP status or another reason is not a closure.
+    """
+    if not isinstance(code, str):
+        return False
+    return code.strip() == OWNER_CLOSED_CODE or owner_closed_refusal(code) is not None
+
+
+def owner_closed_refusal(text: object) -> str | None:
+    """The refusing WebApp operation when ``text`` carries the typed closure refusal as a whole token.
+
+    The one match every caller uses: the retry classifier (through ``owner_closed``), the sweep that
+    ends a closed job (``end_owner_closed_preparation``) and the Atlas preview step. The token may
+    sit inside a longer message (``run_e2e failed: ...``), as the listener reads authority endings.
+    """
+    match = _OWNER_CLOSED_REFUSAL.search(text) if isinstance(text, str) else None
+    return match.group(1) if match else None
 
 
 def hard_stop_kind(code: object) -> str | None:

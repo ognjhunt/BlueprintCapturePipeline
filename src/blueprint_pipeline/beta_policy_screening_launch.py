@@ -326,7 +326,34 @@ def preflight_candidate_capacity(*, plan: Mapping[str, Any], candidate: Mapping[
     blockers = admission.get("blockers") or []
     busy = admission.get("status") == "deferred" and blockers in (
         ["vast_paid_launch_lock_busy"], ["vast_release_deployment_in_progress"])
-    return {"capacity_available": not busy, "blockers": blockers}
+    if busy:
+        return {"capacity_available": False, "blockers": blockers}
+    # Room to land the result, asked of the same disk ledger the landing uses, before anything is paid
+    # for: a launch that would not fit waits in line and costs nothing (``beta_screening_disk_admission``).
+    from .beta_screening_disk_admission import WORK_DISK_WAIT_BLOCKER, work_disk_admission
+
+    from .task_family_policy_execution import FAMILY_BACKEND
+
+    backend = (candidate.get("execution_spec") or {}).get("backend")
+    if backend not in {"robolab.v1", FAMILY_BACKEND}:
+        # G1 runs its own session (``native_g1_beta_paid``): no output-delivery question, and its collection
+        # hold refuses there before any rental. Both other lanes land through the policy-canary session.
+        return {"capacity_available": True, "blockers": blockers}
+    from .policy_canary_output_members import (
+        STREAM, PolicyCanaryOutputDeliveryError, record_resolution, resolve_output_delivery,
+    )
+
+    try:
+        resolved = resolve_output_delivery()
+    except PolicyCanaryOutputDeliveryError:
+        return {"capacity_available": True, "blockers": blockers}  # the session refuses it before any spend
+    # Resolved once, here: the session uses this record, so the hold checked is the hold it takes.
+    record_resolution(Path(attempt_dir).resolve(), resolved)
+    streamed = resolved.mode == STREAM
+    disk = work_disk_admission(Path(attempt_dir).resolve(), streamed=streamed)
+    if not disk["admitted"]:
+        return {"capacity_available": False, "blockers": [WORK_DISK_WAIT_BLOCKER], "work_disk": disk}
+    return {"capacity_available": True, "blockers": blockers}
 
 
 def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,

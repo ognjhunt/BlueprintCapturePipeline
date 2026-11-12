@@ -68,6 +68,8 @@ _OUTAGE = re.compile(r"http_(?:429|5[0-9][0-9])(?![0-9])|timeout|timed out|conne
                      r"|no space left|disk_budget|capacity_insufficient", re.IGNORECASE)
 _CHAIN_LIMIT = 16
 OUTAGE, REFUSAL, DETERMINISTIC = "outage", "refusal", "deterministic"
+#: The WebApp's ``website_run_closed_by_owner``: the run is closed until the site gives a new instruction.
+OWNER_CLOSED = "owner_closed"
 #: The job has no sentence yet (``website_task_context_contracts.task_named``): it waits for the
 #: site, buying nothing, and each run re-reads the website's current context.
 AWAITING_JOB_SENTENCE = "awaiting_job_sentence"
@@ -80,7 +82,11 @@ AWAITING_JOB_SENTENCE = "awaiting_job_sentence"
 def classify(*texts: str) -> str:
     """privacy_rights, money (``job_retry_policy.hard_stop_kind``), the wait for the job's sentence, outage or
     refusal (unclassified)."""
-    from .job_retry_policy import PRIVACY_RIGHTS, hard_stop_kind
+    from .job_retry_policy import PRIVACY_RIGHTS, hard_stop_kind, owner_closed_refusal
+    if any(owner_closed_refusal(text) for text in texts if text):
+        # The site's owner closed the run: never retried. The listener ends the job, and the sweep
+        # (``end_owner_closed_preparation``) ends one this same match left behind.
+        return OWNER_CLOSED
     stripped = [_OPERATION.sub("website_control_http_", text) for text in texts if text]
     kinds = {hard_stop_kind(text) for text in stripped} - {None}
     if kinds:

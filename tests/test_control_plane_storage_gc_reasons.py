@@ -140,7 +140,7 @@ def test_evidence_protection_reason_keeps_the_existing_order(tmp_path, monkeypat
     assert reason() is None
     assert reasons.EVIDENCE_PROTECTION_REASONS == (
         "protected_unreadable_settlement", "protected_process", "protected_process_inventory_unreadable",
-        "protected_pin", "protected_settlement", "protected_queue")
+        "protected_pin", "protected_settlement", "protected_queue", "protected_open_job_source")
 
 
 def test_unreadable_process_inventory_protects_with_a_reason(tmp_path, monkeypatch) -> None:

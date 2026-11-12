@@ -1,0 +1,12 @@
+{
+ "capture_id": "walkthrough-capture-447ae4f4-c253-44ae-a897-c999245e0ef7",
+ "intent_digest": "sha256:f06d4da8b9f81559cd23f5f7640534a1ca8d646b2961c0f85dd9a94f0344d05f",
+ "intent_id": "scene-c0e6803928890efaa9cdacd6b65589e86a32df6499fd3987f3c1682b6ee81473",
+ "launch_receipt_digest": "sha256:82a24a5c9ca333b192cd5ec8127830904c228bc1675a8450811c7018811a026b",
+ "request_digest": "sha256:aab6cd91294a156e0b474181253c9b7cdc2bbdce4fbddfaa4c70ac9c35c3b6da",
+ "robot_free_readiness_status": "refused",
+ "scene_revision_digest": "sha256:ae2703d00c670c85144ad2ded40260c526a69d4e93e292eefea4df4afefcc90b",
+ "schema_version": "blueprint.team_scene_packet_request.v1",
+ "source_launch_root": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/website-f06d4da8b9f81559cd23f5f7-e86f4e54-20261102t223121z-16f5bee56419-activation-auto-launch",
+ "task_id": "website-53e1ef5c8bf71f6d840a"
+}

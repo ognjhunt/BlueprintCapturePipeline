@@ -94,7 +94,11 @@ from .control_plane_storage_gc_reasons import (
     evidence_protection_reason, live_pin_kinds, pin_protection, walked_bytes,
 )
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
-from .control_plane_lane_scratch_retention import LaneScratchRetentionError, observe_lane_scratch_retention
+from .open_job_source_runs import queue_roots_from_env as open_job_queue_roots_from_env
+from .control_plane_lane_scratch_retention import (  # noqa: F401 - the two env names are re-exported
+    LANE_SCRATCH_ENV, LANE_SCRATCH_ROOTS_ENV, LaneScratchRetentionError, lane_settings as _lane_settings,
+    observe_lane_scratch_retention,
+)
 # Kept under their old names for every existing caller.
 from .control_plane_storage_references import (  # noqa: F401 - re-exported
     MAX_QUEUE_MESSAGE_BYTES as _MAX_QUEUE_MESSAGE_BYTES,
@@ -135,8 +139,6 @@ EVIDENCE_OFFLOAD_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD"
 EVIDENCE_HOT_WINDOW_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS"
 EVIDENCE_ABANDONED_AFTER_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_ABANDONED_AFTER_SECONDS"
 SCRATCH_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_ROOTS"
-LANE_SCRATCH_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH_ROOTS"
-LANE_SCRATCH_ENV = "BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH"
 DERIVED_MINIMUM_AGE_ENV = "BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS"
 SCRATCH_MINIMUM_AGE_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS"
 RUNNING_COMMIT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_RUNNING_COMMIT"
@@ -1315,6 +1317,8 @@ def run_storage_gc(
     lane_scratch_enabled: bool = False,
     lane_scratch_alert: str | None = None,
     lane_reference_target: str | Path | None = None,
+    team_scene_packet_queue_root: str | Path | None = None,
+    screening_queue_root: str | Path | None = None,
     _experiment_config_path: str | Path = "/etc/blueprint-operator-door/door.json",
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
@@ -1457,7 +1461,9 @@ def run_storage_gc(
                 # queues on every check; see evidence_protection_reason.
                 return evidence_protection_reason(
                     directory, settlement_roots=settlement_roots, pins_root=pins_root,
-                    queue_roots=queue_roots, now=clock, ignored_process_ids=(os.getpid(),))
+                    queue_roots=queue_roots, now=clock, ignored_process_ids=(os.getpid(),),
+                    team_scene_packet_queue_root=team_scene_packet_queue_root,
+                    screening_queue_root=screening_queue_root, scene_intent_root=scene_intent_root)
 
             # Keep authenticated downloads usable after cold evidence reclamation.
             from .task_evaluation_result_artifact_store import (
@@ -1678,21 +1684,6 @@ class _LaneRoots(argparse.Action):
         setattr(namespace, self.dest, roots)
 
 
-def _lane_settings(args: Any) -> tuple[tuple[str, ...], bool, str | None]:
-    raw = str(os.getenv(LANE_SCRATCH_ENV) or "").strip().lower()
-    invalid = raw not in {"", "0", "false", "1", "true"} or bool(args.lane_roots_invalid)
-    enabled = raw in {"1", "true"}
-    roots = tuple(args.lane_scratch_root or ())
-    if args.lane_scratch_root is None:
-        configured = str(os.getenv(LANE_SCRATCH_ROOTS_ENV) or "")
-        # Bound before splitting/collecting; paths receive the leaf's stricter policy.
-        if len(configured) > 8193 or configured.count(":") > 1:
-            invalid = True
-        else:
-            roots = tuple(configured.split(":")) if configured else ()
-    return (() if invalid else roots), enabled, "lane_configuration_invalid" if invalid else None
-
-
 def _env_int(name: str, default: int | None) -> int | None:
     raw = str(os.getenv(name) or "").strip()
     if not raw:
@@ -1908,6 +1899,7 @@ def _run_main(argv: list[str]) -> int:
         scene_workspace_roots=args.scene_workspace_root or _split_env(SCENE_WORKSPACE_ROOTS_ENV),
         scene_intent_root=args.scene_intent_root,
         scene_binding_root=str(os.getenv(SCENE_BINDING_ROOT_ENV) or "").strip() or None,
+        **open_job_queue_roots_from_env(),  # an open website job's scene run stays on the host
         scene_workspace_retirement_enabled=retirement_enabled,
         scene_workspace_retirement_alert=retirement_alert,
         replay_parent_roots=args.replay_parent_root or _split_env(REPLAY_PARENT_ROOTS_ENV),

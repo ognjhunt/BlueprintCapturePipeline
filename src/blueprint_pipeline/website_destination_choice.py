@@ -413,15 +413,15 @@ def _job_closed_or_ended(capture_root: Path) -> bool:
     """The job's run was closed by its owner, or its authority ended (or its ledger cannot be read)."""
     import json
 
+    from .job_retry_policy import owner_closed
     try:
         ledger = json.loads((Path(capture_root) / "pipeline_job_ledger.json").read_text())
     except (OSError, ValueError):
         return True
     if not isinstance(ledger, dict):
         return True
-    # The WebApp's closure refusal, as its typed code (``website_run_closed_by_owner``) in the ledger.
     return (ledger.get("status") == "terminal_authority_ended"
-            or "website_run_closed_by_owner" in f"{ledger.get('last_error')} {ledger.get('terminal_code')}")
+            or owner_closed(ledger.get("last_error")) or owner_closed(ledger.get("terminal_code")))
 
 
 def open_place_picture(*, request_id: str, capture_id: str, digest: str, storage_root: Path | None) -> bytes:

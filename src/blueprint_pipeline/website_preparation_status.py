@@ -154,6 +154,14 @@ RETIRED_REASON = "owner_retired_parked_delivery"
 NOT_OWED_REASON = "webapp_recorded_this_ending"
 NOT_OWED_EXPLANATION = ("no preparation status report is owed: the WebApp recorded this job's "
                         "no-grant ending itself (website_scene_job_no_grant_ended) and already shows it")
+#: The same for the closed run's own unfinished work once the site's owner closed the run
+#: (``website_run_closed_by_owner``): the WebApp keeps and shows the closure (``websiteRunClosure``),
+#: so a report that the work stopped is not owed. A report of a result finished before the closure
+#: is still owed and is never retired here (``_report_not_owed``).
+NOT_OWED_CLOSED_EXPLANATION = ("no preparation status report is owed for this run's unfinished work: the "
+                               "site's owner closed the run (website_run_closed_by_owner) and the WebApp "
+                               "keeps and shows that closure itself")
+_NOT_OWED_EXPLANATIONS = frozenset({NOT_OWED_EXPLANATION, NOT_OWED_CLOSED_EXPLANATION})
 MAX_RETIREMENT_EVIDENCE = 500
 
 
@@ -167,7 +175,7 @@ def _read_delivery(path: Path) -> dict[str, Any]:
         retired_at, evidence = value.get("retired_at_epoch"), value.get("retirement_approval_evidence")
         _require(type(retired_at) in (int, float) and math.isfinite(retired_at) and retired_at >= 0)
         if value.get("retired_reason") == NOT_OWED_REASON:
-            _require(value.get("report_not_owed") == NOT_OWED_EXPLANATION)
+            _require(value.get("report_not_owed") in _NOT_OWED_EXPLANATIONS)
         else:
             _require(value.get("retired_reason") == RETIRED_REASON
                      and isinstance(evidence, str) and 1 <= len(evidence) <= MAX_RETIREMENT_EVIDENCE)
@@ -454,6 +462,86 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         raise PreparationStatusUnavailable(_UNAVAILABLE) from exc
 
 
+def _report_not_owed(ledger: Mapping[str, Any], old: Mapping[str, Any] | None = None) -> str | None:
+    """Why no status report is owed for this ledger's ending, or None when one is owed.
+
+    Only the ended job's own unfinished work is not owed. A still-pending earlier report whose
+    revision was written for a finished result (``_reports_finished_result``) stays owed: the
+    ending does not retire it.
+    """
+    from .job_retry_policy import OWNER_CLOSED_CODE
+    from .website_task_context import NO_GRANT_ENDED_CODE
+    if ledger.get("status") != "terminal_authority_ended":
+        return None
+    if old and old.get("state") == "pending" and _reports_finished_result(ledger, old):
+        return None
+    return {NO_GRANT_ENDED_CODE: NOT_OWED_EXPLANATION,
+            OWNER_CLOSED_CODE: NOT_OWED_CLOSED_EXPLANATION}.get(ledger.get("terminal_code"))
+
+
+def _reports_finished_result(ledger: Mapping[str, Any], old: Mapping[str, Any]) -> bool:
+    """Whether the pending report ``old`` was retained for a finished (completed) attempt.
+
+    A report is retained right after its revision commits, so the attempt it reports is the latest
+    one that started no later than the report became pending. An unreadable time counts as
+    finished, so a result's report is never retired on a guess.
+    """
+    from .website_preparation_terminal import _parse_utc
+    since = old.get("pending_since_epoch")
+    if isinstance(since, bool) or not isinstance(since, (int, float)) or not math.isfinite(since):
+        return any(isinstance(row, Mapping) and row.get("status") == "completed"
+                   for row in ledger.get("attempt_history") or ())
+    latest, latest_status = None, None
+    for row in ledger.get("attempt_history") or ():
+        if not isinstance(row, Mapping) or row.get("attempt_number") is None:
+            continue
+        started = _parse_utc(row.get("started_at"))
+        if started is None:
+            if row.get("status") == "completed":
+                return True
+            continue
+        if started.timestamp() <= since and (latest is None or started >= latest):
+            latest, latest_status = started, row.get("status")
+    return latest_status == "completed"
+
+
+def _retire_not_owed(root: Path, path: Path, *, selected: Mapping[str, str], revision: int,
+                     old: Mapping[str, Any], explanation: str) -> None:
+    """Write this revision's delivery retired as not owed, superseding any earlier report. Caller holds the lock."""
+    from .website_preparation_delivery_index import update as update_index
+    retired = {"schema_version": "website_preparation_status_delivery.v1", "state": RETIRED_STATE,
+               "selectors": dict(selected), "revision": revision, "retired_at_epoch": time.time(),
+               "retired_reason": NOT_OWED_REASON, "report_not_owed": explanation,
+               **({"superseded_delivery": {key: old.get(key) for key in ("state", "revision")}}
+                  if old else {})}
+    write_json(path, retired)
+    update_index(root, retired)
+
+
+def _retire_closed_without_context(root: Path) -> bool:
+    """A closed run that never retained a context: retire its earlier delivery on that delivery's selectors.
+
+    Nothing else can be written without a context, and the site's current context would only answer
+    with the closure again. Returns whether the run is a closed one (whatever was written).
+    """
+    from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
+    from .job_retry_policy import OWNER_CLOSED_CODE
+    with _existing_job_ledger_lock(root) as lock_state:
+        if lock_state != "ledger_present":
+            return False
+        ledger = _read_job_ledger(root)
+        path = root / DELIVERY_FILE
+        old = _read_delivery(path) if path.is_file() else {}
+        if _report_not_owed(ledger, old) is None or ledger.get("terminal_code") != OWNER_CLOSED_CODE:
+            return False
+        revision = ledger.get("revision")
+        if (type(revision) is int and revision > 0 and old
+                and not (old.get("state") == RETIRED_STATE and old.get("revision") == revision)):
+            _retire_not_owed(root, path, selected=validate_selectors(old.get("selectors")), revision=revision,
+                             old=old, explanation=NOT_OWED_CLOSED_EXPLANATION)
+        return True
+
+
 def retain_preparation_wakeup(capture_root: Path) -> None:
     """Persist only selectors after a committed ledger; no network under lock.
 
@@ -471,6 +559,8 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
     if context is None:
         if not (root / "pipeline_job_ledger.json").is_file():
             return  # Nothing claimed yet; the lock below re-checks before any write.
+        if _retire_closed_without_context(root):
+            return  # The owner closed the run: no read of the site's context is made or owed.
         # An attempt that failed before retaining a context is still reported,
         # bound to the site's current context (one signed read, before the lock).
         purpose = birth.get("capture_observation_purpose")
@@ -496,16 +586,10 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
             # The owner retired this revision's delivery: it stays retired, and its hint stays gone.
             update_index(root, old)
             return
-        from .website_task_context import NO_GRANT_ENDED_CODE
-        if ledger.get("status") == "terminal_authority_ended" and ledger.get("terminal_code") == NO_GRANT_ENDED_CODE:
+        not_owed = _report_not_owed(ledger, old)
+        if not_owed is not None:
             # Owed nothing: the WebApp declared this ending. Supersede any earlier report, retired at once.
-            retired = {"schema_version": "website_preparation_status_delivery.v1", "state": RETIRED_STATE,
-                       "selectors": selected, "revision": revision, "retired_at_epoch": time.time(),
-                       "retired_reason": NOT_OWED_REASON, "report_not_owed": NOT_OWED_EXPLANATION,
-                       **({"superseded_delivery": {key: old.get(key) for key in ("state", "revision")}}
-                          if old else {})}
-            write_json(path, retired)
-            update_index(root, retired)
+            _retire_not_owed(root, path, selected=selected, revision=revision, old=old, explanation=not_owed)
             return
         if old.get("selectors") == selected and old.get("revision") == revision:
             if old.get("state") == "pending" and "pending_since_epoch" not in old:
@@ -552,7 +636,8 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
     """
     from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .website_preparation_terminal import (
-        end_expired_preparation, end_no_grant_preparation, note_sweep_liveness, record_unretried_preparation,
+        end_expired_preparation, end_no_grant_preparation, end_owner_closed_preparation, note_sweep_liveness,
+        record_unretried_preparation,
     )
     from .website_preparation_delivery_index import due, defer_unavailable, update as update_index, METRICS_FILE
     from .website_task_context import website_webapp_request
@@ -580,6 +665,10 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
     bounded = roots[:maximum]
     for root in bounded:
         try:
+            if listener is not None:
+                # A run the site's owner closed ends now, from the refusal its ledger already records
+                # (no read is made), so it is neither observed overdue nor re-run.
+                end_owner_closed_preparation(root, listener=listener)
             if alive_since is not None:
                 # An expired grant ends the job; anything else silent is only overdue.
                 if listener is not None:

@@ -237,6 +237,13 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     it is no longer produced and reads as any other recoverable failure.
     """
     code = _reason(error)
+    from .job_retry_policy import OWNER_CLOSED_CODE, owner_closed
+    if owner_closed(code) or owner_closed(str(error)):
+        # The site's owner closed this run: the step ends now, never on the refusal schedule. Only an
+        # operator's Atlas retry (door selected-handoff --atlas-retry), after a new instruction from
+        # the site, opens it again.
+        from .bounded_error import error_description
+        return _transition(job, current, "failed", OWNER_CLOSED_CODE, last_error=error_description(error))
     if code in _WITHDRAWN:
         return _transition(job, current, "withdrawn", "website_capture_withdrawn" if job.get("schema_version") == SCHEMA else code)
     if code in _AWAITING_AUTHORITY:
@@ -585,6 +592,12 @@ def _deliver(job: dict[str, Any], *, now: Callable[[], float]) -> dict[str, Any]
         error = _reason(exc)
         if error in _WITHDRAWN and job["state"] != "withdrawn":
             return _transition(job, current, "withdrawn", "website_capture_withdrawn")
+        from .job_retry_policy import OWNER_CLOSED_CODE, owner_closed
+        if owner_closed(error) or owner_closed(str(exc)):
+            # The WebApp refused this preview because the site's owner closed the run: it keeps and
+            # shows the closure, so this revision is not sent again.
+            return {**job, "delivered_revision": job["revision"], "delivery_attempts": 0,
+                    "delivery_next_at_epoch": 0, "delivery_error": None, "delivery_not_owed": OWNER_CLOSED_CODE}
     if error is None:
         return {**job, "delivered_revision": job["revision"], "delivery_attempts": 0, "delivery_next_at_epoch": 0,
                 "delivery_error": None}

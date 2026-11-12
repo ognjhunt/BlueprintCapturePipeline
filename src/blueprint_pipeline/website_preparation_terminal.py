@@ -358,6 +358,61 @@ def end_no_grant_preparation(capture_root: Path, *, alive_since: datetime, liste
                                    code=NO_GRANT_ENDED_CODE, stage=NO_GRANT_STAGE, trigger=_no_grant_ask_due)
 
 
+#: The stage the ending of an already-recorded owner closure is written under (end_owner_closed_preparation).
+OWNER_CLOSED_STAGE = "website_preparation_owner_closed"
+
+
+def end_owner_closed_preparation(capture_root: Path, *, listener: Any) -> dict[str, Any] | None:
+    """End a retryable preparation whose last attempt the WebApp refused because the site's owner closed the run.
+
+    Before ``website_run_closed_by_owner`` ended a job, such a refusal was recorded as an ordinary
+    retryable failure, and the host re-ran the job every couple of hours for ever (each run met the
+    same refusal in under a second). The refusal the ledger already records is the WebApp's own
+    typed answer, so nothing is asked again: only a ``failed_retryable`` ledger whose ``last_error``
+    carries that typed 409 as a whole token (``job_retry_policy.owner_closed_refusal``, the same match
+    the retry classifier uses, so a closed job is always either ended here or never retried) is ended, through the listener's one terminal function, on a claim of
+    the revision read here. A live lease, any other error or status, and a later delivery (which
+    records its own attempt) are left alone. Nothing is retried, bought, renewed or released here.
+    Returns the committed terminal ledger, or None.
+    """
+    from .job_retry_policy import OWNER_CLOSED_CODE, owner_closed_refusal
+    root = Path(capture_root)
+    with _existing_job_ledger_lock(root) as state:
+        if state != "ledger_present":
+            return None
+        ledger = _read_job_ledger(root)
+    error = ledger.get("last_error")
+    if (ledger.get("status") != "failed_retryable" or type(error) is not str
+            or type(ledger.get("revision")) is not int
+            or any(type(ledger.get(key)) is not str or not ledger[key] for key in
+                   ("scene_id", "capture_id", "producer_delivery_key", "source_payload_sha256"))):
+        return None
+    operation = owner_closed_refusal(error)  # The classifier's own match: whole token, anywhere in the text.
+    if operation is None:
+        return None
+    refusal = ValueError(error)
+    ending = (operation, OWNER_CLOSED_CODE)
+    claim, claimed = listener._claim_job_lease(
+        root, scene_id=ledger["scene_id"], capture_id=ledger["capture_id"], owner=listener._lease_owner(),
+        lease_seconds=listener.DEFAULT_JOB_LEASE_SECONDS, payload_sha256=ledger["source_payload_sha256"],
+        producer_delivery_key=ledger["producer_delivery_key"], create_capture_root=False,
+        expected_revision=ledger["revision"])
+    if claim != "claimed":
+        return None
+    handoff = listener.HandoffMessage(
+        bucket=root.parents[3].name, scene_id=ledger["scene_id"], capture_id=ledger["capture_id"],
+        raw_prefix_uri=f"gs://{root.parents[3].name}/scenes/{ledger['scene_id']}"
+                       f"/captures/{ledger['capture_id']}/raw/",
+        pipeline_handoff_uri=None)
+    result = listener._finish_terminal_authority_ending(
+        root, handoff=handoff, owner=claimed["lease_owner"], token=claimed["lease_token"],
+        operation=ending[0], code=ending[1], error=refusal, stage=OWNER_CLOSED_STAGE,
+        attempt_count=claimed["attempt_count"], attempt_started_at=claimed["last_attempt_started_at"],
+        previous_history=listener._attempt_history(claimed),
+        payload_digest=ledger["source_payload_sha256"], producer_delivery_key=ledger["producer_delivery_key"])
+    return result["job_ledger"]
+
+
 def _end_silent_preparation(root: Path, *, alive_since: datetime, listener: Any, now: datetime | None,
                             code: str, stage: str, trigger: Any) -> dict[str, Any] | None:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)

@@ -341,8 +341,232 @@ def validate_policy_episode_lifecycle(receipt: Mapping[str, Any]) -> dict[str, A
     return dict(lifecycle)
 
 
+# --- What the robot's cameras really showed of the job before a beta try: three outcomes --
+#
+# The pre-policy runtime gate (``policy_canary_runtime_observation_integrity_gate.v1``,
+# written by ``native_task_arena_policy_canary_worker``) measures, from the simulator's own
+# semantic segmentation, how many pixels of the task object and of the destination marker
+# each camera shows, and how many of those pixels the room's appearance (the Gaussian splat)
+# covers. Its own verdict is all-or-nothing: one covered pixel blocks it. A beta session then
+# continued past every blocked gate whose frames were usable, so on capture-447ae4f4 a gate
+# that said ``blocked`` blocked nothing (39 tries ran and were graded).
+#
+# The functions below read the gate's measurements and decide:
+#
+# - ``visible``: the task object and the marker are each seen, clean, in a camera the policy
+#   is given. Tries run and count.
+# - ``visible_with_caveat``: each is seen enough in at least one policy camera, but one is partly
+#   covered there, or a policy camera does not show it at the start. Tries run and count, and
+#   the record says what was hidden where (only whole-view flags are published).
+# - ``not_visible``: the object or the marker is not seen enough in any checked policy camera.
+#   Tries still run and count, flagged ``<target>_not_in_view_of_checked_cameras``; never a stop.
+#
+# A gate that does not carry the measurements (an older receipt, or a composition capture
+# that failed) is ``unmeasured`` and keeps the earlier handling: its blockers are flags.
+#
+# Thresholds, chosen on capture-447ae4f4's measurements (tray: 912 of 16,880 interior pixels
+# covered in the external view; marker: 2,406 of 16,926):
+#
+# - a target counts as seen in a camera when at least ``MINIMUM_INTERIOR_PIXELS`` (64, the
+#   composition check's own floor) of its unobstructed interior pixels exist there and at
+#   least ``MINIMUM_VISIBLE_SHARE`` (half) of them are not covered;
+# - it is clean when at most ``CLEAN_MAXIMUM_HIDDEN_SHARE`` (1 %) is covered; above that it is
+#   partly hidden. On 447 the tray (5.4 % covered) and the marker (14.2 %) are partly hidden,
+#   so 447 is ``visible_with_caveat``.
+#
+# The policy cameras are the external and the wrist camera; the overview camera is
+# review-only (``adp009d_policy_episode``: ``review_only_camera_ids == ["overview"]``), so it
+# is recorded but never decides. The composition check renders the external and overview
+# cameras only; the wrist camera's task-object pixels come from the camera qualification
+# (``camera_role_qualifications.wrist``), which measures pixels but not coverage. At the
+# DROID reset pose the wrist camera often does not see the object at all (it looks past it:
+# ``adp009d_approach_capture``), and DROID's reset is the start its policies learned from
+# (``native_task_camera_start_configuration``), so a wrist view without the object at the
+# start is a caveat, never a blocker. The marker is decided on the
+# external camera alone.
+
+VISIBILITY_VERDICT_SCHEMA_VERSION = "policy_observation_visibility_verdict.v1"
+VISIBLE = "visible"
+VISIBLE_WITH_CAVEAT = "visible_with_caveat"
+NOT_VISIBLE = "not_visible"
+UNMEASURED = "unmeasured"
+#: Cameras whose images reach the policy. The overview camera is review-only.
+POLICY_CAMERA_ROLES = ("external", "wrist")
+MINIMUM_INTERIOR_PIXELS = 64
+MINIMUM_VISIBLE_SHARE = 0.5
+CLEAN_MAXIMUM_HIDDEN_SHARE = 0.01
+#: Targets the gate decides on; a marker is required only when the plan drew one.
+TASK_OBJECT = "task_object"
+TARGET_MARKER = "task_target_marker"
+#: Gate blockers that this verdict replaces once the gate is measured. Every other blocker
+#: (a capture failure, a missing camera, a destination support not seen) stays a flag.
+SUPERSEDED_BLOCKERS = frozenset({
+    "droid_wrist_task_pixels_below_threshold",
+    "policy_canary_task_semantic_visibility_failed",
+    "policy_canary_external_task_visibility_failed",
+    "policy_canary_wrist_task_visibility_failed",
+    "policy_canary_overview_task_visibility_failed",
+})
+SUPERSEDED_COMPOSITION_REASONS = frozenset({
+    "composition_support_background_occlusion_requires_review",
+    "composition_support_interior_insufficient",
+})
+
+
+def _count(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _composition_rows(gate: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
+    composition = gate.get("asset_composition_gate")
+    if not isinstance(composition, Mapping):
+        return None
+    views = composition.get("views")
+    if not isinstance(views, list):
+        return None
+    rows = []
+    for view in views:
+        if not isinstance(view, Mapping) or not isinstance(view.get("assessment"), Mapping):
+            return None
+        rows.append(view)
+    return rows
+
+
+def _measure(view: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Pixels of one target in one camera, from its composition assessment; ``None`` if unreadable."""
+    assessment = view["assessment"]
+    if assessment.get("scope") != "opaque_target_coverage":
+        return None
+    interior = _count(assessment.get("support_interior_pixels"))
+    hidden = _count(assessment.get("interior_pixels_occluded_by_appearance"))
+    if interior is None or hidden is None or hidden > interior:
+        return None
+    share = hidden / interior if interior else 1.0
+    return {"interior_pixels": interior, "hidden_pixels": hidden, "hidden_share": round(share, 6),
+            "seen": interior >= MINIMUM_INTERIOR_PIXELS and 1.0 - share >= MINIMUM_VISIBLE_SHARE,
+            "clean": interior >= MINIMUM_INTERIOR_PIXELS and share <= CLEAN_MAXIMUM_HIDDEN_SHARE,
+            "source": "composition_semantic_segmentation"}
+
+
+def _wrist_object(gate: Mapping[str, Any]) -> dict[str, Any] | None:
+    qualifications = gate.get("camera_role_qualifications")
+    row = qualifications.get("wrist") if isinstance(qualifications, Mapping) else None
+    if not isinstance(row, Mapping):
+        return None
+    pixels, minimum = _count(row.get("pixel_count")), _count(row.get("minimum_pixels"))
+    if pixels is None or minimum is None or not isinstance(row.get("passed"), bool):
+        return None
+    # The qualification counts the object's own pixels; it does not measure coverage, so "clean"
+    # is reported as not measured (None), never as true.
+    return {"pixel_count": pixels, "minimum_pixels": minimum, "seen": row["passed"] is True,
+            "clean": None, "coverage_measured": False, "source": "camera_qualification_semantic_segmentation"}
+
+
+def visibility_verdict(gate: Any) -> dict[str, Any]:
+    """The three-way verdict of a runtime gate's measurements (``unmeasured`` when it has none)."""
+    unmeasured = {"schema_version": VISIBILITY_VERDICT_SCHEMA_VERSION, "outcome": UNMEASURED, "flags": [], "targets": {}}
+    if not isinstance(gate, Mapping):
+        return unmeasured
+    rows = _composition_rows(gate)
+    if rows is None:
+        return unmeasured
+    composition = gate["asset_composition_gate"]
+    classes = composition.get("target_semantic_classes")
+    if not isinstance(classes, list) or TASK_OBJECT not in classes:
+        return unmeasured
+    required = [TASK_OBJECT] + ([TARGET_MARKER] if TARGET_MARKER in classes else [])
+    measured: dict[str, dict[str, Any]] = {target: {} for target in required}
+    review: dict[str, dict[str, Any]] = {target: {} for target in required}
+    for view in rows:
+        target, role = view.get("target_semantic_class"), view.get("camera_role")
+        if target not in measured:
+            continue
+        reading = _measure(view)
+        if reading is None:
+            return unmeasured
+        (measured if role in POLICY_CAMERA_ROLES else review)[target][str(role)] = reading
+    wrist = _wrist_object(gate)
+    if wrist is None or "external" not in measured[TASK_OBJECT]:
+        return unmeasured
+    measured[TASK_OBJECT]["wrist"] = wrist
+    if TARGET_MARKER in measured and "external" not in measured[TARGET_MARKER]:
+        return unmeasured
+    # Never a stop: the tries run on every outcome. Only whole-view flags are published (``flags``):
+    # ``<target>_not_in_view_of_checked_cameras`` when none of the CHECKED policy cameras sees it (the gate
+    # measures the external camera and the wrist qualification only, so a policy that also reads
+    # ``exterior_right`` may still see it there), and ``<target>_partly_hidden`` when it is seen but no
+    # checked camera that measures coverage shows it clean (each of them shows it partly hidden). What each
+    # camera showed stays in the record (``camera_flags``, ``targets``) and is not published: the wrist
+    # camera often does not see the object at the start, which is no finding about the scene.
+    flags: set[str] = set()
+    camera_flags: set[str] = set()
+    unseen: list[str] = []
+    for target in required:
+        cameras = measured[target]
+        every = {**review[target], **cameras}
+        if not any(reading["seen"] for reading in cameras.values()):
+            unseen.append(target)
+            flags.add(f"{target}_not_in_view_of_checked_cameras")
+        else:
+            covered = [reading for reading in every.values() if reading["clean"] is not None]
+            if covered and all(reading["seen"] and reading["clean"] is False for reading in covered):
+                flags.add(f"{target}_partly_hidden")
+        for role, reading in sorted(every.items()):
+            if not reading["seen"]:
+                camera_flags.add(f"{target}_not_in_view:{role}")
+            elif reading["clean"] is False:
+                camera_flags.add(f"{target}_partly_hidden:{role}")
+    outcome = NOT_VISIBLE if unseen else VISIBLE_WITH_CAVEAT if flags or camera_flags else VISIBLE
+    return {"schema_version": VISIBILITY_VERDICT_SCHEMA_VERSION, "outcome": outcome,
+            "flags": sorted(flags), "camera_flags": sorted(camera_flags),
+            "not_seen_by_the_checked_cameras": sorted(unseen),
+            "checked_cameras": sorted({role for target in required for role in measured[target]}
+                                      | {role for target in required for role in review[target]}),
+            "stops_the_tries": False,
+            "targets": {target: {"policy_cameras": measured[target], "review_cameras": review[target]}
+                        for target in required},
+            "thresholds": {"minimum_interior_pixels": MINIMUM_INTERIOR_PIXELS,
+                           "minimum_visible_share": MINIMUM_VISIBLE_SHARE,
+                           "clean_maximum_hidden_share": CLEAN_MAXIMUM_HIDDEN_SHARE},
+            "policy_camera_roles": list(POLICY_CAMERA_ROLES)}
+
+
+def _superseded(code: str) -> bool:
+    if code in SUPERSEDED_BLOCKERS:
+        return True
+    parts = code.split(":")
+    return len(parts) == 3 and parts[1] in (TASK_OBJECT, TARGET_MARKER) and parts[2] in SUPERSEDED_COMPOSITION_REASONS
+
+
+def gate_flag_codes(gate: Mapping[str, Any], blocker_codes: list[str]) -> list[str]:
+    """The flags a beta try carries past a blocked gate (never a stop, whatever the cameras see).
+
+    ``blocker_codes`` are the gate's blockers as typed codes (``observation_quality_flag_codes``).
+    A measured gate replaces its visibility blockers with the verdict's own flags and keeps
+    every other blocker; an unmeasured gate keeps its blockers unchanged.
+    """
+    verdict = visibility_verdict(gate)
+    if verdict["outcome"] == UNMEASURED:
+        return list(blocker_codes)
+    replaced = sorted({code for code in blocker_codes if not _superseded(code)} | set(verdict["flags"]))
+    # A clean verdict on a gate blocked only by a few covered pixels has nothing new to say:
+    # its own blockers stay the flags, so a blocked gate always carries at least one.
+    return replaced or list(blocker_codes)
+
+
 __all__ = [
     "ALLOWED_TERMINAL_CLASSES",
+    "CLEAN_MAXIMUM_HIDDEN_SHARE",
+    "MINIMUM_INTERIOR_PIXELS",
+    "MINIMUM_VISIBLE_SHARE",
+    "NOT_VISIBLE",
+    "POLICY_CAMERA_ROLES",
+    "UNMEASURED",
+    "VISIBILITY_VERDICT_SCHEMA_VERSION",
+    "VISIBLE",
+    "VISIBLE_WITH_CAVEAT",
+    "gate_flag_codes",
+    "visibility_verdict",
     "LIFECYCLE_SCHEMA_VERSION",
     "OBSERVATION_QUALITY_FLAG",
     "OBSERVATION_QUALITY_FLAG_UNTYPED",

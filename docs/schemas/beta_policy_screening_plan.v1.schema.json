@@ -554,6 +554,134 @@
         "size_bytes"
       ],
       "type": "object"
+    },
+    "grasp_screen": {
+      "description": "Whether this robot's hand can hold the task object (website_candidate_grasp_screen): flags on the robot's result, never a stop. Absent in plans written before it and on rows the screen did not reach.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "schema_version",
+            "status",
+            "grippers",
+            "flags",
+            "dimensions_m",
+            "approach"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "website_candidate_grasp_screen.v1"
+            },
+            "status": {
+              "const": "assessed"
+            },
+            "grippers": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "model",
+                  "full_stroke_m",
+                  "grip_force_recorded",
+                  "sensitivity",
+                  "horizontal_width_upper_m",
+                  "closes_across_object",
+                  "flags"
+                ],
+                "properties": {
+                  "model": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "full_stroke_m": {
+                    "type": "number"
+                  },
+                  "grip_force_recorded": {
+                    "type": "boolean"
+                  },
+                  "sensitivity": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "horizontal_width_upper_m": {
+                    "type": "number"
+                  },
+                  "closes_across_object": {
+                    "type": "boolean"
+                  },
+                  "flags": {
+                    "items": {
+                      "enum": [
+                        "task_object_grip_depends_on_weight",
+                        "task_object_heavier_than_grip",
+                        "task_object_needs_edge_grip",
+                        "task_object_wider_than_gripper"
+                      ]
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  }
+                }
+              }
+            },
+            "flags": {
+              "items": {
+                "enum": [
+                  "task_object_grip_depends_on_weight",
+                  "task_object_heavier_than_grip",
+                  "task_object_needs_edge_grip",
+                  "task_object_wider_than_gripper"
+                ]
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "dimensions_m": {
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "approach": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "schema_version",
+            "status",
+            "reason",
+            "flags"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "website_candidate_grasp_screen.v1"
+            },
+            "status": {
+              "const": "not_assessed"
+            },
+            "reason": {
+              "pattern": "^(?:no_gripper_recorded|grasp_screen_failed:[A-Za-z_][A-Za-z0-9_]*)$",
+              "type": "string"
+            },
+            "flags": {
+              "maxItems": 0,
+              "type": "array"
+            }
+          }
+        }
+      ]
     }
   },
   "$id": "beta_policy_screening_plan.v1",
@@ -721,6 +849,9 @@
               },
               "status": {
                 "const": "selected"
+              },
+              "grasp_screen": {
+                "$ref": "#/$defs/grasp_screen"
               }
             },
             "required": [
@@ -805,6 +936,9 @@
               },
               "status": {
                 "const": "waitlisted"
+              },
+              "grasp_screen": {
+                "$ref": "#/$defs/grasp_screen"
               }
             },
             "required": [
@@ -864,6 +998,9 @@
                   "deferred",
                   "infeasible"
                 ]
+              },
+              "grasp_screen": {
+                "$ref": "#/$defs/grasp_screen"
               }
             },
             "required": [

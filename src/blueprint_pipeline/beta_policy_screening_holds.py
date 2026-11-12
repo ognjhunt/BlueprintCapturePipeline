@@ -142,6 +142,12 @@ def probe_hold(code: str, capture_root: str | Path, *, queue_root: str | Path | 
         return ("robot_free_probe_unavailable_for_task" if rigid else "robot_free_probe_not_completed"), _code(reason)
     if status == "scene_revision_unbound":
         return "robot_free_probe_not_completed", "scene_revision_unbound"
+    from .scene_run_cold_storage import COLD_STORAGE, cold_storage_hold
+
+    if status == COLD_STORAGE:
+        # The probe's root (the job's scene run) is in cold storage: nothing can decide the probe until it is
+        # restored, so the job is held by name instead of reading "in progress" for ever.
+        return cold_storage_hold(state.get("probe_root"))
     if status == "probe_required":
         terminal = final_terminal(state, queue_root=queue_root, release=release)
         if terminal is not None:

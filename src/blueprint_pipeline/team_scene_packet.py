@@ -1052,6 +1052,9 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
 
     appearance = dict((native_appearance_materializer or compiler._materialize_native_particlefield_appearance)(
         source_path=assets["appearance"], output_root=root / "native-appearance"))
+    if not articulated:
+        # The robots' cameras see the room pressed down out of the object and its mark (receipt in the variant).
+        appearance = compiler.apply_task_volume_clearance(appearance, task_spec=task_spec, output_root=root)
     rows = [compiler.evidence_asset_row(Path(appearance["path"]), root=root, semantic_role="scene_appearance"),
             compiler.evidence_asset_row(physics_collision, root=root, semantic_role="scene_collision"), task_row]
     if destination_asset is not None:

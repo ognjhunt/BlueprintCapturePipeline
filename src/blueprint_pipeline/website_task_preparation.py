@@ -20,7 +20,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 from PIL import Image
@@ -1052,6 +1052,22 @@ def _sealer_admits(*, support, subject_min, subject_max, registration, size_tole
     return admitted
 
 
+def _flag_only_record(measure: Callable[[], Any]) -> dict[str, Any]:
+    """A flag-only measurement's record, or a "not assessed" one with the reason: never a stop.
+
+    The record must be a JSON object with finite numbers, since the preparation's digest and file carry it.
+    """
+    try:
+        record = measure()
+        json.dumps(record, allow_nan=False)
+        if not isinstance(record, dict):
+            raise TypeError("measurement_record_not_an_object")
+        return record
+    except Exception as exc:  # noqa: BLE001 - a flag-only measurement must never stop a job
+        return {"status": "not_assessed", "reason": type(exc).__name__ + ":" + str(exc)[:200], "flags": [],
+                "stops_preparation": False}
+
+
 def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                                       removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                       base_scene: Mapping[str, Any], output_root: Path, spend: Mapping[str, Any],
@@ -1925,6 +1941,14 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                            if atlas_route == "geometry_only" else {})},
         "provider_mutation_performed": False,
     }
+    if synthetic is None and not independent_object and subject_target.get("track"):
+        from .website_task_placement_check import box_fit_record
+        value["video_box_fit_check"] = _flag_only_record(lambda: box_fit_record(
+            value, track=subject_target["track"], frames=source_geometry["frames"]))
+    if synthetic is None and not independent_object and not articulated:
+        from .website_support_height_agreement import preparation_record
+        value["support_height_agreement"] = _flag_only_record(lambda: preparation_record(
+            value, base_scene=base_scene, masks=task_masks, frames=source_geometry["frames"]))
     value["digest"] = canonical_digest(value, digest_field="digest")
     write_json(output_root / "preparation.json", value)
     (output_root / "thumbnail.b64").write_text(thumbnail["png_base64"])

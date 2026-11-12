@@ -178,6 +178,35 @@ class OutputDelivery:
         return {"mode": self.mode, "reason": self.reason}
 
 
+#: The resolution a screening attempt's pre-launch check made, kept beside the attempt so the session uses
+#: the same one instead of resolving again (``beta_policy_screening_launch.preflight_candidate_capacity``).
+RESOLVED_FILENAME = "output_delivery_resolution.v1.json"
+#: A screening session found no pre-launch resolution beside its attempt: refused before any spend.
+RESOLUTION_MISSING = "policy_canary_output_delivery_resolution_missing"
+
+
+def record_resolution(attempt_dir: str | Path, resolved: OutputDelivery) -> None:
+    """Keep the pre-launch resolution for the session (``resolved_for_attempt``)."""
+    import json
+
+    (Path(attempt_dir) / RESOLVED_FILENAME).write_text(json.dumps(resolved.record(), sort_keys=True), encoding="utf-8")
+
+
+def resolved_for_attempt(job_dir: str | Path) -> OutputDelivery | None:
+    """The resolution recorded for the attempt that owns ``job_dir`` (its ``allocator`` folder), or None."""
+    import json
+
+    path = Path(job_dir).resolve().parent / RESOLVED_FILENAME
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(value, dict) or value.get("mode") not in DELIVERY_MODES
+            or value.get("mode") not in REASON_MODES.get(value.get("reason"), ())):
+        return None
+    return OutputDelivery(value["mode"], value["reason"])
+
+
 def resolve_output_delivery(environ: Mapping[str, str] | None = None, *,
                             measurement_path: str | Path | None = None) -> OutputDelivery:
     """The mode the setting names; unset or empty is auto; any other value is a typed refusal.

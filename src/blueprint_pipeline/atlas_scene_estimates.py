@@ -53,6 +53,15 @@ TASK_OBJECT_GUESSED, TARGET_ROLE_KEPT = "scene_estimate:task_object_guessed", "s
 TASK_REVIEW_ESTIMATED = "scene_estimate:task_review_estimated"
 DESTINATION_GUESSED, DESTINATION_NEAR_START = "scene_estimate:destination_guessed", "scene_estimate:destination_near_start"
 REGISTRATION_AMBIGUOUS = "scene_estimate:registration_ambiguous"
+#: The registration's own residual near the task, above ``PLACEMENT_UNCERTAINTY_FLOOR_M``: where the
+#: object sits in the room is known only to within that (7.2 cm on capture-447ae4f4).
+PLACEMENT_UNCERTAINTY = "scene_estimate:placement_uncertainty"
+#: The placed collision box fits the object's own masks poorly (``website_task_placement_check``): carried
+#: under the check's own names, ``task_object_box_fit_offset`` and ``task_object_box_fit_size``.
+TASK_OBJECT_BOX_FIT_FLAGS = frozenset({"task_object_box_fit_offset", "task_object_box_fit_size"})
+#: The support the object rests on is at another height in the picture than in the physics
+#: (``website_support_height_agreement``), and it was not corrected.
+SUPPORT_HEIGHT = "scene_estimate:support_height_differs_from_picture"
 #: No surface lay within the search window under the object's estimated bottom; it rests on the nearest
 #: one under its footprint (``website_support_geometry.nearest_support_under``), moved by the recorded drop.
 SUPPORT_GUESSED = "scene_estimate:support_guessed"
@@ -62,9 +71,12 @@ ROBOT_FIT_NONE = "scene_estimate:robot_fit_none"
 #: The capability verdict abstained (``website_rigid_feasibility``: no enabled arm, no clear stance found,
 #: or the object beyond reach from every stance found): the job's simulation is built anyway.
 CAPABILITY_UNASSESSED = "scene_estimate:capability_unassessed"
+#: Below this the residual is inside what an 85 mm hand closing on the placed object still takes:
+#: half its opening plus a centimetre of finger pad, rounded to 5 cm.
+PLACEMENT_UNCERTAINTY_FLOOR_M = 0.05
 CODES = frozenset({LEVEL, APPEARANCE, FLOOR, COLLIDER, CITATIONS, SURROUNDING, TASK_OBJECT_GUESSED,
                    TARGET_ROLE_KEPT, TASK_REVIEW_ESTIMATED, DESTINATION_GUESSED, DESTINATION_NEAR_START,
-                   REGISTRATION_AMBIGUOUS, SUPPORT_GUESSED})
+                   REGISTRATION_AMBIGUOUS, PLACEMENT_UNCERTAINTY, SUPPORT_HEIGHT, SUPPORT_GUESSED})
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -140,9 +152,17 @@ def preparation_flags(path: Path) -> set[str]:
     ambiguity = value.get("registration_ambiguity")
     if isinstance(ambiguity, Mapping):
         flags.append(REGISTRATION_AMBIGUOUS)
+    residual = _mapping(value.get("coordinate_frame")).get("placement_uncertainty_m")
+    if (isinstance(residual, (int, float)) and not isinstance(residual, bool)
+            and residual > PLACEMENT_UNCERTAINTY_FLOOR_M):
+        flags.append(PLACEMENT_UNCERTAINTY)
+    box_fit = _mapping(value.get("video_box_fit_check")).get("flags")
+    box_fit = {code for code in box_fit if isinstance(code, str)} if isinstance(box_fit, list) else set()
+    if SUPPORT_HEIGHT in (_mapping(value.get("support_height_agreement")).get("flags") or []):
+        flags.append(SUPPORT_HEIGHT)
     if _mapping(_mapping(value.get("support")).get("guess")).get("flag") == SUPPORT_GUESSED:
         flags.append(SUPPORT_GUESSED)
-    codes = {code for code in flags if code in CODES}
+    codes = {code for code in flags if code in CODES} | (box_fit & TASK_OBJECT_BOX_FIT_FLAGS)
     fit = _robot_fit_none(path.parent / "native" / "robot_fit_precheck.json")
     codes |= {fit} if fit else set()
     try:

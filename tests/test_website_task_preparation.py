@@ -1289,10 +1289,13 @@ def test_without_a_region_the_existing_fixture_compiles_to_the_same_preparation(
     monkeypatch.chdir(tmp_path)
     value = preparation.compile_website_scene_preparation(**_arguments(Path(".")))
     assert "destination_region" not in value and "destination_region" not in REMOVAL
+    # The video placement check (2026-11-12) is a record beside the pinned output, never a change to it.
+    assert value["video_box_fit_check"]["stops_preparation"] is False
     # So is the record of how the destination was chosen (2026-11-12): no field of the output changes.
     assert value["destination_choice"]["basis"] in {"grounded_centre", "start_surface_farthest_spot"}
     assert canonical_digest(_rounded({key: item for key, item in value.items()
-                                      if key not in {"digest", "destination_choice"}})) == (
+                                      if key not in {"digest", "video_box_fit_check", "support_height_agreement",
+                                                     "destination_choice"}})) == (
         "sha256:54f20485d07a2fbf87311e1c5791f8cefc7d1675ba41a0c8ac06ad9e76938d43")
 
 
@@ -1579,3 +1582,14 @@ def test_every_place_offered_seals_with_the_real_sealer_on_both_destination_path
         sealed_surface_target(value, destination=destination, support={"aabb_min_xyz": low, "aabb_max_xyz": high},
                               subject_min=envelope["minimum_xyz_m"], subject_max=envelope["maximum_xyz_m"],
                               development=False)
+
+
+@pytest.mark.parametrize("measured", [lambda: {"flags": [], "median": float("nan")}, lambda: ["not", "a", "record"],
+                                      lambda: {"value": object()}, lambda: (_ for _ in ()).throw(KeyError("subject"))])
+def test_a_measurement_record_the_preparation_cannot_seal_is_not_assessed_never_a_stop(measured):
+    """The box-fit and support-height records ride in the preparation's digest: one that cannot be sealed
+    (a number that is not finite, not an object, a raise) is recorded as not assessed (review of R2)."""
+    record = preparation._flag_only_record(measured)
+    assert record["status"] == "not_assessed" and record["flags"] == [] and record["stops_preparation"] is False
+    assert preparation._flag_only_record(lambda: {"status": "assessed", "flags": ["x"]}) == {
+        "status": "assessed", "flags": ["x"]}

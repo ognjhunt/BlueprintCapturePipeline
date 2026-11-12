@@ -48,6 +48,39 @@ def require_current_source(source: Mapping[str, Any], *, site_id: str) -> dict[s
     return current
 
 
+def _restore_source_run(request: Mapping[str, Any], *, context: Mapping[str, Any] | None = None,
+                        packet_queue_root: str | Path | None = None) -> dict[str, Any]:
+    """Bring an open job's scene run back from cold storage (``scene_run_restore``); never raises.
+
+    Privacy: the job's withdrawal and its source (consent, rights) are read again before anything is fetched
+    and again under the deletion's lock before anything is placed.
+    """
+    from .scene_run_restore import restore_open_job_run
+    from .screening_site_withdrawal import site_withdrawal_state
+    from .team_scene_packet_worker import _read_json, resolve_capture_root
+
+    try:
+        retained = _read_json(resolve_capture_root(request) / "pipeline" / "website_task_context.json") or {}
+        source = {"scene_intent_id": request["intent_id"], "scene_intent_digest": request["intent_digest"],
+                  "capture_id": request["capture_id"], "task_id": request["task_id"],
+                  "task_context_digest": retained["context_digest"],
+                  "scene_revision_digest": request["scene_revision_digest"]}
+        if context is None:
+            context = require_current_source(source, site_id=retained["scene_id"])
+
+        def still_current() -> bool:
+            try:
+                require_current_source(source, site_id=retained["scene_id"])
+            except Exception:  # noqa: BLE001 - not current now (revoked, ended, unreadable): nothing lands
+                return False
+            return site_withdrawal_state(str(retained["scene_id"])) in {"not_withdrawn", "not_configured"}
+
+        return restore_open_job_run(Path(request["source_launch_root"]), window_open=not job_window_closed(context),
+                                    still_current=still_current, packet_queue_root=packet_queue_root)
+    except Exception as exc:  # noqa: BLE001 - an unread source restores nothing now; the next pass asks again
+        return {"status": "source_unavailable", "error_type": type(exc).__name__}
+
+
 def job_window_closed(context: Mapping[str, Any]) -> bool:
     """Whether the current source says its job's window has ended (its execution deadline or its
     consent's expiry). Unknown or unreadable is not closed: the launch preflight still decides."""
@@ -87,6 +120,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .beta_policy_screening_scene_half import current_half
     from .beta_policy_screening_team import catalog_for_profile
     from .rigid_robot_free_probe_runner import _running_release, source_commit
+    from .scene_run_cold_storage import COLD_STORAGE, cold_storage_hold, in_cold_storage, require_on_disk
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
     from .team_scene_packet_worker import (
@@ -145,6 +179,11 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     outcome["scene_packet"] = {key: packet_status[key] for key in
                                                ("status", "blockers", "automatic_retry") if key in packet_status}
                     hold = packet_hold(packet_status, release=packet_release)
+                    if hold is None and packet_status.get("blockers") == [COLD_STORAGE]:
+                        # The team half cannot be compiled again while its scene run is in cold storage: the job
+                        # is told at once, by name, and an open job's run is brought back by itself.
+                        outcome["scene_run_restore"] = _restore_source_run(request, packet_queue_root=packet_root)
+                        hold = cold_storage_hold(request["source_launch_root"])
                     raise ValueError("beta_screening_scene_packet_not_ready")
                 capture = resolve_capture_root(request)
                 retained = _read_json(capture / "pipeline" / "website_task_context.json") or {}
@@ -206,7 +245,25 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                         # re-plan is refused at launch as before.
                         close_self_replan(superseded, queue_root=root)
                         raise ValueError(WINDOW_CLOSED)
-                    result, receipt, _zero = _validate_source(Path(request["source_launch_root"]))
+                    # A scene run moved to cold storage is its own typed state, never a catch-all refusal; an
+                    # open job's run is brought back by itself first (``scene_run_restore``).
+                    kept = None
+                    if in_cold_storage(Path(request["source_launch_root"])):
+                        from .scene_run_restore import clean_stale_staging
+                        clean_stale_staging(Path(request["source_launch_root"]))  # open or not: no crashed leftovers
+                        if job_window_closed(context):
+                            raise ValueError(WINDOW_CLOSED)
+                        # What its pointer kept is enough for a re-plan; only without it is the run restored.
+                        from .task_evaluation_configured_controls_source_evidence import validate_retained_source
+                        try:
+                            kept = validate_retained_source(Path(request["source_launch_root"]))
+                            outcome["scene_run_restore"] = {"status": "not_needed_read_from_pointer"}
+                        except Exception:  # noqa: BLE001 - not kept, or not intact: bring the run back
+                            outcome["scene_run_restore"] = _restore_source_run(request, context=context,
+                                                                                packet_queue_root=packet_root)
+                    if kept is None:
+                        require_on_disk(Path(request["source_launch_root"]))
+                    result, receipt, _zero = kept or _validate_source(Path(request["source_launch_root"]))
                     if (result.get("configured_scene_revision_digest") != source["scene_revision_digest"]
                             or receipt.get("receipt_digest") != request["launch_receipt_digest"]):
                         raise ValueError("beta_screening_completed_scene_binding_changed")
@@ -268,6 +325,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                 # A refusal that keeps coming back the same way is told to the job as held, once it has
                 # lasted long enough; planning is still tried on every pass.
                 refused_since = blocked_since(_read_json(states / path.name), outcome["blockers"])
+                if hold is None and code == COLD_STORAGE:
+                    hold = cold_storage_hold(request["source_launch_root"] if request is not None else None)
                 if hold is None:
                     hold = stalled_source_hold(outcome["blockers"][0], refused_since)
             if request is not None and newest.get(request["intent_id"]) == ("processed", path.name):
@@ -624,11 +683,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
         max_launches=args.max_launches)
     after = deliver_publications(queue_root=root)
+    from .open_job_testing_final import publish_testing_record
+
+    # Which jobs' testing is final, sealed to this ledger, for the storage GC (``open_job_source_runs``).
+    # A failure keeps every run (no record reads as not final) and never stops the tick.
+    try:
+        open_job_testing = publish_testing_record(root)
+    except Exception as exc:  # noqa: BLE001 - the GC keeps runs without a record; the tick goes on
+        open_job_testing = {"status": "failed", "error_type": type(exc).__name__}
     control_alerts = alert_known_good_controls(root)
     from .beta_policy_screening_holds import deliver_holds
 
     # A held evaluation (no campaign could start) reaches the website by name, like a campaign.
     holds = deliver_holds(queue_root=root)
+    from .beta_screening_disk_admission import alert_disk_waits
+    from .control_plane_capacity_controller import WEBHOOK_URL_ENV
+
+    # Rows waiting in line for room on the work disk: one alert while any waits (how many, since when).
+    disk_wait_alert = alert_disk_waits(root, webhook_url=os.getenv(WEBHOOK_URL_ENV) or "")
     from .website_candidate_selection import deliver_selections, retain_selections
     try:
         # After a terminal result is published, choose from it; local and unpaid.
@@ -649,7 +721,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
                       "publication_after": after, "holds": holds, "selections": selections,
                       "runtime_diagnostics_backfill": diagnostics, "review_video_backfill": review_videos,
-                      "unspent_bundle_prune": unspent_bundles, "worker_status": status,
+                      "unspent_bundle_prune": unspent_bundles, "open_job_testing": open_job_testing, "work_disk_wait_alert": disk_wait_alert, "worker_status": status,
                       "known_good_control_alerts": control_alerts},
                      sort_keys=True))
     return 0

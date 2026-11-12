@@ -11,9 +11,29 @@ import json
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
+from .scene_run_cold_pointer import retained_member  # noqa: F401 - re-exported; the read-only leaf holds it
 
 RETAINED_RECEIPTS = frozenset({"launch_receipt.json"})
+#: Kept as well, so a website job's re-plan reads them without restoring the run (stage 8, 2026-11-12): the
+#: website-sync and post-teardown zero receipts and the robot-free probe's receipt, plus the launch
+#: receipt's own terminal result when it lies inside the run (``replan_members``). capture-447's: 1.6, 2.4,
+#: 5.4 and 35.5 KB, each under ``MAX_RECEIPT_BYTES``. Read only through ``retained_member``.
+REPLAN_RECORDS = frozenset({"webapp_sync_succeeded.json", "post_teardown_provider_zero_receipt.json",
+                            "robot_free_readiness.v1.json"})
 MAX_RECEIPT_BYTES = 64 * 1024
+
+
+def replan_members(directory: Path, members: list[dict]) -> set[str]:
+    """The members a re-plan reads, by relative path: the fixed records and the receipt's result when inside."""
+    wanted = set(REPLAN_RECORDS)
+    try:
+        receipt = json.loads((directory / "launch_receipt.json").read_text(encoding="utf-8"))
+        result = Path(str(((receipt.get("terminal_evidence") or {}).get("result") or {}).get("path") or ""))
+        wanted.add(result.relative_to(directory).as_posix())
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return {row["relative_path"] for row in members if row["relative_path"] in wanted
+            and int(row.get("size_bytes", MAX_RECEIPT_BYTES + 1)) <= MAX_RECEIPT_BYTES}
 
 
 def read_receipt_bytes(path: Path) -> bytes:

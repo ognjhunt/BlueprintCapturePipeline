@@ -662,3 +662,154 @@ def test_auto_holds_the_needed_set_to_the_hold_the_session_can_take(tmp_path, mo
 
     monkeypatch.setenv(FOOTPRINT_ENV, "lots")
     assert members.resolve_output_delivery(environ, measurement_path=record).record() == OVER_BUDGET
+
+
+@pytest.mark.parametrize("ending, outcome", [("completed", "completed"), ("raised", "failed"),
+                                             ("consumption_refused", "blocked")])
+def test_a_screening_download_holds_its_landing_room_through_the_run_and_releases_it_on_every_exit(
+        context, tmp_path, monkeypatch, ending, outcome):
+    """Stage 8 review: the landing room is held by the session from before any spend until the run ends."""
+    import os
+
+    from blueprint_pipeline import beta_screening_disk_admission as disk_admission
+    from blueprint_pipeline.control_plane_disk_budget import ENCLOSING_RESERVATIONS_ENV
+
+    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
+    released, seen = [], {}
+
+    class Hold:
+        token = "b" * 32
+
+        def release(self, *, outcome="completed"):
+            released.append(outcome)
+
+    monkeypatch.setattr(disk_admission, "reserve_landing_hold", lambda _job: Hold())
+    monkeypatch.setattr(native, "consume_session_authority_once", lambda *_a, **_kw: (
+        {"status": "refused", "blockers": ["x"]} if ending == "consumption_refused" else {"status": "consumed"}))
+
+    def lane(**kwargs):
+        seen["enclosing"] = os.environ.get(ENCLOSING_RESERVATIONS_ENV)
+        seen["reservation"] = kwargs["provider_output_reservation"]
+        if ending == "raised":
+            raise RuntimeError("the run failed")
+        return {"status": "completed"}
+
+    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
+
+    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
+    _, _, binding = context
+    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
+    members.record_resolution(tmp_path, members.OutputDelivery(members.DOWNLOAD, members.EXPLICIT))
+    if ending == "raised":
+        with pytest.raises(RuntimeError):
+            _run_session(context, tmp_path, monkeypatch, lane=lane)
+    else:
+        _run_session(context, tmp_path, monkeypatch, lane=lane)
+    assert released == [outcome]
+    if ending != "consumption_refused":
+        # The extraction's exact hold inside it does not count it twice; the download lane gets no stream hold.
+        assert seen == {"enclosing": "b" * 32, "reservation": None}
+    assert os.environ.get(ENCLOSING_RESERVATIONS_ENV) is None
+
+
+def test_a_screening_download_without_room_refuses_before_the_authority_is_consumed(context, tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_screening_disk_admission as disk_admission
+    from blueprint_pipeline.control_plane_disk_ledger import ControlPlaneDiskBudgetError
+
+    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
+
+    def refused(_job):
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
+
+    monkeypatch.setattr(disk_admission, "reserve_landing_hold", refused)
+    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
+    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
+
+    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
+    _, _, binding = context
+    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
+    members.record_resolution(tmp_path, members.OutputDelivery(members.DOWNLOAD, members.EXPLICIT))
+    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
+    assert result["blockers"] == ["policy_canary_output_disk_admission_refused"]
+    assert proves_no_provider_allocation(result)
+
+
+def test_a_screening_session_uses_the_delivery_its_pre_launch_check_resolved(context, tmp_path, monkeypatch):
+    """Review 36 (6): resolved once, in the coordinator's check, and passed on; never resolved again."""
+    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
+
+    _set_delivery(monkeypatch, tmp_path, None, configured=True, measured=True)  # this process would stream
+    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
+    _, _, binding = context
+    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
+    members.record_resolution(tmp_path, members.OutputDelivery(members.DOWNLOAD, members.AUTO_NEEDED_SET_UNMEASURED))
+    forwarded = _run_session(context, tmp_path, monkeypatch, execute=False)
+    assert forwarded["provider_output_delivery"] == "download"
+    assert forwarded[RESOLUTION] == {"mode": "download", "reason": members.AUTO_NEEDED_SET_UNMEASURED}
+
+
+
+def test_a_screening_session_without_its_pre_launch_resolution_is_held_before_any_spend(context, tmp_path, monkeypatch):
+    """Review 8c (6): it must not quietly resolve again in its own process."""
+    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
+
+    _set_delivery(monkeypatch, tmp_path, None, configured=True, measured=True)
+    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
+    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
+    _, _, binding = context
+    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
+    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
+    assert result["blockers"] == [members.RESOLUTION_MISSING] and proves_no_provider_allocation(result)
+
+
+@pytest.mark.parametrize("backend", ["robolab.v1", "task_family_native.v1"])
+@pytest.mark.parametrize("room", [True, False])
+def test_each_policy_canary_lane_is_checked_before_launch_and_its_paid_run_uses_that_record(
+        context, tmp_path, monkeypatch, backend, room):
+    """Review 8d (1): both lanes that land through this session get their record; a paid run proceeds with
+    room and waits in line, unspent, without it. A task-family run is never shut out for want of a record."""
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
+    from blueprint_pipeline import beta_screening_disk_admission as disk_admission
+    from blueprint_pipeline import vast_launch_slots
+    from blueprint_pipeline.control_plane_disk_budget import floor_bytes
+
+    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
+    monkeypatch.setenv(disk_admission.RESERVATION_ROOT_ENV, str(tmp_path / "ledger"))
+    monkeypatch.delenv(disk_admission.LANDING_HOLD_ENV, raising=False)
+    total = 400 * 1024**3
+    free = floor_bytes(total, role=disk_admission.ROLE) + disk_admission.DEFAULT_LANDING_HOLD_BYTES + (
+        1024**3 if room else -1024**3)
+    monkeypatch.setattr(disk_admission, "measure_disk", lambda _p: SimpleNamespace(total=total, free=free, used=total - free))
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *_a: None)
+    monkeypatch.setattr(vast_launch_slots, "inspect_vast_launch_admission", lambda: {"status": "admitted", "blockers": []})
+    capacity = launch.preflight_candidate_capacity(plan={}, candidate={"execution_spec": {"backend": backend}},
+                                                   attempt_dir=tmp_path, prepared={})
+    assert members.resolved_for_attempt(tmp_path / "allocator") == members.OutputDelivery(members.DOWNLOAD, members.EXPLICIT)
+    if not room:
+        assert capacity["capacity_available"] is False and capacity["blockers"] == [disk_admission.WORK_DISK_WAIT_BLOCKER]
+        return  # the coordinator keeps it in line; nothing is launched or paid for
+    assert capacity == {"capacity_available": True, "blockers": []}
+    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
+    monkeypatch.setattr(native, "consume_session_authority_once", lambda *_a, **_kw: {"status": "consumed"})
+    _, _, binding = context
+    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
+    ran = []
+    _run_session(context, tmp_path, monkeypatch, lane=lambda **kwargs: ran.append(kwargs) or {"status": "completed"})
+    assert len(ran) == 1 and ran[0]["provider_output_delivery"] == members.DOWNLOAD
+
+
+def test_a_paid_screening_run_without_a_record_is_held_and_its_authority_never_consumed(context, tmp_path, monkeypatch):
+    """Un-faked: no pre-launch record beside the attempt, a paid run, the real lookup."""
+    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
+
+    _set_delivery(monkeypatch, tmp_path, "stream", configured=True, measured=True)
+    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
+    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
+    _, _, binding = context
+    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
+    assert not (tmp_path / members.RESOLVED_FILENAME).exists()
+    result = _run_session(context, tmp_path, monkeypatch, execute=True, lane=_forbidden)
+    assert result["blockers"] == [members.RESOLUTION_MISSING] and proves_no_provider_allocation(result)

@@ -1,0 +1,1181 @@
+{
+ "budget_basis": "website_job_ceiling",
+ "budget_usd": "15.00",
+ "campaign_id": "screening-f3d50faef0dfe2fba1c40454ad67fc32",
+ "candidates": [
+  {
+   "blockers": [
+    "screening_gpu_memory_floor_unrentable"
+   ],
+   "candidate_id": "cosmos3_nano_policy_droid",
+   "configuration_digest": "sha256:57110bad4acd656e7793553d4755e185e0aaefe0481c32a0d7d5bc1dcee6ef86",
+   "display_name": "Cosmos 3 Nano Policy DROID",
+   "status": "infeasible"
+  },
+  {
+   "blockers": [
+    "robot_reach_insufficient:pregrasp:0.974m_vs_0.739m"
+   ],
+   "candidate_id": "molmoact2_bimanual_yam",
+   "configuration_digest": "sha256:1adf5f37170fd9e22d022af40ab398b46d0f634420910de3aa3955fde8a075bf",
+   "display_name": "MolmoAct2 \u00b7 YAM bimanual (public baseline)",
+   "status": "infeasible"
+  },
+  {
+   "admission_digest": "sha256:06af19d8bb41c4735f40f40b3524f104e9b306a695cdb69ee9759fce406d9b50",
+   "blockers": [],
+   "candidate_id": "molmoact2_droid",
+   "configuration_digest": "sha256:81c9f0edcc324ce2c451f3b503607d8bebd21216075b19ab03de20826293c978",
+   "cost_quote": {
+    "configuration_digest": "sha256:81c9f0edcc324ce2c451f3b503607d8bebd21216075b19ab03de20826293c978",
+    "episode_count": 10,
+    "maximum_cost_usd": "4.00",
+    "price_source": "canonical_gpu_canary_hard_cap_including_startup_transfer_storage_teardown",
+    "quote_digest": "sha256:ac2f654047da9c637495e1d21d6f484f36303c3663bee2131eb305c27605da2a",
+    "quote_id": "operator-cap-molmoact2_droid",
+    "scene_revision_digest": "sha256:ae2703d00c670c85144ad2ded40260c526a69d4e93e292eefea4df4afefcc90b",
+    "schema_version": "beta_policy_screening_cost_quote.v1",
+    "valid_until": "2026-11-07T07:34:48.116645+00:00"
+   },
+   "display_name": "MolmoAct 2 DROID",
+   "episode_count": 10,
+   "execution_spec": {
+    "backend": "robolab.v1",
+    "candidate_id": "molmoact2_droid",
+    "checkpoint_inventory": null,
+    "configuration_digest": "sha256:81c9f0edcc324ce2c451f3b503607d8bebd21216075b19ab03de20826293c978",
+    "hard_ttl_seconds": 14400,
+    "implementation_commit": "9dd4e0dc4d491937e767280e6df786ad9c124e22",
+    "max_hourly_rate_usd": "0.80",
+    "minimum_gpu_memory_gb": 48,
+    "policy_execution_spec": {
+     "path": "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening/inputs/screening-f3d50faef0dfe2fba1c40454ad67fc32/71fa15b247655734d144091b8af367c41b4e10e1c60f97c7e48150169c379297.execution_spec.json",
+     "sha256": "sha256:208f20a4a3841600d8cda162c541c6268deb5c3442bc0bc385f9543da6b9290c",
+     "size_bytes": 16042
+    },
+    "runtime_digest": "sha256:985e34ccad36132579b42e85e469857e8d3137fe2a574f30bb145847b34785ac",
+    "schema_version": "blueprint.beta_policy_screening_execution.v1",
+    "task_success_contract_digest": "sha256:19292ba8ca1c06ec03a02c3e9fd64621b88d921dea3f21d1be12b104022670bc"
+   },
+   "max_cost_usd": "4.00",
+   "reach_rank": {
+    "basis": "reach_unmeasured",
+    "feasibility_digest": "sha256:5ca59bd12a7c03470114d2a94e0ef643ce011f5e5c81ccca1107f889e98c22d4",
+    "feasibility_status": "feasible",
+    "reach_source": "franka_chain_reach_bound",
+    "reasons": [
+     "candidate_reach_not_recorded"
+    ],
+    "report_digest": null,
+    "solve_source": null,
+    "solve_status": null,
+    "tier": 2
+   },
+   "scenario_cells": [
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.000",
+     "cell_spec_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+     "family": "canonical_anchor",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "canonical_anchor",
+      "ordinal": 0,
+      "parameters": {}
+     },
+     "resolved_scenario_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+     "seed": 1731723082
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.001",
+     "cell_spec_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+     "family": "placement_approach",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "placement_approach",
+      "ordinal": 1,
+      "parameters": {
+       "object_start_x_delta_m": -0.002,
+       "object_start_y_delta_m": 0.0295,
+       "object_yaw_delta_degrees": -1.84
+      }
+     },
+     "resolved_scenario_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+     "seed": 23746513
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.002",
+     "cell_spec_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+     "family": "placement_approach",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "placement_approach",
+      "ordinal": 2,
+      "parameters": {
+       "object_start_x_delta_m": 0.0086,
+       "object_start_y_delta_m": -0.015,
+       "object_yaw_delta_degrees": 2.99
+      }
+     },
+     "resolved_scenario_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+     "seed": 1350478078
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.003",
+     "cell_spec_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+     "family": "illumination",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "illumination",
+      "ordinal": 3,
+      "parameters": {
+       "task_light_intensity_scale": 0.921
+      }
+     },
+     "resolved_scenario_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+     "seed": 2128806918
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.004",
+     "cell_spec_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+     "family": "camera_sensor",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "camera_sensor",
+      "ordinal": 4,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0141
+      }
+     },
+     "resolved_scenario_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+     "seed": 745674577
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.005",
+     "cell_spec_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+     "family": "pairwise_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "pairwise_stress",
+      "ordinal": 5,
+      "parameters": {
+       "object_yaw_delta_degrees": -4.72,
+       "task_light_intensity_scale": 0.817
+      }
+     },
+     "resolved_scenario_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+     "seed": 840477413
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.006",
+     "cell_spec_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+     "family": "pairwise_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "pairwise_stress",
+      "ordinal": 6,
+      "parameters": {
+       "external_camera_x_delta_m": -0.0091,
+       "task_light_intensity_scale": 1.048
+      }
+     },
+     "resolved_scenario_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+     "seed": 1873431612
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.007",
+     "cell_spec_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 7,
+      "parameters": {
+       "external_camera_x_delta_m": -0.0086,
+       "object_start_x_delta_m": 0.0106,
+       "object_start_y_delta_m": -0.014,
+       "object_yaw_delta_degrees": -7.41,
+       "task_light_intensity_scale": 0.928
+      }
+     },
+     "resolved_scenario_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+     "seed": 999856853
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.008",
+     "cell_spec_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 8,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0108,
+       "object_start_x_delta_m": -0.0103,
+       "object_start_y_delta_m": 0.0133,
+       "object_yaw_delta_degrees": -1.75,
+       "task_light_intensity_scale": 0.939
+      }
+     },
+     "resolved_scenario_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+     "seed": 671528394
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.009",
+     "cell_spec_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 9,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0056,
+       "object_start_x_delta_m": -0.0097,
+       "object_start_y_delta_m": 0.0081,
+       "object_yaw_delta_degrees": 3.07,
+       "task_light_intensity_scale": 1.104
+      }
+     },
+     "resolved_scenario_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+     "seed": 262523849
+    }
+   ],
+   "status": "selected"
+  },
+  {
+   "blockers": [
+    "screening_gpu_memory_floor_unrentable"
+   ],
+   "candidate_id": "openwam_alpha_franka",
+   "configuration_digest": "sha256:02e6a8fa549e48c140659dd625140a405da8332d155fe549469b2b23dacb3fe9",
+   "display_name": "OpenWAM Alpha \u2014 single FR3 + nominal Robotiq2F85 simulation",
+   "status": "infeasible"
+  },
+  {
+   "blockers": [
+    "robot_reach_insufficient:pregrasp:1.025m_vs_0.628m"
+   ],
+   "candidate_id": "openwam_alpha_piper_bimanual",
+   "configuration_digest": "sha256:0202b7211f8e50f9c92566ca95ee568c1a5ffa4d55771e81a568c20635ed9afa",
+   "display_name": "OpenWAM Alpha \u00b7 PiPER bimanual (public baseline)",
+   "status": "infeasible"
+  },
+  {
+   "admission_digest": "sha256:ecd257c56d87d92ba730247cd2631123ac27a5771f72472a8590102210d77321",
+   "blockers": [],
+   "candidate_id": "pi0_droid_jointpos_100k_polaris",
+   "configuration_digest": "sha256:129cea58aa5b67d7e42e87cc250438928cb22ef8ecc8127dc14559f4194d59a2",
+   "cost_quote": {
+    "configuration_digest": "sha256:129cea58aa5b67d7e42e87cc250438928cb22ef8ecc8127dc14559f4194d59a2",
+    "episode_count": 10,
+    "maximum_cost_usd": "4.00",
+    "price_source": "canonical_gpu_canary_hard_cap_including_startup_transfer_storage_teardown",
+    "quote_digest": "sha256:3581cfd57e3497dcca4a60c8e496f1bf0053fb1eba6c335a116b7d8a76fd93dc",
+    "quote_id": "operator-cap-pi0_droid_jointpos_100k_polaris",
+    "scene_revision_digest": "sha256:ae2703d00c670c85144ad2ded40260c526a69d4e93e292eefea4df4afefcc90b",
+    "schema_version": "beta_policy_screening_cost_quote.v1",
+    "valid_until": "2026-11-07T07:34:47.322968+00:00"
+   },
+   "display_name": "\u03c00 DROID joint position 100k (PolaRiS)",
+   "episode_count": 10,
+   "execution_spec": {
+    "backend": "robolab.v1",
+    "candidate_id": "pi0_droid_jointpos_100k_polaris",
+    "checkpoint_inventory": {
+     "path": "/opt/blueprint/task-evaluation-control-plane-releases/9dd4e0dc4d491937e767280e6df786ad9c124e22/docs/experiments/policy_ranking_thesis_20260726/openpi_polaris_checkpoint_inventory.json",
+     "sha256": "sha256:df3a335daeff5ac556e0370a9bf3003397a5b7acbe568e7d474b8c99ce63e774",
+     "size_bytes": 65516
+    },
+    "configuration_digest": "sha256:129cea58aa5b67d7e42e87cc250438928cb22ef8ecc8127dc14559f4194d59a2",
+    "hard_ttl_seconds": 14400,
+    "implementation_commit": "9dd4e0dc4d491937e767280e6df786ad9c124e22",
+    "max_hourly_rate_usd": "0.80",
+    "minimum_gpu_memory_gb": 12,
+    "policy_execution_spec": {
+     "path": "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening/inputs/screening-f3d50faef0dfe2fba1c40454ad67fc32/85f609026eb005c782ec2dae44e82213e89b78dbac5fcd35c8f1af8e56dadc23.execution_spec.json",
+     "sha256": "sha256:7b506f23a7423d442000817b239cdc559fff0b9ff5d7ffb876ab40ffe0188f69",
+     "size_bytes": 7891
+    },
+    "runtime_digest": "sha256:648edc17499f477a915788ac22f6936db48459b558b3861b62357fc4b350d717",
+    "schema_version": "blueprint.beta_policy_screening_execution.v1",
+    "task_success_contract_digest": "sha256:19292ba8ca1c06ec03a02c3e9fd64621b88d921dea3f21d1be12b104022670bc"
+   },
+   "max_cost_usd": "4.00",
+   "reach_rank": {
+    "basis": "reach_unmeasured",
+    "feasibility_digest": "sha256:5ca59bd12a7c03470114d2a94e0ef643ce011f5e5c81ccca1107f889e98c22d4",
+    "feasibility_status": "feasible",
+    "reach_source": "franka_chain_reach_bound",
+    "reasons": [
+     "candidate_reach_not_recorded"
+    ],
+    "report_digest": null,
+    "solve_source": null,
+    "solve_status": null,
+    "tier": 2
+   },
+   "scenario_cells": [
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.000",
+     "cell_spec_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+     "family": "canonical_anchor",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "canonical_anchor",
+      "ordinal": 0,
+      "parameters": {}
+     },
+     "resolved_scenario_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+     "seed": 1731723082
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.001",
+     "cell_spec_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+     "family": "placement_approach",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "placement_approach",
+      "ordinal": 1,
+      "parameters": {
+       "object_start_x_delta_m": -0.002,
+       "object_start_y_delta_m": 0.0295,
+       "object_yaw_delta_degrees": -1.84
+      }
+     },
+     "resolved_scenario_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+     "seed": 23746513
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.002",
+     "cell_spec_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+     "family": "placement_approach",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "placement_approach",
+      "ordinal": 2,
+      "parameters": {
+       "object_start_x_delta_m": 0.0086,
+       "object_start_y_delta_m": -0.015,
+       "object_yaw_delta_degrees": 2.99
+      }
+     },
+     "resolved_scenario_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+     "seed": 1350478078
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.003",
+     "cell_spec_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+     "family": "illumination",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "illumination",
+      "ordinal": 3,
+      "parameters": {
+       "task_light_intensity_scale": 0.921
+      }
+     },
+     "resolved_scenario_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+     "seed": 2128806918
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.004",
+     "cell_spec_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+     "family": "camera_sensor",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "camera_sensor",
+      "ordinal": 4,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0141
+      }
+     },
+     "resolved_scenario_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+     "seed": 745674577
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.005",
+     "cell_spec_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+     "family": "pairwise_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "pairwise_stress",
+      "ordinal": 5,
+      "parameters": {
+       "object_yaw_delta_degrees": -4.72,
+       "task_light_intensity_scale": 0.817
+      }
+     },
+     "resolved_scenario_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+     "seed": 840477413
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.006",
+     "cell_spec_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+     "family": "pairwise_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "pairwise_stress",
+      "ordinal": 6,
+      "parameters": {
+       "external_camera_x_delta_m": -0.0091,
+       "task_light_intensity_scale": 1.048
+      }
+     },
+     "resolved_scenario_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+     "seed": 1873431612
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.007",
+     "cell_spec_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 7,
+      "parameters": {
+       "external_camera_x_delta_m": -0.0086,
+       "object_start_x_delta_m": 0.0106,
+       "object_start_y_delta_m": -0.014,
+       "object_yaw_delta_degrees": -7.41,
+       "task_light_intensity_scale": 0.928
+      }
+     },
+     "resolved_scenario_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+     "seed": 999856853
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.008",
+     "cell_spec_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 8,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0108,
+       "object_start_x_delta_m": -0.0103,
+       "object_start_y_delta_m": 0.0133,
+       "object_yaw_delta_degrees": -1.75,
+       "task_light_intensity_scale": 0.939
+      }
+     },
+     "resolved_scenario_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+     "seed": 671528394
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.009",
+     "cell_spec_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 9,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0056,
+       "object_start_x_delta_m": -0.0097,
+       "object_start_y_delta_m": 0.0081,
+       "object_yaw_delta_degrees": 3.07,
+       "task_light_intensity_scale": 1.104
+      }
+     },
+     "resolved_scenario_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+     "seed": 262523849
+    }
+   ],
+   "status": "selected"
+  },
+  {
+   "admission_digest": "sha256:9f9370a4cbedf4d8354aa059dac6a0602168428242920aaf15d02d263c79fe34",
+   "blockers": [],
+   "candidate_id": "pi0_droid_jointpos_polaris",
+   "configuration_digest": "sha256:12cc34946cc986fb92ab2e401d48a76da7b9d00ec548b718cb73c2b575c63adb",
+   "cost_quote": {
+    "configuration_digest": "sha256:12cc34946cc986fb92ab2e401d48a76da7b9d00ec548b718cb73c2b575c63adb",
+    "episode_count": 10,
+    "maximum_cost_usd": "4.00",
+    "price_source": "canonical_gpu_canary_hard_cap_including_startup_transfer_storage_teardown",
+    "quote_digest": "sha256:de213181cca591a4ecf9f1d7cd54021bf9e8cd5987218fa84ddf300f0bc7c979",
+    "quote_id": "operator-cap-pi0_droid_jointpos_polaris",
+    "scene_revision_digest": "sha256:ae2703d00c670c85144ad2ded40260c526a69d4e93e292eefea4df4afefcc90b",
+    "schema_version": "beta_policy_screening_cost_quote.v1",
+    "valid_until": "2026-11-07T07:34:47.016812+00:00"
+   },
+   "display_name": "\u03c00 DROID joint position (PolaRiS)",
+   "episode_count": 10,
+   "execution_spec": {
+    "backend": "robolab.v1",
+    "candidate_id": "pi0_droid_jointpos_polaris",
+    "checkpoint_inventory": {
+     "path": "/opt/blueprint/task-evaluation-control-plane-releases/9dd4e0dc4d491937e767280e6df786ad9c124e22/docs/experiments/policy_ranking_thesis_20260726/openpi_polaris_checkpoint_inventory.json",
+     "sha256": "sha256:df3a335daeff5ac556e0370a9bf3003397a5b7acbe568e7d474b8c99ce63e774",
+     "size_bytes": 65516
+    },
+    "configuration_digest": "sha256:12cc34946cc986fb92ab2e401d48a76da7b9d00ec548b718cb73c2b575c63adb",
+    "hard_ttl_seconds": 14400,
+    "implementation_commit": "9dd4e0dc4d491937e767280e6df786ad9c124e22",
+    "max_hourly_rate_usd": "0.80",
+    "minimum_gpu_memory_gb": 12,
+    "policy_execution_spec": {
+     "path": "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening/inputs/screening-f3d50faef0dfe2fba1c40454ad67fc32/efd9d7f5650bae3014f019cc5555a00f4a3c71986559b5efbd2e4ee051c56da7.execution_spec.json",
+     "sha256": "sha256:89f7f974c4aa2985b2474b4a7a410827d8e30094423c21b36d4eda60875596b4",
+     "size_bytes": 7871
+    },
+    "runtime_digest": "sha256:648edc17499f477a915788ac22f6936db48459b558b3861b62357fc4b350d717",
+    "schema_version": "blueprint.beta_policy_screening_execution.v1",
+    "task_success_contract_digest": "sha256:19292ba8ca1c06ec03a02c3e9fd64621b88d921dea3f21d1be12b104022670bc"
+   },
+   "max_cost_usd": "4.00",
+   "reach_rank": {
+    "basis": "reach_unmeasured",
+    "feasibility_digest": "sha256:5ca59bd12a7c03470114d2a94e0ef643ce011f5e5c81ccca1107f889e98c22d4",
+    "feasibility_status": "feasible",
+    "reach_source": "franka_chain_reach_bound",
+    "reasons": [
+     "candidate_reach_not_recorded"
+    ],
+    "report_digest": null,
+    "solve_source": null,
+    "solve_status": null,
+    "tier": 2
+   },
+   "scenario_cells": [
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.000",
+     "cell_spec_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+     "family": "canonical_anchor",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "canonical_anchor",
+      "ordinal": 0,
+      "parameters": {}
+     },
+     "resolved_scenario_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+     "seed": 1731723082
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.001",
+     "cell_spec_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+     "family": "placement_approach",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "placement_approach",
+      "ordinal": 1,
+      "parameters": {
+       "object_start_x_delta_m": -0.002,
+       "object_start_y_delta_m": 0.0295,
+       "object_yaw_delta_degrees": -1.84
+      }
+     },
+     "resolved_scenario_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+     "seed": 23746513
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.002",
+     "cell_spec_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+     "family": "placement_approach",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "placement_approach",
+      "ordinal": 2,
+      "parameters": {
+       "object_start_x_delta_m": 0.0086,
+       "object_start_y_delta_m": -0.015,
+       "object_yaw_delta_degrees": 2.99
+      }
+     },
+     "resolved_scenario_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+     "seed": 1350478078
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.003",
+     "cell_spec_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+     "family": "illumination",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "illumination",
+      "ordinal": 3,
+      "parameters": {
+       "task_light_intensity_scale": 0.921
+      }
+     },
+     "resolved_scenario_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+     "seed": 2128806918
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.004",
+     "cell_spec_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+     "family": "camera_sensor",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "camera_sensor",
+      "ordinal": 4,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0141
+      }
+     },
+     "resolved_scenario_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+     "seed": 745674577
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.005",
+     "cell_spec_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+     "family": "pairwise_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "pairwise_stress",
+      "ordinal": 5,
+      "parameters": {
+       "object_yaw_delta_degrees": -4.72,
+       "task_light_intensity_scale": 0.817
+      }
+     },
+     "resolved_scenario_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+     "seed": 840477413
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.006",
+     "cell_spec_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+     "family": "pairwise_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "pairwise_stress",
+      "ordinal": 6,
+      "parameters": {
+       "external_camera_x_delta_m": -0.0091,
+       "task_light_intensity_scale": 1.048
+      }
+     },
+     "resolved_scenario_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+     "seed": 1873431612
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.007",
+     "cell_spec_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 7,
+      "parameters": {
+       "external_camera_x_delta_m": -0.0086,
+       "object_start_x_delta_m": 0.0106,
+       "object_start_y_delta_m": -0.014,
+       "object_yaw_delta_degrees": -7.41,
+       "task_light_intensity_scale": 0.928
+      }
+     },
+     "resolved_scenario_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+     "seed": 999856853
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.008",
+     "cell_spec_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 8,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0108,
+       "object_start_x_delta_m": -0.0103,
+       "object_start_y_delta_m": 0.0133,
+       "object_yaw_delta_degrees": -1.75,
+       "task_light_intensity_scale": 0.939
+      }
+     },
+     "resolved_scenario_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+     "seed": 671528394
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.009",
+     "cell_spec_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 9,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0056,
+       "object_start_x_delta_m": -0.0097,
+       "object_start_y_delta_m": 0.0081,
+       "object_yaw_delta_degrees": 3.07,
+       "task_light_intensity_scale": 1.104
+      }
+     },
+     "resolved_scenario_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+     "seed": 262523849
+    }
+   ],
+   "status": "selected"
+  },
+  {
+   "admission_digest": "sha256:6ed9891970196b5577513e5a0c25231ac6517c69e86b2a6b232ce4e737c82732",
+   "blockers": [
+    "site_screening_budget_insufficient"
+   ],
+   "candidate_id": "pi0_fast_droid_jointpos_polaris",
+   "configuration_digest": "sha256:9dfe46a48da2627787f338d2aa4063f75d977485e21fbcadb72a52cf8b1c170a",
+   "cost_quote": {
+    "configuration_digest": "sha256:9dfe46a48da2627787f338d2aa4063f75d977485e21fbcadb72a52cf8b1c170a",
+    "episode_count": 10,
+    "maximum_cost_usd": "4.00",
+    "price_source": "canonical_gpu_canary_hard_cap_including_startup_transfer_storage_teardown",
+    "quote_digest": "sha256:6d29c808562f95cd9660047f71e6b8349ab5e18bfcf127094bdd3ae09de5aaa5",
+    "quote_id": "operator-cap-pi0_fast_droid_jointpos_polaris",
+    "scene_revision_digest": "sha256:ae2703d00c670c85144ad2ded40260c526a69d4e93e292eefea4df4afefcc90b",
+    "schema_version": "beta_policy_screening_cost_quote.v1",
+    "valid_until": "2026-11-07T07:34:47.586408+00:00"
+   },
+   "display_name": "\u03c00-FAST DROID joint position (PolaRiS)",
+   "episode_count": 10,
+   "execution_spec": {
+    "backend": "robolab.v1",
+    "candidate_id": "pi0_fast_droid_jointpos_polaris",
+    "checkpoint_inventory": {
+     "path": "/opt/blueprint/task-evaluation-control-plane-releases/9dd4e0dc4d491937e767280e6df786ad9c124e22/docs/experiments/policy_ranking_thesis_20260726/openpi_polaris_checkpoint_inventory.json",
+     "sha256": "sha256:df3a335daeff5ac556e0370a9bf3003397a5b7acbe568e7d474b8c99ce63e774",
+     "size_bytes": 65516
+    },
+    "configuration_digest": "sha256:9dfe46a48da2627787f338d2aa4063f75d977485e21fbcadb72a52cf8b1c170a",
+    "hard_ttl_seconds": 14400,
+    "implementation_commit": "9dd4e0dc4d491937e767280e6df786ad9c124e22",
+    "max_hourly_rate_usd": "0.80",
+    "minimum_gpu_memory_gb": 12,
+    "policy_execution_spec": {
+     "path": "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening/inputs/screening-f3d50faef0dfe2fba1c40454ad67fc32/578ddc29948eb98d7fa15e06ca07a4b1e44961db3183a83d22f78ad7506bf715.execution_spec.json",
+     "sha256": "sha256:3fcfb91e9160984f2bee6318da43a43e6d02701c08146658dfd2c0d9af4be787",
+     "size_bytes": 7891
+    },
+    "runtime_digest": "sha256:648edc17499f477a915788ac22f6936db48459b558b3861b62357fc4b350d717",
+    "schema_version": "blueprint.beta_policy_screening_execution.v1",
+    "task_success_contract_digest": "sha256:19292ba8ca1c06ec03a02c3e9fd64621b88d921dea3f21d1be12b104022670bc"
+   },
+   "max_cost_usd": "4.00",
+   "reach_rank": {
+    "basis": "reach_unmeasured",
+    "feasibility_digest": "sha256:5ca59bd12a7c03470114d2a94e0ef643ce011f5e5c81ccca1107f889e98c22d4",
+    "feasibility_status": "feasible",
+    "reach_source": "franka_chain_reach_bound",
+    "reasons": [
+     "candidate_reach_not_recorded"
+    ],
+    "report_digest": null,
+    "solve_source": null,
+    "solve_status": null,
+    "tier": 2
+   },
+   "scenario_cells": [
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.000",
+     "cell_spec_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+     "family": "canonical_anchor",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "canonical_anchor",
+      "ordinal": 0,
+      "parameters": {}
+     },
+     "resolved_scenario_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+     "seed": 1731723082
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.001",
+     "cell_spec_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+     "family": "placement_approach",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "placement_approach",
+      "ordinal": 1,
+      "parameters": {
+       "object_start_x_delta_m": -0.002,
+       "object_start_y_delta_m": 0.0295,
+       "object_yaw_delta_degrees": -1.84
+      }
+     },
+     "resolved_scenario_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+     "seed": 23746513
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.002",
+     "cell_spec_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+     "family": "placement_approach",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "placement_approach",
+      "ordinal": 2,
+      "parameters": {
+       "object_start_x_delta_m": 0.0086,
+       "object_start_y_delta_m": -0.015,
+       "object_yaw_delta_degrees": 2.99
+      }
+     },
+     "resolved_scenario_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+     "seed": 1350478078
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.003",
+     "cell_spec_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+     "family": "illumination",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "illumination",
+      "ordinal": 3,
+      "parameters": {
+       "task_light_intensity_scale": 0.921
+      }
+     },
+     "resolved_scenario_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+     "seed": 2128806918
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.004",
+     "cell_spec_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+     "family": "camera_sensor",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "camera_sensor",
+      "ordinal": 4,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0141
+      }
+     },
+     "resolved_scenario_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+     "seed": 745674577
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.005",
+     "cell_spec_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+     "family": "pairwise_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "pairwise_stress",
+      "ordinal": 5,
+      "parameters": {
+       "object_yaw_delta_degrees": -4.72,
+       "task_light_intensity_scale": 0.817
+      }
+     },
+     "resolved_scenario_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+     "seed": 840477413
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.006",
+     "cell_spec_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+     "family": "pairwise_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "pairwise_stress",
+      "ordinal": 6,
+      "parameters": {
+       "external_camera_x_delta_m": -0.0091,
+       "task_light_intensity_scale": 1.048
+      }
+     },
+     "resolved_scenario_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+     "seed": 1873431612
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.007",
+     "cell_spec_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 7,
+      "parameters": {
+       "external_camera_x_delta_m": -0.0086,
+       "object_start_x_delta_m": 0.0106,
+       "object_start_y_delta_m": -0.014,
+       "object_yaw_delta_degrees": -7.41,
+       "task_light_intensity_scale": 0.928
+      }
+     },
+     "resolved_scenario_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+     "seed": 999856853
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.008",
+     "cell_spec_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 8,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0108,
+       "object_start_x_delta_m": -0.0103,
+       "object_start_y_delta_m": 0.0133,
+       "object_yaw_delta_degrees": -1.75,
+       "task_light_intensity_scale": 0.939
+      }
+     },
+     "resolved_scenario_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+     "seed": 671528394
+    },
+    {
+     "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.009",
+     "cell_spec_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+     "family": "composed_stress",
+     "partition": "screening",
+     "resolved_scenario": {
+      "family": "composed_stress",
+      "ordinal": 9,
+      "parameters": {
+       "external_camera_x_delta_m": 0.0056,
+       "object_start_x_delta_m": -0.0097,
+       "object_start_y_delta_m": 0.0081,
+       "object_yaw_delta_degrees": 3.07,
+       "task_light_intensity_scale": 1.104
+      }
+     },
+     "resolved_scenario_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+     "seed": 262523849
+    }
+   ],
+   "status": "waitlisted"
+  },
+  {
+   "blockers": [
+    "agile_robots_controller_or_policy_private_no_access",
+    "candidate_disabled",
+    "commercial_use_not_admitted",
+    "policy_identity_not_pinned",
+    "policy_identity_not_verified",
+    "prepared_robot_policy_registration_missing",
+    "publisher_status_of_new_description_repository_unconfirmed",
+    "runtime_candidate_binding_missing",
+    "task_kind_support_unverified"
+   ],
+   "candidate_id": "agile_robots_diana_7_controller",
+   "configuration_digest": "sha256:0fcafd942ac9a5efcb673cd8ad61afef76ee2554436cbb02e30ac8a04528dd7c",
+   "display_name": "Agile Robots Diana 7 \u00b7 Agile Robots controller",
+   "reach_rank": {
+    "basis": "reach_unmeasured",
+    "feasibility_digest": "sha256:5ca59bd12a7c03470114d2a94e0ef643ce011f5e5c81ccca1107f889e98c22d4",
+    "feasibility_status": "unassessed",
+    "reach_source": null,
+    "reasons": [
+     "embodiment_reach_manifest_not_registered"
+    ],
+    "report_digest": null,
+    "solve_source": null,
+    "solve_status": null,
+    "tier": 2
+   },
+   "status": "unavailable"
+  }
+ ],
+ "capture_id": "walkthrough-capture-447ae4f4-c253-44ae-a897-c999245e0ef7",
+ "catalog_digest": "sha256:584408d2c801196bf9a4d6fd284abee1ab413c8cce83198d776787f1ea2c6a90",
+ "claim_ceiling": "diagnostic_policy_execution",
+ "maximum_planned_cost_usd": "12.00",
+ "plan_digest": "sha256:6db0d7a61004c0f71ab9a57a1981abe72899d46e1fae70702a43feb01e3276a4",
+ "purpose": "screening",
+ "robot_free_probe_digest": "sha256:eef2e6cfe566559c830f1795b0523bace218c40559020b5ff013ba4899f3c576",
+ "scenario_cells": [
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.000",
+   "cell_spec_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+   "family": "canonical_anchor",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "canonical_anchor",
+    "ordinal": 0,
+    "parameters": {}
+   },
+   "resolved_scenario_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70",
+   "seed": 1731723082
+  },
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.001",
+   "cell_spec_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+   "family": "placement_approach",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "placement_approach",
+    "ordinal": 1,
+    "parameters": {
+     "object_start_x_delta_m": -0.002,
+     "object_start_y_delta_m": 0.0295,
+     "object_yaw_delta_degrees": -1.84
+    }
+   },
+   "resolved_scenario_digest": "sha256:e497473cf7f9a1f73b3248fef99f21fada97c5bcfec5cac9fbfb447d6f6087d7",
+   "seed": 23746513
+  },
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.002",
+   "cell_spec_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+   "family": "placement_approach",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "placement_approach",
+    "ordinal": 2,
+    "parameters": {
+     "object_start_x_delta_m": 0.0086,
+     "object_start_y_delta_m": -0.015,
+     "object_yaw_delta_degrees": 2.99
+    }
+   },
+   "resolved_scenario_digest": "sha256:39cd9af43ef53a95d26af0e0f23bb81c43c2d388183ce45aaddc44a22aa52545",
+   "seed": 1350478078
+  },
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.003",
+   "cell_spec_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+   "family": "illumination",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "illumination",
+    "ordinal": 3,
+    "parameters": {
+     "task_light_intensity_scale": 0.921
+    }
+   },
+   "resolved_scenario_digest": "sha256:e01121fb56fd120a5807826e431309c875d71d8c384acb580a1a0005456aa5f0",
+   "seed": 2128806918
+  },
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.004",
+   "cell_spec_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+   "family": "camera_sensor",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "camera_sensor",
+    "ordinal": 4,
+    "parameters": {
+     "external_camera_x_delta_m": 0.0141
+    }
+   },
+   "resolved_scenario_digest": "sha256:215b2c969e4e15f596b99df9bcb75d23d7ec3f36be1312cfc4946146ed3d7fc5",
+   "seed": 745674577
+  },
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.005",
+   "cell_spec_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+   "family": "pairwise_stress",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "pairwise_stress",
+    "ordinal": 5,
+    "parameters": {
+     "object_yaw_delta_degrees": -4.72,
+     "task_light_intensity_scale": 0.817
+    }
+   },
+   "resolved_scenario_digest": "sha256:c613a6ab9ab8d643266605d7e4ca4b8b33307a6273fa1beb214d8424be94f787",
+   "seed": 840477413
+  },
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.006",
+   "cell_spec_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+   "family": "pairwise_stress",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "pairwise_stress",
+    "ordinal": 6,
+    "parameters": {
+     "external_camera_x_delta_m": -0.0091,
+     "task_light_intensity_scale": 1.048
+    }
+   },
+   "resolved_scenario_digest": "sha256:f4006ad8f5ca7ed0aaab8a3258b5aee875d1b4b9ed3b666bd17de3afb9f857ca",
+   "seed": 1873431612
+  },
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.007",
+   "cell_spec_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+   "family": "composed_stress",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "composed_stress",
+    "ordinal": 7,
+    "parameters": {
+     "external_camera_x_delta_m": -0.0086,
+     "object_start_x_delta_m": 0.0106,
+     "object_start_y_delta_m": -0.014,
+     "object_yaw_delta_degrees": -7.41,
+     "task_light_intensity_scale": 0.928
+    }
+   },
+   "resolved_scenario_digest": "sha256:63cf39108424ca6864ca10332a6bc4f62c1a3be09c1ae0754105bcc331a5a71a",
+   "seed": 999856853
+  },
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.008",
+   "cell_spec_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+   "family": "composed_stress",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "composed_stress",
+    "ordinal": 8,
+    "parameters": {
+     "external_camera_x_delta_m": 0.0108,
+     "object_start_x_delta_m": -0.0103,
+     "object_start_y_delta_m": 0.0133,
+     "object_yaw_delta_degrees": -1.75,
+     "task_light_intensity_scale": 0.939
+    }
+   },
+   "resolved_scenario_digest": "sha256:1d5680a5becb6962c3a327a50cd84c194f2655ada5b1f3692db828bdc882a4e2",
+   "seed": 671528394
+  },
+  {
+   "cell_id": "screening.site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7.009",
+   "cell_spec_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+   "family": "composed_stress",
+   "partition": "screening",
+   "resolved_scenario": {
+    "family": "composed_stress",
+    "ordinal": 9,
+    "parameters": {
+     "external_camera_x_delta_m": 0.0056,
+     "object_start_x_delta_m": -0.0097,
+     "object_start_y_delta_m": 0.0081,
+     "object_yaw_delta_degrees": 3.07,
+     "task_light_intensity_scale": 1.104
+    }
+   },
+   "resolved_scenario_digest": "sha256:4a81a144b02c385c31978a11099a83410d718f1006e88ad5321feb0fbcb26b26",
+   "seed": 262523849
+  }
+ ],
+ "scenario_plan_digest": "sha256:34181481548d78129fec7ac32816ac69229c675af28adc2dfef2691869b93f1c",
+ "scene_id": "site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7",
+ "scene_inputs": {
+  "path": "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening/inputs/screening-f3d50faef0dfe2fba1c40454ad67fc32/2abd1eb986df0e57bbd4bfe1da7a68996e5f4786cb8fa2ceb33a903ac14f435e.scene_inputs.json",
+  "sha256": "sha256:3398f9bc5a2e7b8f1708bb3cf7cd8a6edad92f942f05084baf887061fbe5c698",
+  "size_bytes": 16641
+ },
+ "scene_revision_digest": "sha256:ae2703d00c670c85144ad2ded40260c526a69d4e93e292eefea4df4afefcc90b",
+ "schema_version": "beta_policy_screening_plan.v1",
+ "screening_harness_revision": 1,
+ "site_id": "site-capture-447ae4f4-c253-44ae-a897-c999245e0ef7",
+ "source": {
+  "capture_id": "walkthrough-capture-447ae4f4-c253-44ae-a897-c999245e0ef7",
+  "scene_intent_digest": "sha256:f06d4da8b9f81559cd23f5f7640534a1ca8d646b2961c0f85dd9a94f0344d05f",
+  "scene_intent_id": "scene-c0e6803928890efaa9cdacd6b65589e86a32df6499fd3987f3c1682b6ee81473",
+  "scene_revision_digest": "sha256:ae2703d00c670c85144ad2ded40260c526a69d4e93e292eefea4df4afefcc90b",
+  "task_context_digest": "sha256:53e1ef5c8bf71f6d840a76f91ad9f6d949429538058a8423ded9bd290d003430",
+  "task_id": "website-53e1ef5c8bf71f6d840a"
+ },
+ "task_id": "website-53e1ef5c8bf71f6d840a",
+ "task_success_contract_digest": "sha256:19292ba8ca1c06ec03a02c3e9fd64621b88d921dea3f21d1be12b104022670bc",
+ "website_job_ceiling": {
+  "available_usd": "61.90",
+  "local_screening_holds_usd": "0.00",
+  "read_at": "2026-11-06T07:35:38.065189+00:00",
+  "remaining_cost_usd": "61.90",
+  "schema_version": "beta_policy_screening_job_ceiling.v1",
+  "summary": {
+   "maximum_cost_usd": 130,
+   "native_construction_cost_usd": 24.01,
+   "preparation_cost_usd": 20.510981,
+   "remaining_cost_usd": 61.909019,
+   "reserved_or_settled_cost_usd": 68.090981,
+   "schema_version": "website_job_ceiling.v1",
+   "screening_cost_usd": 23.57,
+   "source": "atlas_authorization"
+  },
+  "summary_digest": "sha256:d3ce75c78bbf1701ace991905614586f51a7fc1297ae942ddc60a8d365f848e3"
+ }
+}

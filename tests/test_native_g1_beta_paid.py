@@ -344,3 +344,32 @@ def test_a_forged_oversize_g1_output_still_refuses_by_name(tmp_path, monkeypatch
     assert extracted["status"] == "blocked"
     assert "native_g1_beta_output_read_budget_exceeded" in extracted["blockers"]
     assert not (tmp_path / "immutable_execution" / "cells/huge.bin").exists()
+
+
+@pytest.mark.parametrize("room", [True, False])
+def test_a_g1_row_has_no_delivery_record_to_need_and_its_own_session_holds_it_without_room(tmp_path, monkeypatch, room):
+    """Review 8d (1): the G1 lane never reaches the policy-canary session, so the pre-launch check writes it
+    no record and adds no landing check; its paid session refuses for disk before any rental."""
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from blueprint_pipeline import policy_canary_output_members as members
+    from blueprint_pipeline import vast_launch_slots
+
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *_a: None)
+    monkeypatch.setattr(vast_launch_slots, "inspect_vast_launch_admission", lambda: {"status": "admitted", "blockers": []})
+    assert launch.preflight_candidate_capacity(plan={}, candidate={"execution_spec": {"backend": "native_g1.v1"}},
+                                               attempt_dir=attempt, prepared={}) == {"capacity_available": True, "blockers": []}
+    assert not (attempt / members.RESOLVED_FILENAME).exists()
+    args, _, bundle, identity, _, _ = setup(tmp_path, monkeypatch)
+    need = paid.collection_reservation_bytes(bundle["bundle_size_bytes"])
+    monkeypatch.setattr(disk, "disk_headroom", lambda **kwargs: {"available_bytes": need + (1 if room else -1)})
+    rented = []
+    monkeypatch.setattr(paid, "run_arena_native_control_vast",
+                        lambda **kwargs: rented.append(kwargs) or {"status": "blocked", "blockers": ["stub"]})
+    result = dispatch(args, identity)
+    if room:
+        assert rented and "g1_beta_collection_capacity_insufficient" not in result["blockers"]
+    else:
+        assert not rented and "g1_beta_collection_capacity_insufficient" in result["blockers"]
+        assert result["provider_mutations_performed"] == 0

@@ -1766,13 +1766,13 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
             if not isinstance(capacity, Mapping) or type(capacity.get("capacity_available")) is not bool:
                 raise ValueError("beta_screening_capacity_preflight_invalid")
             if capacity["capacity_available"] is False:
-                if capacity.get("blockers") not in (["vast_paid_launch_lock_busy"],
-                                                    ["vast_release_deployment_in_progress"]):
-                    raise ValueError("beta_screening_capacity_preflight_invalid")
+                from .beta_screening_disk_admission import capacity_wait_is_disk, disk_wait_ended
+                disk = capacity_wait_is_disk(capacity.get("blockers"))  # raises for any other blocker
 
                 def waiting(item):
                     item["attempt"].update(prepared=dict(prepared), retry_not_before=_retry_after_capacity())
-                    item.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
+                    if not (disk and disk_wait_ended(item, _now(), _seconds_since)):  # held: its money released
+                        item.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
                 _update(root, plan["campaign_id"], candidate["candidate_id"], waiting)
                 return False
         except Exception as exc:  # noqa: BLE001 - this boundary is read-only and strictly pre-intent
@@ -1789,6 +1789,7 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
 
     def launching(item):
         item["attempt"]["prepared"] = dict(prepared)
+        item["attempt"].pop("work_disk_wait_since", None)
         item["attempt"]["launch_intent_at"] = _now()
         item.update(status="launching", blockers=[])
     _update(root, plan["campaign_id"], candidate["candidate_id"], launching)

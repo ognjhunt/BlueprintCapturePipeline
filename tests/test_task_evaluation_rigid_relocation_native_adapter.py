@@ -922,3 +922,135 @@ def test_an_estimated_website_template_binds_within_its_placement_uncertainty():
     assert _estimated_support_height_tolerance({"dimension_authority": "estimated"}) == .005
     assert _estimated_support_height_tolerance(
         {"dimension_authority": "estimated", "placement_uncertainty_m": float("nan")}) == .005
+
+
+def _surfaces(*heights):
+    """A collider of flat surfaces at ``heights``: its highest point in a band, as ``support_surface`` answers."""
+    def surface(_lower, _upper, *, floor_z, ceiling_z):
+        inside = [z for z in heights if floor_z <= z <= ceiling_z]
+        return max(inside) if inside else None
+    return surface
+
+
+def _goal(registered_top, *surfaces):
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
+        _goal_support_reading, _window_on_goal_rest,
+    )
+
+    spec = {"target_position_world_m": [0.1, 0.2, 0.80], "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "subject_collision_bounds_scoring_frame_m": {"minimum": [-0.05, -0.05, 0.0], "maximum": [0.05, 0.05, 0.1]},
+            "destination_position_bounds_world_m": {"minimum": [0.05, 0.15, 0.79], "maximum": [0.15, 0.25, 0.81]},
+            "support_height_interval_m": [0.79, 0.81]}
+    reading = _goal_support_reading(_surfaces(*surfaces), task_spec=spec, collision=None, center=[0, 0, 0],
+                                    support_top=registered_top, below_m=0.08)
+    return spec, reading, _window_on_goal_rest(spec, reading)
+
+
+def test_the_window_stays_as_sealed_when_the_collider_rest_is_inside_though_the_registered_top_differs():
+    """capture-447: registered top 1.27 cm off the collider; the collider rest is in the window: as main."""
+    spec, reading, out = _goal(0.8127, 0.80)
+    assert out is spec and "window_aligned_to_goal_rest" not in reading and reading["within_success_window"] is True
+
+
+def test_an_unrelated_taller_collider_or_the_floor_is_never_taken_as_the_destinations_support():
+    spec, reading, out = _goal(0.80, 0.83, 0.80, 0.0)  # a shelf 3 cm above and beside, the floor far below
+    assert reading["own_support_collider_top_z_m"] == 0.80 and out is spec
+    spec, reading, out = _goal(0.80, 1.10, 0.0)  # no collider surface within 2.5 cm of the registered top: no move
+    assert "own_support_collider_top_z_m" not in reading and out is spec
+
+
+@pytest.mark.parametrize("excess_cm, moves", [(0.3, True), (1.5, True), (2.0, True), (2.1, False), (10.0, False)])
+def test_the_window_moves_the_least_that_puts_the_rest_5_mm_inside_and_never_more_than_two_and_a_half_cm(
+        excess_cm, moves):
+    """Review 8d (4a): the rest lands 5 mm inside the moved window, so a placement 1 mm lower still scores; the
+    whole move (gap plus margin) is at most 2.5 cm, or nothing moves."""
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import height_adjusted_flag
+
+    surface = 0.81 + excess_cm / 100  # the own support's rest lies that far above the sealed window's top
+    spec, reading, out = _goal(surface, surface)
+    if not moves:
+        assert out is spec and "window_aligned_to_goal_rest" not in reading
+        return
+    moved = reading["window_aligned_to_goal_rest"]
+    assert moved["distance_m"] == pytest.approx(excess_cm / 100 + 0.005) and moved["margin_m"] == 0.005
+    low, high = reading["moved_window_scoring_z_m"]
+    assert out["destination_position_bounds_world_m"]["maximum"][2] == pytest.approx(surface + 0.005)
+    for placement in (surface, surface - 0.001, surface + 0.001, surface - 0.0049):
+        assert low <= placement <= high
+    assert height_adjusted_flag(moved) == f"scene_estimate:success_height_adjusted:{round(excess_cm * 10) + 5}mm"
+    # The collider's verdict is against the ORIGINAL window: the existing flag is still raised.
+    assert reading["within_success_window"] is False
+
+
+def test_a_rest_below_the_window_moves_it_down_with_the_same_margin():
+    spec, reading, out = _goal(0.785, 0.785)  # rest 5 mm under the sealed window's bottom
+    low, high = reading["moved_window_scoring_z_m"]
+    assert reading["window_aligned_to_goal_rest"]["distance_m"] == pytest.approx(-0.010)
+    assert (low, high) == (pytest.approx(0.780), pytest.approx(0.800)) and low < 0.785 - 0.001
+
+
+def _thin_goal(width_m, above_m):
+    """A window ``width_m`` high whose rest lies ``above_m`` over its top."""
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
+        _goal_support_reading, _window_on_goal_rest,
+    )
+
+    low, high = 0.80, 0.80 + width_m
+    spec = {"target_position_world_m": [0.1, 0.2, low], "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "subject_collision_bounds_scoring_frame_m": {"minimum": [-0.05, -0.05, 0.0], "maximum": [0.05, 0.05, 0.1]},
+            "destination_position_bounds_world_m": {"minimum": [0.05, 0.15, low], "maximum": [0.15, 0.25, high]},
+            "support_height_interval_m": [low, high]}
+    rest = high + above_m
+    reading = _goal_support_reading(_surfaces(rest), task_spec=spec, collision=None, center=[0, 0, 0],
+                                    support_top=rest, below_m=0.08)
+    return spec, reading, _window_on_goal_rest(spec, reading)
+
+
+def test_a_window_thinner_than_20_mm_keeps_a_quarter_of_its_height_as_margin():
+    spec, reading, out = _thin_goal(0.008, 0.003)
+    moved = reading["window_aligned_to_goal_rest"]
+    assert moved["margin_m"] == pytest.approx(0.002) and moved["distance_m"] == pytest.approx(0.005)
+    low, high = reading["moved_window_scoring_z_m"]
+    assert high - 0.002 == pytest.approx(0.811) == low + 0.006  # the rest, a quarter of 8 mm under the top
+
+
+@pytest.mark.parametrize("width_m, above_m, flag", [
+    (0.0016, 0.00005, None),   # 0.45 mm in all rounds to 0: no move and no flag (was ``:0mm``)
+    (0.0016, 0.00012, "1mm"),  # 0.52 mm rounds to 1
+    (0.020, 0.0198, "25mm"),   # 24.8 mm rounds to 25: the most
+    (0.020, 0.0202, None),     # 25.2 mm: over the bound, no move
+])
+def test_the_flag_comes_from_the_same_rounded_figure_that_decides_the_move(width_m, above_m, flag):
+    """Review 8d (4b): a 0.51 mm move never publishes ``0mm``; the flag is always 1 to 25."""
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import HEIGHT_ADJUSTED_FLAG, height_adjusted_flag
+
+    spec, reading, out = _thin_goal(width_m, above_m)
+    if flag is None:
+        assert out is spec and "window_aligned_to_goal_rest" not in reading
+        return
+    assert height_adjusted_flag(reading["window_aligned_to_goal_rest"]) == f"{HEIGHT_ADJUSTED_FLAG}:{flag}"
+    assert height_adjusted_flag({"distance_m": 0.0005}) is None  # no decided figure: never published as a move
+
+
+@pytest.mark.parametrize("rest, window", [(float("nan"), [0.79, 0.81]), ("not a height", [0.79, 0.81]),
+                                          (0.83, [0.79, None]), (0.83, ["x", 0.81])])
+def test_a_rest_or_window_it_cannot_read_leaves_the_window_as_sealed_and_says_why(rest, window):
+    """A measurement never stops the build (review of R2): the sealed window stands, flagged in the reading."""
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import _window_on_goal_rest
+
+    spec = {"target_position_world_m": [0.1, 0.2, 0.80],
+            "destination_position_bounds_world_m": {"minimum": [0.05, 0.15, 0.79], "maximum": [0.15, 0.25, 0.81]}}
+    reading = {"own_support_rest_scoring_z_m": rest, "success_window_scoring_z_m": window}
+    assert _window_on_goal_rest(spec, reading) is spec
+    assert "window_aligned_to_goal_rest" not in reading
+    if None not in window:
+        assert reading["window_alignment_not_assessed"].split(":")[0] in {"ValueError", "TypeError"}
+
+
+def test_a_spec_without_its_target_is_left_as_sealed():
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import _window_on_goal_rest
+
+    spec = {"destination_position_bounds_world_m": {"minimum": [0.05, 0.15, 0.79], "maximum": [0.15, 0.25, 0.81]}}
+    reading = {"own_support_rest_scoring_z_m": 0.82, "success_window_scoring_z_m": [0.79, 0.81]}
+    assert _window_on_goal_rest(spec, reading) is spec
+    assert reading["window_alignment_not_assessed"].startswith("KeyError")

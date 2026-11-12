@@ -37,7 +37,8 @@ def _sha256(path: Path) -> str:
 
 
 def validate_source(run_root: Path, *, load_json: Callable[..., dict[str, Any]] = _load,
-                    sha256: Callable[[Path], str] = _sha256) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+                    sha256: Callable[[Path], str] = _sha256,
+                    is_file: Callable[[Path], bool] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     receipt = load_json(
         run_root / "launch_receipt.json", blocker="configured_controls_worker_launch_receipt_invalid"
     )
@@ -63,11 +64,9 @@ def validate_source(run_root: Path, *, load_json: Callable[..., dict[str, Any]] 
             "configured_controls_worker_qualifying_terminal_missing"
         )
     result_path = Path(str(result_artifact.get("path") or "")).expanduser()
-    if (
-        result_path.is_symlink()
-        or not result_path.is_file()
-        or sha256(result_path) != result_artifact.get("digest")
-    ):
+    present = (is_file(result_path) if is_file is not None
+               else not result_path.is_symlink() and result_path.is_file())
+    if not present or sha256(result_path) != result_artifact.get("digest"):
         raise TaskEvaluationConfiguredControlsProgressionWorkerError(
             "configured_controls_worker_terminal_artifact_invalid"
         )
@@ -105,3 +104,38 @@ def validate_source(run_root: Path, *, load_json: Callable[..., dict[str, Any]] 
             "configured_controls_worker_post_teardown_provider_zero_invalid"
         )
     return load_json(result_path, blocker="configured_controls_worker_terminal_result_invalid"), receipt, zero
+
+
+def validate_retained_source(run_root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """``validate_source`` of an offloaded run, read from the bytes its pointer kept; raises like it.
+
+    Stage 8: a re-plan then needs no restore. A pointer without the records raises the same refusals.
+    """
+    import hashlib
+
+    # The read-only leaf: the pointer's own checked bytes, the launch receipt among them; nothing here can
+    # reach a worker (``tests/test_controls_read_evidence.py``).
+    from .scene_run_cold_pointer import retained_member
+
+    def raw(path: Path) -> bytes | None:
+        try:
+            relative = path.relative_to(run_root).as_posix()
+        except ValueError:
+            return None
+        return retained_member(run_root, relative)
+
+    def load(path: Path, *, blocker: str) -> dict[str, Any]:
+        data = raw(path)
+        try:
+            value = json.loads(data) if data is not None else None
+        except ValueError:
+            value = None
+        if not isinstance(value, Mapping):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(blocker)
+        return dict(value)
+
+    def digest(path: Path) -> str:
+        data = raw(path)
+        return "sha256:" + hashlib.sha256(data).hexdigest() if data is not None else ""
+
+    return validate_source(run_root, load_json=load, sha256=digest, is_file=lambda path: raw(path) is not None)

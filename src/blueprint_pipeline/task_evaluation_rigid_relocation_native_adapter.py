@@ -378,7 +378,105 @@ def _goal_support_reading(support_surface: Callable[..., float | None], *, task_
         rest = reading["collider_top_z_m"] - scoring[0][2]
         reading["rest_scoring_z_m"] = rest
         reading["within_success_window"] = low is not None and high is not None and low <= rest <= high
+    # The destination's OWN support on the collider: the first collider surface within MAX_WINDOW_MOVE_M of the
+    # registered support top at the goal, searched from just above that band downward (its highest point in
+    # the band), so a shelf above or the floor below is never taken (``_window_on_goal_rest``).
+    lower = [target[axis] + scoring[0][axis] for axis in (0, 1)]
+    upper = [target[axis] + scoring[1][axis] for axis in (0, 1)]
+    try:
+        own = support_surface(lower, upper, floor_z=support_top - MAX_WINDOW_MOVE_M,
+                              ceiling_z=support_top + MAX_WINDOW_MOVE_M)
+    except (ArithmeticError, TypeError, ValueError):
+        own = None
+    if isinstance(own, (int, float)) and math.isfinite(own):
+        reading["own_support_collider_top_z_m"] = float(own)
+        reading["own_support_rest_scoring_z_m"] = float(own) - scoring[0][2]
     return reading
+
+
+#: The most the sealed height window is moved to the goal's own support. capture-447's registered table top
+#: (0.8166 m) and the scan's collider top under it (0.8039 m) differ by 1.27 cm: the reconstruction's own
+#: support uncertainty. Twice that covers a support registered that far off; a larger gap is not one surface
+#: misread, so the window stays as sealed and the gap is flagged as before.
+MAX_WINDOW_MOVE_M = 0.025
+HEIGHT_ADJUSTED_FLAG = "scene_estimate:success_height_adjusted"
+#: How far inside the moved window the rest lands, so a placement a millimetre off still scores: 5 mm, or a
+#: quarter of the window's height when the window is thinner than 20 mm.
+WINDOW_MARGIN_M = 0.005
+
+
+def window_margin(low: float, high: float) -> float:
+    return WINDOW_MARGIN_M if high - low >= 4 * WINDOW_MARGIN_M else (high - low) / 4
+
+
+def height_adjusted_flag(moved: Any) -> str | None:
+    """``scene_estimate:success_height_adjusted:<mm>mm`` for a recorded move, from the figure that decided it.
+
+    Always 1 to 25 mm; a record without that figure (or outside it) is not published as a move.
+    """
+    millimetres = moved.get("distance_mm") if isinstance(moved, Mapping) else None
+    if type(millimetres) is not int or not 1 <= millimetres <= round(MAX_WINDOW_MOVE_M * 1000):
+        return None
+    return f"{HEIGHT_ADJUSTED_FLAG}:{millimetres}mm"
+
+
+def _window_on_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> dict[str, Any]:
+    """``_move_window_to_goal_rest``, which never stops the build: on input it cannot use (a height that is not
+    a number, a spec without its target) the sealed window stands and the reading says why
+    (``window_alignment_not_assessed``)."""
+    try:
+        return _move_window_to_goal_rest(task_spec, reading)
+    except (ArithmeticError, KeyError, IndexError, TypeError, ValueError) as exc:
+        for key in ("window_aligned_to_goal_rest", "sealed_window_before_m", "moved_window_scoring_z_m"):
+            reading.pop(key, None)
+        reading["window_alignment_not_assessed"] = f"{type(exc).__name__}:{str(exc)[:160]}"
+        return task_spec
+
+
+def _move_window_to_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> dict[str, Any]:
+    """The sealed height window, moved the least it must to hold where the object rests on its own support.
+
+    Owner, 2026-11-12: a correct placement must be able to score, and the simulation rests the object on the
+    COLLIDER. The rest height is the object's lowest point on the destination's own support collider
+    (``own_support_rest_scoring_z_m``: the first collider surface within ``MAX_WINDOW_MOVE_M`` of the
+    registered support top at the goal). With none in that band, or when the sealed window already holds it,
+    nothing moves and the spec is exactly what is sealed. Otherwise the window (the goal height, its box and
+    its support interval) moves by the smallest amount that puts the rest inside it by ``window_margin``,
+    only when that whole move is at most ``MAX_WINDOW_MOVE_M`` (with a rounding tolerance; exactly 2.5 cm
+    moves) and it is at least 1 mm rounded to whole millimetres; otherwise nothing moves. The reading records
+    it (``window_aligned_to_goal_rest``) with that same rounded figure (``distance_mm``, 1 to 25), which is the
+    one ``scene_estimate:success_height_adjusted:<mm>mm`` publishes.
+    ``within_success_window`` stays the collider's verdict against the ORIGINAL window, so
+    ``goal_rest_outside_sealed_success_window`` is raised exactly as before.
+    """
+    rest = reading.get("own_support_rest_scoring_z_m")
+    window = reading.get("success_window_scoring_z_m") or [None, None]
+    if rest is None or None in window:
+        return task_spec
+    low, high = float(window[0]), float(window[1])
+    rest = float(rest)
+    if low <= rest <= high:
+        return task_spec
+    margin = window_margin(low, high)
+    move = rest - margin - low if rest < low else rest + margin - high
+    if abs(move) > MAX_WINDOW_MOVE_M + 1e-9:
+        reading["window_move_refused_m"] = round(move, 4)  # left as sealed; the existing flag stands
+        return task_spec
+    millimetres = round(abs(move) * 1000)
+    if millimetres < 1:
+        return task_spec  # rounds to no move: none, and no flag
+    spec = dict(task_spec)
+    target = list(spec["target_position_world_m"])
+    spec["target_position_world_m"] = [*target[:2], float(target[2]) + move]
+    bounds = {key: list(value) for key, value in spec["destination_position_bounds_world_m"].items()}
+    bounds["minimum"][2], bounds["maximum"][2] = float(bounds["minimum"][2]) + move, float(bounds["maximum"][2]) + move
+    spec["destination_position_bounds_world_m"] = bounds
+    if spec.get("support_height_interval_m") is not None:
+        spec["support_height_interval_m"] = [float(value) + move for value in spec["support_height_interval_m"]]
+    reading.update(window_aligned_to_goal_rest={"distance_m": round(move, 4), "distance_mm": millimetres,
+                                                "margin_m": margin, "basis": "destination_own_support_collider"},
+                   sealed_window_before_m=list(window), moved_window_scoring_z_m=[low + move, high + move])
+    return spec
 
 
 def _runtime_geometry(
@@ -1253,10 +1351,25 @@ def _adapt_rigid_relocation_documents(
                 "collision_bounds_body_frame_m"),
             center=geometry["center_body_frame_m"], support_top=float(goal_support["top_z_m"]),
             below_m=_estimated_support_height_tolerance(template))
+        native_task_spec = _window_on_goal_rest(native_task_spec, reading)
         affordance = dict(native_task_spec["interaction_affordance"])
         affordance["support_alignment"] = {**affordance["support_alignment"], "goal_support": reading}
         affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
         native_task_spec["interaction_affordance"] = affordance
+    # On every path: the scored area is kept off the start, only ever shrunk, never below the 5 cm disc
+    # (``varied_start_clearance``; the destination step upstream already keeps it off, this is its guard).
+    from .varied_start_clearance import shrink_area_off_start
+    try:
+        shrunk_spec, shrunk = shrink_area_off_start(native_task_spec)
+        if shrunk is not None:
+            affordance = dict(shrunk_spec["interaction_affordance"])
+            affordance["support_alignment"] = {**(affordance.get("support_alignment") or {}),
+                                               "destination_area_off_start": shrunk}
+            affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+            shrunk_spec = {**shrunk_spec, "interaction_affordance": affordance}
+        native_task_spec = shrunk_spec
+    except (ArithmeticError, KeyError, IndexError, TypeError, ValueError):
+        pass  # A measurement never stops the build: the sealed area stands exactly as it was.
     native_definition = {
         "schema_version": "task_evaluation_native_task_definition.v1",
         "identity": dict(task["identity"]),

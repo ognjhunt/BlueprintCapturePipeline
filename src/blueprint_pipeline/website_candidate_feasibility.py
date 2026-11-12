@@ -424,6 +424,17 @@ def scene_check(plan_row: Mapping[str, Any]) -> tuple[str, list[str]]:
     either way, which includes every plan written before rows recorded a ``reach_rank``. Read from the
     retained plan alone, so a campaign's verdict never changes between its revisions.
     """
+    status, flags = _reach_check(plan_row)
+    # Whether this robot's hand can hold the object (``website_candidate_grasp_screen``) joins its flags.
+    grasp = plan_row.get("grasp_screen")
+    held = [code for code in (grasp.get("flags") if isinstance(grasp, Mapping) else None) or []
+            if isinstance(code, str)]
+    if held:
+        return "flagged", sorted(set(flags) | set(held))
+    return status, flags
+
+
+def _reach_check(plan_row: Mapping[str, Any]) -> tuple[str, list[str]]:
     if plan_row.get("status") == "infeasible":
         measured = any(is_measured_refusal(code) for code in plan_row.get("blockers") or [])
         return ("flagged", [SCENE_CHECK_OUT_OF_REACH]) if measured else ("unknown", [])

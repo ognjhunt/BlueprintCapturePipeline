@@ -36,6 +36,8 @@ PROTECTED_PROCESS_INVENTORY_UNREADABLE = "protected_process_inventory_unreadable
 PROTECTED_PIN = "protected_pin"
 PROTECTED_SETTLEMENT = "protected_settlement"
 PROTECTED_QUEUE = "protected_queue"
+#: A website job's scene run while that job is open (``open_job_source_runs``).
+PROTECTED_OPEN_JOB_SOURCE = "protected_open_job_source"
 #: In the order ``evidence_protection_reason`` checks them.
 EVIDENCE_PROTECTION_REASONS = (
     PROTECTED_UNREADABLE_SETTLEMENT,
@@ -44,6 +46,7 @@ EVIDENCE_PROTECTION_REASONS = (
     PROTECTED_PIN,
     PROTECTED_SETTLEMENT,
     PROTECTED_QUEUE,
+    PROTECTED_OPEN_JOB_SOURCE,
 )
 
 
@@ -78,6 +81,9 @@ def evidence_protection_reason(
     now: Callable[[], float],
     ignored_process_ids: Sequence[int] = (),
     process_root: Path = Path("/proc"),
+    team_scene_packet_queue_root: str | Path | None = None,
+    screening_queue_root: str | Path | None = None,
+    scene_intent_root: str | Path | None = None,
 ) -> str | None:
     """Why the evidence phase must leave ``directory`` in place, or None when nothing protects it.
 
@@ -92,7 +98,11 @@ def evidence_protection_reason(
        (``pin_protection`` names those pins);
     4. ``protected_settlement``: a settlement record reopens a path under it that
        the offload pointer does not retain;
-    5. ``protected_queue``: a pending or processing queue message names it.
+    5. ``protected_queue``: a pending or processing queue message names it;
+    6. ``protected_open_job_source``: an open website job still needs it as its
+       scene run (``open_job_source_runs``: a team-scene-packet request names
+       it, the job's window is open and its testing is not final). Checked only
+       when ``team_scene_packet_queue_root`` and ``scene_intent_root`` are given.
 
     Settlement records and queue messages are re-read on every call.
     ``apply_evidence_offload`` re-checks protection immediately before it evicts
@@ -116,6 +126,12 @@ def evidence_protection_reason(
         return PROTECTED_SETTLEMENT
     if directory.name in queue_reference_text(queue_roots):
         return PROTECTED_QUEUE
+    from .open_job_source_runs import open_job_source_reason
+
+    if open_job_source_reason(directory, packet_queue_root=team_scene_packet_queue_root,
+                              screening_queue_root=screening_queue_root, intent_root=scene_intent_root,
+                              now=now) is not None:
+        return PROTECTED_OPEN_JOB_SOURCE
     return None
 
 

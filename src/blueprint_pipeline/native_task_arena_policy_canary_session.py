@@ -41,9 +41,11 @@ except ModuleNotFoundError:  # repository package
     from .policy_execution_evidence import (candidate_execution_kinds, evidence_kind, execution_evidence_valid,
         execution_invoked, retained_rollout_counts, rollout_counts, rollout_counts_valid, rollout_total, SCRIPTED, scripted_fields)
 try:  # flat provider-bundle layout
-    from policy_episode_lifecycle import observation_quality_flag_codes, observation_quality_flags_valid
+    from policy_episode_lifecycle import (gate_flag_codes, observation_quality_flag_codes,
+                                          observation_quality_flags_valid)
 except ModuleNotFoundError:  # repository package
-    from .policy_episode_lifecycle import observation_quality_flag_codes, observation_quality_flags_valid
+    from .policy_episode_lifecycle import (gate_flag_codes, observation_quality_flag_codes,
+                                           observation_quality_flags_valid)
 
 
 SCHEMA_VERSION = "native_task_arena_policy_canary_session.v1"
@@ -102,6 +104,13 @@ def observation_quality_flags(gate: Any, *, run_kind: Any) -> list[str] | None:
     (there is nothing to run a policy on), a gate that is not the sealed runtime
     gate or whose digest does not verify, and every other run kind (the internal
     canary and team lanes are unchanged here).
+
+    A gate that carries its camera measurements is read for what the cameras really
+    showed (``policy_episode_lifecycle.visibility_verdict``): its visibility blockers are
+    replaced by the verdict's own whole-view flags (what is hidden from every checked camera). That is
+    never a stop, even when no policy camera sees the object (``task_object_not_in_view_of_checked_cameras``):
+    the owner's rule is that the tries run, and a camera check cannot change on an unchanged
+    scene, so it must never cost a new paid start.
     """
     if run_kind != BETA_RUN_KIND or not isinstance(gate, Mapping):
         return None
@@ -115,7 +124,7 @@ def observation_quality_flags(gate: Any, *, run_kind: Any) -> list[str] | None:
             or not isinstance(blockers, list) or not blockers
             or gate.get("gate_digest") != canonical_digest(gate, digest_field="gate_digest")):
         return None
-    return observation_quality_flag_codes(blockers)
+    return gate_flag_codes(gate, observation_quality_flag_codes(blockers))
 
 
 def observation_quality_fields(results: Any) -> dict[str, Any]:

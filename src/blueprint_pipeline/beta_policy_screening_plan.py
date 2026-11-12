@@ -121,6 +121,22 @@ def _reach_rank(value: Any) -> dict[str, Any]:
     return value
 
 
+def _grasp_screen(value: Any) -> dict[str, Any]:
+    """A row's grasp record (``website_candidate_grasp_screen``)."""
+    from .website_candidate_grasp_screen import validate_grasp_screen
+    try:
+        return validate_grasp_screen(value)
+    except ValueError as exc:
+        raise BetaPolicyScreeningPlanError(str(exc)) from exc
+
+
+def _grasp_screen_or_none(value: Any) -> dict[str, Any] | None:
+    try:
+        return _grasp_screen(value)
+    except BetaPolicyScreeningPlanError:
+        return None
+
+
 def money(value: Any) -> Decimal:
     if not isinstance(value, str) or not _MONEY.fullmatch(value):
         raise BetaPolicyScreeningPlanError("beta_screening_money_invalid")
@@ -393,6 +409,19 @@ def screening_cells(scene: Mapping[str, Any], count: int = DEFAULT_EPISODES) -> 
     return cells
 
 
+def _estimate_flags(scene: Mapping[str, Any], cells: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The scene's estimate flags, plus ``destination_near_start`` when a try's start is not clear of its area.
+
+    $0 at plan time, every varied cell (``varied_start_clearance``): flagged, never a refusal.
+    """
+    flags = list(scene.get(SCENE_ESTIMATE_FLAGS_FIELD) or [])
+    if scene.get("task_kind") == "rigid_pick_place" and isinstance(scene.get("task_spec"), Mapping):
+        from .varied_start_clearance import DESTINATION_NEAR_START, uncleared_cells
+        if uncleared_cells(scene["task_spec"], cells):
+            flags.append(DESTINATION_NEAR_START)
+    return sorted(set(flags))
+
+
 def _scene(value: Mapping[str, Any]) -> dict[str, Any]:
     scene = _json(value)
     for key in ("site_id", "scene_id", "capture_id", "task_id", "scene_intent_id", "task_kind"):
@@ -636,6 +665,10 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         if not isinstance(reach, dict) or any(not isinstance(key, str) for key in reach):
             raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
         reach = {key: _reach_rank(value) for key, value in reach.items()}
+    grasp = capabilities.get("candidate_grasp_screen")
+    # A record it cannot read is left off its row (a flag-only check, never a reason to stop planning).
+    grasp = ({key: value for key, value in grasp.items() if isinstance(key, str) and _grasp_screen_or_none(value)}
+             if isinstance(grasp, dict) else None)
     available = capabilities.get("credentials_available", [])
     if not isinstance(available, list) or any(not isinstance(name, str) for name in available):
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
@@ -699,6 +732,9 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             continue
         if reach is not None:
             row["reach_rank"] = deepcopy(reach.get(candidate_id) or reach_rank(None))
+        if grasp is not None and candidate_id in grasp:
+            # Whether this robot's hand can hold the object: a flag on its result, never a stop.
+            row["grasp_screen"] = deepcopy(grasp[candidate_id])
         binding = bindings.get(candidate_id)
         row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials, website=website)
         row["blockers"] = sorted(set(row["blockers"] + failures.get(candidate_id, [])))
@@ -765,8 +801,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         "purpose": "screening", "claim_ceiling": CLAIM_CEILING,
         HARNESS_REVISION_FIELD: SCREENING_HARNESS_REVISION,
         # Optional: plans of a scene built on no estimate, and every plan written before 2026-11-10, carry none.
-        **({SCENE_ESTIMATE_FLAGS_FIELD: list(scene[SCENE_ESTIMATE_FLAGS_FIELD])}
-           if scene.get(SCENE_ESTIMATE_FLAGS_FIELD) else {}),
+        **({SCENE_ESTIMATE_FLAGS_FIELD: _estimate_flags(scene, cells)} if _estimate_flags(scene, cells) else {}),
         "candidates": candidates, "plan_digest": "",
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
@@ -899,6 +934,9 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
             # Why the row sits where it does in the budget order; plans built before it carry none.
             _reach_rank(row["reach_rank"])
             evidence_fields = evidence_fields | {"reach_rank"}
+        if "grasp_screen" in row:
+            _grasp_screen(row["grasp_screen"])
+            evidence_fields = evidence_fields | {"grasp_screen"}
         if not _CANDIDATE_ID.fullmatch(row["candidate_id"]):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_invalid")
         _digest(row["configuration_digest"], "beta_screening_configuration_invalid")
@@ -1046,7 +1084,7 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
             if (row["status"] in {"selected", WAITLISTED} and budget == 0
                     or row["status"] == "deferred" and row["blockers"] == [WAITLIST_BLOCKER]):
                 for key in set(row) - {"candidate_id", "display_name", "configuration_digest", "execution_evidence_kind",
-                                       "reach_rank"}:
+                                       "reach_rank", "grasp_screen"}:
                     del row[key]
                 row.update(status="deferred", blockers=[JOB_CEILING_DEFERRED])
             elif row["status"] == WAITLISTED:

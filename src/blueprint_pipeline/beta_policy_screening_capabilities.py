@@ -223,6 +223,26 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     # The estimates the capture's base scene rests on, carried to the result as flags (``atlas_scene_estimates``).
     from .atlas_scene_estimates import capture_scene_flags
     estimate_flags = capture_scene_flags(Path(capture_root))
+    # The packet's own appearance flags (``scene_appearance_task_clearance``) join them, so they reach the result.
+    try:
+        packet_request = _read(Path(facts["packet_dir"]) / "native_task_arena_packet_request.v1.json")
+        clearance = ((packet_request.get("appearance_variant") or {}).get("task_clearance") or {})
+        estimate_flags = sorted(set(estimate_flags) | {code for code in clearance.get("flags") or []
+                                                        if isinstance(code, str)})
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    try:
+        # A sealed height window moved onto the destination's own support is an estimate, with its distance
+        # (``task_evaluation_rigid_relocation_native_adapter._window_on_goal_rest``).
+        planned = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
+        goal = ((((planned.get("task_spec") or {}).get("interaction_affordance") or {}).get("support_alignment") or {})
+                .get("goal_support") or {})
+        from .task_evaluation_rigid_relocation_native_adapter import height_adjusted_flag
+        flag = height_adjusted_flag(goal.get("window_aligned_to_goal_rest"))
+        if flag:
+            estimate_flags = sorted(set(estimate_flags) | {flag})
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
     if estimate_flags:
         scene["scene_estimate_flags"] = estimate_flags
     repo = Path(__file__).resolve().parents[2]
@@ -442,8 +462,15 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     scripted = {row["candidate_id"] for row in catalog["candidates"] if row["policy"]["kind"] == "scripted"}
     stations = {key: row["station_basis"] for key, row in feasibility["candidates"].items()
                 if key in scripted and isinstance(row.get("station_basis"), str)}
+    # Each robot's own hand against the object: flags on that robot's result, never a stop.
+    from .website_candidate_grasp_screen import grasp_screens, recorded_approach
+    try:
+        grasp = grasp_screens(catalog=catalog, profile=profile, task_spec=task, approach=recorded_approach(capture_root))
+    except Exception:  # noqa: BLE001 - a flag-only check must never stop planning
+        grasp = None
     return {"scene": scene,
             "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials,
+                             **({"candidate_grasp_screen": grasp} if grasp else {}),
                              "candidate_blockers": candidate_blockers, "candidate_infeasible": infeasible,
                              # Orders the budget: a flagged own-arm solve after every unflagged one.
                              "candidate_reach_rank": reach_ranks(feasibility),

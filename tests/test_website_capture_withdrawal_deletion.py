@@ -604,3 +604,148 @@ def test_cli_delete_is_a_dry_run_unless_applied_with_authorization(world, tmp_pa
     with pytest.raises(deletion.WithdrawalDeletionError, match="explicit_authorization_required"):
         deletion.main()
     assert _snapshot(tmp_path) == before
+
+
+def test_a_withdrawal_still_deletes_a_scene_run_the_clean_up_keeps_for_an_open_job(world, tmp_path, monkeypatch):
+    """Stage 8 keeps an open website job's scene run on the host (``open_job_source_runs``). Privacy wins: the
+    withdrawal deletion never reads that reason, and the kept run goes at once with the site's other copies."""
+    import time
+
+    from blueprint_pipeline import completed_replay_cache_retention as retention
+    from blueprint_pipeline.control_plane_storage_gc_reasons import (
+        PROTECTED_OPEN_JOB_SOURCE,
+        evidence_protection_reason,
+    )
+
+    run = world["construction"]
+    intent = _sealed({"intent_id": world["intent_id"],
+                      "request": {"execution": {"expires_at_epoch": time.time() + 86_400}}}, "intent_digest")
+    intent_root = tmp_path / "gc-scene-intents"
+    _write(intent_root / world["intent_id"] / "intent.json", intent)
+    packets = tmp_path / "gc-team-scene-packets"
+    _write(packets / "processed" / "request.json", {"intent_id": world["intent_id"],
+                                                    "intent_digest": intent["intent_digest"],
+                                                    "source_launch_root": str(run)})
+    monkeypatch.setattr(retention, "process_reference", lambda _root, **_kwargs: None)
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import open_job_source_runs as open_jobs
+
+    # The work disk has room, so the open job's run is kept (under the floor it may be moved, oldest first).
+    monkeypatch.setattr(open_jobs, "measure_disk", lambda _path: SimpleNamespace(total=100 * 1024**3,
+                                                                                 free=90 * 1024**3, used=0))
+    # The job is open (its window runs, no campaign is final): the clean-up keeps the run.
+    assert evidence_protection_reason(
+        run, settlement_roots=(), pins_root=tmp_path / "pins", queue_roots=[], now=time.time,
+        team_scene_packet_queue_root=packets, screening_queue_root=tmp_path / "no-screening",
+        scene_intent_root=intent_root) == PROTECTED_OPEN_JOB_SOURCE
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    assert run.name in {row["name"] for row in plan["runs"]}
+    _apply(world, plan, cloud_storage=gcs)
+    assert not run.exists()
+
+
+def test_a_withdrawal_also_deletes_a_scene_runs_restore_record(world, tmp_path):
+    """Review 8c (7): ``<run>.restore.v1.json`` (attempt counts and times) goes with the site's run."""
+    from blueprint_pipeline import scene_run_restore as restore
+
+    run = world["construction"]
+    restore._write_state(run, {"attempts": 1, "status": "refused", "error_type": "ValueError"})
+    record = run.parent / (run.name + restore.STATE_SUFFIX)
+    assert json.loads(record.read_text())["schema_version"] == restore.STATE_SCHEMA
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    _apply(world, plan, cloud_storage=gcs)
+    assert not run.exists() and not record.exists()
+
+
+@pytest.mark.parametrize("content", ['{"attempts": 1, "status": "ref', "", "\x00\xff not json"])
+def test_a_torn_or_unreadable_restore_record_and_the_restore_lock_never_stop_a_withdrawal(world, content):
+    """Review 8d (2), privacy: the run's own restore leftovers (record, lock, temporary) go with it, unread."""
+    from blueprint_pipeline import scene_run_restore as restore
+
+    run = world["construction"]
+    record = run.parent / (run.name + restore.STATE_SUFFIX)
+    record.write_bytes(content.encode("utf-8", "surrogateescape"))  # what a crash in a plain write leaves
+    lock = run.parent / f".{run.name}.restore.lock"
+    lock.write_bytes(b"")
+    temporary = run.parent / f".{run.name}.restore-state.tmp"
+    temporary.write_text('{"half', encoding="utf-8")
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    assert not plan["unresolved"]
+    _apply(world, plan, cloud_storage=gcs)
+    assert not any(path.exists() for path in (run, record, lock, temporary))
+
+
+def test_the_restore_record_is_written_whole_or_not_at_all(tmp_path, monkeypatch):
+    """A crash mid-write leaves the previous record, never a torn one, and no temporary beside it."""
+    from blueprint_pipeline import scene_run_restore as restore
+
+    run = tmp_path / "launch-1"
+    restore._write_state(run, {"attempts": 1, "status": "refused"})
+    record = run.parent / (run.name + restore.STATE_SUFFIX)
+    before = record.read_bytes()
+
+    def crash(*_args, **_kwargs):
+        raise OSError("disk went away mid-write")
+
+    monkeypatch.setattr(restore.os, "fsync", crash)
+    restore._write_state(run, {"attempts": 2, "status": "refused"})
+    assert record.read_bytes() == before and json.loads(before)["attempts"] == 1
+    assert sorted(path.name for path in tmp_path.iterdir()) == [record.name]
+
+
+@pytest.mark.parametrize("name", ["{run}.restore.v1.json", ".{run}.restore.lock", ".{run}.restore-state.tmp"])
+def test_a_symlinked_restore_leftover_is_removed_itself_and_its_target_outside_the_site_is_untouched(
+        world, tmp_path, name):
+    """Review 8e (1), privacy: the link goes (never followed), the run goes, the link's target stays."""
+    import os
+
+    run = world["construction"]
+    outside = tmp_path / "not-this-site"
+    outside.mkdir()
+    target = outside / "keep.json"
+    target.write_text('{"another": "owner"}', encoding="utf-8")
+    before = (target.read_bytes(), os.stat(target).st_mtime_ns)
+    link = run.parent / name.format(run=run.name)
+    link.symlink_to(target)
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    assert not plan["unresolved"]
+    _apply(world, plan, cloud_storage=gcs)
+    assert not run.exists() and not os.path.lexists(link)
+    assert (target.read_bytes(), os.stat(target).st_mtime_ns) == before and sorted(outside.iterdir()) == [target]
+
+
+def test_any_other_symlinked_leftover_still_refuses_the_withdrawal(world, tmp_path):
+    run = world["construction"]
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("x", encoding="utf-8")
+    (run.parent / f".{run.name}.staging").symlink_to(target)
+    plan = _plan(world, cloud_storage=FakeGcs())
+    assert any(row["reason"] == "website_withdrawal_deletion_unsafe_entry" or "unsafe_entry" in row["reason"]
+               for row in plan["unresolved"])
+    assert target.exists()
+
+
+def test_a_withdrawal_lists_and_deletes_a_killed_restores_staging_with_the_run(world):
+    """PR review, privacy: a restore killed mid-way leaves ``.<run>.restoring`` (its partial download and
+    extraction inside); the withdrawal's plan lists it as the run's leftover and the apply removes it."""
+    from blueprint_pipeline import scene_run_restore as restore
+
+    run = world["construction"]
+    staging = restore.staging_path(run)
+    partial = staging / run.name / ".restore-x1y2z3" / "evidence.tar"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"part of the site's archive")
+    (staging / run.name / ".restore-x1y2z3" / "tree" / "allocator").mkdir(parents=True)
+    (staging / run.name / ".restore-x1y2z3" / "tree" / "launch_receipt.json").write_text("{}")
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    assert not plan["unresolved"]
+    [row] = [row for row in plan["runs"] if row["name"] == run.name]
+    assert str(staging) in row["leftovers"]
+    _apply(world, plan, cloud_storage=gcs)
+    assert not run.exists() and not staging.exists()
