@@ -1134,6 +1134,26 @@ and lists each path with what was recorded about it at approval time:
   file count. A folder whose listing the door partly refused records how many
   names it could not see (`door_unlisted_entries`); its bytes and count may then
   only be larger.
+- `task_evaluation_inputs_subfolder`: a direct child directory of one of three
+  parents under the inputs root, `sam31-preparations`, `stage-replays` and
+  `configured-controls` (`SUBFOLDER_PARENTS`, the owner's decision of 2026-11-12
+  to clear those three folders), with the same fields as a folder. Nothing
+  deeper and never the parent itself. It is checked exactly as a folder, through
+  the same code, and in addition: the parent is opened without following a link
+  and must be a directory on the inputs root's own device that the mount table
+  does not list as a mount point; no mount point may sit at or below the child
+  (a same-filesystem bind mount keeps its device number, so the table is read,
+  and an unreadable table refuses it as `mount_table_unavailable`); a symlink in
+  the parent or in the inputs root may not point at the child, into it or at the
+  parent; and the loose JSON directly in each of the three parents is read as
+  live state. The parents' names are used by released code; only the child's own
+  name refuses it as `named_by_released_code`. A file, unit, queue message or
+  process naming only the parent's path does not refuse a child (otherwise
+  nothing under a named root could be cleared); a live pin on the parent does,
+  as does a process using the child or anything in it. The child is renamed
+  aside inside its parent; the parent is never deleted, renamed or re-moded.
+  Measured for a manifest with
+  `scripts/measure_owner_approved_deletion_folders.py` (the door's read-only `ls`).
 - `authority_ended_scene_workspace`: a website scene working copy under
   `/var/lib/blueprint/pubsub-handoffs/<bucket>/scenes/`, with each capture's
   `terminal_code`, `terminal_at` and `terminal_payload_sha256` from its ledger.
@@ -1150,7 +1170,9 @@ Nothing runs it on a timer. An operator starts two oneshot units by hand:
 1. `blueprint-owner-approved-deletion-plan.service` checks every path of every
    manifest and writes
    `/var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions/<manifest_id>/plan.json`.
-   It deletes nothing. A path is `eligible` only when it is the recorded
+   It deletes nothing. A manifest in `deploy/owner-approved-deletions/held/`
+   is never planned or applied: the units read only the directory's own
+   `*.json`. A path is `eligible` only when it is the recorded
    identity and no live storage pin names it, lies inside it or contains it, no
    pending or processing queue message (the reclaim timer's queues and the scene
    queues) names it, no process uses it, no systemd unit or drop-in file under

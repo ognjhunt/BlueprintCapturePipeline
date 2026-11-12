@@ -1,0 +1,170 @@
+{
+ "schema_version": "owner_approved_deletion_manifest.v1",
+ "manifest_id": "2026-11-12-host-work-volume-reserve",
+ "approved_by": "owner",
+ "approved_at": "2026-11-12T21:05:00Z",
+ "expires_at": "2026-11-19T21:05:00Z",
+ "approval_evidence": "Owner, 2026-11-12 about 21:05Z, asked to approve each on its own (yes or no): 1. `task-evaluation-inputs/sam31-preparations`: 10.1 GB, 22 folders of preparation outputs from development scenes in September, untouched for at least 57 days, in a lane that is switched off. The system's own clean-up already lists all 22 as removable but only as a dry run. Lost: those old outputs. 2. `task-evaluation-inputs/stage-replays/claude-provision-trial`: 11.7 GB, a zero-cost trial replay from October. Lost: that replay's files. 3. Only if 1 and 2 free less than expected (some files are shared between folders): `task-evaluation-inputs/configured-controls`: 9.1 GB, newest file 27 September, lane switched off. Answered verbatim \"yes approve all 3\". This manifest: item 3, held; run only if 1 and 2 free less than expected.",
+ "entries": [
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-16ea923e",
+   "newest_mtime_epoch": 1788144480,
+   "apparent_bytes": 50869,
+   "file_count": 16,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-20b18586",
+   "newest_mtime_epoch": 1788144480,
+   "apparent_bytes": 51383,
+   "file_count": 17,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-359fbc9b",
+   "newest_mtime_epoch": 1788147205,
+   "apparent_bytes": 50869,
+   "file_count": 16,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-4d1e6da6",
+   "newest_mtime_epoch": 1788122888,
+   "apparent_bytes": 77555,
+   "file_count": 29,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-645c93f6",
+   "newest_mtime_epoch": 1788117163,
+   "apparent_bytes": 66437,
+   "file_count": 23,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-6f79ac956",
+   "newest_mtime_epoch": 1788095379,
+   "apparent_bytes": 3041,
+   "file_count": 5,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-7f72ae40",
+   "newest_mtime_epoch": 1788131630,
+   "apparent_bytes": 45850,
+   "file_count": 19,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-807e4ace",
+   "newest_mtime_epoch": 1788147631,
+   "apparent_bytes": 4272472600,
+   "file_count": 17,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-8f5b2313",
+   "newest_mtime_epoch": 1788127450,
+   "apparent_bytes": 78322,
+   "file_count": 31,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-ba53eac7",
+   "newest_mtime_epoch": 1788111489,
+   "apparent_bytes": 36064,
+   "file_count": 17,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-c79f262d",
+   "newest_mtime_epoch": 1788147205,
+   "apparent_bytes": 51383,
+   "file_count": 17,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-corrective-r13-1cdd33bd",
+   "newest_mtime_epoch": 1788250215,
+   "apparent_bytes": 47575,
+   "file_count": 16,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-corrective-r13-864beba8",
+   "newest_mtime_epoch": 1788250808,
+   "apparent_bytes": 12563,
+   "file_count": 13,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-d5206ac2",
+   "newest_mtime_epoch": 1788118968,
+   "apparent_bytes": 68355,
+   "file_count": 24,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-e0c1df2f",
+   "newest_mtime_epoch": 1788106369,
+   "apparent_bytes": 52547,
+   "file_count": 19,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-e23d52fac",
+   "newest_mtime_epoch": 1788103664,
+   "apparent_bytes": 83520,
+   "file_count": 27,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-e9b9affa",
+   "newest_mtime_epoch": 1788112709,
+   "apparent_bytes": 59523,
+   "file_count": 21,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-ee034eff",
+   "newest_mtime_epoch": 1788133423,
+   "apparent_bytes": 62588,
+   "file_count": 25,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene839873-fd7c7193",
+   "newest_mtime_epoch": 1788127934,
+   "apparent_bytes": 50422,
+   "file_count": 20,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/configured-controls/scene841757-30b10e56",
+   "newest_mtime_epoch": 1788928794,
+   "apparent_bytes": 4287194736,
+   "file_count": 21,
+   "door_unlisted_entries": 0
+  }
+ ]
+}

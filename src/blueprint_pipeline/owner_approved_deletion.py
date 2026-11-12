@@ -13,13 +13,30 @@ Two oneshot units run this module and nothing starts them on a timer:
   ``<report root>/<manifest id>/receipts/<key>.json`` for every path it deletes, before it
   renames the path aside and again once it is gone.
 
-A path is eligible only when it is one of two kinds, each under a fixed parent:
+A path is eligible only when it is one of three kinds, each under a fixed parent:
 
 * ``task_evaluation_inputs_folder``: a direct child directory of
   ``/var/lib/blueprint/task-evaluation-inputs``. Its newest mtime (whole seconds, over the
   folder and everything in it), its regular-file bytes and its file count must equal what the
   manifest recorded. A folder the door could not list in full records how many names it could
   not see (``door_unlisted_entries``); its bytes and count may then only be larger.
+* ``task_evaluation_inputs_subfolder``: a direct child directory of one of the parents in
+  ``SUBFOLDER_PARENTS`` (``sam31-preparations``, ``stage-replays``, ``configured-controls``, each
+  a direct child of the inputs root; the owner's decision of 2026-11-12), and nothing deeper. It
+  is checked exactly as a folder, through the same code: the same entry fields and identity, the
+  same references, live state, released code and scan roots. In addition the parent is opened
+  without following a link and must be a directory on the inputs root's own mount (not itself a
+  mount point), no mount table entry may sit at or below the child (a bind mount of the same
+  filesystem keeps its device number, so the table is read), and a symlink in the parent, like
+  one in the inputs root, may not point at the child, into it or at the parent. The parent itself
+  is never deleted, renamed or re-moded; the child is renamed aside inside the parent. The
+  parent's name is named by released code (that is why the parent can never be listed as a
+  folder); only the child's own name refuses the child as ``named_by_released_code``. A live-state
+  file, unit file, queue message or process that names only the parent's path does not refuse the
+  child, otherwise nothing under a named root could ever be cleared; a live pin on the parent
+  does (as a pin containing any path does), and so does a process using the child or anything in
+  it. The loose JSON directly in each of these parents is read as live state, as the inputs
+  root's is.
 * ``authority_ended_scene_workspace``: a website scene working copy under
   ``/var/lib/blueprint/pubsub-handoffs/<bucket>/scenes/``. Every capture in it must have ended
   for good because its authority ended (ledger ``terminal_authority_ended``) more than seven
@@ -84,12 +101,19 @@ RECEIPT_SCHEMA = "owner_approved_deletion_receipt.v1"
 RESULT_SCHEMA = "owner_approved_deletion_result.v1"
 APPLY_ACK = "delete-owner-approved-paths"
 FOLDER = "task_evaluation_inputs_folder"
+SUBFOLDER = "task_evaluation_inputs_subfolder"
 SCENE = "authority_ended_scene_workspace"
+#: The only parents whose direct child directories a manifest may list as ``SUBFOLDER``: the owner's
+#: decision of 2026-11-12 (about 21:05Z, "yes approve all 3") to clear these three folders of the
+#: host's work volume. Each is a direct child of the inputs root; the parent itself is never listed.
+SUBFOLDER_PARENTS = ("sam31-preparations", "stage-replays", "configured-controls")
+#: Both folder kinds share the folder checks and the identity compared at plan and apply.
+_FOLDER_CLASSES = frozenset({FOLDER, SUBFOLDER})
 #: Classes whose deletion privacy requires: a leftover reference in live state never keeps the
 #: data; the plan and receipt record it under ``references_left_pointing_at_nothing``.
 PRIVACY_REQUIRED_CLASSES = frozenset({SCENE})
 #: Housekeeping classes: a live-state reference, an incomplete scan or released code keeps them.
-HOUSEKEEPING_CLASSES = frozenset({FOLDER})
+HOUSEKEEPING_CLASSES = frozenset({FOLDER, SUBFOLDER})
 INPUTS_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
 HANDOFF_ROOT = Path("/var/lib/blueprint/pubsub-handoffs")
 DEFAULT_MANIFEST_DIR = Path("/opt/blueprint/task-evaluation-control-plane/deploy/owner-approved-deletions")
@@ -134,6 +158,8 @@ MAX_SCAN_FILES = 200_000
 MAX_SCAN_FILE_BYTES = 64 * 1024 * 1024
 QUEUE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS"
 UNIT_DIRECTORIES = (Path("/etc/systemd/system"), Path("/run/systemd/system"), Path("/run/systemd/transient"))
+#: This process's mount table: a bind mount of the same filesystem keeps its device number.
+MOUNTINFO = Path("/proc/self/mountinfo")
 MAX_APPROVAL_SECONDS = 14 * 86400
 MAX_PLAN_AGE_SECONDS = 24 * 3600
 #: Pub/Sub message retention: once a capture ended longer ago, its message can no longer be
@@ -177,11 +203,16 @@ def _count(value: Any) -> bool:
 # --- the manifest -----------------------------------------------------------------------------
 
 
-def _folder_entry(entry: Mapping[str, Any], inputs_root: Path) -> dict[str, Any]:
+def _folder_entry(entry: Mapping[str, Any], inputs_root: Path, *,
+                  parents: Sequence[str] | None = None) -> dict[str, Any]:
+    """A folder entry; with ``parents``, a direct child of one of those direct children of the inputs root."""
+
     keys = {"class", "path", "newest_mtime_epoch", "apparent_bytes", "file_count", "door_unlisted_entries"}
     _require(set(entry) == keys, "entry_fields_invalid")
     path = Path(str(entry["path"]))
-    _require(path.parent == inputs_root and _NAME.fullmatch(path.name) and not path.name.startswith(ASIDE_PREFIX)
+    placed = (path.parent == inputs_root if parents is None
+              else path.parent.parent == inputs_root and path.parent.name in parents)
+    _require(placed and _NAME.fullmatch(path.name) and not path.name.startswith(ASIDE_PREFIX)
              and str(path) == entry["path"], "entry_path_outside_allowlist")
     _require(all(_count(entry[key]) for key in keys - {"class", "path"}), "entry_identity_invalid")
     return dict(entry)
@@ -210,6 +241,8 @@ def _scene_entry(entry: Mapping[str, Any], handoff_root: Path) -> dict[str, Any]
 #: HOUSEKEEPING_CLASSES (a test holds that).
 ENTRY_VALIDATORS: dict[str, Callable[..., dict[str, Any]]] = {
     FOLDER: lambda entry, *, inputs_root, handoff_root: _folder_entry(entry, inputs_root),
+    SUBFOLDER: lambda entry, *, inputs_root, handoff_root: _folder_entry(entry, inputs_root,
+                                                                         parents=SUBFOLDER_PARENTS),
     SCENE: lambda entry, *, inputs_root, handoff_root: _scene_entry(entry, handoff_root),
 }
 
@@ -663,8 +696,8 @@ class LiveState:
         source.update(status="read", files=self.file_count - before)
         return documents
 
-    def _loose_json(self, root: Path) -> None:
-        source = {"root": str(root), "kind": "inputs_root_loose_json", "required": True}
+    def _loose_json(self, root: Path, *, kind: str = "inputs_root_loose_json", required: bool = True) -> None:
+        source = {"root": str(root), "kind": kind, "required": required}
         self.sources.append(source)
         before = self.file_count
         try:
@@ -672,7 +705,8 @@ class LiveState:
                 items = sorted(iterator, key=lambda item: item.name)
         except FileNotFoundError:
             source["status"] = "absent"
-            self.unreadable[str(root)] = "required_root_missing"
+            if required:
+                self.unreadable[str(root)] = "required_root_missing"
             return
         except OSError:
             self.unreadable[str(root)] = "unreadable"
@@ -720,6 +754,8 @@ def scan_live_state(*, config_root: Path, intent_root: Path | None, binding_root
     state._walk(Path(binding_root), kind="public_source_bindings", required=True)
     state._walk(Path(launch_profile_catalog), kind="launch_profile_catalog", required=True)
     state._loose_json(Path(inputs_root))
+    for parent in SUBFOLDER_PARENTS:  # a subfolder's siblings, as the inputs root's loose JSON is a folder's
+        state._loose_json(Path(inputs_root) / parent, kind="subfolder_parent_loose_json", required=False)
     for root in registry_roots:
         state._walk(Path(root), kind="control_plane_registry", required=False)
     for root in release_roots:
@@ -780,21 +816,67 @@ def live_state_reasons(entries: Sequence[Mapping[str, Any]], state: LiveState, d
 # --- the per-kind checks ------------------------------------------------------------------------
 
 
+def _mount_points(mountinfo: Path) -> frozenset[str] | None:
+    """Every mount point in ``mountinfo`` (its fifth field, unescaped); ``None`` when it cannot be read."""
+
+    try:
+        table = Path(mountinfo).read_bytes()
+        points = set()
+        for line in table.splitlines():
+            fields = line.split(b" ")
+            if len(fields) < 5:
+                raise ValueError("mountinfo_unparsed")
+            point = re.sub(rb"\\([0-7]{3})", lambda match: bytes([int(match.group(1), 8) & 0xFF]), fields[4])
+            points.add(posixpath.normpath(os.fsdecode(point)))
+        return frozenset(points) if points else None
+    except (OSError, ValueError):
+        return None
+
+
+def _subfolder_parent_unsafe(parent_fd: int, path: Path, mountinfo: Path) -> str | None:
+    """Why a subfolder's parent or the child's mounts refuse it: the parent on another device than the
+    inputs root or a mount point itself, or a mount at or below the child."""
+
+    try:
+        root_fd = _open_directory(path.parent.parent)
+    except OSError:
+        return "parent_unsafe"
+    try:
+        if os.fstat(root_fd).st_dev != os.fstat(parent_fd).st_dev:
+            return "parent_unsafe"
+    finally:
+        os.close(root_fd)
+    points = _mount_points(mountinfo)
+    if points is None:
+        return "mount_table_unavailable"
+    if str(path.parent) in points:
+        return "parent_unsafe"
+    if str(path) in points:
+        return "mount_point"
+    if any(_inside(point, [str(path)]) for point in points):
+        return "mount_point_inside"
+    return None
+
+
 def _check_folder(entry: Mapping[str, Any], references: References, *, link_targets: Sequence[Path],
-                  ) -> tuple[list[str], dict[str, Any] | None]:
+                  mountinfo: Path = MOUNTINFO) -> tuple[list[str], dict[str, Any] | None]:
     path = Path(entry["path"])
+    subfolder = entry["class"] == SUBFOLDER
     try:
         parent_fd = _open_directory(path.parent)
     except OSError:
         return ["parent_unsafe"], None
     try:
         identity = _measure(parent_fd, path.name)
+        if subfolder and not isinstance(identity, str):
+            identity = _subfolder_parent_unsafe(parent_fd, path, mountinfo) or identity
     finally:
         os.close(parent_fd)
     if isinstance(identity, str):
         return [identity], None
     reasons = [] if _folder_matches_manifest(entry, identity) else ["changed_since_approval"]
-    if any(target == path or path in target.parents for target in link_targets):
+    targets = [*link_targets, *(_sibling_link_targets(path.parent) if subfolder else ())]
+    if any(target == path or path in target.parents or (subfolder and target == path.parent) for target in targets):
         reasons.append("symlink_target")
     reasons.extend(references.reasons(path))
     return reasons, identity
@@ -927,13 +1009,14 @@ class Settings:
                  launch_profile_catalog: Path = DEFAULT_LAUNCH_PROFILE_CATALOG,
                  registry_roots: Sequence[Path] = DEFAULT_REGISTRY_ROOTS,
                  release_roots: Sequence[Path] = (DEFAULT_RELEASE_ROOT,),
-                 door_roots: Sequence[Path] = (DEFAULT_DOOR_ROOT,)) -> None:
+                 door_roots: Sequence[Path] = (DEFAULT_DOOR_ROOT,), mountinfo: Path = MOUNTINFO) -> None:
         self.pins_root, self.queue_roots, self.intent_root = Path(pins_root), tuple(map(Path, queue_roots)), intent_root
         self.inputs_root, self.handoff_root = Path(inputs_root), Path(handoff_root)
         self.unit_directories, self.process_root = tuple(unit_directories), Path(process_root)
         self.config_root, self.binding_root = Path(config_root), Path(binding_root)
         self.launch_profile_catalog, self.registry_roots = Path(launch_profile_catalog), tuple(map(Path, registry_roots))
         self.release_roots, self.door_roots = tuple(map(Path, release_roots)), tuple(map(Path, door_roots))
+        self.mountinfo = Path(mountinfo)
 
     def references(self, now: float) -> References:
         return build_references(pins_root=self.pins_root, queue_roots=self.queue_roots, intent_root=self.intent_root,
@@ -960,8 +1043,8 @@ def _with_skipped_references(verdict: Mapping[str, Any], identity: dict[str, Any
 def _check(entry: Mapping[str, Any], references: References, settings: Settings, now: float,
            link_targets: Sequence[Path]) -> tuple[list[str], dict[str, Any] | None]:
     try:
-        if entry["class"] == FOLDER:
-            return _check_folder(entry, references, link_targets=link_targets)
+        if entry["class"] in _FOLDER_CLASSES:
+            return _check_folder(entry, references, link_targets=link_targets, mountinfo=settings.mountinfo)
         return _check_scene(entry, references, pins_root=settings.pins_root, queue_roots=settings.queue_roots,
                             intent_root=settings.intent_root, now=now)
     except Exception as error:  # noqa: BLE001 - a check that cannot finish keeps the path
@@ -1115,7 +1198,7 @@ def apply_manifest(manifest_path: Path, *, report_root: Path, settings: Settings
         entry = entries[row["path"]]
         reasons, identity = _check(entry, references, settings, observed_at, link_targets)
         if not reasons and identity is not None and any(identity[key] != row["identity"][key]
-                                                        for key in _COMPARED if entry["class"] == FOLDER):
+                                                        for key in _COMPARED if entry["class"] in _FOLDER_CLASSES):
             reasons = ["changed_since_plan"]
         if not reasons and identity is not None and (identity["dev"], identity["ino"]) != (
                 row["identity"]["dev"], row["identity"]["ino"]):
