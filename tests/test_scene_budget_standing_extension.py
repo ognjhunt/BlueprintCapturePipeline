@@ -243,6 +243,7 @@ def test_the_schema_bound_is_never_passed(tmp_path, grant, account_report):
 # --------------------------------------------------------------------------------------
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest  # noqa: E402
+from blueprint_pipeline.website_preparation_contracts import validate_preparation_request  # noqa: E402
 from tests.test_website_preparation_contract_v2 import VECTOR, NOW  # noqa: E402
 
 PREPARATION_KEY = "website_preparation_authority"
@@ -449,3 +450,218 @@ def test_nothing_extends_past_the_monthly_limit(tmp_path, account_300):
     with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
         _reserve_at(root, intent, "scene-configuration-third", 5)  # $5 short, $4 left
     assert [r["amount_usd"] for r in _records(directory)] == [6]
+
+
+# --------------------------------------------------------------------------------------
+# 2026-11-12, after review: an automatic extension never takes one job's scene ceiling past
+# $100, the website's per-job safety limit; an owner grant still can.
+# --------------------------------------------------------------------------------------
+
+
+def test_the_automatic_job_limit_mirrors_the_website_safety_limit():
+    assert standing.AUTOMATIC_EXTENSION_JOB_LIMIT_USD == 100
+    assert standing.AUTOMATIC_EXTENSION_JOB_LIMIT_USD < standing.SCHEMA_CEILING_USD
+
+
+def test_an_automatic_extension_to_exactly_100_dollars_is_admitted(tmp_path, account_300):
+    request, task, grant = _confirmed_vector()
+    _retain(tmp_path, request, task, grant)
+    root, directory, intent = _stage_confirmed(tmp_path, request)
+    _reserve_at(root, intent, "scene-configuration-held", 18)
+    assert _reserve_at(root, intent, "scene-configuration-next", 82)["status"] == "reserved"
+    [record] = _records(directory)
+    assert (record["prior_ceiling_usd"], record["amount_usd"], record["resulting_ceiling_usd"]) == (20, 80, 100)
+
+
+def test_an_automatic_extension_past_100_dollars_is_refused_and_nothing_is_issued(tmp_path, account_300):
+    request, task, grant = _confirmed_vector()
+    _retain(tmp_path, request, task, grant)
+    root, directory, intent = _stage_confirmed(tmp_path, request)
+    _reserve_at(root, intent, "scene-configuration-held", 18)
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve_at(root, intent, "scene-configuration-next", 82.01)
+    assert _records(directory) == []
+    assert standing.effective_scene_budget(directory, intent)["max_total_spend_usd"] == 20
+
+
+def test_successive_automatic_extensions_stop_at_100_dollars(tmp_path, account_300):
+    request, task, grant = _confirmed_vector()
+    _retain(tmp_path, request, task, grant)
+    root, directory, intent = _stage_confirmed(tmp_path, request)
+    for index in range(5):  # 5 x $18 = $90
+        _reserve_at(root, intent, f"scene-configuration-{index}", 18)
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve_at(root, intent, "scene-configuration-5", 18)  # $108
+    assert _records(directory)[-1]["resulting_ceiling_usd"] == 90
+
+
+def test_an_unconfirmed_flagged_job_is_bound_the_same_way(tmp_path, grant, account_report):
+    directory, intent = _stage(tmp_path, spend=20, attempts=16)
+    _reserve(tmp_path, intent, "a1", 18)
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve(tmp_path, intent, "a2", 82.01)
+    assert _records(directory) == []
+    assert _reserve(tmp_path, intent, "a2", 82)["status"] == "reserved"
+    assert _records(directory)[0]["resulting_ceiling_usd"] == 100
+
+
+def test_an_owner_grant_above_100_dollars_still_works(tmp_path, account_300):
+    request, task, grant = _confirmed_vector()
+    _retain(tmp_path, request, task, grant)
+    root, directory, intent = _stage_confirmed(tmp_path, request)
+    owner_budget.extend_scene_execution_budget(
+        queue_root=root, intent_id=intent["intent_id"], intent_digest=intent["intent_digest"],
+        owner=intent["request"]["owner"], authenticated_client="webapp", trusted_clients={"webapp"},
+        max_total_spend_usd=150, max_paid_attempts=16, authorization_reference="owner_approval:test",
+        ack=owner_budget.ACK, now=NOW + 30)
+    _reserve_at(root, intent, "scene-configuration-held", 18)
+    assert _reserve_at(root, intent, "scene-configuration-next", 132)["status"] == "reserved"  # $150 exactly
+    assert _records(directory) == []  # the owner's ceiling admitted it; nothing automatic
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve_at(root, intent, "scene-configuration-third", 1)  # past the owner's $150: automatic stops
+    assert _records(directory) == []
+
+
+# --------------------------------------------------------------------------------------
+# The grant file's guards, each pinned (review probes, 2026-11-12).
+# --------------------------------------------------------------------------------------
+
+
+def _q(tmp_path):
+    return tmp_path / "intents"
+
+
+def test_a_symlinked_grant_file_is_refused(tmp_path):
+    request, task, grant = _confirmed_vector()
+    capture = _retain(tmp_path, request, task, grant, capture_grant=False)
+    real = tmp_path / "real.json"
+    real.write_text(json.dumps(grant))
+    (capture / "pipeline" / "website_scene_sponsorship.json").symlink_to(real)
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+def test_a_grant_file_over_64_kib_is_refused(tmp_path):
+    request, task, grant = _confirmed_vector()
+    capture = _retain(tmp_path, request, task, grant)
+    (capture / "pipeline" / "website_scene_sponsorship.json").write_text(json.dumps(grant) + " " * (64 * 1024))
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+def _rewrite_capture_path(tmp_path, value):
+    [path] = list((tmp_path / "website-source-bindings").glob("*.json"))
+    registration = json.loads(path.read_text())
+    registration["capture_source"]["canonical_path"] = value
+    registration["registration_digest"] = canonical_digest(registration, digest_field="registration_digest")
+    path.write_text(json.dumps(registration))
+
+
+def test_a_capture_path_with_dot_dot_is_refused(tmp_path):
+    request, task, grant = _confirmed_vector()
+    capture = _retain(tmp_path, request, task, grant)
+    _rewrite_capture_path(tmp_path, str(capture / ".." / capture.name))
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+def test_a_relative_capture_path_is_refused(tmp_path, monkeypatch):
+    request, task, grant = _confirmed_vector()
+    capture = _retain(tmp_path, request, task, grant)
+    monkeypatch.chdir(tmp_path)  # the relative path would resolve to the real capture from here
+    _rewrite_capture_path(tmp_path, str(capture.relative_to(tmp_path)))
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+@pytest.mark.parametrize("value", [[1, 2], "grant", 7, None])
+def test_a_grant_file_that_is_not_an_object_waits_and_never_raises(tmp_path, value):
+    request, task, grant = _confirmed_vector()
+    capture = _retain(tmp_path, request, task, grant)
+    (capture / "pipeline" / "website_scene_sponsorship.json").write_text(json.dumps(value))
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+@pytest.mark.parametrize("retained", ["invalid", "empty"])
+def test_a_grant_the_preparation_kept_is_never_replaced_by_the_capture_file(tmp_path, retained):
+    request, task, grant = _confirmed_vector()
+    kept = {} if retained == "empty" else {**grant, "max_paid_attempts": 15}  # its digest no longer matches
+    _retain(tmp_path, request, task, grant, in_preparation=kept)
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+def test_confirmed_scope_is_honoured_only_when_passed_exactly(tmp_path):
+    request, task, grant = _confirmed_vector()
+    with pytest.raises(ValueError, match="website_preparation_request_authority_invalid"):
+        validate_preparation_request(request=request, task_context=task, authority=grant, now=NOW)
+    for truthy in (1, "true"):
+        with pytest.raises(ValueError, match="website_preparation_request_authority_invalid"):
+            validate_preparation_request(request=request, task_context=task, authority=grant, now=NOW,
+                                         confirmed_task=truthy)
+    assert validate_preparation_request(request=request, task_context=task, authority=grant, now=NOW,
+                                        confirmed_task=True) == grant
+
+
+def test_every_authority_reopening_still_refuses_a_confirmed_task(tmp_path):
+    # The preparation keeps a valid confirmed grant: the extension reads it, the authority paths do not admit it.
+    request, task, grant = _confirmed_vector()
+    _retain(tmp_path, request, task, grant, in_preparation=grant)
+    with pytest.raises(ValueError, match="website_preparation_request_authority_invalid"):
+        website_preparation_authority._retained_sources(request=request, queue_root=_q(tmp_path), now=NOW)
+    with pytest.raises(ValueError, match="website_preparation_request_authority_invalid"):
+        website_preparation_authority.require_retained_preparation_authority(
+            request=request, queue_root=_q(tmp_path), now=NOW)
+
+
+def test_an_owner_that_differs_only_by_organization_is_refused(tmp_path):
+    request, task, grant = _confirmed_vector()
+    grant["owner"] = {**grant["owner"], "organization_id": "other-org"}
+    grant["authority_digest"] = canonical_digest(grant, digest_field="authority_digest")
+    _retain(tmp_path, request, task, grant)
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+@pytest.mark.parametrize("field,value", [("max_total_spend_usd", 19), ("max_paid_attempts", 15),
+                                         ("expires_at_epoch", 1791525000)])
+def test_a_request_whose_execution_caps_differ_from_the_grant_is_refused(tmp_path, field, value):
+    request, task, grant = _confirmed_vector()
+    request["execution"][field] = value
+    _retain(tmp_path, request, task, grant)
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+def test_a_grant_changed_after_it_was_signed_is_refused(tmp_path):
+    request, task, grant = _confirmed_vector()
+    grant["policy_digest"] = "sha256:" + "0" * 64  # nothing else reads this field
+    _retain(tmp_path, request, task, grant)
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+def test_the_flag_must_be_exactly_true(tmp_path):
+    request, task, grant = _confirmed_vector(flag=None)
+    grant[standing.GRANT_FIELD] = "true"
+    grant["authority_digest"] = canonical_digest(grant, digest_field="authority_digest")
+    _retain(tmp_path, request, task, grant)
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+def test_an_unconfirmed_request_never_reads_a_confirmed_grant(tmp_path):
+    request, task, grant = _confirmed_vector()
+    request["consent"]["task_confirmed"] = False
+    _retain(tmp_path, request, task, grant)
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+def test_another_requests_grant_in_the_same_capture_is_refused(tmp_path):
+    request, task, grant = _confirmed_vector()
+    _other_request, _other_task, other_grant = _confirmed_vector(spend=19)
+    capture = _retain(tmp_path, request, task, grant, capture_grant=False)
+    (capture / "pipeline" / "website_scene_sponsorship.json").write_text(json.dumps(other_grant))
+    assert standing.granted_authority(request, _q(tmp_path), NOW) is None
+
+
+def test_an_owner_extended_window_keeps_the_grant_readable_past_its_expiry(tmp_path, monkeypatch):
+    request, task, grant = _confirmed_vector()
+    _retain(tmp_path, request, task, grant)
+    after = grant["expires_at_epoch"] + 60
+    assert standing.granted_authority(request, _q(tmp_path), after) is None
+    # The intent's verified owner window extension (``_intent_valid_until``) moves only the "still valid" check.
+    monkeypatch.setattr(website_preparation_authority, "_intent_valid_until",
+                        lambda **_: grant["expires_at_epoch"] + 3600)
+    assert standing.granted_authority(request, _q(tmp_path), after) == grant
