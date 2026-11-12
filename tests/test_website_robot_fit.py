@@ -80,6 +80,20 @@ def _check(row, name):
     return next(check for check in row["checks"] if check["check"] == name)
 
 
+HANDS = {"max_hand_height_m": _figure(1.5, "m", "Hand height up to 1.5 m"),
+         "min_hand_height_m": _figure(0, "m", "Hand height from 0 m")}
+
+
+def _floor_at(monkeypatch, floor_z=0.0, lower_half=2.0):
+    """The scene's floor search as the table would get it from a real collider: its height, and wide."""
+    from blueprint_pipeline import website_robot_fit_floor
+
+    monkeypatch.setattr(website_robot_fit_floor, "widest_clear_square", lambda **_: {
+        "floor_z_m": floor_z, "lower_half_m": lower_half, "upper_half_m": None, "upper_hole_possible": False,
+        "budget_exhausted": False,
+        "searches": [{"half_extent_m": lower_half, "clear": True, "position_world_m": [0.0, 0.0, 0.0]}]})
+
+
 def _reach(metres):
     return _figure(metres, "m", f"Reach {metres * 1000:g} mm", f"{metres * 1000:g} mm = {metres:g} m")
 
@@ -231,22 +245,26 @@ def test_payload_takes_the_owners_weight_with_a_band_else_the_estimate(tmp_path)
     assert estimated["inputs"]["owner_item_weight"] == {"text": "2-3 kg", "parsed_kg": None, "used": False}
 
 
-def test_only_the_objects_own_mass_rules_a_model_out_and_only_an_arm_takes_the_tool(tmp_path):
-    # A 2 kg item is 1.8 to 2.2 kg. A lighter tool could replace the 0.9 kg default on an arm's
-    # flange; a humanoid lifts with its own hand, so no tool is added for it.
+def test_the_lightest_mass_with_the_default_tool_rules_a_model_out_and_only_an_arm_takes_the_tool(tmp_path):
+    # A 2 kg item is 1.8 to 2.2 kg. With the 0.9 kg default tool on an arm's flange even 1.8 kg is over
+    # a 2.5 kg rating, so no item this heavy passes with it: a fail, never a condition already false.
+    # A humanoid lifts with its own hand, so no tool is added for it.
     rows = _rows(_table(tmp_path, sealed(_model("arm", rated_payload_kg=_payload(2.5)),
                                          _model("tiny_arm", rated_payload_kg=_payload(1.5)),
                                          _model("humanoid", "humanoid", rated_payload_kg=_payload(2.5))),
                         job=_job(weight="2 kg")))
     payload = {name: _check(row, "payload") for name, row in rows.items()}
     assert {name: check["result"] for name, check in payload.items()} == {
-        "arm": "unknown", "tiny_arm": "fail", "humanoid": "pass"}
-    assert payload["arm"]["values"]["required_kg"] == {"optimistic": 1.8, "pessimistic": 3.1}
+        "arm": "fail", "tiny_arm": "fail", "humanoid": "pass"}
+    # One rule: the item plus the default tool, both ends of the band, against the rating.
+    assert payload["arm"]["values"]["required_kg"] == {"optimistic": 2.7, "pessimistic": 3.1}
     assert payload["humanoid"]["values"]["required_kg"] == {"optimistic": 1.8, "pessimistic": 2.2}
     assert [(payload[name]["values"]["end_effector"], payload[name]["values"]["tool_mass_kg"])
             for name in ("arm", "humanoid")] == [("default_tool", 0.9), ("own_hand", 0.0)]
-    assert payload["tiny_arm"]["reason"] == "even the lightest mass, before any tool, exceeds the rated payload"
-    assert payload["arm"]["reason"] == "the rated payload falls between the lightest mass and the heaviest plus the tool"
+    # The reason says the gripper is counted, so nobody reads it as the item alone.
+    gripper = "even the lightest mass plus a 0.9 kg gripper (the default tool) exceeds the rated payload"
+    assert payload["tiny_arm"]["reason"] == payload["arm"]["reason"] == gripper
+    assert "condition" not in payload["arm"] and rows["arm"]["first_look_verdict"] == "doesnt_fit"
 
 
 @pytest.mark.parametrize("target, result", [(None, "not_requested"), (0.3, "fail"), (2.0, "unknown"),
@@ -262,6 +280,78 @@ def test_cycle_time_is_bounded_from_both_sides(tmp_path, target, result):
         assert check["values"]["pessimistic_s"] == pytest.approx(15.2, abs=1e-6)
     assert table["rows"][0]["verdict"] == {"not_requested": "fits_spec", "pass": "fits_spec", "fail": "doesnt_fit",
                                            "unknown": "unknown"}[result]
+
+
+def test_a_row_open_only_on_estimates_fits_if_its_conditions_hold(tmp_path, monkeypatch):
+    _floor_at(monkeypatch)
+    # The estimated item is 0.084-2.370 kg; the place needs 0.49-0.83 m of reach across the scale band.
+    catalog = sealed(_model("light", rated_payload_kg=_payload(2)), _model("heavy", rated_payload_kg=_payload(12)),
+                     _model("both", rated_payload_kg=_payload(2), max_reach_m=_reach(0.6)),
+                     _model("short", rated_payload_kg=_payload(2), max_reach_m=_reach(0.4)),
+                     _model("unrated", rated_payload_kg=None),
+                     _model("mobile", "mobile_manipulator", rated_payload_kg=_payload(2),
+                            max_base_speed_m_s=_figure(1.0, "m/s", "Base speed 1 m/s"), **HANDS))
+    table = _table(tmp_path, catalog)
+    rows = _rows(table)
+    # The legacy verdict is unchanged for every reader that predates the first look.
+    assert {name: row["verdict"] for name, row in rows.items()} == {
+        "light": "unknown", "heavy": "fits_spec", "both": "unknown", "short": "doesnt_fit", "unrated": "unknown",
+        "mobile": "unknown"}
+    assert {name: row["first_look_verdict"] for name, row in rows.items()} == {
+        "light": "fits_if", "heavy": "fits_spec", "both": "fits_if", "short": "doesnt_fit", "unrated": "unknown",
+        "mobile": "fits_if"}
+    assert table["counts"] == {"fits": 0, "fits_spec": 1, "doesnt_fit": 1, "unknown": 4}
+    assert table["first_look_counts"] == {"fits": 0, "fits_spec": 1, "fits_if": 3, "doesnt_fit": 1, "unknown": 1}
+    light = rows["light"]
+    # The item limit is the rated payload less the 0.9 kg default tool on the flange.
+    assert (light["rated_payload_kg"], light["payload_limit_kg"], light["verdict_if_conditions_hold"]) == (2, 1.1,
+                                                                                                          "fits_spec")
+    assert light["conditions"] == [{"check": "payload", "quantity": "item_mass_kg", "unit": "kg", "need_min": 0.084375,
+                                    "need_max": 2.37037, "limit": 1.1, "need_basis": "estimated_from_video",
+                                    "limit_basis": "catalog"}]
+    assert light["first_look_reasons"] == ["payload: fits if the item weighs no more than 1.1 kg; this job seems to "
+                                           "need 0.084375 to 2.37037 kg, estimated from the video"]
+    assert _check(light, "payload")["cause"] == "estimate_straddles_limit" and light["missing"] == []
+    assert [entry["quantity"] for entry in rows["both"]["conditions"]] == ["reach_m", "item_mass_kg"]
+    assert rows["both"]["conditions"][0]["need_min"] == pytest.approx(0.491808) and (
+        rows["both"]["conditions"][0]["limit"] == 0.6)
+    # A pass on the band records that it rests on the video's estimate.
+    assert _check(rows["heavy"], "payload")["basis"] == _check(rows["heavy"], "reach")["basis"] == "estimated_from_video"
+    # A missing catalog figure is no condition: the row stays unknown and says which.
+    assert rows["unrated"]["missing"] == [{"check": "payload", "cause": "catalog_figure_missing"}]
+    assert rows["unrated"]["payload_limit_kg"] is None
+    # The route from the entrance is never checked: a condition with no numbers, beside its weight.
+    assert [entry["quantity"] for entry in rows["mobile"]["conditions"]] == ["item_mass_kg", "route_clear"]
+    assert rows["mobile"]["missing"] == []
+    assert rows["mobile"]["payload_limit_kg"] == 2.0  # its own hand: no tool is subtracted
+    # Most useful first: fits_spec, fits_if by fewest conditions and then the highest payload limit (the
+    # rows most likely to hold), doesnt_fit, unknown.
+    assert [row["model_id"] for row in table["rows"]] == ["heavy", "light", "mobile", "both", "short", "unrated"]
+
+
+def test_a_known_weight_that_straddles_a_rating_is_conditional_on_the_sites_word(tmp_path):
+    rows = _rows(_table(tmp_path, sealed(_model("close", rated_payload_kg=_payload(6)),
+                                         _model("strong", rated_payload_kg=_payload(7))), job=_job(weight="5 kg")))
+    assert (rows["strong"]["first_look_verdict"], rows["strong"]["conditions"]) == ("fits_spec", [])
+    assert rows["close"]["first_look_verdict"] == "fits_if"
+    assert rows["close"]["conditions"][0]["need_basis"] == "owner_stated"
+    assert rows["close"]["conditions"][0]["need_min"] == 4.5 and rows["close"]["payload_limit_kg"] == 5.1
+
+
+def test_no_weight_at_all_is_a_condition_the_site_can_answer(tmp_path):
+    job = _job()
+    job["physics"] = {}
+    rows = _rows(_table(tmp_path, sealed(_model("arm", rated_payload_kg=_payload(5)),
+                                         _model("toy", rated_payload_kg=_payload(0.5))), job=job))
+    assert rows["arm"]["first_look_verdict"] == "fits_if"
+    assert rows["arm"]["conditions"][0] == {"check": "payload", "quantity": "item_mass_kg", "unit": "kg",
+                                                 "need_min": None, "need_max": None, "limit": 4.1,
+                                                 "need_basis": "unavailable", "limit_basis": "catalog"}
+    assert rows["arm"]["first_look_reasons"] == ["payload: fits if the item weighs no more than 4.1 kg; not known "
+                                                 "for this job"]
+    # The default tool alone outweighs a 0.5 kg rating: no item weight fits with it, so no condition.
+    assert rows["toy"]["first_look_verdict"] == "unknown"
+    assert rows["toy"]["missing"] == [{"check": "payload", "cause": "item_mass_missing"}]
 
 
 def test_every_path_checked_profile_names_its_recipe():
@@ -323,34 +413,50 @@ def test_no_clear_station_is_unknown_never_a_failure(tmp_path, monkeypatch):
             "unknown", "unknown", "unknown")
 
 
-def test_mobile_bases_and_humanoids_are_never_cleared_for_access(tmp_path):
+def test_an_unchecked_route_is_a_condition_only_when_nothing_else_is_open(tmp_path, monkeypatch):
+    _floor_at(monkeypatch)
     base_speed = _figure(1.0, "m/s", "Base speed 1 m/s")
     catalog = sealed(
         _model("fixed"),
         _model("small_mobile", "mobile_manipulator", max_reach_m=_reach(1.0), max_base_speed_m_s=base_speed,
-               base_footprint_diameter_m=_figure(0.25, "m", "Footprint 250 mm", "250 mm = 0.25 m")),
+               base_footprint_diameter_m=_figure(0.25, "m", "Footprint 250 mm", "250 mm = 0.25 m"), **HANDS),
         _model("large_mobile", "mobile_manipulator", max_reach_m=_reach(1.0), max_base_speed_m_s=base_speed,
-               base_footprint_diameter_m=None,
+               base_footprint_diameter_m=None, **HANDS,
                base_footprint_l_w_m=_figure([0.6, 0.5], "m", "600 x 500 mm", "600 mm = 0.6 m; 500 mm = 0.5 m")),
         _model("humanoid", "humanoid", max_base_speed_m_s=base_speed, base_footprint_diameter_m=None))
     rows = _rows(_table(tmp_path, catalog))
+    route = {"quantity": "route_clear", "unit": None, "need_min": None, "need_max": None, "limit": None,
+             "need_basis": "not_checked", "limit_basis": "not_checked"}
     for name in ("small_mobile", "large_mobile", "humanoid"):
+        # Access is never checked: the check stays unknown, naming its cause, with a no-number condition.
         assert _check(rows[name], "access") == {"check": "access", "result": "unknown",
-                                                "reason": "path from the entrance not checked", "values": {}}
-        assert rows[name]["verdict"] == "unknown"
+                                                "reason": "path from the entrance not checked", "values": {},
+                                                "cause": "not_checked", "condition": route}
+        assert rows[name]["verdict"] == "unknown"  # the legacy verdict is unchanged
+    # Only the route open: fits if it has a clear route to the job.
+    assert rows["small_mobile"]["first_look_verdict"] == "fits_if"
+    assert rows["small_mobile"]["conditions"] == [{"check": "access", **route}]
+    assert rows["small_mobile"]["first_look_reasons"] == [
+        "access: fits if it has a clear route to the job; the route was not checked"]
+    # Another check open for another cause: unknown, and the route is not listed as missing. The large
+    # base stands on the wide floor the search found; the humanoid publishes no hand heights.
+    assert _check(rows["large_mobile"], "stance")["result"] == "pass"
+    assert rows["humanoid"]["first_look_verdict"] == "unknown"
+    assert rows["humanoid"]["missing"] == [{"check": "stance", "cause": "catalog_figure_missing"},
+                                           {"check": "reach", "cause": "catalog_figure_missing"}]
     assert "access" not in {check["check"] for check in rows["fixed"]["checks"]}
     assert rows["fixed"]["verdict"] == "fits_spec"
-    # They stand at the same stations: a base inside the cleared 0.3 m square passes, a larger one is unknown.
+    # A robot that drives to the job is judged on its hand heights, not on a distance from a station.
     assert _check(rows["small_mobile"], "stance")["result"] == "pass"
+    assert _check(rows["small_mobile"], "reach")["values"]["decided_by"] == "published_hand_height_range"
     assert _check(rows["small_mobile"], "reach")["result"] == "pass"
-    assert _check(rows["large_mobile"], "stance")["result"] == "unknown"
-    assert _check(rows["humanoid"], "reach")["result"] == "unknown"
 
 
-def test_a_wheeled_humanoid_is_judged_like_a_mobile_base(tmp_path):
-    # No logic of its own: the same figures give the same checks as a mobile manipulator, with the
-    # published reach from a station, its own hand (no tool weight) and access not checked.
-    figures = {"max_reach_m": _reach(1.0), "max_base_speed_m_s": _figure(1.0, "m/s", "Base speed 1 m/s"),
+def test_a_wheeled_humanoid_is_judged_like_a_mobile_base(tmp_path, monkeypatch):
+    # No logic of its own: the same figures give the same checks as a mobile manipulator, with its
+    # hand heights, its own hand (no tool weight) and access not checked.
+    _floor_at(monkeypatch)
+    figures = {"max_reach_m": _reach(1.0), "max_base_speed_m_s": _figure(1.0, "m/s", "Base speed 1 m/s"), **HANDS,
                "rated_payload_kg": _payload(2.05), "base_footprint_diameter_m": _figure(
                    0.25, "m", "Footprint 250 mm", "250 mm = 0.25 m")}
     catalog = sealed(_model("mobile", "mobile_manipulator", **figures), _model("wheeled", "wheeled_humanoid", **figures))
@@ -495,3 +601,116 @@ def test_a_lost_handoff_lease_still_stops_the_handoff(handoff, monkeypatch):
     monkeypatch.setattr("blueprint_pipeline.website_robot_fit.robot_fit_table", lost)
     with pytest.raises(HandoffLeaseError):
         handoff("clear")
+
+
+def test_the_floor_is_searched_once_for_the_widest_base_it_stands(tmp_path):
+    from blueprint_pipeline.team_embodiment import TeamEmbodimentError
+    from blueprint_pipeline.website_robot_fit_floor import (
+        MAX_SEARCHES, FloorNotSearched, floor_stance, widest_clear_square,
+    )
+
+    asked = []
+
+    def search(*, footprint_half_extent_m, **_):
+        asked.append(footprint_half_extent_m[0])
+        if footprint_half_extent_m[0] > 0.4:
+            raise TeamEmbodimentError(["team_embodiment_free_base_no_clear_stance"])
+        return {"floor_z_m": 0.0}
+
+    floor = widest_clear_square(preparation=_job(), collision_path=Path("unused"), collision_sha256="sha256:x",
+                                known_clear_half_m=0.15, needed_half_m=1.0, search=search)
+    # The largest half extent any base needs first, then bisected: bounded whatever the number of robots.
+    assert asked[0] == 1.0 and len(asked) <= MAX_SEARCHES
+    assert floor["lower_half_m"] <= 0.4 < floor["upper_half_m"] and floor["upper_half_m"] - floor["lower_half_m"] <= 0.025
+    assert floor["upper_hole_possible"] is False and floor["floor_z_m"] == 0.0
+    band = (0.75, 1.333333)
+    # The floor offers 2 x 0.38-0.4 m at 1x: 0.57 m at the smaller scale, 1.08 m at the larger.
+    assert floor_stance([[0.5, 0.4]], floor, band)["result"] == "pass"
+    # The floor seems to offer 0.57 to 1.08 m: a 1 m base is a condition, a 1.25 m one is not found (the
+    # largest width the job seems to offer is short of it), never a condition already false.
+    assert floor_stance([[1.0, 1.0]], floor, band)["result"] == "conditional"
+    assert floor_stance([[1.25, 1.0]], floor, band)["result"] == "not_found"
+    assert floor_stance([[1.6, 1.5]], floor, band)["result"] == "fail"
+    # A refusal on a scanned room's own mesh may be a hole in the reconstruction: never a fail.
+    assert floor_stance([[1.6, 1.5]], {**floor, "upper_hole_possible": True}, band)["result"] == "not_found"
+
+    def no_floor(**_):
+        raise TeamEmbodimentError(["team_embodiment_scene_floor_not_found"])
+
+    with pytest.raises(FloorNotSearched):
+        widest_clear_square(preparation=_job(), collision_path=Path("unused"), collision_sha256="sha256:x",
+                            known_clear_half_m=0.15, needed_half_m=1.0, search=no_floor)
+
+
+def test_a_base_larger_than_the_station_is_stood_on_the_scenes_own_floor(tmp_path):
+    room = _room(tmp_path)
+    job = _job()
+    figures = {"max_reach_m": _reach(1.0), "max_base_speed_m_s": _figure(1.0, "m/s", "Base speed 1 m/s"),
+               "rated_payload_kg": _payload(12), **HANDS}
+    catalog = sealed(_model("wide", "mobile_manipulator", **figures, base_footprint_diameter_m=_figure(
+        0.5, "m", "Footprint 500 mm", "500 mm = 0.5 m")))
+    table = robot_fit_table(preparation=job, collision_path=room, verdict=_verdict(job, room), catalog=catalog)
+    stance = _check(table["rows"][0], "stance")
+    # The open 4 m floor holds a 0.5 m base even at the smaller scale: a pass that rests on the video's estimate.
+    assert (stance["result"], stance["basis"]) == ("pass", "estimated_from_video")
+    assert stance["values"]["floor_search"] == "widest_clear_square_base"
+    search = table["inputs"]["floor_search"]["result"]
+    assert search["searches"] and "seconds" not in search
+    # The same search found the floor, so its hand heights decide reach: the box top is 0.1 m up.
+    assert search["floor_z_m"] == pytest.approx(0.0, abs=0.02)
+    assert _check(table["rows"][0], "reach")["result"] == "pass"
+    # Only the unchecked route stays open: fits if it has a clear route to the job.
+    assert table["rows"][0]["first_look_verdict"] == "fits_if"
+    assert [entry["quantity"] for entry in table["rows"][0]["conditions"]] == ["route_clear"]
+
+
+def test_a_floor_that_holds_the_base_only_at_some_scales_is_a_condition(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_robot_fit_floor
+
+    monkeypatch.setattr(website_robot_fit_floor, "widest_clear_square",
+                        lambda **_: {"lower_half_m": 0.45, "upper_half_m": 0.475, "upper_hole_possible": False,
+                                     "budget_exhausted": False, "floor_z_m": 0.0, "searches": [
+                                         {"half_extent_m": 0.45, "clear": True, "position_world_m": [0.0, 0.0, 0.0]}]})
+    catalog = sealed(_model("wide", base_footprint_diameter_m=None, base_footprint_l_w_m=_figure(
+        [1.0, 0.8], "m", "1000 x 800 mm", "1000 mm = 1.0 m; 800 mm = 0.8 m")))
+    row = _table(tmp_path, catalog)["rows"][0]
+    stance = _check(row, "stance")
+    assert stance["cause"] == "estimate_straddles_limit"
+    assert stance["condition"] == {"quantity": "floor_width_m", "unit": "m", "need_min": 0.675, "need_max": 1.266667,
+                                   "limit": 1.0, "need_basis": "estimated_from_video", "limit_basis": "catalog"}
+    assert row["first_look_verdict"] == "fits_if"
+    assert row["first_look_reasons"][0] == ("stance: fits if there is 1 m of clear floor to stand on; this job seems "
+                                            "to offer 0.675 to 1.26667 m, estimated from the video")
+
+
+def test_a_humanoid_names_the_figures_its_reach_needs(tmp_path):
+    rows = _rows(_table(tmp_path, sealed(_model("walker", "humanoid", base_footprint_diameter_m=None,
+                                                max_base_speed_m_s=_figure(1.0, "m/s", "Base speed 1 m/s")))))
+    reach = _check(rows["walker"], "reach")
+    assert reach["cause"] == "catalog_figure_missing"
+    assert reach["values"]["missing_figures"] == ["max_hand_height_m", "min_hand_height_m"]
+
+
+@pytest.mark.parametrize("top, bottom, result, condition", [
+    (1.5, 0.0, "pass", False), (0.05, 0.0, "fail", False), (0.11, 0.0, "unknown", True),
+    (1.5, 0.5, "fail", False), (1.5, None, "unknown", False),
+    # The bottom straddles: a band that only dips below it is no fail, and no condition is written for it.
+    (1.5, 0.1, "unknown", False)])
+def test_a_robot_that_drives_is_judged_on_its_hand_heights(tmp_path, monkeypatch, top, bottom, result, condition):
+    # The box top and the place are 0.1 m above the floor: 0.075-0.133 m across the scale band.
+    _floor_at(monkeypatch)
+    hands = {"max_hand_height_m": _figure(top, "m", f"Hand height up to {top} m"),
+             "min_hand_height_m": None if bottom is None else _figure(bottom, "m", f"Hand height from {bottom} m")}
+    row = _table(tmp_path, sealed(_model("walker", "humanoid", base_footprint_diameter_m=None,
+                                         max_base_speed_m_s=_figure(1.0, "m/s", "Base speed 1 m/s"),
+                                         **hands)))["rows"][0]
+    reach = _check(row, "reach")
+    assert reach["result"] == result
+    assert ("condition" in reach) is condition
+    if condition:
+        assert reach["condition"] == {"quantity": "hand_height_m", "unit": "m", "need_min": 0.075,
+                                      "need_max": 0.133333, "limit": 0.11, "need_basis": "estimated_from_video",
+                                      "limit_basis": "catalog"}
+    if bottom is None:
+        assert reach["cause"] == "catalog_figure_missing" and reach["values"]["missing_figures"] == [
+            "min_hand_height_m"]

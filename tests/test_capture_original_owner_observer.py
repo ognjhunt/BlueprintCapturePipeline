@@ -103,6 +103,17 @@ def test_recording_rights_statement_versions_are_a_closed_set():
                                                              "2026-11-12.v4"})
 
 
+def test_every_sharing_statement_version_is_an_accepted_recording_statement():
+    # One list: a new sharing version is added in `sharing_statement` and accepted here from there.
+    from blueprint_pipeline.capture_original_owner_observer import RECORDING_RIGHTS_STATEMENT_VERSIONS
+    from blueprint_pipeline.sharing_statement import SHARING_STATEMENT_VERSIONS
+
+    assert SHARING_STATEMENT_VERSIONS and set(SHARING_STATEMENT_VERSIONS) <= RECORDING_RIGHTS_STATEMENT_VERSIONS
+    for version in SHARING_STATEMENT_VERSIONS:
+        value = attested_under(version)
+        assert validate_original(value) == value
+
+
 @pytest.mark.parametrize("version", ["2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3", "2026-11-12.v4"])
 def test_owner_observation_admits_each_recording_statement_a_site_can_attest(version):
     # v1 and v2 records stay valid; v3 is the short sentence on the start form.

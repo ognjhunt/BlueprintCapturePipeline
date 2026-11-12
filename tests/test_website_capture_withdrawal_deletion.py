@@ -338,6 +338,47 @@ def test_published_scene_previews_of_the_job_are_found_by_name_and_deleted(world
     assert set(mine) <= {row["uri"] for row in receipt["deleted"]["objects"]}
 
 
+def test_company_clips_of_the_job_are_found_by_name_and_deleted_with_the_local_copy(world):
+    # The silent clip deployment companies watch (website_company_clip): every archived version of the
+    # walkthrough's and a supplement's is deleted by name, the host copy goes with the scene, and a pass
+    # holding the clip lock makes deletion wait. Other jobs' clips stay.
+    import fcntl
+    from blueprint_pipeline import website_company_clip as company_clip
+    child = "supplement-" + "a" * 40
+    mine = [_uri("website-company-clip", "3", "walkthrough-req1.mp4"),
+            _uri("website-company-clip", "4", f"req1-{child}.mp4")]
+    others = [_uri("website-company-clip", "5", "walkthrough-req2.mp4"),
+              _uri("website-company-clip", "6", f"req11-{child}.mp4")]
+    for uri in [*mine, *others]:
+        world["store"].put(uri, b"synthetic clip", versions=2, marker=True)
+    directory = world["capture"].joinpath(*company_clip.DIRECTORY)
+    _write(directory / company_clip.CLIP_FILE, b"synthetic clip")
+    _write(directory / company_clip.MANIFEST_FILE, {"schema_version": company_clip.MANIFEST_SCHEMA})
+    (directory / company_clip.LOCK_FILE).touch()
+    plan = _plan(world)
+    assert plan["unresolved"] == []
+    found = {row["uri"]: row for row in plan["objects"]}
+    assert set(mine) <= set(found) and not set(others) & set(found)
+    assert len(found[mine[0]]["versions"]) == 3
+    with (directory / company_clip.LOCK_FILE).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with pytest.raises(deletion.WithdrawalDeletionError, match="company_clip_busy"):
+            _apply(world, plan)
+    assert world["store"].deleted == [] and (directory / company_clip.CLIP_FILE).exists()
+    receipt = _apply(world, plan)
+    assert all(not world["store"].present(uri) for uri in mine)
+    assert all(world["store"].present(uri) for uri in others)
+    assert set(mine) <= {row["uri"] for row in receipt["deleted"]["objects"]}
+    assert not (directory / company_clip.CLIP_FILE).exists()
+    assert not (directory / company_clip.MANIFEST_FILE).exists()
+
+
+def test_company_clips_cannot_be_ruled_out_without_the_object_store(world):
+    plan = _plan(world, object_store=None)
+    assert {"prefix": f"{PREFIX}/website-company-clip/sha256/",
+            "reason": "website_withdrawal_deletion_object_store_unconfigured"} in plan["unresolved"]
+
+
 def test_scene_previews_cannot_be_ruled_out_without_the_object_store(world):
     plan = _plan(world, object_store=None)
     assert {"prefix": f"{PREFIX}/website-scene-preview/sha256/",

@@ -960,6 +960,21 @@ def scene_preview_tick(storage_root: Path) -> dict[str, int]:
         return {"tick_failed": 1}
 
 
+def company_clip_tick(storage_root: Path, stop_reason: Callable[[], str | None] | None = None) -> dict[str, int]:
+    """The silent clip approved deployment companies watch (``website_company_clip``), made by the same timer.
+
+    Local ffmpeg on retained clips; it pays for nothing and never touches a job. It stops between
+    captures for a hold, a quiesce or a new release (``stop_reason``) and keeps to its own time budget.
+    A failure is counted, never raised into the tick, and retried by the next one.
+    """
+    try:
+        from .website_company_clip import tick as publish_company_clips
+        return publish_company_clips(storage_root, stop_reason=stop_reason)
+    except Exception as error:  # noqa: BLE001 - clips are optional; the Atlas tick has finished
+        logger.warning("website_company_clip_tick_failed type=%s", type(error).__name__)
+        return {"tick_failed": 1}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -983,11 +998,12 @@ def main(argv: list[str] | None = None) -> int:
         counts.update({"owned_" + key: value for key, value in poll_from_environment().items()})
         print(json.dumps(counts, sort_keys=True), flush=True)
         return 0
-    counts = tick(args.storage_root, continue_seconds=continue_seconds_from_environment(),
-                  stop_reason=trigger_stop_reason())
+    stop_reason = trigger_stop_reason()
+    counts = tick(args.storage_root, continue_seconds=continue_seconds_from_environment(), stop_reason=stop_reason)
     from .owned_capture_atlas_worker import tick_from_environment
     counts.update({"owned_" + key: value for key, value in tick_from_environment().items()})
     counts.update({"scene_preview_" + key: value for key, value in scene_preview_tick(args.storage_root).items()})
+    counts.update({"company_clip_" + key: value for key, value in company_clip_tick(args.storage_root, stop_reason).items()})
     print(json.dumps(counts, sort_keys=True), flush=True)
     return 0
 

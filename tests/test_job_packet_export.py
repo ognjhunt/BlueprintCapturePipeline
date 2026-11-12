@@ -314,9 +314,11 @@ def _out(tmp_path: Path, name: str = "out") -> Path:
     return path
 
 
-def _owned_list(tmp_path: Path, ids: list[str], **fields) -> Path:
-    return _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1",
-                                            "captures": [{"capture_id": item, **fields} for item in ids]})
+def _owned_list(tmp_path: Path, ids: list[str], clip: bytes | None = None, **fields) -> Path:
+    """Every row names one video (``video_sha256_prefix`` is required): the job's clip when given, else none."""
+    prefix = hashlib.sha256(clip).hexdigest()[:12] if clip is not None else "0" * 12
+    return _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "captures": [
+        {"capture_id": item, "video_sha256_prefix": prefix, **fields} for item in ids]})
 
 
 def _owned() -> OwnedCaptureApproval:
@@ -324,8 +326,8 @@ def _owned() -> OwnedCaptureApproval:
                                 approved_on="2026-11-12")
 
 
-def _owned_basis(tmp_path: Path) -> dict:
-    return {"owned": _owned(), "owned_list": _owned_list(tmp_path, [CAPTURE]), "now": NOW}
+def _owned_basis(tmp_path: Path, clip: bytes) -> dict:
+    return {"owned": _owned(), "owned_list": _owned_list(tmp_path, [CAPTURE], clip), "now": NOW}
 
 
 def _refusal(inputs: JobInputs, tmp_path: Path, **kwargs) -> JobPacketRefused:
@@ -517,8 +519,8 @@ def test_check_names_match_the_fit_table_writer() -> None:
     source = (Path(packet.__file__).parent / "website_robot_fit.py").read_text()
     assert set(re.findall(r'_check\("([a-z_]+)"', source)) == set(packet.CHECK_WORDS)
     from blueprint_pipeline.beta_policy_screening_result import CANDIDATE_STATUSES
-    from blueprint_pipeline.website_robot_fit import VERDICTS
-    assert set(VERDICTS) == set(packet.VERDICT_WORDS) and CANDIDATE_STATUSES == set(packet.STATUS_WORDS)
+    from blueprint_pipeline.website_robot_fit_projection import FIRST_LOOK_VERDICTS
+    assert set(FIRST_LOOK_VERDICTS) == set(packet.VERDICT_WORDS) and CANDIDATE_STATUSES == set(packet.STATUS_WORDS)
 
 
 # --- the first look: followed through the handoff's pointer and checked ------------------------------------
@@ -588,10 +590,163 @@ def test_repeats_are_left_out_and_large_counts_are_capped(tmp_path, job) -> None
     assert "48" not in _without_packet_number(sheet)
 
 
+# --- the first look's conditional rows ------------------------------------------------------------------
+
+OLD_TABLE_LINES = [
+    "Source: the pipeline's robot fit table.", "", "| Robot | Maker | Kind | Fit | Checks not passed |",
+    "|---|---|---|---|---|", "| UR5e | Universal Robots | fixed arm | fits on published figures | payload (unknown) |",
+    "| UR10e | Universal Robots | fixed arm | does not fit | reach (failed) |", "",
+    "Counts: fits on published figures: 1, does not fit: 1", "",
+    "Checked against published specifications and the scene's estimated geometry: reach, payload. It is not a test "
+    "of any robot.", "Cycle time was not checked: the site gave no target.",
+    "Payload is unknown for 1 of the 2 robots listed: the object was not weighed, and its mass is estimated from the "
+    "video only (the paper check allows 0.4–1.8 kg)."]
+PLANTED = "Call Dana on 415 555 0199"
+
+
+def _fit_table_of(rows: list[dict]) -> dict:
+    return {"rows": rows, "inputs": {"mass_basis": "estimated", "mass_kg_range": [0.4, 1.8]}}
+
+
+def _condition(check: str, quantity: str, need, limit, need_basis: str = "estimated_from_video",
+               limit_basis: str = "catalog") -> dict:
+    from blueprint_pipeline.website_robot_fit_projection import QUANTITY_UNITS
+    return {"check": check, "quantity": quantity, "unit": QUANTITY_UNITS.get(quantity, "m"),
+            "need_min": None if need is None else need[0], "need_max": None if need is None else need[1],
+            "limit": limit, "need_basis": need_basis, "limit_basis": limit_basis}
+
+
+ROUTE = {"check": "access", "quantity": "route_clear", "unit": None, "need_min": None, "need_max": None,
+         "limit": None, "need_basis": "not_checked", "limit_basis": "not_checked"}
+
+
+def _conditional(model_id: str, name: str, body: str, limit_kg: float, conditions: list[dict],
+                 passed: tuple[str, ...] = ()) -> dict:
+    """A ``fits_if`` row as ``website_robot_fit`` writes it: ``verdict`` unknown, each conditional check open."""
+    checks = [{"check": name_, "result": "pass", "reason": "fine"} for name_ in passed]
+    checks += [{"check": c["check"], "result": "unknown", "reason": PLANTED, "cause": "estimate_straddles_limit",
+                "condition": {k: v for k, v in c.items() if k != "check"}} for c in conditions]
+    return {"model_id": model_id, "name": name, "manufacturer": "x", "body_type": body, "verdict": "unknown",
+            "first_look_verdict": "fits_if", "verdict_if_conditions_hold": "fits_spec", "rated_payload_kg": limit_kg,
+            "payload_limit_kg": limit_kg, "conditions": conditions, "missing": [], "reasons": [PLANTED],
+            "first_look_reasons": [PLANTED] * len(conditions), "checks": checks}
+
+
+def _first_look_rows() -> list[dict]:
+    ur5e, ur10e = ({**row, "first_look_verdict": row["verdict"]} for row in _fit_rows())
+    unknown = {"model_id": "franka_research_3", "name": "FR3", "manufacturer": "x", "body_type": "fixed_arm",
+               "verdict": "unknown", "first_look_verdict": "unknown", "missing": [{"check": "stance",
+                                                                                  "cause": "catalog_figure_missing"}],
+               "checks": [{"check": "stance", "result": "unknown", "reason": "no footprint"}]}
+    return [
+        unknown, ur10e,
+        _conditional("hello_robot_stretch_3", "Stretch 3", "mobile_manipulator", 1.5, [
+            _condition("stance", "floor_width_m", (0.5, 1.4), 0.62),
+            _condition("reach", "hand_height_m", (0.6, 1.06), 1.1), ROUTE], passed=("payload",)),
+        ur5e,
+        _conditional("ufactory_xarm7", "xArm 7", "fixed_arm", 2.6, [
+            _condition("cycle_time", "cycle_time_s", (20, 40), 30, limit_basis="owner_target")],
+            passed=("stance", "reach", "payload")),
+        _conditional("franka_emika_panda", "Panda", "fixed_arm", 2.1, [
+            _condition("reach", "reach_m", (0.701, 1.219), 0.855),
+            _condition("payload", "item_mass_kg", (0.024, 33.647), 2.1)], passed=("stance",)),
+        _conditional("yaskawa_gp12", "GP12", "fixed_arm", 11.1, [
+            _condition("payload", "item_mass_kg", None, 11.1, need_basis="unavailable")], passed=("stance", "reach")),
+    ]
+
+
+def test_conditional_rows_are_worded_with_the_pipelines_own_sentences_in_order() -> None:
+    lines = packet.fit_lines(_fit_table_of(_first_look_rows()))
+    sheet = "\n".join(lines)
+    shown = [line.split(" | ")[0][2:] for line in lines if line.startswith("| ") and not line.startswith("| Robot")]
+    # The order is the projection's row_order: fits, then fits if (fewest conditions first, then the highest
+    # payload limit), then does not fit, then unknown.
+    assert shown == ["UR5e", "GP12", "xArm 7", "Panda (FER)", "Stretch 3", "UR10e", "Franka Research 3 (FR3)"]
+    assert "| Stretch 3 | Hello Robot | arm on a moving base | fits if the conditions below hold | " \
+           "a place to stand (a condition below), reach (a condition below), access from the entrance " \
+           "(a condition below) |" in lines
+    worded = [line for line in lines if line.startswith("- ")]
+    assert worded == [
+        "- GP12, payload: fits if the item weighs no more than 11.1 kg; not known for this job.",
+        "- xArm 7, cycle time: fits if the cycle stays within the 30 s target; this job seems to need 20 to 40 s, "
+        "estimated from the video.",
+        "- Panda (FER), reach: fits if the job needs no more than its 0.855 m reach; this job seems to need 0.701 to "
+        "1.219 m, estimated from the video.",
+        "- Panda (FER), payload: fits if the item weighs no more than 2.1 kg; this job seems to need 0.024 to "
+        "33.647 kg, estimated from the video.",
+        # The floor condition holds when the floor is at least the base's size: never "no more than".
+        "- Stretch 3, a place to stand: fits if there is 0.62 m of clear floor to stand on; this job seems to offer "
+        "0.5 to 1.4 m, estimated from the video.",
+        "- Stretch 3, reach: fits if the job's heights are within its hand range up to 1.1 m; it seems to need 0.6 "
+        "to 1.06 m, estimated from the video.",
+        "- Stretch 3, access from the entrance: fits if it has a clear route to the job; the route was not checked."]
+    assert ("Counts: fits on published figures: 1, fits if the conditions below hold: 4, does not fit: 1, "
+            "unknown: 1") in lines
+    # The table's own text is never copied: names come from the catalog, sentences from the Pipeline's words.
+    assert PLANTED not in sheet and "555" not in sheet and "| x |" not in sheet and "left out" not in sheet
+    # Conditional payload checks are worded above, not counted as left open.
+    assert "Payload is unknown for 1 of the 7 robots listed" in sheet
+
+
+def test_the_sentences_are_the_ones_the_fit_table_writes() -> None:
+    from blueprint_pipeline.website_robot_fit import _condition_reason
+    from blueprint_pipeline.website_robot_fit_projection import condition_sentence
+    for row in _first_look_rows():
+        for condition in row.get("conditions") or []:
+            assert _condition_reason(condition["check"], condition) == \
+                f"{condition['check']}: {condition_sentence(condition)}"
+
+
+def test_a_table_without_conditional_rows_reads_exactly_as_before() -> None:
+    assert packet.fit_lines(_fit_table_of(_fit_rows())) == OLD_TABLE_LINES
+    # The same rows written by the new table writer, with a first-look verdict and no fits_if row.
+    rows = [{**row, "first_look_verdict": row["verdict"], "conditions": [], "missing": []} for row in _fit_rows()]
+    assert packet.fit_lines(_fit_table_of(rows)) == OLD_TABLE_LINES
+
+
+@pytest.mark.parametrize("change", [
+    lambda row: row["conditions"].append(_condition("stance", "door_width_m", (0.5, 0.9), 0.7)),
+    lambda row: row["conditions"][0].update(quantity="floor_width_m"),
+    lambda row: row["conditions"][0].update(need_basis=PLANTED),
+    lambda row: row["conditions"][0].update(limit=PLANTED),
+    lambda row: row["conditions"][0].update(need_min=None),
+    lambda row: row["conditions"][0].update(need_min=2.0),
+    lambda row: row["conditions"][0].update(need_basis="unavailable"),
+    lambda row: row.update(conditions=[]),
+    lambda row: row.update(conditions=row["conditions"][:1]),
+    lambda row: row.update(verdict="fits_spec"),
+    lambda row: row.update(verdict_if_conditions_hold=None),
+    lambda row: row.update(missing=[{"check": "stance", "cause": "no_clear_station"}]),
+    lambda row: row.update(first_look_verdict="fits_maybe"),
+])
+def test_a_conditional_row_this_tool_cannot_word_is_left_out_and_counted(change) -> None:
+    rows = _first_look_rows()
+    panda = next(row for row in rows if row["model_id"] == "franka_emika_panda")
+    change(panda)
+    lines = packet.fit_lines(_fit_table_of(rows))
+    sheet = "\n".join(lines)
+    assert "Panda" not in sheet and "Some rows were left out (1)" in sheet
+    assert "door" not in sheet and PLANTED not in sheet
+    assert sum(line.startswith("| ") and not line.startswith("| Robot") for line in lines) == 6
+
+
+def test_the_packet_sheet_shows_the_conditional_rows(tmp_path, job) -> None:
+    inputs = job()
+    _seal_first_look(inputs.capture_dir, rows=_first_look_rows())
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
+    assert "fits if the conditions below hold" in sheet and PLANTED not in sheet
+    assert "- Stretch 3, a place to stand: fits if there is 0.62 m of clear floor to stand on" in sheet
+
+
 # --- who may get a packet -------------------------------------------------------------------------------
 
 def test_the_current_statement_is_the_only_one_that_shares() -> None:
-    assert packet.SHARING_PERMISSION_STATEMENT_VERSIONS == (CURRENT,)
+    # One list for every reader: the packet tool keeps no copy of its own.
+    from blueprint_pipeline import sharing_statement
+    assert sharing_statement.SHARING_STATEMENT_VERSIONS == (CURRENT,)
+    assert not hasattr(packet, "SHARING_PERMISSION_STATEMENT_VERSIONS") and not hasattr(packet, "OWNED_CAPTURE_KEYS")
+    assert packet.owned_captures is sharing_statement.owned_captures
+    assert packet.OWNED_CAPTURES_PATH == sharing_statement.OWNED_CAPTURES_PATH
 
 
 @pytest.mark.parametrize("statement", ["2026-09-18.v1", OLDER, "2026-11-11.v3", None, "2026-11-12.V4", " 2026-11-12.v4"])
@@ -607,15 +762,16 @@ REFERENCE = "walkthrough-capture-39ecdc97-1b37-4e7c-8db5-d6208f7f62c5"
 
 def test_the_committed_allow_list_holds_only_the_reference_capture_and_its_video() -> None:
     # The owner's approval, 2026-11-12: the reference job is Blueprint's own capture. Nothing else is listed.
-    rows = packet.owned_captures()
-    assert set(rows) == {REFERENCE} and rows[REFERENCE]["video_sha256_prefix"] == "9fe4715c4333"
+    assert packet.owned_captures() == ({REFERENCE: "9fe4715c4333"}, None)
+    rows = {row["capture_id"]: row for row in json.loads(packet.OWNED_CAPTURES_PATH.read_text())["captures"]}
     assert rows[REFERENCE]["approved_by"] == "owner" and rows[REFERENCE]["approved_on"] == "2026-11-12"
 
 
 @pytest.mark.parametrize("row", [
-    {"capture_id": CAPTURE, "note": "x"}, {"capture_id": CAPTURE, "video_sha256_prefix": "9FE4715C4333"},
+    {"capture_id": CAPTURE}, {"capture_id": CAPTURE, "note": "x"}, {"capture_id": CAPTURE, "video_sha256_prefix": "9FE4715C4333"},
     {"capture_id": CAPTURE, "video_sha256_prefix": "9fe4"}, {"capture_id": CAPTURE, "approved_on": "yesterday"},
     {"capture_id": CAPTURE, "evidence": " "}, {"capture_id": CAPTURE, "approved_by": 7},
+    {"capture_id": CAPTURE, "video_sha256_prefix": None}, {"capture_id": CAPTURE, "approved_on": None},
 ])
 def test_an_allow_list_row_with_an_unknown_key_or_a_wrong_value_is_refused(tmp_path, job, row) -> None:
     path = _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "captures": [row]})
@@ -625,7 +781,7 @@ def test_an_allow_list_row_with_an_unknown_key_or_a_wrong_value_is_refused(tmp_p
 
 def test_a_repeated_capture_on_the_allow_list_is_refused(tmp_path, job) -> None:
     path = _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1",
-                                            "captures": [{"capture_id": CAPTURE}, {"capture_id": CAPTURE}]})
+                                            "captures": [{"capture_id": CAPTURE, "video_sha256_prefix": "a" * 12}] * 2})
     assert _refused(job(statement=OLDER), tmp_path, owned=_owned(), owned_list=path, now=NOW) == \
         "job_packet_owned_capture_list_invalid"
 
@@ -673,8 +829,8 @@ def test_a_malformed_allow_list_is_a_clean_refusal(tmp_path, job, raw) -> None:
         "job_packet_owned_capture_list_invalid"
 
 
-def test_an_allow_listed_capture_records_the_approval_beside_the_folder_only(tmp_path, job) -> None:
-    manifest = build_job_packet(job(statement=OLDER), output_root=_out(tmp_path), **_owned_basis(tmp_path))
+def test_an_allow_listed_capture_records_the_approval_beside_the_folder_only(tmp_path, job, clip_with_sound) -> None:
+    manifest = build_job_packet(job(statement=OLDER), output_root=_out(tmp_path), **_owned_basis(tmp_path, clip_with_sound))
     assert manifest["permission_basis"] == {"rule": "blueprint_owned_capture"}
     basis = json.loads(Path(manifest["operator_record"]).read_text())["permission_basis"]
     assert basis["approval_evidence"] == "Yes, share the reference job." and basis["approved_on"] == "2026-11-12"
@@ -682,13 +838,15 @@ def test_an_allow_listed_capture_records_the_approval_beside_the_folder_only(tmp
 
 
 @pytest.mark.parametrize("approved_on", ["2026-11-13", "2026-08-13", "2020-01-01"])
-def test_an_approval_dated_in_the_future_or_over_90_days_ago_is_refused(tmp_path, job, approved_on) -> None:
+def test_an_approval_dated_in_the_future_or_over_90_days_ago_is_refused(tmp_path, job, approved_on,
+                                                                         clip_with_sound) -> None:
     approval = OwnedCaptureApproval(CAPTURE, "owner", "yes", approved_on)
     assert _refused(job(statement=OLDER), tmp_path, owned=approval, now=NOW,
                     owned_list=_owned_list(tmp_path, [CAPTURE])) == "job_packet_owned_capture_approval_out_of_date"
     assert build_job_packet(job(root=tmp_path / "ok", statement=OLDER), output_root=_out(tmp_path, "ok-out"), now=NOW,
                             owned=OwnedCaptureApproval(CAPTURE, "owner", "yes", "2026-08-14"),
-                            owned_list=_owned_list(tmp_path, [CAPTURE]))["permission_basis"]["rule"] == "blueprint_owned_capture"
+                            owned_list=_owned_list(tmp_path, [CAPTURE], clip_with_sound)
+                            )["permission_basis"]["rule"] == "blueprint_owned_capture"
 
 
 # --- refusals: withdrawn, unconsented, ended or closed ------------------------------------------------------
@@ -832,11 +990,11 @@ REFUSALS = {
 
 @pytest.mark.parametrize("basis", ["site_statement", "blueprint_owned"])
 @pytest.mark.parametrize("case", sorted(REFUSALS))
-def test_withdrawn_unconsented_ended_or_closed_jobs_are_refused(tmp_path, job, basis, case) -> None:
+def test_withdrawn_unconsented_ended_or_closed_jobs_are_refused(tmp_path, job, basis, case, clip_with_sound) -> None:
     change, code = REFUSALS[case]
     inputs = job(statement=CURRENT if basis == "site_statement" else OLDER)
     change(inputs)
-    assert _refused(inputs, tmp_path, **(_owned_basis(tmp_path) if basis == "blueprint_owned" else {})) == code
+    assert _refused(inputs, tmp_path, **(_owned_basis(tmp_path, clip_with_sound) if basis == "blueprint_owned" else {})) == code
 
 
 def test_the_delivery_gate_is_asked_for_a_job_packet(tmp_path, job, monkeypatch) -> None:
