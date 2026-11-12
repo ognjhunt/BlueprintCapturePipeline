@@ -924,32 +924,50 @@ def test_an_estimated_website_template_binds_within_its_placement_uncertainty():
         {"dimension_authority": "estimated", "placement_uncertainty_m": float("nan")}) == .005
 
 
-def test_the_sealed_height_window_moves_onto_the_destinations_own_support_by_a_bounded_distance():
-    """Stage 8 2e (review 36): own support, not the highest collider; bounded; the existing flag is never hidden."""
-    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import MAX_WINDOW_MOVE_M, _window_on_goal_rest
+def _surfaces(*heights):
+    """A collider of flat surfaces at ``heights``: its highest point in a band, as ``support_surface`` answers."""
+    def surface(_lower, _upper, *, floor_z, ceiling_z):
+        inside = [z for z in heights if floor_z <= z <= ceiling_z]
+        return max(inside) if inside else None
+    return surface
 
-    spec = {"target_position_world_m": [0.1, 0.2, 0.80],
+
+def _goal(registered_top, *surfaces):
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
+        _goal_support_reading, _window_on_goal_rest,
+    )
+
+    spec = {"target_position_world_m": [0.1, 0.2, 0.80], "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "subject_collision_bounds_scoring_frame_m": {"minimum": [-0.05, -0.05, 0.0], "maximum": [0.05, 0.05, 0.1]},
             "destination_position_bounds_world_m": {"minimum": [0.05, 0.15, 0.79], "maximum": [0.15, 0.25, 0.81]},
             "support_height_interval_m": [0.79, 0.81]}
+    reading = _goal_support_reading(_surfaces(*surfaces), task_spec=spec, collision=None, center=[0, 0, 0],
+                                    support_top=registered_top, below_m=0.08)
+    return spec, reading, _window_on_goal_rest(spec, reading)
 
-    def reading(own_top, collider_top=0.80, collider_rest=0.80):
-        # The object's lowest point is 0.0 below its origin in these fixtures: rest = surface top.
-        return {"rest_scoring_z_m": collider_rest, "collider_top_z_m": collider_top,
-                "registered_support_top_z_m": own_top, "success_window_scoring_z_m": [0.79, 0.81],
-                "within_success_window": 0.79 <= collider_rest <= 0.81}
 
-    # The destination's own support sits 2 cm lower (the other end of a sloping table): moved, recorded.
-    lower = reading(0.78, collider_top=0.78, collider_rest=0.78)
-    moved = _window_on_goal_rest(spec, lower)
-    low, high = (moved["destination_position_bounds_world_m"][key][2] for key in ("minimum", "maximum"))
-    assert low <= 0.78 <= high and abs((high - low) - 0.02) < 1e-12 and moved["support_height_interval_m"] == [low, high]
-    assert abs(lower["window_aligned_to_goal_rest"]["distance_m"] + 0.02) < 1e-9
-    assert lower["within_success_window"] is True
-    # A shelf above the goal (the collider's highest point) is not the destination's support: own top wins.
-    shelf = reading(0.80, collider_top=1.20, collider_rest=1.20)
-    assert _window_on_goal_rest(spec, shelf) is spec and shelf["within_success_window"] is False  # flag stands
-    # Farther than the bound: left as sealed, and the existing flag (within False) is raised exactly as before.
-    far = reading(0.80 - 2 * MAX_WINDOW_MOVE_M, collider_top=0.80 - 2 * MAX_WINDOW_MOVE_M,
-                  collider_rest=0.80 - 2 * MAX_WINDOW_MOVE_M)
-    assert _window_on_goal_rest(spec, far) is spec and far["within_success_window"] is False
-    assert "window_aligned_to_goal_rest" not in far and far["window_move_refused_m"] < -MAX_WINDOW_MOVE_M
+def test_the_window_stays_as_sealed_when_the_collider_rest_is_inside_though_the_registered_top_differs():
+    """capture-447: registered top 1.27 cm off the collider; the collider rest is in the window: as main."""
+    spec, reading, out = _goal(0.8127, 0.80)
+    assert out is spec and "window_aligned_to_goal_rest" not in reading and reading["within_success_window"] is True
+
+
+def test_an_unrelated_taller_collider_or_the_floor_is_never_taken_as_the_destinations_support():
+    spec, reading, out = _goal(0.80, 0.83, 0.80, 0.0)  # a shelf 3 cm above and beside, the floor far below
+    assert reading["own_support_collider_top_z_m"] == 0.80 and out is spec
+    spec, reading, out = _goal(0.80, 1.10, 0.0)  # no collider surface within 2.5 cm of the registered top: no move
+    assert "own_support_collider_top_z_m" not in reading and out is spec
+
+
+@pytest.mark.parametrize("excess_cm, moves", [(2.4, True), (2.5, True), (2.6, False), (10.0, False)])
+def test_the_window_moves_the_least_it_must_and_never_more_than_two_and_a_half_centimetres(excess_cm, moves):
+    surface = 0.81 + excess_cm / 100  # the own support's rest lies that far above the sealed window's top
+    spec, reading, out = _goal(surface, surface)
+    if not moves:
+        assert out is spec and "window_aligned_to_goal_rest" not in reading
+        return
+    distance = reading["window_aligned_to_goal_rest"]["distance_m"]
+    assert abs(distance - excess_cm / 100) < 1e-9
+    assert out["destination_position_bounds_world_m"]["maximum"][2] == pytest.approx(surface)
+    # The collider's verdict is against the ORIGINAL window: the existing flag is still raised.
+    assert reading["within_success_window"] is False

@@ -378,6 +378,19 @@ def _goal_support_reading(support_surface: Callable[..., float | None], *, task_
         rest = reading["collider_top_z_m"] - scoring[0][2]
         reading["rest_scoring_z_m"] = rest
         reading["within_success_window"] = low is not None and high is not None and low <= rest <= high
+    # The destination's OWN support on the collider: the first collider surface within MAX_WINDOW_MOVE_M of the
+    # registered support top at the goal, searched from just above that band downward (its highest point in
+    # the band), so a shelf above or the floor below is never taken (``_window_on_goal_rest``).
+    lower = [target[axis] + scoring[0][axis] for axis in (0, 1)]
+    upper = [target[axis] + scoring[1][axis] for axis in (0, 1)]
+    try:
+        own = support_surface(lower, upper, floor_z=support_top - MAX_WINDOW_MOVE_M,
+                              ceiling_z=support_top + MAX_WINDOW_MOVE_M)
+    except (ArithmeticError, TypeError, ValueError):
+        own = None
+    if isinstance(own, (int, float)) and math.isfinite(own):
+        reading["own_support_collider_top_z_m"] = float(own)
+        reading["own_support_rest_scoring_z_m"] = float(own) - scoring[0][2]
     return reading
 
 
@@ -390,30 +403,33 @@ HEIGHT_ADJUSTED_FLAG = "scene_estimate:success_height_adjusted"
 
 
 def _window_on_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> dict[str, Any]:
-    """The sealed height window, moved onto the rest height on the destination's own support when it missed it.
+    """The sealed height window, moved the least it must to hold where the object rests on its own support.
 
-    Owner, 2026-11-12: a correct placement must be able to score. The rest height is the destination's own
-    registered support top (the surface it was sealed on) less the object's lowest point, never the highest
-    collider under the goal (a shelf above it, or the floor where the support is missing). Moved only when it
-    lies outside the window by at most ``MAX_WINDOW_MOVE_M``; the goal height, its box and its support
-    interval move by the same distance, and the reading records it (``window_aligned_to_goal_rest``, the
-    distance) for the result's estimate flag (``HEIGHT_ADJUSTED_FLAG``). ``within_success_window`` stays the
-    collider's own verdict against the window as it now is, so ``goal_rest_outside_sealed_success_window`` is
-    raised exactly when it still applies.
+    Owner, 2026-11-12: a correct placement must be able to score, and the simulation rests the object on the
+    COLLIDER. The rest height is the object's lowest point on the destination's own support collider
+    (``own_support_rest_scoring_z_m``: the first collider surface within ``MAX_WINDOW_MOVE_M`` of the
+    registered support top at the goal). With none in that band, or when the sealed window already holds it,
+    nothing moves and the spec is exactly what is sealed. Otherwise the window (the goal height, its box and
+    its support interval) moves by the smallest amount that holds it, only when that is at most
+    ``MAX_WINDOW_MOVE_M`` (with a rounding tolerance; exactly 2.5 cm moves) and at least 1 mm when rounded;
+    the reading records it (``window_aligned_to_goal_rest``, for ``scene_estimate:success_height_adjusted``).
+    ``within_success_window`` stays the collider's verdict against the ORIGINAL window, so
+    ``goal_rest_outside_sealed_success_window`` is raised exactly as before.
     """
-    collider_rest, top, own = (reading.get(key) for key in ("rest_scoring_z_m", "collider_top_z_m",
-                                                            "registered_support_top_z_m"))
+    rest = reading.get("own_support_rest_scoring_z_m")
     window = reading.get("success_window_scoring_z_m") or [None, None]
-    if None in (collider_rest, top, own) or None in window:
+    if rest is None or None in window:
         return task_spec
     low, high = float(window[0]), float(window[1])
-    rest = float(own) - (float(top) - float(collider_rest))  # the object's lowest point on its own support
+    rest = float(rest)
     if low <= rest <= high:
         return task_spec
-    move = rest - (low + high) / 2.0
-    if abs(move) > MAX_WINDOW_MOVE_M:
+    move = rest - low if rest < low else rest - high
+    if abs(move) > MAX_WINDOW_MOVE_M + 1e-9:
         reading["window_move_refused_m"] = round(move, 4)  # left as sealed; the existing flag stands
         return task_spec
+    if round(abs(move) * 1000) < 1:
+        return task_spec  # rounds to no move: none, and no flag
     spec = dict(task_spec)
     target = list(spec["target_position_world_m"])
     spec["target_position_world_m"] = [*target[:2], float(target[2]) + move]
@@ -422,10 +438,8 @@ def _window_on_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> 
     spec["destination_position_bounds_world_m"] = bounds
     if spec.get("support_height_interval_m") is not None:
         spec["support_height_interval_m"] = [float(value) + move for value in spec["support_height_interval_m"]]
-    moved = [low + move, high + move]
-    reading.update(window_aligned_to_goal_rest={"distance_m": round(move, 4), "basis": "destination_own_support"},
-                   sealed_window_before_m=list(window), success_window_scoring_z_m=moved,
-                   within_success_window=moved[0] <= float(collider_rest) <= moved[1])
+    reading.update(window_aligned_to_goal_rest={"distance_m": round(move, 4), "basis": "destination_own_support_collider"},
+                   sealed_window_before_m=list(window), moved_window_scoring_z_m=[low + move, high + move])
     return spec
 
 
