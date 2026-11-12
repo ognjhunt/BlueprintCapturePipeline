@@ -62,7 +62,15 @@ first look and the simulation, and is told plainly where the job stands: not
 yet sent, sent and waiting, or no response yet. Nothing promises a response
 that has not been given.
 
-No deployment company is required to test in the simulation. When several are
+The simulation is core. A deployment company cannot say it can do a job
+without testing on the site's twin, so once a job's simulation exists a company
+downloads it (the site's scene with the job's object in it, and what counts as
+done), tests in its own tools, and answers "Tested it: can do" or "Tested it:
+cannot yet". Before the simulation exists a company may still answer from the
+video: interested, not a fit, or would need something. Connecting a company's
+own software to Blueprint's simulation, so that Blueprint scores it, comes
+later. The reconstruction and its estimates are treated as accurate enough for
+this; a site is not asked to confirm measurements. When several companies are
 interested the site decides: up to three introductions per job, in the order
 the companies answered. After an introduction both sides are asked, at 14, 45
 and 90 days, what happened; the answer is recorded on the job.
