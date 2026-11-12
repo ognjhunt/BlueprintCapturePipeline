@@ -1774,3 +1774,102 @@ def test_the_raw_set_finds_links_and_long_paths_in_binary_bytes():
         assert scan.scan_stream(_io.BytesIO(b"\x00\x01" + planted + b"\x02"), [], text=False) is not None, planted
     for short in (b"/tmp/work/x", b"~/x", b"jane@acmemail.example", b"10.1.2.3"):
         assert scan.scan_stream(_io.BytesIO(b"\x00\x01" + short + b"\x02"), [], text=False) is None, short
+
+
+# --- round 5: kept PNG chunks are bounded; fixed link schemes are found whatever byte precedes them ---------------
+
+def _ihdr(colour: int = 2, depth: int = 8, interlace: int = 0, width: int = 1, height: int = 1) -> bytes:
+    return _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, interlace))
+
+
+def _png_with(chunks: bytes, *, colour: int = 2, depth: int = 8, pixel: bytes = b"\x00\x80\x80\x80",
+              idat: bytes | None = None) -> bytes:
+    data = zlib.compress(pixel) if idat is None else idat
+    return b"\x89PNG\r\n\x1a\n" + _ihdr(colour, depth) + chunks + _png_chunk(b"IDAT", data) + _png_chunk(b"IEND", b"")
+
+
+OVERSIZED = {
+    "gAMA": lambda: _png_with(_png_chunk(b"gAMA", b"\x00\x00\xb1\x8f" + R4_PLANT)),
+    "cHRM": lambda: _png_with(_png_chunk(b"cHRM", b"\x00" * 32 + R4_PLANT)),
+    "sRGB": lambda: _png_with(_png_chunk(b"sRGB", b"\x00" + R4_PLANT)),
+    "pHYs": lambda: _png_with(_png_chunk(b"pHYs", b"\x00" * 9 + R4_PLANT)),
+    "sBIT": lambda: _png_with(_png_chunk(b"sBIT", b"\x08\x08\x08" + R4_PLANT)),
+    "sBIT_short": lambda: _png_with(_png_chunk(b"sBIT", b"\x08")),
+    "PLTE_not_multiple_of_3": lambda: _png_with(_png_chunk(b"PLTE", b"\x00" * 3 + R4_PLANT[:4]), colour=3,
+                                                pixel=b"\x00\x00"),
+    "PLTE_over_bit_depth": lambda: _png_with(_png_chunk(b"PLTE", b"\x00" * 9), colour=3, depth=1, pixel=b"\x00\x00"),
+    "PLTE_on_greyscale": lambda: _png_with(_png_chunk(b"PLTE", b"\x00" * 3), colour=0, pixel=b"\x00\x00"),
+    "tRNS_over_palette": lambda: _png_with(_png_chunk(b"PLTE", b"\x00" * 6) + _png_chunk(b"tRNS", b"\x00" * 3),
+                                           colour=3, pixel=b"\x00\x00"),
+    "tRNS_truecolour": lambda: _png_with(_png_chunk(b"tRNS", b"\x00" * 6 + R4_PLANT)),
+    "tRNS_with_alpha": lambda: _png_with(_png_chunk(b"tRNS", b"\x00" * 2), colour=6,
+                                         pixel=b"\x00\x80\x80\x80\x80"),
+    "IHDR_long": lambda: (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+                                                            + R4_PLANT)
+                          + _png_chunk(b"IDAT", zlib.compress(b"\x00\x80\x80\x80")) + _png_chunk(b"IEND", b"")),
+    "IEND_long": lambda: (_plain_png()[:-12] + _png_chunk(b"IEND", R4_PLANT)),
+    "IDAT_trailing": lambda: _png_with(b"", idat=zlib.compress(b"\x00\x80\x80\x80") + R4_PLANT),
+    "IDAT_unfinished": lambda: _png_with(b"", idat=zlib.compress(b"\x00\x80\x80\x80")[:-4]),
+}
+
+
+@pytest.mark.parametrize("case", sorted(OVERSIZED))
+def test_a_kept_png_chunk_of_the_wrong_length_or_trailing_image_data_refuses(case):
+    from blueprint_pipeline import outbound_file_writer as writer
+    with pytest.raises(writer.WriteRefused, match="a PNG that cannot be read chunk by chunk"):
+        writer.png_bytes(OVERSIZED[case]())
+
+
+def test_an_oversized_kept_chunk_refuses_the_package(job):
+    _texture_job(job, "wood.png", OVERSIZED["gAMA"]())
+    world = World(job)
+    assert world.publish() == {"status": "refused", "reason": "website_company_simulation_file_kind_not_shipped",
+                               "detail": "scene_appearance a PNG that cannot be read chunk by chunk"}
+    assert world.archived == []
+
+
+def _real_images() -> dict[str, bytes]:
+    import numpy as np
+    from PIL import Image, ImageCms
+    rng = np.random.default_rng(3)
+    rgb = Image.fromarray(rng.integers(0, 255, (64, 48, 3), dtype=np.uint8), "RGB")
+    icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+    def encode(image, **options):
+        buffer = io.BytesIO()
+        image.save(buffer, "PNG", **options)
+        return buffer.getvalue()
+    palette = rgb.convert("P", palette=Image.ADAPTIVE, colors=16)
+    interlaced = (b"\x89PNG\r\n\x1a\n" + _ihdr(2, 8, interlace=1) + _png_chunk(b"IDAT", zlib.compress(b"\x00\x10\x20\x30"))
+                  + _png_chunk(b"IEND", b""))
+    return {"icc": encode(rgb, icc_profile=icc),
+            "16-bit": encode(Image.fromarray(rng.integers(0, 65535, (32, 32), dtype=np.uint16))),
+            "interlaced": interlaced,
+            "paletted_trns": encode(palette, transparency=3),
+            "rgba": encode(rgb.convert("RGBA")),
+            "with_gamma_and_phys": encode(rgb, dpi=(72, 72))}
+
+
+@pytest.mark.parametrize("label", ["icc", "16-bit", "interlaced", "paletted_trns", "rgba", "with_gamma_and_phys"])
+def test_real_pngs_are_written_with_identical_pixels(label):
+    import numpy as np
+    from PIL import Image
+    from blueprint_pipeline import outbound_file_writer as writer
+    data = _real_images()[label]
+    written = writer.png_bytes(data)
+    with Image.open(io.BytesIO(data)) as before, Image.open(io.BytesIO(written)) as after:
+        assert before.mode == after.mode and before.size == after.size
+        assert np.array_equal(np.asarray(before), np.asarray(after))
+        assert "icc_profile" not in after.info
+
+
+def test_a_real_paletted_texture_still_publishes(job):
+    _texture_job(job, "wood.png", _real_images()["paletted_trns"])
+    _published_and_clean(job, image=".png")
+
+
+@pytest.mark.parametrize("scheme", [b"gs://bucket-x/y", b"s3://bucket-x/y", b"http://host.example/x",
+                                    b"https://host.example/x", b"file:///tmp/x"])
+@pytest.mark.parametrize("before", [b"A", b"7", b" ", b"\x00", b"\xff"])
+def test_a_fixed_link_scheme_is_found_in_raw_bytes_whatever_byte_precedes_it(scheme, before):
+    assert scan.scan_stream(io.BytesIO(b"\x01\x02" + before + scheme + b"\x03"), [], text=False) is not None

@@ -586,6 +586,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
             hidden.append(prim)
     if any(name.startswith("scene/files/") for name in names):
         lines.append("- scene/files/: files the parts above use.")
+    if any(name.lower().endswith((".png", ".jpg", ".jpeg")) for name in names):
+        lines.append("- Textures were rewritten without their colour profile and EXIF data, so a photo that relied on "
+                     "an EXIF rotation shows unrotated.")
     lines += ["- success_rule.json: what counts as done, as numbers, with the run's timing and the object's",
               "  start position and size where known.", "- README.txt: this file.", ""]
     lines += ["Each part's file is referenced on a child prim, /World/<part>/Asset, under the part's position and",

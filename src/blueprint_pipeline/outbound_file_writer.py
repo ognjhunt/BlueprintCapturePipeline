@@ -1,14 +1,15 @@
 """Every file that leaves Blueprint as a simulation file is written by Blueprint, never copied.
 
 The rule: no file reaches the simulation package (``website_company_simulation``) or the job packet's simulation
-folders (``job_packet_export``) byte for byte. Each is written here, from values Blueprint read, into a new file;
-what the reader does not read cannot be in the output. The shared scan (``outbound_file_scan``) then runs over the
-output as the proof.
+folders (``job_packet_export``) byte for byte. Each is written here, from values Blueprint read, into a new file:
+what the reader skips is not written, and every part that is kept is either a field of a fixed, checked length
+(an image header, a PNG gamma or colour chunk, a JPEG frame header) or numeric payload (the one limit below). The
+shared scan (``outbound_file_scan``) then runs over the output as the proof.
 
 | Kind | Read | Written | Dropped |
 |---|---|---|---|
 | USD layer (``.usd``, ``.usda``, ``.usdc``) | ``Sdf.Layer.OpenAsAnonymous`` | ``Sdf.Layer.Export`` to the same format | anything the layer does not hold as data: text comments, bytes after a crate |
-| PNG | chunk by chunk, every CRC checked, no decoder | the signature, then only IHDR, PLTE, IDAT, tRNS, gAMA, cHRM, sRGB, sBIT, pHYs, IEND, whole and in order; then decoded with Pillow as a check | every other ancillary chunk (tEXt, zTXt, iTXt, eXIf, iCCP, tIME, bKGD, hIST, sPLT, private chunks, animation chunks) and anything after IEND |
+| PNG | chunk by chunk, every CRC checked, each kept chunk at exactly the length its type allows (IHDR 13, IEND 0, gAMA 4, cHRM 32, sRGB 1, pHYs 9, sBIT and tRNS by colour type, PLTE a multiple of 3 within the bit depth), the joined IDAT exactly one complete compressed stream; no decoder | the signature, then only IHDR, PLTE, IDAT, tRNS, gAMA, cHRM, sRGB, sBIT, pHYs, IEND, whole and in order; then decoded with Pillow as a check | every other ancillary chunk (tEXt, zTXt, iTXt, eXIf, iCCP, tIME, bKGD, hIST, sPLT, private chunks, animation chunks) and anything after IEND |
 | JPEG | segment by segment, no decoder | SOI, DQT, DHT, DAC, DRI, SOF (C0 to CF except C4, C8, CC), SOS with its entropy-coded data, EOI; the 12-byte Adobe APP14 only; then decoded with Pillow as a check | every other APPn and every COM segment, wherever it stands, and anything after EOI |
 | USDZ | member by member | a new stored archive: each member written by its kind above, names checked, 64-byte aligned data with zero-filled padding, fixed times, no comment, no other extra field | the archive comment, extra fields, any member that is not a USD layer, a PNG or a JPEG (refused) |
 
@@ -47,12 +48,41 @@ class WriteRefused(ValueError):
 
 # --- PNG ----------------------------------------------------------------------------------------------------------
 
+#: The length each kept fixed-size chunk must have (PNG specification); a longer one could carry free text.
+_PNG_FIXED_LENGTHS = {b"IHDR": 13, b"IEND": 0, b"gAMA": 4, b"cHRM": 32, b"sRGB": 1, b"pHYs": 9}
+#: sBIT's length and tRNS's by colour type (0 greyscale, 2 truecolour, 3 paletted, 4 grey + alpha, 6 RGBA).
+_SBIT_LENGTHS = {0: 1, 2: 3, 3: 3, 4: 2, 6: 4}
+_TRNS_LENGTHS = {0: 2, 2: 6}
+
+
+def _png_chunk_fits(kind: bytes, body: bytes, header: bytes, palette_entries: int | None) -> bool:
+    """A kept chunk has exactly the length its type allows, given the image's header."""
+    if kind in _PNG_FIXED_LENGTHS:
+        return len(body) == _PNG_FIXED_LENGTHS[kind]
+    depth, colour = header[8], header[9]
+    if kind == b"sBIT":
+        return len(body) == _SBIT_LENGTHS.get(colour, -1)
+    if kind == b"PLTE":
+        limit = min(256, 2 ** depth) if colour == 3 else 256
+        return colour in (2, 3, 6) and len(body) % 3 == 0 and 0 < len(body) // 3 <= limit
+    if kind == b"tRNS":
+        if colour == 3:
+            return palette_entries is not None and 0 < len(body) <= palette_entries
+        return len(body) == _TRNS_LENGTHS.get(colour, -1)
+    return True  # IDAT: checked as one stream below
+
+
 def png_bytes(data: bytes) -> bytes:
-    """The PNG rewritten from its kept chunks, or ``WriteRefused``."""
+    """The PNG rewritten from its kept chunks, or ``WriteRefused``.
+
+    Each kept chunk must have the length its type allows, and the image data (IDAT, joined) must be exactly one
+    complete compressed stream: no byte may follow its end. So no kept chunk can carry free text.
+    """
     refuse = WriteRefused("a PNG that cannot be read chunk by chunk")
     if not data.startswith(PNG_SIGNATURE):
         raise refuse
-    out, position, first, ended = [PNG_SIGNATURE], len(PNG_SIGNATURE), True, False
+    out, position, ended = [PNG_SIGNATURE], len(PNG_SIGNATURE), False
+    header, palette_entries, image_data = b"", None, []
     while position < len(data):
         if position + 12 > len(data):
             raise refuse
@@ -62,10 +92,19 @@ def png_bytes(data: bytes) -> bytes:
             raise refuse
         body = data[position + 8:position + 8 + length]
         crc = struct.unpack(">I", data[end - 4:end])[0]
-        if zlib.crc32(kind + body) & 0xFFFFFFFF != crc or (first and kind != b"IHDR"):
+        if zlib.crc32(kind + body) & 0xFFFFFFFF != crc or (not header and kind != b"IHDR"):
             raise refuse
-        first = False
+        if kind == b"IHDR":
+            if header or len(body) != 13:
+                raise refuse
+            header = body
         if kind in PNG_KEPT:
+            if not _png_chunk_fits(kind, body, header, palette_entries):
+                raise refuse
+            if kind == b"PLTE":
+                palette_entries = len(body) // 3
+            if kind == b"IDAT":
+                image_data.append(body)
             out.append(data[position:end])
         elif kind[:1].isupper():  # an unknown critical chunk: the image cannot be read without it
             raise refuse
@@ -73,8 +112,18 @@ def png_bytes(data: bytes) -> bytes:
         if kind == b"IEND":
             ended = True
             break  # nothing after IEND is written
-    if not ended:
+    if not ended or not image_data:
         raise refuse
+    stream = zlib.decompressobj()
+    try:
+        for part in image_data:
+            while part:  # bounded output per step: a small stream that inflates hugely is read in pieces
+                stream.decompress(part, 1 << 24)
+                part = stream.unconsumed_tail
+    except zlib.error:
+        raise refuse from None
+    if not stream.eof or stream.unused_data:
+        raise refuse  # a compressed stream that does not end, or bytes after its end
     written = b"".join(out)
     _decodes(written, "a PNG that cannot be read chunk by chunk")
     return written

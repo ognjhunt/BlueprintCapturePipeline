@@ -34,7 +34,7 @@ patterns whose chance of matching random bytes is about 1e-5 per GiB or less (th
 |---|---|---|
 | The caller's ids, account ids and keys (hyphen and underscore forms) | yes, any length of 4 or more | only those of ``RAW_LITERAL_MINIMUM`` (16) characters or more |
 | Token formats with long fixed prefixes (``AKIA``/``ASIA`` key ids, ``github_pat_``, ``glpat-``, private-key blocks, JWTs, ``aws_secret_access_key=``) | yes | yes (``_RAW_TOKENS``; below 1e-9 each in 512 MiB) |
-| Links with three or more host characters: ``gs://``, ``s3://``, ``http(s)://``, ``file://``, any lower-case scheme of four letters or more | yes (any scheme, any case) | yes (``_RAW_LINKS_AND_PATHS``; about 1.7e-5 per GiB for ``gs``/``s3``, about 1e-5 for other schemes, far less for the rest) |
+| Links with three or more host characters: ``gs://``, ``s3://``, ``http(s)://``, ``file://``, any lower-case scheme of four letters or more | yes (any scheme, any case) | yes (``_RAW_LINKS_AND_PATHS``; a fixed scheme whatever byte precedes it, about 1.7e-5 per GiB for ``gs``/``s3``, far less for ``http(s)``/``file``; any other scheme after a non-letter, about 1e-5 per GiB) |
 | Long host paths: ``/var/lib/blueprint``, ``/mnt/blueprint-work``, ``/home/<3+>/``, ``/Users/<3+>/`` | yes | yes (below 1e-18 a position) |
 | Short host paths (``/tmp/``, ``/opt/``, ``/srv/``, ``/data/``, ``/root/``, ``~/``, drive and UNC paths), other tokens (``sk-``, ``gh*_``, ``xox*-``, ``AIza``, ``hf_``, bearer), signed-link parameters | yes | no |
 | Email and IPv4 addresses, bare web addresses | yes | no |
@@ -101,16 +101,19 @@ SPEC_WALK_BYTES = 8 << 20
 
 #: Raw bytes of a binary file, besides long-prefix tokens: links and long host paths, each with a chance in random
 #: bytes of about 1e-5 per GiB or less (a GiB is about 1.07e9 positions):
-#: - ``gs://``, ``s3://`` + 3 host characters: (1/256)^5 x (66/256)^3, about 1.6e-14 a position, 1.7e-5 per GiB
-#:   each (lower-case schemes only; upper case is found in parsed text);
+#: - ``gs://``, ``s3://`` + 3 host characters, whatever byte comes before: (1/256)^5 x (66/256)^3, about 1.6e-14
+#:   a position, 1.7e-5 per GiB each (lower-case schemes only; upper case is found in parsed text). No look-behind:
+#:   a fixed scheme is found after a letter, a digit, a space, a NUL or a high byte alike, and dropping it does not
+#:   raise the rate, since the five fixed bytes alone set it;
 #: - ``http://``, ``https://``, ``file://`` + 3: (1/256)^7 or less x 0.017, below 1e-18 a position;
-#: - any other scheme of 4 to 15 lower-case letters + ``://`` + 3: (26/256)^4 x (1/256)^3 x 0.017 x 0.9 (a
-#:   non-letter before it), about 1e-14 a position, about 1e-5 per GiB;
+#: - any other scheme of 4 to 15 lower-case letters + ``://`` + 3: (26/256)^4 x (1/256)^3 x 0.017 x 0.9, about
+#:   1e-14 a position, about 1e-5 per GiB. This one keeps its look-behind (no letter before it): it anchors the
+#:   match at the start of a run of letters, so one run is counted once, not once for each of its suffixes;
 #: - ``/var/lib/blueprint``, ``/mnt/blueprint-work``: below 1e-30 a position;
 #: - ``/home/`` or ``/Users/`` + 3 name characters + ``/``: (1/256)^7 x (40/256)^3, below 1e-18 a position.
 #: Short paths (``/tmp/``, ``~/``, ``/opt/``, ``/data/``), emails, IPv4 and bare domains stay in parsed text only.
 _RAW_LINKS_AND_PATHS = re.compile(
-    rb"(?<![A-Za-z0-9])(?:gs|s3|https?|file)://[A-Za-z0-9._~%/-]{3}"
+    rb"(?:gs|s3|https?|file)://[A-Za-z0-9._~%/-]{3}"
     rb"|(?<![A-Za-z])[a-z][a-z0-9+.-]{3,15}://[A-Za-z0-9._~%-]{3}"
     rb"|/var/+lib/+blueprint|/mnt/+blueprint-work|/home/[A-Za-z0-9._-]{3,64}/|/Users/[A-Za-z0-9._ -]{3,64}/")
 _RAW_LINK_KINDS = ((b"gs:", STORAGE_LINK), (b"s3:", STORAGE_LINK), (b"http", WEB_LINK), (b"file:", FILE_LINK),
