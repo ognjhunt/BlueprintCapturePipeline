@@ -10,9 +10,7 @@ a status read: anything it cannot verify is left out (None).
 Two shapes. v1 (status v5 to v7) is frozen: the WebApp reads it strictly, so it reads
 each row's ``verdict``, where a ``fits_if`` row is ``unknown`` as before. v2 (status v8)
 reads ``first_look_verdict`` and carries ``fits_if`` with its conditions, each row's rated payload and payload limit, which checks failed, and what
-is missing for an ``unknown`` row. For a job handed off before the first look existed, v2 alone reads the
-refreshed table built beside the hand-off (``website_first_look_refresh``), when it is bound to the same
-task context digest, preparation and handed-off table; v1 and ``robot_fit_rows`` read the handed-off table.
+is missing for an ``unknown`` row.
 """
 from __future__ import annotations
 
@@ -150,38 +148,12 @@ def _verified_table(root: Path, task_context_digest: str) -> tuple[str, Any] | N
             or table.get("schema_version") != "website_robot_fit_table.v1"
             or table.get("preparation_digest") != preparation["digest"]
             or table["table_digest"] != reference.get("digest")
-            or not table_readable(table)):
+            or table.get("evidence_label") != "spec_bounded_estimate"
+            or table.get("physical_world_truth_claimed") is not False
+            or any(row.get("verdict") not in VERDICTS or _first_look(row) not in FIRST_LOOK_VERDICTS
+                   or (_first_look(row) == FITS_IF and row["verdict"] != "unknown") for row in table["rows"])):
         return None
     return route, table
-
-
-def table_readable(table: Mapping[str, Any]) -> bool:
-    """A fit table's label, claim and row codes are ones every reader here can word."""
-    return (table.get("evidence_label") == "spec_bounded_estimate"
-            and table.get("physical_world_truth_claimed") is False
-            and not any(row.get("verdict") not in VERDICTS or _first_look(row) not in FIRST_LOOK_VERDICTS
-                        or (_first_look(row) == FITS_IF and row["verdict"] != "unknown") for row in table["rows"]))
-
-
-def _with_first_look(root: Path, table: Mapping[str, Any], task_context_digest: str) -> Mapping[str, Any]:
-    """The handed-off table, or for one written before the first look its refreshed table, when bound.
-
-    Only when the handed-off table (already verified) has no first-look fields, and a refreshed table
-    (``website_first_look_refresh``) is bound to this task context digest, this preparation and this
-    handed-off table, is that table read instead. Anything else returns the handed-off table unchanged.
-    The handed-off file is never modified.
-    """
-    from .website_first_look_refresh import has_first_look, refreshed_table
-
-    if has_first_look(table):
-        return table
-    try:
-        refreshed = refreshed_table(root, task_context_digest=task_context_digest,
-                                    preparation_digest=table["preparation_digest"],
-                                    handoff_table_digest=table["table_digest"])
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return table
-    return refreshed if refreshed is not None and table_readable(refreshed) else table
 
 
 def robot_fit_rows(*, capture_root: Path, task_context_digest: str) -> list[dict[str, Any]] | None:
@@ -309,7 +281,6 @@ def read_robot_fit_v2(*, capture_root: Path, task_context_digest: str) -> dict[s
             return _projection(route, reason=table, schema_version=SCHEMA_VERSION_V2, geometry_basis=None,
                                weight_basis=None,
                                unknown_causes=None)
-        table = _with_first_look(root, table, task_context_digest)
         counts = _first_look_counts(table)
         basis = (table.get("inputs") or {}).get("mass_basis")
         models = [_v2_model(row) for row in sorted(table["rows"], key=row_order)]

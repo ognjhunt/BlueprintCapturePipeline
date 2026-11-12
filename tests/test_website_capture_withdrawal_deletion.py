@@ -373,27 +373,6 @@ def test_company_clips_of_the_job_are_found_by_name_and_deleted_with_the_local_c
     assert not (directory / company_clip.MANIFEST_FILE).exists()
 
 
-def test_a_refreshed_first_look_is_deleted_with_the_site_and_its_pass_makes_deletion_wait(world):
-    # The refreshed first look (website_first_look_refresh) lives only under the capture's pipeline/ folder:
-    # the local cleanup takes every file there, and a pass holding its lock makes deletion wait.
-    import fcntl
-    from blueprint_pipeline import website_first_look_refresh as first_look
-    directory = world["capture"].joinpath(*first_look.DIRECTORY)
-    _write(directory / first_look.TABLE_FILE, {"schema_version": "website_robot_fit_table.v1"})
-    _write(directory / first_look.STATUS_FILE, {"schema_version": first_look.STATUS_SCHEMA})
-    (directory / first_look.LOCK_FILE).touch()
-    plan = _plan(world)
-    assert plan["unresolved"] == []
-    with (directory / first_look.LOCK_FILE).open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        with pytest.raises(deletion.WithdrawalDeletionError, match="first_look_busy"):
-            _apply(world, plan)
-    assert (directory / first_look.TABLE_FILE).exists()
-    _apply(world, plan)
-    assert not (directory / first_look.TABLE_FILE).exists()
-    assert not (directory / first_look.STATUS_FILE).exists()
-
-
 def test_company_clips_cannot_be_ruled_out_without_the_object_store(world):
     plan = _plan(world, object_store=None)
     assert {"prefix": f"{PREFIX}/website-company-clip/sha256/",

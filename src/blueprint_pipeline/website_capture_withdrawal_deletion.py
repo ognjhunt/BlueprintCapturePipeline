@@ -772,8 +772,7 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
     in progress refuses (``atlas_preview_busy``) and the operator retries. Each
     capture's scene preview lock is held the same way (``scene_preview_busy``). It holds
     each capture's screening review-video retention lock the same way
-    (``review_videos_busy``), so no video is copied in while the site is deleted, each
-    capture's refreshed first look lock (``first_look_busy``, ``website_first_look_refresh``),
+    (``review_videos_busy``), so no video is copied in while the site is deleted,
     and the team scene packet queue's lock (``team_scene_packets_busy``), so no
     worker run compiles a half or writes a derived row or status meanwhile.
     The screening deletes come first, after their re-plan under the screening
@@ -841,20 +840,6 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise WithdrawalDeletionError("website_withdrawal_deletion_company_simulation_busy") from None
-        from .website_first_look_refresh import DIRECTORY as FIRST_LOOK_DIRECTORY, LOCK_FILE as FIRST_LOOK_LOCK
-        for path in sorted(site.glob(f"captures/*/{'/'.join(FIRST_LOOK_DIRECTORY)}/{FIRST_LOOK_LOCK}")):
-            # The refreshed first look (``website_first_look_refresh``): no pass writes one meanwhile.
-            _require(not any(item.is_symlink() for item in (path, *path.parents)), "unsafe_entry")
-            try:
-                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            except OSError:
-                raise WithdrawalDeletionError("website_withdrawal_deletion_first_look_lock_unsafe") from None
-            lock = locks.enter_context(os.fdopen(descriptor, "rb"))
-            _require(stat.S_ISREG(os.fstat(lock.fileno()).st_mode), "first_look_lock_unsafe")
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise WithdrawalDeletionError("website_withdrawal_deletion_first_look_busy") from None
         from .beta_screening_review_videos import DIRNAME as REVIEW_VIDEOS, LOCK_NAME as REVIEW_LOCK
         for path in sorted(site.glob(f"captures/*/pipeline/{REVIEW_VIDEOS}/{REVIEW_LOCK}")):
             _require(not any(item.is_symlink() for item in (path, *path.parents)), "unsafe_entry")
