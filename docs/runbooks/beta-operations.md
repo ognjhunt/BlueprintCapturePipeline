@@ -111,7 +111,7 @@ What frequent states mean:
 | `blocked` / `scene_configuration_failed`, blocker `scene_configuration_launch_dispatcher_lost` | The dispatcher wrote no receipt, and its own allocator timeout ended 15 min ago or more. It died. | Read the dispatcher's journal and the provider inventory (`door status`). |
 | `blocked` / `preparation`, blocker `preallocation_capacity_recovery_cap_exhausted` | Six $0 recoveries were spent. The job has ended (`capacity_recovery_cap_exhausted`). | Find out why the market, storage or guard kept refusing. |
 | `blocked` / `preparation`, blocker `retry_cap_exhausted` | A rented machine was lost and the intent had no retry left: one retry for an intent issued since 2026-11-10, none before. The job has ended. | Read the dead machine's launch receipt. |
-| blocker `scene_intake_spend_cap_exhausted` or `scene_intake_attempt_cap_exhausted` | The scene's own budget is used up. This is a money hold, so it does not page. | Owner decision. Preview, then apply, `door extend-scene-execution-budget` ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)). |
+| blocker `scene_intake_spend_cap_exhausted` or `scene_intake_attempt_cap_exhausted` | The scene's own budget is used up and the job could not extend it by itself: the account's monthly headroom did not cover it, or the extension would pass $100 for the job. This is a money hold, so it does not page. | Owner decision. Preview, then apply, `door extend-scene-execution-budget` ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)). |
 | blocker `scene_intake_authority_expired` | The execution window expired. | Owner decision. Plan, then apply, `door extend-scene-execution-window`. |
 
 ### A website preparation failed
