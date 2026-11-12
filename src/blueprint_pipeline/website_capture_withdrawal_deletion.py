@@ -158,6 +158,13 @@ POINTER_SUFFIXES = (".offloaded.v1.json", ".residue.v1.json", ".residue-restore.
 #: A run's own working records that name no copy anywhere: removed with the run, never read, so a torn or
 #: unreadable one can never stop a withdrawal (``scene_run_restore``'s attempt record).
 RUN_RECORD_SUFFIXES = (".restore.v1.json",)
+
+
+def _restore_leftover_names(run: str) -> frozenset[str]:
+    """``scene_run_restore``'s own files for ``run``: its record, its lock and the record's temporary. A
+    symlink with one of these names is removed itself (``os.unlink``, never followed); any other symlink
+    leftover still refuses the withdrawal (``unsafe_entry``)."""
+    return frozenset({run + ".restore.v1.json", f".{run}.restore.lock", f".{run}.restore-state.tmp"})
 # Each sidecar's writer seals it: (schemas, digest field, the field naming its run).
 _POINTER_SEALS = {
     ".offloaded.v1.json": ({"control_plane_evidence_offload_pointer.v1"}, "pointer_digest", "directory"),
@@ -417,7 +424,7 @@ def _scan_unit(unit: dict[str, Any], scan: _Scan, *, object_store: Any, scan_arc
             scan.feed(_Bytes(raw))
     unit["pointer_values"] = pointers
     for path in unit["leftovers"]:
-        _require(not path.is_symlink(), "unsafe_entry")
+        _require(not path.is_symlink() or path.name in _restore_leftover_names(unit["name"]), "unsafe_entry")
     if directory is not None:
         unit["inventory"] = _inventory(directory)
         _scan_files((directory / row[0] for row in unit["inventory"] if row[0].endswith(_SCANNED_SUFFIXES)), scan)
@@ -821,7 +828,10 @@ def _apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
             deleted["runs"].append(run["directory"])
         for path in (*run["leftovers"], *run["pointers"]):
             target = Path(path)
-            if target.is_dir() and not target.is_symlink():
+            if stat.S_ISLNK(os.lstat(target).st_mode) if os.path.lexists(target) else False:
+                # Only a restore leftover's name gets here (``_scan_unit``): the link itself goes, its target never.
+                os.unlink(target)
+            elif target.is_dir() and not target.is_symlink():
                 shutil.rmtree(target)
             else:
                 target.unlink(missing_ok=True)

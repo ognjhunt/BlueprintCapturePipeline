@@ -499,3 +499,38 @@ def test_deploy_never_replans_while_a_reservation_is_held(tmp_path, monkeypatch)
     [replay] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
     assert replay["status"] == "already_enqueued" and replay["campaign_id"] == adopted["campaign_id"]
     assert len(list((root / "plans").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("content", [None, "{not json"])
+def test_a_missing_limits_config_stops_the_pass_before_any_job_is_touched(tmp_path, monkeypatch, capsys, content):
+    """Review 8e (2): our configuration's fault is never a job's hold. Every stored byte stays, nothing is
+    published, one line names the file, and the non-zero exit fails the unit (its ``unit_failed`` page)."""
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from blueprint_pipeline import website_job_limits
+    from blueprint_pipeline.team_scene_packet_worker import QUEUE_ROOT_ENV as PACKET_QUEUE_ENV
+    from tests.test_beta_policy_screening_coordinator import plan
+
+    queue, packets = tmp_path / "queue", tmp_path / "packets"
+    coordinator.enqueue_screening_campaign(plan(count=2, cost="1.00"), queue_root=queue)
+    (packets / "processed").mkdir(parents=True)
+    (packets / "processed" / "request.json").write_text('{"intent_id": "intent-1"}', encoding="utf-8")
+    monkeypatch.setenv(PACKET_QUEUE_ENV, str(packets))
+    config = tmp_path / "website_job_limits.v1.json"
+    if content is not None:
+        config.write_text(content, encoding="utf-8")
+    monkeypatch.setenv(website_job_limits.CONFIG_ENV, str(config))
+    published = []
+    monkeypatch.setattr(worker, "publish_screening", lambda publication: published.append(publication))
+    snapshot = lambda: {str(p): p.read_bytes() for p in sorted(tmp_path.rglob("*")) if p.is_file() and p != config}  # noqa: E731
+    before = snapshot()
+    assert worker.entrypoint(["--queue-root", str(queue), "--packet-queue-root", str(packets)]) == 2
+    assert snapshot() == before and published == []
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and str(config) in err
+
+
+def test_the_screening_unit_pages_on_a_failed_pass():
+    from pathlib import Path
+
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-beta-policy-screening.service").read_text()
+    assert "OnFailure=blueprint-unit-failure@%n.service" in unit and "-m blueprint_pipeline.beta_policy_screening_worker" in unit

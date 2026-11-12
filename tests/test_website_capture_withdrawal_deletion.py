@@ -695,3 +695,36 @@ def test_the_restore_record_is_written_whole_or_not_at_all(tmp_path, monkeypatch
     restore._write_state(run, {"attempts": 2, "status": "refused"})
     assert record.read_bytes() == before and json.loads(before)["attempts"] == 1
     assert sorted(path.name for path in tmp_path.iterdir()) == [record.name]
+
+
+@pytest.mark.parametrize("name", ["{run}.restore.v1.json", ".{run}.restore.lock", ".{run}.restore-state.tmp"])
+def test_a_symlinked_restore_leftover_is_removed_itself_and_its_target_outside_the_site_is_untouched(
+        world, tmp_path, name):
+    """Review 8e (1), privacy: the link goes (never followed), the run goes, the link's target stays."""
+    import os
+
+    run = world["construction"]
+    outside = tmp_path / "not-this-site"
+    outside.mkdir()
+    target = outside / "keep.json"
+    target.write_text('{"another": "owner"}', encoding="utf-8")
+    before = (target.read_bytes(), os.stat(target).st_mtime_ns)
+    link = run.parent / name.format(run=run.name)
+    link.symlink_to(target)
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    assert not plan["unresolved"]
+    _apply(world, plan, cloud_storage=gcs)
+    assert not run.exists() and not os.path.lexists(link)
+    assert (target.read_bytes(), os.stat(target).st_mtime_ns) == before and sorted(outside.iterdir()) == [target]
+
+
+def test_any_other_symlinked_leftover_still_refuses_the_withdrawal(world, tmp_path):
+    run = world["construction"]
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("x", encoding="utf-8")
+    (run.parent / f".{run.name}.staging").symlink_to(target)
+    plan = _plan(world, cloud_storage=FakeGcs())
+    assert any(row["reason"] == "website_withdrawal_deletion_unsafe_entry" or "unsafe_entry" in row["reason"]
+               for row in plan["unresolved"])
+    assert target.exists()

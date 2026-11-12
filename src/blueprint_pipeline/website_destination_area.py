@@ -69,8 +69,9 @@ def area_for_region(*, region_min: Sequence[float], region_max: Sequence[float],
     clipped = [max(region_min[i], support_min[i]) for i in (0, 1)], [min(region_max[i], support_max[i]) for i in (0, 1)]
     if any(clipped[0][i] > clipped[1][i] for i in (0, 1)):
         return None  # The place does not lie on the support at all.
+    collapsed = [low[i] > high[i] for i in (0, 1)]
     for i in (0, 1):
-        if low[i] > high[i]:
+        if collapsed[i]:
             # Narrower than the object: its centre line is the only spot.
             low[i] = high[i] = (clipped[0][i] + clipped[1][i]) / 2.0
     start_centre = [(subject_min[i] + subject_max[i]) / 2.0 for i in (0, 1)]
@@ -81,7 +82,12 @@ def area_for_region(*, region_min: Sequence[float], region_max: Sequence[float],
             candidates.append([x, y])
     best = None
     for centre in candidates:
-        room = min(centre[0] - low[0], high[0] - centre[0], centre[1] - low[1], high[1] - centre[1]) + half
+        # How far the named place reaches from this centre: to its own (clipped) edges. Measured through the
+        # shrunk region plus half the object where the place is wider than the object (the same number), and
+        # to the place's own edges on an axis where it is narrower (review 2026-11-12: there the shrunk region
+        # is one line, and adding half the object would reach past the place).
+        room = min(min(centre[i] - clipped[0][i], clipped[1][i] - centre[i]) if collapsed[i]
+                   else min(centre[i] - low[i], high[i] - centre[i]) + half for i in (0, 1))
         clear = _distance_to_box(centre, subject_min, subject_max)
         if clear <= minimum_radius_m:
             # Never inside or touching the start footprint: the task would start (nearly) complete.

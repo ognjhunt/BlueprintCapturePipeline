@@ -1551,3 +1551,34 @@ def test_a_relocated_region_that_fits_nowhere_on_its_surface_is_flagged_and_the_
     assert moved["relocation"] == {**value["destination_relocation"], "applied_at": "native_submission"}
 
 
+
+
+@pytest.mark.parametrize("named", [True, False])
+def test_every_place_offered_seals_with_the_real_sealer_on_both_destination_paths(tmp_path, monkeypatch, named):
+    """Review 2026-11-12: on the path with no destination target the places offered were not checked, so one
+    could lie off the support and be refused at sealing (``surface_target_outside_support``)."""
+    import numpy as np
+
+    from blueprint_pipeline.website_preparation_outcome import PLACE_QUESTION_ENV
+    from blueprint_pipeline.website_surface_target_admission import sealed_surface_target
+    monkeypatch.setenv(PLACE_QUESTION_ENV, "true")
+    from blueprint_pipeline import website_destination_choice as places
+    real, calls = places.settle_place, []
+    monkeypatch.setattr(places, "settle_place", lambda *a, **k: calls.append(k) or real(*a, **k))
+    value = _compile(tmp_path, lambda geometry: {"task_masks": _masks(geometry, destination=named)})
+    # Both paths hand the places offered the sealer's admission and the real surface.
+    assert calls and all(call.get("admit") is not None and call.get("holds") is not None for call in calls)
+    choice = value["destination_choice"]
+    to_sim = np.asarray(value["coordinate_frame"]["runtime_to_simulator"])
+    low, high = preparation._runtime_bounds({"minimum": value["support"]["aabb_min"],
+                                             "maximum": value["support"]["aabb_max"]}, to_sim)
+    envelope = value["authoring_inputs"]["metric_envelope"]
+    assert choice["candidates"]
+    for row in choice["candidates"]:
+        destination = {key: item for key, item in value["destination"].items() if key != "radius_m"}
+        destination["position_world_m"] = [*row["centre_xy"], value["destination"]["position_world_m"][2]]
+        if row["radius_m"] > 0.05:
+            destination["radius_m"] = row["radius_m"]
+        sealed_surface_target(value, destination=destination, support={"aabb_min_xyz": low, "aabb_max_xyz": high},
+                              subject_min=envelope["minimum_xyz_m"], subject_max=envelope["maximum_xyz_m"],
+                              development=False)
