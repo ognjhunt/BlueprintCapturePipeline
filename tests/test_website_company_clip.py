@@ -83,6 +83,12 @@ def _capture(tmp_path: Path, *, version: str = SHARED, size: str = "1920x1080", 
     return root
 
 
+@pytest.fixture(autouse=True)
+def _route_clock(monkeypatch):
+    """The route's own clock, a minute after the passes' fixed ``NOW``, so a recorded grant is fresh."""
+    monkeypatch.setattr(clip, "_wall_clock", lambda: NOW + 60)
+
+
 @pytest.fixture
 def capture(tmp_path):
     return _capture(tmp_path)
@@ -196,7 +202,10 @@ def test_a_clip_carrying_any_source_tag_is_refused_and_retried(capture, monkeypa
     assert world.publish(capture) == {"status": "failed", "reason": "website_company_clip_output_metadata_not_clean"}
     assert world.archived == [] and not (capture.joinpath(*clip.DIRECTORY) / clip.CLIP_FILE).exists()
     monkeypatch.setattr(clip, "_encode", real)
-    assert world.publish(capture)["status"] == "published"
+    # Recorded for this source and builder revision: no full encode every pass; tried again a window later.
+    assert world.publish(capture, now=lambda: NOW + 60) == {
+        "status": "failed", "reason": "website_company_clip_output_metadata_not_clean"}
+    assert world.publish(capture, now=lambda: NOW + clip.LIVE_STATEMENT_RECHECK_SECONDS)["status"] == "published"
 
 
 def test_an_upload_already_within_bounds_is_still_re_encoded_never_served_as_is(capture):

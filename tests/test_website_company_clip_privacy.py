@@ -24,6 +24,11 @@ from tests.test_website_company_clip import (
 
 pytestmark = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
                                 reason="needs local ffmpeg and ffprobe")
+
+
+@pytest.fixture(autouse=True)
+def _route_clock(monkeypatch):
+    monkeypatch.setattr(clip, "_wall_clock", lambda: NOW + 60)
 HOUR, DAY = 3600, 86400
 PLACE = b"GPS 48.8584N SECRETLOC"
 
@@ -89,8 +94,9 @@ def test_closed_captions_in_the_source_never_reach_the_clip(tmp_path):
     assert built["width"] == 640 and built["has_audio"] is False
     assert "SECRETLOC" not in _decoded_captions(target) and "48.8584" not in _decoded_captions(target)
     body = target.read_bytes()
-    assert b"GA94" not in body and b"SECRETLOC" not in body and b"48.8584" not in body
-    assert _side_data(target) == set() and clip.frames_clean(target) and not clip.carries_caption_units(target)
+    assert b"SECRETLOC" not in body and b"48.8584" not in body
+    assert _side_data(target) == set() and clip.frames_clean(target) and not clip.sei_units_present(target)
+    assert clip.sei_units_present(source)  # the check sees the source's caption units
 
 
 def test_both_encoder_settings_are_needed_and_the_after_write_proof_decodes(tmp_path, monkeypatch):
@@ -104,9 +110,10 @@ def test_both_encoder_settings_are_needed_and_the_after_write_proof_decodes(tmp_
         outputs[name] = tmp_path / "cc" / f"{name}.mp4"
         _run("ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v:0", "-c:v", "libx264", "-preset",
              "ultrafast", "-pix_fmt", "yuv420p", *extra, str(outputs[name]))
-    assert "SECRETLOC" in _decoded_captions(outputs["plain"]) and clip.carries_caption_units(outputs["plain"])
+    assert "SECRETLOC" in _decoded_captions(outputs["plain"]) and clip.sei_units_present(outputs["plain"])
     assert "SECRETLOC" not in _decoded_captions(outputs["a53cc_off"]) and _side_data(outputs["a53cc_off"])
-    assert _side_data(outputs["both"]) == set()
+    assert clip.sei_units_present(outputs["a53cc_off"])
+    assert _side_data(outputs["both"]) == set() and not clip.sei_units_present(outputs["both"])
 
     # An encoder that lets the captions through is caught after writing, by decoding the frames.
     def leaky(source, target, **kwargs):
@@ -117,6 +124,66 @@ def test_both_encoder_settings_are_needed_and_the_after_write_proof_decodes(tmp_
     with pytest.raises(ValueError, match="website_company_clip_output_frame_side_data"):
         clip.build_clip(source, tmp_path / "cc" / "leaky.mp4")
     assert not (tmp_path / "cc" / "leaky.mp4").exists()
+
+
+def _leaky(source, target, **kwargs):
+    """An encoder that keeps the source's captions and x264's own SEI."""
+    _run("ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v:0", "-map_metadata", "-1", "-c:v", "libx264",
+         "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-f", "mp4", str(target))
+
+
+def test_the_frame_side_data_proof_refuses_on_its_own(tmp_path, monkeypatch):
+    # Pins the decode proof alone: with the SEI-unit proof switched off it still refuses.
+    source = _captioned_source(tmp_path / "cc")
+    monkeypatch.setattr(clip, "_encode", _leaky)
+    monkeypatch.setattr(clip, "sei_units_present", lambda path, **kw: False)
+    with pytest.raises(ValueError, match="website_company_clip_output_frame_side_data"):
+        clip.build_clip(source, tmp_path / "cc" / "out.mp4")
+
+
+def test_the_sei_unit_proof_refuses_on_its_own(tmp_path, monkeypatch):
+    source = _captioned_source(tmp_path / "cc")
+    monkeypatch.setattr(clip, "_encode", _leaky)
+    monkeypatch.setattr(clip, "frames_clean", lambda path, **kw: True)
+    with pytest.raises(ValueError, match="website_company_clip_output_sei_units_left"):
+        clip.build_clip(source, tmp_path / "cc" / "out.mp4")
+
+
+def test_a_clean_clip_whose_bytes_happen_to_hold_the_caption_marker_is_published(tmp_path, monkeypatch):
+    # Clip bytes are close to random: "GA94" turns up in about one clip in 80. Outside an SEI unit it means
+    # nothing, so it never refuses a clip.
+    capture = _capture(tmp_path)
+    real = clip._encode
+
+    def with_marker(source, target, **kwargs):
+        real(source, target, **kwargs)
+        with open(target, "ab") as stream:  # a trailing MP4 "free" box holding the marker
+            stream.write((12).to_bytes(4, "big") + b"free" + b"GA94")
+    monkeypatch.setattr(clip, "_encode", with_marker)
+    world = World()
+    assert world.publish(capture)["status"] == "published"
+    assert any(b"GA94" in body for body in world.objects.values())
+
+
+def test_a_clip_an_after_encode_proof_refuses_is_recorded_and_not_re_encoded_every_pass(tmp_path, monkeypatch):
+    capture = _capture(tmp_path)
+    builds, real = [], clip.build_clip
+
+    def counting(*args, **kwargs):
+        builds.append(1)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(clip, "build_clip", counting)
+    monkeypatch.setattr(clip, "frames_clean", lambda path, **kw: False)
+    world = World()
+    statuses = [world.publish(capture, now=lambda t=t: NOW + t) for t in (0, 60, 120)]
+    assert statuses == [{"status": "failed", "reason": "website_company_clip_output_frame_side_data"}] * 3
+    assert len(builds) == 1 and world.archived == []
+    manifest = _manifest(capture)
+    assert manifest["refused"] == "website_company_clip_output_frame_side_data" and manifest["refused_at_epoch"] == NOW
+    # It does not starve the captures after it: later passes return at once, and a window later it is tried again.
+    monkeypatch.setattr(clip, "frames_clean", lambda path, **kw: True)
+    assert world.publish(capture, now=lambda: NOW + clip.LIVE_STATEMENT_RECHECK_SECONDS)["status"] == "published"
+    assert len(builds) == 2
 
 
 # --- MF2: a basis that ends takes the clip back ------------------------------------------------------------
@@ -189,6 +256,37 @@ def test_a_published_clip_rereads_its_live_statement_once_a_window_and_records_s
     assert world.rights_reads == reads + 1
     check = json.loads((capture.joinpath(*clip.DIRECTORY) / clip.STATEMENT_CHECK_FILE).read_text())
     assert check["checked_at_epoch"] == NOW + 6 * HOUR and check["granted_at_epoch"] == NOW + 6 * HOUR
+
+
+def test_the_route_refuses_a_grant_older_than_its_lifetime_with_no_answer_since(tmp_path, monkeypatch):
+    # The pass is kept away (a hold, the budget): the route alone bounds an unanswered grant at 12 hours.
+    capture, world, _ = _published(tmp_path, monkeypatch, "live_not_sharing")
+    digest = _manifest(capture)["archive"]["digest"]
+    check_path = capture.joinpath(*clip.DIRECTORY) / clip.STATEMENT_CHECK_FILE
+    check = json.loads(check_path.read_text())
+    check.update(outcome="unanswered", checked_at_epoch=NOW + 7 * HOUR)
+    check_path.write_text(json.dumps(check))
+    monkeypatch.setattr(clip, "_wall_clock", lambda: NOW + 11 * HOUR)
+    assert _open(capture, world, digest)[1] > 0  # a grant 11 hours old is still served
+    monkeypatch.setattr(clip, "_wall_clock", lambda: NOW + clip.LIVE_GRANT_LIFETIME_SECONDS)
+    with pytest.raises(clip.CompanyClipUnavailable):
+        _open(capture, world, digest)
+    monkeypatch.setattr(clip, "_wall_clock", lambda: NOW + 31 * DAY)
+    with pytest.raises(clip.CompanyClipUnavailable):
+        _open(capture, world, digest)
+
+
+def test_a_raw_upload_is_hashed_once_even_before_a_manifest_exists(tmp_path, monkeypatch):
+    capture = _capture(tmp_path, normalized=False)
+    world = World(rights=ValueError("website_control_task-context_http_503:unclassified"))
+    assert world.publish(capture)["status"] == "refused"  # no answer: nothing is built, no manifest
+    assert not (capture.joinpath(*clip.DIRECTORY) / clip.MANIFEST_FILE).exists()
+    kept = json.loads((capture.joinpath(*clip.DIRECTORY) / clip.RAW_DIGEST_FILE).read_text())
+    assert kept["digest"] == _sha(capture / "raw/walkthrough.mp4") and kept["relative"] == "raw/walkthrough.mp4"
+    monkeypatch.setattr(clip, "_sha256_file", lambda path: pytest.fail("hashed the raw upload again"))
+    monkeypatch.setattr("blueprint_pipeline.website_source_video.probe_video",
+                        lambda path: pytest.fail("probed the raw upload again"))
+    assert world.publish(capture, now=lambda: NOW + 60)["status"] == "refused"
 
 
 def test_an_unanswered_reread_keeps_the_clip_for_one_more_window_then_takes_it_back(tmp_path, monkeypatch):

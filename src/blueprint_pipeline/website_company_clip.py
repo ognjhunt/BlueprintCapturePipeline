@@ -143,8 +143,11 @@ _RIGHTS_REFUSALS = re.compile(r"(source_revoked|consent_revoked|consent_expired|
                               r"|capture_revoked_or_expired|website_company_clip_not_permitted)\b")
 _NOT_PERMITTED = "website_company_clip_not_permitted"
 _RIGHTS_REFUSED = "website_company_clip_rights_refused"
-#: The ATSC A53 caption identifier inside an H.264 SEI unit; a clip whose bytes carry it is refused.
-_CAPTION_MARKER = b"GA94"
+#: Beside the lock: a raw upload's digest, kept before any manifest exists (keyed by path, size and mtime).
+RAW_DIGEST_FILE = "raw_upload_digest.json"
+#: An after-encode proof that refuses a clip is recorded for that source and builder revision and tried
+#: again only after ``LIVE_STATEMENT_RECHECK_SECONDS``, as a timeout is: no full encode every pass.
+_OUTPUT_REFUSAL = re.compile(r"website_company_clip_output_[a-z_]+")
 
 
 class CompanyClipUnavailable(ValueError):
@@ -228,23 +231,31 @@ def raw_upload_source(capture_root: Path) -> dict[str, Any] | None:
             "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns}
 
 
-def _raw_upload_digest(source: Mapping[str, Any], manifest: Mapping[str, Any]) -> str | None:
+def _raw_upload_digest(source: Mapping[str, Any], manifest: Mapping[str, Any], directory: Path) -> str | None:
     """The raw upload's digest, or None when it is not a readable video.
 
-    Read once: a pass reuses the digest the manifest kept for the same file, size and modification time,
-    so a current clip costs no read of a large upload every pass.
+    Read once: a pass reuses the digest the manifest kept, or before any manifest exists the one kept in
+    ``RAW_DIGEST_FILE`` beside the lock, for the same file, size and modification time, so no pass reads a
+    large upload in full again.
     """
     from .website_source_video import probe_video
-    kept = manifest.get("source_video")
-    if (manifest.get("source") == "raw_upload" and isinstance(kept, Mapping)
-            and all(kept.get(key) == source[key] for key in ("relative", "size_bytes", "mtime_ns"))
-            and _DIGEST.fullmatch(str(kept.get("digest") or ""))):
-        return kept["digest"]
+
+    def same(kept: Any) -> bool:
+        return (isinstance(kept, Mapping) and all(kept.get(key) == source[key]
+                                                  for key in ("relative", "size_bytes", "mtime_ns"))
+                and bool(_DIGEST.fullmatch(str(kept.get("digest") or ""))))
+    for kept in ((manifest.get("source_video") if manifest.get("source") == "raw_upload" else None),
+                 _read(directory / RAW_DIGEST_FILE)):
+        if same(kept):
+            return kept["digest"]
     try:
         probe_video(Path(source["path"]))
-        return _sha256_file(Path(source["path"]))
+        digest = _sha256_file(Path(source["path"]))
     except (subprocess.SubprocessError, OSError, ValueError):
         return None
+    write_json(directory / RAW_DIGEST_FILE, {key: source[key] for key in ("relative", "size_bytes", "mtime_ns")}
+               | {"digest": digest})
+    return digest
 
 
 def clip_source(capture_root: Path) -> dict[str, Any] | None:
@@ -510,14 +521,23 @@ def frames_clean(path: Path, *, timeout: float = ENCODE_TIMEOUT_SECONDS) -> bool
         not isinstance(frame, dict) or frame.get("side_data_list") for frame in frames)
 
 
-def carries_caption_units(path: Path) -> bool:
-    """The A53 caption identifier anywhere in the file's bytes."""
-    tail = b""
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            if _CAPTION_MARKER in tail + chunk:
-                return True
-            tail = chunk[-(len(_CAPTION_MARKER) - 1):]
+def sei_units_present(path: Path, *, timeout: float = ENCODE_TIMEOUT_SECONDS) -> bool:
+    """Any SEI unit (NAL type 6, where captions and user data travel) left in the clip's H.264 stream.
+
+    The stream is copied out in Annex B form and split at its start codes; emulation prevention means a
+    start code never occurs inside a unit, so this reads unit headers only, never chance bytes in the
+    picture data. The encode drops every SEI unit (``filter_units``), so the answer must be no.
+    """
+    completed = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-map", "0:v:0", "-c", "copy",
+                                "-bsf:v", "h264_mp4toannexb", "-f", "h264", "-"],
+                               check=True, capture_output=True, timeout=max(1.0, timeout))
+    stream, position = completed.stdout, 0
+    if not stream:
+        return True  # nothing to read is not a proof
+    while (found := stream.find(b"\x00\x00\x01", position)) >= 0:
+        if found + 3 < len(stream) and stream[found + 3] & 0x1F == 6:
+            return True
+        position = found + 3
     return False
 
 
@@ -574,14 +594,19 @@ def build_clip(source: Path, output: Path, *, max_bytes: int = MAX_CLIP_BYTES,
         if isinstance(source_seconds, (int, float)) and source_seconds > 0 and (
                 seconds is None or seconds < source_seconds - max(1.0, 0.02 * source_seconds)):
             raise ValueError("website_company_clip_output_truncated")
+        # Two separate proofs, each on its own: every frame decoded carries no side data, and no SEI unit is
+        # left in the stream.
         try:
             clean = frames_clean(partial, timeout=deadline - time.monotonic())
+            sei = clean and sei_units_present(partial, timeout=deadline - time.monotonic())
         except subprocess.TimeoutExpired:
             raise ValueError(ENCODE_TIMED_OUT) from None
         except (subprocess.SubprocessError, ValueError):
-            clean = False
-        if not clean or carries_caption_units(partial):
+            clean, sei = False, True
+        if not clean:
             raise ValueError("website_company_clip_output_frame_side_data")
+        if sei:
+            raise ValueError("website_company_clip_output_sei_units_left")
         os.replace(partial, output)
     finally:
         partial.unlink(missing_ok=True)
@@ -757,7 +782,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
         manifest = _read(manifest_path)
         if source["source"] == "raw_upload":
             # Decided before any rights read: a missing or broken upload is no source, never a failure.
-            source["digest"] = _raw_upload_digest(source, manifest)
+            source["digest"] = _raw_upload_digest(source, manifest, directory)
             if source["digest"] is None:
                 return {"status": "no_source"}
         revision = clip_revision(source, max_bytes=max_bytes)
@@ -777,10 +802,12 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
             return {"status": "not_permitted"}
         if manifest.get("clip_revision") == revision and manifest.get("refused") == OVER_CAP:
             return {"status": "over_size_cap"}
-        timed_out = manifest.get("refused_at_epoch")
-        if (manifest.get("clip_revision") == revision and manifest.get("refused") == ENCODE_TIMED_OUT
-                and isinstance(timed_out, int) and 0 <= now() - timed_out < LIVE_STATEMENT_RECHECK_SECONDS):
-            return {"status": "encode_timed_out"}
+        refused, refused_at = manifest.get("refused"), manifest.get("refused_at_epoch")
+        if (manifest.get("clip_revision") == revision and isinstance(refused, str) and isinstance(refused_at, int)
+                and (refused == ENCODE_TIMED_OUT or _OUTPUT_REFUSAL.fullmatch(refused))
+                and 0 <= now() - refused_at < LIVE_STATEMENT_RECHECK_SECONDS):
+            return ({"status": "encode_timed_out"} if refused == ENCODE_TIMED_OUT
+                    else {"status": "failed", "reason": refused})
         # A definite "no" from this window's live read stands until the window passes: no request every pass.
         if not owned and not _live_due(check, now(), root) and check.get("outcome") in ("not_sharing", "rights_refused"):
             if manifest:
@@ -797,11 +824,10 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
             if manifest:
                 _take_back(manifest, manifest_path, retract)
             return {"status": "not_permitted"}
-        # The WebApp refused this clip: nothing is archived again until the live rights change, a window passes
-        # or the website asks for a recheck.
+        # The WebApp refused this clip: nothing is archived again until the live rights differ from those at the
+        # refusal or a window passes. A recheck only makes the live read due; unchanged rights keep the refusal.
         memory = manifest.get("refused_by_webapp")
         if (isinstance(memory, Mapping) and memory.get("clip_revision") == revision
-                and not recheck_requested_since(root, memory.get("at_epoch"))
                 and memory.get("rights_fingerprint") == check.get("rights_fingerprint")
                 and isinstance(memory.get("at_epoch"), int)
                 and 0 <= now() - memory["at_epoch"] < LIVE_STATEMENT_RECHECK_SECONDS):
@@ -822,12 +848,14 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
             try:
                 built = build_clip(Path(source["path"]), clip_path, max_bytes=max_bytes)
             except ValueError as error:
-                if str(error) not in (OVER_CAP, ENCODE_TIMED_OUT):
+                code = str(error)
+                if code not in (OVER_CAP, ENCODE_TIMED_OUT) and not _OUTPUT_REFUSAL.fullmatch(code):
                     raise
                 clip_path.unlink(missing_ok=True)
-                write_json(manifest_path, {**base, "clip": None, "refused": str(error), "refused_at_epoch": int(now())})
-                logger.warning("%s capture=%s", str(error), identity["capture_id"])
-                return {"status": "over_size_cap" if str(error) == OVER_CAP else "encode_timed_out"}
+                write_json(manifest_path, {**base, "clip": None, "refused": code, "refused_at_epoch": int(now())})
+                logger.warning("%s capture=%s", code, identity["capture_id"])
+                return ({"status": "over_size_cap"} if code == OVER_CAP else {"status": "encode_timed_out"}
+                        if code == ENCODE_TIMED_OUT else {"status": "failed", "reason": code})
             manifest = {**base, "clip": {**built, "path": CLIP_FILE}}
         manifest["permission"], manifest["upload_sha256"] = basis, upload
         record = clip_record(identity=identity, manifest=manifest)
@@ -926,12 +954,17 @@ def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
     return start, end
 
 
+#: The route's clock (the pass takes ``now`` from its caller); a test can set it.
+def _wall_clock() -> float:
+    return time.time()
+
+
 def _basis_still_holds(root: Path, capture_id: str, manifest: Mapping[str, Any]) -> bool:
     basis = (manifest.get("permission") or {}).get("permission_basis")
     if basis == "blueprint_owned_capture":
         return owned_basis_holds(capture_id, manifest.get("upload_sha256"))
     if basis == "site_sharing_statement":
-        return live_grant_holds(_read(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE))
+        return live_grant_holds(_read(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE), _wall_clock())
     return False
 
 

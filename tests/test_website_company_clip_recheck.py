@@ -23,6 +23,11 @@ from tests.test_website_company_clip import (
 
 pytestmark = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
                                 reason="needs local ffmpeg and ffprobe")
+
+
+@pytest.fixture(autouse=True)
+def _route_clock(monkeypatch):
+    monkeypatch.setattr(clip, "_wall_clock", lambda: NOW + 60)
 SIGNED = {"x-blueprint-pipeline-signature": "sha256=x", "x-test-client": "blueprint-webapp"}
 REFUSED = ValueError("website_control_company-clip_http_409:website_company_clip_not_permitted")
 
@@ -54,25 +59,28 @@ def _owned_row(capture: Path) -> dict:
             "video_sha256_prefix": _sha(capture / "raw/walkthrough.mp4")[7:19]}
 
 
-def test_a_recheck_is_accepted_and_the_next_pass_offers_again_after_a_remembered_refusal(tmp_path, monkeypatch):
+def test_a_recheck_rereads_the_rights_and_keeps_a_refusal_while_they_are_unchanged(tmp_path, monkeypatch):
+    # A website that keeps asking for a recheck while it keeps refusing does not set the pace of uploads:
+    # each recheck makes the pass read the live rights again, and unchanged rights keep the refusal.
     capture = _capture(tmp_path)
     world = World(delivery_error=REFUSED)
     assert world.publish(capture)["status"] == "refused"
-    assert world.publish(capture, now=lambda: NOW + 60)["status"] == "refused"  # remembered: nothing uploaded
-    assert len(world.archived) == 1
-    world.delivery_error = None  # the WebApp now has what it needed to accept
-    clock = {"now": NOW + 120}
+    assert len(world.archived) == 1 and len(world.retracted) == 1
+    clock = {"now": NOW + 60}
     monkeypatch.setattr(permission_recheck.time, "time", lambda: clock["now"])
-    response = _recheck(_client(tmp_path / "storage", monkeypatch))
-    assert response.status_code == 202
-    assert response.json() == {"schema_version": "website_company_recheck.v1", "accepted": True}
-    # The request itself did nothing but mark: no encode, upload, delete or rights read.
-    assert len(world.archived) == 1 and len(world.retracted) == 1 and world.rights_reads == 2
+    client = _client(tmp_path / "storage", monkeypatch)
+    for minute in range(1, 5):
+        clock["now"] = NOW + 61 * minute
+        reads = world.rights_reads
+        response = _recheck(client)
+        assert response.status_code == 202
+        assert response.json() == {"schema_version": "website_company_recheck.v1", "accepted": True}
+        assert world.rights_reads == reads  # the request itself only marks: no read, encode, upload or delete
+        assert world.publish(capture, now=lambda: clock["now"] + 1)["status"] == "refused"
+        assert world.rights_reads == reads + 1
+    assert len(world.archived) == 1 and len(world.retracted) == 1
     mark = capture.joinpath(*clip.DIRECTORY) / permission_recheck.MARK_FILE
-    assert json.loads(mark.read_text())["requested_at_epoch"] == NOW + 120
-    reads = world.rights_reads
-    assert world.publish(capture, now=lambda: NOW + 130)["status"] == "published"
-    assert world.rights_reads == reads + 1 and len(world.archived) == 2
+    assert json.loads(mark.read_text())["requested_at_epoch"] == NOW + 61 * 4
 
 
 def test_the_reference_capture_owned_then_refused_then_v4_after_a_recheck(tmp_path, monkeypatch):

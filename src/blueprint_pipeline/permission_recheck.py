@@ -3,8 +3,9 @@ check honours.
 
 The website calls the Pipeline when a job's recording statement or withdrawal is recorded
 (``POST .../website-company-clips/{capture_id}/recheck``). The mark makes the capture's stored live
-permission check (``pipeline/company_clip/statement_check.json``) and any remembered website refusal
-stale, so the next pass reads the live rights again instead of waiting for its window. The company clip
+permission check (``pipeline/company_clip/statement_check.json``) stale, so the next pass reads the live
+rights again instead of waiting for its window. A remembered website refusal is not dropped by the mark:
+it goes only when that new read differs from the rights at the refusal, so rechecks alone cause no upload. The company clip
 (``website_company_clip``) and the simulation package both read that check, so both call
 ``recheck_requested_since``.
 
