@@ -4,6 +4,8 @@
 #   src/blueprint_pipeline/website_scene_workspace_retention.py
 #   src/blueprint_pipeline/website_scene_workspace_digests.py
 #   src/blueprint_pipeline/website_scene_workspace_queue.py
+#   src/blueprint_pipeline/website_scene_workspace_records.py
+#   src/blueprint_pipeline/website_scene_workspace_references.py
 #   src/blueprint_pipeline/control_plane_evidence_offload.py
 
 from __future__ import annotations

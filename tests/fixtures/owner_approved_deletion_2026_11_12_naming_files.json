@@ -1,0 +1,201 @@
+{
+  "description": "Paths only, from the table in sections 1a and 1b of the 2026-11-12 damage report: which live file named which deleted folder. No other content of those files is known here; 'field' is the report's own word for where the path sat, or null.",
+  "rows": [
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259/franka_robotiq_2f_85_flattened.usd",
+      "naming_file": "/etc/blueprint/task-evaluation-controls-robot-catalog.json",
+      "field": "bindings franka-pick-place-840938, -841757"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259/franka_robotiq_2f_85_flattened.usd",
+      "naming_file": "/etc/blueprint/task-evaluation-controls-autoprovision-bootstrap.json",
+      "field": "robot_catalog_bindings"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259/franka_robotiq_2f_85_flattened.usd",
+      "naming_file": "/etc/blueprint/task-evaluation-configured-controls-intents/0263d0886c05d47ac1900b1e30b01beb3631b004f76f910378a4ff4f43b6e88e.json",
+      "field": "artifact_inventory.robot_asset_usd_path"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259/franka_robotiq_2f_85_flattened.usd",
+      "naming_file": "/etc/blueprint/task-evaluation-configured-controls-intents/0612aadf5ba476c5f4df647f9e1ea53aa6f2388b2d0b448936adf4164148d4ce.json",
+      "field": "artifact_inventory.robot_asset_usd_path"
+    },
+    {
+      "section": "1b",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/native-droid-robot-isaac6-c8d72259/franka_robotiq_2f_85_flattened.usd",
+      "naming_file": "/etc/blueprint/scene840938-fresh-20260912/controls-bootstrap.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-30b10e56-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-30b10e56-20260905",
+      "naming_file": "/var/lib/blueprint/task-evaluation-inputs/public-source-bindings/public-scene-841757-autonomous-20260907.json",
+      "field": "installation_receipt"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-524fe54b-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-524fe54b-20260905",
+      "naming_file": "/var/lib/blueprint/task-evaluation-inputs/public-source-bindings/public-scene-841757-autonomous-20260907.json",
+      "field": "publisher_intake"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-30b10e56-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-task-intent-30b10e56-20260905",
+      "naming_file": "/var/lib/blueprint/task-evaluation-inputs/public-source-bindings/public-scene-841757-autonomous-20260907.json",
+      "field": "accepted_task_seed"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-30b10e56-20260905.source-preparation",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-raw-30b10e56-20260905.source-preparation",
+      "naming_file": "/var/lib/blueprint/task-evaluation-inputs/public-source-bindings/public-scene-841757-autonomous-20260907.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-30b10e56-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene-841757-standard-30b10e56-20260905",
+      "naming_file": "/var/lib/blueprint/task-evaluation-inputs/public-source-bindings/public-scene-841757-autonomous-20260907.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-02f42675",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-02f42675",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-02f42675",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-02f42675",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.renewal-20260921.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-02f42675",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene840920-task-a-02f42675",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.scene840938-20260912.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-authorities-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-authorities-20260905",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-authorities-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-authorities-20260905",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.renewal-20260921.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-authorities-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/sam31-scene841757-authorities-20260905",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.scene840938-20260912.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-02f42675-r5",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-02f42675-r5",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-02f42675-r5",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-02f42675-r5",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.renewal-20260921.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-02f42675-r5",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/sam31-worker-image-02f42675-r5",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.scene840938-20260912.json",
+      "field": null
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene840920-sam-postprocess-9384ef1b",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-sam-postprocess-9384ef1b",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.json",
+      "field": "review_terms"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene840920-sam-postprocess-9384ef1b",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-sam-postprocess-9384ef1b",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.renewal-20260921.json",
+      "field": "review_terms"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene840920-sam-postprocess-9384ef1b",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-sam-postprocess-9384ef1b",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.scene840938-20260912.json",
+      "field": "review_terms"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene841757-provider-inputs-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene841757-provider-inputs-20260905",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.json",
+      "field": "calibrated_views_machine_avoidlist_path"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene841757-provider-inputs-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene841757-provider-inputs-20260905",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.renewal-20260921.json",
+      "field": "calibrated_views_machine_avoidlist_path"
+    },
+    {
+      "section": "1a",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene841757-provider-inputs-20260905",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene841757-provider-inputs-20260905",
+      "naming_file": "/etc/blueprint/task-evaluation-public-scene-machinery.scene840938-20260912.json",
+      "field": "calibrated_views_machine_avoidlist_path"
+    },
+    {
+      "section": "1b",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/segment-cutout-840920-aea0bb8c",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/segment-cutout-840920-aea0bb8c",
+      "naming_file": "/var/lib/blueprint/task-evaluation-inputs/fresh_scene_artifixer_candidate_515c_request.v1.json",
+      "field": null
+    },
+    {
+      "section": "1b",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-515c688c-from-8b041da1",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/retained-scene-render-840920-515c688c-from-8b041da1",
+      "naming_file": "/var/lib/blueprint/task-evaluation-inputs/fresh_scene_artifixer_candidate_515c_request.v1.json",
+      "field": null
+    },
+    {
+      "section": "1b",
+      "deleted_folder": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-53b84015-r1",
+      "named_path": "/var/lib/blueprint/task-evaluation-inputs/scene840920-native-assets-53b84015-r1",
+      "naming_file": "/var/lib/blueprint/task-evaluation-inputs/seal_blast_radius_task_a_freeze.v1.json",
+      "field": null
+    }
+  ]
+}

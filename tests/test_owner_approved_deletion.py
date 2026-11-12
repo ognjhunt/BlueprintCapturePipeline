@@ -2,12 +2,14 @@
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/owner_approved_deletion.py
+#   src/blueprint_pipeline/website_scene_workspace_references.py
 #   deploy/owner-approved-deletions/2026-11-04-arena-scratch.json
 #   deploy/owner-approved-deletions/held/2026-11-04-authority-ended-scenes.json
 #   deploy/owner-approved-deletions/2026-11-04-controlled-policy-integration.json
 #   deploy/owner-approved-deletions/2026-11-12-old-development-folders.json
 #   deploy/systemd/blueprint-owner-approved-deletion-plan.service
 #   deploy/systemd/blueprint-owner-approved-deletion.service
+#   tests/fixtures/owner_approved_deletion_2026_11_12_naming_files.json
 
 from __future__ import annotations
 
@@ -52,13 +54,29 @@ class Host:
         self.control = root / "pipeline-control-plane"
         for path in (self.inputs, self.handoffs, self.control / "storage-pins", self.control / "queue" / "pending",
                      self.control / "queue" / "processing", self.control / "task-evaluation-scene-intents",
-                     self.control / "website-source-bindings", root / "units", root / "proc", root / "manifests"):
+                     self.control / "website-source-bindings", root / "units", root / "proc", root / "manifests",
+                     root / "etc-blueprint", self.inputs / "public-source-bindings",
+                     *(root / "release" / name for name in oad.RELEASE_SUBDIRECTORIES)):
             path.mkdir(parents=True, exist_ok=True)
+        self.etc = root / "etc-blueprint"
+        self.intents = self.control / "task-evaluation-scene-intents"
+        self.bindings = self.inputs / "public-source-bindings"
+        self.catalog = self.control / "task-evaluation-launch-profile-catalog.json"
+        self.catalog.write_text(json.dumps({"profiles": []}), encoding="utf-8")
         self.reports = root / "reports"
         self.settings = oad.Settings(pins_root=self.control / "storage-pins", queue_roots=[self.control / "queue"],
-                                     intent_root=self.control / "task-evaluation-scene-intents",
-                                     inputs_root=self.inputs, handoff_root=self.handoffs,
-                                     unit_directories=[root / "units"], process_root=root / "proc")
+                                     intent_root=self.intents, inputs_root=self.inputs, handoff_root=self.handoffs,
+                                     unit_directories=[root / "units"], process_root=root / "proc",
+                                     config_root=self.etc, binding_root=self.bindings,
+                                     launch_profile_catalog=self.catalog,
+                                     registry_roots=[self.control / "website-source-bindings",
+                                                     self.control / "beta-policy-screening"],
+                                     release_roots=[root / "release"], door_roots=[root / "door"])
+
+    def write(self, path: Path, document) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(document if isinstance(document, str) else json.dumps(document), encoding="utf-8")
+        return path
 
     def folder(self, name: str, files: dict[str, bytes] | None = None, *, mtime: int = 1787000000) -> Path:
         folder = self.inputs / name
@@ -436,3 +454,597 @@ def test_the_units_run_by_hand_with_the_reclaim_timers_queues():
         assert f"-m blueprint_pipeline.owner_approved_deletion{action}" in text
         assert "--manifest-dir /opt/blueprint/task-evaluation-control-plane/deploy/owner-approved-deletions" in text
         assert not (systemd / f"{name}.timer").exists() and not (systemd / f"{name}.path").exists()
+
+
+def test_the_units_can_read_every_live_state_root():
+    # ProtectSystem=strict leaves the host readable; only the provider key files are hidden, and the scan
+    # never reads them. Nothing else may hide or replace a root the live-state scan needs.
+    roots = [oad.DEFAULT_CONFIG_ROOT, oad.DEFAULT_INTENT_ROOT, oad.DEFAULT_PUBLIC_SOURCE_BINDING_ROOT,
+             oad.DEFAULT_LAUNCH_PROFILE_CATALOG, oad.INPUTS_ROOT, oad.DEFAULT_PINS_ROOT, *oad.DEFAULT_REGISTRY_ROOTS,
+             oad.DEFAULT_RELEASE_ROOT, oad.DEFAULT_DOOR_ROOT]
+    for name in ("blueprint-owner-approved-deletion-plan", "blueprint-owner-approved-deletion"):
+        lines = (REPO_ROOT / "deploy" / "systemd" / f"{name}.service").read_text().splitlines()
+        assert "User=root" in lines and "ProtectSystem=strict" in lines
+        assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_PTRACE" in lines
+        hidden = [line.split("=", 1)[1] for line in lines
+                  if line.split("=", 1)[0] in ("InaccessiblePaths", "TemporaryFileSystem", "BindPaths",
+                                               "BindReadOnlyPaths", "ProtectProc")]
+        assert hidden == ["-/etc/blueprint/provider-secrets"], hidden
+        assert {Path(path.lstrip("-")).name for path in hidden} <= oad.CONFIG_EXCLUDED_NAMES
+        assert all(not any(str(root) == path.lstrip("-") or str(root).startswith(path.lstrip("-") + "/")
+                           for path in hidden) for root in roots)
+
+
+# --- live state: configuration and registries that still name a folder -------------------------
+
+
+def _naming_sources(host: Host, folder: Path) -> dict[str, Path]:
+    """One naming file per source the plan reads, each naming ``folder`` (or a file in it)."""
+
+    asset = f"{folder}/franka_robotiq_2f_85_flattened.usd"
+    retained = host.root / "completed-scene-preparation" / "scene-retained" / "public-source" / "binding.json"
+    host.write(retained, {"references": {"installation_receipt": {"path": str(folder / "receipt.json")}}})
+    return {
+        "config_json": host.write(host.etc / "task-evaluation-controls-robot-catalog.json",
+                                  {"bindings": [{"robot_asset_usd_path": asset}]}),
+        "config_env": host.write(host.etc / "installed-source-bindings" / "scene.env", f"SOURCE_ROOT={folder}\n"),
+        "configured_controls_intent": host.write(
+            host.etc / "task-evaluation-configured-controls-intents" / "abc.json",
+            {"status": "revoked", "artifact_inventory": {"robot_asset_usd_path": asset}}),
+        "launch_profile": host.write(host.etc / "task-evaluation-launch-profiles" / "p.json", {
+            "claim_ceiling": "development_only", "allocator": {"argv": ["run", f"--input={folder}/job"]}}),
+        "machinery": host.write(host.etc / "task-evaluation-public-scene-machinery.json",
+                                {"review_terms": f"file://{folder}/terms.md"}),
+        "scene_intent": host.write(host.intents / "scene-a" / "intent.json",
+                                   {"status": "ended", "source": {"path": str(folder)}}),
+        "retained_binding": retained,
+        "public_source_binding": host.write(host.bindings / "public-scene-1.json", {
+            "references": {"publisher_intake": {"path": f"{folder}/intake.json"}}}),
+        "launch_profile_catalog": host.write(host.catalog, {"profiles": [{"inputs": [str(folder)]}]}),
+        "inputs_root_loose_json": host.write(host.inputs / "request.v1.json", {"segment": str(folder)}),
+        "control_plane_registry": host.write(host.control / "website-source-bindings" / "b.json",
+                                             {"path": str(folder)}),
+    }
+
+
+@pytest.mark.parametrize("source", [
+    "config_json", "config_env", "configured_controls_intent", "launch_profile", "machinery", "scene_intent",
+    "retained_binding", "public_source_binding", "launch_profile_catalog", "inputs_root_loose_json",
+    "control_plane_registry"])
+def test_a_folder_named_by_live_state_is_refused_with_the_naming_file(host, source):
+    folder = host.folder("scene-841757-raw-30b10e56-20260905")
+    keep = _naming_sources(host, folder)[source]
+    for name, path in _naming_sources(host, folder).items():  # leave only the source under test naming it
+        if name != source:
+            path.write_text("[]" if path.suffix == ".json" else "\n", encoding="utf-8")
+    if source == "retained_binding":
+        host.write(host.intents / "scene-a" / "progression.json", {"state": {"source_binding": {"path": str(keep)}}})
+    manifest = host.manifest([host.folder_entry(folder)])
+
+    plan = host.plan(manifest)
+
+    row = plan["entries"][0]
+    assert (row["status"], row["reasons"], row["named_by"]) == ("skipped", ["named_by_live_state"], [str(keep)])
+    assert plan["reference_scan"]["status"] == "complete" and plan["skipped_counts"] == {"named_by_live_state": 1}
+    assert host.apply(manifest)["outcome_counts"] == {"not_eligible_in_plan": 1} and folder.is_dir()
+    receipt = json.loads((host.reports / "test-manifest" / "receipts" / f"{oad._key(str(folder))}.json").read_text())
+    assert (receipt["status"], receipt["reasons"], receipt["named_by"]) == (
+        "skipped", ["named_by_live_state"], [str(keep)])
+
+
+def test_a_link_in_the_configuration_names_its_target(host):
+    folder = host.folder("native-droid-robot-isaac6-c8d72259")
+    (host.etc / "current-robot").symlink_to(folder / "robot.usd")  # dangling: the file inside is not there
+
+    row = host.plan(host.manifest([host.folder_entry(folder)]))["entries"][0]
+
+    assert row["named_by"] == [str(host.etc / "current-robot")] and row["status"] == "skipped"
+
+
+def test_named_paths_compare_whole_components(host):
+    folder = host.folder("scene-84")
+    host.write(host.etc / "names.json", {"near": [str(host.inputs / "scene-841757"), f"{folder}-other/x",
+                                                  f"{host.inputs}/xscene-84", str(host.inputs), f"gs:/{folder}",
+                                                  f"https://host{folder}"]})
+
+    assert host.plan(host.manifest([host.folder_entry(folder)]))["eligible_count"] == 1
+
+
+def test_an_unreadable_file_marks_every_entry_and_deletes_nothing(host, monkeypatch):
+    first, second = host.folder("arena-launch-r1"), host.folder("arena-launch-r2")
+    secret = host.write(host.etc / "installed-source-bindings" / "scene.env", "TOKEN=x\n")
+    broken = host.write(host.etc / "task-evaluation-launch-profiles" / "half.json", '{"immutable_inputs": [')
+    real_read = Path.read_bytes
+
+    def read_bytes(path):
+        if path == secret:
+            raise PermissionError(13, "denied")
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    manifest = host.manifest([host.folder_entry(first), host.folder_entry(second)])
+
+    plan = host.plan(manifest)
+
+    assert plan["eligible_count"] == 0
+    assert {row["status"] for row in plan["entries"]} == {"skipped"}
+    assert all(row["reasons"] == ["reference_scan_incomplete"] for row in plan["entries"])
+    assert plan["reference_scan"]["status"] == "incomplete"
+    assert plan["reference_scan"]["unreadable"] == [{"path": str(secret), "code": "permission_denied"},
+                                                    {"path": str(broken), "code": "not_json"}]
+    assert host.apply(manifest)["outcome_counts"] == {"not_eligible_in_plan": 2}
+    assert first.is_dir() and second.is_dir()
+    receipt = json.loads((host.reports / "test-manifest" / "receipts" / f"{oad._key(str(first))}.json").read_text())
+    assert receipt["reference_scan_unreadable"] == plan["reference_scan"]["unreadable"]
+
+
+@pytest.mark.parametrize("missing", ["etc", "intents", "bindings", "catalog"])
+def test_a_missing_root_marks_every_entry(host, missing):
+    import shutil
+
+    folder = host.folder("arena-launch-r1")
+    target = getattr(host, missing)
+    shutil.rmtree(target) if target.is_dir() else target.unlink()
+
+    plan = host.plan(host.manifest([host.folder_entry(folder)]))
+
+    assert plan["entries"][0]["reasons"] == ["reference_scan_incomplete"]
+    assert plan["reference_scan"]["unreadable"] == [{"path": str(target), "code": "required_root_missing"}]
+
+
+def test_an_optional_registry_may_be_absent_but_the_provider_secrets_are_never_read(host):
+    folder = host.folder("arena-launch-r1")
+    host.write(host.etc / "provider-secrets" / "names.json", {"path": str(folder)})
+
+    plan = host.plan(host.manifest([host.folder_entry(folder)]))
+
+    assert plan["eligible_count"] == 1, plan["entries"][0]
+    assert not (host.control / "beta-policy-screening").exists()
+
+
+def test_a_folder_may_name_its_own_files_and_a_deleted_folder_may_name_another(tmp_path):
+    x, y, z = (str(tmp_path / name) for name in ("x", "y", "z"))
+    state = oad.LiveState()
+    state._add(f"{y}/cfg.json", {f"{x}/f"})  # a file inside another folder this run deletes
+    state._add(f"{x}/binding.json", {f"{x}/own"})  # a folder naming its own files
+    entries = [{"path": path, "class": oad.FOLDER} for path in (x, y)]
+
+    verdicts = oad.live_state_reasons(entries, state, deleted=[x, y])
+    assert [verdicts[path]["reasons"] for path in (x, y)] == [[], []]
+
+    # The same file counts once the folder holding it stays.
+    assert oad.live_state_reasons(entries, state, deleted=[x])[x] == {
+        "reasons": ["named_by_live_state"], "named_by": [f"{y}/cfg.json"], "named_by_released_code": []}
+    # ... and when it stays because live state names it in turn, found on a second pass.
+    state._add(str(tmp_path / "etc" / "p.json"), {z, f"{y}/cfg.json"})
+    chained = oad.live_state_reasons(entries, state, deleted=[x, y])
+    assert chained[y]["reasons"] == ["named_by_live_state"]
+    assert chained[x] == {"reasons": ["named_by_live_state"], "named_by": [f"{y}/cfg.json"],
+                          "named_by_released_code": []}
+
+
+def test_a_reference_from_a_folder_that_stays_still_counts(host):
+    # A retained binding inside one folder names another; the intent that records it keeps the first, so
+    # the binding's reference keeps the second (a second pass of the check).
+    receipt, holder = host.folder("scene-841757-raw-30b10e56-20260905"), host.folder("completed-scene-preparation")
+    binding = host.write(holder / "scene-a" / "public-source" / "binding.json",
+                         {"installation_receipt": {"path": f"{receipt}/r.json"}})
+    host.write(host.intents / "scene-a" / "progression.json", {"source_binding": {"path": str(binding)}})
+    plan = host.plan(host.manifest([host.folder_entry(receipt), host.folder_entry(holder)]))
+
+    rows = {Path(row["path"]).name: row for row in plan["entries"]}
+    assert rows[holder.name]["named_by"] == [str(host.intents / "scene-a" / "progression.json")]
+    assert (rows[receipt.name]["reasons"], rows[receipt.name]["named_by"]) == (["named_by_live_state"], [str(binding)])
+
+
+def test_apply_lets_only_what_it_deletes_name_another_path(host, monkeypatch):
+    first, second = host.folder("arena-launch-r1"), host.folder("arena-launch-r2")
+    manifest = host.manifest([host.folder_entry(first), host.folder_entry(second)])
+    assert host.plan(manifest)["eligible_count"] == 2
+    write_storage_pin(pins_root=host.control / "storage-pins", kind="preparation", owner_id="pin-1",
+                      paths=[second], ttl_seconds=DAY, now=lambda: APPROVED_EPOCH + 100)
+    seen = []
+    real = oad.live_state_reasons
+    monkeypatch.setattr(oad, "live_state_reasons", lambda entries, state, deleted: seen.append(list(deleted))
+                        or real(entries, state, deleted))
+
+    result = host.apply(manifest)
+
+    assert seen == [[str(first)]]  # not the plan's two: the pinned one stays, so its files would count
+    assert result["outcome_counts"] == {"deleted": 1, "skipped": 1} and second.is_dir()
+
+
+def test_a_folder_named_after_the_plan_is_kept_by_apply(host):
+    folder = host.folder("arena-launch-r1")
+    manifest = host.manifest([host.folder_entry(folder)])
+    assert host.plan(manifest)["eligible_count"] == 1
+    profile = host.write(host.etc / "task-evaluation-launch-profiles" / "new.json",
+                         {"immutable_inputs": [{"path": f"{folder}/job/result.json"}]})
+
+    result = host.apply(manifest)
+
+    assert result["outcomes"] == [{"path": str(folder), "outcome": "skipped", "reasons": ["named_by_live_state"],
+                                   "named_by": [str(profile)], "named_by_released_code": []}]
+    assert folder.is_dir()
+
+
+def test_the_2026_11_12_shapes_are_never_eligible(host):
+    # The real shapes of the damage report's section 1a, each still marked ended or development-only.
+    robot, receipt, authorization, inputs = (host.folder(name) for name in (
+        "native-droid-robot-isaac6-c8d72259", "scene-841757-raw-30b10e56-20260905",
+        "sam31-scene841757-authorities-20260905", "arena-launch-r5"))
+    host.write(host.etc / "task-evaluation-controls-robot-catalog.json", {"bindings": [
+        {"binding_id": "franka-pick-place-841757", "robot_asset_usd_path": f"{robot}/franka_robotiq_2f_85_flattened.usd"}]})
+    host.write(host.bindings / "public-scene-841757-autonomous-20260907.json", {
+        "rights_reference": "internal_noncommercial_research_only",
+        "references": {"installation_receipt": {"path": f"{receipt}/installation_receipt.json"}}})
+    machinery = host.write(host.etc / "task-evaluation-public-scene-machinery.renewal-20260921.json",
+                           {"privacy_authorization": f"{authorization}/privacy.json"})
+    host.write(host.etc / "task-evaluation-scene-progression.json", {"machinery_path": str(machinery)})
+    host.write(host.etc / "task-evaluation-launch-profiles" / "arena.json", {
+        "claim_ceiling": "development_only", "immutable_inputs": [{"path": f"{inputs}/scene.usd"}]})
+    host.write(host.intents / "scene-0353eba5" / "intent.json", {
+        "status": "revoked", "request": {"source": {"binding_id": "public-scene-841757-autonomous-20260907"}}})
+    manifest = host.manifest([host.folder_entry(path) for path in (robot, receipt, authorization, inputs)])
+
+    plan = host.plan(manifest)
+
+    assert plan["eligible_count"] == 0
+    assert {row["reasons"][0] for row in plan["entries"]} == {"named_by_live_state"}
+    assert host.apply(manifest)["outcome_counts"] == {"not_eligible_in_plan": 4}
+    assert all(path.is_dir() for path in (robot, receipt, authorization, inputs))
+
+
+def test_the_2026_11_12_manifest_replayed_against_the_naming_files_refuses_the_14_live_named_folders(tmp_path):
+    """The real manifest against the files the damage report found naming its folders (paths only)."""
+
+    fixture = json.loads((REPO_ROOT / "tests/fixtures/owner_approved_deletion_2026_11_12_naming_files.json")
+                         .read_text())
+    mirror = tmp_path / "host"
+
+    def mirrored(path: str) -> Path:
+        return mirror / path.lstrip("/")
+
+    by_file: dict[str, list[str]] = {}
+    for row in fixture["rows"]:
+        by_file.setdefault(row["naming_file"], []).append(row["named_path"])
+    for name, paths in by_file.items():
+        target = mirrored(name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(sorted(set(paths))), encoding="utf-8")  # the paths, no invented fields
+    for root in ("etc/blueprint", "var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"):
+        (mirror / root).mkdir(parents=True, exist_ok=True)
+    catalog = mirror / "var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json"
+    catalog.write_text("[]", encoding="utf-8")
+    manifest, _ = oad.load_manifest(REPO_ROOT / "deploy/owner-approved-deletions/2026-11-12-old-development-folders.json")
+    paths = [entry["path"] for entry in manifest["entries"]]
+
+    state = oad.scan_live_state(
+        config_root=mirror / "etc/blueprint",
+        intent_root=mirror / "var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents",
+        binding_root=mirrored(str(oad.DEFAULT_PUBLIC_SOURCE_BINDING_ROOT)), launch_profile_catalog=catalog,
+        inputs_root=mirrored(str(oad.INPUTS_ROOT)))
+    reasons = oad.live_state_reasons(manifest["entries"], state, deleted=paths)
+
+    refused = {path: verdict["named_by"] for path, verdict in reasons.items() if verdict["reasons"]}
+    expected: dict[str, set[str]] = {}
+    for row in fixture["rows"]:
+        expected.setdefault(row["deleted_folder"], set()).add(str(mirrored(row["naming_file"])))
+    assert len(expected) == 14
+    assert {path: set(files) for path, files in refused.items()} == expected
+    assert all((reasons[path]["reasons"], reasons[path]["named_by"]) == (["named_by_live_state"], sorted(expected[path]))
+               for path in expected)
+
+
+# --- privacy-required deletions are never kept by a leftover reference ----------------------------
+
+
+def test_every_class_is_either_privacy_required_or_housekeeping():
+    # A new class must be put in exactly one of the two sets before a manifest may list it.
+    assert set(oad.ENTRY_VALIDATORS) == oad.PRIVACY_REQUIRED_CLASSES | oad.HOUSEKEEPING_CLASSES
+    assert not oad.PRIVACY_REQUIRED_CLASSES & oad.HOUSEKEEPING_CLASSES
+    assert oad.PRIVACY_REQUIRED_CLASSES == {oad.SCENE} and oad.HOUSEKEEPING_CLASSES == {oad.FOLDER}
+
+
+def _privacy_scene_named_by_a_binding(tmp_path, host):
+    # A development website source registration nobody claims any more, as on the host: the retention
+    # checks let it go, and the live-state scan sees that it still names the workspace.
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.website_scene_workspace_references import REGISTRATION_SCHEMA
+
+    scene = _authority_ended_scene(tmp_path, host)
+    registration = {"schema_version": REGISTRATION_SCHEMA, "request_digest": "sha256:" + "a" * 64,
+                    "claim_ceiling": "development_only",
+                    "references": {"capture_source": {"path": f"{scene}/captures/w/raw"}}}
+    registration["registration_digest"] = canonical_digest(registration, digest_field="registration_digest")
+    binding = host.write(host.control / "website-source-bindings" / "a96.json", registration)
+    old = time.time() - 60 * DAY
+    os.utime(binding, (old, old))
+    return scene, binding
+
+
+def test_a_privacy_deletion_named_by_a_binding_is_eligible_and_records_the_reference(tmp_path, host, capsys):
+    scene, binding = _privacy_scene_named_by_a_binding(tmp_path, host)
+    now = time.time()
+    later = now + 8 * DAY
+    manifest = host.manifest([_scene_entry(scene)], **_approval_around(now))
+
+    plan = host.plan(manifest, at=later)
+    row = plan["entries"][0]
+    assert oad._journal(plan["manifest_id"], plan["entries"], plan["reference_scan"])[
+        "references_left_pointing_at_nothing_count"] == 1
+    assert json.loads(capsys.readouterr().out) == {"manifest_id": "test-manifest", oad.LEFT_POINTING_AT_NOTHING: {
+        "path": str(scene), "named_by": [str(binding)], "unreadable": []}}
+
+    assert (row["status"], row["reasons"], row["named_by"]) == ("eligible", [], [str(binding)])
+    assert row[oad.LEFT_POINTING_AT_NOTHING] == {"named_by": [str(binding)], "unreadable": []}
+    result = host.apply(manifest, at=later + 60)
+    assert result["outcome_counts"] == {"deleted": 1} and not scene.exists()
+    receipt = json.loads((host.reports / "test-manifest" / "receipts" / f"{oad._key(str(scene))}.json").read_text())
+    assert receipt["status"] == "deleted"
+    assert receipt[oad.LEFT_POINTING_AT_NOTHING] == {"named_by": [str(binding)], "unreadable": []}
+
+
+def test_the_same_reference_keeps_a_housekeeping_folder(host):
+    folder = host.folder("arena-launch-r1")
+    binding = host.write(host.control / "website-source-bindings" / "a96.json",
+                         {"capture_source": {"canonical_path": f"{folder}/captures/w/raw"}})
+
+    row = host.plan(host.manifest([host.folder_entry(folder)]))["entries"][0]
+
+    assert (row["status"], row["reasons"], row["named_by"]) == ("skipped", ["named_by_live_state"], [str(binding)])
+    assert oad.LEFT_POINTING_AT_NOTHING not in row
+
+
+def test_a_privacy_deletion_goes_ahead_when_the_scan_is_incomplete_and_housekeeping_does_not(tmp_path, host):
+    scene, binding = _privacy_scene_named_by_a_binding(tmp_path, host)
+    folder = host.folder("arena-launch-r1")
+    broken = host.write(host.etc / "bad.json", "{not json")
+    now = time.time()
+    later = now + 8 * DAY
+    manifest = host.manifest([_scene_entry(scene), host.folder_entry(folder)], **_approval_around(now))
+
+    rows = {row["class"]: row for row in host.plan(manifest, at=later)["entries"]}
+
+    unreadable = [{"path": str(broken), "code": "not_json"}]
+    assert (rows[oad.SCENE]["status"], rows[oad.SCENE]["reasons"]) == ("eligible", [])
+    assert rows[oad.SCENE][oad.LEFT_POINTING_AT_NOTHING] == {"named_by": [str(binding)], "unreadable": unreadable}
+    assert (rows[oad.FOLDER]["status"], rows[oad.FOLDER]["reasons"]) == ("skipped", ["reference_scan_incomplete"])
+    assert host.apply(manifest, at=later + 60)["outcome_counts"] == {"deleted": 1, "not_eligible_in_plan": 1}
+    assert not scene.exists() and folder.is_dir()
+
+
+# --- scan roots, released code, and the scan's own limits ---------------------------------------
+
+
+def test_a_folder_that_is_or_holds_a_scan_root_is_refused_and_the_next_plan_still_runs(host):
+    holder = host.folder("registry-holder")
+    host.settings.registry_roots = (*host.settings.registry_roots, holder / "nested" / "registry")
+    manifest = host.manifest([host.folder_entry(host.bindings), host.folder_entry(holder)])
+
+    plan = host.plan(manifest)
+
+    assert {Path(row["path"]).name: row["reasons"] for row in plan["entries"]} == {
+        "public-source-bindings": ["live_state_scan_root"], "registry-holder": ["live_state_scan_root"]}
+    host.apply(manifest)
+    later = host.plan(host.manifest([host.folder_entry(host.folder("c-folder"))], manifest_id="second"))
+    assert later["reference_scan"]["status"] == "complete" and later["eligible_count"] == 1
+
+
+@pytest.mark.parametrize("name", ["owner-source-store", "toolchains", "particlefield-runtime-assets",
+                                  "stage-replays", "semantic-pretraining", "system-runtime-prerequisites"])
+def test_a_folder_released_code_uses_as_a_path_component_is_refused(host, name):
+    folder = host.folder(name)
+    host.settings.release_roots = (REPO_ROOT,)  # the real source tree; its manifests are never read as code
+
+    row = host.plan(host.manifest([host.folder_entry(folder)]))["entries"][0]
+
+    assert row["reasons"] == ["named_by_released_code"]
+    assert row["named_by_released_code"] and all(
+        path.startswith(str(REPO_ROOT / "src")) or path.startswith(str(REPO_ROOT / "scripts"))
+        or path.startswith(str(REPO_ROOT / "deploy")) for path in row["named_by_released_code"])
+
+
+def test_the_released_code_never_counts_the_deletion_manifests(host):
+    folder = host.folder("arena-launch-r1")
+    host.write(host.root / "release" / "deploy" / "owner-approved-deletions" / "m.json", {"path": str(folder)})
+    host.write(host.root / "release" / "src" / "other.py", 'NAME = "arena-launch-r10"\n')
+
+    assert host.plan(host.manifest([host.folder_entry(folder)]))["eligible_count"] == 1
+
+
+def test_a_tree_deeper_than_the_limit_is_an_incomplete_scan(host, monkeypatch):
+    monkeypatch.setattr(oad, "MAX_SCAN_DEPTH", 2)
+    folder = host.folder("arena-launch-r1")
+    host.write(host.etc / "a" / "b" / "c.json", {"path": str(folder)})
+
+    plan = host.plan(host.manifest([host.folder_entry(folder)]))
+
+    assert plan["entries"][0]["reasons"] == ["reference_scan_incomplete"]
+    assert plan["reference_scan"]["unreadable"] == [{"path": str(host.etc / "a" / "b"), "code": "scan_depth_limit"}]
+
+
+def test_deeply_nested_json_is_unreadable_not_a_crash(host):
+    folder = host.folder("deep")
+    deep = host.write(host.etc / "deep.json", "[" * 100000 + "]" * 100000)
+
+    plan = host.plan(host.manifest([host.folder_entry(folder)]))
+
+    assert plan["entries"][0]["reasons"] == ["reference_scan_incomplete"]
+    assert plan["reference_scan"]["unreadable"] == [{"path": str(deep), "code": "too_deeply_nested"}]
+
+
+def test_a_file_gone_since_it_was_listed_names_nothing(host, monkeypatch):
+    folder = host.folder("arena-launch-r1")
+    moving = host.write(host.control / "beta-policy-screening" / "queue" / "row.json", {"path": str(folder)})
+    real_read = Path.read_bytes
+
+    def read_bytes(path):
+        if path == moving:
+            path.unlink()  # a queue consumer took it between the listing and the read
+            raise FileNotFoundError(2, "gone")
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    plan = host.plan(host.manifest([host.folder_entry(folder)]))
+
+    assert plan["reference_scan"]["status"] == "complete" and plan["eligible_count"] == 1
+
+
+def test_a_linked_configuration_folder_is_read(host, tmp_path):
+    folder = host.folder("arena-launch-r1")
+    outside = tmp_path / "outside"
+    host.write(outside / "c.json", {"p": str(folder)})
+    (host.etc / "current").symlink_to(outside)
+
+    row = host.plan(host.manifest([host.folder_entry(folder)]))["entries"][0]
+
+    assert row["named_by"] == [str(host.etc / "current" / "c.json")]
+
+
+def test_the_journal_names_each_refused_path_its_reasons_and_naming_files_but_no_values(host, monkeypatch, capsys):
+    folder, other = host.folder("arena-launch-r1"), host.folder("arena-launch-r2")
+    env = host.write(host.etc / "scene.env", f"API_TOKEN=s3cr3t-value\nSOURCE_ROOT={folder}\n")
+    manifest = host.manifest([host.folder_entry(folder), host.folder_entry(other)])
+    real_plan = oad.plan_manifest
+    plans = [host.plan(manifest)]
+    # main() plans with production roots; hand it this host's plan instead, as the unit would print it.
+    monkeypatch.setattr(oad, "plan_manifest", lambda path, **_: plans[-1])
+    monkeypatch.setenv(oad.QUEUE_ROOTS_ENV, str(host.control / "queue"))
+
+    assert oad.main(["plan", "--manifest-dir", str(manifest.parent)]) == 0
+
+    def journal(out: str) -> tuple[list[dict], dict]:
+        lines = out.splitlines()
+        rows = [json.loads(line) for line in lines if line.startswith('{"manifest_id"')]
+        return rows, json.loads("\n".join(lines[len(rows):]))["manifests"][0]
+
+    out = capsys.readouterr().out
+    rows, summary = journal(out)
+    assert rows == [{"manifest_id": "test-manifest", "refused": {
+        "path": str(folder), "reasons": ["named_by_live_state"], "named_by": [str(env)], "named_by_released_code": []}}]
+    assert (summary["reference_scan"], summary["refused_count"], summary["unreadable_count"]) == ("complete", 1, 0)
+    assert "s3cr3t" not in out
+    broken = host.write(host.etc / "bad.json", "{")
+    plans.append(real_plan(manifest, report_root=host.reports, settings=host.settings, now=lambda: APPROVED_EPOCH + 60))
+    assert oad.main(["plan", "--manifest-dir", str(manifest.parent)]) == 0
+    rows, summary = journal(capsys.readouterr().out)
+    assert [row["unreadable"] for row in rows if "unreadable" in row] == [{"path": str(broken), "code": "not_json"}]
+    assert {row["refused"]["path"] for row in rows if "refused" in row} == {str(folder), str(other)}
+    assert summary["reference_scan"] == "incomplete"
+
+
+def test_the_apply_journal_names_a_file_that_went_malformed_after_the_plan(host, monkeypatch, capsys):
+    folder = host.folder("arena-launch-r1")
+    naming = host.write(host.etc / "task-evaluation-launch-profiles" / "p.json",
+                        {"allocator": {"argv": ["run", "--input=/elsewhere/job"]}})
+    manifest = host.manifest([host.folder_entry(folder)])
+    assert host.plan(manifest)["eligible_count"] == 1
+    naming.write_text('{"allocator": {"argv": [', encoding="utf-8")
+    real_apply = oad.apply_manifest
+    # main() applies with production roots; run this host's apply instead, as the unit would print it.
+    monkeypatch.setattr(oad, "apply_manifest", lambda path, **_: real_apply(
+        manifest, report_root=host.reports, settings=host.settings, ack=oad.APPLY_ACK, now=lambda: APPROVED_EPOCH + 120))
+    monkeypatch.setenv(oad.QUEUE_ROOTS_ENV, str(host.control / "queue"))
+
+    assert oad.main(["apply", "--ack", oad.APPLY_ACK, "--manifest-dir", str(manifest.parent)]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    rows = [json.loads(line) for line in lines if line.startswith('{"manifest_id"')]
+    summary = json.loads("\n".join(lines[len(rows):]))["manifests"][0]
+    assert [row["unreadable"] for row in rows if "unreadable" in row] == [{"path": str(naming), "code": "not_json"}]
+    assert [row["refused"] for row in rows if "refused" in row] == [{
+        "path": str(folder), "reasons": ["reference_scan_incomplete"], "named_by": [], "named_by_released_code": []}]
+    assert (summary["reference_scan"], summary["unreadable_count"], summary["deleted_count"]) == ("incomplete", 1, 0)
+    assert folder.is_dir()
+
+
+def test_someone_elses_malformed_binding_or_queue_file_never_keeps_a_privacy_deletion(tmp_path, host):
+    scene = _authority_ended_scene(tmp_path, host)
+    folder = host.folder("arena-launch-r1")
+    binding = host.write(host.control / "website-source-bindings" / "other.json", "{half")
+    queued = host.control / "queue" / "pending" / "row.json"
+    queued.write_bytes(b"\xff\xfe not utf-8")
+    now = time.time()
+    later = now + 8 * DAY
+    manifest = host.manifest([_scene_entry(scene), host.folder_entry(folder)], **_approval_around(now))
+
+    rows = {row["class"]: row for row in host.plan(manifest, at=later)["entries"]}
+
+    assert (rows[oad.SCENE]["status"], rows[oad.SCENE]["reasons"]) == ("eligible", [])
+    left = rows[oad.SCENE][oad.LEFT_POINTING_AT_NOTHING]
+    assert {"path": str(binding), "code": "reference_index_unreadable"} in left["unreadable"]
+    assert {"path": str(queued), "code": "queue_inventory_unreadable"} in left["unreadable"]
+    assert {"path": str(binding), "code": "not_json"} in left["unreadable"]
+    assert oad.UNREADABLE_REFERENCES not in rows[oad.SCENE]["identity"]
+    assert rows[oad.FOLDER]["status"] == "skipped"
+    assert set(rows[oad.FOLDER]["reasons"]) == {"queue_inventory_unreadable", "reference_scan_incomplete"}
+    assert host.apply(manifest, at=later + 60)["outcome_counts"] == {"deleted": 1, "not_eligible_in_plan": 1}
+    receipt = json.loads((host.reports / "test-manifest" / "receipts" / f"{oad._key(str(scene))}.json").read_text())
+    assert receipt[oad.LEFT_POINTING_AT_NOTHING] == left and not scene.exists() and folder.is_dir()
+
+
+def test_an_open_process_or_a_pin_still_holds_a_privacy_deletion(tmp_path, host):
+    scene = _authority_ended_scene(tmp_path, host)
+    host.write(host.control / "website-source-bindings" / "other.json", "{half")
+    process = host.root / "proc" / "4242"
+    (process / "fd").mkdir(parents=True)
+    (process / "cmdline").write_bytes(b"python\0-m\0x\0")
+    (process / "environ").write_bytes(b"")
+    (process / "cwd").symlink_to(scene)
+    now = time.time()
+    manifest = host.manifest([_scene_entry(scene)], **_approval_around(now))
+
+    row = host.plan(manifest, at=now + 8 * DAY)["entries"][0]
+    assert row["status"] == "skipped" and "in_use" in row["reasons"]
+
+    (process / "cwd").unlink()
+    write_storage_pin(pins_root=host.control / "storage-pins", kind="preparation", owner_id="pin-1",
+                      paths=[scene], ttl_seconds=30 * DAY, now=lambda: now)
+    row = host.plan(manifest, at=now + 8 * DAY)["entries"][0]
+    assert row["status"] == "skipped" and "pinned" in row["reasons"]
+
+
+def test_the_tolerant_queue_reader_keeps_the_strict_limits_and_lists_what_it_skips(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_scene_workspace_queue as queue
+
+    pending = tmp_path / "queue" / "pending"
+    pending.mkdir(parents=True)
+    good = pending / "a-good.json"
+    good.write_text('{"scene_id": "scene-good"}')
+    large = pending / "b-large.json"
+    large.write_text("x" * 64)
+    changing = pending / "c-changing.json"
+    changing.write_text('{"scene_id": "scene-changing"}')
+    real_read = queue.os.read
+
+    def read(fd, count):
+        data = real_read(fd, count)
+        if os.fstat(fd).st_ino == changing.stat().st_ino and data:
+            os.utime(changing, ns=(1, 1))  # rewritten while it was read
+        return data
+
+    monkeypatch.setattr(queue.os, "read", read)
+    text, unreadable = queue.tolerant_queue_reference_text([tmp_path / "queue"], max_file_bytes=40)
+    assert "scene-good" in text and "scene-changing" not in text
+    assert unreadable == [str(large), str(changing)]
+
+    monkeypatch.setattr(queue.os, "read", real_read)
+    monkeypatch.setattr(queue, "MAX_QUEUE_ENTRIES", 1)
+    assert queue.tolerant_queue_reference_text([tmp_path / "queue"])[1] == [str(large), str(changing)]
+    monkeypatch.setattr(queue, "MAX_QUEUE_ENTRIES", 10)
+    monkeypatch.setattr(queue, "MAX_QUEUE_TOTAL_BYTES", 30)
+    text, unreadable = queue.tolerant_queue_reference_text([tmp_path / "queue"])
+    assert "scene-good" in text and unreadable == [str(large), str(changing)]
+
+
+def test_references_record_an_unreadable_queue_file_for_a_privacy_path(host):
+    bad = host.control / "queue" / "pending" / "row.json"
+    bad.write_bytes(b"\xff not utf-8")
+    references = host.settings.references(APPROVED_EPOCH)
+    path = host.handoffs / "bucket" / "scenes" / "scene-1"
+
+    assert references.reasons(path) == ["queue_inventory_unreadable"]
+    unreadable: list = []
+    assert references.reasons(path, unreadable) == []
+    assert unreadable == [{"path": str(bad), "code": "queue_inventory_unreadable"}]

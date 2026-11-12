@@ -41,7 +41,6 @@ import argparse
 import fcntl
 import hashlib
 import json
-import math
 import os
 import re
 import secrets
@@ -62,7 +61,7 @@ from .control_plane_evidence_offload import ControlPlaneEvidenceOffloadError, _H
 from .control_plane_storage_gc import _pinned_workspace
 from .control_plane_storage_pins import DEFAULT_PINS_ROOT, PINS_ROOT_ENV, live_pinned_paths, storage_pin_guard
 from .core.security_controls import SecurityValidationError, strict_gcs_bucket, strict_identifier
-from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_configured_scene_object_store import (
     materialize_configured_scene_artifact,
     publish_configured_scene_stream,
@@ -76,7 +75,13 @@ from .website_scene_workspace_digests import (
     hash_file as _hash_file,
     save_inventory_cache,
 )
-from .website_scene_workspace_queue import QueueInventoryUnavailable, queue_reference_text
+from .website_scene_workspace_queue import (
+    QueueInventoryUnavailable,
+    queue_reference_text,
+    tolerant_queue_reference_text,
+)
+from .website_scene_workspace_records import _MAX_RECORD_BYTES, _load_json
+from .website_scene_workspace_references import ReferenceIndex, build_reference_index
 
 
 PLAN_SCHEMA = "website_scene_workspace_retirement_plan.v1"
@@ -148,11 +153,8 @@ TERMINAL_AUTHORITY_STATUS = "terminal_authority_ended"
 LEDGER_LOCK = f".{LISTENER_FILES['ledger']}.lock"
 #: A terminal ledger status and the acknowledgement disposition that ends its message.
 TERMINAL_DISPOSITIONS = {"completed": "terminal_success", TERMINAL_AUTHORITY_STATUS: TERMINAL_AUTHORITY_STATUS}
-REGISTRATION_SCHEMA = "website_scene_source_registration.v1"
 #: Where website_scene_handoff records the source registration it wrote for a capture.
 WEBSITE_HANDOFF = ("pipeline", "website_scene_preparation", "handoff.json")
-#: The most a record reader here (``_load_json``: the listener's receipt lookup, restore) reads.
-_MAX_RECORD_BYTES = 16 * 1024 * 1024
 #: A receipt must stay readable once its workspace is gone, so it may never outgrow its readers.
 RECEIPT_MAX_BYTES = _MAX_RECORD_BYTES
 #: A receipt at or under this is a small write that frees gigabytes, and ENOSPC on it fails before
@@ -234,24 +236,10 @@ class RetentionContext:
     # Authority-ended captures can contain revoked local derivatives. No production
     # entrypoint enables their archival until an owner-approved deletion lifecycle exists.
     allow_authority_ended_archive: bool = False
-
-
-@dataclass(frozen=True)
-class ReferenceIndex:
-    """Website source registrations and scene intents, read once per tick."""
-
-    readable: bool
-    binding_root: Path | None = None
-    #: {"path", "request_digest", "reference_paths", "registered_at_epoch"}
-    registrations: tuple[Mapping[str, Any], ...] = ()
-    #: {"intent_id", "request_digest", "finished": "completed" | "revoked" | "expired" | None,
-    #:  "open_attempts": unsettled attempt ids a revoked or expired intent still holds, which it
-    #:  does only within the grace period after it finished}
-    intents: tuple[Mapping[str, Any], ...] = ()
-
-
-class _Unreadable(Exception):
-    pass
+    #: Only for a deletion privacy requires (owner_approved_deletion): when a list, an unreadable
+    #: queue file, registration or intent is appended here ({"path", "code"}) and skipped, instead of
+    #: protecting every scene. None, the default everywhere else, keeps the fail-closed reading.
+    unreadable_references: list[dict[str, str]] | None = None
 
 
 def _identity(bucket: Any, scene_id: Any) -> tuple[str, str]:
@@ -289,38 +277,6 @@ def scene_queue_roots(queue_roots: Sequence[str | Path], intent_root: Path | Non
     if intent_root is not None:
         roots.extend(Path(intent_root).parent / name for name in SCENE_QUEUE_CHILDREN)
     return tuple(dict.fromkeys(roots))
-
-
-def _load_json(path: Path) -> tuple[str, dict[str, Any] | None, os.stat_result | None]:
-    """``("ok", object, stat)``, ``("absent", None, None)`` or ``("unreadable", None, stat)``.
-
-    Never follows a symlink and reads only regular files of bounded size.
-    """
-
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except (FileNotFoundError, NotADirectoryError):
-        return "absent", None, None
-    except OSError:
-        return "unreadable", None, None
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_RECORD_BYTES:
-            return "unreadable", None, info
-        data = bytearray()
-        while chunk := os.read(descriptor, 1 << 20):
-            data += chunk
-            if len(data) > _MAX_RECORD_BYTES:
-                return "unreadable", None, info
-    except OSError:
-        return "unreadable", None, None
-    finally:
-        os.close(descriptor)
-    try:
-        value = json.loads(bytes(data).decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return "unreadable", None, info
-    return ("ok", value, info) if isinstance(value, dict) else ("unreadable", None, info)
 
 
 def _epoch(value: Any) -> float | None:
@@ -590,176 +546,7 @@ def scene_workspaces(storage_root: Path) -> list[tuple[str, str, Path]]:
     return rows
 
 
-# --- the reference index: website source registrations and the intents that resolve them ----------
-
-
-def _registrations(binding_root: Path | None) -> tuple[Mapping[str, Any], ...]:
-    if binding_root is None:
-        raise _Unreadable
-    try:
-        info = os.lstat(binding_root)
-    except FileNotFoundError:
-        return ()  # nothing was ever registered
-    except OSError as exc:
-        raise _Unreadable from exc
-    if not stat.S_ISDIR(info.st_mode):
-        raise _Unreadable
-    try:
-        names = sorted(os.listdir(binding_root))
-    except OSError as exc:
-        raise _Unreadable from exc
-    rows: list[Mapping[str, Any]] = []
-    for name in names:
-        if name.startswith(".") or not name.endswith(".json"):
-            continue  # exclusive writers stage hidden temporaries
-        state, value, record_info = _load_json(Path(binding_root) / name)
-        if state != "ok" or value is None or record_info is None:
-            raise _Unreadable
-        references = value.get("references")
-        request_digest = value.get("request_digest")
-        if (
-            value.get("schema_version") != REGISTRATION_SCHEMA
-            or value.get("registration_digest") != canonical_digest(value, digest_field="registration_digest")
-            or not isinstance(request_digest, str)
-            or not request_digest.startswith(_SHA256)
-            or not isinstance(references, Mapping)
-            or not references
-            or not all(isinstance(ref, Mapping) and isinstance(ref.get("path"), str) for ref in references.values())
-        ):
-            raise _Unreadable
-        rows.append({
-            "path": str(Path(binding_root) / name),
-            "request_digest": request_digest,
-            "reference_paths": tuple(str(ref["path"]) for ref in references.values()),
-            "registered_at_epoch": float(record_info.st_mtime),
-        })
-    return tuple(rows)
-
-
-def _revoked_at(path: Path) -> float:
-    """When an intent was revoked: the time its receipt records, else the receipt file's time."""
-
-    state, receipt, _ = _load_json(path)
-    value = receipt.get("revoked_at_epoch") if state == "ok" and receipt is not None else None
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-        return float(value)
-    return os.stat(path).st_mtime
-
-
-def _intent_finished(directory: Path, intent: Mapping[str, Any], *, now: float,
-                     expired_grace_seconds: int) -> tuple[str | None, float | None]:
-    """Why scene progression will never resolve this intent's source again, and since when.
-
-    Mirrors ``task_evaluation_scene_progression._advance_intent``: a completed
-    progression, a revocation, or an elapsed (possibly extended) execution window.
-    An owner can still extend an elapsed window, so expiry counts only once the
-    grace period after it has passed too. ``(None, None)`` while the intent is open.
-    """
-
-    from . import task_evaluation_scene_intake as intake
-
-    projection_path = directory / "progression.json"
-    if os.path.lexists(projection_path):
-        projection = intake._read(projection_path, "progression_digest")
-        if projection.get("intent_digest") != intent["intent_digest"] or projection.get("intent_id") != intent["intent_id"]:
-            raise _Unreadable
-        if projection.get("status") == "completed":
-            return "completed", None
-    revocation = directory / "revoked.json"
-    if revocation.exists():
-        return "revoked", _revoked_at(revocation)
-    expiry = intake.effective_execution_expiry(directory, intent)
-    if now >= expiry + expired_grace_seconds:
-        return "expired", expiry
-    return None, None
-
-
-def _open_attempts(directory: Path) -> tuple[str, ...]:
-    """Attempt rows scene progression still treats as live: no validated cancellation or settlement.
-
-    Read the way progression reads them (``attempts/*.json`` under the intent, each
-    digest-checked, terminal only through ``validated_cancellation``); anything
-    unreadable raises and so protects every scene.
-    """
-
-    from . import task_evaluation_scene_intake as intake
-    from .task_evaluation_retained_controls_evidence import validated_cancellation
-
-    attempts = directory / "attempts"
-    try:
-        mode = os.lstat(attempts).st_mode
-    except FileNotFoundError:
-        return ()
-    if not stat.S_ISDIR(mode):
-        raise _Unreadable
-    live = []
-    for path in sorted(attempts.glob("*.json")):
-        row = intake._read(path, "attempt_digest")
-        if validated_cancellation(directory, row) is None:
-            live.append(str(row.get("attempt_id") or path.stem))
-    return tuple(live)
-
-
-def _intents(intent_root: Path | None, *, now: float,
-             expired_grace_seconds: int = DEFAULT_EXPIRED_GRACE_SECONDS) -> tuple[Mapping[str, Any], ...]:
-    from . import task_evaluation_scene_intake as intake
-
-    if intent_root is None:
-        raise _Unreadable
-    try:
-        if not stat.S_ISDIR(os.lstat(intent_root).st_mode):
-            raise _Unreadable
-        names = sorted(os.listdir(intent_root))
-    except OSError as exc:
-        raise _Unreadable from exc
-    rows: list[Mapping[str, Any]] = []
-    for name in names:
-        if not name.startswith("scene-"):
-            continue
-        directory = Path(intent_root) / name
-        try:
-            mode = os.lstat(directory).st_mode
-            if stat.S_ISLNK(mode):
-                raise _Unreadable
-            if not stat.S_ISDIR(mode):
-                continue  # scene progression reads directories only
-            intent = intake._read(directory / "intent.json", "intent_digest")
-            request = intent.get("request")
-            if intent.get("intent_id") != name or not isinstance(request, Mapping):
-                raise _Unreadable
-            finished, finished_at = _intent_finished(directory, intent, now=now,
-                                                     expired_grace_seconds=expired_grace_seconds)
-            # A completed intent's attempts ended with it: progression completes only after
-            # joining the attempt's terminal result, and only retired predecessors are ever
-            # settled, so its own row stays a spend hold forever. A revoked or expired intent
-            # holds an attempt it has not cancelled or settled, but only for the grace period
-            # after it finished: materialization copies the workspace inputs into the
-            # attempt's own staging, and no factory pass runs for days, so every hold expires.
-            # (An expired intent's period has passed by the time it counts as finished.)
-            held = finished in {"revoked", "expired"} and now < float(finished_at) + expired_grace_seconds
-            rows.append({
-                "intent_id": name,
-                "request_digest": cross_runtime_canonical_digest(request),
-                "finished": finished,
-                "open_attempts": _open_attempts(directory) if held else (),
-            })
-        except _Unreadable:
-            raise
-        except Exception as exc:  # noqa: BLE001 - an intent that cannot be read protects every scene
-            raise _Unreadable from exc
-    return tuple(rows)
-
-
-def build_reference_index(context: RetentionContext, *, now: float) -> ReferenceIndex:
-    """Read every website source registration and scene intent once; unreadable means protect all."""
-
-    try:
-        registrations = _registrations(context.binding_root)
-        intents = _intents(context.intent_root, now=float(now), expired_grace_seconds=context.expired_grace_seconds)
-    except _Unreadable:
-        return ReferenceIndex(readable=False, binding_root=context.binding_root)
-    return ReferenceIndex(readable=True, binding_root=context.binding_root,
-                          registrations=registrations, intents=intents)
+# --- what the reference index (website_scene_workspace_references) and a capture's handoff say --
 
 
 def _under(path_text: str, roots: Sequence[Path]) -> bool:
@@ -983,7 +770,13 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
     if _pinned_workspace(scene, live_pinned_paths(context.pins_root, now=lambda: now)):
         early.append("pinned")
     try:
-        if scene_id in queue_reference_text(context.queue_roots):
+        if context.unreadable_references is None:
+            queue_text = queue_reference_text(context.queue_roots)
+        else:
+            queue_text, unreadable = tolerant_queue_reference_text(context.queue_roots)
+            context.unreadable_references.extend({"path": path, "code": "queue_inventory_unreadable"}
+                                                 for path in unreadable)
+        if scene_id in queue_text:
             early.append("queue_referenced")
     except QueueInventoryUnavailable:
         early.append("queue_inventory_unreadable")

@@ -1158,6 +1158,37 @@ Nothing runs it on a timer. An operator starts two oneshot units by hand:
    it (a failed transient unit counts until `reset-failed`), and no sibling
    symlink points into it. Paths are opened one component at a time without
    following a link, and a folder holding another mount is refused.
+   No file of the host's live state may name the path or a path under it
+   either (whole path components: `/x/scene-84` is not named by `/x/scene-841757`).
+   The plan reads, once: every JSON and `.env` file under `/etc/blueprint` (the
+   robot catalog, the controls autoprovision bootstrap, the configured-controls
+   intents, the public-scene machinery files, the launch profiles, the scene
+   progression config, the env files; not `provider-secrets`, which the units
+   hide), every file of every scene intent and each retained
+   `source_binding.path` they record, the public source bindings
+   (`task-evaluation-inputs/public-source-bindings`), the launch-profile catalog,
+   the loose JSON in `task-evaluation-inputs`, and, when present, the website
+   source bindings, the configured-scene activation intents, beta policy
+   screening and standing authorizations (also `.jsonl`, `.yaml`, `.toml` as
+   text; linked folders are followed once). A named path is refused as
+   `named_by_live_state`, and the row's `named_by` lists every naming file. A
+   file inside a path this run deletes does not count; a file marked
+   ended, revoked or `development_only` does. A folder whose name the active
+   release's `src`, `deploy` or `scripts` (never the deletion manifests) or the
+   door's installed scripts use as a path component is refused as
+   `named_by_released_code` (files in `named_by_released_code`), and a folder that
+   is or holds a root the scan reads as `live_state_scan_root`. If a required root
+   is missing, or a file cannot be read, is not JSON, is nested too deeply or lies
+   below the depth limit, every folder is `reference_scan_incomplete`,
+   nothing is eligible, and `reference_scan.unreadable` lists what could not be
+   read; a file removed between listing and reading names nothing. There is no
+   override. Privacy comes first: for an `authority_ended_scene_workspace` (the
+   classes in `PRIVACY_REQUIRED_CLASSES`) these references and an incomplete scan
+   never keep the workspace; the plan and receipt record them as
+   `references_left_pointing_at_nothing` (`named_by`, `unreadable`), to be
+   retired afterwards. On 2026-11-12 a clearance made before this check
+   deleted 112 folders those files still named and stopped production for six
+   hours.
 2. `blueprint-owner-approved-deletion.service` deletes what a plan of the same
    manifest bytes, at most 24 hours old, found eligible, while the approval has
    not expired. It re-runs every check and requires the same device, inode and
@@ -1168,9 +1199,42 @@ Nothing runs it on a timer. An operator starts two oneshot units by hand:
    scans), removes it without following links, and rewrites the receipt as
    `deleted`. A run that stopped after the rename is finished by the next apply;
    one that stopped before it starts over. Each run also writes
-   `apply-<epoch>.json` with every path's outcome.
+   `apply-<epoch>.json` with every path's outcome and its own fresh
+   `reference_scan`. A path it does not delete because a check refused it gets a
+   `skipped` receipt with its `reasons`, `named_by` and, for an incomplete scan,
+   `reference_scan_unreadable`.
 
-Receipts and plans are root `0644` under `0755`, so the door can read them.
+When a folder is refused as `named_by_live_state`, the folder is still in use
+as far as the host can tell, even when what names it is old, revoked or
+development-only. Ask the owner, then retire what names it (end the intent, remove
+the launch profile, re-point the catalog, binding or machinery file to a copy that
+stays) and plan again. Never edit the manifest, a naming file's path or the plan
+to get past it. A `reference_scan_incomplete` plan is fixed by making the listed
+file readable or valid, or by restoring the missing root, never by moving it out
+of the scan.
+
+`named_by_released_code` matches a folder's name, not its use, so it can be a
+false positive on a common name: on 2026-11-12 it refused 30 of the 62 inputs
+folders, among them `diagnostics`, `sources` and `render-probes`. Such a folder
+stays refused until no release uses the name as a path component. Refusing is
+the safe direction for housekeeping, and the rule never applies to a privacy
+deletion. The way past it is a code change, reviewed and released like any
+other, never an edit to the manifest.
+
+For a privacy deletion, someone else's unreadable or malformed file never keeps
+the workspace either: a queue file, website source registration or scene intent
+that cannot be read (`queue_inventory_unreadable`, `reference_index_unreadable`
+for a housekeeping folder) is skipped and listed under
+`references_left_pointing_at_nothing.unreadable`. A pin, a process using it, a
+queue message naming it or an open scene intent still keep it: those mean it is
+in use now and clear when that use ends.
+
+The report directory is created under the units' `UMask=0077`, so the door
+cannot open the plan or the receipts. Each run therefore prints, to its journal
+(`operator_door.py journal <unit>`), every refused path with its `reasons`,
+`named_by` and `named_by_released_code`, every unreadable path with its code, and
+every `references_left_pointing_at_nothing` row: paths only, never a value read
+from a file.
 Run it again and a deleted path reports `already_deleted`.
 
 ```bash
