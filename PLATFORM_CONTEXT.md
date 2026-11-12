@@ -70,10 +70,11 @@ outside company needs the owner's go-ahead first.
 As of 2026-11-12 no recorded permission covers sending a site's video or the
 simulation of its site to a deployment company: every statement a site has
 agreed to says they stay private. Until the owner sets a new permission and
-its wording, a deployment company receives a summary of the job only (the
-site's sentence, the first look, the success rule and the early trial's
-result), without the site's name or address. Nobody but the owner changes the
-wording of anything a site agrees to.
+its wording, a deployment company sees only the summary the site approved:
+the kind of job, the fields the site chose to share, the first look, and the
+early trial's result where one exists. It never sees the video or the
+simulation. Nobody but the owner changes the wording of anything a site agrees
+to.
 
 V1 is by hand. One video becomes a packet; the Pipeline is the packet factory.
 Blueprint carries the packet to five to ten deployment companies and collects
