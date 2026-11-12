@@ -17,9 +17,14 @@ table only when the handed-off one verifies, has no first-look fields, and the r
 the same task context digest; every other reader is unchanged.
 
 CPU and local files only: it buys nothing and calls nothing outside the machine. It is informational,
-so it never stops the pass or another capture: a failed build is recorded with its error type and
-retried on a later pass, at most once an hour (``RETRY_SECONDS``). A built table is not rebuilt unless
-what it is bound to changes (a new hand-off or task context). A withdrawn capture is skipped, and its
+so it never stops the pass or another capture: a failed build (a missing input included) is recorded
+with its error type and retried on a later pass, at most once an hour (``RETRY_SECONDS``) and at most
+``MAX_ATTEMPTS`` times for one binding, after which the record says ``gave_up`` and the capture is only
+read. A built table is written once and never rebuilt unless what it is bound to changes (a new
+hand-off or task context), so a refreshed capture can go idle and its workspace be retired
+(``website_scene_workspace_retention`` waits for every entry's modification time to be old). One capture
+is built at a time; the collider's binary copy and stage live only inside that build's read scope
+(``usd_binary_read_cache.read_scope``), released before the next capture. A withdrawn capture is skipped, and its
 withdrawal deletion removes this folder with the rest of the site's files; the lock here is held by
 that deletion as it holds the preview locks.
 """
@@ -49,6 +54,8 @@ LOCK_FILE = "first_look_refresh.lock"
 STATUS_SCHEMA = "website_first_look_refresh.v1"
 #: A failed build is tried again on a later pass, at most this often.
 RETRY_SECONDS = 3600
+#: Build attempts for one binding before the pass stops touching the capture (``gave_up``).
+MAX_ATTEMPTS = 3
 #: As the company clip's pass: no capture is started after this many seconds of one pass.
 TICK_BUDGET_SECONDS = 900
 _ERROR = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,127}")
@@ -78,8 +85,9 @@ def handed_off(capture_root: Path) -> dict[str, Any] | None:
 
     None when there is no hand-off table the site's reader would verify (that reader then shows nothing
     either). A table with first-look fields comes back alone (``{"route", "table"}``): it needs nothing.
-    Raises ``ValueError`` (or ``OSError``, ``KeyError``) when a verified old-format table exists but an
-    input to rebuild it is missing or does not verify: that is recorded as a failed build.
+    When a verified old-format table exists but an input to rebuild it is missing or does not verify, it
+    comes back with ``error`` (the exception's type) and no inputs: recorded as a failed build for its
+    binding, like any other failure.
     """
     from .website_preparation_outcome import _load
     from .website_robot_fit_projection import _verified_table
@@ -100,20 +108,24 @@ def handed_off(capture_root: Path) -> dict[str, Any] | None:
     route, table = found
     if has_first_look(table):
         return {"route": route, "table": table}
-    section = handoff["fit_check"] if route == "geometry_only" else handoff
-    reference = section["capability_verdict"]
-    verdict = _load(_inside(root, reference["path"]), root, "verdict_digest")
-    if verdict["verdict_digest"] != reference.get("digest"):
-        raise ValueError("website_first_look_refresh_verdict_changed")
-    if route == "geometry_only":
-        collision = _inside(root, section["collision"]["path"])
-    else:
-        runtime = _load(_inside(root, handoff["runtime_inputs"]["path"]), root, "digest")
-        if runtime["digest"] != handoff["runtime_inputs"].get("digest"):
-            raise ValueError("website_first_look_refresh_runtime_inputs_changed")
-        collision = _inside(root, runtime["collision"]["path"])
-    return {"route": route, "handoff": handoff, "preparation": preparation, "task_context_digest": context,
-            "table": table, "verdict": verdict, "collision_path": collision}
+    found = {"route": route, "handoff": handoff, "preparation": preparation, "task_context_digest": context,
+             "table": table}
+    try:
+        section = handoff["fit_check"] if route == "geometry_only" else handoff
+        reference = section["capability_verdict"]
+        verdict = _load(_inside(root, reference["path"]), root, "verdict_digest")
+        if verdict["verdict_digest"] != reference.get("digest"):
+            raise ValueError("website_first_look_refresh_verdict_changed")
+        if route == "geometry_only":
+            collision = _inside(root, section["collision"]["path"])
+        else:
+            runtime = _load(_inside(root, handoff["runtime_inputs"]["path"]), root, "digest")
+            if runtime["digest"] != handoff["runtime_inputs"].get("digest"):
+                raise ValueError("website_first_look_refresh_runtime_inputs_changed")
+            collision = _inside(root, runtime["collision"]["path"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        return {**found, "error": _error_code(type(exc).__name__)}
+    return {**found, "verdict": verdict, "collision_path": collision}
 
 
 def _binding(found: Mapping[str, Any]) -> dict[str, Any]:
@@ -180,47 +192,75 @@ def _error_code(error: Any) -> str:
     return text if _ERROR.fullmatch(text) else "unrecorded"
 
 
+def _record(directory: Path, root: Path) -> Mapping[str, Any] | None:
+    """The status record as it stands, read only; None when there is none or it does not verify."""
+    from .website_preparation_outcome import _load
+
+    status_path = directory / STATUS_FILE
+    if not status_path.exists():
+        return None
+    try:
+        return _load(status_path, root, "digest")
+    except (OSError, ValueError):
+        return None
+
+
+def _decided(previous: Mapping[str, Any] | None, binding: Mapping[str, Any], now: float) -> str | None:
+    """``gave_up`` or ``waiting_retry`` when the record already settles this pass for ``binding``; else None."""
+    if previous is None or any(previous.get(key) != value for key, value in binding.items()):
+        return None  # no record, or one for another binding: the count starts again
+    if previous.get("status") == "gave_up":
+        return "gave_up"
+    if (previous.get("status") == "failed" and isinstance(previous.get("attempted_at_epoch"), int)
+            and now - previous["attempted_at_epoch"] < RETRY_SECONDS):
+        return "waiting_retry"
+    return None
+
+
 def refresh_first_look(capture_root: Path, *, now: Callable[[], float] = time.time) -> dict[str, Any]:
     """Build the refreshed first look for one capture when it needs one; its outcome as ``status``.
 
     ``withdrawn``, ``not_needed`` (no verified handed-off table, or it already has first-look fields),
     ``current`` (built for what it is bound to), ``waiting_retry`` (failed less than an hour ago),
-    ``busy`` (another pass holds it), ``built`` or ``failed``.
+    ``gave_up`` (``MAX_ATTEMPTS`` builds failed for this binding), ``busy`` (another pass holds it),
+    ``built`` or ``failed``.
+
+    What it writes: on a successful build the table and the status record, once; after that the capture
+    reads as ``current`` and nothing is written or locked again, so its workspace can go idle. A failure
+    rewrites the record at most once an hour and at most ``MAX_ATTEMPTS`` times for one binding (task
+    context digest, preparation digest, handed-off table digest); the last says ``gave_up`` and the
+    capture is then only read. A new binding starts the count again.
     """
     root = Path(capture_root).absolute()
     if capture_withdrawn(root):
         return {"status": "withdrawn"}
-    try:
-        found = handed_off(root)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        found = {"error": _error_code(type(exc).__name__)}
-    if found is None or ("table" in found and "preparation" not in found):
+    found = handed_off(root)
+    if found is None or "preparation" not in found:
         return {"status": "not_needed"}
+    binding = _binding(found)
+    directory = root.joinpath(*DIRECTORY)
+    # Read-only first: a built, given-up or recently failed capture is settled without a lock or a write.
+    if _bound(root, binding):
+        return {"status": "current"}
+    decided = _decided(_record(directory, root), binding, now())
+    if decided is not None:
+        return {"status": decided}
     try:
         with _refresh_lock(root) as directory:
             if capture_withdrawn(root):  # under the lock the withdrawal deletion also holds
                 return {"status": "withdrawn"}
-            status_path = directory / STATUS_FILE
-            previous: Mapping[str, Any] | None = None
-            if status_path.exists():
-                from .website_preparation_outcome import _load
-                try:
-                    previous = _load(status_path, root, "digest")
-                except (OSError, ValueError):
-                    previous = None
-            binding = _binding(found) if "table" in found else None
-            if binding is not None and _bound(root, binding):
+            if _bound(root, binding):  # another pass built it meanwhile
                 return {"status": "current"}
-            if (previous is not None and previous.get("status") == "failed"
-                    and all(previous.get(key) == value for key, value in (binding or {}).items())
-                    and isinstance(previous.get("attempted_at_epoch"), int)
-                    and now() - previous["attempted_at_epoch"] < RETRY_SECONDS):
-                return {"status": "waiting_retry"}
+            previous = _record(directory, root)
+            decided = _decided(previous, binding, now())
+            if decided is not None:
+                return {"status": decided}
+            same = previous is not None and all(previous.get(key) == value for key, value in binding.items())
+            attempts = (previous.get("attempts") if same and isinstance(previous.get("attempts"), int) else 0) + 1
             record: dict[str, Any] = {"schema_version": STATUS_SCHEMA, "capture_id": root.name,
                                       "scene_id": root.parent.parent.name, "attempted_at_epoch": int(now()),
-                                      **(binding or {"task_context_digest": None, "preparation_digest": None,
-                                                     "handoff_table_digest": None})}
-            if binding is None:
+                                      "attempts": attempts, "max_attempts": MAX_ATTEMPTS, **binding}
+            if "error" in found:
                 record.update(status="failed", error=found["error"], table_digest=None)
             else:
                 from .website_scene_handoff import _robot_fit_table
@@ -231,13 +271,18 @@ def refresh_first_look(capture_root: Path, *, now: Callable[[], float] = time.ti
                     record.update(status="failed", error=_error_code(built.get("error")), table_digest=None)
                 else:
                     record.update(status="built", error=None, table_digest=built["digest"])
-            record["digest"] = canonical_digest(record, digest_field="digest")
-            write_json(status_path, record)
-            if record["status"] == "built" and not _bound(root, binding):
-                # Written but not readable back as bound: recorded so the next pass after the hour retries.
-                record.update(status="failed", error="refreshed_table_unverified", table_digest=None)
+            if record["status"] == "built":
                 record["digest"] = canonical_digest(record, digest_field="digest")
-                write_json(status_path, record)
+                write_json(directory / STATUS_FILE, record)
+                if _bound(root, binding):
+                    return {"status": "built"}
+                # Written but not readable back as bound: a failure like any other.
+                record.update(status="failed", error="refreshed_table_unverified", table_digest=None)
+            if attempts >= MAX_ATTEMPTS:
+                record["status"] = "gave_up"
+            record.pop("digest", None)
+            record["digest"] = canonical_digest(record, digest_field="digest")
+            write_json(directory / STATUS_FILE, record)
             return {"status": record["status"]}
     except FirstLookRefreshBusy:
         return {"status": "busy"}
@@ -272,5 +317,5 @@ def tick(storage_root: Path, *, stop_reason: Callable[[], str | None] | None = N
     return counts
 
 
-__all__ = ["DIRECTORY", "LOCK_FILE", "RETRY_SECONDS", "STATUS_FILE", "STATUS_SCHEMA", "TABLE_FILE",
+__all__ = ["DIRECTORY", "LOCK_FILE", "MAX_ATTEMPTS", "RETRY_SECONDS", "STATUS_FILE", "STATUS_SCHEMA", "TABLE_FILE",
            "has_first_look", "handed_off", "refresh_first_look", "refreshed_table", "tick"]

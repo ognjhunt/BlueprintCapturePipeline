@@ -164,6 +164,7 @@ def test_a_failed_build_is_recorded_and_retried_after_the_hour(tmp_path, monkeyp
     assert refresh.refresh_first_look(root, now=lambda: NOW) == {"status": "failed"}
     record = json.loads(root.joinpath(*refresh.DIRECTORY, refresh.STATUS_FILE).read_text())
     assert record["status"] == "failed" and record["error"] == "RuntimeError" and record["table_digest"] is None
+    assert record["attempts"] == 1 and record["max_attempts"] == refresh.MAX_ATTEMPTS
     assert record["attempted_at_epoch"] == int(NOW)
     assert _v2(root)["table_digest"] == json.loads(handed.read_text())["table_digest"]
     monkeypatch.setattr(website_robot_fit, "robot_fit_table", real)
@@ -181,8 +182,98 @@ def test_a_missing_input_is_recorded_by_name_and_builds_nothing(tmp_path, monkey
     assert refresh.refresh_first_look(root, now=lambda: NOW) == {"status": "failed"}
 
     record = json.loads(root.joinpath(*refresh.DIRECTORY, refresh.STATUS_FILE).read_text())
-    assert record["error"] == "ValueError" and record["table_digest"] is None
+    assert record["error"] == "ValueError" and record["table_digest"] is None and record["attempts"] == 1
+    # Counted against the same binding as any other failure.
+    assert record["handoff_table_digest"] == json.loads(handed.read_text())["table_digest"]
     assert not root.joinpath(*refresh.DIRECTORY, refresh.TABLE_FILE).exists()
+
+
+def _rehand_off(handed: Path) -> None:
+    """A new hand-off of the same job: another old-format table (one row fewer), its record sealed again."""
+    table = json.loads(handed.read_text())
+    table["rows"] = table["rows"][:-1]
+    table["table_digest"] = canonical_digest(table, digest_field="table_digest")
+    write_json(handed, table)
+    path = handed.parent.parent / "handoff.json"
+    handoff = json.loads(path.read_text())
+    handoff["robot_fit_table"]["digest"] = table["table_digest"]
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(path, handoff)
+
+
+def test_after_three_failures_the_pass_gives_up_and_writes_nothing_more(tmp_path, monkeypatch):
+    root, handed = _handed_off(tmp_path, monkeypatch)
+    collision = Path(json.loads((handed.parent / "runtime_inputs.json").read_text())["collision"]["path"])
+    kept = collision.read_bytes()
+    collision.unlink()  # a missing input: a failure like any other
+    status = root.joinpath(*refresh.DIRECTORY, refresh.STATUS_FILE)
+    hour = refresh.RETRY_SECONDS
+
+    assert refresh.refresh_first_look(root, now=lambda: NOW) == {"status": "failed"}
+    assert refresh.refresh_first_look(root, now=lambda: NOW + hour) == {"status": "failed"}
+    assert refresh.refresh_first_look(root, now=lambda: NOW + 2 * hour) == {"status": "gave_up"}
+    record = json.loads(status.read_text())
+    assert (record["status"], record["attempts"], record["error"]) == ("gave_up", 3, "ValueError")
+    before = (status.read_bytes(), status.stat().st_mtime_ns)
+    directory = root.joinpath(*refresh.DIRECTORY)
+    entries = sorted((path.name, path.stat().st_mtime_ns) for path in directory.iterdir())
+    folder = directory.stat().st_mtime_ns
+
+    def no_lock(_root):
+        raise AssertionError("a given-up capture is never locked")
+
+    monkeypatch.setattr(refresh, "_refresh_lock", no_lock)
+    # A day later, and with the input back: still nothing written, the capture is reported given up.
+    collision.write_bytes(kept)
+    assert refresh.refresh_first_look(root, now=lambda: NOW + 2 * hour + 86400) == {"status": "gave_up"}
+    assert (status.read_bytes(), status.stat().st_mtime_ns) == before
+    assert sorted((path.name, path.stat().st_mtime_ns) for path in directory.iterdir()) == entries
+    assert directory.stat().st_mtime_ns == folder
+    assert refresh.tick(tmp_path / "storage", now=lambda: NOW + 3 * 86400) == {"gave_up": 1}
+    assert (status.read_bytes(), status.stat().st_mtime_ns) == before
+
+
+def test_a_changed_binding_is_tried_again_after_giving_up(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_robot_fit
+
+    root, handed = _handed_off(tmp_path, monkeypatch)
+    real = website_robot_fit.robot_fit_table
+
+    def broken(**_):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(website_robot_fit, "robot_fit_table", broken)
+    for step in range(3):
+        refresh.refresh_first_look(root, now=lambda step=step: NOW + step * refresh.RETRY_SECONDS)
+    assert refresh.refresh_first_look(root, now=lambda: NOW + 86400) == {"status": "gave_up"}
+    monkeypatch.setattr(website_robot_fit, "robot_fit_table", real)
+    _rehand_off(handed)
+
+    assert refresh.refresh_first_look(root, now=lambda: NOW + 86400) == {"status": "built"}
+    record = json.loads(root.joinpath(*refresh.DIRECTORY, refresh.STATUS_FILE).read_text())
+    assert record["attempts"] == 1 and record["handoff_table_digest"] == json.loads(handed.read_text())["table_digest"]
+    assert _v2(root)["table_digest"] == record["table_digest"]
+
+
+def test_a_successful_refresh_writes_once_and_never_again(tmp_path, monkeypatch):
+    from blueprint_pipeline import usd_binary_read_cache
+
+    root, _handed = _handed_off(tmp_path, monkeypatch)
+    assert refresh.refresh_first_look(root, now=lambda: NOW) == {"status": "built"}
+    # One capture at a time: the build's read scope is closed and holds no collider copy or stage after it.
+    assert usd_binary_read_cache._SCOPES == [] and usd_binary_read_cache._COPIES == {}
+    directory = root.joinpath(*refresh.DIRECTORY)
+    entries = sorted((path.name, path.stat().st_mtime_ns, path.read_bytes()) for path in directory.iterdir())
+    folder = directory.stat().st_mtime_ns
+
+    def no_lock(_root):
+        raise AssertionError("a current capture is never locked")
+
+    monkeypatch.setattr(refresh, "_refresh_lock", no_lock)
+    for day in range(1, 4):
+        assert refresh.refresh_first_look(root, now=lambda day=day: NOW + day * 86400) == {"status": "current"}
+    assert sorted((path.name, path.stat().st_mtime_ns, path.read_bytes()) for path in directory.iterdir()) == entries
+    assert directory.stat().st_mtime_ns == folder
 
 
 def test_a_withdrawn_capture_is_skipped(tmp_path, monkeypatch):
