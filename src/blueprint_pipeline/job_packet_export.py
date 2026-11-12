@@ -91,7 +91,12 @@ CONSENT_FILES = ("raw/rights_consent.json", "rights_consent.json", "raw/manifest
 #: The checks ``website_robot_fit`` writes (its ``_check`` calls) and their results, in fixed words.
 CHECK_WORDS = {"stance": "a place to stand", "reach": "reach", "payload": "payload",
                "cycle_time": "cycle time", "access": "access from the entrance"}
-RESULT_WORDS = {"pass": "passed", "fail": "failed", "unknown": "unknown"}
+#: Every result ``website_robot_fit._check`` writes; ``not_requested`` (no cycle-time target) is not a failed check.
+RESULT_WORDS = {"pass": "passed", "fail": "failed", "unknown": "unknown", "not_requested": "no target given"}
+NOT_A_FAILED_CHECK = {"pass", "not_requested"}
+SCRIPTED_CHECK_TITLE = "Check of the simulation (scripted, not robot software)"
+SCRIPTED_CHECK_SENTENCE = ("We ran a scripted pick and place in this simulation to check the simulation itself. "
+                           "It says nothing about any robot's software.")
 VERDICT_WORDS = {"fits": "fits (its carry was path-checked)", "fits_spec": "fits on published figures",
                  "doesnt_fit": "does not fit", "unknown": "unknown"}
 BODY_WORDS = {"fixed_arm": "fixed arm", "mobile_manipulator": "arm on a moving base", "humanoid": "humanoid",
@@ -549,13 +554,14 @@ def summary_fit_lines(table: Mapping[str, Any] | None) -> list[str]:
     for row in table.get("rows") if isinstance(table.get("rows"), list) else []:
         model = catalog.get(row.get("model_id")) if isinstance(row, Mapping) and isinstance(row.get("model_id"), str) else None
         checks = row.get("checks") if isinstance(row, Mapping) and isinstance(row.get("checks"), list) else None
-        if (model is None or model["name"] in seen or row.get("verdict") not in VERDICTS or checks is None
+        if (model is None or model["model_id"] in seen or row.get("verdict") not in VERDICTS or checks is None
                 or any(not isinstance(c, Mapping) or c.get("check") not in CHECK_WORDS
                        or c.get("result") not in RESULT_WORDS for c in checks)):
             dropped += 1
         else:
-            seen.add(model["name"])
-            open_checks = [f"{CHECK_WORDS[c['check']]} ({RESULT_WORDS[c['result']]})" for c in checks if c["result"] != "pass"]
+            seen.add(model["model_id"])
+            open_checks = [f"{CHECK_WORDS[c['check']]} ({RESULT_WORDS[c['result']]})" for c in checks
+                           if c["result"] not in NOT_A_FAILED_CHECK]
             rows.append((model, row["verdict"], open_checks))
     lines = ["Source: the pipeline's robot fit table.", ""]
     if rows:
@@ -573,31 +579,67 @@ def summary_fit_lines(table: Mapping[str, Any] | None) -> list[str]:
     return lines
 
 
-def summary_trial_lines(publication: Mapping[str, Any] | None) -> list[str]:
+def _trial_kind(entry: Mapping[str, Any], row: Mapping[str, Any]) -> str | None:
+    """``learned`` or ``scripted`` when the catalog and the published row agree; None when they do not.
+
+    A scripted run only checks the simulation: it is never robot software's result. The catalog says
+    scripted by ``policy.kind``; the row by ``execution_evidence_kind`` and ``candidate_policy_queried``
+    (``beta_policy_screening_result``), which older rows leave out.
+    """
+    from .policy_execution_evidence import LEARNED, SCRIPTED
+    catalog_scripted = _mapping(entry.get("policy")).get("kind") == "scripted"
+    kind = row.get("execution_evidence_kind")
+    queried = row.get("candidate_policy_queried")
+    if catalog_scripted:
+        return "scripted" if kind in (None, SCRIPTED) and queried is not True else None
+    if kind not in (None, LEARNED) or queried is False:
+        return None
+    return "learned"
+
+
+def _trial_rows(publication: Mapping[str, Any]) -> tuple[dict[str, list], int, int]:
+    """The rows of each kind (catalog name, status, tries, successes) and how many of each were left out."""
     from .beta_policy_screening_result import CANDIDATE_STATUSES
+    catalog, rows, seen = _policy_catalog(), {"learned": [], "scripted": []}, set()
+    dropped = {"learned": 0, "scripted": 0}
+    for row in publication.get("candidates") if isinstance(publication.get("candidates"), list) else []:
+        entry = catalog.get(row.get("candidate_id")) if isinstance(row, Mapping) and isinstance(row.get("candidate_id"), str) else None
+        kind = _trial_kind(entry, row) if entry is not None else None
+        scored = _count(row.get("episodes_scored"), low=1) if isinstance(row, Mapping) else None
+        succeeded = _count(row.get("episodes_succeeded"), high=scored or 0) if scored is not None else None
+        if (kind is None or entry["candidate_id"] in seen or row.get("status") not in CANDIDATE_STATUSES
+                or row.get("status") not in STATUS_WORDS or scored is None or succeeded is None):
+            dropped[kind or "learned"] += 1  # unknown or disagreeing rows count against the early trial
+        else:
+            seen.add(entry["candidate_id"])
+            rows[kind].append((entry, row["status"], scored, succeeded))
+    return rows, dropped["learned"], dropped["scripted"]
+
+
+def _table_lines(rows: list, header: str) -> list[str]:
+    return [f"| {header} | Status | Runs scored | Runs that met the success rule |", "|---|---|---|---|",
+            *(f"| {entry['display_name']} | {STATUS_WORDS[status]} | {scored} | {succeeded} of {scored} |"
+              for entry, status, scored, succeeded in rows)]
+
+
+def summary_trial_lines(publication: Mapping[str, Any] | None) -> list[str]:
+    """The early trial of learned robot software, and apart from it any scripted check of the simulation.
+
+    Every name is the catalog's; the two sections are never added together.
+    """
     lines = [f"**{EARLY_TRIAL_LABEL}**", ""]
     if publication is None:
         return lines + ["No early trial result is included: none was given to the tool for this job."]
-    catalog, rows, dropped, seen = _policy_catalog(), [], 0, set()
-    for row in publication.get("candidates") if isinstance(publication.get("candidates"), list) else []:
-        entry = catalog.get(row.get("candidate_id")) if isinstance(row, Mapping) and isinstance(row.get("candidate_id"), str) else None
-        scored = _count(row.get("episodes_scored"), low=1) if isinstance(row, Mapping) else None
-        succeeded = _count(row.get("episodes_succeeded"), high=scored or 0) if scored is not None else None
-        if (entry is None or entry["display_name"] in seen or row.get("status") not in CANDIDATE_STATUSES
-                or row.get("status") not in STATUS_WORDS or scored is None or succeeded is None):
-            dropped += 1
-        else:
-            seen.add(entry["display_name"])
-            rows.append((entry, row["status"], scored, succeeded))
-    if rows:
-        lines += ["| Robot software | Status | Runs scored | Runs that met the success rule |", "|---|---|---|---|"]
-        lines += [f"| {entry['display_name']} | {STATUS_WORDS[status]} | {scored} | {succeeded} of {scored} |"
-                  for entry, status, scored, succeeded in rows]
-    else:
-        lines.append("No row of the trial could be shown.")
+    rows, dropped, scripted_dropped = _trial_rows(publication)
+    lines += _table_lines(rows["learned"], "Robot software") if rows["learned"] else ["No row of the trial could be shown."]
     lines += _left_out(dropped)
     campaign = CAMPAIGN_WORDS.get(publication.get("status")) if isinstance(publication.get("status"), str) else None
-    return lines + ["", f"Trial status: {campaign or NOT_RECORDED}. A zero is a valid result of the trial."]
+    lines += ["", f"Trial status: {campaign or NOT_RECORDED}. A zero is a valid result of the trial."]
+    if rows["scripted"] or scripted_dropped:
+        lines += ["", f"## {SCRIPTED_CHECK_TITLE}", "", SCRIPTED_CHECK_SENTENCE, ""]
+        lines += _table_lines(rows["scripted"], "Scripted run") if rows["scripted"] else ["No row of the check could be shown."]
+        lines += _left_out(scripted_dropped)
+    return lines
 
 
 def _cell(value: Any) -> str:
@@ -620,17 +662,9 @@ def _full_fit_lines(table: Mapping[str, Any]) -> list[str]:
 
 
 def _full_trial_lines(publication: Mapping[str, Any] | None) -> list[str]:
-    lines = [f"**{EARLY_TRIAL_LABEL}**", ""]
-    if publication is None:
-        return lines + ["No early trial result is included: none was given to the tool for this job."]
-    lines += ["| Robot software | Status | Runs scored | Runs that met the success rule |", "|---|---|---|---|"]
-    for row in [row for row in publication.get("candidates") or [] if isinstance(row, Mapping)]:
-        scored, succeeded = _count(row.get("episodes_scored")), _count(row.get("episodes_succeeded"))
-        lines.append("| " + " | ".join(_cell(v) for v in (
-            row.get("display_name") or row.get("candidate_id"), row.get("status"), scored if scored is not None else INVALID,
-            f"{succeeded} of {scored}" if scored is not None and succeeded is not None and succeeded <= scored
-            else INVALID)) + " |")
-    return lines + ["", f"Trial status: {_cell(publication.get('status'))}. A zero is a valid result of the trial."]
+    # The same rows as the summary: which section a row belongs in is decided from the catalog either way,
+    # and the publication itself is attached under files/early-trial/.
+    return summary_trial_lines(publication)
 
 
 def _length(value: Any) -> str:

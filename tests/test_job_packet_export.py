@@ -858,3 +858,116 @@ def test_the_operator_record_keeps_the_pull_record_whole_and_outside_the_packet(
     assert record["pull_record_sha256"] == hashlib.sha256(record_path.read_bytes()).hexdigest()
     blob = _all_bytes(Path(manifest["packet_dir"])).decode()
     assert "absent_on_host" not in blob and "website_withdrawal" not in blob and "consent_takedown" not in blob
+
+
+# --- scripted runs and every value the pipeline's builders write ------------------------------------------
+
+SCRIPTED_ID = "blueprint_scripted_kinova_gen3"
+SCRIPTED_KIND = "scripted_simulator_state_baseline"
+
+
+def _scripted_row(**fields) -> dict:
+    return {"candidate_id": SCRIPTED_ID, "status": "completed", "episodes_scored": 3, "episodes_succeeded": 3,
+            "execution_evidence_kind": SCRIPTED_KIND, "candidate_policy_queried": False, **fields}
+
+
+def _sheet_with_rows(tmp_path: Path, rows: list[dict], **kwargs) -> str:
+    inputs = _job(tmp_path)
+    _edit(inputs.screening_publication, lambda value: value.update(candidates=rows))
+    return (Path(build_job_packet(inputs, output_root=_out(tmp_path), **kwargs)["packet_dir"]) / "JOB_SHEET.md").read_text()
+
+
+def _sections(sheet: str) -> tuple[str, str]:
+    trial = sheet.split("## Early trial", 1)[1].split("## ", 1)[0]
+    check = sheet.split(f"## {packet.SCRIPTED_CHECK_TITLE}", 1)[1].split("## ", 1)[0] if packet.SCRIPTED_CHECK_TITLE in sheet else ""
+    return trial, check
+
+
+LEARNED_ROW = {"candidate_id": "pi05_droid", "status": "completed", "episodes_scored": 10, "episodes_succeeded": 0}
+
+
+@pytest.mark.parametrize("level", ["summary", "full"])
+def test_a_scripted_run_is_a_check_of_the_simulation_never_robot_software(tmp_path, level) -> None:
+    sheet = _sheet_with_rows(tmp_path, [LEARNED_ROW, _scripted_row()], **(_full(tmp_path) if level == "full" else {}))
+    trial, check = _sections(sheet)
+    assert "| π0.5 DROID | completed | 10 | 0 of 10 |" in trial
+    assert "Blueprint scripted" not in trial and "left out" not in trial
+    assert packet.SCRIPTED_CHECK_SENTENCE in check and "| Blueprint scripted pick/place — kinova_gen3 | completed | 3 | 3 of 3 |" in check
+    assert "13" not in sheet and "3 of 13" not in sheet  # the two are never added together
+
+
+@pytest.mark.parametrize("level", ["summary", "full"])
+def test_a_catalog_scripted_row_without_its_evidence_kind_is_still_not_robot_software(tmp_path, level) -> None:
+    row = _scripted_row()
+    del row["execution_evidence_kind"], row["candidate_policy_queried"]
+    trial, check = _sections(_sheet_with_rows(tmp_path, [row], **(_full(tmp_path) if level == "full" else {})))
+    assert "Blueprint scripted" not in trial and "No row of the trial could be shown." in trial
+    assert "kinova_gen3 | completed | 3 | 3 of 3 |" in check
+
+
+@pytest.mark.parametrize("level", ["summary", "full"])
+@pytest.mark.parametrize("row", [
+    {**LEARNED_ROW, "execution_evidence_kind": SCRIPTED_KIND},
+    {**LEARNED_ROW, "candidate_policy_queried": False},
+    _scripted_row(execution_evidence_kind="learned_policy"),
+    _scripted_row(candidate_policy_queried=True),
+])
+def test_a_row_whose_kind_disagrees_with_the_catalog_is_left_out(tmp_path, level, row) -> None:
+    trial, check = _sections(_sheet_with_rows(tmp_path, [row], **(_full(tmp_path) if level == "full" else {})))
+    assert "No row of the trial could be shown." in trial and "Some rows were left out (1)" in trial
+    assert "| " not in check
+
+
+def test_every_fit_result_the_writer_uses_is_known() -> None:
+    source = (Path(packet.__file__).parent / "website_robot_fit.py").read_text()
+    written = set(re.findall(r'_check\("[a-z_]+", "([a-z_]+)"', source)) | {"pass", "fail", "unknown"}
+    assert written == set(packet.RESULT_WORDS)
+
+
+def _real_fit_table(tmp_path: Path, cycle):
+    from blueprint_pipeline.robot_spec_catalog import load_robot_spec_catalog
+    from blueprint_pipeline.website_robot_fit import robot_fit_table
+    from tests.test_website_robot_fit import _collision, _verdict
+    from tests.test_website_robot_fit import _job as fit_job
+    job = fit_job(cycle=cycle)
+    collision = _collision(tmp_path)
+    return robot_fit_table(preparation=job, collision_path=collision, verdict=_verdict(job, collision),
+                           catalog=load_robot_spec_catalog())
+
+
+@pytest.mark.parametrize("cycle", [None, 30, 1])
+def test_the_real_fit_table_loses_no_row(tmp_path, cycle) -> None:
+    table = _real_fit_table(tmp_path, cycle)
+    lines = packet.summary_fit_lines(table)
+    shown = [line for line in lines if line.startswith("| ") and not line.startswith("| Robot")]
+    assert len(shown) == len(table["rows"]) and not any("left out" in line for line in lines)
+    if cycle is None:
+        assert {check["result"] for row in table["rows"] for check in row["checks"]
+                if check["check"] == "cycle_time"} == {"not_requested"}
+        assert not any("no target given" in line or "cycle time" in line for line in shown)
+
+
+def _real_publication(scripted_count: int = 3):
+    from blueprint_pipeline.beta_policy_screening_result import screening_publication
+    from tests.test_beta_scripted_publication import publication_inputs
+    inputs = publication_inputs()
+    scripted = inputs["plan"]["candidates"][0]
+    scripted_summary = inputs["state"]["candidates"].pop(scripted["candidate_id"])
+    learned = {**scripted, "candidate_id": "pi05_droid", "display_name": "x"}
+    del learned["execution_evidence_kind"]
+    learned_summary = copy.deepcopy(scripted_summary)
+    for key in ("execution_evidence_kind", "action_source", "scripted_rollout_count", "learned_policy_rollout_count",
+                "scripted_controller_invoked", "candidate_policy_queried"):
+        del learned_summary["summary"][key]
+    scripted = {**scripted, "candidate_id": SCRIPTED_ID}
+    inputs["plan"]["candidates"] = [learned, scripted]
+    inputs["state"]["candidates"] = {"pi05_droid": learned_summary, SCRIPTED_ID: scripted_summary}
+    return screening_publication(**inputs)
+
+
+def test_the_real_publication_loses_no_row_and_keeps_scripted_apart() -> None:
+    publication = _real_publication()
+    lines = packet.summary_trial_lines(publication)
+    text = "\n".join(lines)
+    assert "left out" not in text and "π0.5 DROID" in text.split(packet.SCRIPTED_CHECK_TITLE)[0]
+    assert "kinova_gen3" in text.split(packet.SCRIPTED_CHECK_TITLE)[1]
