@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 MAX_QUEUE_FILE_BYTES = 16 * 1024 * 1024
 MAX_QUEUE_TOTAL_BYTES = 64 * 1024 * 1024
@@ -16,12 +16,19 @@ class QueueInventoryUnavailable(RuntimeError):
     """A queue may contain a live scene reference that cannot be inspected."""
 
 
-def queue_reference_text(roots: Sequence[Path], *, max_file_bytes: int = MAX_QUEUE_FILE_BYTES) -> str:
+def _states(root: Path, live_states: Mapping[str, Sequence[str]] | None) -> tuple[str, ...]:
+    """``pending`` and ``processing``, plus the further live states ``live_states`` lists for this queue."""
+
+    return tuple(dict.fromkeys(("pending", "processing", *((live_states or {}).get(Path(root).name, ())))))
+
+
+def queue_reference_text(roots: Sequence[Path], *, max_file_bytes: int = MAX_QUEUE_FILE_BYTES,
+                         live_states: Mapping[str, Sequence[str]] | None = None) -> str:
     chunks: list[str] = []
     total = 0
     entries = 0
     for root in roots:
-        for state in ("pending", "processing"):
+        for state in _states(root, live_states):
             directory = Path(root) / state
             try:
                 info = os.lstat(directory)
@@ -74,8 +81,9 @@ def queue_reference_text(roots: Sequence[Path], *, max_file_bytes: int = MAX_QUE
     return "\n".join(chunks)
 
 
-def tolerant_queue_reference_text(roots: Sequence[Path], *,
-                                  max_file_bytes: int = MAX_QUEUE_FILE_BYTES) -> tuple[str, list[str]]:
+def tolerant_queue_reference_text(roots: Sequence[Path], *, max_file_bytes: int = MAX_QUEUE_FILE_BYTES,
+                                  live_states: Mapping[str, Sequence[str]] | None = None,
+                                  ) -> tuple[str, list[str]]:
     """Each queue file read on its own: the text of those that could be read, and the paths of the rest.
 
     Only for a deletion privacy requires, where one unrelated malformed queue file must not keep a
@@ -88,7 +96,7 @@ def tolerant_queue_reference_text(roots: Sequence[Path], *,
     total = 0
     entries = 0
     for root in roots:
-        for state in ("pending", "processing"):
+        for state in _states(root, live_states):
             directory = Path(root) / state
             try:
                 if not stat.S_ISDIR(os.lstat(directory).st_mode):

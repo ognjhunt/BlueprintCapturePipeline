@@ -1133,20 +1133,27 @@ and lists each path with what was recorded about it at approval time:
   seconds (over the folder and everything in it), its regular-file bytes and its
   file count. A folder whose listing the door partly refused records how many
   names it could not see (`door_unlisted_entries`); its bytes and count may then
-  only be larger.
-- `task_evaluation_inputs_subfolder`: a direct child directory of one of three
-  parents under the inputs root, `sam31-preparations`, `stage-replays` and
-  `configured-controls` (`SUBFOLDER_PARENTS`, the owner's decision of 2026-11-12
-  to clear those three folders), with the same fields as a folder. Nothing
-  deeper and never the parent itself. It is checked exactly as a folder, through
+  only be larger, and its bytes at most 1.25 times what was recorded
+  (`larger_than_approved`); a newer tree is refused as always.
+- `task_evaluation_inputs_subfolder`: a direct child directory of a parent in
+  `SUBFOLDER_PARENTS`: any child of `sam31-preparations`, any child of
+  `configured-controls`, and under `stage-replays` only `claude-provision-trial`.
+  On 2026-11-12 the owner approved exactly three folders:
+  `task-evaluation-inputs/sam31-preparations`,
+  `task-evaluation-inputs/stage-replays/claude-provision-trial` and
+  `task-evaluation-inputs/configured-controls` (the last only if the first two
+  free less than expected). Listing their children rather than the folders, and
+  the rule below on naming only the parent, are the planner's decisions. Same
+  fields as a folder; nothing deeper and never the parent itself. It is checked exactly as a folder, through
   the same code, and in addition: the parent is opened without following a link
   and must be a directory on the inputs root's own device that the mount table
   does not list as a mount point; no mount point may sit at or below the child
   (a same-filesystem bind mount keeps its device number, so the table is read,
-  and an unreadable table refuses it as `mount_table_unavailable`); a symlink in
-  the parent or in the inputs root may not point at the child, into it or at the
-  parent; and the loose JSON directly in each of the three parents is read as
-  live state. The parents' names are used by released code; only the child's own
+  and an unreadable table refuses it as `mount_table_unavailable`); a symlink
+  that is a direct entry of the inputs root or of any of the three parents may
+  not point at the child, into it, at its parent or at the inputs root (links
+  deeper inside sibling folders are not scanned); and the loose JSON directly in
+  each of the three parents is read as live state, each parent being a scan root. The parents' names are used by released code; only the child's own
   name refuses it as `named_by_released_code`. A file, unit, queue message or
   process naming only the parent's path does not refuse a child (otherwise
   nothing under a named root could be cleared); a live pin on the parent does,
@@ -1172,10 +1179,16 @@ Nothing runs it on a timer. An operator starts two oneshot units by hand:
    `/var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions/<manifest_id>/plan.json`.
    It deletes nothing. A manifest in `deploy/owner-approved-deletions/held/`
    is never planned or applied: the units read only the directory's own
-   `*.json`. A path is `eligible` only when it is the recorded
+   `*.json`. A manifest is moved to `held/` once it has been applied, and is
+   brought back only deliberately: a run checks every entry it skipped before
+   from scratch, so an entry once refused only as `in_use` could otherwise be
+   deleted unseen. A path is `eligible` only when it is the recorded
    identity and no live storage pin names it, lies inside it or contains it, no
-   pending or processing queue message (the reclaim timer's queues and the scene
-   queues) names it, no process uses it, no systemd unit or drop-in file under
+   queue message in a live state names it (`pending` and `processing` of the
+   reclaim timer's queues and the scene queues, and every queue and state in
+   `LIVE_QUEUE_STATES` of `control_plane_release_leases.py`, such as SAM
+   preparation jobs `waiting_external` and launch preparations
+   `awaiting_source_preparation` or `awaiting_capacity`), no process uses it, no systemd unit or drop-in file under
    `/etc/systemd/system`, `/run/systemd/system` or `/run/systemd/transient` names
    it (a failed transient unit counts until `reset-failed`), and no sibling
    symlink points into it. Paths are opened one component at a time without
@@ -1253,10 +1266,20 @@ in use now and clear when that use ends.
 
 The report directory is created under the units' `UMask=0077`, so the door
 cannot open the plan or the receipts. Each run therefore prints, to its journal
-(`operator_door.py journal <unit>`), every refused path with its `reasons`,
-`named_by` and `named_by_released_code`, every unreadable path with its code, and
-every `references_left_pointing_at_nothing` row: paths only, never a value read
-from a file.
+(`operator_door.py journal <unit>`) one line per path: in the plan every
+eligible path with its class, the bytes and file count it measured and the
+manifest recorded, and `door_unlisted_entries`; in the apply each path as it is
+deleted (a `deleting` line before the rename, a `deleted` line in the summary);
+and every refused path with its `reasons`, `named_by` and
+`named_by_released_code`, every unreadable path with its code, and every
+`references_left_pointing_at_nothing` row: paths and numbers only, never a value
+read from a file. Each line starts with `{"manifest_id": ...`.
+
+Stated limits: a process that maps a file and closes its descriptor, or runs in
+another mount namespace, is not seen as using a path; two applies at once are
+not locked out (run one at a time); and the apply is started while
+`blueprint-completed-replay-cache-gc` is not running, since it walks
+`stage-replays`.
 Run it again and a deleted path reports `already_deleted`.
 
 ```bash

@@ -19,24 +19,28 @@ A path is eligible only when it is one of three kinds, each under a fixed parent
   ``/var/lib/blueprint/task-evaluation-inputs``. Its newest mtime (whole seconds, over the
   folder and everything in it), its regular-file bytes and its file count must equal what the
   manifest recorded. A folder the door could not list in full records how many names it could
-  not see (``door_unlisted_entries``); its bytes and count may then only be larger.
-* ``task_evaluation_inputs_subfolder``: a direct child directory of one of the parents in
-  ``SUBFOLDER_PARENTS`` (``sam31-preparations``, ``stage-replays``, ``configured-controls``, each
-  a direct child of the inputs root; the owner's decision of 2026-11-12), and nothing deeper. It
-  is checked exactly as a folder, through the same code: the same entry fields and identity, the
-  same references, live state, released code and scan roots. In addition the parent is opened
-  without following a link and must be a directory on the inputs root's own mount (not itself a
-  mount point), no mount table entry may sit at or below the child (a bind mount of the same
-  filesystem keeps its device number, so the table is read), and a symlink in the parent, like
-  one in the inputs root, may not point at the child, into it or at the parent. The parent itself
+  not see (``door_unlisted_entries``); its bytes and count may then only be larger, and its bytes
+  at most ``MAX_UNLISTED_GROWTH`` (1.25) times the recorded bytes (``larger_than_approved``).
+* ``task_evaluation_inputs_subfolder``: a direct child directory of a parent in
+  ``SUBFOLDER_PARENTS``, and nothing deeper: any child of ``sam31-preparations``, any child of
+  ``configured-controls``, and under ``stage-replays`` only ``claude-provision-trial``. The owner
+  approved exactly those three folders on 2026-11-12 (``sam31-preparations``,
+  ``stage-replays/claude-provision-trial``, ``configured-controls``); listing a folder's children
+  rather than the folder is the planner's. It is checked exactly as a folder, through the same
+  code: the same entry fields and identity, the same references, live state, released code and
+  scan roots. In addition the parent is opened without following a link and must be a directory
+  on the inputs root's own device that the mount table does not list (a bind mount of the same
+  filesystem keeps its device number, so the table is read), no mount point may sit at or below
+  the child, and no symlink that is a direct entry of the inputs root or of any of the three
+  parents may point at the child, into it, at its parent or at the inputs root. The parent itself
   is never deleted, renamed or re-moded; the child is renamed aside inside the parent. The
   parent's name is named by released code (that is why the parent can never be listed as a
-  folder); only the child's own name refuses the child as ``named_by_released_code``. A live-state
-  file, unit file, queue message or process that names only the parent's path does not refuse the
-  child, otherwise nothing under a named root could ever be cleared; a live pin on the parent
-  does (as a pin containing any path does), and so does a process using the child or anything in
-  it. The loose JSON directly in each of these parents is read as live state, as the inputs
-  root's is.
+  folder); only the child's own name refuses the child as ``named_by_released_code``. The
+  planner's decision of 2026-11-12: a live-state file, unit file, queue message or process that
+  names only the parent's path does not refuse the child, otherwise nothing under a named root
+  could ever be cleared; a live pin on the parent does (as a pin containing any path does), and so
+  does a process using the child or anything in it. The loose JSON directly in each of these
+  parents is read as live state, as the inputs root's is, and each parent is a scan root.
 * ``authority_ended_scene_workspace``: a website scene working copy under
   ``/var/lib/blueprint/pubsub-handoffs/<bucket>/scenes/``. Every capture in it must have ended
   for good because its authority ended (ledger ``terminal_authority_ended``) more than seven
@@ -47,8 +51,10 @@ A path is eligible only when it is one of three kinds, each under a fixed parent
   not touched.
 
 Every path is also refused while a live storage pin names it, lies inside it or contains it, a
-pending or processing queue message names it, a live process uses it, a systemd unit file
-names it, or a sibling symlink points into it. The paths are opened one component at a time
+queue message in a live state names it (``pending`` and ``processing`` of every queue root, and
+every queue and state in ``control_plane_release_leases.LIVE_QUEUE_STATES``, such as SAM
+preparation jobs ``waiting_external``), a live process uses it, a systemd unit file names it, or a
+sibling symlink points into it. The paths are opened one component at a time
 without following a link, a folder holding another mount is refused, and the deletion itself
 never follows a symlink.
 
@@ -71,8 +77,17 @@ workspaces) live-state references and an incomplete scan never keep the path. Th
 receipt and the journal record them as ``references_left_pointing_at_nothing``.
 
 The plan and receipts sit in a directory the unit's ``UMask=0077`` leaves root-only, so stdout
-(the journal) lists each refused path with its reasons and naming files and each unreadable path
-with its code: paths only, never a value read from a file.
+(the journal) lists each eligible path with its class and the bytes and files the plan measured and
+the manifest recorded, each refused path with its reasons and naming files, each unreadable path
+with its code, and in the apply each path as it is deleted: paths and numbers only, never a value
+read from a file. Only manifests directly in the manifest directory are run; one moved to
+``held/`` (as each is once applied) is never planned or applied.
+
+Stated limits (not checked here): a symlink deeper inside a sibling folder is not scanned and is
+left dangling; a process that maps a file and then closes its descriptor, or that runs in another
+mount namespace, is not seen as using the path; two applies at once are not locked out, so the
+operator runs one at a time, and starts the apply while the completed-replay-cache clean-up
+(``blueprint-completed-replay-cache-gc``) is not running, since it walks ``stage-replays``.
 """
 
 from __future__ import annotations
@@ -103,10 +118,19 @@ APPLY_ACK = "delete-owner-approved-paths"
 FOLDER = "task_evaluation_inputs_folder"
 SUBFOLDER = "task_evaluation_inputs_subfolder"
 SCENE = "authority_ended_scene_workspace"
-#: The only parents whose direct child directories a manifest may list as ``SUBFOLDER``: the owner's
-#: decision of 2026-11-12 (about 21:05Z, "yes approve all 3") to clear these three folders of the
-#: host's work volume. Each is a direct child of the inputs root; the parent itself is never listed.
-SUBFOLDER_PARENTS = ("sam31-preparations", "stage-replays", "configured-controls")
+#: The only parents whose direct child directories a manifest may list as ``SUBFOLDER``, each a direct
+#: child of the inputs root, with the children allowed (``None``: any). The owner approved, on
+#: 2026-11-12 about 21:05Z ("yes approve all 3"), exactly three folders: ``sam31-preparations``,
+#: ``stage-replays/claude-provision-trial`` and ``configured-controls`` (the last only if the first two
+#: free less than expected). So under ``stage-replays`` only that one child is accepted. Listing the
+#: children instead of the folders is the planner's decision; the parent itself is never listed.
+SUBFOLDER_PARENTS: Mapping[str, frozenset[str] | None] = {
+    "sam31-preparations": None,
+    "stage-replays": frozenset({"claude-provision-trial"}),
+    "configured-controls": None,
+}
+#: A folder the door could not list in full may have grown past what was recorded, but not by more.
+MAX_UNLISTED_GROWTH = 1.25
 #: Both folder kinds share the folder checks and the identity compared at plan and apply.
 _FOLDER_CLASSES = frozenset({FOLDER, SUBFOLDER})
 #: Classes whose deletion privacy requires: a leftover reference in live state never keeps the
@@ -204,14 +228,16 @@ def _count(value: Any) -> bool:
 
 
 def _folder_entry(entry: Mapping[str, Any], inputs_root: Path, *,
-                  parents: Sequence[str] | None = None) -> dict[str, Any]:
-    """A folder entry; with ``parents``, a direct child of one of those direct children of the inputs root."""
+                  parents: Mapping[str, frozenset[str] | None] | None = None) -> dict[str, Any]:
+    """A folder entry; with ``parents``, a direct child of one of those direct children of the inputs root
+    (only the listed children where the parent lists any)."""
 
     keys = {"class", "path", "newest_mtime_epoch", "apparent_bytes", "file_count", "door_unlisted_entries"}
     _require(set(entry) == keys, "entry_fields_invalid")
     path = Path(str(entry["path"]))
     placed = (path.parent == inputs_root if parents is None
-              else path.parent.parent == inputs_root and path.parent.name in parents)
+              else path.parent.parent == inputs_root and path.parent.name in parents
+              and (parents[path.parent.name] is None or path.name in parents[path.parent.name]))
     _require(placed and _NAME.fullmatch(path.name) and not path.name.startswith(ASIDE_PREFIX)
              and str(path) == entry["path"], "entry_path_outside_allowlist")
     _require(all(_count(entry[key]) for key in keys - {"class", "path"}), "entry_identity_invalid")
@@ -348,13 +374,21 @@ def _measure(parent_fd: int, name: str) -> dict[str, Any] | str:
 _COMPARED = ("dev", "ino", "newest_mtime_epoch", "apparent_bytes", "file_count", "directory_count")
 
 
-def _folder_matches_manifest(entry: Mapping[str, Any], identity: Mapping[str, Any]) -> bool:
+def _folder_mismatch(entry: Mapping[str, Any], identity: Mapping[str, Any]) -> str | None:
+    """Why the measured folder is not the one the owner approved, or ``None``."""
+
     if identity["newest_mtime_epoch"] != entry["newest_mtime_epoch"]:
-        return False
+        return "changed_since_approval"
     if entry["door_unlisted_entries"]:
-        return (identity["apparent_bytes"] >= entry["apparent_bytes"]
-                and identity["file_count"] >= entry["file_count"])
-    return identity["apparent_bytes"] == entry["apparent_bytes"] and identity["file_count"] == entry["file_count"]
+        if (identity["apparent_bytes"] < entry["apparent_bytes"]
+                or identity["file_count"] < entry["file_count"]):
+            return "changed_since_approval"
+        if identity["apparent_bytes"] > entry["apparent_bytes"] * MAX_UNLISTED_GROWTH:
+            return "larger_than_approved"
+        return None
+    if identity["apparent_bytes"] == entry["apparent_bytes"] and identity["file_count"] == entry["file_count"]:
+        return None
+    return "changed_since_approval"
 
 
 # --- references ---------------------------------------------------------------------------------
@@ -413,12 +447,14 @@ class References:
 
     def __init__(self, *, pins_root: Path, queue_roots: Sequence[Path], unit_texts: Sequence[tuple[str, str]],
                  process_index: Callable[[Path], bool], now: float) -> None:
+        from .control_plane_release_leases import LIVE_QUEUE_STATES
         from .control_plane_storage_pins import live_pinned_paths
         from .website_scene_workspace_queue import QueueInventoryUnavailable, queue_reference_text
 
         self.pinned = live_pinned_paths(pins_root, now=lambda: now)
+        self.live_states = LIVE_QUEUE_STATES  # every live state the repository lists, for each such queue
         try:
-            self.queue_text: str | None = queue_reference_text(list(queue_roots))
+            self.queue_text: str | None = queue_reference_text(list(queue_roots), live_states=self.live_states)
         except QueueInventoryUnavailable:
             self.queue_text = None
         self.queue_roots = tuple(queue_roots)
@@ -438,7 +474,8 @@ class References:
         queue_text = self.queue_text
         if queue_text is None and unreadable is not None:
             if self._tolerant is None:
-                self._tolerant = tolerant_queue_reference_text(list(self.queue_roots))
+                self._tolerant = tolerant_queue_reference_text(list(self.queue_roots),
+                                                               live_states=self.live_states)
             queue_text = self._tolerant[0]
             unreadable.extend({"path": name, "code": "queue_inventory_unreadable"} for name in self._tolerant[1])
         if queue_text is None:
@@ -454,8 +491,11 @@ class References:
 
 def build_references(*, pins_root: Path, queue_roots: Sequence[Path], intent_root: Path | None,
                      now: float, unit_directories: Sequence[Path] = UNIT_DIRECTORIES,
-                     process_root: Path = Path("/proc")) -> References:
+                     process_root: Path = Path("/proc"), live_queue_root: Path | None = None) -> References:
+    """``live_queue_root``: where the queues of ``LIVE_QUEUE_STATES`` live; each is read as well."""
+
     from .completed_replay_cache_retention import process_reference_index
+    from .control_plane_release_leases import LIVE_QUEUE_STATES
     from .website_scene_workspace_retention import scene_queue_roots
 
     try:
@@ -463,8 +503,10 @@ def build_references(*, pins_root: Path, queue_roots: Sequence[Path], intent_roo
     except ValueError:
         def index(_path: Path) -> bool:
             return True
-    return References(pins_root=pins_root, queue_roots=scene_queue_roots(queue_roots, intent_root),
-                      unit_texts=unit_file_texts(unit_directories), process_index=index, now=now)
+    live = [Path(live_queue_root) / name for name in LIVE_QUEUE_STATES] if live_queue_root is not None else []
+    roots = tuple(dict.fromkeys([*scene_queue_roots(queue_roots, intent_root), *live]))
+    return References(pins_root=pins_root, queue_roots=roots, unit_texts=unit_file_texts(unit_directories),
+                      process_index=index, now=now)
 
 
 # --- live state: the configuration and registries that name paths ---------------------------------
@@ -696,9 +738,12 @@ class LiveState:
         source.update(status="read", files=self.file_count - before)
         return documents
 
-    def _loose_json(self, root: Path, *, kind: str = "inputs_root_loose_json", required: bool = True) -> None:
+    def _loose_json(self, root: Path, *, kind: str = "inputs_root_loose_json", required: bool = True,
+                    scan_root: bool = False) -> None:
         source = {"root": str(root), "kind": kind, "required": required}
         self.sources.append(source)
+        if scan_root:
+            self.roots.append(posixpath.normpath(str(root)))
         before = self.file_count
         try:
             with os.scandir(root) as iterator:
@@ -755,7 +800,8 @@ def scan_live_state(*, config_root: Path, intent_root: Path | None, binding_root
     state._walk(Path(launch_profile_catalog), kind="launch_profile_catalog", required=True)
     state._loose_json(Path(inputs_root))
     for parent in SUBFOLDER_PARENTS:  # a subfolder's siblings, as the inputs root's loose JSON is a folder's
-        state._loose_json(Path(inputs_root) / parent, kind="subfolder_parent_loose_json", required=False)
+        state._loose_json(Path(inputs_root) / parent, kind="subfolder_parent_loose_json", required=False,
+                          scan_root=True)
     for root in registry_roots:
         state._walk(Path(root), kind="control_plane_registry", required=False)
     for root in release_roots:
@@ -874,9 +920,16 @@ def _check_folder(entry: Mapping[str, Any], references: References, *, link_targ
         os.close(parent_fd)
     if isinstance(identity, str):
         return [identity], None
-    reasons = [] if _folder_matches_manifest(entry, identity) else ["changed_since_approval"]
-    targets = [*link_targets, *(_sibling_link_targets(path.parent) if subfolder else ())]
-    if any(target == path or path in target.parents or (subfolder and target == path.parent) for target in targets):
+    mismatch = _folder_mismatch(entry, identity)
+    reasons = [mismatch] if mismatch else []
+    targets = list(link_targets)
+    ancestors: tuple[Path, ...] = ()
+    if subfolder:  # links directly in any of the three parents, and a link at the parent or the inputs root
+        for parent in SUBFOLDER_PARENTS:
+            if (path.parent.parent / parent).is_dir() and not (path.parent.parent / parent).is_symlink():
+                targets.extend(_sibling_link_targets(path.parent.parent / parent))
+        ancestors = (path.parent, path.parent.parent)
+    if any(target == path or path in target.parents or target in ancestors for target in targets):
         reasons.append("symlink_target")
     reasons.extend(references.reasons(path))
     return reasons, identity
@@ -1009,7 +1062,8 @@ class Settings:
                  launch_profile_catalog: Path = DEFAULT_LAUNCH_PROFILE_CATALOG,
                  registry_roots: Sequence[Path] = DEFAULT_REGISTRY_ROOTS,
                  release_roots: Sequence[Path] = (DEFAULT_RELEASE_ROOT,),
-                 door_roots: Sequence[Path] = (DEFAULT_DOOR_ROOT,), mountinfo: Path = MOUNTINFO) -> None:
+                 door_roots: Sequence[Path] = (DEFAULT_DOOR_ROOT,), mountinfo: Path = MOUNTINFO,
+                 live_queue_root: Path = _CONTROL_PLANE) -> None:
         self.pins_root, self.queue_roots, self.intent_root = Path(pins_root), tuple(map(Path, queue_roots)), intent_root
         self.inputs_root, self.handoff_root = Path(inputs_root), Path(handoff_root)
         self.unit_directories, self.process_root = tuple(unit_directories), Path(process_root)
@@ -1017,10 +1071,12 @@ class Settings:
         self.launch_profile_catalog, self.registry_roots = Path(launch_profile_catalog), tuple(map(Path, registry_roots))
         self.release_roots, self.door_roots = tuple(map(Path, release_roots)), tuple(map(Path, door_roots))
         self.mountinfo = Path(mountinfo)
+        self.live_queue_root = Path(live_queue_root)
 
     def references(self, now: float) -> References:
         return build_references(pins_root=self.pins_root, queue_roots=self.queue_roots, intent_root=self.intent_root,
-                                now=now, unit_directories=self.unit_directories, process_root=self.process_root)
+                                now=now, unit_directories=self.unit_directories, process_root=self.process_root,
+                                live_queue_root=self.live_queue_root)
 
     def live_state(self) -> LiveState:
         return scan_live_state(config_root=self.config_root, intent_root=self.intent_root,
@@ -1074,8 +1130,11 @@ def plan_manifest(manifest_path: Path, *, report_root: Path, settings: Settings,
         if expired:
             reasons = sorted({*reasons, "approval_expired"})
         status = "absent" if reasons == ["absent"] else "eligible" if not reasons else "skipped"
+        recorded = ({"recorded": {key: entry[key] for key in ("apparent_bytes", "file_count", "door_unlisted_entries")}}
+                    if entry["class"] in _FOLDER_CLASSES else {})
         rows.append({"path": entry["path"], "class": entry["class"], "status": status, "reasons": reasons,
-                     **{key: value for key, value in verdict.items() if key != "reasons"}, "identity": identity})
+                     **{key: value for key, value in verdict.items() if key != "reasons"}, "identity": identity,
+                     **recorded})
     eligible = [row for row in rows if row["status"] == "eligible"]
     plan: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA, "manifest_id": manifest["manifest_id"], "manifest_sha256": manifest_sha256,
@@ -1265,6 +1324,10 @@ def _delete(manifest: Mapping[str, Any], plan: Mapping[str, Any], row: Mapping[s
                 return {"path": row["path"], "outcome": "skipped", "reasons": reasons or ["changed_since_plan"]}
         _publish(receipt_path, _receipt(manifest, plan, row, status="deleting", identity=identity, aside=aside,
                                         observed_at=float(now()), **(extra or {})))
+        # The journal names each path as it goes, before the rename: paths and numbers only.
+        print(_journal_line(manifest["manifest_id"], "deleting", {
+            "path": row["path"], "class": row["class"], "apparent_bytes": identity["apparent_bytes"],
+            "file_count": identity["file_count"]}), flush=True)
         parent_fd = _open_directory(path.parent)
         try:
             os.rename(path.name, aside, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
@@ -1297,34 +1360,55 @@ def manifests(directory: Path) -> list[Path]:
 
 
 def journal_lines(rows: Sequence[Mapping[str, Any]], scan: Mapping[str, Any]) -> dict[str, Any]:
-    """What lands in the journal: each refused path with its reasons and naming files, each unreadable
-    path with its code, and the references a privacy deletion leaves. Paths only, never file contents.
+    """What lands in the journal: each eligible path (plan) or deleted path (apply) with its class and
+    sizes, each refused path with its reasons and naming files, each unreadable path with its code, and
+    the references a privacy deletion leaves. Paths and numbers only, never file contents; at most one
+    line of each kind per manifest entry (``MAX_ENTRIES``).
 
     The plan and receipts sit under the unit's ``UMask=0077`` report directory, which the door cannot
-    open, so the journal is where an operator sees why a path was kept.
+    open, so the journal is where an operator sees which paths an apply would delete and why a path
+    was kept.
     """
 
-    refused, dangling = [], []
+    eligible, deleted, refused, dangling = [], [], [], []
     for row in rows:
         reasons = row.get("reasons") or []
+        if row.get("status") == "eligible":
+            identity = row.get("identity") or {}
+            recorded = row.get("recorded") or {}
+            eligible.append({"path": row["path"], "class": row.get("class"),
+                             "measured_apparent_bytes": identity.get("apparent_bytes"),
+                             "measured_file_count": identity.get("file_count"),
+                             "recorded_apparent_bytes": recorded.get("apparent_bytes"),
+                             "recorded_file_count": recorded.get("file_count"),
+                             "door_unlisted_entries": recorded.get("door_unlisted_entries")})
+        if row.get("outcome") == "deleted":
+            deleted.append({"path": row["path"], "apparent_bytes": row.get("apparent_bytes"),
+                            "allocated_bytes": row.get("allocated_bytes")})
         if row.get("status", row.get("outcome")) in ("skipped",) and reasons:
             refused.append({"path": row["path"], "reasons": reasons, "named_by": row.get("named_by") or [],
                             "named_by_released_code": row.get("named_by_released_code") or []})
         if row.get(LEFT_POINTING_AT_NOTHING):
             dangling.append({"path": row["path"], **row[LEFT_POINTING_AT_NOTHING]})
     return {"reference_scan": scan.get("status"), "unreadable": list(scan.get("unreadable") or []),
-            "refused": refused, LEFT_POINTING_AT_NOTHING: dangling}
+            "eligible": eligible, "deleted": deleted, "refused": refused, LEFT_POINTING_AT_NOTHING: dangling}
+
+
+def _journal_line(manifest_id: str, key: str, row: Mapping[str, Any]) -> str:
+    """One journal line, always starting with ``{"manifest_id": ...``, its row's keys sorted."""
+
+    return json.dumps({"manifest_id": manifest_id, key: dict(sorted(row.items()))})
 
 
 def _journal(manifest_id: str, rows: Sequence[Mapping[str, Any]], scan: Mapping[str, Any]) -> dict[str, Any]:
-    """Print one compact line per refused, unreadable or left-dangling path; return the counts."""
+    """Print one compact line per eligible, deleted, refused, unreadable or left-dangling path; return the counts."""
 
     lines = journal_lines(rows, scan)
-    for key in ("refused", "unreadable", LEFT_POINTING_AT_NOTHING):
+    keys = ("eligible", "deleted", "refused", "unreadable", LEFT_POINTING_AT_NOTHING)
+    for key in keys:
         for row in lines[key]:
-            print(json.dumps({"manifest_id": manifest_id, key: row}, sort_keys=True))
-    return {"reference_scan": lines["reference_scan"],
-            **{key + "_count": len(lines[key]) for key in ("refused", "unreadable", LEFT_POINTING_AT_NOTHING)}}
+            print(_journal_line(manifest_id, key, row))
+    return {"reference_scan": lines["reference_scan"], **{key + "_count": len(lines[key]) for key in keys}}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
