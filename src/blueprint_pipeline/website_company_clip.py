@@ -29,7 +29,8 @@ website capture and publishes it exactly as the scene preview is published
 - the bytes go to the private artifact store under a name for the capture (withdrawal deletion
   finds them by that name, also after workspace retirement); the WebApp is told the clip's
   identity through the signed ``company-clip`` control operation and reads the bytes, by range,
-  through the signed ``/api/live-pipeline/website-company-clips`` route.
+  through the signed ``/api/live-pipeline/website-company-clips`` route, which serves a clip only
+  while its capture's folder exists to be checked.
 
 Rights are a hard stop. Nothing is made unless the capture is unwithdrawn, the delivery-time
 takedown gate allows it, the WebApp's current task context grants consent, and the recording
@@ -976,23 +977,23 @@ def open_company_clip(*, request_id: str, capture_id: str, digest: str, storage_
     While the workspace exists the capture must be unwithdrawn, the takedown gate must allow it,
     its manifest must name this digest as archived and not taken back, and its basis must still hold:
     Blueprint's own list names it, or the last live read granted sharing and nothing has said no since.
-    After retirement only the object named for this capture and digest exists to read (withdrawal
-    deletion deletes it). With no storage root configured nothing can be checked, so nothing is served.
+    Once the capture's folder is gone (retirement, withdrawal deletion) nothing can be checked, so nothing
+    is served, even while the stored object still exists; likewise with no storage root configured.
+    Withdrawal deletion still deletes the stored versions by name without the folder.
     """
     if (storage_root is None or not capture_name_matches_request(request_id, capture_id)
             or not _DIGEST.fullmatch(str(digest))):
         raise CompanyClipUnavailable("website_company_clip_unavailable")
     roots = [root for root in Path(storage_root).glob(f"*/scenes/site-{request_id}/captures/{capture_id}")
              if root.is_dir()]
-    if len(roots) > 1:
+    if len(roots) != 1:  # none: no withdrawal, takedown, manifest or basis can be checked; fail closed
         raise CompanyClipUnavailable("website_company_clip_unavailable")
-    if roots:
-        manifest = _read(roots[0].joinpath(*DIRECTORY) / MANIFEST_FILE)
-        archive = manifest.get("archive") or {}
-        if (not delivery_gate_allows(roots[0]) or manifest.get("schema_version") != MANIFEST_SCHEMA
-                or archive.get("digest") != digest or _hidden(archive)
-                or not _basis_still_holds(roots[0], capture_id, manifest)):
-            raise CompanyClipUnavailable("website_company_clip_unavailable")
+    manifest = _read(roots[0].joinpath(*DIRECTORY) / MANIFEST_FILE)
+    archive = manifest.get("archive") or {}
+    if (not delivery_gate_allows(roots[0]) or manifest.get("schema_version") != MANIFEST_SCHEMA
+            or archive.get("digest") != digest or _hidden(archive)
+            or not _basis_still_holds(roots[0], capture_id, manifest)):
+        raise CompanyClipUnavailable("website_company_clip_unavailable")
     from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
     from .task_evaluation_configured_scene_object_store import _artifact_object_store_client, _object_missing
     if client is None or bucket is None:

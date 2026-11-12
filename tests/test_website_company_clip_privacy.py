@@ -508,6 +508,27 @@ def test_the_route_refuses_a_taken_back_archive_another_schema_or_an_unknown_bas
         _open(capture, world, digest)
 
 
+def test_a_retired_capture_is_not_served_even_while_its_object_is_stored(published, monkeypatch):
+    capture, world, digest = published
+    assert _open(capture, world, digest)[1] > 0
+    shutil.rmtree(capture)  # workspace retirement: the folder is gone, the stored object is not
+    assert world.objects
+    with pytest.raises(clip.CompanyClipUnavailable):
+        _open(capture, world, digest)
+    assert _app(capture, world, monkeypatch).get(_url(digest), headers=SIGNED).status_code == 404
+
+
+def test_a_retired_owned_capture_is_not_served_after_its_row_is_removed(tmp_path, monkeypatch):
+    capture, world, end = _published(tmp_path, monkeypatch, "owned_row_removed")
+    digest = _manifest(capture)["archive"]["digest"]
+    shutil.rmtree(capture)
+    end()
+    assert world.objects  # no pass can find the capture to take the object back
+    with pytest.raises(clip.CompanyClipUnavailable):
+        _open(capture, world, digest)
+    assert _app(capture, world, monkeypatch).get(_url(digest), headers=SIGNED).status_code == 404
+
+
 # --- the not-permitted pass and the after-write proofs -----------------------------------------------------
 
 def test_the_not_permitted_precheck_takes_an_archived_copy_back_without_a_live_read(tmp_path, monkeypatch):
