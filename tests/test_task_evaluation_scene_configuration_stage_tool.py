@@ -393,3 +393,47 @@ def test_stage_start_outside_a_run_copy_refuses_by_name_and_deletes_nothing(
         execute_stage_tool(adapter_id=adapter_id, environment=environment, runner=_artifixer_component)
     assert cache.is_dir()
     assert "TOOLCHAIN_RESTORE" not in capsys.readouterr().err
+
+
+def test_stage_start_restores_a_copy_reached_through_a_linked_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The entrypoint exports ``$RUNTIME_ROOT/toolchain`` unresolved; ``/workspace`` may be a link."""
+
+    adapter_id = "artifixer3d_observed_object_removal"
+    environment, _result, toolchain = _run_copy_environment(tmp_path, monkeypatch, adapter_id)
+    workspace = tmp_path / "workspace"
+    workspace.symlink_to(tmp_path, target_is_directory=True)
+    environment[TOOLCHAIN_ROOT_ENV] = str(workspace / "provider_runtime" / "toolchain")
+    cache = toolchain / "components" / adapter_id / "package" / "__pycache__"
+    cache.mkdir()
+
+    result = execute_stage_tool(adapter_id=adapter_id, environment=environment, runner=_artifixer_component)
+
+    assert result["status"] == "completed" and not cache.exists()
+    assert _flag(capsys.readouterr().err, "TOOLCHAIN_RESTORED")["removed_count"] == 1
+
+
+def test_a_restore_that_raises_is_flagged_and_the_full_check_still_decides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from blueprint_pipeline import task_evaluation_scene_configuration_stage_tool as tool
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
+        TaskEvaluationSceneConfigurationStageProducerError,
+    )
+
+    adapter_id = "artifixer3d_observed_object_removal"
+    environment, _result, toolchain = _run_copy_environment(tmp_path, monkeypatch, adapter_id)
+    cache = toolchain / "components" / adapter_id / "package" / "__pycache__"
+    cache.mkdir()
+
+    def deep(**_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(tool, "restore_run_toolchain_copy", deep)
+    with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_not_read_only:components/{adapter_id}/package/__pycache__$"):
+        execute_stage_tool(adapter_id=adapter_id, environment=environment, runner=_artifixer_component)
+    flag = _flag(capsys.readouterr().err, "TOOLCHAIN_RESTORE_FAILED")
+    assert flag["error_type"] == "RecursionError"
+    assert cache.is_dir()

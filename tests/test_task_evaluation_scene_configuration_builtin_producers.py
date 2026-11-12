@@ -312,10 +312,27 @@ def _run_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, commit: str = "a"
         component_packages=_component_packages(tmp_path, bundled_bytecode=True),
     )
     (runtime / module._PROVIDER_BUNDLE_MANIFEST).write_text("{}\n", encoding="utf-8")
+    # A run unpacks a zip, so each file is its own inode; the builder here links
+    # files it shares with its sources.
+    _own_inodes(root)
     # In a run this package is imported from provider_runtime/blueprint_pipeline.
     monkeypatch.setattr(module, "_loaded_runtime_root", lambda: runtime)
     digest = json.loads((root / f"{module.TOOLCHAIN_SCHEMA_VERSION}.json").read_text())["toolchain_digest"]
     return module, root.resolve(), commit, digest
+
+
+def _own_inodes(root: Path) -> None:
+    import os
+
+    for directory, _names, files in os.walk(root):
+        for name in files:
+            path = Path(directory) / name
+            info = path.lstat()
+            if info.st_nlink > 1:
+                data = path.read_bytes()
+                path.unlink()
+                path.write_bytes(data)
+                path.chmod(info.st_mode & 0o7777)
 
 
 def _restore(module, root, commit, digest):
@@ -543,21 +560,272 @@ def test_restore_reseals_a_parent_it_opened_to_remove_an_entry(tmp_path, monkeyp
     (cache / "nested").mkdir()
     (cache / "nested" / "x.pyc").write_bytes(b"x")
     (cache / "nested").chmod(0o555)
-    opened = []
-    real_chmod = module._chmod_nofollow
+    package = (root / _PACKAGE).stat().st_ino
+    modes = []
+    real_fchmod = os.fchmod
 
-    def chmod(path, mode, *, directory):
-        opened.append((Path(path), mode))
-        real_chmod(path, mode, directory=directory)
+    def fchmod(handle, mode):
+        modes.append((os.fstat(handle).st_ino, mode))
+        real_fchmod(handle, mode)
 
-    # Behave as an unprivileged owner would see the sealed modes.
-    monkeypatch.setattr(os, "access", lambda path, mode: not (Path(path).stat().st_mode & 0o200 == 0))
-    monkeypatch.setattr(module, "_chmod_nofollow", chmod)
+    # Behave as an unprivileged owner would.
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(os, "fchmod", fchmod)
 
     record = _restore(module, root, commit, digest)
 
     assert record["removed_entry_count"] == 3 and not cache.exists()
-    assert (root / _PACKAGE, 0o755) in opened  # opened to remove the entry...
+    assert (package, 0o755) in modes  # opened to remove the entry...
     assert (root / _PACKAGE).stat().st_mode & 0o777 == 0o555  # ...and sealed again
     assert record["modes_restored"] == []  # opening it was ours, not drift
+    _validate(module, root, commit)
+
+
+# Review of 5321b4372: races, mounts, hard links, deep trees and the guard.
+
+
+def _writable_outside(tmp_path: Path) -> Path:
+    outside = tmp_path / "outside"
+    (outside / "nested").mkdir(parents=True)
+    (outside / "nested" / "keep.txt").write_text("keep", encoding="utf-8")
+    (outside / "file.txt").write_text("file", encoding="utf-8")
+    (outside / "file.txt").chmod(0o666)
+    (outside / "stray.txt").write_text("foreign only if followed", encoding="utf-8")
+    outside.chmod(0o777)
+    return outside
+
+
+def _outside_state(outside: Path) -> tuple:
+    return outside.lstat().st_mode, _snapshot(outside)
+
+
+def test_guard_accepts_a_root_reached_through_a_linked_ancestor(tmp_path, monkeypatch):
+    """The entrypoint passes ``$RUNTIME_ROOT/toolchain`` unresolved; ``/workspace`` may be a link."""
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    workspace = tmp_path / "workspace"
+    workspace.symlink_to(tmp_path, target_is_directory=True)
+    via_link = workspace / "provider_runtime" / "toolchain"
+    cache = root / _PACKAGE / "__pycache__"
+    cache.mkdir()
+
+    assert module.is_run_toolchain_copy(via_link) is True
+    record = _restore(module, via_link, commit, digest)
+
+    assert record["status"] == "restored" and not cache.exists()
+    _validate(module, root, commit)
+
+
+def test_guard_never_accepts_a_linked_root_a_missing_bundle_manifest_or_other_code(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    runtime = root.parent
+    assert module.is_run_toolchain_copy(root) is True
+    # The root itself a link (to a real toolchain beside it).
+    real = runtime / "toolchain-real"
+    root.rename(real)
+    root.symlink_to(real, target_is_directory=True)
+    assert module.is_run_toolchain_copy(root) is False
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match="^scene_configuration_toolchain_restore_not_run_copy$"):
+        _restore(module, root, commit, digest)
+    root.unlink()
+    real.rename(root)
+    # No bundle manifest beside it, or one that is not a regular file.
+    bundle = runtime / module._PROVIDER_BUNDLE_MANIFEST
+    bundle.rename(runtime / "elsewhere.json")
+    assert module.is_run_toolchain_copy(root) is False
+    bundle.symlink_to(runtime / "elsewhere.json")
+    assert module.is_run_toolchain_copy(root) is False
+    bundle.unlink()
+    (runtime / "elsewhere.json").rename(bundle)
+    assert module.is_run_toolchain_copy(root) is True
+    # This package imported from somewhere else (the release checkout).
+    monkeypatch.setattr(module, "_loaded_runtime_root", lambda: tmp_path / "release" / "src")
+    assert module.is_run_toolchain_copy(root) is False
+
+
+def test_a_link_at_a_kept_file_name_changes_nothing_outside(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    outside = _writable_outside(tmp_path)
+    sealed = root / _PACKAGE / "run"
+    sealed.unlink()
+    sealed.symlink_to(outside / "file.txt")
+    before = _outside_state(outside)
+
+    _restore(module, root, commit, digest)
+
+    assert _outside_state(outside) == before and sealed.is_symlink()
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_symlink_forbidden:{_PACKAGE}/run$"):
+        _validate(module, root, commit)
+
+
+def test_a_link_at_a_kept_directory_name_changes_nothing_outside(tmp_path, monkeypatch):
+    import shutil
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    outside = _writable_outside(tmp_path)
+    stages = root / "stages"
+    stages.chmod(0o755)
+    shutil.rmtree(stages)
+    stages.symlink_to(outside, target_is_directory=True)
+    before = _outside_state(outside)
+
+    _restore(module, root, commit, digest)
+
+    assert _outside_state(outside) == before
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match="^scene_configuration_toolchain_symlink_forbidden:stages$"):
+        _validate(module, root, commit)
+
+
+def test_a_sealed_name_hard_linked_elsewhere_keeps_its_mode_and_is_refused(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sealed = root / _PACKAGE / "run"
+    victim = outside / "victim"
+    victim.write_bytes(sealed.read_bytes())
+    victim.chmod(0o775)
+    sealed.unlink()
+    os_link(victim, sealed)
+
+    record = _restore(module, root, commit, digest)
+
+    assert record["left"] == [{"relative_path": f"{_PACKAGE}/run", "reason": "hard_linked"}]
+    assert record["modes_restored"] == []
+    assert victim.stat().st_mode & 0o777 == 0o775
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_file_invalid:{_PACKAGE}/run$"):
+        _validate(module, root, commit)
+
+
+def test_sealed_files_linked_into_a_private_tree_still_pass(tmp_path, monkeypatch):
+    """``private_blender`` hard-links sealed files after the stage-3 check; stage 5 must still run."""
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    private = tmp_path / "packaged_blender"
+    private.mkdir()
+    sealed = root / _PACKAGE / "run"
+    os_link(sealed, private / "run")
+    cache = root / _PACKAGE / "__pycache__"
+    cache.mkdir()
+
+    record = _restore(module, root, commit, digest)
+
+    assert record["status"] == "restored" and record["left"] == []
+    assert (private / "run").stat().st_ino == sealed.stat().st_ino
+    _validate(module, root, commit)
+
+
+def os_link(source: Path, target: Path) -> None:
+    import os
+
+    os.link(source, target)
+
+
+def test_a_parent_swapped_for_a_link_mid_restore_never_reaches_outside(tmp_path, monkeypatch):
+    """Review probe P10: every action is relative to a handle, so a swapped parent is not followed."""
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    mirror = outside / Path(_PACKAGE).relative_to("components")
+    mirror.mkdir(parents=True)
+    (mirror / "planted.txt").write_text("OUTSIDE - must survive", encoding="utf-8")
+    (root / _PACKAGE / "planted.txt").write_text("foreign", encoding="utf-8")
+    real_entries = module._entries
+    swapped = []
+
+    def entries(handle):
+        rows = real_entries(handle)
+        if not swapped and any(name == "planted.txt" for name, _info in rows):
+            swapped.append(1)
+            # Between listing and acting: put a link where `components` was.
+            root.chmod(0o755)
+            (root / "components").rename(root / "components-moved")
+            (root / "components").symlink_to(outside, target_is_directory=True)
+        return rows
+
+    monkeypatch.setattr(module, "_entries", entries)
+
+    _restore(module, root, commit, digest)
+
+    assert swapped and (mirror / "planted.txt").read_text() == "OUTSIDE - must survive"
+    # The removal went to the handle it held: the real, moved directory.
+    assert not (root / "components-moved" / Path(_PACKAGE).relative_to("components") / "planted.txt").exists()
+
+
+def test_an_entry_on_another_filesystem_is_left_alone(tmp_path, monkeypatch):
+    """Review probe P12 without mount rights: an entry whose device differs is never touched."""
+    import os
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    mounted = root / "stages" / "mnt"
+    mounted.mkdir()
+    (mounted / "data.txt").write_text("other filesystem", encoding="utf-8")
+    real_entries = module._entries
+
+    def entries(handle):
+        rows = []
+        for name, info in real_entries(handle):
+            if name == "mnt":
+                values = list(info)
+                values[2] = info.st_dev + 1  # st_dev
+                info = os.stat_result(values)
+            rows.append((name, info))
+        return rows
+
+    monkeypatch.setattr(module, "_entries", entries)
+
+    record = _restore(module, root, commit, digest)
+
+    assert record["left"] == [{"relative_path": "stages/mnt", "reason": "other_filesystem"}]
+    assert (mounted / "data.txt").read_text() == "other filesystem"
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match="^scene_configuration_toolchain_not_read_only:stages/mnt$"):
+        _validate(module, root, commit)
+
+
+def test_a_real_mount_inside_the_tree_is_left_alone(tmp_path, monkeypatch):
+    """Review probe P12. Needs mount rights; skipped where the machine has none."""
+    import subprocess
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    source = tmp_path / "mounted-source"
+    source.mkdir()
+    (source / "data.txt").write_text("other filesystem", encoding="utf-8")
+    mounted = root / "stages" / "mnt"
+    mounted.mkdir()
+    bound = subprocess.run(["mount", "--bind", str(source), str(mounted)], capture_output=True, text=True)
+    if bound.returncode != 0:
+        pytest.skip("no mount rights here: " + bound.stderr.strip()[:200])
+    try:
+        record = _restore(module, root, commit, digest)
+        assert (source / "data.txt").read_text() == "other filesystem"
+        # A bind mount keeps the device number; the mount table still names it.
+        assert record["left"] == [{"relative_path": "stages/mnt", "reason": "other_filesystem"}]
+        assert record["removed"] == []
+    finally:
+        subprocess.run(["umount", str(mounted)], capture_output=True)
+
+
+def test_a_very_deep_planted_tree_is_removed_without_recursion(tmp_path, monkeypatch):
+    """Review probe P7: 3000 levels raised RecursionError out of rmtree."""
+    import os
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _PACKAGE / "__pycache__"
+    base.mkdir()
+    here = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for _ in range(3000):
+            os.mkdir("d", dir_fd=here)
+            child = os.open("d", os.O_RDONLY | os.O_DIRECTORY, dir_fd=here)
+            os.close(here)
+            here = child
+    finally:
+        os.close(here)
+
+    record = _restore(module, root, commit, digest)
+
+    assert record["removed"] == [{"relative_path": f"{_PACKAGE}/__pycache__", "kind": "directory",
+                                  "contained_entries": 3000}]
+    assert not base.exists()
     _validate(module, root, commit)

@@ -336,23 +336,25 @@ def _restore_run_toolchain(toolchain_root: Path, production_input: Mapping[str, 
     A stage-3 process running as container root can create entries in the
     run's unpacked toolchain, and the full check below would then end a paid
     job over sealed files nobody changed. Only the run's own copy is touched
-    (``is_run_toolchain_copy``). Whatever happens here, the full byte check
-    that follows still decides: a changed, resized or missing sealed file is
+    (``is_run_toolchain_copy``). Whatever happens here, including an exception
+    such as running out of handles in a very deep planted tree, the full byte
+    check that follows still decides: a changed, resized or missing sealed file is
     refused by name. The line goes to stderr, which the stage producer
     retains as ``stage_producer.log`` on success and failure alike.
     """
 
-    if not is_run_toolchain_copy(toolchain_root):
-        return
     try:
+        if not is_run_toolchain_copy(toolchain_root):
+            return
         record = restore_run_toolchain_copy(
             root=toolchain_root,
             expected_source_commit=str(production_input["source_commit"]),
             expected_toolchain_digest=str(production_input["toolchain_digest"]),
         )
-    except (OSError, TaskEvaluationSceneConfigurationStageProducerError) as exc:
+    except Exception as exc:  # noqa: BLE001 - any failure here leaves the decision to the full check
         detail = redacted_failure_text(f"{type(exc).__name__}:{exc}")[:1000]
-        print(f"{TOOLCHAIN_RESTORE_FAILED_MARKER} " + canonical_json({"error": detail}),
+        print(f"{TOOLCHAIN_RESTORE_FAILED_MARKER} "
+              + canonical_json({"error_type": type(exc).__name__, "error": detail}),
               file=sys.stderr, flush=True)
         return
     if record["status"] == "restored":
@@ -399,7 +401,11 @@ def execute_stage_tool(
         )
     )
     toolchain_root = _required_path(values, TOOLCHAIN_ROOT_ENV)
-    _restore_run_toolchain(toolchain_root, production_input)
+    # The guard needs the path as given: resolving it would hide a root that
+    # is itself a link.
+    _restore_run_toolchain(
+        Path(str(values[TOOLCHAIN_ROOT_ENV]).strip()).expanduser(), production_input
+    )
     manifest, _entrypoints = _validate_toolchain(
         root=toolchain_root,
         expected_source_commit=str(production_input["source_commit"]),
