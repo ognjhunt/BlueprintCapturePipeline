@@ -169,3 +169,20 @@ def test_447s_area_passes_the_sealer_with_the_size_tolerance():
     admit = _sealer(SUBJECT_MIN, SUBJECT_MAX, SUPPORT_MIN, SUPPORT_MAX)
     sealed, choice = _choose(admit=admit)
     assert choice["basis"] == NAMED_REGION and admit(sealed) and sealed["radius_m"] >= 0.05
+
+
+@pytest.mark.parametrize("narrow_axes", [(1,), (0, 1)])
+def test_a_place_narrower_than_the_object_never_gets_a_disc_past_its_edges(narrow_axes):
+    """Review 2026-11-12: on an axis where the place is narrower than the object, the disc reached half the
+    object past the place's centre line (a 40 cm object, a 20 x 20 cm place: a 20 cm disc). It now reaches
+    only to the place's own edges; a place under the 5 cm disc keeps the 5 cm disc, recorded as such."""
+    region_min = [0.4, -0.1] if narrow_axes == (1,) else [0.6, -0.1]
+    region_max = [1.4, 0.1] if narrow_axes == (1,) else [0.8, 0.1]
+    area = area_for_region(region_min=region_min, region_max=region_max, support_min=[-2.0, -2.0],
+                           support_max=[2.0, 2.0], subject_min=[-1.0, -0.2], subject_max=[-0.6, 0.2])
+    centre, radius = area["centre_xy"], area["radius_m"]
+    reach = min(min(centre[i] - region_min[i], region_max[i] - centre[i]) for i in (0, 1))
+    assert radius <= max(reach, 0.05) + 1e-12 and radius == pytest.approx(0.10)
+    tiny = area_for_region(region_min=[0.6, -0.02], region_max=[0.64, 0.02], support_min=[-2.0, -2.0],
+                           support_max=[2.0, 2.0], subject_min=[-1.0, -0.2], subject_max=[-0.6, 0.2])
+    assert tiny["radius_m"] == 0.05 and tiny["radius_derivation"]["limited_by"] == "smallest_area"

@@ -1038,6 +1038,20 @@ def _unplaceable_part_estimate(code: str, configuration: Mapping[str, Any]) -> s
     return part if part is not None and any(row.get("part_id") == part for row in rows) else None
 
 
+def _sealer_admits(*, support, subject_min, subject_max, registration, size_tolerance, outline):
+    """The sealer's own admission of a sealed destination, run at preparation ($0)."""
+    def admitted(sealed: Mapping[str, Any]) -> bool:
+        try:
+            admit_surface_target(destination=sealed, support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), support)),
+                subject_min=subject_min, subject_max=subject_max, development_support=False,
+                placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
+                relative_error=size_tolerance, support_outline=outline)
+        except ValueError:
+            return False
+        return True
+    return admitted
+
+
 def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                                       removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                       base_scene: Mapping[str, Any], output_root: Path, spend: Mapping[str, Any],
@@ -1449,16 +1463,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             # The place the sentence names is where the object goes, and the area scored and marked
             # (``website_destination_area``); a harness relocation never moves it away again.
             from .website_destination_area import NAMED_REGION, choose_destination
-            def admitted(sealed: Mapping[str, Any]) -> bool:
-                # The sealer's own admission, run at preparation ($0), exactly as below.
-                try:
-                    admit_surface_target(destination=sealed, support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), sim_support)),
-                        subject_min=sim_min, subject_max=sim_max, development_support=False,
-                        placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
-                        relative_error=size_tolerance, support_outline=region_outline)
-                except ValueError:
-                    return False
-                return True
+            admitted = _sealer_admits(support=sim_support, subject_min=sim_min, subject_max=sim_max,
+                                      registration=registration, size_tolerance=size_tolerance, outline=region_outline)
             destination, destination_choice = choose_destination(
                 destination=destination, subject_min=sim_min, subject_max=sim_max, support_min=sim_support[0],
                 support_max=sim_support[1], region=region_record, relocation=relocation, admit=admitted,
@@ -1517,8 +1523,14 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 destination=destination, subject_min=sim_min, subject_max=sim_max, support_min=sim_support[0],
                 support_max=sim_support[1], region=None, relocation=relocation)
             from .website_destination_choice import SITE_CHOICE, settle_place  # the places offered; the site's pick
+            # The places offered here are checked as on the named path: on the surface and admitted by the sealer.
+            surface = None if outline is None else outline.in_frame(runtime_to_sim)
             destination, destination_choice = settle_place(output_root, destination, destination_choice,
-                                                           subject_min=sim_min, subject_max=sim_max, support=sim_support)
+                subject_min=sim_min, subject_max=sim_max, support=sim_support,
+                holds=None if surface is None else (
+                    lambda centre, radius: surface.holds(centre, radius, tolerance=REGION_EDGE_ROUNDING_M)),
+                admit=_sealer_admits(support=sim_support, subject_min=sim_min, subject_max=sim_max,
+                                     registration=registration, size_tolerance=size_tolerance, outline=surface))
             relocation = None if destination_choice["basis"] == SITE_CHOICE else relocation
     else:
         blockers.append("task_destination_pose_required")

@@ -288,3 +288,30 @@ def test_a_replaced_question_takes_its_picture_with_it(tmp_path):
     folder = pipeline / choice.QUESTION_DIR
     assert not (folder / place.PICTURE_FILE).exists() and not (folder / place.PICTURE_RECORD).exists()
     assert place.read_place_question(pipeline) is None
+
+
+def test_with_the_sealer_handed_in_no_place_offered_is_refused_at_sealing(tmp_path):
+    """Review 2026-11-12: a 4 cm object on a support from -1 to 1 m was offered end places at +-0.98 m with a
+    5 cm disc, partly off the support; the sealer refuses them. With its admission handed in, none is offered."""
+    from blueprint_pipeline.website_surface_target_admission import admit_surface_target
+    subject_min, subject_max, support = [-0.02, -0.02, 0.8], [0.02, 0.02, 0.84], ([-1.0, -0.3, 0.75], [1.0, 0.3, 0.8])
+    def seals(destination):
+        try:
+            admit_surface_target(destination=destination, support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), support)),
+                                 subject_min=subject_min, subject_max=subject_max, placement_uncertainty_m=None,
+                                 development_support=False)
+        except ValueError:
+            return False
+        return True
+    destination = {"relation": "on", "visible_label": "table", "mode": "existing_support_surface",
+                   "position_world_m": [0.5, 0.0, 0.8], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    record = {"basis": "start_surface_farthest_spot", "position_world_m": [0.5, 0.0, 0.8], "area_radius_m": 0.05,
+              "start_centre_world_m": [0.0, 0.0]}
+    pipeline = _pipeline(tmp_path)
+
+    def offered(**extra):
+        _, settled = place.settle_place(pipeline / "website_scene_preparation", destination, record,
+                                        subject_min=subject_min, subject_max=subject_max, support=support, **extra)
+        return [{**destination, "position_world_m": [*row["centre_xy"], 0.8]} for row in settled["candidates"]]
+    assert not all(seals(row) for row in offered())  # the defect: an offered place the sealer refuses
+    assert all(seals(row) for row in offered(admit=seals))
