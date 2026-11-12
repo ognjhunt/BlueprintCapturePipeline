@@ -644,6 +644,7 @@ def served(job, monkeypatch):
     app = FastAPI()
     http.register_website_atlas_preview_routes(app, require_admission=admission)
     monkeypatch.setenv(http.HANDOFF_STORAGE_ROOT_ENV, str(job.capture.parents[4]))
+    monkeypatch.setattr(sim, "_wall_clock", lambda: NOW + 1)  # the route's own clock, beside the pass's NOW
     real = sim.open_company_simulation
     monkeypatch.setattr(sim, "open_company_simulation", lambda **kw: real(**kw, client=bucket, bucket="b"))
     url = f"/api/live-pipeline/website-company-simulations/{CAPTURE}/simulation.zip?request_id={REQUEST}&digest={digest}"
@@ -987,3 +988,192 @@ def test_the_spec_walk_finds_what_the_text_export_finds(tmp_path, monkeypatch, w
     stage.GetRootLayer().Save()
     found = scan._usd_text_finding(path, scan.literal_forms([(REQUEST, "a job id")]))
     assert found is not None and found[0] == "a job id"
+
+
+# --- review fixes (part B): permission that ends, the website's refusal, the route, the pass's budget ------------
+
+UPLOAD = "sha256:" + "ab" * 32
+
+
+def _owned_job(tmp_path, monkeypatch, *, prefix: str = UPLOAD[7:19]) -> Job:
+    """A capture under an older statement, on Blueprint's own list for the upload the scene was made from."""
+    job = Job(tmp_path, version=OLDER)
+    _write(job.capture.joinpath("pipeline", "company_clip", "company_clip.json"), {"upload_sha256": UPLOAD})
+    owned = _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "purpose": "test",
+                                             "captures": [{"capture_id": CAPTURE, "approved_by": "owner",
+                                                           "approved_on": "2026-11-12", "evidence": "test",
+                                                           "video_sha256_prefix": prefix}]})
+    monkeypatch.setattr(sim, "OWNED_CAPTURES_LIST", owned)
+    return job
+
+
+def _at(world: World, seconds: int) -> dict:
+    return sim.publish_company_simulation(world.job.capture, now=lambda: NOW + seconds, check_rights=world.check_rights,
+                                          archive=world.archive, retract=world.retract, deliver=world.deliver,
+                                          queue_root=world.job.queue)
+
+
+def _read_route(job: Job, world: World, *, now: float, storage_root: Path | None = None, digest: str | None = None):
+    try:
+        return sim.open_company_simulation(request_id=REQUEST, capture_id=CAPTURE,
+                                           digest=digest or _manifest(job)["archive"]["digest"],
+                                           storage_root=job.capture.parents[4] if storage_root is None else storage_root,
+                                           client=_Bucket(world.objects), bucket="b", now=now)[1]
+    except sim.CompanySimulationUnavailable:
+        return "unavailable"
+
+
+@pytest.mark.parametrize("later", [60, 7 * 3600, 30 * 86400])
+def test_a_capture_taken_off_blueprints_list_loses_its_package_on_the_next_pass_and_route_read(
+        tmp_path, monkeypatch, later):
+    job = _owned_job(tmp_path, monkeypatch)
+    world = World(job, rights={"consent_status": "granted", "consent_revoked": False, "statement_version": OLDER})
+    assert world.publish()["status"] == "published"
+    assert world.delivered[0]["permission_basis"] == "blueprint_owned_capture"
+    assert _read_route(job, world, now=NOW + 1) != "unavailable"
+    _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "purpose": "test", "captures": []})
+    # The route reads the list itself, before any pass.
+    assert _read_route(job, world, now=NOW + later) == "unavailable"
+    assert _at(world, later)["status"] == "not_permitted"
+    assert len(world.retracted) == 1 and _manifest(job)["archive"]["retracted"] is True
+
+
+def test_an_owned_row_for_another_upload_never_shares(tmp_path, monkeypatch):
+    job = _owned_job(tmp_path, monkeypatch, prefix="000000000000")
+    world = World(job, rights={"consent_status": "granted", "consent_revoked": False, "statement_version": OLDER})
+    assert world.publish() == {"status": "not_permitted"} and world.archived == []
+
+
+@pytest.mark.parametrize("later", [60, 7 * 3600, 30 * 86400])
+def test_a_live_revocation_after_publishing_takes_the_package_back(job, later):
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    reads = world.rights_reads
+    world.rights = {"consent_status": "revoked", "consent_revoked": True, "statement_version": SHARED}
+    result = _at(world, later)
+    if later < sim.permission.LIVE_STATEMENT_RECHECK_SECONDS:
+        # Within the window nothing is read: the package stays until the window, or a recheck mark, asks again.
+        assert result["status"] == "current" and world.rights_reads == reads
+        from blueprint_pipeline.permission_recheck import request_recheck
+        assert request_recheck(job.capture, now=NOW + later) == "accepted"
+        result = _at(world, later)
+    assert result == {"status": "refused", "reason": "website_company_simulation_rights_refused"}
+    assert len(world.retracted) == 1 and _read_route(job, world, now=NOW + later) == "unavailable"
+
+
+@pytest.mark.parametrize("later", [60, 7 * 3600, 30 * 86400])
+def test_with_no_live_answer_a_grant_is_kept_at_most_the_bound_and_the_route_applies_it(job, later):
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    world.rights = ValueError("website_task_context_http_503")
+    result = _at(world, later)
+    bound = sim.permission.LIVE_GRANT_LIFETIME_SECONDS
+    if later < bound:
+        assert result["status"] == "current" and _read_route(job, world, now=NOW + later) != "unavailable"
+    else:
+        assert result["status"] == "not_permitted" and len(world.retracted) == 1
+    # The route applies the bound by itself, whatever the pass did.
+    assert _read_route(job, world, now=NOW + bound + 1) == "unavailable"
+
+
+def test_a_package_archived_but_not_delivered_is_taken_back_on_a_revoked_answer(job):
+    world = World(job, delivery_error=ValueError("website_control_company-simulation_http_503:x"))
+    assert world.publish()["status"] == "failed" and len(world.archived) == 1
+    world.delivery_error = None
+    world.rights = {"consent_status": "revoked", "consent_revoked": True, "statement_version": SHARED}
+    result = world.publish()
+    assert result == {"status": "refused", "reason": "website_company_simulation_rights_refused"}
+    assert len(world.retracted) == 1 and world.objects == {} and _manifest(job)["archive"]["retracted"] is True
+
+
+def test_a_website_refusal_is_remembered_four_passes_one_upload(job):
+    error = ValueError("website_control_company-simulation_http_409:website_company_simulation_not_permitted")
+    world = World(job, delivery_error=error)
+    statuses = [_at(world, seconds)["status"] for seconds in (0, 60, 120, 180)]
+    assert statuses == ["refused"] * 4 and len(world.archived) == 1 and len(world.retracted) == 1
+
+
+def test_a_recheck_alone_does_not_forget_a_website_refusal_but_changed_rights_or_the_window_do(job):
+    from blueprint_pipeline.permission_recheck import request_recheck
+    error = ValueError("website_control_company-simulation_http_409:website_company_simulation_not_permitted")
+    world = World(job, delivery_error=error)
+    assert _at(world, 0)["status"] == "refused"
+    assert request_recheck(job.capture, now=NOW + 100) == "accepted"
+    reads = world.rights_reads
+    assert _at(world, 120)["status"] == "refused" and len(world.archived) == 1
+    assert world.rights_reads == reads + 1  # the mark made the live read due; the same rights keep the refusal
+    world.delivery_error = None
+    assert _at(world, sim.permission.LIVE_STATEMENT_RECHECK_SECONDS + 1)["status"] == "published"
+    assert len(world.archived) == 2
+
+
+def test_a_new_revision_is_offered_again_after_a_website_refusal(job):
+    error = ValueError("website_control_company-simulation_http_409:website_company_simulation_not_permitted")
+    world = World(job, delivery_error=error)
+    assert _at(world, 0)["status"] == "refused"
+    _stage(job.collision, "Collision", doc="a second compile")
+    job.seal()
+    world.delivery_error = None
+    assert _at(world, 60)["status"] == "published" and len(world.archived) == 2
+
+
+def test_the_route_fails_closed(job):
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    assert _read_route(job, world, now=NOW + 1) != "unavailable"
+    digest = _manifest(job)["archive"]["digest"]
+    try:
+        served = sim.open_company_simulation(request_id=REQUEST, capture_id=CAPTURE, digest=digest, storage_root=None,
+                                             client=_Bucket(world.objects), bucket="b", now=NOW + 1)
+    except sim.CompanySimulationUnavailable:
+        served = "unavailable"
+    assert served == "unavailable"
+    _withdraw(job.capture)
+    import shutil
+    shutil.rmtree(job.capture)  # the workspace is gone; the site's tombstone stays
+    assert world.objects  # the archived object is still stored until withdrawal deletion runs
+    assert _read_route(job, world, now=NOW + 1, digest=digest) == "unavailable"
+    (job.capture.parents[1] / "website_withdrawal/tombstone.json").unlink()
+    # No workspace: nothing to check, so nothing is served.
+    assert _read_route(job, world, now=NOW + 1, digest=digest) == "unavailable"
+
+
+def test_the_pass_stops_between_captures_and_keeps_to_its_budget(tmp_path, monkeypatch):
+    job = Job(tmp_path)
+    calls = []
+    monkeypatch.setattr(sim, "publish_company_simulation", lambda capture, **kw: calls.append(capture)
+                        or {"status": "current"})
+    assert sim.tick(tmp_path / "storage", stop_reason=lambda: "held") == {"deferred": 1, "stopped_held": 1}
+    ticks = iter([0.0, sim.TICK_BUDGET_SECONDS + 1])
+    assert sim.tick(tmp_path / "storage", clock=lambda: next(ticks)) == {"deferred": 1, "stopped_time_budget": 1}
+    assert calls == [] and job.capture.exists()
+    from blueprint_pipeline import website_atlas_preview
+    seen = []
+    monkeypatch.setattr(sim, "tick", lambda root, stop_reason=None: seen.append(stop_reason) or {})
+    website_atlas_preview.company_simulation_tick(tmp_path, stop_reason=lambda: None)
+    assert seen and callable(seen[0])
+
+
+def test_a_build_past_its_deadline_is_recorded_and_tried_again_only_after_the_window(job, monkeypatch):
+    world = World(job)
+    result = sim.publish_company_simulation(job.capture, now=lambda: NOW, check_rights=world.check_rights,
+                                            archive=world.archive, retract=world.retract, deliver=world.deliver,
+                                            queue_root=job.queue, build_seconds=-1)
+    assert result == {"status": "build_timed_out"} and _manifest(job)["refused"] == sim.BUILD_TIMED_OUT
+    monkeypatch.setattr(sim, "build_package", lambda *a, **k: pytest.fail("rebuilt within the window"))
+    assert _at(world, 3600) == {"status": "build_timed_out"}
+    monkeypatch.undo()
+    assert _at(world, sim.permission.LIVE_STATEMENT_RECHECK_SECONDS + 1)["status"] == "published"
+
+
+def test_a_scan_refusal_is_tried_again_after_the_window(job, monkeypatch):
+    job.appearance.unlink()
+    job.appearance = _stage(job.assets / "appearance.usdc", "Appearance", doc=REQUEST, texture="./textures/wood.png")
+    job.seal()
+    world = World(job)
+    assert _at(world, 0)["reason"] == "website_company_simulation_file_names_the_site"
+    calls = []
+    real = sim.build_package
+    monkeypatch.setattr(sim, "build_package", lambda *a, **k: calls.append(1) or real(*a, **k))
+    assert _at(world, 3600)["status"] == "refused" and calls == []
+    assert _at(world, sim.permission.LIVE_STATEMENT_RECHECK_SECONDS + 1)["status"] == "refused" and calls == [1]

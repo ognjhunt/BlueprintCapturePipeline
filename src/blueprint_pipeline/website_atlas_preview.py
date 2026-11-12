@@ -975,7 +975,8 @@ def company_clip_tick(storage_root: Path, stop_reason: Callable[[], str | None] 
         return {"tick_failed": 1}
 
 
-def company_simulation_tick(storage_root: Path) -> dict[str, int]:
+def company_simulation_tick(storage_root: Path, stop_reason: Callable[[], str | None] | None = None
+                            ) -> dict[str, int]:
     """The simulation package deployment companies download (``website_company_simulation``), after the clip.
 
     Local files and ``pxr`` on compiled team scene halves; it pays for nothing and never touches a job. A
@@ -983,7 +984,7 @@ def company_simulation_tick(storage_root: Path) -> dict[str, int]:
     """
     try:
         from .website_company_simulation import tick as publish_company_simulations
-        return publish_company_simulations(storage_root)
+        return publish_company_simulations(storage_root, stop_reason=stop_reason)
     except Exception as error:  # noqa: BLE001 - packages are optional; the Atlas tick has finished
         logger.warning("website_company_simulation_tick_failed type=%s", type(error).__name__)
         return {"tick_failed": 1}
@@ -1019,7 +1020,7 @@ def main(argv: list[str] | None = None) -> int:
     counts.update({"scene_preview_" + key: value for key, value in scene_preview_tick(args.storage_root).items()})
     counts.update({"company_clip_" + key: value for key, value in company_clip_tick(args.storage_root, stop_reason).items()})
     counts.update({"company_simulation_" + key: value
-                   for key, value in company_simulation_tick(args.storage_root).items()})
+                   for key, value in company_simulation_tick(args.storage_root, stop_reason).items()})
     print(json.dumps(counts, sort_keys=True), flush=True)
     return 0
 

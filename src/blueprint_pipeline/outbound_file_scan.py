@@ -32,7 +32,7 @@ import struct
 import tempfile
 import zipfile
 import zlib
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -467,14 +467,17 @@ def _needles(relative: str, literals: Sequence[tuple[bytes, str]], words_only_un
 
 
 def scan_tree(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Path | None = None,
-              words_only_under: str | None = None) -> list[Finding]:
+              words_only_under: str | None = None, before_each: Callable[[], None] | None = None) -> list[Finding]:
     """Every file under ``root`` in name order, at most one finding per file.
 
-    ``words_only_under``: look for the site's own words only in files under this prefix.
+    ``words_only_under``: look for the site's own words only in files under this prefix. ``before_each`` is
+    called before each file (a caller's deadline check, which may raise).
     """
     root = Path(root)
     findings = []
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        if before_each is not None:
+            before_each()
         relative = path.relative_to(root).as_posix()
         finding = scan_file(path, relative, _needles(relative, literals, words_only_under), scratch)
         if finding:

@@ -51,6 +51,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import company_share_permission as permission
 from . import website_company_clip as clip
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
@@ -78,6 +79,13 @@ CONTENT_TYPE = "application/zip"
 MAX_PACKAGE_BYTES = 512 * 1024 * 1024
 BUILDER_REVISION = "website_company_simulation_builder.v1"
 OVER_CAP = "website_company_simulation_over_size_cap"
+BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
+#: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in
+#: well under this; one that does not is recorded and tried again after the live-statement window.
+BUILD_DEADLINE_SECONDS = 900
+#: The pass starts no capture after this. It runs after the company clip's pass (up to 900 s, plus one encode of
+#: at most 900 s) in the same unit, whose start timeout is 2 h: 600 s plus one build keeps both well inside it.
+TICK_BUDGET_SECONDS = 600
 QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
 DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/team-scene-packets"
 PACKET_DIRECTORIES = ("native-task-packet", "native-task-packet-three-view")
@@ -118,11 +126,11 @@ def package_filename(capture_id: str, request_id: str) -> str:
 
 
 def _read(path: Path) -> dict[str, Any]:
-    return clip._read(Path(path))
+    return permission.read_json(Path(path))
 
 
 def _sha256_file(path: Path) -> str:
-    return clip._sha256_file(Path(path))
+    return permission.sha256_file(Path(path))
 
 
 # --- where the job's simulation is -------------------------------------------------------------------------------
@@ -150,7 +158,7 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
     None too, and is tried again on the next pass.
     """
     root, queue = Path(capture_root), Path(queue_root or _queue_root())
-    identity = clip._identity(root)
+    identity = permission.capture_identity(root)
     statuses = []
     try:
         candidates = sorted((queue / "status").glob("*.json"))
@@ -256,7 +264,7 @@ def _walk_values(value: Any, keys: frozenset[str]) -> Iterator[str]:
 def secret_literals(capture_root: Path, source: Mapping[str, Any]) -> list[tuple[str, str]]:
     """The job's own ids, account ids and keys, each with the kind printed in a finding (never the value)."""
     root = Path(capture_root)
-    identity = clip._identity(root)
+    identity = permission.capture_identity(root)
     status = source.get("status") or {}
     records = [_read(root / name) for name in (
         "capture_descriptor.json", "raw/manifest.json", "raw/capture_upload_complete.json",
@@ -553,11 +561,16 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
 
 
 def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tuple[str, str]],
-                  words: list[tuple[bytes, str]] | None = None, max_bytes: int = MAX_PACKAGE_BYTES) -> dict[str, Any]:
+                  words: list[tuple[bytes, str]] | None = None, max_bytes: int = MAX_PACKAGE_BYTES,
+                  deadline: float | None = None) -> dict[str, Any]:
     """Stage, rewrite, compose, scan and zip the package to ``output``; ``PackageRefused`` or ``OVER_CAP`` otherwise.
 
     It holds no lock: every file it writes is its own (a staging folder and a partial zip named for this build).
+    ``deadline`` (a ``time.monotonic`` value) is checked between steps and files: past it, ``BUILD_TIMED_OUT``.
     """
+    def on_time() -> None:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ValueError(BUILD_TIMED_OUT)
     import tempfile
 
     from .outbound_file_scan import literal_forms, scan_tree
@@ -578,6 +591,7 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
         units: dict[str, tuple[str | None, float | None]] = {}
         rows = []
         for prim, row in source["files"].items():
+            on_time()
             if _sha256_file(row["path"]) != row["sha256"]:
                 raise PackageRefused("website_company_simulation_source_changed", row["role"])
             relative = row["placement"]["name"] + row["suffix"]
@@ -593,8 +607,10 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
                                                    encoding="utf-8")
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
         (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units), encoding="utf-8")
+        on_time()
         _resolves_inside(staging)
-        findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch)
+        findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch, before_each=on_time)
+        on_time()
         if findings:
             raise PackageRefused("website_company_simulation_file_names_the_site", findings[0].sentence())
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
@@ -687,7 +703,7 @@ def _current(manifest: Mapping[str, Any], revision: str, package: Path) -> bool:
     built, archive = manifest.get("package") or {}, manifest.get("archive") or {}
     return (manifest.get("schema_version") == MANIFEST_SCHEMA and manifest.get("simulation_revision") == revision
             and not package.is_symlink() and package.is_file() and package.stat().st_size == built.get("size_bytes")
-            and archive.get("digest") == built.get("digest") and not clip._hidden(archive)
+            and archive.get("digest") == built.get("digest") and not permission.hidden(archive)
             and (manifest.get("delivered") or {}).get("simulation_digest") == manifest.get("simulation_digest"))
 
 
@@ -697,61 +713,91 @@ def _take_back_if_archived(root: Path, manifest_path: Path, retract: Callable[[s
     with package_lock(root):
         manifest = _read(manifest_path)
         if manifest:
-            clip._take_back(manifest, manifest_path, retract)
+            permission.take_back(manifest, manifest_path, retract)
 
 
-def _record_statement_check(root: Path, now: float, error: BaseException) -> None:
-    """Shared with the clip: a capture its files do not permit is read live once a window, for both."""
-    directory = root.joinpath(*clip.DIRECTORY)
-    if directory.parent.is_dir() and not directory.parent.is_symlink():
-        directory.mkdir(mode=0o750, exist_ok=True)
-        write_json(directory / clip.STATEMENT_CHECK_FILE, {"checked_at_epoch": int(now), "outcome": clip._reason(error)})
+#: Read at call time, so a test can point it at a temporary list (the clip's own setting when unset).
+OWNED_CAPTURES_LIST: Path | None = None
+
+
+def _owned_list() -> Path | None:
+    return OWNED_CAPTURES_LIST if OWNED_CAPTURES_LIST is not None else clip.OWNED_CAPTURES_LIST
+
+
+def upload_sha256(capture_root: Path) -> str | None:
+    """The digest of the upload the scene was built from, which Blueprint's own list names by prefix: the
+    original normalization recorded, else the one the company clip recorded for the raw upload."""
+    recorded = clip.recorded_video_sha256(capture_root)
+    if recorded:
+        return recorded
+    value = _read(Path(capture_root).joinpath(*clip.DIRECTORY) / clip.MANIFEST_FILE).get("upload_sha256")
+    return value if isinstance(value, str) and _DIGEST.fullmatch(value) else None
 
 
 def publish_company_simulation(capture_root: Path, *, now: Callable[[], float] = time.time,
-                               check_rights: Callable[[Mapping[str, str]], Mapping[str, Any]] = clip._live_rights,
+                               check_rights: Callable[[Mapping[str, str]], Mapping[str, Any]] = permission.live_rights,
                                archive: Callable[..., dict[str, Any]] = _archive,
-                               retract: Callable[[str], None] = clip._retract,
+                               retract: Callable[[str], None] = permission.retract_object,
                                deliver: Callable[..., None] = _deliver, queue_root: Path | None = None,
-                               max_bytes: int = MAX_PACKAGE_BYTES) -> dict[str, Any]:
-    """One idempotent pass for one capture: make, archive and deliver what is not yet current.
+                               max_bytes: int = MAX_PACKAGE_BYTES,
+                               build_seconds: float = BUILD_DEADLINE_SECONDS) -> dict[str, Any]:
+    """One idempotent pass for one capture: make, archive and deliver what is not yet current, and take back
+    what may no longer be shared (``company_share_permission``, shared with the company clip).
 
-    Returns ``{"status": ...}``: ``current``, ``published``, ``not_permitted``, ``no_source`` (no compiled
-    simulation yet), ``over_size_cap``, ``withdrawn``, ``refused`` (rights, the takedown gate, or the package may
-    not leave, with a reason), ``busy`` or ``failed`` (retried by the next pass). It never raises.
+    Returns ``{"status": ...}``: ``current``, ``published``, ``not_permitted`` (no basis; any archived copy is
+    taken back), ``no_source`` (no compiled simulation yet), ``over_size_cap``, ``build_timed_out`` (tried again
+    after the window), ``withdrawn``, ``refused`` (rights, the takedown gate, the website, or the package may not
+    leave, with a reason), ``busy`` or ``failed`` (retried by the next pass). It never raises.
     """
     try:
-        return _publish(Path(capture_root), now, check_rights, archive, retract, deliver, queue_root, max_bytes)
+        return _publish(Path(capture_root), now, check_rights, archive, retract, deliver, queue_root, max_bytes,
+                        build_seconds)
     except CompanySimulationBusy:
         return {"status": "busy"}
     except Exception as error:  # noqa: BLE001 - one capture never stops a pass; retried next time
         logger.warning("website_company_simulation_failed capture=%s type=%s", Path(capture_root).name,
                        type(error).__name__)
-        return {"status": "failed", "reason": clip._reason(error)}
+        return {"status": "failed", "reason": _own_reason(error)}
 
 
-def _own_reason(error: BaseException) -> str:
-    """The reason in the simulation's own name: the clip's shared rights checks speak in the clip's."""
-    reason = clip._reason(error)
+def _own_reason(error: BaseException | str) -> str:
+    """The reason in the simulation's own name: the shared rights checks speak in the clip's."""
+    reason = error if isinstance(error, str) else permission.reason_code(error)
     return "website_company_simulation_" + reason.removeprefix("website_company_clip_") \
         if reason.startswith("website_company_clip_") else reason
 
 
-def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max_bytes):
-    identity = clip._identity(root)
+def _own(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if result is not None and isinstance(result.get("reason"), str):
+        result = {**result, "reason": _own_reason(result["reason"])}
+    return result
+
+
+def _refused_live(check, manifest, manifest_path, retract):
+    return _own(permission.refused_live(check, manifest, manifest_path, retract,
+                                        unanswered="website_company_simulation_rights_unanswered"))
+
+
+#: Build outcomes recorded for a revision and tried again only after the window, not every pass.
+_RETRIED_AFTER_WINDOW = re.compile(r"website_company_simulation_[a-z_]+")
+
+
+def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max_bytes, build_seconds):
+    identity = permission.capture_identity(root)
     directory = root.joinpath(*DIRECTORY)
     manifest_path, package_path = directory / MANIFEST_FILE, directory / PACKAGE_FILE
-    if clip._retraction_pending(_read(manifest_path)):
+    owned_list = _owned_list()
+    if permission.retraction_pending(_read(manifest_path)):
         with package_lock(root):
             manifest = _read(manifest_path)
-            if clip._retraction_pending(manifest) and not clip._take_back(manifest, manifest_path, retract):
+            if permission.retraction_pending(manifest) and not permission.take_back(manifest, manifest_path, retract):
                 return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
     if capture_withdrawn(root):
         return {"status": "withdrawn"}
-    if not clip.delivery_gate_allows(root):
+    if not permission.delivery_gate_allows(root, surface="website_company_simulation"):
         _take_back_if_archived(root, manifest_path, retract)
         return {"status": "refused", "reason": "website_company_simulation_takedown_gate_closed"}
-    if not clip._may_be_permitted(root, identity, now()):
+    if not permission.may_be_permitted(root, identity, now(), owned_list):
         _take_back_if_archived(root, manifest_path, retract)
         return {"status": "not_permitted"}
     if simulation_source(root, queue_root=queue_root) is None:
@@ -764,131 +810,195 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             return {"status": "no_source"}
         revision = simulation_revision(source, max_bytes=max_bytes)
         manifest = _read(manifest_path)
+        upload = upload_sha256(root)
+        owned = permission.owned_basis_holds(identity["capture_id"], upload, owned_list)
+        check = permission.read_check(root)
         if _current(manifest, revision, package_path):
-            return {"status": "current", "simulation_revision": revision}
-        if manifest.get("simulation_revision") == revision and manifest.get("refused") == OVER_CAP:
-            return {"status": "over_size_cap"}
-        if manifest.get("simulation_revision") == revision and isinstance(manifest.get("refused"), str):
-            return {"status": "refused", "reason": manifest["refused"]}
-        try:
-            basis = clip.permission_from_rights(root, check_rights(identity), identity)
-        except Exception as error:  # noqa: BLE001 - any doubt about rights is a refusal
-            _record_statement_check(root, now(), error)
-            if str(error) != clip._NOT_PERMITTED:
-                return {"status": "refused", "reason": _own_reason(error)}
-            if manifest:
-                clip._take_back(manifest, manifest_path, retract)
+            # A published package keeps its basis or goes: Blueprint's list every pass, the live rights at least
+            # once a window (and at once after a recheck mark). A definite "no" takes it back on this pass.
+            if permission.live_due(check, now(), root):
+                check = permission.record_live(root, identity, check_rights, now())
+                if check["outcome"] == "rights_refused":
+                    return _refused_live(check, manifest, manifest_path, retract)
+            basis = (manifest.get("permission") or {}).get("permission_basis")
+            if ((basis == "blueprint_owned_capture" and owned)
+                    or (basis == "site_sharing_statement" and permission.live_grant_holds(check, now()))):
+                return {"status": "current", "simulation_revision": revision}
+            permission.take_back(manifest, manifest_path, retract)
             return {"status": "not_permitted"}
+        refused, refused_at = manifest.get("refused"), manifest.get("refused_at_epoch")
+        if manifest.get("simulation_revision") == revision and refused == OVER_CAP:
+            return {"status": "over_size_cap"}
+        if (manifest.get("simulation_revision") == revision and isinstance(refused, str)
+                and isinstance(refused_at, int) and _RETRIED_AFTER_WINDOW.fullmatch(refused)
+                and 0 <= now() - refused_at < permission.LIVE_STATEMENT_RECHECK_SECONDS):
+            return ({"status": "build_timed_out"} if refused == BUILD_TIMED_OUT
+                    else {"status": "refused", "reason": refused})
+        # A definite "no" from this window's live read stands until the window passes: no request every pass.
+        if (not owned and not permission.live_due(check, now(), root)
+                and check.get("outcome") in ("not_sharing", "rights_refused")):
+            if manifest:
+                permission.take_back(manifest, manifest_path, retract)
+            return ({"status": "not_permitted"} if check["outcome"] == "not_sharing"
+                    else {"status": "refused", "reason": _own_reason(check.get("reason") or permission.RIGHTS_REFUSED)})
+        # A build or a delivery: always on a fresh live answer, recorded whatever it says.
+        check = permission.record_live(root, identity, check_rights, now())
+        stopped = _refused_live(check, manifest, manifest_path, retract)
+        if stopped is not None:
+            return stopped
+        basis = permission.decided_basis(check, owned)
+        if basis is None:
+            if manifest:
+                permission.take_back(manifest, manifest_path, retract)
+            return {"status": "not_permitted"}
+        # The website refused this package: nothing is uploaded again until the live rights differ from those at
+        # the refusal, the window passes or a new revision arrives. A recheck only makes the live read due.
+        memory = manifest.get("refused_by_webapp")
+        if (isinstance(memory, Mapping) and memory.get("simulation_revision") == revision
+                and memory.get("rights_fingerprint") == check.get("rights_fingerprint")
+                and isinstance(memory.get("at_epoch"), int)
+                and 0 <= now() - memory["at_epoch"] < permission.LIVE_STATEMENT_RECHECK_SECONDS):
+            return {"status": "refused", "reason": str(memory.get("reason"))}
         built = manifest.get("package") or {}
         needs_build = (manifest.get("simulation_revision") != revision or package_path.is_symlink()
                        or not package_path.is_file() or _sha256_file(package_path) != built.get("digest"))
-        if needs_build and manifest.get("archive") and not clip._take_back(manifest, manifest_path, retract):
+        if needs_build and manifest.get("archive") and not permission.take_back(manifest, manifest_path, retract):
             return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
     base = {"schema_version": MANIFEST_SCHEMA, **identity, "simulation_revision": revision,
             "source": {"plan_digest": source.get("plan_digest"),
                        "files": {prim: row["sha256"] for prim, row in sorted(source["files"].items())}},
-            "permission": basis, "built_at_epoch": int(now()), "archive": None, "delivered": None}
+            "upload_sha256": upload, "permission": basis, "built_at_epoch": int(now()), "archive": None,
+            "delivered": None}
     candidate, outcome = directory / f".candidate-{revision[7:23]}.zip", None
     if needs_build:
         try:
             built = build_package(source, candidate, literals=secret_literals(root, source),
-                                  words=capture_site_words(root), max_bytes=max_bytes)
+                                  words=capture_site_words(root), max_bytes=max_bytes,
+                                  deadline=time.monotonic() + build_seconds)
         except PackageRefused as error:
-            outcome = {**base, "package": None, "refused": error.reason, "detail": error.detail}
+            outcome = {**base, "package": None, "refused": error.reason, "detail": error.detail,
+                       "refused_at_epoch": int(now())}
         except ValueError as error:
-            if str(error) != OVER_CAP:
+            if str(error) not in (OVER_CAP, BUILD_TIMED_OUT):
                 candidate.unlink(missing_ok=True)
                 raise
-            outcome = {**base, "package": None, "refused": OVER_CAP}
+            outcome = {**base, "package": None, "refused": str(error), "refused_at_epoch": int(now())}
     try:
         with package_lock(root):
             if capture_withdrawn(root):
                 return {"status": "withdrawn"}
             if needs_build:
                 fresh = simulation_source(root, queue_root=queue_root)
-                if fresh is None or simulation_revision(fresh, max_bytes=max_bytes) != revision \
-                        or _read(manifest_path).get("simulation_revision") not in (None, revision, manifest.get(
-                            "simulation_revision")):
+                if fresh is None or simulation_revision(fresh, max_bytes=max_bytes) != revision:
                     return {"status": "failed", "reason": "website_company_simulation_changed_during_build"}
                 if outcome is not None:
                     package_path.unlink(missing_ok=True)
                     write_json(manifest_path, outcome)
+                    logger.warning("website_company_simulation_not_built capture=%s reason=%s",
+                                   identity["capture_id"], outcome["refused"])
                     if outcome["refused"] == OVER_CAP:
-                        logger.warning("website_company_simulation_over_size_cap capture=%s", identity["capture_id"])
                         return {"status": "over_size_cap"}
-                    logger.warning("website_company_simulation_refused capture=%s reason=%s", identity["capture_id"],
-                                   outcome["refused"])
+                    if outcome["refused"] == BUILD_TIMED_OUT:
+                        return {"status": "build_timed_out"}
                     return {"status": "refused", "reason": outcome["refused"], "detail": outcome["detail"]}
                 os.replace(candidate, package_path)
-                manifest = {**base, "package": {**built, "path": PACKAGE_FILE}}
-            return _publish_built(root, identity, manifest, manifest_path, package_path, basis, built, revision,
-                                  now, archive, retract, deliver)
+                manifest = {**base, "package": {**built, "path": PACKAGE_FILE},
+                            **({"refused_by_webapp": manifest["refused_by_webapp"]}
+                               if isinstance(manifest.get("refused_by_webapp"), Mapping) else {})}
+            return _publish_built(root, identity, manifest, manifest_path, package_path, basis, upload, built,
+                                  revision, check, now, archive, retract, deliver)
     finally:
         candidate.unlink(missing_ok=True)
 
 
-def _publish_built(root, identity, manifest, manifest_path, package_path, basis, built, revision, now, archive,
-                   retract, deliver):
-    manifest["permission"] = basis
+def _publish_built(root, identity, manifest, manifest_path, package_path, basis, upload, built, revision, check,
+                   now, archive, retract, deliver):
+    manifest["permission"], manifest["upload_sha256"] = basis, upload
     record = package_record(identity=identity, manifest=manifest)
     manifest["simulation_digest"] = record["simulation_digest"]
     write_json(manifest_path, manifest)
     stored = manifest.get("archive") or {}
-    if stored.get("digest") != built["digest"] or clip._hidden(stored):
+    if stored.get("digest") != built["digest"] or permission.hidden(stored):
         manifest["archive"] = archive(package_path, identity=identity)
         if manifest["archive"]["digest"] != built["digest"]:
             raise ValueError("website_company_simulation_archive_mismatch")
         write_json(manifest_path, manifest)
     if capture_withdrawn(root):
-        clip._take_back(manifest, manifest_path, retract)
+        permission.take_back(manifest, manifest_path, retract)
         return {"status": "withdrawn"}
     try:
         deliver(record, identity=identity)
     except Exception as error:  # noqa: BLE001 - classified below; the archive stands only with rights
         reason = _own_reason(error)
-        if _RIGHTS_REFUSALS.search(str(error)):
-            clip._take_back(manifest, manifest_path, retract)
+        if permission.RIGHTS_REFUSALS.search(str(error)):
+            permission.take_back(manifest, manifest_path, retract)
+            manifest["refused_by_webapp"] = {"simulation_revision": revision, "reason": reason,
+                                             "at_epoch": int(now()), "rights_fingerprint": check.get("rights_fingerprint")}
+            write_json(manifest_path, manifest)
             return {"status": "refused", "reason": reason}
         manifest["last_delivery_error"] = reason
         write_json(manifest_path, manifest)
         return {"status": "failed", "reason": reason}
     manifest["delivered"] = {"simulation_digest": record["simulation_digest"], "at_epoch": int(now())}
     manifest.pop("last_delivery_error", None)
+    manifest.pop("refused_by_webapp", None)
     write_json(manifest_path, manifest)
     return {"status": "published", "simulation_revision": revision, "simulation_digest": record["simulation_digest"]}
 
 
-def tick(storage_root: Path, **options: Any) -> dict[str, int]:
-    """One pass over every capture the clip pass covers; counts of each outcome."""
+def tick(storage_root: Path, *, stop_reason: Callable[[], str | None] | None = None,
+         budget_seconds: float = TICK_BUDGET_SECONDS, clock: Callable[[], float] = time.monotonic,
+         **options: Any) -> dict[str, int]:
+    """One pass over every capture the clip pass covers; counts of each outcome.
+
+    As the clip's pass: between captures it stops for a hold, a quiesce or a new release (``stop_reason``) and
+    starts no capture after ``budget_seconds``; the captures left are counted ``deferred``. One build also has
+    its own deadline (``BUILD_DEADLINE_SECONDS``).
+    """
     counts: dict[str, int] = {}
-    for capture in clip.capture_roots(storage_root):
+    started = clock()
+    captures = clip.capture_roots(storage_root)
+    for index, capture in enumerate(captures):
+        reason = stop_reason() if stop_reason is not None else None
+        if reason or clock() - started >= budget_seconds:
+            counts["deferred"] = len(captures) - index
+            counts["stopped_" + (reason or "time_budget")] = 1
+            break
         status = publish_company_simulation(capture, **options)["status"]
         counts[status] = counts.get(status, 0) + 1
     return counts
 
 
+#: The route's clock (the pass takes ``now`` from its caller); a test can set it.
+def _wall_clock() -> float:
+    return time.time()
+
+
 def open_company_simulation(*, request_id: str, capture_id: str, digest: str, storage_root: Path | None,
-                            range_header: str | None = None, client: Any = None,
-                            bucket: str | None = None) -> tuple[Any, int, tuple[int, int] | None]:
+                            range_header: str | None = None, client: Any = None, bucket: str | None = None,
+                            now: float | None = None) -> tuple[Any, int, tuple[int, int] | None]:
     """The archived package body, its full size and the range served, for a read the WebApp authorized.
 
-    While the workspace exists the capture must be unwithdrawn, the takedown gate must allow it and its manifest
-    must name this digest as archived; after retirement only the object named for this capture and digest exists
-    to read (withdrawal deletion deletes it).
+    It fails closed: with no storage root, a withdrawn site (found without the workspace), no capture
+    workspace, a closed takedown gate, a manifest that does not name this digest as archived and not taken back,
+    or a basis that no longer holds at ``now`` (Blueprint's list names this upload, or the last live grant is
+    younger than the bound and nothing has said no since), nothing is served.
     """
-    if not capture_name_matches_request(request_id, capture_id) or not _DIGEST.fullmatch(str(digest)):
+    if (storage_root is None or not capture_name_matches_request(request_id, capture_id)
+            or not _DIGEST.fullmatch(str(digest)) or permission.site_withdrawn(storage_root, request_id)):
         raise CompanySimulationUnavailable("website_company_simulation_unavailable")
-    if storage_root is not None:
-        roots = [root for root in Path(storage_root).glob(f"*/scenes/site-{request_id}/captures/{capture_id}")
-                 if root.is_dir()]
-        if len(roots) > 1:
-            raise CompanySimulationUnavailable("website_company_simulation_unavailable")
-        if roots:
-            manifest = _read(roots[0].joinpath(*DIRECTORY) / MANIFEST_FILE)
-            stored = manifest.get("archive") or {}
-            if (not clip.delivery_gate_allows(roots[0]) or manifest.get("schema_version") != MANIFEST_SCHEMA
-                    or stored.get("digest") != digest or clip._hidden(stored)):
-                raise CompanySimulationUnavailable("website_company_simulation_unavailable")
+    roots = [root for root in Path(storage_root).glob(f"*/scenes/site-{request_id}/captures/{capture_id}")
+             if root.is_dir() and not root.is_symlink()]
+    if len(roots) != 1:
+        raise CompanySimulationUnavailable("website_company_simulation_unavailable")
+    manifest = _read(roots[0].joinpath(*DIRECTORY) / MANIFEST_FILE)
+    stored = manifest.get("archive") or {}
+    moment = _wall_clock() if now is None else now
+    if (not permission.delivery_gate_allows(roots[0], surface="website_company_simulation")
+            or manifest.get("schema_version") != MANIFEST_SCHEMA or stored.get("digest") != digest
+            or permission.hidden(stored)
+            or not permission.basis_still_holds(roots[0], capture_id, manifest, moment, _owned_list())):
+        raise CompanySimulationUnavailable("website_company_simulation_unavailable")
     from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
     from .task_evaluation_configured_scene_object_store import _artifact_object_store_client, _object_missing
     if client is None or bucket is None:
