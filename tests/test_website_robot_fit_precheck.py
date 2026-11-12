@@ -478,3 +478,14 @@ def test_a_scripted_carry_miss_with_the_object_in_reach_fits_the_franka_with_the
     unknown = robot_fit_precheck(preparation=preparation, collision_path=collision, verdict=verdict,
                                  catalog=fixed_arm_catalog())
     assert by_embodiment(unknown, FRANKA)["verdict"] == "unknown" and unknown["hold_reason"] is None
+
+
+def test_a_no_fit_job_reaches_scene_building_with_its_note(tmp_path, handoff):
+    """Owner decision, 2026-11-12 frame: the job packet needs the simulation for any job, whether or not one of
+    OUR robots fits on paper (a deployment company's robot may). The handoff is admitted for scene building and
+    the job carries ``scene_estimate:robot_fit_none:<cause>``; nothing about a robot is promised."""
+    from blueprint_pipeline.atlas_scene_estimates import preparation_flags
+    preparation, collision = shelf_scene(tmp_path)
+    admissible, result, native = handoff(preparation, collision, catalog=fixed_arm_catalog())
+    assert admissible is True and result["status"] == "intake_ready"
+    assert "scene_estimate:robot_fit_none:reach" in preparation_flags(native.parent / "preparation.json")
