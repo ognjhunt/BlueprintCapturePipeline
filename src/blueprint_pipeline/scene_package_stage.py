@@ -5,16 +5,24 @@ The compiled scene's USD files are separate assets; where each sits lives only i
 row's asset at its ``pose_world`` (``native_task_arena_runtime``: the pose describes the USD namespace). The plan
 is a record and never leaves. So both the simulation package for deployment companies
 (``website_company_simulation``) and the offline job packet (``job_packet_export``) write ``scene.usda`` with this
-module: one stage that references each shipped asset by a relative path, under a neutral prim name for its role,
-at the plan's position, orientation and scale, with the plan's visibility, in metres with the plan's up axis.
+module: one stage with a neutral prim for each row (``/World/Room``, ``/World/Object``, ...; a role this module
+does not know becomes ``/World/Part_01`` and so on, a repeated role ``/World/Object_02``), carrying the plan's
+position, orientation, scale and visibility, in metres with the plan's up axis.
 
-Nothing from the plan is copied as text: no id, digest, path or name. A row that cannot be placed honestly (an
-unknown role, a missing or malformed pose, an asset that is not shipped) refuses the stage, naming the role. No
-pose is ever guessed.
+Each asset is referenced on a child prim, ``<role prim>/Asset``, so the asset keeps its own root transform and the
+plan's pose is applied on top of it. That is how Blueprint's own checks compose them: the appearance alignment
+gate (``native_task_appearance_frame_alignment``) applies the spawn pose to the asset's own composed transform
+(``spawn @ layer``), and the runtime gives the pose to the spawner as the asset's placement in the scene.
+
+Nothing from the plan is copied as text: no id, digest, path or name. A row that cannot be placed honestly (a
+missing or malformed pose, an asset that is not shipped) refuses the stage, naming the role. No pose is ever
+guessed.
 
 ``neutral_rule`` projects the plan's success criteria and the few neutral facts a company needs to reproduce the
-run (physics and control rates, the episode length, the object's start pose and size) into the small success-rule
-file: numbers, true or false, and short lowercase mode words only.
+run (physics and control rates, the episode length, the object's start pose and size, and the object's estimated
+mass and friction when the job has them) into the small success-rule file. The criteria pass through an
+allow-list: only keys listed here, holding numbers, true or false, or a word from a closed set, survive; anything
+else is left out and counted.
 """
 from __future__ import annotations
 
@@ -29,10 +37,23 @@ ROLE_PRIMS = {"scene_appearance": "Room", "scene_collision": "RoomCollision", "t
               "task_support": "Support", "replacement": "Replacement"}
 USD_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz"})
 _MODE_WORD = re.compile(r"[a-z][a-z_]{0,40}")
-#: Criteria fields that name things (ids, digests, paths, labels) or Blueprint's own checks; never shipped.
-_DROPPED = frozenset({"controls", "visible_label", "schema_version", "target_digest", "support_prim_path",
-                      "support_source_instance_id"})
-_DROPPED_ENDINGS = ("_id", "_ids", "_digest", "_path", "_paths", "_label", "_uri", "_name")
+#: The success criteria's own keys (rigid_task_success_contract.v1 and what the scorer reads). Nothing else ships.
+CRITERIA_KEYS = frozenset({
+    "destination_containment", "gripper_state", "motion", "orientation", "retreat", "safety", "settling", "support",
+    "surface_target", "temporal_invariants", "terminal_task_contact", "no_drop", "opening", "hold", "mode",
+    "position_bounds_world_m", "minimum", "maximum", "threshold_m", "minimum_lift_m", "minimum_translation_m",
+    "minimum_translation", "movement_epsilon_m", "reference_xyzw", "tolerance_rad", "minimum_clearance_m",
+    "withdrawal_unit_destination_frame", "orientation_tolerance_rad", "position_tolerance_m", "window_samples",
+    "contact_mode", "height_interval_m", "height_mode", "maximum_angular_speed_rad_s", "maximum_linear_speed_m_s",
+    "maximum_tilt_rad", "non_colliding", "radius_m", "shape", "stable_seconds", "surface_position_world_m",
+    "containment_excursions", "workspace_excursions", "forbidden_contact_classes", "maximum_regrasps",
+    "maximum_retries", "maximum_task_contact_force_n", "minimum_fall_m", "minimum_opening_m", "minimum_angle_rad",
+    "minimum_hold_seconds"})
+#: The words a criterion's value may be. Any other text is left out.
+MODE_WORDS = frozenset({
+    "required", "ignored", "released", "cleared", "forbidden", "allowed", "optional", "held", "closed", "open",
+    "grasped", "flat_green_disc", "robot_background", "robot_object", "object_background", "robot_support",
+    "object_support", "robot_robot", "any", "none", "upright", "within"})
 
 
 class StageRefused(ValueError):
@@ -64,15 +85,21 @@ def placements(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
     rows = plan.get("objects")
     if not isinstance(rows, list) or not rows:
         raise StageRefused("scene_stage_no_objects")
-    found, seen = [], set()
+    found: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    parts = 0
     for row in rows:
         role = str(row.get("semantic_role") or "") if isinstance(row, Mapping) else ""
-        prim = ROLE_PRIMS.get(role)
-        if prim is None:
-            raise StageRefused("scene_stage_role_unknown", role if _MODE_WORD.fullmatch(role) else "unnamed")
-        if prim in seen:
-            raise StageRefused("scene_stage_role_repeated", role)
-        seen.add(prim)
+        if not isinstance(row, Mapping):
+            raise StageRefused("scene_stage_pose_missing", "unnamed")
+        base = ROLE_PRIMS.get(role)
+        if base is None:
+            parts += 1
+            prim = f"Part_{parts:02d}"
+            role = role if _MODE_WORD.fullmatch(role) else "unnamed"
+        else:
+            seen[base] = seen.get(base, 0) + 1
+            prim = base if seen[base] == 1 else f"{base}_{seen[base]:02d}"
         pose = row.get("pose_world")
         position = pose.get("position_world_m") if isinstance(pose, Mapping) else None
         orientation = pose.get("orientation_xyzw") if isinstance(pose, Mapping) else None
@@ -88,12 +115,19 @@ def placements(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
             raise StageRefused("scene_stage_asset_not_shipped", role)
         if not isinstance(row.get("visible", True), bool):
             raise StageRefused("scene_stage_visibility_invalid", role)
-        found.append({"role": role, "prim": prim, "usd_path": relative.as_posix(),
+        found.append({"role": role, "prim": prim, "name": package_name(prim), "usd_path": relative.as_posix(),
                       "position": [float(item) for item in position],
                       "orientation_xyzw": [float(item) for item in orientation],
                       "scale": [float(item) for item in scale] if scale is not None else None,
                       "visible": row.get("visible", True) is not False})
     return found
+
+
+def package_name(prim: str) -> str:
+    """The neutral file stem for a role prim: ``Object`` is ``object``, every other part goes under ``scene/``."""
+    if prim == "Object":
+        return "object"
+    return "scene/" + re.sub(r"(?<=[a-z])(?=[A-Z])", "_", prim).lower()
 
 
 def _target_prim(path: Path, role: str) -> str:
@@ -135,9 +169,7 @@ def write_stage(stage_path: Path, rows: Sequence[Mapping[str, Any]], *, axis: st
         x, y, z = row["position"]
         qx, qy, qz, qw = row["orientation_xyzw"]
         order = ['"xformOp:translate"', '"xformOp:orient"']
-        lines += [f'    def Xform "{row["prim"]}" (',
-                  f"        prepend references = @./{relative.as_posix()}@{f'<{prim}>' if prim else ''}", "    )",
-                  "    {"]
+        lines += [f'    def Xform "{row["prim"]}"', "    {"]
         if not row["visible"]:
             lines.append('        token visibility = "invisible"')
         lines += [f"        quatd xformOp:orient = ({_number(qw)}, {_number(qx)}, {_number(qy)}, {_number(qz)})"]
@@ -146,7 +178,10 @@ def write_stage(stage_path: Path, rows: Sequence[Mapping[str, Any]], *, axis: st
             lines.append(f"        double3 xformOp:scale = ({_number(sx)}, {_number(sy)}, {_number(sz)})")
             order.append('"xformOp:scale"')
         lines += [f"        double3 xformOp:translate = ({_number(x)}, {_number(y)}, {_number(z)})",
-                  f"        uniform token[] xformOpOrder = [{', '.join(order)}]", "    }"]
+                  f"        uniform token[] xformOpOrder = [{', '.join(order)}]", "",
+                  '        def "Asset" (',
+                  f"            prepend references = @./{relative.as_posix()}@{f'<{prim}>' if prim else ''}",
+                  "        )", "        {", "        }", "    }"]
     lines += ["}", ""]
     text = "\n".join(lines)
     stage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,34 +189,71 @@ def write_stage(stage_path: Path, rows: Sequence[Mapping[str, Any]], *, axis: st
     return text
 
 
-def _neutral(value: Any) -> Any:
-    """Numbers, true or false, and short mode words; anything that could name something is dropped."""
-    if isinstance(value, bool) or (isinstance(value, (int, float)) and math.isfinite(value)):
-        return value
-    if isinstance(value, str):
-        return value if _MODE_WORD.fullmatch(value) else None
-    if isinstance(value, list):
-        items = [_neutral(item) for item in value]
-        return items if all(item is not None for item in items) else None
-    if isinstance(value, Mapping):
-        out = {}
-        for key, item in value.items():
-            if not isinstance(key, str) or key in _DROPPED or key.endswith(_DROPPED_ENDINGS):
-                continue
-            kept = _neutral(item)
-            if kept is not None and kept != {}:
-                out[key] = kept
-        return out
+def _number_like(value: Any) -> bool:
+    return isinstance(value, bool) or (isinstance(value, (int, float)) and math.isfinite(value))
+
+
+def neutral_criteria(criteria: Mapping[str, Any], *, support_prim: str | None = None) -> tuple[dict[str, Any], int]:
+    """The criteria through the allow-list, and how many fields were left out.
+
+    ``support_prim_path`` names the support in Blueprint's scene; it becomes ``support_prim`` with the stage's own
+    prim (``/World/Support``) when the stage has one, and is left out otherwise.
+    """
+    left_out = 0
+
+    def keep(value: Any) -> Any:
+        nonlocal left_out
+        if _number_like(value):
+            return value
+        if isinstance(value, str):
+            if value in MODE_WORDS:
+                return value
+            left_out += 1
+            return None
+        if isinstance(value, list):
+            items = [keep(item) for item in value]
+            if any(item is None for item in items):
+                return None
+            return items
+        if isinstance(value, Mapping):
+            out = {}
+            for key, item in value.items():
+                if key == "support_prim_path" and support_prim:
+                    out["support_prim"] = support_prim
+                    continue
+                if key not in CRITERIA_KEYS:
+                    left_out += 1
+                    continue
+                kept = keep(item)
+                if kept is not None and kept != {}:
+                    out[key] = kept
+            return out
+        left_out += 1
+        return None
+    kept = keep(criteria)
+    return (kept if isinstance(kept, dict) else {}), left_out
+
+
+def _range(value: Any) -> list[float] | None:
+    if _finite(value, 2) and 0 <= value[0] <= value[1]:
+        return [float(value[0]), float(value[1])]
     return None
 
 
-def neutral_rule(plan: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The success-rule file: the criteria and the neutral facts to reproduce the run, or None without criteria."""
+def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    """The success-rule file: the criteria and the neutral facts to reproduce the run, or None without criteria.
+
+    ``estimates``: the preparation's ``physics.bounds`` for the object, estimated from the video; when it holds a
+    mass or friction range they go under ``object_estimates_from_video``.
+    """
     criteria = ((plan.get("task_spec") or {}).get("task_success_contract") or {}).get("criteria")
     if not isinstance(criteria, Mapping):
         return None
-    rule: dict[str, Any] = {"units": "metres, radians, seconds", "up_axis": up_axis(plan),
-                            "criteria": _neutral(criteria)}
+    rows = placements(plan)
+    support = "/World/Support" if any(row["prim"] == "Support" for row in rows) else None
+    kept, left_out = neutral_criteria(criteria, support_prim=support)
+    rule: dict[str, Any] = {"units": "metres, radians, seconds", "up_axis": up_axis(plan), "criteria": kept,
+                            "criteria_fields_left_out": left_out}
     cadence = plan.get("cadence") if isinstance(plan.get("cadence"), Mapping) else {}
     timing = {key: cadence[key] for key in ("physics_frequency_hz", "control_frequency_hz", "episode_length_seconds")
               if isinstance(cadence.get(key), (int, float)) and not isinstance(cadence.get(key), bool)
@@ -194,10 +266,17 @@ def neutral_rule(plan: Mapping[str, Any]) -> dict[str, Any] | None:
             if _finite(pose.get("position_world_m"), 3) and _finite(pose.get("orientation_xyzw"), 4):
                 rule["object_start"] = {"position_m": list(pose["position_world_m"]),
                                         "orientation_xyzw": list(pose["orientation_xyzw"])}
+            break
     extent = (plan.get("task_object_observability") or {}).get("task_object_extent_m")
     if _finite(extent, 3):
         rule["object_size_m"] = list(extent)
+    if isinstance(estimates, Mapping):
+        found = {key: _range(estimates.get(key)) for key in ("mass_kg", "static_friction", "dynamic_friction")}
+        found = {key: value for key, value in found.items() if value is not None}
+        if found:
+            rule["object_estimates_from_video"] = found
     return rule
 
 
-__all__ = ["ROLE_PRIMS", "StageRefused", "neutral_rule", "placements", "up_axis", "write_stage"]
+__all__ = ["CRITERIA_KEYS", "MODE_WORDS", "ROLE_PRIMS", "StageRefused", "neutral_criteria", "neutral_rule",
+           "package_name", "placements", "up_axis", "write_stage"]

@@ -457,7 +457,10 @@ def test_the_packet_holds_the_whole_job(tmp_path, job, clip_with_sound) -> None:
     for row in manifest["files"]:
         data = (folder / row["path"]).read_bytes()
         assert row["size"] == len(data) and row["sha256"] == hashlib.sha256(data).hexdigest()
-    assert json.loads((folder / "files/task/success_rule.json").read_text()) == {"criteria": _contract()["criteria"]}
+    # The rule ships through the shared allow-list: the site's own label ("back shelf") stays out.
+    expected_rule = copy.deepcopy(_contract()["criteria"])
+    del expected_rule["surface_target"]["visible_label"]
+    assert json.loads((folder / "files/task/success_rule.json").read_text()) == {"criteria": expected_rule}
     on_disk_manifest = json.loads((folder / "manifest.json").read_text())
     assert on_disk_manifest["permission_basis"] == {"rule": "site_sharing_permission", "statement_version": CURRENT}
     assert on_disk_manifest["first_look_source"] == "pipeline_robot_fit_table"
@@ -1552,6 +1555,16 @@ def test_a_copied_file_that_names_the_site_or_a_path_is_refused_by_file_and_kind
     assert refusal.code == "job_packet_file_names_the_site" and str(refusal).endswith(f"{relative} holds {kind}")
     for value in (CAPTURE, TOKEN, STORAGE, USER, LINK, "/var/lib/blueprint", str(inputs.pull_root)):
         assert value not in str(refusal)
+
+
+@pytest.mark.parametrize("words", [NAME, STREET, EMAIL, PHONE, SENTENCE.split(" ", 2)[2].upper()])
+def test_the_sites_own_words_in_a_copied_file_refuse_the_packet_but_the_sheet_may_quote_it(tmp_path, job, words) -> None:
+    inputs = job()
+    _write(inputs.team_scene_dir / "native-task-packet" / "look.usda", f'#usda 1.0\n(doc = "made for {words}")\n')
+    refusal = _refusal(inputs, tmp_path)
+    assert refusal.code == "job_packet_file_names_the_site"
+    assert str(refusal).endswith("files/simulation/team-scene/native-task-packet/look.usda holds the site's own words")
+    assert words.lower() not in str(refusal).lower()
 
 
 def test_a_clip_sidecar_and_a_namespace_link_are_fine(tmp_path, job) -> None:

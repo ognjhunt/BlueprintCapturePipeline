@@ -368,7 +368,7 @@ def test_a_new_simulation_revision_replaces_the_package(job):
     assert len(world.retracted) == 1 and len(world.delivered) == 2
 
 
-CARRIERS = ("usda", "usdc", "texture", "success_rule")
+CARRIERS = ("usda", "usdc", "texture")
 PLANTS = {"request_id": REQUEST, "request_id_underscore": REQUEST.replace("-", "_"), "capture_id": CAPTURE,
           "account_id": ACCOUNT, "task_id": TASK, "host_path": "/var/lib/blueprint/pubsub-handoffs/x",
           "home_path": "/" + "home/operator/x", "storage": "gs://plant-bucket/x", "link": "https://plant.invalid/x",
@@ -474,8 +474,13 @@ def test_a_scaled_row_is_scaled_on_the_stage(job, tmp_path):
     stage = Usd.Stage.Open(str(out / "scene.usda"))
     matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/World/Object")).ComputeLocalToWorldTransform(0)
     assert matrix.GetRow3(0).GetLength() == pytest.approx(2.0)
-    with pytest.raises(stage_module.StageRefused, match="unknown"):
-        stage_module.placements({"objects": [{**plan["objects"][0], "semantic_role": "robot"}]})
+    # A role this module does not know gets a neutral numbered prim; a repeated role is numbered.
+    named = stage_module.placements({"objects": [{**plan["objects"][0], "semantic_role": "task_drawer"},
+                                                 {**plan["objects"][2]}, {**plan["objects"][2]},
+                                                 {**plan["objects"][0], "semantic_role": "Jane's cabinet"}]})
+    assert [row["prim"] for row in named] == ["Part_01", "Object", "Object_02", "Part_02"]
+    assert [row["name"] for row in named] == ["scene/part_01", "object", "scene/object_02", "scene/part_02"]
+    assert named[3]["role"] == "unnamed"
 
 
 # --- the gate -------------------------------------------------------------------------------------------------
@@ -691,3 +696,294 @@ def test_a_storage_fault_is_503_and_names_nothing(served, monkeypatch):
     response = served["client"].get(served["url"], headers=served["signed"])
     assert response.status_code == 503 and "secret" not in response.text
     assert response.json() == {"detail": "website_company_simulation_storage_unavailable"}
+
+
+# --- review fixes (part A) -------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("plant", sorted(PLANTS))
+def test_a_value_planted_in_the_success_rule_never_ships(job, tmp_path, plant):
+    # The rule is an allow-list: an unknown key, a nested label, a path and free text are left out, not shipped.
+    job.criteria[f"note {PLANTS[plant]} end"] = 1
+    job.criteria["settling"]["label_text"] = PLANTS[plant]
+    job.criteria["support"] = {"contact_mode": "required", "support_prim_path": "/World/Shelf_" + ACCOUNT,
+                               "visible_label": "back shelf", "height_interval_m": [0.8, 0.9]}
+    job.criteria["motion"]["kind"] = "loading_dock_by_bobs_desk"
+    job.seal()
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        rule = json.loads(archive.read("success_rule.json"))
+    text = json.dumps(rule)
+    for value in (PLANTS[plant], "back shelf", "loading_dock", "Shelf_", "label_text", "note "):
+        assert value not in text
+    assert rule["criteria"]["support"] == {"contact_mode": "required", "height_interval_m": [0.8, 0.9]}
+    assert rule["criteria_fields_left_out"] >= 5
+
+
+def test_the_success_rule_allow_list_maps_the_support_prim_only_when_the_stage_has_one():
+    from blueprint_pipeline import scene_package_stage as stage_module
+    criteria = {"support": {"support_prim_path": "/Root/x", "contact_mode": "required"}, "jane_house": {"mode": "x"},
+                "surface_target": {"shape": "flat_green_disc", "visible_label": "wooden table", "radius_m": 0.3,
+                                   "nested": [{"label": "a"}]}, "safety": {"mode": "free text here"}}
+    kept, left_out = stage_module.neutral_criteria(criteria, support_prim="/World/Support")
+    assert kept == {"support": {"support_prim": "/World/Support", "contact_mode": "required"},
+                    "surface_target": {"shape": "flat_green_disc", "radius_m": 0.3}}
+    assert left_out == 4
+    assert "support_prim" not in stage_module.neutral_criteria(criteria)[0]["support"]
+
+
+def test_the_object_estimates_from_the_video_go_in_the_rule_and_are_left_out_when_absent(job):
+    _write(job.capture / "pipeline/website_scene_preparation/preparation.json",
+           {"physics": {"bounds": {"mass_kg": [0.4, 1.8], "static_friction": [0.2, 0.9], "dynamic_friction": "x"}}})
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        rule = json.loads(archive.read("success_rule.json"))
+        readme = archive.read("README.txt").decode()
+    assert rule["object_estimates_from_video"] == {"mass_kg": [0.4, 1.8], "static_friction": [0.2, 0.9]}
+    assert "estimated from the video" in readme
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    (job.capture / "pipeline/website_scene_preparation/preparation.json").unlink()
+    assert "object_estimates_from_video" not in sim.simulation_source(job.capture, queue_root=job.queue)["rule"]
+    assert source["rule"]["object_estimates_from_video"]
+
+
+def _asset_with_root_transform(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stage = Usd.Stage.CreateNew(str(path))
+    root = UsdGeom.Xform.Define(stage, "/Object")
+    stage.SetDefaultPrim(root.GetPrim())
+    root.AddScaleOp().Set((0.01, 0.01, 0.01))
+    root.AddRotateZOp().Set(90.0)
+    UsdGeom.Cube.Define(stage, "/Object/Box")
+    stage.GetRootLayer().Save()
+    return path
+
+
+def test_the_assets_own_root_transform_is_kept_under_the_plans_pose(job, tmp_path):
+    from pxr import Gf
+    asset = _asset_with_root_transform(tmp_path / "src/obj.usda")
+    job.object.unlink()
+    job.object = job.assets / "replacement.usdz"
+    assert UsdUtils.CreateNewUsdzPackage(str(asset), str(job.object))
+    job.seal()
+    assert World(job).publish()["status"] == "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        archive.extractall(tmp_path / "out")
+    stage = Usd.Stage.Open(str(tmp_path / "out/scene.usda"))
+    asset_world = UsdGeom.Xformable(stage.GetPrimAtPath("/World/Object/Asset")).ComputeLocalToWorldTransform(0)
+    source_stage = Usd.Stage.Open(str(asset))
+    own = UsdGeom.Xformable(source_stage.GetPrimAtPath("/Object")).ComputeLocalToWorldTransform(0)
+    pose = Gf.Matrix4d(1.0)
+    x, y, z, w = OBJECT_POSE["orientation_xyzw"]
+    pose.SetRotate(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
+    pose.SetTranslateOnly(Gf.Vec3d(*OBJECT_POSE["position_world_m"]))
+    expected = own * pose  # USD row vectors: the asset's own transform first, then the plan's pose
+    for row in range(4):
+        assert list(asset_world.GetRow(row)) == pytest.approx(list(expected.GetRow(row)))
+    assert asset_world.GetRow3(0).GetLength() == pytest.approx(0.01)
+    readme = (tmp_path / "out/README.txt").read_text()
+    assert "/World/<part>/Asset" in readme and "own scale or rotation" in readme
+    assert "To see it, set its visibility to inherited" in readme
+
+
+def test_sublayer_time_offsets_survive_the_rewrite(job, tmp_path):
+    other = _stage(job.assets / "layers/extra.usda", "Extra")
+    stage = Usd.Stage.Open(str(job.appearance))
+    layer = stage.GetRootLayer()
+    layer.subLayerPaths.append(str(other))  # absolute inside the scene: rewritten to a relative path
+    layer.subLayerOffsets[0] = Sdf.LayerOffset(7.0, 2.0)
+    layer.Save()
+    job.seal()
+    assert World(job).publish()["status"] == "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        archive.extractall(tmp_path / "out")
+    shipped = Sdf.Layer.FindOrOpen(str(tmp_path / "out/scene/room.usdc"))
+    assert list(shipped.subLayerOffsets) == [Sdf.LayerOffset(7.0, 2.0)]
+    assert not Path(shipped.subLayerPaths[0]).is_absolute()
+
+
+def _string_texture(job: Job, value: str) -> None:
+    stage = Usd.Stage.Open(str(job.appearance))
+    prim = stage.GetPrimAtPath("/Appearance/Look/Texture")
+    prim.CreateAttribute("inputs:mdl_tex", Sdf.ValueTypeNames.String).Set(value)
+    stage.GetRootLayer().Save()
+    job.seal()
+
+
+def test_a_string_that_names_a_file_is_shipped_and_rewritten(job, tmp_path):
+    _write(job.assets / "textures/rough.png", _png())
+    _string_texture(job, "./textures/rough.png")
+    assert World(job).publish()["status"] == "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        archive.extractall(tmp_path / "out")
+    stage = Usd.Stage.Open(str(tmp_path / "out/scene/room.usdc"))
+    value = stage.GetPrimAtPath("/Appearance/Look/Texture").GetAttribute("inputs:mdl_tex").Get()
+    assert value.startswith("./files/file-") and (tmp_path / "out/scene" / value).is_file()
+
+
+@pytest.mark.parametrize("value", ["./textures/missing.png", "/srv/elsewhere/rough.png"])
+def test_a_string_that_names_a_missing_or_outside_file_refuses_naming_the_role(job, value):
+    _string_texture(job, value)
+    result = World(job).publish()
+    assert result["status"] == "refused" and result["detail"] == "scene_appearance"
+    assert result["reason"] in {"website_company_simulation_reference_missing",
+                                "website_company_simulation_outside_reference"}
+
+
+def test_udim_tiles_inside_the_scene_are_all_shipped(job, tmp_path):
+    for tile in (1001, 1002):
+        _write(job.assets / f"textures/wood.{tile}.png", _png())
+    job.appearance = _stage(job.appearance, "Appearance", texture="./textures/wood.<UDIM>.png")
+    job.seal()
+    assert World(job).publish()["status"] == "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        names = archive.namelist()
+        archive.extractall(tmp_path / "out")
+    tiles = [name for name in names if re.fullmatch(r"scene/files/file-\d{3}\.100[12]\.png", name)]
+    assert len(tiles) == 2
+    text = Sdf.Layer.FindOrOpen(str(tmp_path / "out/scene/room.usdc")).ExportToString()
+    assert re.search(r"@\./files/file-\d{3}\.<UDIM>\.png@", text)
+
+
+def test_udim_without_tiles_refuses(job):
+    job.appearance = _stage(job.appearance, "Appearance", texture="./textures/none.<UDIM>.png")
+    job.seal()
+    result = World(job).publish()
+    assert result["status"] == "refused" and result["reason"] == "website_company_simulation_reference_missing"
+
+
+def test_an_unknown_role_gets_a_neutral_part_prim_and_is_placed(job, tmp_path):
+    plan_path = job.packet / sim.PLAN_FILE
+    plan = json.loads(plan_path.read_text())
+    drawer = _stage(job.assets / "drawer.usda", "Drawer")
+    plan["objects"].append({"name": "x", "semantic_role": "task_drawer", "usd_path": "assets/drawer.usda",
+                            "sha256": _sha(drawer), "size_bytes": drawer.stat().st_size, "visible": True,
+                            "pose_world": {"position_world_m": [1.0, 2.0, 0.5], "orientation_xyzw": [0, 0, 0, 1]}})
+    plan_path.write_text(json.dumps(plan))
+    assert World(job).publish()["status"] == "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        assert "scene/part_01.usda" in archive.namelist()
+        archive.extractall(tmp_path / "out")
+    stage = Usd.Stage.Open(str(tmp_path / "out/scene.usda"))
+    world = UsdGeom.Xformable(stage.GetPrimAtPath("/World/Part_01")).ComputeLocalToWorldTransform(0)
+    assert list(world.ExtractTranslation()) == pytest.approx([1.0, 2.0, 0.5])
+    assert "task_drawer" not in (tmp_path / "out/scene.usda").read_text()
+
+
+def test_the_resolves_inside_proof_is_what_refuses_a_reference_the_localizer_left(job, monkeypatch):
+    # Pin the proof: a localizer that copied a layer without rewriting its reference is caught by the proof alone.
+    other = _stage(job.assets / "layers/extra.usda", "Extra")
+    job.appearance = _stage(job.appearance, "Appearance", sublayer=str(other))
+    job.seal()
+
+    def verbatim(self, source, target, label):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        import shutil as _shutil
+        _shutil.copyfile(source, target)
+    monkeypatch.setattr(sim._Localizer, "place", verbatim)
+    result = World(job).publish()
+    assert result["status"] == "refused" and result["reason"] in {
+        "website_company_simulation_outside_reference", "website_company_simulation_reference_missing"}
+    assert result["detail"] == "scene.usda"
+
+
+def test_a_rights_refusal_is_reported_in_the_simulations_own_name(job):
+    world = World(job, rights={"consent_status": "revoked", "consent_revoked": True, "statement_version": SHARED})
+    result = world.publish()
+    assert result == {"status": "refused", "reason": "website_company_simulation_rights_refused"}
+
+
+# --- the site's own words -------------------------------------------------------------------------------------
+
+SITE_NAME, STREET, EMAIL, PHONE = "Harbourview Bakery", "17 Quayside Lane", "owner@harbourview.example", "+44 20 7946 0958"
+SENTENCE = "Move the blue tray from the counter to the back shelf every morning"
+
+
+def _site_records(job: Job) -> None:
+    _write(job.capture / "pipeline/website_task_context.json", {
+        "description": SENTENCE, "operator_answers": {"who": "Jane Placeholder"},
+        "capture_rights": {"consent_status": "granted", "consent_revoked": False, "statement_version": SHARED}})
+    descriptor = json.loads((job.capture / "capture_descriptor.json").read_text())
+    descriptor["metadata"]["site_identity"] = {"name": SITE_NAME, "address": STREET, "email": EMAIL, "phone": PHONE}
+    _write(job.capture / "capture_descriptor.json", descriptor)
+
+
+@pytest.mark.parametrize("words", [SITE_NAME.upper(), STREET, EMAIL, PHONE, "the counter to the back",
+                                   "jane placeholder"])
+def test_the_sites_own_words_in_a_scene_file_refuse_the_package(job, words):
+    _site_records(job)
+    job.appearance.unlink()
+    job.appearance = _stage(job.assets / "appearance.usda", "Appearance", doc=f"made for {words} today",
+                            texture="./textures/wood.png")
+    job.seal()
+    result = World(job).publish()
+    assert result["status"] == "refused", result
+    assert result["detail"].startswith("scene/room.usda holds ")
+    assert words.lower() not in json.dumps(result).lower()
+
+
+def test_the_sites_own_words_are_gathered_from_its_records(job):
+    from blueprint_pipeline import outbound_file_scan
+    _site_records(job)
+    found = {value.decode() for value, _kind in outbound_file_scan.capture_site_words(job.capture)}
+    assert {SITE_NAME.lower(), STREET.lower(), EMAIL.lower(), PHONE.lower(), "jane placeholder",
+            "move the blue tray", "the back shelf every"} <= found
+
+
+def test_a_clean_package_does_not_trip_on_the_sites_words(job):
+    _site_records(job)
+    assert World(job).publish()["status"] == "published"
+
+
+# --- the scan's new kinds and the cheaper walk of large layers -------------------------------------------------
+
+@pytest.mark.parametrize(("text", "kind"), [
+    ("at /" + "root/x", "a host path"), ("at /" + "Users/someone/x", "a host path"), ("at /srv/x", "a host path"),
+    ("at /data/x", "a host path"), ("at ~/x", "a host path"), ("at \\\\server\\share", "a host path"),
+    ("at /var//lib/blueprint/x", "a host path"), ("in b2://bucket/x", "a link"), ("in ftp://x", "a link"),
+    ("in wasbs://x@y", "a link"), ("in omniverse://x", "a link"), ("host 10.1.2.3 here", "an IP address"),
+    ("mail jane@bakery.example.zz now", "an email address"), ("key p_ghp_" + "a" * 36, "a key or token"),
+    ("set aws_secret_access_key=", "a key or token"),
+])
+def test_the_scan_finds_the_new_kinds(tmp_path, text, kind):
+    finding = _scan_text(tmp_path, text)
+    assert finding is not None and finding.kind == kind, finding
+
+
+@pytest.mark.parametrize("text", ["usd-core 0.26.5 and 1.2.3", "v10.1.2", "1.2.3.4.5", "0.5, 1.25, 3.0, 4.75",
+                                  "scene.usd", "xformOp:translate = (1.0, 2.0, 3.0)", "@./a.png@ and @./b.usd@"])
+def test_the_new_kinds_leave_ordinary_numbers_alone(tmp_path, text):
+    assert _scan_text(tmp_path, text) is None
+
+
+@pytest.mark.parametrize("walk", [False, True])
+@pytest.mark.parametrize("where", ["doc", "custom_data", "prim_name", "string_attr", "time_sample", "asset_info",
+                                   "relationship", "layer_data"])
+def test_the_spec_walk_finds_what_the_text_export_finds(tmp_path, monkeypatch, walk, where):
+    monkeypatch.setattr(scan, "SPEC_WALK_BYTES", 0 if walk else 1 << 40)
+    planted = REQUEST.replace("-", "_")
+    path = tmp_path / "layer.usdc"
+    stage = Usd.Stage.CreateNew(str(path))
+    root = UsdGeom.Xform.Define(stage, "/Root").GetPrim()
+    UsdGeom.Points.Define(stage, "/Root/Cloud").CreatePointsAttr([(float(i), 0.0, 0.0) for i in range(2000)])
+    if where == "doc":
+        stage.GetRootLayer().documentation = planted
+    elif where == "custom_data":
+        root.SetCustomDataByKey("k", planted)
+    elif where == "prim_name":
+        UsdGeom.Xform.Define(stage, f"/Root/{planted}")
+    elif where == "string_attr":
+        root.CreateAttribute("note", Sdf.ValueTypeNames.String).Set(planted)
+    elif where == "time_sample":
+        root.CreateAttribute("note", Sdf.ValueTypeNames.String).Set(planted, 3.0)
+    elif where == "asset_info":
+        root.SetAssetInfoByKey("name", planted)
+    elif where == "relationship":
+        UsdGeom.Xform.Define(stage, f"/{planted}")
+        root.CreateRelationship("link").AddTarget(f"/{planted}")
+    else:
+        stage.GetRootLayer().customLayerData = {"by": planted}
+    stage.GetRootLayer().Save()
+    found = scan._usd_text_finding(path, scan.literal_forms([(REQUEST, "a job id")]))
+    assert found is not None and found[0] == "a job id"

@@ -54,6 +54,7 @@ from typing import Any
 from . import website_company_clip as clip
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .outbound_file_scan import capture_site_words
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
 
 logger = logging.getLogger(__name__)
@@ -81,9 +82,6 @@ QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
 DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/team-scene-packets"
 PACKET_DIRECTORIES = ("native-task-packet", "native-task-packet-three-view")
 PLAN_FILE = "native_task_arena_scene_plan.v1.json"
-#: Where each role's file goes in the package: neutral names only.
-PACKAGE_NAMES = {"scene_appearance": "scene/room", "scene_collision": "scene/room_collision", "task_object": "object",
-                 "task_support": "scene/support", "replacement": "scene/replacement"}
 _USD = frozenset({".usd", ".usda", ".usdc", ".usdz"})
 _FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -166,13 +164,31 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
                 and isinstance(status.get("team_scene_inputs_path"), str)):
             statuses.append((path.stat().st_mtime_ns, path.name, status))
     for _mtime, _name, status in sorted(statuses, reverse=True):
-        source = _half(Path(status["team_scene_inputs_path"]).parent, status)
+        source = _half(Path(status["team_scene_inputs_path"]).parent, status, estimates=object_estimates(root))
         if source is not None:
             return source
     return None
 
 
-def _half(scene: Path, status: Mapping[str, Any]) -> dict[str, Any] | None:
+def object_estimates(capture_root: Path) -> Mapping[str, Any] | None:
+    """The object's mass and friction ranges as preparation estimated them from the video, when recorded.
+
+    Read from the preparation the scene handoff names (inside the capture), else the default preparation record.
+    """
+    root = Path(capture_root)
+    preparation = root / "pipeline" / "website_scene_preparation" / "preparation.json"
+    named = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json").get("preparation_path")
+    if isinstance(named, str):
+        candidate = Path(named)
+        candidate = candidate if candidate.is_absolute() else root / candidate
+        if _inside(root, candidate) is not None:
+            preparation = candidate
+    bounds = (_read(preparation).get("physics") or {}).get("bounds")
+    return bounds if isinstance(bounds, Mapping) else None
+
+
+def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None
+          ) -> dict[str, Any] | None:
     """The half's plan and shipped files; a row that cannot be placed is kept as ``refusal`` naming its role."""
     from .scene_package_stage import StageRefused, neutral_rule, placements, up_axis
     if not scene.is_absolute() or scene.is_symlink() or not scene.is_dir():
@@ -191,17 +207,16 @@ def _half(scene: Path, status: Mapping[str, Any]) -> dict[str, Any] | None:
         try:
             rows = placements(plan)
             axis = up_axis(plan)
-            rule = neutral_rule(plan)
+            rule = neutral_rule(plan, estimates=estimates)
             if rule is None:
                 raise StageRefused("scene_stage_success_rule_missing")
-            by_role = {row.get("semantic_role"): row for row in plan["objects"]}
-            for placement in rows:
-                role, raw = placement["role"], by_role[placement["role"]]
+            for placement, raw in zip(rows, plan["objects"], strict=True):
+                role = placement["role"]
                 path = _inside(packet, packet.joinpath(*PurePosixPath(placement["usd_path"]).parts))
                 if (path is None or path.stat().st_size != raw.get("size_bytes")
                         or not _DIGEST.fullmatch(str(raw.get("sha256") or ""))):
                     raise StageRefused("scene_stage_asset_not_shipped", role)
-                source["files"][role] = {"path": path, "sha256": raw["sha256"], "size_bytes": int(raw["size_bytes"]),
+                source["files"][placement["prim"]] = {"path": path, "role": role, "sha256": raw["sha256"], "size_bytes": int(raw["size_bytes"]),
                                          "suffix": PurePosixPath(placement["usd_path"]).suffix.lower(),
                                          "placement": {key: value for key, value in placement.items()
                                                        if key != "usd_path"}}
@@ -218,8 +233,8 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
     """Names this package: the files' digests, their placements, the success rule, the builder and the cap."""
     return canonical_digest({
         "builder": BUILDER_REVISION, "format": FORMAT, "max_bytes": int(max_bytes),
-        "files": {role: {key: row[key] for key in ("sha256", "size_bytes", "suffix", "placement")}
-                  for role, row in sorted(source["files"].items())},
+        "files": {prim: {key: row[key] for key in ("sha256", "size_bytes", "suffix", "placement")}
+                  for prim, row in sorted(source["files"].items())},
         "rule": source.get("rule"), "axis": source.get("axis"), "refusal": source.get("refusal"),
         "plan_digest": source.get("plan_digest") if source.get("refusal") else None})
 
@@ -289,37 +304,109 @@ def _outside(path: str) -> bool:
             or ".." in pure.parts)
 
 
-def _check_usdz(path: Path) -> None:
+def _check_usdz(path: Path, label: str) -> None:
     """A usdz is kept as it is: every reference inside it must stay inside it."""
     try:
         with zipfile.ZipFile(path) as archive:
             names = [info.filename for info in archive.infolist() if Path(info.filename).suffix.lower() in _USD]
     except (OSError, zipfile.BadZipFile):
-        raise PackageRefused("website_company_simulation_scene_unreadable", "the object") from None
+        raise PackageRefused("website_company_simulation_scene_unreadable", label) from None
     if not names:
-        raise PackageRefused("website_company_simulation_scene_unreadable", "the object")
+        raise PackageRefused("website_company_simulation_scene_unreadable", label)
     for name in names:
         layer = _open_layer(f"{path}[{name}]")
         if layer is None:
-            raise PackageRefused("website_company_simulation_scene_unreadable", "the object")
-        for reference in _asset_paths(layer):
+            raise PackageRefused("website_company_simulation_scene_unreadable", label)
+        for reference in [*_asset_paths(layer), *(value for _spec, value in _file_strings(layer))]:
             if reference and _outside(reference):
-                raise PackageRefused("website_company_simulation_outside_reference", "the object")
+                raise PackageRefused("website_company_simulation_outside_reference", label)
+
+
+#: A string or token value with one of these endings names a file: it is shipped and rewritten like an asset path.
+FILE_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz", ".png", ".jpg", ".jpeg", ".exr", ".hdr", ".tga",
+                           ".tif", ".tiff", ".bmp", ".ktx", ".ktx2", ".dds", ".mdl", ".obj", ".ply", ".glb", ".gltf",
+                           ".vdb", ".nvdb", ".mtl", ".wav", ".mp4", ".mov"})
+_STRING_TYPES = frozenset({"string", "token", "string[]", "token[]"})
+
+
+def _names_file(value: Any) -> bool:
+    return isinstance(value, str) and PurePosixPath(value.strip().replace("\\", "/")).suffix.lower() in FILE_SUFFIXES
+
+
+def _file_strings(layer: Any) -> list[tuple[Any, str]]:
+    """Every (attribute spec, value) whose string or token value names a file, in defaults and time samples."""
+    from pxr import Sdf
+    found: list[tuple[Any, str]] = []
+    paths: list = []
+    layer.Traverse(Sdf.Path.absoluteRootPath, paths.append)
+    for path in paths:
+        spec = layer.GetAttributeAtPath(path) if path.IsPropertyPath() else None
+        if spec is None or str(spec.typeName) not in _STRING_TYPES:
+            continue
+        values = [spec.default] if spec.HasDefaultValue() else []
+        values += [layer.QueryTimeSample(path, sample) for sample in layer.ListTimeSamplesForPath(path)]
+        for value in values:
+            for item in (list(value) if not isinstance(value, str) and value is not None else [value]):
+                if _names_file(item):
+                    found.append((spec, str(item)))
+    return found
+
+
+def _rewrite_strings(layer: Any, rewrite: Callable[[str], str]) -> None:
+    """Rewrite every string or token value that names a file, in defaults and time samples."""
+    from pxr import Sdf
+    paths: list = []
+    layer.Traverse(Sdf.Path.absoluteRootPath, paths.append)
+
+    def fixed(value: Any) -> Any:
+        if isinstance(value, str):
+            return rewrite(value) if _names_file(value) else value
+        if value is not None and not isinstance(value, str):
+            items = list(value)
+            new = [rewrite(item) if _names_file(item) else item for item in items]
+            return new if new != items else value
+        return value
+    for path in paths:
+        spec = layer.GetAttributeAtPath(path) if path.IsPropertyPath() else None
+        if spec is None or str(spec.typeName) not in _STRING_TYPES:
+            continue
+        if spec.HasDefaultValue():
+            new = fixed(spec.default)
+            if new is not spec.default and new != spec.default:
+                spec.default = new
+        for sample in layer.ListTimeSamplesForPath(path):
+            value = layer.QueryTimeSample(path, sample)
+            new = fixed(value)
+            if new is not value and new != value:
+                layer.SetTimeSample(path, sample, new)
+
+
+_UDIM = "<UDIM>"
 
 
 class _Localizer:
-    """Copies each USD file into the package, rewriting every reference to a relative path inside it."""
+    """Copies each USD file into the package, rewriting every reference to a relative path inside it.
+
+    Asset paths (sublayers, references, payloads, asset-valued attributes) and string or token values that name a
+    file are rewritten; sublayer time offsets are kept; every tile of a UDIM texture inside the scene's own folder
+    is shipped. A reference that is a link, points outside the scene's files or names nothing refuses the package.
+    """
 
     def __init__(self, assets_dir: Path, staging: Path):
         self.assets, self.staging = assets_dir.resolve(), staging
         self.placed: dict[Path, Path] = {}
+        self.count = 0
+
+    def _target(self, suffix: str) -> Path:
+        self.count += 1
+        return self.staging / "scene" / "files" / f"file-{self.count:03d}{suffix}"
 
     def place(self, source: Path, target: Path, label: str) -> None:
         source = source.resolve()
         self.placed[source] = target
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.suffix.lower() == ".usdz":
-            _check_usdz(source)
+            _check_usdz(source, label)
             shutil.copyfile(source, target)
             return
         if source.suffix.lower() not in _USD:
@@ -331,31 +418,69 @@ class _Localizer:
         changed: list[bool] = []
         failure: list[str] = []
 
+        def inside(candidate: Path) -> Path | None:
+            try:
+                resolved = candidate.resolve(strict=True)
+            except OSError:
+                return None
+            return resolved if resolved.is_relative_to(self.assets) and resolved.is_file() else None
+
         def rewrite(reference: str) -> str:
             if not reference or failure:
                 return reference
             if "://" in reference or reference.startswith("file:"):
                 failure.append("website_company_simulation_outside_reference")
                 return reference
-            candidate = Path(reference) if Path(reference).is_absolute() else source.parent / reference
+            base = Path(reference) if Path(reference).is_absolute() else source.parent / reference
+            if _UDIM in reference:
+                return udim(reference, base)
             try:
-                resolved = candidate.resolve(strict=True)
+                base.resolve(strict=True)
             except OSError:
                 failure.append("website_company_simulation_reference_missing")
                 return reference
-            if not resolved.is_relative_to(self.assets) or not resolved.is_file():
+            resolved = inside(base)
+            if resolved is None:
                 failure.append("website_company_simulation_outside_reference")
                 return reference
             placed = self.placed.get(resolved)
             if placed is None:
-                placed = self.staging / "scene" / "files" / f"file-{len(self.placed) + 1:03d}{resolved.suffix.lower()}"
+                placed = self._target(resolved.suffix.lower())
                 self.place(resolved, placed, label)
             relative = "./" + Path(os.path.relpath(placed, target.parent)).as_posix()
             if relative != reference:
                 changed.append(True)
             return relative
+
+        def udim(reference: str, base: Path) -> str:
+            head, _, tail = base.name.partition(_UDIM)
+            pattern = re.compile(re.escape(head) + r"(1[0-9]{3})" + re.escape(tail))
+            try:
+                tiles = sorted(item for item in base.parent.iterdir() if pattern.fullmatch(item.name))
+            except OSError:
+                tiles = []
+            if not tiles or any(inside(tile) is None for tile in tiles):
+                failure.append("website_company_simulation_reference_missing" if not tiles
+                               else "website_company_simulation_outside_reference")
+                return reference
+            stem = self._target("")
+            for tile in tiles:
+                number = pattern.fullmatch(tile.name).group(1)
+                tile_target = stem.with_name(f"{stem.name}.{number}{tail.lower() or tile.suffix.lower()}")
+                tile_target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(tile.resolve(), tile_target)
+                self.placed.setdefault(tile.resolve(), tile_target)
+            changed.append(True)
+            return "./" + Path(os.path.relpath(stem.with_name(f"{stem.name}.{_UDIM}{tail.lower()}"),
+                                                target.parent)).as_posix()
         from pxr import UsdUtils
+        offsets = list(layer.subLayerOffsets)
         UsdUtils.ModifyAssetPaths(layer, rewrite)
+        for index, offset in enumerate(offsets):
+            if index < len(layer.subLayerPaths):
+                layer.subLayerOffsets[index] = offset
+        if not failure:
+            _rewrite_strings(layer, rewrite)
         if failure:
             raise PackageRefused(failure[0], label)
         if changed:
@@ -381,64 +506,84 @@ _SAYS = {"scene_appearance": "how the site looks", "scene_collision": "the site'
 def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[str],
             units: Mapping[str, tuple[str | None, float | None]]) -> str:
     """Only what is true of the package in front of it."""
-    from .scene_package_stage import ROLE_PRIMS
     lines = ["Simulation of one job", "", "What this is", "",
              "A simulation of the site a deployment company was asked about, with the job's object in it,",
              "and the rule for what counts as the job done. Test in your own tools.", "",
              "How the pieces fit", "",
              "- scene.usda: open this one. It places every part below at its position, in /World."]
-    for role, relative in placed.items():
-        hidden = "" if source["files"][role]["placement"]["visible"] else " Hidden in scene.usda."
-        lines.append(f"- {relative} (/World/{ROLE_PRIMS[role]}): {_SAYS[role]}.{hidden}")
+    hidden = []
+    for prim, relative in placed.items():
+        row = source["files"][prim]
+        says = _SAYS.get(row["role"], "a part of the site")
+        visible = row["placement"]["visible"]
+        lines.append(f"- {relative} (/World/{prim}): {says}." + ("" if visible else " Hidden in scene.usda."))
+        if not visible:
+            hidden.append(prim)
     if any(name.startswith("scene/files/") for name in names):
         lines.append("- scene/files/: files the parts above use.")
     lines += ["- success_rule.json: what counts as done, as numbers, with the run's timing and the object's",
-              "  start position and size where known.", "- README.txt: this file.", "",
-              "Units and axes", "", "- scene.usda is in metres (1 unit is 1 metre), radians and seconds.",
+              "  start position and size where known.", "- README.txt: this file.", ""]
+    lines += ["Each part's file is referenced on a child prim, /World/<part>/Asset. The part's position and",
+              "orientation in the simulation are on /World/<part>, so any transform the file itself holds (its",
+              "own scale or rotation) is kept and applied first, as Blueprint's simulation applies it."]
+    for prim in hidden:
+        lines += [f"/World/{prim} is in the scene but hidden, as in Blueprint's simulation, where it is used for",
+                  "contact and not drawn. To see it, set its visibility to inherited (in usdview: select it and",
+                  "press Make Visible)."]
+    lines += ["", "Units and axes", "", "- scene.usda is in metres (1 unit is 1 metre), radians and seconds.",
               f"- Up is +{source['axis']} in scene.usda."]
-    for role, relative in placed.items():
-        up, metres = units[role]
+    for prim, relative in placed.items():
+        up, metres = units[prim]
         stated = [f"up axis {up}" if up else None, f"{metres:g} metres per unit" if metres is not None else None]
         stated = [item for item in stated if item]
         lines.append(f"- {relative} states " + (" and ".join(stated) if stated else "no up axis or unit") + ".")
     if source.get("appearance_representation") == "particlefield_3d_gaussian_splat":
-        lines.append("- The look is a 3D Gaussian splat in USD particle fields. Some tools cannot show it; the "
-                     "collision part still holds the geometry.")
+        lines += ["- The room's look is a 3D Gaussian splat stored as USD particle fields. Some tools cannot show",
+                  "  it; the hidden collision part holds the room's geometry."]
     lines += ["", "How it was made", "",
               "Built from one phone video of the site. Sizes, distances and positions are estimates from that",
               "video, not measurements. A result in this simulation is not a promise of what a robot does at the",
-              "site, and says nothing about safety. No robot is included: bring your own.", "",
-              "Terms", "",
+              "site, and says nothing about safety. No robot is included: bring your own."]
+    if (source.get("rule") or {}).get("object_estimates_from_video"):
+        lines.append("The object's mass and friction in success_rule.json are ranges estimated from the video.")
+    lines += ["", "Terms", "",
               "This package is for judging this one job. Do not pass it on and do not use it to train software.",
               "Blueprint may ask you to delete it; then delete every copy.", ""]
     return "\n".join(lines)
 
 
 def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tuple[str, str]],
-                  max_bytes: int = MAX_PACKAGE_BYTES) -> dict[str, Any]:
-    """Stage, rewrite, compose, scan and zip the package to ``output``; ``PackageRefused`` or ``OVER_CAP`` otherwise."""
+                  words: list[tuple[bytes, str]] | None = None, max_bytes: int = MAX_PACKAGE_BYTES) -> dict[str, Any]:
+    """Stage, rewrite, compose, scan and zip the package to ``output``; ``PackageRefused`` or ``OVER_CAP`` otherwise.
+
+    It holds no lock: every file it writes is its own (a staging folder and a partial zip named for this build).
+    """
+    import tempfile
+
     from .outbound_file_scan import literal_forms, scan_tree
     from .scene_package_stage import StageRefused, write_stage
     if source.get("refusal"):
         raise PackageRefused(source["refusal"])
     if sum(row["size_bytes"] for row in source["files"].values()) > max_bytes:
         raise ValueError(OVER_CAP)
-    staging = output.parent / STAGING
-    partial = output.with_name(output.name + ".partial")
-    shutil.rmtree(staging, ignore_errors=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=STAGING + "-", dir=output.parent))
+    staging, scratch = work / "package", work / "scan"
+    partial = work / "simulation.zip.partial"
     staging.mkdir(mode=0o750)
+    scratch.mkdir(mode=0o700)
     try:
         localizer = _Localizer(Path(source["assets_dir"]), staging)
         placed: dict[str, str] = {}
         units: dict[str, tuple[str | None, float | None]] = {}
         rows = []
-        for role, row in source["files"].items():
+        for prim, row in source["files"].items():
             if _sha256_file(row["path"]) != row["sha256"]:
-                raise PackageRefused("website_company_simulation_source_changed", role)
-            relative = PACKAGE_NAMES[role] + row["suffix"]
-            localizer.place(Path(row["path"]), staging / relative, relative)
-            placed[role] = relative
-            units[role] = _layer_units(staging / relative)
+                raise PackageRefused("website_company_simulation_source_changed", row["role"])
+            relative = row["placement"]["name"] + row["suffix"]
+            localizer.place(Path(row["path"]), staging / relative, row["role"])
+            placed[prim] = relative
+            units[prim] = _layer_units(staging / relative)
             rows.append({**row["placement"], "file": relative})
         try:
             write_stage(staging / "scene.usda", rows, axis=source["axis"])
@@ -449,7 +594,7 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
         (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units), encoding="utf-8")
         _resolves_inside(staging)
-        findings = scan_tree(staging, literal_forms(literals))
+        findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch)
         if findings:
             raise PackageRefused("website_company_simulation_file_names_the_site", findings[0].sentence())
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
@@ -464,8 +609,7 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
             raise ValueError(OVER_CAP)
         os.replace(partial, output)
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
-        partial.unlink(missing_ok=True)
+        shutil.rmtree(work, ignore_errors=True)
     return {"format": FORMAT, "content_type": CONTENT_TYPE, "digest": _sha256_file(output), "size_bytes": size,
             "files": names, "max_bytes": int(max_bytes)}
 
@@ -586,6 +730,13 @@ def publish_company_simulation(capture_root: Path, *, now: Callable[[], float] =
         return {"status": "failed", "reason": clip._reason(error)}
 
 
+def _own_reason(error: BaseException) -> str:
+    """The reason in the simulation's own name: the clip's shared rights checks speak in the clip's."""
+    reason = clip._reason(error)
+    return "website_company_simulation_" + reason.removeprefix("website_company_clip_") \
+        if reason.startswith("website_company_clip_") else reason
+
+
 def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max_bytes):
     identity = clip._identity(root)
     directory = root.joinpath(*DIRECTORY)
@@ -605,6 +756,8 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         return {"status": "not_permitted"}
     if simulation_source(root, queue_root=queue_root) is None:
         return {"status": "no_source"}
+    # 1. Under the lock: decide. 2. Without it: build (minutes for a real scene; withdrawal deletion is never held).
+    # 3. Under the lock again: check nothing changed, then publish.
     with package_lock(root):
         source = simulation_source(root, queue_root=queue_root)
         if source is None:
@@ -622,64 +775,87 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         except Exception as error:  # noqa: BLE001 - any doubt about rights is a refusal
             _record_statement_check(root, now(), error)
             if str(error) != clip._NOT_PERMITTED:
-                return {"status": "refused", "reason": clip._reason(error)}
+                return {"status": "refused", "reason": _own_reason(error)}
             if manifest:
                 clip._take_back(manifest, manifest_path, retract)
             return {"status": "not_permitted"}
         built = manifest.get("package") or {}
-        if (manifest.get("simulation_revision") != revision or package_path.is_symlink() or not package_path.is_file()
-                or _sha256_file(package_path) != built.get("digest")):
-            if manifest.get("archive") and not clip._take_back(manifest, manifest_path, retract):
-                return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
-            base = {"schema_version": MANIFEST_SCHEMA, **identity, "simulation_revision": revision,
-                    "source": {"plan_digest": source.get("plan_digest"),
-                               "files": {role: row["sha256"] for role, row in sorted(source["files"].items())}},
-                    "permission": basis, "built_at_epoch": int(now()), "archive": None, "delivered": None}
-            try:
-                built = build_package(source, package_path, literals=secret_literals(root, source), max_bytes=max_bytes)
-            except PackageRefused as error:
-                package_path.unlink(missing_ok=True)
-                write_json(manifest_path, {**base, "package": None, "refused": error.reason, "detail": error.detail})
-                logger.warning("website_company_simulation_refused capture=%s reason=%s", identity["capture_id"],
-                               error.reason)
-                return {"status": "refused", "reason": error.reason, "detail": error.detail}
-            except ValueError as error:
-                if str(error) != OVER_CAP:
-                    raise
-                package_path.unlink(missing_ok=True)
-                write_json(manifest_path, {**base, "package": None, "refused": OVER_CAP})
-                logger.warning("website_company_simulation_over_size_cap capture=%s", identity["capture_id"])
-                return {"status": "over_size_cap"}
-            manifest = {**base, "package": {**built, "path": PACKAGE_FILE}}
-        manifest["permission"] = basis
-        record = package_record(identity=identity, manifest=manifest)
-        manifest["simulation_digest"] = record["simulation_digest"]
-        write_json(manifest_path, manifest)
-        if capture_withdrawn(root):
-            return {"status": "withdrawn"}
-        stored = manifest.get("archive") or {}
-        if stored.get("digest") != built["digest"] or clip._hidden(stored):
-            manifest["archive"] = archive(package_path, identity=identity)
-            if manifest["archive"]["digest"] != built["digest"]:
-                raise ValueError("website_company_simulation_archive_mismatch")
-            write_json(manifest_path, manifest)
-        if capture_withdrawn(root):
-            clip._take_back(manifest, manifest_path, retract)
-            return {"status": "withdrawn"}
+        needs_build = (manifest.get("simulation_revision") != revision or package_path.is_symlink()
+                       or not package_path.is_file() or _sha256_file(package_path) != built.get("digest"))
+        if needs_build and manifest.get("archive") and not clip._take_back(manifest, manifest_path, retract):
+            return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
+    base = {"schema_version": MANIFEST_SCHEMA, **identity, "simulation_revision": revision,
+            "source": {"plan_digest": source.get("plan_digest"),
+                       "files": {prim: row["sha256"] for prim, row in sorted(source["files"].items())}},
+            "permission": basis, "built_at_epoch": int(now()), "archive": None, "delivered": None}
+    candidate, outcome = directory / f".candidate-{revision[7:23]}.zip", None
+    if needs_build:
         try:
-            deliver(record, identity=identity)
-        except Exception as error:  # noqa: BLE001 - classified below; the archive stands only with rights
-            reason = clip._reason(error)
-            if _RIGHTS_REFUSALS.search(str(error)):
-                clip._take_back(manifest, manifest_path, retract)
-                return {"status": "refused", "reason": reason}
-            manifest["last_delivery_error"] = reason
-            write_json(manifest_path, manifest)
-            return {"status": "failed", "reason": reason}
-        manifest["delivered"] = {"simulation_digest": record["simulation_digest"], "at_epoch": int(now())}
-        manifest.pop("last_delivery_error", None)
+            built = build_package(source, candidate, literals=secret_literals(root, source),
+                                  words=capture_site_words(root), max_bytes=max_bytes)
+        except PackageRefused as error:
+            outcome = {**base, "package": None, "refused": error.reason, "detail": error.detail}
+        except ValueError as error:
+            if str(error) != OVER_CAP:
+                candidate.unlink(missing_ok=True)
+                raise
+            outcome = {**base, "package": None, "refused": OVER_CAP}
+    try:
+        with package_lock(root):
+            if capture_withdrawn(root):
+                return {"status": "withdrawn"}
+            if needs_build:
+                fresh = simulation_source(root, queue_root=queue_root)
+                if fresh is None or simulation_revision(fresh, max_bytes=max_bytes) != revision \
+                        or _read(manifest_path).get("simulation_revision") not in (None, revision, manifest.get(
+                            "simulation_revision")):
+                    return {"status": "failed", "reason": "website_company_simulation_changed_during_build"}
+                if outcome is not None:
+                    package_path.unlink(missing_ok=True)
+                    write_json(manifest_path, outcome)
+                    if outcome["refused"] == OVER_CAP:
+                        logger.warning("website_company_simulation_over_size_cap capture=%s", identity["capture_id"])
+                        return {"status": "over_size_cap"}
+                    logger.warning("website_company_simulation_refused capture=%s reason=%s", identity["capture_id"],
+                                   outcome["refused"])
+                    return {"status": "refused", "reason": outcome["refused"], "detail": outcome["detail"]}
+                os.replace(candidate, package_path)
+                manifest = {**base, "package": {**built, "path": PACKAGE_FILE}}
+            return _publish_built(root, identity, manifest, manifest_path, package_path, basis, built, revision,
+                                  now, archive, retract, deliver)
+    finally:
+        candidate.unlink(missing_ok=True)
+
+
+def _publish_built(root, identity, manifest, manifest_path, package_path, basis, built, revision, now, archive,
+                   retract, deliver):
+    manifest["permission"] = basis
+    record = package_record(identity=identity, manifest=manifest)
+    manifest["simulation_digest"] = record["simulation_digest"]
+    write_json(manifest_path, manifest)
+    stored = manifest.get("archive") or {}
+    if stored.get("digest") != built["digest"] or clip._hidden(stored):
+        manifest["archive"] = archive(package_path, identity=identity)
+        if manifest["archive"]["digest"] != built["digest"]:
+            raise ValueError("website_company_simulation_archive_mismatch")
         write_json(manifest_path, manifest)
-        return {"status": "published", "simulation_revision": revision, "simulation_digest": record["simulation_digest"]}
+    if capture_withdrawn(root):
+        clip._take_back(manifest, manifest_path, retract)
+        return {"status": "withdrawn"}
+    try:
+        deliver(record, identity=identity)
+    except Exception as error:  # noqa: BLE001 - classified below; the archive stands only with rights
+        reason = _own_reason(error)
+        if _RIGHTS_REFUSALS.search(str(error)):
+            clip._take_back(manifest, manifest_path, retract)
+            return {"status": "refused", "reason": reason}
+        manifest["last_delivery_error"] = reason
+        write_json(manifest_path, manifest)
+        return {"status": "failed", "reason": reason}
+    manifest["delivered"] = {"simulation_digest": record["simulation_digest"], "at_epoch": int(now())}
+    manifest.pop("last_delivery_error", None)
+    write_json(manifest_path, manifest)
+    return {"status": "published", "simulation_revision": revision, "simulation_digest": record["simulation_digest"]}
 
 
 def tick(storage_root: Path, **options: Any) -> dict[str, int]:

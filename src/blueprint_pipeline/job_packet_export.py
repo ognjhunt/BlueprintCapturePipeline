@@ -1197,14 +1197,16 @@ def _secrets(capture_dir: Path, context: Mapping[str, Any], pull: PullRecord) ->
     return [(value.encode(), kind) for value, kind in found if isinstance(value, str) and len(value) >= 4]
 
 
-def _scan_packet(packet: Path, secrets: list[tuple[bytes, str]]) -> None:
+def _scan_packet(packet: Path, secrets: list[tuple[bytes, str]], words: list[tuple[bytes, str]] | None = None) -> None:
     """Refuse when any file written into the packet, or any member of a zip there, holds an id, key, path or link.
 
     The scan is shared with the simulation package (``outbound_file_scan``): ids in both forms, host paths, storage,
-    file and web links, bare web addresses in text, tokens, and the text form of every binary USD layer.
+    file and other links, bare web addresses, emails and IP addresses in text, tokens, and the text form of every
+    binary USD layer. The site's own words (``words``) are looked for under ``files/`` only: the job sheet quotes the
+    site's description on purpose.
     """
     from .outbound_file_scan import first_finding, literal_forms
-    finding = first_finding(packet, literal_forms(secrets))
+    finding = first_finding(packet, [*literal_forms(secrets), *(words or [])], words_only_under="files/")
     if finding is not None:
         raise JobPacketRefused("job_packet_file_names_the_site", finding.sentence())
 
@@ -1437,7 +1439,11 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
         written = {"JOB_SHEET.md": "\n".join(sheet), "README.md": _readme(
             files=written_files, preparation=preparation, base_scene=base_scene)}
         if isinstance(criteria, Mapping):
-            written["files/task/success_rule.json"] = json.dumps({"criteria": criteria}, indent=2, sort_keys=True) + "\n"
+            # Through the shared allow-list (``scene_package_stage.neutral_criteria``): numbers and closed mode words
+            # only, so no label the site typed or path the plan holds leaves in the rule.
+            from .scene_package_stage import neutral_criteria
+            written["files/task/success_rule.json"] = json.dumps({"criteria": neutral_criteria(criteria)[0]}, indent=2,
+                                                                 sort_keys=True) + "\n"
         for filename, text in written.items():
             (packet / filename).parent.mkdir(parents=True, exist_ok=True)
             (packet / filename).write_text(text, encoding="utf-8")
@@ -1462,7 +1468,9 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
             target = packet / "files" / "video" / f"video{video.suffix.lower()}"
             target.parent.mkdir(parents=True, exist_ok=True)
             sound = _copy_video(video, target)
-        _scan_packet(packet, _secrets(capture_dir, context, pull))
+        from .outbound_file_scan import capture_site_words, record_site_words
+        _scan_packet(packet, _secrets(capture_dir, context, pull),
+                     capture_site_words(capture_dir) + record_site_words([context]))
         listed = []
         for relative in sorted([*written, *(row[2] for row in copies), *(row[2] for row in members),
                                 *([SIMULATION_STAGE] if stage is not None else []),
