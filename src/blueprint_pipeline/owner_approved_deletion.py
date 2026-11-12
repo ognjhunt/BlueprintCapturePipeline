@@ -34,6 +34,17 @@ pending or processing queue message names it, a live process uses it, a systemd 
 names it, or a sibling symlink points into it. The paths are opened one component at a time
 without following a link, a folder holding another mount is refused, and the deletion itself
 never follows a symlink.
+
+A path is also refused while the host's live state names it or a path under it
+(``named_by_live_state``, with the naming files in the row's ``named_by``): every JSON and
+``.env`` file under ``/etc/blueprint`` (robot catalog, controls bootstrap, configured-controls
+intents, machinery files, launch profiles, scene progression config, env files), every scene
+intent's files and the retained bindings they name, the public source bindings, the launch-profile
+catalog, the loose JSON in the inputs root and the registries the control plane reads on a tick
+(``LiveState``). On 2026-11-12 a clearance without this check deleted 112 folders those files still
+named. A file inside a path this manifest deletes does not count; a file marked ended, revoked or
+development-only still does. If a required root is missing or any file under the roots cannot be
+read or parsed, every path is ``reference_scan_incomplete`` and nothing is eligible.
 """
 
 from __future__ import annotations
@@ -43,6 +54,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -68,6 +80,29 @@ DEFAULT_MANIFEST_DIR = Path("/opt/blueprint/task-evaluation-control-plane/deploy
 DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions")
 DEFAULT_PINS_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/storage-pins")
 DEFAULT_INTENT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents")
+_CONTROL_PLANE = Path("/var/lib/blueprint/pipeline-control-plane")
+#: The host configuration every unit reads (``EnvironmentFile=/etc/blueprint/*.env``, the scene
+#: progression ``--config``, the controls autoprovision defaults, the launch-profile directory).
+DEFAULT_CONFIG_ROOT = Path("/etc/blueprint")
+#: Key files the units make inaccessible (``InaccessiblePaths=``); not configuration, never read.
+CONFIG_EXCLUDED_NAMES = frozenset({"provider-secrets"})
+#: ``public_source_binding_root`` of the scene progression config (task_evaluation_scene_progression).
+DEFAULT_PUBLIC_SOURCE_BINDING_ROOT = INPUTS_ROOT / "public-source-bindings"
+#: ``BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH`` (production_runtime_env_guard).
+DEFAULT_LAUNCH_PROFILE_CATALOG = _CONTROL_PLANE / "task-evaluation-launch-profile-catalog.json"
+#: Further registries read on a tick, scanned when present: website source bindings (scene
+#: progression, website_scene_source_registry_paths), configured-scene activation intents
+#: (``activation_intent_root``), beta policy screening (coordinator ``DEFAULT_QUEUE_ROOT``) and
+#: standing launch authorizations (task_evaluation_release_retention).
+DEFAULT_REGISTRY_ROOTS = (
+    _CONTROL_PLANE / "website-source-bindings",
+    _CONTROL_PLANE / "task-evaluation-scene-configuration-activation-intents",
+    _CONTROL_PLANE / "beta-policy-screening",
+    _CONTROL_PLANE / "standing-authorizations",
+)
+MAX_SCAN_DEPTH = 8
+MAX_SCAN_FILES = 200_000
+MAX_SCAN_FILE_BYTES = 64 * 1024 * 1024
 QUEUE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS"
 UNIT_DIRECTORIES = (Path("/etc/systemd/system"), Path("/run/systemd/system"), Path("/run/systemd/transient"))
 MAX_APPROVAL_SECONDS = 14 * 86400
@@ -350,6 +385,250 @@ def build_references(*, pins_root: Path, queue_roots: Sequence[Path], intent_roo
                       unit_texts=unit_file_texts(unit_directories), process_index=index, now=now)
 
 
+# --- live state: the configuration and registries that name paths ---------------------------------
+
+#: An absolute path inside a string: at a token boundary, up to the first character a path here never
+#: holds (``:`` separates PATH-like lists, ``=`` ends an ``--option=``). ``file:///x`` yields ``/x``.
+_PATH_TOKEN = re.compile(r"(?<![A-Za-z0-9._@%+~-])/[A-Za-z0-9._@%+~/-]+")
+NAMED_BY_LIVE_STATE = "named_by_live_state"
+REFERENCE_SCAN_INCOMPLETE = "reference_scan_incomplete"
+
+
+def _paths_in(text: str) -> set[str]:
+    found = set()
+    for match in _PATH_TOKEN.finditer(text):
+        path = posixpath.normpath(match.group())
+        if path != "/" and not path.startswith("//"):  # ``//host/...`` is a URL's host, not a host path
+            found.add(path)
+    return found
+
+
+def _json_strings(value: Any) -> list[str]:
+    strings, stack = [], [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            strings.append(current)
+        elif isinstance(current, dict):
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return strings
+
+
+def _inside(path: str, roots: Sequence[str]) -> bool:
+    return any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
+
+
+class LiveState:
+    """Every path the host's configuration and registries name, with the files that name it.
+
+    Built once per plan or apply. ``unreadable`` lists every root or file that could not be read
+    completely; while it is not empty no path is eligible (``reference_scan_incomplete``).
+    """
+
+    def __init__(self) -> None:
+        self.named: dict[str, set[str]] = {}  # a named path and each of its ancestors -> naming files
+        self.unreadable: dict[str, str] = {}
+        self.sources: list[dict[str, Any]] = []
+        self.file_count = 0
+
+    def _add(self, source_file: str, paths: set[str]) -> None:
+        for path in paths:
+            current = path
+            while current not in ("/", ""):
+                self.named.setdefault(current, set()).add(source_file)
+                current = posixpath.dirname(current)
+
+    def naming_files(self, path: Path | str, excluded: Sequence[str] = ()) -> list[str]:
+        """The files naming ``path`` or a path under it, leaving out files inside ``excluded`` or ``path``."""
+
+        target = posixpath.normpath(str(path))
+        skip = [*map(str, excluded), target]
+        return sorted(name for name in self.named.get(target, ()) if not _inside(name, skip))
+
+    def summary(self) -> dict[str, Any]:
+        return {"status": "incomplete" if self.unreadable else "complete", "file_count": self.file_count,
+                "sources": self.sources,
+                "unreadable": [{"path": path, "code": code} for path, code in sorted(self.unreadable.items())]}
+
+    # --- reading ---------------------------------------------------------------------------------
+
+    def _read(self, path: Path, *, env: bool = False) -> Any:
+        """The parsed JSON (or ``.env`` text), recording its paths; ``None`` and an unreadable entry on failure."""
+
+        name = str(path)
+        if self.file_count >= MAX_SCAN_FILES:
+            self.unreadable.setdefault(name, "scan_file_limit")
+            return None
+        self.file_count += 1
+        try:
+            info = os.stat(path)
+            if not stat.S_ISREG(info.st_mode):
+                self.unreadable[name] = "not_a_regular_file"
+                return None
+            if info.st_size > MAX_SCAN_FILE_BYTES:
+                self.unreadable[name] = "too_large"
+                return None
+            raw = path.read_bytes()
+        except PermissionError:
+            self.unreadable[name] = "permission_denied"
+            return None
+        except OSError:
+            self.unreadable[name] = "unreadable"
+            return None
+        if env:
+            text = raw.decode("utf-8", "replace")
+            self._add(name, _paths_in(text))
+            return text
+        try:
+            document = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.unreadable[name] = "not_json"
+            return None
+        self._add(name, {found for text in _json_strings(document) for found in _paths_in(text)})
+        return document
+
+    def _walk(self, root: Path, *, kind: str, required: bool, env_files: bool = False, excluded_names: frozenset[str] = frozenset()) -> list[tuple[Path, Any]]:
+        """Read every JSON (and ``.env``) file under ``root``; a file root is read itself."""
+
+        source = {"root": str(root), "kind": kind, "required": required}
+        self.sources.append(source)
+        documents: list[tuple[Path, Any]] = []
+        if not os.path.lexists(root):
+            source["status"] = "absent"
+            if required:
+                self.unreadable[str(root)] = "required_root_missing"
+            return documents
+        if not root.is_dir():
+            documents.append((root, self._read(root)))
+            source.update(status="read", files=1)
+            return documents
+        before = self.file_count
+        pending = [(root, 0)]
+        while pending:
+            directory, depth = pending.pop()
+            try:
+                with os.scandir(directory) as iterator:
+                    items = sorted(iterator, key=lambda item: item.name)
+            except PermissionError:
+                self.unreadable[str(directory)] = "permission_denied"
+                continue
+            except OSError:
+                self.unreadable[str(directory)] = "unreadable"
+                continue
+            for item in items:
+                path = Path(item.path)
+                if item.name in excluded_names and directory == root:
+                    continue
+                wanted = item.name.endswith(".json") or (env_files and (item.name == ".env"
+                                                                         or item.name.endswith(".env")))
+                try:
+                    if item.is_symlink():
+                        # A link names its target, dangling or not; a linked file is read where it is linked.
+                        self._add(str(path), {posixpath.normpath(str(directory / os.readlink(path)))})
+                        if wanted and path.is_file():
+                            documents.append((path, self._read(path, env=not item.name.endswith(".json"))))
+                        continue
+                    if item.is_dir(follow_symlinks=False):
+                        if depth + 1 >= MAX_SCAN_DEPTH:
+                            self.unreadable[str(path)] = "scan_depth_limit"
+                        else:
+                            pending.append((path, depth + 1))
+                        continue
+                except OSError:
+                    self.unreadable[str(path)] = "unreadable"
+                    continue
+                if wanted and item.is_file(follow_symlinks=False):
+                    documents.append((path, self._read(path, env=not item.name.endswith(".json"))))
+        source.update(status="read", files=self.file_count - before)
+        return documents
+
+    def _loose_json(self, root: Path) -> None:
+        source = {"root": str(root), "kind": "inputs_root_loose_json", "required": True}
+        self.sources.append(source)
+        before = self.file_count
+        try:
+            with os.scandir(root) as iterator:
+                items = sorted(iterator, key=lambda item: item.name)
+        except FileNotFoundError:
+            source["status"] = "absent"
+            self.unreadable[str(root)] = "required_root_missing"
+            return
+        except OSError:
+            self.unreadable[str(root)] = "unreadable"
+            return
+        for item in items:
+            if item.name.endswith(".json") and item.is_file(follow_symlinks=False):
+                self._read(Path(item.path))
+        source.update(status="read", files=self.file_count - before)
+
+
+def _retained_binding_paths(document: Any) -> set[str]:
+    """``source_binding.path`` wherever an intent's files record a retained binding."""
+
+    found, stack = set(), [document]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            binding = current.get("source_binding")
+            if isinstance(binding, dict) and isinstance(binding.get("path"), str):
+                found.add(posixpath.normpath(binding["path"]))
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return found
+
+
+def scan_live_state(*, config_root: Path, intent_root: Path | None, binding_root: Path,
+                    launch_profile_catalog: Path, inputs_root: Path,
+                    registry_roots: Sequence[Path] = ()) -> LiveState:
+    """Read, once, every file of live configuration and registry state that can name a path."""
+
+    state = LiveState()
+    state._walk(Path(config_root), kind="host_configuration", required=True, env_files=True,
+                excluded_names=CONFIG_EXCLUDED_NAMES)
+    if intent_root is not None:
+        intents = state._walk(Path(intent_root), kind="scene_intents", required=True)
+        retained = sorted({path for _, document in intents for path in _retained_binding_paths(document)})
+        source = {"root": "source_binding.path of the scene intents", "kind": "retained_source_bindings",
+                  "required": False, "files": 0, "status": "read"}
+        state.sources.append(source)
+        for path in retained:
+            if os.path.lexists(path):  # a binding already gone holds nothing; the intent still names it
+                state._read(Path(path))
+                source["files"] += 1
+    state._walk(Path(binding_root), kind="public_source_bindings", required=True)
+    state._walk(Path(launch_profile_catalog), kind="launch_profile_catalog", required=True)
+    state._loose_json(Path(inputs_root))
+    for root in registry_roots:
+        state._walk(Path(root), kind="control_plane_registry", required=False)
+    return state
+
+
+def live_state_reasons(paths: Sequence[str], state: LiveState, deleted: Sequence[str],
+                       ) -> dict[str, tuple[list[str], list[str]]]:
+    """Each path's live-state reasons and naming files; ``deleted`` are the paths this run may remove.
+
+    A file inside a path that will be deleted does not count, so the set shrinks until no path it
+    still holds is named by a file inside another path it holds.
+    """
+
+    if state.unreadable:
+        return {path: ([REFERENCE_SCAN_INCOMPLETE], []) for path in paths}
+    deleting = [path for path in deleted if path in set(paths)]
+    while True:
+        named = [path for path in deleting if state.naming_files(path, deleting)]
+        if not named:
+            break
+        deleting = [path for path in deleting if path not in named]
+    result = {}
+    for path in paths:
+        files = state.naming_files(path, deleting)
+        result[path] = ([NAMED_BY_LIVE_STATE], files) if files else ([], [])
+    return result
+
+
 # --- the per-kind checks ------------------------------------------------------------------------
 
 
@@ -486,14 +765,24 @@ class Settings:
     def __init__(self, *, pins_root: Path = DEFAULT_PINS_ROOT, queue_roots: Sequence[Path] = (),
                  intent_root: Path | None = DEFAULT_INTENT_ROOT, inputs_root: Path = INPUTS_ROOT,
                  handoff_root: Path = HANDOFF_ROOT, unit_directories: Sequence[Path] = UNIT_DIRECTORIES,
-                 process_root: Path = Path("/proc")) -> None:
+                 process_root: Path = Path("/proc"), config_root: Path = DEFAULT_CONFIG_ROOT,
+                 binding_root: Path = DEFAULT_PUBLIC_SOURCE_BINDING_ROOT,
+                 launch_profile_catalog: Path = DEFAULT_LAUNCH_PROFILE_CATALOG,
+                 registry_roots: Sequence[Path] = DEFAULT_REGISTRY_ROOTS) -> None:
         self.pins_root, self.queue_roots, self.intent_root = Path(pins_root), tuple(map(Path, queue_roots)), intent_root
         self.inputs_root, self.handoff_root = Path(inputs_root), Path(handoff_root)
         self.unit_directories, self.process_root = tuple(unit_directories), Path(process_root)
+        self.config_root, self.binding_root = Path(config_root), Path(binding_root)
+        self.launch_profile_catalog, self.registry_roots = Path(launch_profile_catalog), tuple(map(Path, registry_roots))
 
     def references(self, now: float) -> References:
         return build_references(pins_root=self.pins_root, queue_roots=self.queue_roots, intent_root=self.intent_root,
                                 now=now, unit_directories=self.unit_directories, process_root=self.process_root)
+
+    def live_state(self) -> LiveState:
+        return scan_live_state(config_root=self.config_root, intent_root=self.intent_root,
+                               binding_root=self.binding_root, launch_profile_catalog=self.launch_profile_catalog,
+                               inputs_root=self.inputs_root, registry_roots=self.registry_roots)
 
 
 def _check(entry: Mapping[str, Any], references: References, settings: Settings, now: float,
@@ -517,14 +806,21 @@ def plan_manifest(manifest_path: Path, *, report_root: Path, settings: Settings,
     expired = observed_at > _instant(manifest["expires_at"], "expires_at_invalid")
     references = settings.references(observed_at)
     link_targets = _sibling_link_targets(settings.inputs_root) if settings.inputs_root.is_dir() else []
+    live = settings.live_state()
+    checked = [(entry, *_check(entry, references, settings, observed_at, link_targets))
+               for entry in manifest["entries"]]
+    named = live_state_reasons([entry["path"] for entry, _, _ in checked], live,
+                               [entry["path"] for entry, reasons, _ in checked if not reasons and not expired])
     rows = []
-    for entry in manifest["entries"]:
-        reasons, identity = _check(entry, references, settings, observed_at, link_targets)
+    for entry, reasons, identity in checked:
+        live_reasons, named_by = named[entry["path"]]
+        if reasons != ["absent"]:
+            reasons = [*reasons, *live_reasons]
         if expired:
             reasons = sorted({*reasons, "approval_expired"})
         status = "absent" if reasons == ["absent"] else "eligible" if not reasons else "skipped"
         rows.append({"path": entry["path"], "class": entry["class"], "status": status, "reasons": reasons,
-                     "identity": identity})
+                     "named_by": named_by, "identity": identity})
     eligible = [row for row in rows if row["status"] == "eligible"]
     plan: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA, "manifest_id": manifest["manifest_id"], "manifest_sha256": manifest_sha256,
@@ -533,7 +829,7 @@ def plan_manifest(manifest_path: Path, *, report_root: Path, settings: Settings,
         "planned_at_epoch": observed_at, "mutations": 0, "entry_count": len(rows),
         "eligible_count": len(eligible), "eligible_apparent_bytes": sum(row["identity"]["apparent_bytes"]
                                                                        for row in eligible),
-        "skipped_counts": _reason_counts(rows), "entries": rows,
+        "skipped_counts": _reason_counts(rows), "reference_scan": live.summary(), "entries": rows,
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     _publish(Path(report_root) / manifest["manifest_id"] / "plan.json", plan)
@@ -610,6 +906,9 @@ def apply_manifest(manifest_path: Path, *, report_root: Path, settings: Settings
     entries = {entry["path"]: entry for entry in manifest["entries"]}
     references = settings.references(observed_at)
     link_targets = _sibling_link_targets(settings.inputs_root) if settings.inputs_root.is_dir() else []
+    live = settings.live_state()
+    named = live_state_reasons([row["path"] for row in plan["entries"]], live,
+                               [row["path"] for row in plan["entries"] if row["status"] == "eligible"])
     outcomes = []
     for row in plan["entries"]:
         receipt_path = directory / "receipts" / f"{_key(row['path'])}.json"
@@ -635,9 +934,25 @@ def apply_manifest(manifest_path: Path, *, report_root: Path, settings: Settings
             # It stopped before the rename: the path is untouched, so check it from the start.
         if row["status"] != "eligible":
             outcomes.append({"path": row["path"], "outcome": "not_eligible_in_plan"})
+            if row["status"] == "skipped":
+                _publish(receipt_path, _receipt(manifest, plan, row, status="skipped", identity=row["identity"] or {},
+                                                aside="", observed_at=observed_at, reasons=row["reasons"],
+                                                named_by=row.get("named_by") or [],
+                                                reference_scan_unreadable=(plan.get("reference_scan") or {}).get(
+                                                    "unreadable", []) if REFERENCE_SCAN_INCOMPLETE in row["reasons"]
+                                                else []))
             continue
         entry = entries[row["path"]]
         reasons, identity = _check(entry, references, settings, observed_at, link_targets)
+        live_reasons, named_by = named[row["path"]]
+        if reasons != ["absent"]:
+            reasons = [*reasons, *live_reasons]
+        if live_reasons:
+            outcomes.append({"path": row["path"], "outcome": "skipped", "reasons": reasons, "named_by": named_by})
+            _publish(receipt_path, _receipt(manifest, plan, row, status="skipped", identity=identity or {},
+                                            aside="", observed_at=observed_at, reasons=reasons, named_by=named_by,
+                                            reference_scan_unreadable=live.summary()["unreadable"]))
+            continue
         if not reasons and identity is not None and any(identity[key] != row["identity"][key]
                                                         for key in _COMPARED if entry["class"] == FOLDER):
             reasons = ["changed_since_plan"]
@@ -722,21 +1037,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--report-root", type=Path, default=DEFAULT_REPORT_ROOT)
     parser.add_argument("--pins-root", type=Path, default=DEFAULT_PINS_ROOT)
     parser.add_argument("--intent-root", type=Path, default=DEFAULT_INTENT_ROOT)
+    parser.add_argument("--config-root", type=Path, default=DEFAULT_CONFIG_ROOT)
+    parser.add_argument("--binding-root", type=Path, default=DEFAULT_PUBLIC_SOURCE_BINDING_ROOT)
+    parser.add_argument("--launch-profile-catalog", type=Path, default=DEFAULT_LAUNCH_PROFILE_CATALOG)
     parser.add_argument("--ack", default="")
     args = parser.parse_args(argv)
     queue_roots = [Path(value) for value in os.environ.get(QUEUE_ROOTS_ENV, "").split(":") if value]
     if not queue_roots:
         print(json.dumps({"error": "owner_approved_deletion_queue_roots_unset"}), file=sys.stderr)
         return 2
-    settings = Settings(pins_root=args.pins_root, queue_roots=queue_roots, intent_root=args.intent_root)
+    settings = Settings(pins_root=args.pins_root, queue_roots=queue_roots, intent_root=args.intent_root,
+                        config_root=args.config_root, binding_root=args.binding_root,
+                        launch_profile_catalog=args.launch_profile_catalog)
     summaries, failed = [], False
     for path in manifests(args.manifest_dir):
         try:
             if args.action == "plan":
                 plan = plan_manifest(path, report_root=args.report_root, settings=settings)
-                summaries.append({key: plan[key] for key in ("manifest_id", "plan_digest", "entry_count",
-                                                             "eligible_count", "eligible_apparent_bytes",
-                                                             "skipped_counts")})
+                summaries.append({**{key: plan[key] for key in ("manifest_id", "plan_digest", "entry_count",
+                                                                "eligible_count", "eligible_apparent_bytes",
+                                                                "skipped_counts")},
+                                  "reference_scan": (plan.get("reference_scan") or {}).get("status")})
             else:
                 result = apply_manifest(path, report_root=args.report_root, settings=settings, ack=args.ack)
                 summaries.append({key: result[key] for key in ("manifest_id", "result_digest", "deleted_count",

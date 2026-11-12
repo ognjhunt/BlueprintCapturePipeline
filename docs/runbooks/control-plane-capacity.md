@@ -324,7 +324,11 @@ safe, and a reference can appear after the census.** Read `age_seconds` first.
   rebuild or a paid re-download.
 - The census retires and deletes nothing, and nothing reads it to delete. An
   owner who decides to retire folders lists them in an owner-approved deletion
-  manifest (`deploy/owner-approved-deletions/`), which re-checks every path.
+  manifest (`deploy/owner-approved-deletions/`), which re-checks every path and
+  refuses any folder a file of `/etc/blueprint`, a scene intent, a source binding,
+  the launch-profile catalog or a control-plane registry still names
+  (`named_by_live_state`; see `docs/CONTROL_PLANE_STORAGE.md#owner-approved-deletions`).
+  An old modification time is not evidence that nothing uses a folder.
 
 ## Owner's Phase 0 checklist
 

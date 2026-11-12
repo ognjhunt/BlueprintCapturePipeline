@@ -1158,6 +1158,26 @@ Nothing runs it on a timer. An operator starts two oneshot units by hand:
    it (a failed transient unit counts until `reset-failed`), and no sibling
    symlink points into it. Paths are opened one component at a time without
    following a link, and a folder holding another mount is refused.
+   No file of the host's live state may name the path or a path under it
+   either (whole path components: `/x/scene-84` is not named by `/x/scene-841757`).
+   The plan reads, once: every JSON and `.env` file under `/etc/blueprint` (the
+   robot catalog, the controls autoprovision bootstrap, the configured-controls
+   intents, the public-scene machinery files, the launch profiles, the scene
+   progression config, the env files; not `provider-secrets`, which the units
+   hide), every file of every scene intent and each retained
+   `source_binding.path` they record, the public source bindings
+   (`task-evaluation-inputs/public-source-bindings`), the launch-profile catalog,
+   the loose JSON in `task-evaluation-inputs`, and, when present, the website
+   source bindings, the configured-scene activation intents, beta policy
+   screening and standing authorizations. A named path is refused as
+   `named_by_live_state`, and the row's `named_by` lists every naming file. A
+   file inside a path the same manifest deletes does not count; a file marked
+   ended, revoked or `development_only` does. If a required root is missing or a
+   file cannot be read or is not JSON, every path is `reference_scan_incomplete`,
+   nothing is eligible, and `reference_scan.unreadable` lists what could not be
+   read. There is no override. On 2026-11-12 a clearance made before this check
+   deleted 112 folders those files still named and stopped production for six
+   hours.
 2. `blueprint-owner-approved-deletion.service` deletes what a plan of the same
    manifest bytes, at most 24 hours old, found eligible, while the approval has
    not expired. It re-runs every check and requires the same device, inode and
@@ -1168,7 +1188,18 @@ Nothing runs it on a timer. An operator starts two oneshot units by hand:
    scans), removes it without following links, and rewrites the receipt as
    `deleted`. A run that stopped after the rename is finished by the next apply;
    one that stopped before it starts over. Each run also writes
-   `apply-<epoch>.json` with every path's outcome.
+   `apply-<epoch>.json` with every path's outcome. A path it does not delete
+   because a check refused it gets a `skipped` receipt with its `reasons`,
+   `named_by` and, for an incomplete scan, `reference_scan_unreadable`.
+
+When a folder is refused as `named_by_live_state`, the folder is still in use
+as far as the host can tell, even when what names it is old, revoked or
+development-only. Ask the owner, then retire what names it (end the intent, remove
+the launch profile, re-point the catalog, binding or machinery file to a copy that
+stays) and plan again. Never edit the manifest, a naming file's path or the plan
+to get past it. A `reference_scan_incomplete` plan is fixed by making the listed
+file readable or valid, or by restoring the missing root, never by moving it out
+of the scan.
 
 Receipts and plans are root `0644` under `0755`, so the door can read them.
 Run it again and a deleted path reports `already_deleted`.
