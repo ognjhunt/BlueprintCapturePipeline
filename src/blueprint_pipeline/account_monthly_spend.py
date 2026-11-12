@@ -1,8 +1,9 @@
 """One account-wide monthly spend limit, enforced where every paid admission passes.
 
-Owner decision 2026-11-07, "Meter + monthly cap", and the amount set the same
-day: USD 200 a UTC calendar month for the whole account. Alerts go at 50 %,
-80 % and 100 % ($100, $160, $200). New paid admissions are refused by name,
+Owner decision 2026-11-07, "Meter + monthly cap", one limit a UTC calendar
+month for the whole account: USD 200 from that day, USD 300 from 2026-11-12
+(owner). Alerts go at 50 %, 80 % and 100 % ($150, $240, $300). New paid
+admissions are refused by name,
 ``account_monthly_spend_limit_reached``, once the month's metered spend plus
 held reservations reaches the limit. This is stage 1, which only adds: every
 existing per-job budget, grant, reservation, provider ceiling and runaway

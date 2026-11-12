@@ -38,19 +38,35 @@ def _require(condition):
         raise ValueError("website_assessment_resume_binding_invalid")
 
 
-def preparation_consent_valid(request):
-    """Structural scope only; consequential consumers must reopen authority."""
-    from .website_preparation_revision_identity import renewal, revision
-    consent = request.get("consent") or {}
+def _scene_preparation_scope(request):
     task = request.get("task") or {}
     return (
         scene_preparation_only(request)
         and request["execution"].get("policy_candidates") == []
         and "robot_binding_id" not in task
         and "evaluation_source" not in task
+    )
+
+
+def preparation_consent_valid(request):
+    """Structural scope only; consequential consumers must reopen authority."""
+    from .website_preparation_revision_identity import renewal, revision
+    consent = request.get("consent") or {}
+    return (
+        _scene_preparation_scope(request)
         and (consent.get("task_confirmed") is False or (consent.get("task_confirmed") is True
              and (revision(request) is not None or renewal(request) is not None)))
     )
+
+
+def confirmed_preparation_scope(request):
+    """A scene-preparation request whose site confirmed its task, revision or not.
+
+    Only the standing budget extension reads a grant for such a request
+    (``website_preparation_authority.retained_extension_grant``); it never
+    stands in for ``preparation_consent_valid`` anywhere authority is reopened.
+    """
+    return _scene_preparation_scope(request) and (request.get("consent") or {}).get("task_confirmed") is True
 
 
 def validate_preparation_proposal(authority, context):
@@ -158,7 +174,15 @@ def validate_preparation_authority(*, task_context, authority, now, valid_until=
     return dict(authority)
 
 
-def validate_preparation_request(*, request, task_context, authority, now, valid_until=None):
+def validate_preparation_request(*, request, task_context, authority, now, valid_until=None,
+                                 confirmed_task=False):
+    """The grant ``authority`` is this request's own; raises ``ValueError`` otherwise.
+
+    ``confirmed_task`` also admits a request whose site confirmed its task
+    (``confirmed_preparation_scope``). Every other check is the same. Only the
+    standing budget extension passes it, to read the grant's flag; it grants
+    no consent, rights or preparation authority.
+    """
     from .website_preparation_revision_identity import capture_id
     validate_preparation_authority(task_context=task_context, authority=authority, now=now,
                                    valid_until=valid_until)
@@ -179,7 +203,8 @@ def validate_preparation_request(*, request, task_context, authority, now, valid
     if authority.get("authoring_provider") == "anthropic":
         expected_providers.append("anthropic")
     if (
-        not preparation_consent_valid(request)
+        not (preparation_consent_valid(request)
+             or (confirmed_task is True and confirmed_preparation_scope(request)))
         or capture_id(request) != task_context["capture_id"]
         or request.get("owner") != authority["owner"]
         or request.get("consent") != authority["consent"]

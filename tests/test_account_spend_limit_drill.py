@@ -20,7 +20,7 @@ SHIPPED = Path(__file__).resolve().parents[1] / "config" / account.CONFIG_FILENA
 def test_drill_walks_the_real_admission_code_through_the_limit(tmp_path):
     result = drill.run_drill(work_root=tmp_path / "drill", config=SHIPPED)
     assert result["status"] == "passed", result["failures"]
-    assert result["limit_usd"] == 200.0 and result["spend_usd"] == 0
+    assert result["limit_usd"] == 300.0 and result["spend_usd"] == 0  # the shipped limit (owner, 2026-11-12)
     by_percent = {step["percent"]: step for step in result["steps"]}
     assert by_percent[49]["threshold_alerts"] == [] and by_percent[49]["admission_blockers"] == []
     assert by_percent[50]["threshold_alerts"] == [{"code": "account_spend_month_50pct", "severity": "warn"}]

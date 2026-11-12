@@ -120,13 +120,15 @@ def granted_authority(request: Mapping[str, Any], queue_root: str | Path, now: f
     """The job's retained signed grant when it allows automatic extension, else ``None``.
 
     Read from the grant the job was prepared under (retained on this host and
-    bound by its digest). Only a website scene-preparation intent has one.
+    bound by its digest). Only a website scene-preparation intent has one;
+    whether its site confirmed its task or not (owner, 2026-11-12: every job
+    extends its own budget inside the account's monthly limit).
     """
     if (request.get("execution") or {}).get("purpose") != "scene_preparation":
         return None
-    from .website_preparation_authority import _retained_sources
+    from .website_preparation_authority import retained_extension_grant
     try:
-        _context, authority, _valid_until = _retained_sources(request=request, queue_root=queue_root, now=now)
+        authority = retained_extension_grant(request=request, queue_root=queue_root, now=now)
     except (OSError, ValueError, KeyError, TypeError):
         return None
     return dict(authority) if authority.get(GRANT_FIELD) is True else None
