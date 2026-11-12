@@ -261,11 +261,12 @@ def test_deployer_installs_and_authority_gates_exact_child_units():
         name = f"{stem}.{suffix}"
         assert name in constants["DEFAULT_DEPLOYED_SYSTEMD_UNITS"]
         assert (repository / "deploy/systemd" / name).is_file()
-    assert f"{stem}.path" in constants["DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS"]
-    assert f"{stem}.path" not in constants["DEFAULT_ALWAYS_ARM_PATH_UNITS"]
-    # Paused by the 2026-11-12 frame: a release disarms the timer; the path stays armed.
-    assert f"{stem}.timer" not in constants["DEFAULT_ALWAYS_ARM_TIMER_UNITS"]
-    assert f"{stem}.timer" in constants["DEFAULT_PAUSED_LANE_DISARM_UNITS"]
+    # Paused by the 2026-11-12 frame: a release disarms the whole lane, path and timer.
+    for suffix in ("path", "timer"):
+        assert f"{stem}.{suffix}" not in constants["DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS"]
+        assert f"{stem}.{suffix}" not in constants["DEFAULT_ALWAYS_ARM_PATH_UNITS"]
+        assert f"{stem}.{suffix}" not in constants["DEFAULT_ALWAYS_ARM_TIMER_UNITS"]
+        assert f"{stem}.{suffix}" in constants["DEFAULT_PAUSED_LANE_DISARM_UNITS"]
     service = (repository / "deploy/systemd" / f"{stem}.service").read_text()
     assert "-m blueprint_pipeline.task_evaluation_scene_retirement_supervisor --worker blueprint_pipeline.task_evaluation_sam31_preparation_execution -- --source-commit" in service
     assert "--max-messages 1" in service

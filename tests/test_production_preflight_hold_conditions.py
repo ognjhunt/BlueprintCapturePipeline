@@ -38,18 +38,19 @@ def test_a_paused_lanes_disarmed_trigger_is_not_a_blocker(monkeypatch) -> None:
     """The release disarms paused lanes' triggers (2026-11-12 frame); the preflight must not count them."""
     from blueprint_pipeline.control_plane_stall_alarm import read_deploy_paused_triggers
 
-    paused = read_deploy_paused_triggers()
-    assert "blueprint-task-evaluation-sam31-preparation-execution.timer" in paused
-    states = {"blueprint-task-evaluation-sam31-preparation-execution.timer": "inactive",
-              "blueprint-task-evaluation-sam31-preparation-execution.path": "inactive"}
-    monkeypatch.setattr(preflight, "unit_properties", lambda unit: {"ActiveState": [states[unit]]})
-    props = {"LoadState": ["loaded"], "ActiveState": ["inactive"], "Result": ["success"],
-             "TriggeredBy": [" ".join(states)]}
-    rows = preflight.unit_health_checks(
-        {"blueprint-task-evaluation-sam31-preparation-execution.service": {"properties": props}})
-    by_trigger = {row["trigger"]: row for row in rows}
-    paused_row = by_trigger["blueprint-task-evaluation-sam31-preparation-execution.timer"]
-    assert (paused_row["severity"], paused_row["code"]) == ("info", "unit_trigger_not_required")
-    # Its path unit is still armed by every release, so an inactive one stays a blocker.
-    armed_row = by_trigger["blueprint-task-evaluation-sam31-preparation-execution.path"]
-    assert (armed_row["severity"], armed_row["code"]) == ("blocker", "unit_trigger_inactive")
+    sam = "blueprint-task-evaluation-sam31-preparation-execution"
+    compile_timer = "blueprint-task-evaluation-episode-compilation.timer"
+    assert {f"{sam}.timer", f"{sam}.path"} <= read_deploy_paused_triggers()
+    assert compile_timer not in read_deploy_paused_triggers()
+    monkeypatch.setattr(preflight, "unit_properties", lambda _unit: {"ActiveState": ["inactive"]})
+
+    def props(triggers):
+        return {"properties": {"LoadState": ["loaded"], "ActiveState": ["inactive"], "Result": ["success"],
+                               "TriggeredBy": [" ".join(triggers)]}}
+
+    rows = preflight.unit_health_checks({f"{sam}.service": props([f"{sam}.timer", f"{sam}.path"]),
+                                         "blueprint-task-evaluation-episode-compilation.service": props([compile_timer])})
+    by_trigger = {row["trigger"]: (row["severity"], row["code"]) for row in rows}
+    assert by_trigger[f"{sam}.timer"] == by_trigger[f"{sam}.path"] == ("info", "unit_trigger_not_required")
+    # An armed lane's trigger left inactive is still a blocker.
+    assert by_trigger[compile_timer] == ("blocker", "unit_trigger_inactive")

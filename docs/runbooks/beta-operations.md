@@ -779,14 +779,16 @@ unit is in `DEFAULT_ALWAYS_ARM_TIMER_UNITS`
 
 Every release stops and disables the triggers in `DEFAULT_PAUSED_LANE_DISARM_UNITS`
 (`scripts/deploy_control_plane_commit.py`): the humanoid G1 campaign dispatcher and
-settlement, embodiment preparation's timer, the agent-run dispatcher, the SAM 3.1
-preparation execution timer, the host episode compilation timer, and
-configured-controls progression (`.timer` and `.path`). No website job needs them;
-their unit files and code stay, and their path watchers that the arm lists still name
-stay armed. A unit already stopped or absent is fine; one that will not stop is
-reported in the receipt (`disarm_failed`) and does not fail the release. The stall
-alarm and the preflight do not count them. To bring a lane back, move its name from
-`DEFAULT_PAUSED_LANE_DISARM_UNITS` into `DEFAULT_ALWAYS_ARM_TIMER_UNITS` and deploy.
+settlement, the agent-run dispatcher with the team-evaluation runner path, SAM 3.1
+preparation execution (`.timer` and `.path`), and configured-controls progression
+(`.timer` and `.path`). A lane is armed or disarmed whole. No website job needs them;
+their unit files and code stay. A unit already stopped or absent is fine; one that
+will not stop does not fail the release and is named in the receipt's
+`paused_lane_disarm.failed`, which `door status` shows under `deploys.recent_receipts`. The stall
+alarm and the preflight do not count them. To bring a lane back, move all its names from
+`DEFAULT_PAUSED_LANE_DISARM_UNITS` back into the arm lists (timers into
+`DEFAULT_ALWAYS_ARM_TIMER_UNITS`, paths into the list they came from) and deploy.
+A release that fails restores the earlier state, so paused lanes that were on before stay on until a release succeeds. Releasing a door hold on `blueprint-agent-run-dispatcher.timer` starts that timer until the next release.
 
 Not done: `reset-failed` on the transient failed units (O-24). It needs a door
 unit action, and another operator uses the host, so do it in a deploy window.

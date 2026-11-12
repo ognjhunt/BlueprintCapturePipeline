@@ -28,7 +28,9 @@ from .secrets_guard import scan_bytes
 
 SCHEMA = "blueprint_operator_door_status.v1"
 _VERSION_KEYS = ("source_commit", "commit_proven", "blockers", "disk_headroom", "claim_ceiling")
-_RECEIPT_KEYS = ("schema", "status", "source_commit", "commit", "mode", "finished_at", "completed_at")
+_RECEIPT_KEYS = ("schema", "status", "source_commit", "commit", "mode", "finished_at", "completed_at",
+                 # The paused lanes a release stopped, found off, or failed to stop.
+                 "paused_lane_disarm")
 _CAPACITY_KEYS = (
     "schema_version", "observed_at_epoch", "level", "report_digest", "alerts", "mounts", "usage",
     "volume_resize", "truncated", "reclaim_outlook", "stall", "provider_spend",

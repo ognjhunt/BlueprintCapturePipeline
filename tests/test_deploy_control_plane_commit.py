@@ -1002,12 +1002,14 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-team-scene-packet.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
+        "blueprint-embodiment-preparation.timer",
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-beta-policy-screening.timer",
         "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.timer",
+        "blueprint-task-evaluation-episode-compilation.timer",
         "blueprint-task-evaluation-episode-compilation-remote.timer",
         "blueprint-team-scene-packet-remote.timer",
         "blueprint-control-plane-storage-gc.timer",
@@ -1023,9 +1025,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     )
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
         "blueprint-embodiment-preparation.path",
-        "blueprint-task-evaluation-sam31-preparation-execution.path",
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
-        "blueprint-team-evaluation-runner.path",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-task-evaluation-episode-compilation-remote.path",
         "blueprint-team-scene-packet-remote.path",
@@ -1057,10 +1057,10 @@ def test_only_service_path_and_timer_unit_suffixes_may_be_installed(
 PAUSED_LANE_UNITS = (
     "blueprint-native-g1-team-campaign-dispatcher.timer",
     "blueprint-native-g1-team-campaign-settlement.timer",
-    "blueprint-embodiment-preparation.timer",
     "blueprint-agent-run-dispatcher.timer",
+    "blueprint-team-evaluation-runner.path",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
-    "blueprint-task-evaluation-episode-compilation.timer",
+    "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
 )
@@ -1077,6 +1077,14 @@ def test_paused_lanes_are_disarmed_and_never_armed_again_without_leaving_the_dis
         # The unit files stay installed; only their arming changes.
         assert unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
         assert (Path(__file__).resolve().parents[1] / "deploy" / "systemd" / unit).is_file()
+    # A lane is wholly armed or wholly disarmed: every trigger of a paused service is paused too.
+    systemd = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+    for unit in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS:
+        service = next(line.split("=", 1)[1].strip() for line in (systemd / unit).read_text().splitlines()
+                       if line.startswith("Unit="))
+        siblings = {path.name for path in systemd.glob("*.path") if f"Unit={service}" in path.read_text()} | {
+            path.name for path in systemd.glob("*.timer") if f"Unit={service}" in path.read_text()}
+        assert siblings <= set(deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS), (unit, siblings)
 
 
 @pytest.mark.parametrize("arm_list", ["always_arm_units", "always_arm_authority_gated_units", "always_arm_timer_units"])
@@ -1183,9 +1191,57 @@ def test_disarm_touches_no_unit_outside_its_list(monkeypatch) -> None:
     assert ("systemctl", "disable", other) not in calls and ("systemctl", "stop", other) not in calls
 
 
-def test_the_release_passes_the_paused_lane_list_to_its_one_successful_restore() -> None:
-    source = (Path(__file__).resolve().parents[1] / "scripts" / "deploy_control_plane_commit.py").read_text()
-    assert source.count("disarm_units=DEFAULT_PAUSED_LANE_DISARM_UNITS") == 1
+@pytest.mark.parametrize("stuck", [None, "blueprint-agent-run-dispatcher.timer"])
+def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tmp_path, monkeypatch, stuck) -> None:
+    """End to end through deploy_control_plane_commit with the real restore and a fake systemd."""
+
+    restore = deploy._restore_installed_path_units
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    triggers = [unit for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS if unit.endswith((".path", ".timer"))]
+    already_off = "blueprint-native-g1-team-campaign-settlement.timer"
+    states = {unit: {"enabled": "enabled", "state": "active"} for unit in triggers}
+    states[already_off] = {"enabled": "disabled", "state": "inactive"}
+    before = {unit: dict(state) for unit, state in states.items()}
+
+    def systemctl(argv, **_kwargs):
+        verb, unit = [item for item in argv[1:] if not item.startswith("--")]
+        if unit == stuck and verb in {"stop", "disable"}:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="busy")
+        if verb in {"enable", "disable"}:
+            states[unit]["enabled"] = verb + "d"
+        elif verb in {"restart", "stop"}:
+            states[unit]["state"] = "active" if verb == "restart" else "inactive"
+        else:
+            raise AssertionError(f"Unexpected host operation: {verb}")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy, "_restore_installed_path_units", restore)
+    monkeypatch.setattr(deploy, "_install_release_systemd_units", lambda **_kwargs: [{"unit": u} for u in triggers])
+    monkeypatch.setattr(deploy, "_installed_path_unit_states", lambda _units: {u: dict(s) for u, s in before.items()})
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda unit, **_kwargs: dict(states[unit]))
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    receipt = deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
+
+    assert receipt["status"] == "deployed"
+    rows = {row["unit"]: row for row in (*receipt["path_unit_states"], *receipt["timer_unit_states"])}
+    paused = set(deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS)
+    armed = {*deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS, *deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS,
+             *deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS, *deploy.DEPLOY_EXEMPT_TRIGGER_UNITS}
+    assert paused <= set(rows) and armed & set(triggers) <= set(rows)
+    for unit in paused:
+        assert rows[unit]["requested_intent"] == "disarm_paused_lane", unit
+        if unit != stuck:
+            assert states[unit] == {"enabled": "disabled", "state": "inactive"}, unit
+    for unit in set(rows) - paused:
+        assert rows[unit]["requested_intent"] != "disarm_paused_lane", unit
+    for unit in armed & set(triggers):
+        assert states[unit] == {"enabled": "enabled", "state": "active"}, unit
+    summary = receipt["paused_lane_disarm"]
+    assert summary["already_off"] == [already_off]
+    assert summary["failed"] == ([stuck] if stuck else [])
+    assert summary["status"] == ("failed" if stuck else "disarmed")
+    assert set(summary["disarmed"]) == paused - {already_off} - {stuck}
+    assert summary["held"] == []
 
 
 @pytest.mark.parametrize("explicit", [False, True])
