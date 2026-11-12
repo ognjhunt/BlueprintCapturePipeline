@@ -912,17 +912,16 @@ def test_pitched_first_camera_is_levelled_by_the_observed_declared_floor(tmp_pat
 
 
 def test_a_camera_anchored_world_keeps_its_four_rolls_and_chooses_by_fit(tmp_path, monkeypatch):
-    # Review 2026-11-12: the pose is chosen by fit alone, as before. Without an observed floor at the
-    # declared height the camera's own axes are the only prior, its roll is unknown, and the four rolls stay
-    # candidates. Here the scene turned over fits best and the true pose is its close rival: the true pose
-    # is not upside down, so it stays a rival and the near-tie still refuses, as it did before.
+    # Review 2026-11-12: a camera-anchored world chooses and refuses exactly as on main. Without an observed
+    # floor at the declared height the camera's own axes are the only prior, its roll is unknown, and the four
+    # rolls stay candidates; a near-tie between them refuses (the checker's 56 probe cases match main's).
     geometry, mesh_path, anchor = _levelled_room_seen_from_a_pitched_camera(tmp_path, monkeypatch, pitch_degrees=30)
     monkeypatch.setattr(preparation, "_observed_declared_ground", lambda *_args: None)
     with pytest.raises(preparation.RegistrationRefusal) as refused:
         preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path, anchor=anchor)
     assert str(refused.value) == "website_registration_ambiguous"
-    assert refused.value.evidence["best"]["roll_degrees"] == 180.0
-    assert refused.value.evidence["runner_up"]["roll_degrees"] == 0.0
+    assert refused.value.evidence["roll_degrees"] == 180.0
+    assert refused.value.evidence["runner_up_roll_degrees"] == 0.0
 
 
 def _yaw(degrees):
@@ -1552,20 +1551,3 @@ def test_a_relocated_region_that_fits_nowhere_on_its_surface_is_flagged_and_the_
     assert moved["relocation"] == {**value["destination_relocation"], "applied_at": "native_submission"}
 
 
-def test_only_cameras_clearly_upside_down_make_a_pose_no_rival():
-    # A sign test on the cameras' image-up direction, never a magnitude one (review 2026-11-12): a camera
-    # pitched steeply down, or a phone held sideways, is not upside down.
-    import math
-    def cameras(pitch_degrees, roll_degrees=0.0):
-        p, r = math.radians(pitch_degrees), math.radians(roll_degrees)
-        pitch = np.array([[1, 0, 0], [0, math.cos(p), -math.sin(p)], [0, math.sin(p), math.cos(p)]])
-        roll = np.array([[math.cos(r), -math.sin(r), 0], [math.sin(r), math.cos(r), 0], [0, 0, 1]])
-        frame = np.eye(4)
-        frame[:3, :3] = pitch @ roll
-        return preparation._camera_ups({"frames": [{"world_from_camera": frame.tolist()}] * 3})
-    upright_pose = np.diag([1.0, -1.0, -1.0])  # OpenCV-like source (y down) into a "Y up" runtime
-    for pitch in (0, 40, 70, 85):
-        assert not preparation._upside_down(upright_pose, cameras(pitch), 1, 1)
-        assert preparation._upside_down(np.eye(3), cameras(pitch), 1, 1) is (pitch < 60)
-    assert not preparation._upside_down(upright_pose, cameras(0, 90), 1, 1)  # held sideways
-    assert preparation._upside_down(np.eye(3), cameras(0), 1, 1) and preparation._upright(np.eye(3), None, 1, 1) is None

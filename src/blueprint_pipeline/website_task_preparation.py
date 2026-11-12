@@ -44,8 +44,7 @@ from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear
                                        supported_destination_near_place, support_outline, support_under)
 from .website_registration_admissibility import (  # noqa: F401 - re-exported for callers and tests
     CLOSE_POSE_DEGREES, CLOSE_POSE_METRES, CLOSE_POSE_SCALE, REGISTRATION_AMBIGUOUS_FLAG,
-    REGISTRATION_DECISIVE_RATIO, UPSIDE_DOWN_MARGIN, RegistrationRefusal, _camera_ups, _close_runner_up, _upright,
-    _upside_down,
+    REGISTRATION_DECISIVE_RATIO, RegistrationRefusal, _close_runner_up,
 )
 from .website_surface_target_admission import (admit_surface_target, preparation_size_tolerance,
                                                replacement_size_tolerance, website_target_radius,
@@ -432,9 +431,7 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
 
     The pose is chosen by fit alone. An Atlas alignment (``source_world_alignment``) measures the source's
     orientation, so its one candidate is that alignment, refined; a world anchored at a camera whose roll is
-    unknown tries the four rolls. An alternative that puts the capture's cameras clearly upside down
-    (``_upside_down``) is no rival in the refusal checks (the runner-up ratio, the anchor conflict): that can
-    only remove a refusal, never change the chosen pose.
+    unknown tries the four rolls and refuses a near-tie between them, as before.
 
     With ``anchor`` (the provider's declared scale, ground plane and the source
     frame it was generated from), the prior pose is refined and its deviation
@@ -477,13 +474,6 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
     if min(row[0] for row in rows) > 1e-7 * np.linalg.norm(target_extent):
         rows += [score(*_refine_registration(fit_source, target, *row[1:])) for row in list(rows)]
     rows.sort(key=lambda row: row[0])
-    axis_name = (anchor or {}).get("up_axis") or up_axis
-    ups = _camera_ups(source_geometry) if axis_name in _UP_INDEX else None
-    up_index, up_sign_value = (_UP_INDEX[axis_name], -1 if axis_name == "-Y" else 1) if ups is not None else (1, 1)
-
-    def rival(row):
-        # A pose that turns the capture's cameras upside down is no rival in a refusal check.
-        return not _upside_down(row[2], ups, up_index, up_sign_value)
     extent_norm = float(np.linalg.norm(target_extent))
 
     def moved_by(row):
@@ -503,15 +493,13 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
             raise RegistrationRefusal("website_registration_ambiguous", {
                 "basis": "no_distinct_alternative_pose", "best_score_runtime_units": float(best[0]),
                 "candidate_count": len(rows)})
-        rivals = [row for row in distinct if rival(row)]
-        ratio = rivals[0][0] / max(best[0], 1e-12) if rivals else math.inf
-        runner_up = rivals[0] if rivals else None
+        ratio = distinct[0][0] / max(best[0], 1e-12)
+        runner_up = distinct[0]
         # A runner-up nearly as good and nearly the same pose is a judgement: the best pose is kept and
         # flagged with its ratio (owner direction 2026-11-11). One that would put the scene somewhere
         # else (turned over, mirrored, another surface) stays the ask for a new video (``_close_runner_up``).
         metres_per_runtime_unit = 1.0 / best[1]
-        if runner_up is not None:
-            _close_runner_up(best, runner_up, ratio, metres_per_runtime_unit)
+        _close_runner_up(best, runner_up, ratio, metres_per_runtime_unit)
     else:
         mpu, camera_from_world = anchor_pose
         up = _UP_INDEX[anchor["up_axis"]]
@@ -537,21 +525,19 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
             rotation = turn(roll) @ level
             prior = (1.0 / mpu, rotation @ camera_from_world[:3, :3], (rotation @ camera_from_world[:3, 3]) / mpu)
             anchored.append((score(*_refine_registration(fit_source, target, *prior)), roll, prior))
-        considered = [{"roll_degrees": roll, "score_m": float(row[0] * mpu),
-                       "camera_up_vertical": _upright(row[2], ups, up_index, up_sign_value),
-                       "upside_down": _upside_down(row[2], ups, up_index, up_sign_value)}
-                      for row, roll, _ in anchored]
+        considered = [{"roll_degrees": roll, "score_m": float(row[0] * mpu)} for row, roll, _ in anchored]
         anchored.sort(key=lambda row: row[0][0])
         best, roll, prior = anchored[0]
-        distinct = [row for row in distinct_from(best, [row[0] for row in anchored[1:]]) if rival(row)]
+        distinct = distinct_from(best, [row[0] for row in anchored[1:]])
         ratio = distinct[0][0] / max(best[0], 1e-12) if distinct else math.inf
         runner_up = distinct[0] if distinct else None
-        # The best anchored pose is kept and flagged with its ratio when the runner-up is nearly the
-        # same pose, as above; capture-39ecdc97 (2026-11-12): its runner-up was the same view turned
-        # over (roll 180 against 0, ratio 1.18), which stays the ask.
-        if runner_up is not None:
-            _close_runner_up(best, runner_up, ratio, mpu, roll=roll,
-                             runner_up_roll=next(row[1] for row in anchored[1:] if row[0] is runner_up))
+        # A camera-anchored world refuses a near-tie between its rolls exactly as before (review 2026-11-12); a
+        # measured alignment has one candidate and no rival.
+        if ratio < REGISTRATION_DECISIVE_RATIO:
+            raise RegistrationRefusal("website_registration_ambiguous", {
+                "runner_up_ratio": float(ratio), "decisive_ratio": REGISTRATION_DECISIVE_RATIO, "roll_degrees": roll,
+                "runner_up_roll_degrees": next(row[1] for row in anchored[1:] if row[0] is runner_up),
+                "poses_considered": considered})
         def same_hypothesis(row):
             return (_rotation_degrees(row[2], best[2]) <= 10.0 and abs(math.log(row[1] / best[1])) <= math.log(1.1)
                     and float(np.linalg.norm(row[3] - best[3])) <= 0.1 * extent_norm)
@@ -570,7 +556,7 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         # poses, which the declared scale already refuses, and poses that only
         # cover more of its unobserved surface, which must also fit the observed
         # source better to count.
-        two_way = [row for row in better if not same_hypothesis(row) and rival(row)
+        two_way = [row for row in better if not same_hypothesis(row)
                    and row[0] * 1.2 < best[0] and best[0] - row[0] > 0.005 * extent_norm
                    and ANCHOR_SCALE_RATIO_BOUNDS[0] <= row[1] * mpu <= ANCHOR_SCALE_RATIO_BOUNDS[1]]
         scored = [(row, forward(row)) for row in two_way]
@@ -603,7 +589,7 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         if same_pose:
             best = min(same_pose, key=lambda row: row[0])
         anchor_report = {"kind": anchor.get("kind"), "frame_id": anchor.get("frame_id"), "roll_degrees": roll,
-                         "poses_considered": considered, "upside_down_margin": UPSIDE_DOWN_MARGIN,
+                         "poses_considered": considered,
                          "hypothesis_axis": "camera_optical" if floor is None else "declared_up",
                          "levelled_tilt_degrees": _rotation_degrees(level, np.eye(3)),
                          "rotation_deviation_degrees": _rotation_degrees(best[2], prior[1]),

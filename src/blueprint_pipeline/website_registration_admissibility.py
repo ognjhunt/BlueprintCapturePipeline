@@ -1,8 +1,8 @@
-"""Which registration poses are admissible, and when a near-tie among them is still a safe guess.
+"""When a near-tie between registration poses is still a safe guess, and the refusal that records it.
 
-Moved unchanged from ``website_task_preparation`` (2026-11-12, file budget). Owner direction 2026-11-12
-(capture-39ecdc97): a pose that turns the scene over is not a candidate; ambiguity is judged only among
-admissible poses, and a close runner-up keeps the best pose as a recorded, flagged guess.
+Moved from ``website_task_preparation`` (2026-11-12, file budget). On the unanchored search a close
+runner-up keeps the best pose as a recorded, flagged guess (owner direction 2026-11-11); one that puts the
+scene somewhere else is refused with its evidence.
 """
 from __future__ import annotations
 
@@ -23,35 +23,6 @@ class RegistrationRefusal(ValueError):
 #: A runner-up pose scoring within this ratio of the best makes the registration a recorded best guess.
 REGISTRATION_DECISIVE_RATIO = 1.2
 REGISTRATION_AMBIGUOUS_FLAG = "scene_estimate:registration_ambiguous"
-
-
-#: An alternative pose under which the capture's cameras are clearly upside down is no rival to the chosen
-#: one: the median camera's image-up direction then points down, its vertical component below -0.5. A sign
-#: test, never a magnitude one: a camera pitched steeply down at a table has an image-up direction near the
-#: horizontal (cos of its pitch, +0.09 at 85 degrees) without being upside down, and a phone held sideways
-#: reads about 0. On capture-39ecdc97 and 447 the turned-over alternative read -0.81 (review 2026-11-12).
-#: Used only to drop a refusal, never to choose a pose.
-UPSIDE_DOWN_MARGIN = 0.5
-
-
-def _camera_ups(source_geometry: Mapping[str, Any]) -> np.ndarray | None:
-    """Each source camera's image-up direction in the source world (OpenCV cameras: image up is -y)."""
-    ups = [-np.asarray(frame["world_from_camera"], dtype=np.float64)[:3, 1] for frame in source_geometry.get("frames", [])
-           if isinstance(frame, Mapping) and frame.get("world_from_camera") is not None]
-    return np.asarray(ups) if ups else None
-
-
-def _upright(rotation: np.ndarray, ups: np.ndarray | None, up: int, up_sign: int) -> float | None:
-    """The median camera's up direction along the scene's up after ``rotation``; None without cameras."""
-    if ups is None:
-        return None
-    return float(np.median((ups @ np.asarray(rotation).T)[:, up] * up_sign))
-
-
-def _upside_down(rotation: np.ndarray, ups: np.ndarray | None, up: int, up_sign: int) -> bool:
-    """Whether ``rotation`` puts the capture's cameras clearly upside down (``UPSIDE_DOWN_MARGIN``)."""
-    value = _upright(rotation, ups, up, up_sign)
-    return value is not None and value < -UPSIDE_DOWN_MARGIN
 
 
 #: A runner-up this close to the best pose puts the scene in nearly the same place: the guess is safe.
