@@ -80,7 +80,8 @@ from .robot_spec_catalog import figure_value
 from .usd_binary_read_cache import read_scoped
 # The site's reader of the table owns its verdicts and row order; it stays off this module's imports.
 from .website_robot_fit_projection import (
-    ESTIMATE_STRADDLES, FIRST_LOOK_VERDICTS, FITS_IF, QUANTITY_UNITS, ROUTE_CLEAR, UNKNOWN_CAUSES, row_order,
+    ESTIMATE_STRADDLES, FIRST_LOOK_VERDICTS, FITS_IF, QUANTITY_UNITS, ROUTE_CLEAR, UNKNOWN_CAUSES, condition_sentence,
+    row_order,
 )
 
 SCHEMA = "website_robot_fit_table.v1"
@@ -572,23 +573,7 @@ def _cycle_target(preparation: Mapping[str, Any]) -> float | None:
 
 def _condition_reason(check: str, condition: Mapping[str, Any]) -> str:
     """One condition in fixed words: what the robot can do, and what the job seems to need."""
-    if condition["quantity"] == ROUTE_CLEAR:
-        return f"{check}: fits if it has a clear route to the job; the route was not checked"
-    if condition["quantity"] == "hand_height_m":
-        return (f"{check}: fits if the job's heights are within its hand range up to {condition['limit']:g} m; it "
-                f"seems to need {condition['need_min']:g} to {condition['need_max']:g} m, estimated from the video")
-    if condition["quantity"] == "floor_width_m":
-        return (f"{check}: fits if there is {condition['limit']:g} m of clear floor to stand on; this job seems to "
-                f"offer {condition['need_min']:g} to {condition['need_max']:g} m, estimated from the video")
-    unit, limit = condition["unit"], condition["limit"]
-    can = {"item_mass_kg": f"the item weighs no more than {limit:g} kg",
-           "reach_m": f"the job needs no more than its {limit:g} m reach",
-           "cycle_time_s": f"the cycle stays within the {limit:g} s target"}[condition["quantity"]]
-    if condition["need_min"] is None:
-        return f"{check}: fits if {can}; not known for this job"
-    source = {"estimated_from_video": "estimated from the video", "owner_stated": "as the site stated it"}
-    return (f"{check}: fits if {can}; this job seems to need {condition['need_min']:g} to "
-            f"{condition['need_max']:g} {unit}, {source[condition['need_basis']]}")
+    return f"{check}: {condition_sentence(condition)}"
 
 
 def _row(model: Mapping[str, Any], checks: list[dict[str, Any]], *, path_checked: bool, rated: Any,

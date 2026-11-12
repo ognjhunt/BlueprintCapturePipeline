@@ -5,8 +5,9 @@ included, with approved deployment companies as the service itself. A capture wh
 Blueprint's own (``config/blueprint_owned_captures.v1.json``) may be shared too. Every reader of
 that permission (the company clip, the job packet tool) asks ``sharing_basis`` here, a leaf with
 no Pipeline imports, so live code never imports the offline packet tool.
-``capture_original_owner_observer.RECORDING_RIGHTS_STATEMENT_VERSIONS`` must also accept each
-version listed here. A version or an owned capture is added only in a reviewed change.
+``capture_original_owner_observer.RECORDING_RIGHTS_STATEMENT_VERSIONS`` takes each version listed
+here, so a new sharing version is added here only. A version or an owned capture is added only in a
+reviewed change.
 
 This decides the basis only. Consent (granted, not revoked), withdrawal and the takedown gate are
 the caller's checks and stop sharing whatever the basis.
@@ -17,6 +18,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,9 @@ OWNED_CAPTURES_SCHEMA = "blueprint_owned_captures.v1"
 OWNED_CAPTURES_PATH = Path(__file__).resolve().parents[2] / "config" / "blueprint_owned_captures.v1.json"
 _ROW_KEYS = frozenset({"capture_id", "approved_by", "approved_on", "evidence", "video_sha256_prefix"})
 _CAPTURE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")
-_PREFIX = re.compile(r"[0-9a-f]{1,64}")
+#: A row's video digest prefix: 12 to 64 lowercase hex digits, enough to name one video.
+_PREFIX = re.compile(r"[0-9a-f]{12,64}")
+_TEXT_KEYS = ("approved_by", "approved_on", "evidence")
 _DIGEST = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
 
 
@@ -47,7 +51,10 @@ def owned_captures(path: Path | None = None) -> tuple[dict[str, str | None], str
     """Blueprint's own captures (capture id to video digest prefix, or None), and a flag.
 
     Strict: an unreadable or malformed list means no owned captures and a flag, never a crash
-    and never "everything is owned".
+    and never "everything is owned". Each row has only known keys, a capture id, non-empty text
+    for ``approved_by``, ``approved_on`` and ``evidence`` when present, a real ``approved_on``
+    date, and a ``video_sha256_prefix`` of 12 to 64 lowercase hex digits when present (a key
+    present with null is malformed). Only ``capture_id`` is required.
     """
     try:
         value = json.loads(Path(path or OWNED_CAPTURES_PATH).read_text(encoding="utf-8"), object_pairs_hook=_unique)
@@ -58,12 +65,17 @@ def owned_captures(path: Path | None = None) -> tuple[dict[str, str | None], str
         for row in value["captures"]:
             if not isinstance(row, dict) or not set(row) <= _ROW_KEYS:
                 raise ValueError("row")
-            capture_id, prefix = row.get("capture_id"), row.get("video_sha256_prefix")
+            capture_id = row.get("capture_id")
             if type(capture_id) is not str or not _CAPTURE_ID.fullmatch(capture_id) or capture_id in owned:
                 raise ValueError("capture_id")
-            if prefix is not None and (type(prefix) is not str or not _PREFIX.fullmatch(prefix)):
+            if any(key in row and (type(row[key]) is not str or not row[key].strip()) for key in _TEXT_KEYS):
+                raise ValueError("text")
+            if "approved_on" in row:
+                date.fromisoformat(row["approved_on"])
+            if "video_sha256_prefix" in row and (type(row["video_sha256_prefix"]) is not str
+                                                 or not _PREFIX.fullmatch(row["video_sha256_prefix"])):
                 raise ValueError("video_sha256_prefix")
-            owned[capture_id] = prefix
+            owned[capture_id] = row.get("video_sha256_prefix")
     except (OSError, UnicodeError, ValueError, TypeError) as error:
         logger.warning("blueprint_owned_capture_list_invalid type=%s", type(error).__name__)
         return {}, "blueprint_owned_capture_list_invalid"

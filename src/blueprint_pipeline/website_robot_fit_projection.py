@@ -75,6 +75,36 @@ def row_order(row: Mapping[str, Any]) -> tuple[int, float]:
     return rank, float(limit) if verdict == FITS_IF and usable else 0.0
 
 
+#: Where a condition's need came from, as the first look says it.
+NEED_SOURCE_WORDS = {"estimated_from_video": "estimated from the video", "owner_stated": "as the site stated it"}
+
+
+def condition_sentence(condition: Mapping[str, Any]) -> str:
+    """One condition of a ``fits_if`` row in fixed words: what the robot can do, and what the job seems to
+    need. The Pipeline's own sentence: the fit table's ``first_look_reasons`` and the job packet use it.
+
+    Every word is fixed here; only the condition's numbers are filled in. A quantity this module does not
+    know, or a need without its origin, is a KeyError, never a sentence.
+    """
+    quantity = condition["quantity"]
+    if quantity == ROUTE_CLEAR:
+        return "fits if it has a clear route to the job; the route was not checked"
+    if quantity == "hand_height_m":
+        return (f"fits if the job's heights are within its hand range up to {condition['limit']:g} m; it "
+                f"seems to need {condition['need_min']:g} to {condition['need_max']:g} m, estimated from the video")
+    if quantity == "floor_width_m":
+        return (f"fits if there is {condition['limit']:g} m of clear floor to stand on; this job seems to "
+                f"offer {condition['need_min']:g} to {condition['need_max']:g} m, estimated from the video")
+    limit = condition["limit"]
+    can = {"item_mass_kg": f"the item weighs no more than {limit:g} kg",
+           "reach_m": f"the job needs no more than its {limit:g} m reach",
+           "cycle_time_s": f"the cycle stays within the {limit:g} s target"}[quantity]
+    if condition["need_min"] is None:
+        return f"fits if {can}; not known for this job"
+    return (f"fits if {can}; this job seems to need {condition['need_min']:g} to "
+            f"{condition['need_max']:g} {QUANTITY_UNITS[quantity]}, {NEED_SOURCE_WORDS[condition['need_basis']]}")
+
+
 def _projection(route: str, **fields: Any) -> dict[str, Any]:
     return {"schema_version": SCHEMA_VERSION, "route": route, "status": "not_run", "reason": None,
             "evidence_label": None, "counts": None, "models": [], "models_truncated": False,
@@ -181,7 +211,7 @@ def _kg(value: Any) -> float | None:
             and math.isfinite(value) and value >= 0 else None)
 
 
-def _published_condition(row: Mapping[str, Any]) -> dict[str, Any]:
+def published_condition(row: Mapping[str, Any]) -> dict[str, Any]:
     """A table condition as v2 publishes it, every code from a fixed set (else ValueError)."""
     need = [row.get("need_min"), row.get("need_max")]
     if row.get("quantity") == ROUTE_CLEAR:
@@ -212,7 +242,7 @@ def _v2_model(row: Mapping[str, Any]) -> dict[str, Any]:
     """One table row as v2 publishes it; ValueError when it is not one a reader could word."""
     verdict = _first_look(row)
     hold = row.get("verdict_if_conditions_hold")
-    conditions = [_published_condition(entry) for entry in row.get("conditions") or []]
+    conditions = [published_condition(entry) for entry in row.get("conditions") or []]
     missing = [{"check": entry.get("check"), "cause": entry.get("cause")} for entry in row.get("missing") or []]
     if any(entry["check"] not in CHECKS or entry["cause"] not in UNKNOWN_CAUSES for entry in missing):
         raise ValueError("website_robot_fit_missing_unreadable")

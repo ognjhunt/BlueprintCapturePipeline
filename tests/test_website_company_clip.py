@@ -67,13 +67,19 @@ def _rights(version: str | None = SHARED, *, consent: str = "granted", revoked: 
             "recorded_at_iso": "2026-11-12T10:00:00Z"}
 
 
-def _capture(tmp_path: Path, *, version: str = SHARED, size: str = "1920x1080", capture_id: str = "walkthrough-req1"):
+def _capture(tmp_path: Path, *, version: str = SHARED, size: str = "1920x1080", capture_id: str = "walkthrough-req1",
+             normalized: bool = True):
+    """A website capture as the host holds it; ``normalized=False`` is one handed off before normalization."""
     from blueprint_pipeline.website_source_video import preparation_source_video
     root = tmp_path / f"storage/source-bucket/scenes/site-req1/captures/{capture_id}"
     _write(root / "raw/manifest.json", {"site_submission_id": "req1", "scene_id": "site-req1",
-                                        "capture_id": capture_id, "capture_rights": _rights(version)})
+                                        "capture_id": capture_id, "capture_rights": _rights(version),
+                                        "video_uri": f"scenes/site-req1/captures/{capture_id}/raw/walkthrough.mp4"})
     raw = _video(root / "raw/walkthrough.mp4", size=size)
-    preparation_source_video(capture_root=root, raw_video=raw)  # writes normalization.json
+    if normalized:
+        preparation_source_video(capture_root=root, raw_video=raw)  # writes normalization.json
+    else:
+        (root / "pipeline/clean_plate").mkdir(parents=True)  # a job that started before normalization existed
     return root
 
 
@@ -284,7 +290,7 @@ def test_the_sharing_basis_reads_a_strict_allow_list(tmp_path):
     context = {"capture_id": "walkthrough-x", "capture_rights": {"statement_version": OLDER}}
     shared = {"capture_id": "walkthrough-x", "capture_rights": {"statement_version": SHARED}}
     good = _owned_list(tmp_path, [{"capture_id": "walkthrough-x", "approved_by": "owner", "approved_on": "2026-11-12",
-                                   "evidence": "e", "video_sha256_prefix": "abab"}])
+                                   "evidence": "e", "video_sha256_prefix": "ab" * 6}])
     assert sharing.sharing_basis(shared, owned_list=good) == {"permission_basis": "site_sharing_statement",
                                                                "statement_version": SHARED}
     assert sharing.sharing_basis(context, video_sha256=digest, owned_list=good) == {
@@ -296,7 +302,14 @@ def test_the_sharing_basis_reads_a_strict_allow_list(tmp_path):
     assert sharing.sharing_basis(context, owned_list=no_prefix)["permission_basis"] == "blueprint_owned_capture"
     for bad in ([{"capture_id": "walkthrough-x", "role": "admin"}], [{"capture_id": 7}], ["walkthrough-x"],
                 [{"capture_id": "walkthrough-x"}, {"capture_id": "walkthrough-x"}],
-                [{"capture_id": "walkthrough-x", "video_sha256_prefix": "XYZ"}], {"capture_id": "walkthrough-x"}):
+                [{"capture_id": "walkthrough-x", "video_sha256_prefix": "XYZ"}], {"capture_id": "walkthrough-x"},
+                # As strict as the packet tool was: a prefix of 12 to 64 hex digits, never null; text where
+                # text is expected; a real approval date.
+                [{"capture_id": "walkthrough-x", "video_sha256_prefix": "abab"}],
+                [{"capture_id": "walkthrough-x", "video_sha256_prefix": None}],
+                [{"capture_id": "walkthrough-x", "video_sha256_prefix": "ab" * 33}],
+                [{"capture_id": "walkthrough-x", "evidence": " "}], [{"capture_id": "walkthrough-x", "approved_by": 7}],
+                [{"capture_id": "walkthrough-x", "approved_on": "yesterday"}]):
         path = _owned_list(tmp_path, bad)
         assert sharing.owned_captures(path) == ({}, "blueprint_owned_capture_list_invalid")
         assert sharing.sharing_basis(context, video_sha256=digest, owned_list=path) is None
@@ -347,11 +360,98 @@ def test_a_webapp_rights_refusal_takes_the_copy_back(capture):
     assert len(world.retracted) == 1
 
 
-def test_nothing_is_made_before_normalization_has_recorded_its_outcome(capture):
-    (capture / "pipeline/source_video/normalization.json").unlink()
+def test_a_normalization_record_that_cannot_be_used_never_falls_back_to_the_raw_upload(capture):
+    (capture / "pipeline/source_video/normalization.json").write_text("{not json")
     world = World()
     assert world.publish(capture) == {"status": "no_source"}
     assert world.rights_reads == 0 and not capture.joinpath(*clip.DIRECTORY).exists()
+
+
+def _planted_tags(path: Path) -> str:
+    return subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags:stream_tags", "-of", "json",
+                           str(path)], check=True, capture_output=True, text=True).stdout
+
+
+def test_a_capture_handed_off_before_normalization_gets_a_silent_clean_clip_from_its_raw_upload(tmp_path, monkeypatch):
+    capture = _capture(tmp_path, size="2560x1440", normalized=False)
+    raw = capture / "raw/walkthrough.mp4"
+    before = raw.read_bytes()
+    assert not (capture / "pipeline/source_video").exists() and _audio_streams(raw) == 1
+    assert "48.8584" in _planted_tags(raw) and "Back office" in _planted_tags(raw)
+    world = World()
+    assert world.publish(capture)["status"] == "published"
+    made = capture.joinpath(*clip.DIRECTORY) / clip.CLIP_FILE
+    streams = clip.probe_streams(made)
+    assert _audio_streams(made) == 0 and [row["codec_type"] for row in streams["streams"]] == ["video"]
+    assert (streams["streams"][0]["width"], streams["streams"][0]["height"]) == (1280, 720)
+    assert clip.metadata_clean(streams) and clip.moov_before_mdat(made)
+    tags = _planted_tags(made)
+    for planted in ("location", "48.8584", "Back office", "manager", "Apple", "iPhone", "creation_time",
+                    "Core Media", "quicktime", "title", "comment", "make", "model"):
+        assert planted not in tags, planted
+    manifest = _manifest(capture)
+    assert manifest["source"] == "raw_upload"
+    assert manifest["source_video"]["relative"] == "raw/walkthrough.mp4" and manifest["source_video"]["digest"] == _sha(raw)
+    # The raw upload itself is never served, and it is left as it was.
+    sent = world.delivered[0]
+    assert sent["digest"] != _sha(raw) and sent["has_audio"] is False and "source" not in sent
+    assert all(body != before for body in world.objects.values()) and raw.read_bytes() == before
+    # A current clip does not read the upload again on every pass.
+    monkeypatch.setattr("blueprint_pipeline.website_source_video.probe_video",
+                        lambda path: pytest.fail("probed a raw upload already made into a clip"))
+    monkeypatch.setattr(clip, "_sha256_file", lambda path: pytest.fail("hashed a raw upload already made into a clip"))
+    assert world.publish(capture)["status"] == "current" and len(world.archived) == 1
+
+
+@pytest.mark.parametrize("case", ["missing", "broken", "empty", "not_named", "outside", "symlink", "not_a_video_name",
+                                  "never_handed_off"])
+def test_a_missing_or_broken_raw_upload_is_no_source_and_raises_nothing(tmp_path, case):
+    capture = _capture(tmp_path, normalized=False)
+    raw, manifest = capture / "raw/walkthrough.mp4", capture / "raw/manifest.json"
+    value = json.loads(manifest.read_text())
+    if case == "missing":
+        raw.unlink()
+    elif case == "broken":
+        raw.write_bytes(b"\x00\x00\x00\x18ftypmp42 not really a video" * 64)
+    elif case == "empty":
+        raw.write_bytes(b"")
+    elif case == "not_named":
+        _write(manifest, {key: item for key, item in value.items() if key != "video_uri"})
+    elif case == "outside":
+        _write(manifest, {**value, "video_uri": "scenes/site-req1/captures/walkthrough-req1/raw/../../x.mp4"})
+    elif case == "symlink":
+        outside = _video(tmp_path / "elsewhere/clip.mp4")
+        raw.unlink()
+        raw.symlink_to(outside)
+    elif case == "never_handed_off":
+        shutil.rmtree(capture / "pipeline")
+    else:
+        raw.rename(capture / "raw/walkthrough.json")
+        _write(manifest, {**value, "video_uri": "scenes/site-req1/captures/walkthrough-req1/raw/walkthrough.json"})
+    world = World()
+    assert world.publish(capture) == {"status": "no_source"}
+    assert world.rights_reads == 0 and world.archived == [] and world.delivered == []
+    assert not (capture.joinpath(*clip.DIRECTORY) / clip.CLIP_FILE).exists()
+
+
+def test_a_capture_with_a_normalization_record_still_uses_it(tmp_path):
+    capture = _capture(tmp_path, size="2560x1440")
+    record = json.loads((capture / "pipeline/source_video/normalization.json").read_text())
+    world = World()
+    assert world.publish(capture)["status"] == "published"
+    manifest = _manifest(capture)
+    assert manifest["source"] == "normalized" and manifest["source_video"]["kind"] == "normalized"
+    assert manifest["source_video"]["relative"] == record["preparation_video"] != "raw/walkthrough.mp4"
+    assert manifest["source_video"]["digest"] == record["normalized"]["sha256"]
+
+
+def test_the_tick_covers_a_capture_handed_off_before_normalization(tmp_path):
+    legacy = _capture(tmp_path, normalized=False)
+    world = World()
+    assert clip.capture_roots(tmp_path / "storage") == [legacy]
+    counts = clip.tick(tmp_path / "storage", check_rights=world.check_rights, archive=world.archive,
+                       retract=world.retract, deliver=world.deliver, now=lambda: NOW)
+    assert counts == {"published": 1} and _manifest(legacy)["source"] == "raw_upload"
 
 
 def test_a_failed_make_never_raises_and_is_retried_by_the_next_pass(capture, monkeypatch):

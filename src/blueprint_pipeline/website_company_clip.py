@@ -9,7 +9,11 @@ website capture and publishes it exactly as the scene preview is published
 
 - made from the clip website preparation reads (``website_source_video``:
   ``pipeline/source_video/normalization.json`` names it), re-encoded every time, so the raw
-  upload is never what is served, even when it was already within the normalization bounds;
+  upload is never what is served, even when it was already within the normalization bounds.
+  A capture handed off before normalization existed has no such record: its clip is made, the
+  same way, from the raw upload its ``raw/manifest.json`` names (``video_uri``). The manifest
+  records which (``source``: ``normalized`` or ``raw_upload``). A record that exists but cannot
+  be used never falls back to the raw upload;
 - video stream only: no audio stream at all (sites are told people heard in a clip must know
   it is shared; a company does not need sound), no subtitle or data stream, and no metadata
   (``-map_metadata -1``: a phone's location tags do not travel);
@@ -159,13 +163,67 @@ def _sha256_file(path: Path) -> str:
     return _sha256(path)
 
 
-def clip_source(capture_root: Path) -> dict[str, Any] | None:
-    """The clip website preparation reads, as its normalization record names it, or None.
+#: The raw upload a capture's ``raw/manifest.json`` names: ``scenes/<site>/captures/<capture>/raw/<file>``.
+RAW_VIDEO_SUFFIXES = frozenset({".mov", ".mp4", ".m4v"})
+_RAW_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")
 
-    None until normalization has recorded its outcome: the clip is made from nothing else.
+
+def raw_upload_source(capture_root: Path) -> dict[str, Any] | None:
+    """The raw upload ``raw/manifest.json`` names (``video_uri``), a regular file in this capture's ``raw/``.
+
+    Cheap: no read of the video. Its digest and whether it is a readable video are decided under the lock.
+    A capture with no ``pipeline/`` directory was never handed off (or was retired): it has no source.
     """
-    from .website_source_video import read_record
     root = Path(capture_root)
+    if (root / "pipeline").is_symlink() or not (root / "pipeline").is_dir():
+        return None
+    named = _read(root / "raw" / "manifest.json").get("video_uri")
+    prefix = f"scenes/{root.parent.parent.name}/captures/{root.name}/raw/"
+    name = named[len(prefix):] if isinstance(named, str) and named.startswith(prefix) else ""
+    if not _RAW_NAME.fullmatch(name) or Path(name).suffix.lower() not in RAW_VIDEO_SUFFIXES:
+        return None
+    path = root / "raw" / name
+    try:
+        info = path.lstat()
+        inside = not (root / "raw").is_symlink() and path.resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError):
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_size <= 0 or not inside:
+        return None
+    return {"path": path, "relative": f"raw/{name}", "source": "raw_upload", "kind": "raw_upload",
+            "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns}
+
+
+def _raw_upload_digest(source: Mapping[str, Any], manifest: Mapping[str, Any]) -> str | None:
+    """The raw upload's digest, or None when it is not a readable video.
+
+    Read once: a pass reuses the digest the manifest kept for the same file, size and modification time,
+    so a current clip costs no read of a large upload every pass.
+    """
+    from .website_source_video import probe_video
+    kept = manifest.get("source_video")
+    if (manifest.get("source") == "raw_upload" and isinstance(kept, Mapping)
+            and all(kept.get(key) == source[key] for key in ("relative", "size_bytes", "mtime_ns"))
+            and _DIGEST.fullmatch(str(kept.get("digest") or ""))):
+        return kept["digest"]
+    try:
+        probe_video(Path(source["path"]))
+        return _sha256_file(Path(source["path"]))
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+
+
+def clip_source(capture_root: Path) -> dict[str, Any] | None:
+    """The clip website preparation reads, as its normalization record names it; without a record, the raw
+    upload the capture's manifest names; or None.
+
+    A record that exists but cannot be used is None: it never falls back to the raw upload. A raw upload's
+    ``digest`` is not set here (see ``_raw_upload_digest``).
+    """
+    from .website_source_video import RECORD_FILE, normalization_root, read_record
+    root = Path(capture_root)
+    if not os.path.lexists(normalization_root(root) / RECORD_FILE):
+        return raw_upload_source(root)
     try:
         record = read_record(root)
     except (OSError, ValueError):
@@ -181,7 +239,7 @@ def clip_source(capture_root: Path) -> dict[str, Any] | None:
         return None
     if not _DIGEST.fullmatch(str(chosen.get("sha256") or "")) or path.stat().st_size != chosen.get("size_bytes"):
         return None
-    return {"path": path, "relative": relative, "digest": chosen["sha256"],
+    return {"path": path, "relative": relative, "digest": chosen["sha256"], "source": "normalized",
             "kind": "normalized" if record.get("normalization_ran") is True else "within_bounds_upload",
             "duration_seconds": chosen.get("duration_seconds"), "fps": chosen.get("fps"),
             "width": chosen.get("width"), "height": chosen.get("height")}
@@ -504,7 +562,8 @@ def publish_company_clip(capture_root: Path, *, now: Callable[[], float] = time.
     """One idempotent pass for one capture: make, archive and deliver what is not yet current.
 
     Returns ``{"status": ...}``: ``current``, ``published``, ``not_permitted`` (older statement),
-    ``no_source`` (not normalized yet), ``over_size_cap``, ``withdrawn``, ``refused`` (rights or
+    ``no_source`` (no normalization record and no readable raw upload named by the capture's manifest,
+    or a record that cannot be used), ``over_size_cap``, ``withdrawn``, ``refused`` (rights or
     the takedown gate, with a reason), ``busy`` or ``failed`` (retried by the next pass). It
     never raises and never touches the capture's job.
     """
@@ -543,8 +602,13 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
         source = clip_source(root)
         if source is None:
             return {"status": "no_source"}
-        revision = clip_revision(source, max_bytes=max_bytes)
         manifest = _read(manifest_path)
+        if source["source"] == "raw_upload":
+            # Decided before any rights read: a missing or broken upload is no source, never a failure.
+            source["digest"] = _raw_upload_digest(source, manifest)
+            if source["digest"] is None:
+                return {"status": "no_source"}
+        revision = clip_revision(source, max_bytes=max_bytes)
         if _current(manifest, revision, clip_path):
             return {"status": "current", "clip_revision": revision}
         if manifest.get("clip_revision") == revision and manifest.get("refused") == OVER_CAP:
@@ -567,7 +631,9 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
             if manifest.get("archive") and not _take_back(manifest, manifest_path, retract):
                 return {"status": "failed", "reason": "website_company_clip_retraction_pending"}
             base = {"schema_version": MANIFEST_SCHEMA, **identity, "clip_revision": revision,
-                    "source": {key: source[key] for key in ("kind", "digest", "relative")},
+                    "source": source["source"],
+                    "source_video": {key: source[key] for key in ("kind", "digest", "relative", "size_bytes",
+                                                                  "mtime_ns") if key in source},
                     "permission": basis, "built_at_epoch": int(now()), "archive": None, "delivered": None}
             try:
                 built = build_clip(Path(source["path"]), clip_path, max_bytes=max_bytes)
@@ -612,12 +678,15 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
 
 
 def capture_roots(storage_root: Path) -> list[Path]:
-    """Every website capture whose video normalization has recorded its outcome."""
+    """Every website capture whose video normalization has recorded its outcome, or that has a raw manifest
+    (a capture handed off before normalization existed)."""
     found = set()
-    for path in Path(storage_root).glob("*/scenes/site-*/captures/*/pipeline/source_video/normalization.json"):
-        capture = path.parents[2]
-        if capture_name_matches_request(capture.parent.parent.name.removeprefix("site-"), capture.name):
-            found.add(capture)
+    for pattern, depth in (("*/scenes/site-*/captures/*/pipeline/source_video/normalization.json", 2),
+                           ("*/scenes/site-*/captures/*/raw/manifest.json", 1)):
+        for path in Path(storage_root).glob(pattern):
+            capture = path.parents[depth]
+            if capture_name_matches_request(capture.parent.parent.name.removeprefix("site-"), capture.name):
+                found.add(capture)
     return sorted(found)
 
 
