@@ -152,6 +152,11 @@ def _inside(base: Path, path: Path) -> Path | None:
     return resolved
 
 
+#: The team scene packet worker's two outcomes of a completed status that name a half
+#: (``team_scene_packet_worker``: ``_compiled_status`` writes ``compiled``, a reused half ``already_compiled``).
+SUCCESS_OUTCOMES = frozenset({"compiled", "already_compiled"})
+
+
 def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> dict[str, Any] | None:
     """The newest compiled team scene half of this capture, as its plan and staged files name it, or None.
 
@@ -167,7 +172,9 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
         return None
     for path in candidates:
         status = _read(path)
-        if (status.get("status") == "completed" and status.get("outcome") == "compiled"
+        # A reused half (a duplicate request, or a retry that found its half) is written as ``already_compiled``;
+        # either way the half itself is checked below (``_half``), never trusted for the word.
+        if (status.get("status") == "completed" and status.get("outcome") in SUCCESS_OUTCOMES
                 and status.get("capture_id") == identity["capture_id"]
                 and Path(str(status.get("capture_root") or "")) == root
                 and isinstance(status.get("team_scene_inputs_path"), str)):

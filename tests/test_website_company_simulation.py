@@ -1394,3 +1394,47 @@ def test_an_event_during_the_build_stops_the_upload(tmp_path, monkeypatch, event
     result = world.publish()
     assert result["status"] in {"refused", "not_permitted"}, result
     assert world.archived == [] and world.delivered == []
+
+
+# --- a reused half: the worker writes ``already_compiled`` for a duplicate request or a retry --------------------
+
+def _set_outcome(job: Job, outcome: str, **changes) -> None:
+    path = job.queue / "status/31e12dca983b8837295ac911c44dee68.json"
+    status = json.loads(path.read_text())
+    status.update(outcome=outcome, **changes)
+    path.write_text(json.dumps(status))
+
+
+def test_an_already_compiled_half_is_published(job):
+    _set_outcome(job, "already_compiled")
+    world = World(job)
+    assert world.publish()["status"] == "published" and len(world.delivered) == 1
+
+
+@pytest.mark.parametrize("broken", ["missing", "no_plan"])
+def test_an_already_compiled_status_naming_a_missing_or_invalid_half_is_no_source(job, broken):
+    _set_outcome(job, "already_compiled")
+    if broken == "missing":
+        _set_outcome(job, "already_compiled", team_scene_inputs_path=str(job.tmp / "nowhere/scene/x.json"))
+    else:
+        (job.packet / sim.PLAN_FILE).unlink()
+    world = World(job)
+    assert world.publish() == {"status": "no_source"} and world.archived == []
+
+
+@pytest.mark.parametrize("outcome", ["compiled", "already_compiled"])
+def test_a_reused_half_whose_file_changed_is_refused_exactly_as_a_compiled_one(job, outcome):
+    # The half is checked the same way whatever the outcome word: a file that no longer matches its plan row
+    # is refused, naming the row's role; nothing is uploaded and nothing raises.
+    _set_outcome(job, outcome)
+    job.collision.write_bytes(b"changed after the plan was sealed")
+    world = World(job)
+    assert world.publish() == {"status": "refused", "reason": "website_company_simulation_asset_not_shipped:"
+                               "scene_collision", "detail": ""}
+    assert world.archived == []
+
+
+@pytest.mark.parametrize("outcome", ["skipped", "failed", "compiling", "", None])
+def test_an_outcome_that_is_not_a_success_is_ignored(job, outcome):
+    _set_outcome(job, outcome)
+    assert World(job).publish() == {"status": "no_source"}
