@@ -76,7 +76,11 @@ from .website_scene_workspace_digests import (
     hash_file as _hash_file,
     save_inventory_cache,
 )
-from .website_scene_workspace_queue import QueueInventoryUnavailable, queue_reference_text
+from .website_scene_workspace_queue import (
+    QueueInventoryUnavailable,
+    queue_reference_text,
+    tolerant_queue_reference_text,
+)
 
 
 PLAN_SCHEMA = "website_scene_workspace_retirement_plan.v1"
@@ -234,6 +238,10 @@ class RetentionContext:
     # Authority-ended captures can contain revoked local derivatives. No production
     # entrypoint enables their archival until an owner-approved deletion lifecycle exists.
     allow_authority_ended_archive: bool = False
+    #: Only for a deletion privacy requires (owner_approved_deletion): when a list, an unreadable
+    #: queue file, registration or intent is appended here ({"path", "code"}) and skipped, instead of
+    #: protecting every scene. None, the default everywhere else, keeps the fail-closed reading.
+    unreadable_references: list[dict[str, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -593,7 +601,7 @@ def scene_workspaces(storage_root: Path) -> list[tuple[str, str, Path]]:
 # --- the reference index: website source registrations and the intents that resolve them ----------
 
 
-def _registrations(binding_root: Path | None) -> tuple[Mapping[str, Any], ...]:
+def _registrations(binding_root: Path | None, skipped: list[str] | None = None) -> tuple[Mapping[str, Any], ...]:
     if binding_root is None:
         raise _Unreadable
     try:
@@ -612,28 +620,37 @@ def _registrations(binding_root: Path | None) -> tuple[Mapping[str, Any], ...]:
     for name in names:
         if name.startswith(".") or not name.endswith(".json"):
             continue  # exclusive writers stage hidden temporaries
-        state, value, record_info = _load_json(Path(binding_root) / name)
-        if state != "ok" or value is None or record_info is None:
-            raise _Unreadable
-        references = value.get("references")
-        request_digest = value.get("request_digest")
-        if (
-            value.get("schema_version") != REGISTRATION_SCHEMA
-            or value.get("registration_digest") != canonical_digest(value, digest_field="registration_digest")
-            or not isinstance(request_digest, str)
-            or not request_digest.startswith(_SHA256)
-            or not isinstance(references, Mapping)
-            or not references
-            or not all(isinstance(ref, Mapping) and isinstance(ref.get("path"), str) for ref in references.values())
-        ):
-            raise _Unreadable
-        rows.append({
-            "path": str(Path(binding_root) / name),
-            "request_digest": request_digest,
-            "reference_paths": tuple(str(ref["path"]) for ref in references.values()),
-            "registered_at_epoch": float(record_info.st_mtime),
-        })
+        try:
+            rows.append(_registration_row(Path(binding_root), name))
+        except _Unreadable:
+            if skipped is None:
+                raise
+            skipped.append(str(Path(binding_root) / name))
     return tuple(rows)
+
+
+def _registration_row(binding_root: Path, name: str) -> Mapping[str, Any]:
+    state, value, record_info = _load_json(Path(binding_root) / name)
+    if state != "ok" or value is None or record_info is None:
+        raise _Unreadable
+    references = value.get("references")
+    request_digest = value.get("request_digest")
+    if (
+        value.get("schema_version") != REGISTRATION_SCHEMA
+        or value.get("registration_digest") != canonical_digest(value, digest_field="registration_digest")
+        or not isinstance(request_digest, str)
+        or not request_digest.startswith(_SHA256)
+        or not isinstance(references, Mapping)
+        or not references
+        or not all(isinstance(ref, Mapping) and isinstance(ref.get("path"), str) for ref in references.values())
+    ):
+        raise _Unreadable
+    return {
+        "path": str(Path(binding_root) / name),
+        "request_digest": request_digest,
+        "reference_paths": tuple(str(ref["path"]) for ref in references.values()),
+        "registered_at_epoch": float(record_info.st_mtime),
+    }
 
 
 def _revoked_at(path: Path) -> float:
@@ -700,8 +717,8 @@ def _open_attempts(directory: Path) -> tuple[str, ...]:
     return tuple(live)
 
 
-def _intents(intent_root: Path | None, *, now: float,
-             expired_grace_seconds: int = DEFAULT_EXPIRED_GRACE_SECONDS) -> tuple[Mapping[str, Any], ...]:
+def _intents(intent_root: Path | None, *, now: float, expired_grace_seconds: int = DEFAULT_EXPIRED_GRACE_SECONDS,
+             skipped: list[str] | None = None) -> tuple[Mapping[str, Any], ...]:
     from . import task_evaluation_scene_intake as intake
 
     if intent_root is None:
@@ -743,21 +760,46 @@ def _intents(intent_root: Path | None, *, now: float,
                 "finished": finished,
                 "open_attempts": _open_attempts(directory) if held else (),
             })
-        except _Unreadable:
-            raise
         except Exception as exc:  # noqa: BLE001 - an intent that cannot be read protects every scene
-            raise _Unreadable from exc
+            if skipped is None:
+                if isinstance(exc, _Unreadable):
+                    raise
+                raise _Unreadable from exc
+            skipped.append(str(directory))
     return tuple(rows)
 
 
 def build_reference_index(context: RetentionContext, *, now: float) -> ReferenceIndex:
     """Read every website source registration and scene intent once; unreadable means protect all."""
 
+    if context.unreadable_references is not None:
+        return _tolerant_reference_index(context, now=now, record=context.unreadable_references)
     try:
         registrations = _registrations(context.binding_root)
         intents = _intents(context.intent_root, now=float(now), expired_grace_seconds=context.expired_grace_seconds)
     except _Unreadable:
         return ReferenceIndex(readable=False, binding_root=context.binding_root)
+    return ReferenceIndex(readable=True, binding_root=context.binding_root,
+                          registrations=registrations, intents=intents)
+
+
+def _tolerant_reference_index(context: RetentionContext, *, now: float,
+                              record: list[dict[str, str]]) -> ReferenceIndex:
+    """The index without what cannot be read, each unreadable file or root recorded (privacy deletions only)."""
+
+    skipped: list[str] = []
+    try:
+        registrations = _registrations(context.binding_root, skipped)
+    except _Unreadable:
+        registrations = ()
+        skipped.append(str(context.binding_root))
+    try:
+        intents = _intents(context.intent_root, now=float(now), expired_grace_seconds=context.expired_grace_seconds,
+                           skipped=skipped)
+    except _Unreadable:
+        intents = ()
+        skipped.append(str(context.intent_root))
+    record.extend({"path": path, "code": "reference_index_unreadable"} for path in skipped)
     return ReferenceIndex(readable=True, binding_root=context.binding_root,
                           registrations=registrations, intents=intents)
 
@@ -983,7 +1025,13 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
     if _pinned_workspace(scene, live_pinned_paths(context.pins_root, now=lambda: now)):
         early.append("pinned")
     try:
-        if scene_id in queue_reference_text(context.queue_roots):
+        if context.unreadable_references is None:
+            queue_text = queue_reference_text(context.queue_roots)
+        else:
+            queue_text, unreadable = tolerant_queue_reference_text(context.queue_roots)
+            context.unreadable_references.extend({"path": path, "code": "queue_inventory_unreadable"}
+                                                 for path in unreadable)
+        if scene_id in queue_text:
             early.append("queue_referenced")
     except QueueInventoryUnavailable:
         early.append("queue_inventory_unreadable")

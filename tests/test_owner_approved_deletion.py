@@ -931,3 +931,49 @@ def test_the_journal_names_each_refused_path_its_reasons_and_naming_files_but_no
     assert [row["unreadable"] for row in rows if "unreadable" in row] == [{"path": str(broken), "code": "not_json"}]
     assert {row["refused"]["path"] for row in rows if "refused" in row} == {str(folder), str(other)}
     assert summary["reference_scan"] == "incomplete"
+
+
+def test_someone_elses_malformed_binding_or_queue_file_never_keeps_a_privacy_deletion(tmp_path, host):
+    scene = _authority_ended_scene(tmp_path, host)
+    folder = host.folder("arena-launch-r1")
+    binding = host.write(host.control / "website-source-bindings" / "other.json", "{half")
+    queued = host.control / "queue" / "pending" / "row.json"
+    queued.write_bytes(b"\xff\xfe not utf-8")
+    now = time.time()
+    later = now + 8 * DAY
+    manifest = host.manifest([_scene_entry(scene), host.folder_entry(folder)], **_approval_around(now))
+
+    rows = {row["class"]: row for row in host.plan(manifest, at=later)["entries"]}
+
+    assert (rows[oad.SCENE]["status"], rows[oad.SCENE]["reasons"]) == ("eligible", [])
+    left = rows[oad.SCENE][oad.LEFT_POINTING_AT_NOTHING]
+    assert {"path": str(binding), "code": "reference_index_unreadable"} in left["unreadable"]
+    assert {"path": str(queued), "code": "queue_inventory_unreadable"} in left["unreadable"]
+    assert {"path": str(binding), "code": "not_json"} in left["unreadable"]
+    assert oad.UNREADABLE_REFERENCES not in rows[oad.SCENE]["identity"]
+    assert rows[oad.FOLDER]["status"] == "skipped"
+    assert set(rows[oad.FOLDER]["reasons"]) == {"queue_inventory_unreadable", "reference_scan_incomplete"}
+    assert host.apply(manifest, at=later + 60)["outcome_counts"] == {"deleted": 1, "not_eligible_in_plan": 1}
+    receipt = json.loads((host.reports / "test-manifest" / "receipts" / f"{oad._key(str(scene))}.json").read_text())
+    assert receipt[oad.LEFT_POINTING_AT_NOTHING] == left and not scene.exists() and folder.is_dir()
+
+
+def test_an_open_process_or_a_pin_still_holds_a_privacy_deletion(tmp_path, host):
+    scene = _authority_ended_scene(tmp_path, host)
+    host.write(host.control / "website-source-bindings" / "other.json", "{half")
+    process = host.root / "proc" / "4242"
+    (process / "fd").mkdir(parents=True)
+    (process / "cmdline").write_bytes(b"python\0-m\0x\0")
+    (process / "environ").write_bytes(b"")
+    (process / "cwd").symlink_to(scene)
+    now = time.time()
+    manifest = host.manifest([_scene_entry(scene)], **_approval_around(now))
+
+    row = host.plan(manifest, at=now + 8 * DAY)["entries"][0]
+    assert row["status"] == "skipped" and "in_use" in row["reasons"]
+
+    (process / "cwd").unlink()
+    write_storage_pin(pins_root=host.control / "storage-pins", kind="preparation", owner_id="pin-1",
+                      paths=[scene], ttl_seconds=30 * DAY, now=lambda: now)
+    row = host.plan(manifest, at=now + 8 * DAY)["entries"][0]
+    assert row["status"] == "skipped" and "pinned" in row["reasons"]

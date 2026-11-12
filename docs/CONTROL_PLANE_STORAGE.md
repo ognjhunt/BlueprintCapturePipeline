@@ -1212,6 +1212,22 @@ to get past it. A `reference_scan_incomplete` plan is fixed by making the listed
 file readable or valid, or by restoring the missing root, never by moving it out
 of the scan.
 
+`named_by_released_code` matches a folder's name, not its use, so it can be a
+false positive on a common name: on 2026-11-12 it refused 30 of the 62 inputs
+folders, among them `diagnostics`, `sources` and `render-probes`. Such a folder
+stays refused until no release uses the name as a path component. Refusing is
+the safe direction for housekeeping, and the rule never applies to a privacy
+deletion. The way past it is a code change, reviewed and released like any
+other, never an edit to the manifest.
+
+For a privacy deletion, someone else's unreadable or malformed file never keeps
+the workspace either: a queue file, website source registration or scene intent
+that cannot be read (`queue_inventory_unreadable`, `reference_index_unreadable`
+for a housekeeping folder) is skipped and listed under
+`references_left_pointing_at_nothing.unreadable`. A pin, a process using it, a
+queue message naming it or an open scene intent still keep it: those mean it is
+in use now and clear when that use ends.
+
 The report directory is created under the units' `UMask=0077`, so the door
 cannot open the plan or the receipts. Each run therefore prints, to its journal
 (`operator_door.py journal <unit>`), every refused path with its `reasons`,

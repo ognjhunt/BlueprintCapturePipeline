@@ -72,3 +72,48 @@ def queue_reference_text(roots: Sequence[Path], *, max_file_bytes: int = MAX_QUE
             except (OSError, UnicodeDecodeError) as exc:
                 raise QueueInventoryUnavailable("queue_inventory_unreadable") from exc
     return "\n".join(chunks)
+
+
+def tolerant_queue_reference_text(roots: Sequence[Path], *,
+                                  max_file_bytes: int = MAX_QUEUE_FILE_BYTES) -> tuple[str, list[str]]:
+    """Each queue file read on its own: the text of those that could be read, and the paths of the rest.
+
+    Only for a deletion privacy requires, where one unrelated malformed queue file must not keep a
+    site's data; every other caller uses the fail-closed ``queue_reference_text``.
+    """
+
+    chunks: list[str] = []
+    unreadable: list[str] = []
+    for root in roots:
+        for state in ("pending", "processing"):
+            directory = Path(root) / state
+            try:
+                if not stat.S_ISDIR(os.lstat(directory).st_mode):
+                    unreadable.append(str(directory))
+                    continue
+                names = sorted(os.listdir(directory))
+            except FileNotFoundError:
+                continue
+            except OSError:
+                unreadable.append(str(directory))
+                continue
+            for name in names:
+                if not name.endswith(".json"):
+                    continue
+                path = directory / name
+                try:
+                    file_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    try:
+                        info = os.fstat(file_fd)
+                        if not stat.S_ISREG(info.st_mode) or info.st_size > max_file_bytes:
+                            unreadable.append(str(path))
+                            continue
+                        with os.fdopen(os.dup(file_fd), "rb") as stream:
+                            chunks.append(stream.read(max_file_bytes + 1).decode("utf-8"))
+                    finally:
+                        os.close(file_fd)
+                except FileNotFoundError:
+                    continue  # taken by its consumer since the listing
+                except (OSError, UnicodeDecodeError):
+                    unreadable.append(str(path))
+    return "\n".join(chunks), unreadable

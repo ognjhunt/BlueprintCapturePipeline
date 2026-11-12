@@ -388,16 +388,29 @@ class References:
             self.queue_text: str | None = queue_reference_text(list(queue_roots))
         except QueueInventoryUnavailable:
             self.queue_text = None
+        self.queue_roots = tuple(queue_roots)
+        self._tolerant: tuple[str, list[str]] | None = None
         self.unit_texts = unit_texts
         self.process_index = process_index
 
-    def reasons(self, path: Path) -> list[str]:
+    def reasons(self, path: Path, unreadable: list[dict[str, str]] | None = None) -> list[str]:
+        """Why ``path`` is kept. With ``unreadable`` (a privacy-required path), an unreadable queue file
+        is recorded there and skipped instead of keeping the path."""
+
+        from .website_scene_workspace_queue import tolerant_queue_reference_text
+
         reasons = []
         if _pinned(path, self.pinned):
             reasons.append("pinned")
-        if self.queue_text is None:
+        queue_text = self.queue_text
+        if queue_text is None and unreadable is not None:
+            if self._tolerant is None:
+                self._tolerant = tolerant_queue_reference_text(list(self.queue_roots))
+            queue_text = self._tolerant[0]
+            unreadable.extend({"path": name, "code": "queue_inventory_unreadable"} for name in self._tolerant[1])
+        if queue_text is None:
             reasons.append("queue_inventory_unreadable")
-        elif _named(self.queue_text, str(path)) or _named(self.queue_text, path.name):
+        elif _named(queue_text, str(path)) or _named(queue_text, path.name):
             reasons.append("queue_referenced")
         units = sorted(name for name, text in self.unit_texts if _named(text, str(path)) or _named(text, path.name))
         reasons.extend(f"unit_referenced:{Path(name).name}" for name in units[:5])
@@ -434,6 +447,8 @@ NAMED_BY_RELEASED_CODE = "named_by_released_code"
 REFERENCE_SCAN_INCOMPLETE = "reference_scan_incomplete"
 LIVE_STATE_SCAN_ROOT = "live_state_scan_root"
 LEFT_POINTING_AT_NOTHING = "references_left_pointing_at_nothing"
+#: Carried out of a privacy path's check: the unreadable queue files, registrations and intents skipped.
+UNREADABLE_REFERENCES = "unreadable_references"
 
 
 def _paths_in(text: str) -> set[str]:
@@ -785,13 +800,14 @@ def _check_folder(entry: Mapping[str, Any], references: References, *, link_targ
     return reasons, identity
 
 
-def _scene_context(path: Path, *, pins_root: Path, queue_roots: Sequence[Path], intent_root: Path | None) -> Any:
+def _scene_context(path: Path, *, pins_root: Path, queue_roots: Sequence[Path], intent_root: Path | None,
+                   unreadable: list[dict[str, str]] | None = None) -> Any:
     from .website_scene_workspace_retention import RetentionContext, binding_root_for, scene_queue_roots
 
     storage_root = path.parent.parent.parent
     return RetentionContext(storage_root=storage_root, pins_root=pins_root,
                             queue_roots=scene_queue_roots(queue_roots, intent_root), intent_root=intent_root,
-                            binding_root=binding_root_for(intent_root))
+                            binding_root=binding_root_for(intent_root), unreadable_references=unreadable)
 
 
 def _ledger_records(path: Path, capture_ids: Sequence[str]) -> list[dict[str, Any]] | None:
@@ -844,14 +860,22 @@ def _check_scene(entry: Mapping[str, Any], references: References, *, pins_root:
             ended = now
         if now - ended < REDELIVERY_WINDOW_SECONDS:
             reasons.append(f"terminal_within_redelivery_window:{row['capture_id']}")
-    context = _scene_context(path, pins_root=pins_root, queue_roots=queue_roots, intent_root=intent_root)
+    # A privacy-required workspace is not kept by someone else's unreadable queue file, registration or
+    # intent: those are recorded (UNREADABLE_REFERENCES) and skipped. A pin, a process, a queue message or
+    # an open intent naming it still keep it: those mean it is in use right now.
+    unreadable: list[dict[str, str]] | None = [] if entry["class"] in PRIVACY_REQUIRED_CLASSES else None
+    context = _scene_context(path, pins_root=pins_root, queue_roots=queue_roots, intent_root=intent_root,
+                             unreadable=unreadable)
     evaluation = _evaluate(context=context, bucket=path.parent.parent.name, scene_id=path.name, scene=path, now=now,
                            index=None, process_checker=references.process_index)
     if "authority_ended_capture_kept_local" not in evaluation.reasons:
         reasons.append("retention_did_not_prove_authority_ended")
     reasons.extend(reason for reason in evaluation.reasons if reason not in _SCENE_REASONS_ALLOWED)
-    reasons.extend(reason for reason in references.reasons(path) if reason not in reasons)
+    reasons.extend(reason for reason in references.reasons(path, unreadable) if reason not in reasons)
     identity["capture_ids"] = sorted(capture_ids)
+    if unreadable:
+        identity[UNREADABLE_REFERENCES] = [{"path": name, "code": code}
+                                           for name, code in sorted({(row["path"], row["code"]) for row in unreadable})]
     return sorted(set(reasons)), identity
 
 
@@ -922,6 +946,17 @@ class Settings:
                                release_roots=self.release_roots, door_roots=self.door_roots)
 
 
+def _with_skipped_references(verdict: Mapping[str, Any], identity: dict[str, Any] | None) -> dict[str, Any]:
+    """The verdict with a privacy path's skipped unreadable references moved out of its identity."""
+
+    skipped = identity.pop(UNREADABLE_REFERENCES, []) if identity else []
+    if not skipped:
+        return dict(verdict)
+    left = dict(verdict.get(LEFT_POINTING_AT_NOTHING) or {"named_by": verdict["named_by"], "unreadable": []})
+    left["unreadable"] = [*left["unreadable"], *skipped]
+    return {**verdict, LEFT_POINTING_AT_NOTHING: left}
+
+
 def _check(entry: Mapping[str, Any], references: References, settings: Settings, now: float,
            link_targets: Sequence[Path]) -> tuple[list[str], dict[str, Any] | None]:
     try:
@@ -950,7 +985,7 @@ def plan_manifest(manifest_path: Path, *, report_root: Path, settings: Settings,
                                   [entry["path"] for entry, reasons, _ in checked if not reasons and not expired])
     rows = []
     for entry, reasons, identity in checked:
-        verdict = verdicts[entry["path"]]
+        verdict = _with_skipped_references(verdicts[entry["path"]], identity)
         if reasons != ["absent"]:
             reasons = [*reasons, *verdict["reasons"]]
         if expired:
@@ -1092,7 +1127,7 @@ def apply_manifest(manifest_path: Path, *, report_root: Path, settings: Settings
     verdicts = live_state_reasons([entries[row["path"]] for row in plan["entries"]], live,
                                   [row["path"] for _, row, _, _, reasons, _ in candidates if not reasons])
     for index, row, entry, receipt_path, reasons, identity in candidates:
-        verdict = verdicts[row["path"]]
+        verdict = _with_skipped_references(verdicts[row["path"]], identity)
         if reasons != ["absent"]:
             reasons = [*reasons, *verdict["reasons"]]
         details = {key: value for key, value in verdict.items() if key != "reasons"}
