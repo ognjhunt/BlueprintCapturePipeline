@@ -182,8 +182,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     if hold is None and packet_status.get("blockers") == [COLD_STORAGE]:
                         # The team half cannot be compiled again while its scene run is in cold storage: the job
                         # is told at once, by name, and an open job's run is brought back by itself.
-                        hold = cold_storage_hold()
                         outcome["scene_run_restore"] = _restore_source_run(request, packet_queue_root=packet_root)
+                        hold = cold_storage_hold(request["source_launch_root"])
                     raise ValueError("beta_screening_scene_packet_not_ready")
                 capture = resolve_capture_root(request)
                 retained = _read_json(capture / "pipeline" / "website_task_context.json") or {}
@@ -326,7 +326,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                 # lasted long enough; planning is still tried on every pass.
                 refused_since = blocked_since(_read_json(states / path.name), outcome["blockers"])
                 if hold is None and code == COLD_STORAGE:
-                    hold = cold_storage_hold()
+                    hold = cold_storage_hold(request["source_launch_root"] if request is not None else None)
                 if hold is None:
                     hold = stalled_source_hold(outcome["blockers"][0], refused_since)
             if request is not None and newest.get(request["intent_id"]) == ("processed", path.name):

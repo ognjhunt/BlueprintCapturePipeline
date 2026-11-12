@@ -303,14 +303,14 @@ def test_the_team_half_recompile_of_an_offloaded_run_is_refused_by_the_same_code
 class _Restore:
     """The archive's restore and the disk ledger, faked: it lands the run with the offload's old times."""
 
-    def __init__(self, monkeypatch, *, disk=True, transfer=True):
+    def __init__(self, monkeypatch, *, disk=True, transfer=True, intact=True):
         from contextlib import nullcontext
 
         from blueprint_pipeline import control_plane_disk_budget as budget
         from blueprint_pipeline import control_plane_evidence_offload as offload
         from blueprint_pipeline.control_plane_disk_ledger import ControlPlaneDiskBudgetError
 
-        self.disk, self.transfer, self.reserved, self.calls = disk, transfer, [], 0
+        self.disk, self.transfer, self.intact, self.reserved, self.calls = disk, transfer, intact, [], 0
 
         def reserve(role, **kwargs):
             if not self.disk:
@@ -321,7 +321,9 @@ class _Restore:
         def restore(*, pointer_path, destination):
             self.calls += 1
             if not self.transfer:
-                raise ValueError("control_plane_evidence_restore_digest_mismatch")
+                raise ConnectionError("artifact store unreachable")  # transient: tried again
+            if not self.intact:
+                raise offload.ControlPlaneEvidenceOffloadError("control_plane_evidence_restore_digest_mismatch")
             Path(destination).mkdir(parents=True)
             (Path(destination) / "launch_receipt.json").write_text("{}")
             old = time.time() - 30 * 86400
@@ -726,3 +728,63 @@ def test_a_restore_killed_mid_way_leaves_its_bytes_only_in_the_run_named_staging
     assert done["status"] == restore.RESTORED and (world["run"] / "launch_receipt.json").is_file()
     assert not staging.exists() and _outside_the_run_named_staging(world) == sorted(
         [world["run"].name, world["run"].name + restore.STATE_SUFFIX])
+
+
+def test_an_archive_that_does_not_match_its_pointer_is_tried_once_until_the_pointer_changes(world, monkeypatch):
+    """PR re-check: an integrity failure cannot clear by waiting, so the archive is not downloaded every six hours."""
+    from blueprint_pipeline import scene_run_restore as restore
+
+    pointer_path = _offloaded(world)
+    fake = _Restore(monkeypatch, intact=False)
+    clock = [0.0]
+    first = restore.restore_open_job_run(world["run"], window_open=True, now=lambda: clock[0])
+    assert first["status"] == restore.ARCHIVE_INVALID and "retry_not_before" not in first
+    assert first["error"] == "control_plane_evidence_restore_digest_mismatch"
+    for _ in range(3):
+        clock[0] += 7 * 3600
+        assert restore.restore_open_job_run(world["run"], window_open=True,
+                                            now=lambda: clock[0])["status"] == restore.ARCHIVE_INVALID
+    assert fake.calls == 1  # never fetched again while the pointer is unchanged
+    # A changed pointer (the run offloaded again) is a new episode: it is tried, and lands.
+    changed = _sealed({**world["pointer"], "size_bytes": world["pointer"]["size_bytes"] + 1}, "pointer_digest")
+    pointer_path.write_text(json.dumps(changed), encoding="utf-8")
+    fake.intact = True
+    assert restore.restore_open_job_run(world["run"], window_open=True, now=lambda: clock[0])["status"] == restore.RESTORED
+    assert fake.calls == 2
+
+
+def test_an_archive_that_will_not_open_is_an_integrity_failure():
+    import tarfile
+
+    from blueprint_pipeline import scene_run_restore as restore
+
+    assert restore._integrity_failure(tarfile.ReadError("not a tar"))
+    assert not restore._integrity_failure(ConnectionError("store unreachable"))
+    assert not restore._integrity_failure(TimeoutError())
+
+
+@pytest.mark.parametrize("fault, detail", [("integrity", "scene_run_restore_archive_integrity_failed"),
+                                           ("transfer", "scene_run_in_cold_storage")])
+def test_the_site_is_told_restoring_only_while_a_restore_can_still_land(tmp_path, monkeypatch, fault, detail):
+    """An archive that fails its own integrity is not being restored: the hold names that (the website's general
+    "a problem on our side" sentence, which its ops alert reports to staff), never ``scene_run_in_cold_storage``;
+    a transient failure keeps the cold-storage hold ("being restored")."""
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline import scene_run_restore
+    from tests.test_beta_policy_screening_worker import prepared_source_queue
+
+    queue = prepared_source_queue(tmp_path, monkeypatch)
+    run = Path(queue["requests"][0]["source_launch_root"])
+    pointer = _fixture("launch_run.offloaded.v1.json")
+    run.parent.mkdir(parents=True, exist_ok=True)
+    (run.parent / (run.name + cold.POINTER_SUFFIX)).write_text(
+        json.dumps(_sealed({**pointer, "directory": run.name}, "pointer_digest")), encoding="utf-8")
+    monkeypatch.setattr(scene_run_restore, "retry_delay", lambda _failures: 0)
+    _Restore(monkeypatch, transfer=fault != "transfer", intact=fault != "integrity")
+    kwargs = {"queue_root": queue["screening_queue"], "packet_queue_root": queue["packet_queue"]}
+    for _ in range(2):  # the second pass reads the record the first one wrote
+        [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [held] = holds.pending_holds(queue_root=queue["screening_queue"])
+    assert (held["reason_code"], held["detail_code"]) == ("team_scene_packet_blocked", detail)
+    assert outcome["scene_run_restore"]["status"] == (
+        scene_run_restore.ARCHIVE_INVALID if fault == "integrity" else "refused")

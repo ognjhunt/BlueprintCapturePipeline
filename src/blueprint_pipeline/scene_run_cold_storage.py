@@ -32,8 +32,10 @@ from .decision_evidence_contracts import canonical_digest
 COLD_STORAGE = "scene_run_in_cold_storage"
 POINTER_SUFFIX = ".offloaded.v1.json"
 POINTER_SCHEMA = "control_plane_evidence_offload_pointer.v1"
-#: What releases the hold today, as the status says it.
-RELEASED_BY = "operator_restore:control_plane_evidence_offload.restore_offloaded_evidence"
+#: What releases the hold, as the status says it. An operator restores through the same call, never through
+#: ``restore_offloaded_evidence`` pointed at the run's own path: that would put its temporary folder beside the
+#: run, where a withdrawal cannot tie the site's bytes to the run.
+RELEASED_BY = "scene_run_restore.restore_open_job_run"
 
 
 def offload_pointer(run_root: str | Path) -> dict[str, Any] | None:
@@ -74,11 +76,20 @@ def require_on_disk(run_root: str | Path) -> None:
         raise ValueError(COLD_STORAGE)
 
 
-def cold_storage_hold() -> tuple[str, str]:
-    """The hold this state publishes: the accepted reason, with the code as its detail."""
+def cold_storage_hold(run_root: str | Path | None = None) -> tuple[str, str]:
+    """The hold this state publishes: the accepted reason, with the code as its detail.
+
+    The website words ``scene_run_in_cold_storage`` as "being restored". When the stored archive failed its
+    own integrity check for the current pointer (``scene_run_restore.ARCHIVE_INVALID``), nothing is restoring
+    it, so the detail is that code instead: the website then says the general "a problem on our side"
+    sentence for ``team_scene_packet_blocked``, and its ops alert for held evaluations tells staff.
+    """
 
     from .beta_policy_screening_holds import STALL_HOLD_REASON
+    from .scene_run_restore import ARCHIVE_INVALID, archive_invalid
 
+    if run_root is not None and archive_invalid(run_root):
+        return STALL_HOLD_REASON, ARCHIVE_INVALID
     return STALL_HOLD_REASON, COLD_STORAGE
 
 

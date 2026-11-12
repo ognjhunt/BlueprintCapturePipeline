@@ -113,7 +113,7 @@ def current_probe_state(capture_root: str | Path) -> dict[str, Any]:
 
         # The root is the job's scene run; when the storage GC moved it to cold storage, say so by name.
         return {"status": COLD_STORAGE if in_cold_storage(probe_root) else "probe_root_unavailable",
-                "capture_root": str(root)}
+                "capture_root": str(root), "probe_root": str(probe_root)}
     try:
         receipt = retained_probe_receipt(probe_root)
     except (OSError, RobotFreeProbeGateError) as exc:

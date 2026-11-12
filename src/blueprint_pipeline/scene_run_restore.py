@@ -21,9 +21,15 @@ restores it in place for an OPEN job (its scene intent window still runs; ``open
   directory named after the run, ``.<run>.restoring``: a restore killed mid-way leaves nothing anywhere
   else, the next pass removes it (``clean_stale_staging``), and a withdrawal deletion counts it as the
   run's own leftover and deletes it with the run (``website_capture_withdrawal_deletion._Units``);
-- a failed try spends nothing and is tried again while the job's window is open, never given up: the next
-  try waits ``job_retry_policy.outage_retry_delay`` (15 min, doubling, at most 6 h), recorded beside the
-  pointer; the screening pass reads the run again on its next pass and its hold is published as released.
+- a transient failed try (disk admission, transfer, store outage, timeout) spends nothing and is tried again
+  while the job's window is open: the next try waits ``job_retry_policy.outage_retry_delay`` (15 min,
+  doubling, at most 6 h), recorded beside the pointer; the screening pass reads the run again on its next
+  pass and its hold is published as released;
+- a failure of the archive's own integrity (its digest, a member list that does not match the pointer, a
+  symlink, an archive that will not open) cannot clear by waiting: the bytes stored are not the bytes
+  offloaded. It ends the tries for this cold-storage episode as ``ARCHIVE_INVALID`` (host-only, in the
+  restore record and the screening outcome; the job keeps its cold-storage hold) and is tried again only
+  when the pointer changes.
 
 A job whose window has ended is not restored: there is nothing left to run for it, and the screening pass
 tells it its window closed (``beta_screening_job_window_closed``). Restoring never deletes the pointer.
@@ -49,6 +55,27 @@ RETRY_FIRST_SECONDS = 900
 RETRY_CAP_SECONDS = 6 * 3600
 ROLE = "evidence_offload"
 RESTORED = "restored"
+#: The archive in the store does not match its pointer: tried again only for a changed pointer. Host only.
+ARCHIVE_INVALID = "scene_run_restore_archive_integrity_failed"
+#: ``control_plane_evidence_offload.restore_offloaded_evidence``'s refusals of the archive's own bytes.
+INTEGRITY_ERRORS = frozenset({"control_plane_evidence_restore_digest_mismatch",
+                              "control_plane_evidence_restore_member_mismatch",
+                              "control_plane_evidence_restore_symlink"})
+
+
+def archive_invalid(run_root: str | Path) -> bool:
+    """Whether the run's stored archive failed its integrity check for the pointer that stands now."""
+    run = Path(run_root)
+    pointer = offload_pointer(run)
+    state = _state(run)
+    return (pointer is not None and state.get("status") == ARCHIVE_INVALID
+            and state.get("pointer_digest") == pointer.get("pointer_digest"))
+
+
+def _integrity_failure(exc: BaseException) -> bool:
+    import tarfile
+
+    return isinstance(exc, tarfile.TarError) or str(exc) in INTEGRITY_ERRORS
 
 
 def retry_delay(failures: int) -> int:
@@ -157,7 +184,7 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
     withdrawal ends the tries.
 
     Returns ``{"status": ...}``: ``on_disk``, ``window_closed``, ``WITHDRAWN``, ``BUSY``, ``restored``,
-    ``waiting_retry``, or ``refused`` (this try failed: disk, transfer or digest; tried again later).
+    ``waiting_retry``, ``refused`` (a transient failure: tried again later), or ``ARCHIVE_INVALID``.
     """
     import fcntl
     import shutil
@@ -172,13 +199,18 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
     if not still_current():
         return {"status": WITHDRAWN}
     state, moment = _state(run), float(now())
+    if state.get("pointer_digest") not in (None, pointer.get("pointer_digest")):
+        state = {"attempts": 0}  # a changed pointer is a new episode: earlier failures do not count
+    if state.get("status") == ARCHIVE_INVALID:
+        return {**state, "status": ARCHIVE_INVALID}  # the same archive will not match again
     if moment < float(state.get("retry_not_before") or 0):
         return {**state, "status": "waiting_retry"}
     from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
     from .control_plane_evidence_offload import restore_offloaded_evidence
 
     attempt = int(state.get("attempts") or 0) + 1
-    record: dict[str, Any] = {"attempts": attempt, "last_attempt_epoch": moment}
+    record: dict[str, Any] = {"attempts": attempt, "last_attempt_epoch": moment,
+                              "pointer_digest": pointer.get("pointer_digest")}
     staging = staging_path(run)
     landing = staging / run.name
     lock = _restorer_lock(run).open("a+b")
@@ -217,6 +249,9 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
         record.update(status="refused", error_type=type(exc).__name__,
                       error=str(exc)[:200] if isinstance(exc, ValueError) or "disk" in str(exc) else "",
                       retry_not_before=moment + retry_delay(attempt))
+        if _integrity_failure(exc):
+            record.update(status=ARCHIVE_INVALID, error=str(exc)[:200])
+            record.pop("retry_not_before")
     finally:
         lock.close()
     _write_state(run, record)
@@ -247,5 +282,5 @@ def _write_state(run: Path, record: Mapping[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-__all__ = ["BUSY", "RESTORED", "RETRY_CAP_SECONDS", "RETRY_FIRST_SECONDS", "WITHDRAWN", "clean_stale_staging",
+__all__ = ["ARCHIVE_INVALID", "BUSY", "archive_invalid", "INTEGRITY_ERRORS", "RESTORED", "RETRY_CAP_SECONDS", "RETRY_FIRST_SECONDS", "WITHDRAWN", "clean_stale_staging",
            "deletion_lock", "restore_open_job_run", "retry_delay", "staging_path"]
