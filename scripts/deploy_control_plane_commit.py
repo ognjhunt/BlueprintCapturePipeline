@@ -3869,7 +3869,7 @@ def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: st
     try:
         report = json.loads(result.stdout)
     except ValueError as exc:
-        raise ControlPlaneDeployError('deploy_terminal_controls_report_invalid') from exc
+        raise ControlPlaneDeployError('deploy_terminal_controls_report_unparseable') from exc
     if (report.get('status') != 'prepared' or report.get('source_commit') != commit
             or report.get('provider_mutation_performed') is not False
             or report.get('model_called') is not False or report.get('placement_materialized') is not False):
@@ -3878,11 +3878,39 @@ def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: st
 
 
 #: Failures of the terminal-controls helper that come from the lane's own
-#: retained inputs or configuration. A non-quiescent worker is not one of them.
-_TERMINAL_CONTROLS_LANE_FAILURES = (
-    "deploy_terminal_controls_adoptions_failed",
-    "deploy_terminal_controls_report_invalid",
+#: retained inputs or configuration (the asset, the catalog, the bootstrap's
+#: contents), and a report that cannot be parsed. A report that names a
+#: provider mutation, a model call or a materialized placement, a non-quiescent
+#: worker, and any other child failure still stop the release.
+_TERMINAL_CONTROLS_LANE_CODES = re.compile(
+    r"(controls_autoprovision_[a-z0-9_]+|configured_controls_autostart_artifact_invalid)"
 )
+
+
+def _terminal_controls_lane_failure(message: str) -> bool:
+    if message == "deploy_terminal_controls_report_unparseable":
+        return True
+    prefix = "deploy_terminal_controls_adoptions_failed:"
+    if not message.startswith(prefix):
+        return False
+    return _TERMINAL_CONTROLS_LANE_CODES.fullmatch(message[len(prefix):].split(":", 1)[0]) is not None
+
+
+def _controls_lane_files(bootstrap: Path) -> dict[str, str | None] | None:
+    """Digests of the files the installer writes, or None when they cannot be named."""
+    from blueprint_pipeline.task_evaluation_controls_autoprovision_installation import (
+        DEFAULT_CATALOG, DEFAULT_CONFIG, DEFAULT_ENVIRONMENT,
+    )
+    try:
+        root = Path(json.loads(bootstrap.read_text(encoding="utf-8"))["config_root"])
+        digests: dict[str, str | None] = {}
+        for default in (DEFAULT_CATALOG, DEFAULT_CONFIG, DEFAULT_ENVIRONMENT):
+            path = root / Path(default).name
+            digests[str(path)] = (hashlib.sha256(path.read_bytes()).hexdigest()
+                                  if path.is_file() else None)
+        return digests
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def _install_controls_autoprovision_lane(*, bootstrap: Path, release_path: str | Path,
@@ -3890,30 +3918,37 @@ def _install_controls_autoprovision_lane(*, bootstrap: Path, release_path: str |
     """Install the controls lane; its own inputs never block the release.
 
     The installer validates every retained robot asset before it writes
-    anything, so a refusal leaves the catalog, config and environment pointer
-    exactly as the last successful install left them; nothing new is armed.
-    The receipt names the blocker. The lane then holds, by name, only the
+    anything, so an asset refusal leaves the catalog, config and environment
+    pointer as the last successful install left them. The receipt names the
+    blocker and whether those files changed (compared before and after, or
+    ``not_determined``). The lane then holds, by name, only the
     scenes that need an unusable binding (``process_config``).
     """
     from blueprint_pipeline.task_evaluation_controls_autoprovision_installation import (
         install_controls_autoprovision,
     )
 
+    files_before = _controls_lane_files(bootstrap)
     try:
         installation = install_controls_autoprovision(bootstrap_path=bootstrap)
     except (ValueError, OSError, KeyError, TypeError) as exc:
         code = str(exc).split(":", 1)[0] if isinstance(exc, ValueError) else ""
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,159}", code):
             code = "controls_autoprovision_installation_failed:" + type(exc).__name__
+        files_after = _controls_lane_files(bootstrap)
+        if files_before is None or files_after is None:
+            written: bool | str = "not_determined"
+        else:
+            written = files_before != files_after
         blocked = {"status": "blocked", "blocker": code, "bootstrap_path": str(bootstrap),
-                   "configuration_written": False, "provider_mutation_performed": False}
+                   "configuration_written": written, "provider_mutation_performed": False}
         return blocked, {"status": "skipped", "blocker": code, "provider_mutation_performed": False}
     try:
         adoptions = _prepare_terminal_controls_adoptions(
             release_path=release_path, commit=commit, config_path=installation["config"]["path"],
         )
     except ControlPlaneDeployError as exc:
-        if not str(exc).startswith(_TERMINAL_CONTROLS_LANE_FAILURES):
+        if not _terminal_controls_lane_failure(str(exc)):
             raise
         adoptions = {"status": "blocked", "blocker": str(exc), "provider_mutation_performed": False}
     return installation, adoptions
