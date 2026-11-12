@@ -630,10 +630,14 @@ def run_native_task_arena_policy_canary_session_vast(
     # needed-set measurement within budget), and every result from here on
     # records the mode and why.
     from . import policy_canary_output_members as output_members
+    screening = authority.get("run_kind") == "blueprint_beta_screening"
+    if screening and output_members.resolved_for_attempt(job_dir) is None:
+        # The pre-launch check's record is the only resolution a screening run uses: held by name, unspent.
+        return _unconsumed_policy_canary_refusal([output_members.RESOLUTION_MISSING])
     try:
         # A screening attempt's pre-launch check resolved it already: the same mode, never a second resolution.
-        resolved = ((output_members.resolved_for_attempt(job_dir) if authority.get("run_kind") == "blueprint_beta_screening"
-                     else None) or output_members.resolve_output_delivery())
+        resolved = (output_members.resolved_for_attempt(job_dir) if screening
+                    else output_members.resolve_output_delivery())
     except output_members.PolicyCanaryOutputDeliveryError as exc:
         return _unconsumed_policy_canary_refusal([str(exc)])
     delivery, recorded = resolved.mode, {output_members.RESOLUTION_FIELD: resolved.record()}

@@ -104,6 +104,11 @@ def shrink_area_off_start(task_spec: dict[str, Any]) -> tuple[dict[str, Any], di
     start, low, high = area
     centre = [float(target[0]), float(target[1])]
     half = [min(centre[axis] - low[axis], high[axis] - centre[axis]) for axis in range(2)]
+    if min(half) < 0:
+        # The target lies outside its own area: no box about it is a sub-area. Left exactly as sealed, flagged.
+        return task_spec, {"area_shrunk_off_start": False, "reason": "target_outside_area", "half_width_m_before": half,
+                           "half_width_m": half, "start_clearance_m": start_clearance_m(task_spec, {}),
+                           "start_clear": False, "flag": DESTINATION_NEAR_START}
     steps = 200
     for step in range(steps + 1):
         scale = 1.0 - step / steps
@@ -114,8 +119,9 @@ def shrink_area_off_start(task_spec: dict[str, Any]) -> tuple[dict[str, Any], di
         candidate = {**task_spec, "destination_position_bounds_world_m": box}
         if clear(candidate, {}):
             break
-    if all(trial[axis] >= half[axis] for axis in range(2)):
+    if not clear(candidate, {}) and all(trial[axis] >= half[axis] for axis in range(2)):
         candidate = task_spec  # nothing could be taken off: the sealed area stands exactly as it was
+    # A box that clears is kept whatever step found it (the first is the box about the target itself).
     record = {"area_shrunk_off_start": True, "half_width_m_before": half, "half_width_m": trial,
               "start_clearance_m": start_clearance_m(candidate, {}), "start_clear": clear(candidate, {}),
               "flag": DESTINATION_NEAR_START}

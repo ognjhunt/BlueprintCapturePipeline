@@ -343,7 +343,9 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                     spec, model = build_registered_team_spec(candidate_id=key, registration=override["robot_policy"],
                         scene_plan=scene_plan, contract=contract, prompt=facts["prompt"],
                         scene_revision_digest=inputs["scene_revision_digest"],
-                        station=station, stance=own_stance(measured), station_reached_by_own_arm=reached)
+                        station=station, stance=own_stance(measured), station_reached_by_own_arm=reached,
+                        # A website row: out of reach is tested and flagged, never refused (owner, 2026-11-12).
+                        reach_refusal_as_flag=True)
                     inventory = None
                 else:
                     spec = _read(_bound_path(override["policy_execution_spec"]))

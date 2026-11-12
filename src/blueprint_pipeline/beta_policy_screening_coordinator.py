@@ -1788,8 +1788,8 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
                             item["attempt"]["reservation_status"] = "released"
                             item.update(status="blocked", blockers=[CANNOT_LAND_BLOCKER])
                             return
-                    else:
-                        item["attempt"].pop(WAIT_SINCE_FIELD, None)
+                    # A lock-busy poll during a disk wait keeps when the wait began: it is cleared only when the
+                    # output can land (``launching``) or the row is held, so the bound and its one alert hold.
                     item.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
                 _update(root, plan["campaign_id"], candidate["candidate_id"], waiting)
                 return False

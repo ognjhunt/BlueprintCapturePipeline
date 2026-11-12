@@ -181,6 +181,8 @@ class OutputDelivery:
 #: The resolution a screening attempt's pre-launch check made, kept beside the attempt so the session uses
 #: the same one instead of resolving again (``beta_policy_screening_launch.preflight_candidate_capacity``).
 RESOLVED_FILENAME = "output_delivery_resolution.v1.json"
+#: A screening session found no pre-launch resolution beside its attempt: refused before any spend.
+RESOLUTION_MISSING = "policy_canary_output_delivery_resolution_missing"
 
 
 def record_resolution(attempt_dir: str | Path, resolved: OutputDelivery) -> None:

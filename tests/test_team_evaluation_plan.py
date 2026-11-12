@@ -120,3 +120,35 @@ def test_the_area_guard_never_grows_an_area_smaller_than_the_disc():
     out, record = shrink_area_off_start(spec)
     assert out["destination_position_bounds_world_m"] == spec["destination_position_bounds_world_m"]
     assert record["start_clear"] is False and record["flag"] == "scene_estimate:destination_near_start"
+
+
+def test_the_area_guard_property_over_random_areas():
+    """Review 8c (4): output within input, never inverted, never below 5 cm unless the input was, and a box
+    about the target that clears the start is always kept (it was found at the first step and thrown away)."""
+    import random
+
+    from blueprint_pipeline import varied_start_clearance as v
+
+    rng = random.Random(8)
+    for _ in range(3000):
+        cx, cy = rng.uniform(-1, 1), rng.uniform(-1, 1)
+        lo = [cx - rng.uniform(0.01, 0.3), cy - rng.uniform(0.01, 0.3)]
+        hi = [cx + rng.uniform(0.01, 0.3), cy + rng.uniform(0.01, 0.3)]
+        tx, ty = (cx, cy) if rng.random() < 0.5 else (rng.uniform(lo[0] - 0.05, hi[0] + 0.05), rng.uniform(lo[1] - 0.05, hi[1] + 0.05))
+        sx, sy = rng.uniform(lo[0] - 0.1, hi[0] + 0.1), rng.uniform(lo[1] - 0.1, hi[1] + 0.1)
+        spec = {"start_pose_world": [sx, sy, 0.8, 0, 0, 0, 1], "target_position_world_m": [tx, ty, 0.8],
+                "destination_position_bounds_world_m": {"minimum": [*lo, 0.79], "maximum": [*hi, 0.81]}}
+        out, record = v.shrink_area_off_start(spec)
+        box = out["destination_position_bounds_world_m"]
+        assert all(box["minimum"][a] <= box["maximum"][a] for a in range(3))
+        assert all(box["minimum"][a] >= lo[a] - 1e-12 and box["maximum"][a] <= hi[a] + 1e-12 for a in range(2))
+        inside = lo[0] <= tx <= hi[0] and lo[1] <= ty <= hi[1]
+        if out is not spec:
+            half = [min(t - lo[a], hi[a] - t) for a, t in enumerate((tx, ty))]
+            assert all((box["maximum"][a] - box["minimum"][a]) / 2 >= min(v.MINIMUM_HALF_WIDTH_M, half[a]) - 1e-9
+                       for a in range(2))
+        if record is not None and inside and not record["start_clear"]:
+            half = record["half_width_m_before"]
+            symmetric = {**spec, "destination_position_bounds_world_m": {
+                "minimum": [tx - half[0], ty - half[1], 0.79], "maximum": [tx + half[0], ty + half[1], 0.81]}}
+            assert not v.clear(symmetric, {})

@@ -612,3 +612,13 @@ def test_a_website_row_that_cannot_reach_gets_a_flagged_bundle_not_a_refusal(tmp
     assert _with_launch_findings({}, row) == {"scene_check_flags": [clearance.REACH_CANNOT_SPAN_FLAG]}
     assert _with_launch_findings({"scene_check_flags": ["arm_reach_solve_flagged"]}, row) == {
         "scene_check_flags": ["arm_reach_solve_flagged", clearance.REACH_CANNOT_SPAN_FLAG]}
+
+
+def test_an_unreadable_launch_report_is_published_as_such_never_dropped(tmp_path):
+    from blueprint_pipeline.robot_arm_path_clearance import PACKET_REPORT_FILENAME
+
+    report = tmp_path / "bundle" / "base" / PACKET_REPORT_FILENAME
+    report.parent.mkdir(parents=True)
+    report.write_text("{not json")
+    assert launch._launch_scene_check(tmp_path / "bundle") == {
+        launch.LAUNCH_SCENE_CHECK_FIELD: [launch.LAUNCH_FINDINGS_UNREADABLE]}

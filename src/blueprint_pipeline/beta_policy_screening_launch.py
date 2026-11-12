@@ -307,6 +307,7 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
 
 #: What the bundle's own checks found at launch about this row's robot, carried to its published scene check.
 LAUNCH_SCENE_CHECK_FIELD = "launch_scene_check_flags"
+LAUNCH_FINDINGS_UNREADABLE = "robot_arm_path_report_unreadable"
 
 
 def _launch_scene_check(bundle_root: Path) -> dict[str, list[str]]:
@@ -320,9 +321,10 @@ def _launch_scene_check(bundle_root: Path) -> dict[str, list[str]]:
     for path in sorted(bundle_root.rglob(PACKET_REPORT_FILENAME)) if bundle_root.is_dir() else ():
         try:
             report = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        flags |= {code for code in report.get("flags") or [] if code == REACH_CANNOT_SPAN_FLAG}
+            flags |= {code for code in report.get("flags") or [] if code == REACH_CANNOT_SPAN_FLAG}
+        except (OSError, ValueError, AttributeError, TypeError):
+            # Never dropped silently: the row says its launch findings could not be read, and goes on.
+            flags.add(LAUNCH_FINDINGS_UNREADABLE)
     return {LAUNCH_SCENE_CHECK_FIELD: sorted(flags)} if flags else {}
 
 

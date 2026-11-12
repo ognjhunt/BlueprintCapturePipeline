@@ -644,3 +644,17 @@ def test_a_withdrawal_still_deletes_a_scene_run_the_clean_up_keeps_for_an_open_j
     assert run.name in {row["name"] for row in plan["runs"]}
     _apply(world, plan, cloud_storage=gcs)
     assert not run.exists()
+
+
+def test_a_withdrawal_also_deletes_a_scene_runs_restore_record(world, tmp_path):
+    """Review 8c (7): ``<run>.restore.v1.json`` (attempt counts and times) goes with the site's run."""
+    from blueprint_pipeline import scene_run_restore as restore
+
+    run = world["construction"]
+    restore._write_state(run, {"attempts": 1, "status": "refused", "error_type": "ValueError"})
+    record = run.parent / (run.name + restore.STATE_SUFFIX)
+    assert json.loads(record.read_text())["schema_version"] == restore.STATE_SCHEMA
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    _apply(world, plan, cloud_storage=gcs)
+    assert not run.exists() and not record.exists()

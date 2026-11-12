@@ -32,6 +32,10 @@ def landing_room_held(monkeypatch):
             pass
 
     monkeypatch.setattr(disk_admission, "reserve_landing_hold", lambda _job: Hold())
+    # The pre-launch check's delivery record (``policy_canary_output_members.record_resolution``) as the
+    # coordinator would have left it: the test environment's own resolution.
+    from blueprint_pipeline import policy_canary_output_members as members
+    monkeypatch.setattr(members, "resolved_for_attempt", lambda _job: members.resolve_output_delivery())
 
 
 def stage_beta_bundle(tmp_path, monkeypatch, *, hosted=False):

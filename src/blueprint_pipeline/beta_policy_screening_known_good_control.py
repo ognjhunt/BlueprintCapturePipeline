@@ -318,7 +318,9 @@ def fund_from_leftover(control: dict[str, Any], plan: Mapping[str, Any], *,
     selected = sum((money(row["max_cost_usd"]) for row in learned if row["status"] == "selected"), Decimal(0))
     if not any(row["status"] == "selected" for row in learned):
         return _unavailable("budget", control)
-    if money(control["max_cost_usd"]) <= money(plan["budget_usd"]) - selected:
+    # Selected only when every AI row that can be funded is, and its cap still fits what they leave.
+    if (not any(row["status"] == "waitlisted" for row in learned)
+            and money(control["max_cost_usd"]) <= money(plan["budget_usd"]) - selected):
         return control
     return {**control, "status": "waitlisted", "blockers": list(waitlist_blockers)}
 
@@ -473,9 +475,21 @@ def control_gate(ledger: Mapping[str, Any], campaign_id: str, plan: Mapping[str,
     state = ledger["campaigns"][campaign_id]
     configured = next(row for row in plan["candidates"] if is_control(row))
     row = state["candidates"][configured["candidate_id"]]
-    if not first_in_plan(configured) and any(state["candidates"][item["candidate_id"]]["status"] in _LEARNED_OPEN
-                                             for item in plan["candidates"] if not is_control(item)):
+    learned = [state["candidates"][item["candidate_id"]] for item in plan["candidates"] if not is_control(item)]
+    if not first_in_plan(configured) and any(item["status"] in _LEARNED_OPEN for item in learned):
         return "wait"
+    if first_in_plan(configured):
+        # Never ahead of a robot: it launches only after an AI row has launched an attempt, and never while an
+        # AI row still waits for money; if no AI row ever launches it ends without running or paying.
+        launched = any("launch_intent_at" in attempt for item in learned
+                       for attempt in [*(item.get("attempt_history") or []), *([item["attempt"]] if item.get("attempt") else [])])
+        waiting = any(item["status"] == "waitlisted" for item in learned)
+        if not launched or waiting:
+            if any(item["status"] in _LEARNED_OPEN for item in learned):
+                return "wait"
+            from .beta_policy_screening_site_limit import budget_reason
+            row.update(status="deferred", blockers=[budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER)])
+            return "closed"
     key = row.setdefault(KEY_FIELD, reuse_key(plan))
     for other_id, other in sorted(ledger["campaigns"].items()):
         if other["site_id"] != state["site_id"]:

@@ -635,8 +635,13 @@ def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mappin
                             structure: Mapping[str, Any], scene_plan: Mapping[str, Any],
                             stance: Mapping[str, Any] | None = None,
                             station: Mapping[str, Any] | None = None,
-                            station_reached_by_own_arm: bool = False) -> dict[str, Any]:
+                            station_reached_by_own_arm: bool = False,
+                            reach_refusal_as_flag: bool = False) -> dict[str, Any]:
     """The sealed binding the execution spec carries, or raise with every reason (no I/O).
+
+    ``reach_refusal_as_flag`` (the website screening only, owner 2026-11-12): a station out of reach is bound
+    and tested, flagged on the robot's result (``website_candidate_feasibility.reach_rank``). Unset, it is
+    refused as it always was.
 
     A free base carries its floor ``stance`` (``team_embodiment_stance.free_base_stance``). A fixed base
     may carry its own ``station`` (the one chosen for this body when the scene was compiled,
@@ -658,11 +663,9 @@ def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mappin
         scene_plan = {**scene_plan, "robot": {**(scene_plan.get("robot") or {}), "base_pose_world": own}}
     if station_reached_by_own_arm and own is None:
         raise TeamEmbodimentError(["team_embodiment_own_station_invalid"])
-    # A station out of reach is a judgement about the outcome, not an inability to run (owner, 2026-11-12):
-    # the robot is bound and tested, and its result carries ``fixed_arm_reach_cannot_span_pick_and_place``
-    # (``website_candidate_feasibility.reach_rank``). The measurement stays in the feasibility record.
-    reach = [code for code in station_reach_blockers(scene_plan, manifest)
-             if code != "team_embodiment_station_out_of_reach"]
+    reach = station_reach_blockers(scene_plan, manifest)
+    if station_reached_by_own_arm or reach_refusal_as_flag:
+        reach = [code for code in reach if code != "team_embodiment_station_out_of_reach"]
     blockers = [*model_structure_blockers(manifest, structure), *reach]
     if free and not (isinstance(stance, Mapping) and _vector(stance.get("position_world_m"), 3)
                      and _vector(stance.get("orientation_xyzw"), 4) and _finite(stance.get("floor_z_m"))):

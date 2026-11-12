@@ -36,6 +36,9 @@ from typing import Any
 from .scene_run_cold_storage import POINTER_SUFFIX, offload_pointer
 
 STATE_SUFFIX = ".restore.v1.json"
+#: The restore's own record beside the run (sealed, so a withdrawal deletion removes it with the run): its
+#: attempt count, times, last status and an error type/code. No content of the job.
+STATE_SCHEMA = "scene_run_restore_state.v1"
 MAX_ATTEMPTS = 3
 RETRY_SECONDS = 3600
 ROLE = "evidence_offload"
@@ -155,11 +158,19 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
                       retry_not_before=moment + RETRY_SECONDS)
         if attempt >= MAX_ATTEMPTS:
             record["status"] = GAVE_UP
+    _write_state(run, record)
+    return record
+
+
+def _write_state(run: Path, record: Mapping[str, Any]) -> None:
+    from .decision_evidence_contracts import canonical_digest
+
+    sealed = {**record, "schema_version": STATE_SCHEMA, "run": run.name, "state_digest": ""}
+    sealed["state_digest"] = canonical_digest(sealed, digest_field="state_digest")
     try:
-        _state_path(run).write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+        _state_path(run).write_text(json.dumps(sealed, sort_keys=True) + "\n", encoding="utf-8")
     except OSError:
         pass
-    return record
 
 
 __all__ = ["BUSY", "GAVE_UP", "MAX_ATTEMPTS", "RESTORED", "RETRY_SECONDS", "WITHDRAWN", "deletion_lock",
