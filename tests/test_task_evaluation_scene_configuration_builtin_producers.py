@@ -509,6 +509,7 @@ def test_restore_never_repairs_a_changed_sealed_file(tmp_path, monkeypatch):
     cache = root / _PACKAGE / "__pycache__"
     with _unsealed(root / _PACKAGE):
         cache.mkdir()
+    (cache / "run.cpython-311.pyc").write_bytes(b"bytecode")
 
     record = _restore(module, root, commit, digest)
 
@@ -620,6 +621,138 @@ def test_restore_reseals_a_parent_it_opened_to_remove_an_entry(tmp_path, monkeyp
     _validate(module, root, commit)
 
 
+# The restore is never stricter than the full check (host run of 2026-11-12):
+# the check ignores directories that hold no file, so the restore leaves them,
+# shipped or planted. It removed two shipped folders on the reference job's paid
+# run (``mujoco.libs``, empty; ``lpips/weights``, two empty sub-folders).
+
+_SHIPPED = f"{_PACKAGE}/runtime"
+
+
+def _shipped_directories(root: Path, *relatives: str) -> None:
+    """Directories that came with the unpacked toolchain and hold no file, sealed 0555."""
+    import os
+
+    base = root / _SHIPPED
+    with _unsealed(base):
+        for relative in relatives:
+            (base / relative).mkdir(parents=True)
+        for relative in relatives:
+            for directory, _names, _files in os.walk(base / relative.split("/")[0], topdown=False):
+                os.chmod(directory, 0o555)
+
+
+def test_restore_leaves_a_shipped_empty_directory_and_names_it_nowhere(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    _shipped_directories(root, "mujoco.libs")
+    shipped = root / _SHIPPED / "mujoco.libs"
+    _validate(module, root, commit)  # the full check accepts it as shipped
+
+    record = _restore(module, root, commit, digest)
+
+    assert shipped.is_dir() and shipped.stat().st_mode & 0o777 == 0o555
+    assert record["status"] == "unchanged"
+    assert record["removed"] == [] and record["removed_count"] == 0 and record["removed_entry_count"] == 0
+    assert record["modes_restored"] == [] and record["left"] == []
+    _validate(module, root, commit)
+
+
+def test_restore_leaves_a_shipped_directory_of_only_empty_directories(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    _shipped_directories(root, "lpips/weights/v0.0", "lpips/weights/v0.1")
+    weights = root / _SHIPPED / "lpips" / "weights"
+    before = _snapshot(root / _SHIPPED / "lpips")
+    _validate(module, root, commit)
+
+    record = _restore(module, root, commit, digest)
+
+    assert _snapshot(root / _SHIPPED / "lpips") == before
+    assert sorted(path.name for path in weights.iterdir()) == ["v0.0", "v0.1"]
+    assert record["status"] == "unchanged"
+    assert record["removed"] == [] and record["modes_restored"] == [] and record["left"] == []
+    _validate(module, root, commit)
+
+
+def test_restore_removes_a_planted_pycache_with_files_entirely(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    cache = root / _SHIPPED / "__pycache__"
+    with _unsealed(root / _SHIPPED):
+        cache.mkdir()
+    (cache / "a.cpython-311.pyc").write_bytes(b"a")
+    (cache / "nested").mkdir()
+    (cache / "nested" / "b.cpython-311.pyc").write_bytes(b"b")
+
+    record = _restore(module, root, commit, digest)
+
+    assert not cache.exists()
+    assert record["removed"] == [{"relative_path": f"{_SHIPPED}/__pycache__", "kind": "directory",
+                                  "contained_entries": 3}]
+    assert record["removed_count"] == 1 and record["removed_entry_count"] == 4
+    _validate(module, root, commit)
+
+
+def test_a_file_planted_in_a_shipped_empty_directory_takes_the_directory_with_it(tmp_path, monkeypatch):
+    """The one case where a shipped directory goes: it contained a removed entry and is empty after.
+
+    The full check would accept the empty directory; the rule cannot tell it
+    from a planted one, and removing it costs nothing the check asks for.
+    """
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    _shipped_directories(root, "mujoco.libs")
+    shipped = root / _SHIPPED / "mujoco.libs"
+    with _unsealed(shipped):
+        (shipped / "planted.so").write_bytes(b"x")
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_file_invalid:{_SHIPPED}/mujoco.libs/planted.so$"):
+        _validate(module, root, commit)
+
+    record = _restore(module, root, commit, digest)
+
+    assert not shipped.exists()
+    assert record["removed"] == [{"relative_path": f"{_SHIPPED}/mujoco.libs", "kind": "directory",
+                                  "contained_entries": 1}]
+    assert record["removed_entry_count"] == 2 and record["modes_restored"] == []
+    assert (root / _SHIPPED).stat().st_mode & 0o777 == 0o555
+    _validate(module, root, commit)
+
+
+def test_a_file_planted_beside_empty_directories_goes_and_its_directory_stays(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    _shipped_directories(root, "lpips/weights/v0.0")
+    weights = root / _SHIPPED / "lpips" / "weights"
+    with _unsealed(weights):
+        (weights / "stray.pth").write_bytes(b"x")
+
+    record = _restore(module, root, commit, digest)
+
+    assert not (weights / "stray.pth").exists() and (weights / "v0.0").is_dir()
+    assert record["removed"] == [{"relative_path": f"{_SHIPPED}/lpips/weights/stray.pth", "kind": "file",
+                                  "contained_entries": 0}]
+    assert weights.stat().st_mode & 0o777 == 0o555 and record["modes_restored"] == []
+    _validate(module, root, commit)
+
+
+def test_a_planted_empty_directory_is_left_and_not_reported_removed(tmp_path, monkeypatch):
+    """The check ignores an empty directory except for its write bits, which are cleared."""
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    planted = root / _SHIPPED / "__pycache__"
+    with _unsealed(root / _SHIPPED):
+        planted.mkdir()
+    planted.chmod(0o755)  # as container root leaves it, whatever the umask
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_not_read_only:{_SHIPPED}/__pycache__$"):
+        _validate(module, root, commit)
+
+    record = _restore(module, root, commit, digest)
+
+    assert planted.is_dir() and planted.stat().st_mode & 0o777 == 0o555
+    assert record["removed"] == [] and record["removed_count"] == 0 and record["removed_entry_count"] == 0
+    assert record["modes_restored"] == [{"relative_path": f"{_SHIPPED}/__pycache__", "kind": "directory",
+                                         "before_mode": "0o755", "after_mode": "0o555"}]
+    assert record["left"] == []
+    _validate(module, root, commit)
+
+
 # Review of 5321b4372: races, mounts, hard links, deep trees and the guard.
 
 
@@ -647,6 +780,7 @@ def test_guard_accepts_a_root_reached_through_a_linked_ancestor(tmp_path, monkey
     cache = root / _PACKAGE / "__pycache__"
     with _unsealed(root / _PACKAGE):
         cache.mkdir()
+    (cache / "run.cpython-311.pyc").write_bytes(b"bytecode")
 
     assert module.is_run_toolchain_copy(via_link) is True
     record = _restore(module, via_link, commit, digest)
@@ -871,7 +1005,11 @@ def test_a_real_mount_inside_the_tree_is_left_alone(tmp_path, monkeypatch):
 
 
 def test_a_very_deep_planted_tree_is_removed_without_recursion(tmp_path, monkeypatch):
-    """Review probe P7: 3000 levels raised RecursionError out of rmtree."""
+    """Review probe P7: 3000 levels raised RecursionError out of rmtree.
+
+    One planted file at the bottom: every level then contained a removed entry
+    and is empty afterwards, so the whole chain goes, bottom-up.
+    """
     import os
 
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
@@ -885,13 +1023,14 @@ def test_a_very_deep_planted_tree_is_removed_without_recursion(tmp_path, monkeyp
             child = os.open("d", os.O_RDONLY | os.O_DIRECTORY, dir_fd=here)
             os.close(here)
             here = child
+        os.close(os.open("x.pyc", os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=here))
     finally:
         os.close(here)
 
     record = _restore(module, root, commit, digest)
 
     assert record["removed"] == [{"relative_path": f"{_PACKAGE}/__pycache__", "kind": "directory",
-                                  "contained_entries": 3000}]
+                                  "contained_entries": 3001}]
     assert not base.exists()
     _validate(module, root, commit)
 

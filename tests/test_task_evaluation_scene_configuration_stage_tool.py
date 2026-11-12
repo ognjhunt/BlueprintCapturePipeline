@@ -412,6 +412,8 @@ def test_stage_start_restores_a_copy_reached_through_a_linked_ancestor(
     cache = toolchain / "components" / adapter_id / "package" / "__pycache__"
     with _unsealed(cache.parent):
         cache.mkdir()
+    # A planted file: an empty planted folder is left (the full check ignores it once sealed).
+    (cache / "run.cpython-311.pyc").write_bytes(b"bytecode")
 
     result = execute_stage_tool(adapter_id=adapter_id, environment=environment, runner=_artifixer_component)
 

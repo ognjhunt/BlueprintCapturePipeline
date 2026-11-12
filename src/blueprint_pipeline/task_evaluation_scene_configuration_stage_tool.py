@@ -336,7 +336,11 @@ def _restore_run_toolchain(toolchain_root: Path, production_input: Mapping[str, 
     A stage-3 process running as container root can create entries in the
     run's unpacked toolchain, and the full check below would then end a paid
     job over sealed files nobody changed. Only the run's own copy is touched
-    (``is_run_toolchain_copy``). Whatever happens here, including an exception
+    (``is_run_toolchain_copy``), and the restore is never stricter than that
+    check: it removes only entries that are not directories and that the
+    inventory does not name, and a directory only when it contained one of those
+    and is empty afterwards. A directory that shipped empty, or holding only
+    empty directories, stays. Whatever happens here, including an exception
     such as running out of handles in a very deep planted tree, the full byte
     check that follows still decides: a changed, resized or missing sealed file is
     refused by name. The line goes to stderr, which the stage producer

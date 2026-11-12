@@ -990,6 +990,23 @@ def company_simulation_tick(storage_root: Path, stop_reason: Callable[[], str | 
         return {"tick_failed": 1}
 
 
+def first_look_refresh_tick(storage_root: Path, stop_reason: Callable[[], str | None] | None = None
+                             ) -> dict[str, int]:
+    """A first look on paper for a job handed off before it existed (``website_first_look_refresh``).
+
+    CPU and local files: the hand-off's own fit table builder, written beside the handed-off table, which
+    is never touched. It pays for nothing and never touches a job. It stops between captures for a hold,
+    a quiesce or a new release (``stop_reason``) and keeps to its own time budget. A failure is counted,
+    never raised into the tick, and retried by a later one.
+    """
+    try:
+        from .website_first_look_refresh import tick as refresh_first_looks
+        return refresh_first_looks(storage_root, stop_reason=stop_reason)
+    except Exception as error:  # noqa: BLE001 - the first look is informational; the Atlas tick has finished
+        logger.warning("website_first_look_refresh_tick_failed type=%s", type(error).__name__)
+        return {"tick_failed": 1}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1021,6 +1038,8 @@ def main(argv: list[str] | None = None) -> int:
     counts.update({"company_clip_" + key: value for key, value in company_clip_tick(args.storage_root, stop_reason).items()})
     counts.update({"company_simulation_" + key: value
                    for key, value in company_simulation_tick(args.storage_root, stop_reason).items()})
+    counts.update({"first_look_refresh_" + key: value
+                   for key, value in first_look_refresh_tick(args.storage_root, stop_reason).items()})
     print(json.dumps(counts, sort_keys=True), flush=True)
     return 0
 
