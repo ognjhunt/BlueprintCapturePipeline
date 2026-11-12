@@ -48,12 +48,16 @@ CRITERIA_KEYS = frozenset({
     "maximum_tilt_rad", "non_colliding", "radius_m", "shape", "stable_seconds", "surface_position_world_m",
     "containment_excursions", "workspace_excursions", "forbidden_contact_classes", "maximum_regrasps",
     "maximum_retries", "maximum_task_contact_force_n", "minimum_fall_m", "minimum_opening_m", "minimum_angle_rad",
-    "minimum_hold_seconds"})
-#: The words a criterion's value may be. Any other text is left out.
+    "minimum_hold_seconds", "placement_relation", "interior_bounds_world_m", "success_rule"})
+#: The words a criterion's value may be, each read from the scorer, not guessed: the modes
+#: ``adp_rigid_task_scoring`` compares (``required``, ``ignored``, ``released``, ``cleared``, ``closed_at_most``,
+#: and ``forbidden`` for excursions), the target's shape, relation and rule (``task_evaluation_surface_target``:
+#: ``flat_green_disc``, ``on``, ``inside``, ``CENTRE_RULE``) and the contact classes the episode telemetry
+#: measures (``native_rigid_episode_telemetry.CONTACT_CHANNELS``). Any other text is left out.
 MODE_WORDS = frozenset({
-    "required", "ignored", "released", "cleared", "forbidden", "allowed", "optional", "held", "closed", "open",
-    "grasped", "flat_green_disc", "robot_background", "robot_object", "object_background", "robot_support",
-    "object_support", "robot_robot", "any", "none", "upright", "within"})
+    "required", "ignored", "released", "cleared", "closed_at_most", "forbidden", "flat_green_disc", "on",
+    "inside", "subject_centre_within_radius", "robot_background", "robot_object", "object_background",
+    "destination_background"})
 
 
 class StageRefused(ValueError):
@@ -211,6 +215,12 @@ def neutral_criteria(criteria: Mapping[str, Any], *, support_prim: str | None = 
             left_out += 1
             return None
         if isinstance(value, list):
+            # A list of words keeps the known ones (each unknown word is left out and counted); a list that mixes
+            # anything else must be whole or it goes.
+            if value and all(isinstance(item, str) for item in value):
+                kept_words = [item for item in value if item in MODE_WORDS]
+                left_out += len(value) - len(kept_words)
+                return kept_words if kept_words else None
             items = [keep(item) for item in value]
             if any(item is None for item in items):
                 return None

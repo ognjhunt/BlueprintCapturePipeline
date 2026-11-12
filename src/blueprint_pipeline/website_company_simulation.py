@@ -40,6 +40,7 @@ import argparse
 import fcntl
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -511,8 +512,31 @@ _SAYS = {"scene_appearance": "how the site looks", "scene_collision": "the site'
          "replacement": "a stand-in part of the site"}
 
 
+def _root_offset(path: Path) -> dict[str, list[float]] | None:
+    """The part file's own root translation and rotation, when either is not identity (1 mm, 0.001 rad)."""
+    from pxr import Gf, Usd, UsdGeom
+    try:
+        stage = Usd.Stage.Open(str(path), Usd.Stage.LoadNone)
+        prim = stage.GetDefaultPrim() or next(iter(stage.GetPseudoRoot().GetChildren()), None)
+        if prim is None or not prim.IsA(UsdGeom.Xformable):
+            return None
+        matrix = UsdGeom.Xformable(prim).GetLocalTransformation(Usd.TimeCode.Default())
+        transform = Gf.Transform(matrix)
+    except Exception:  # noqa: BLE001 - an unreadable part is refused elsewhere; no note
+        return None
+    translation = [float(value) for value in transform.GetTranslation()]
+    quat = transform.GetRotation().GetQuat()
+    xyzw = [float(value) for value in quat.GetImaginary()] + [float(quat.GetReal())]
+    angle = transform.GetRotation().GetAngle()
+    if max(abs(value) for value in translation) <= 1e-3 and abs(angle) <= math.degrees(1e-3):
+        return None
+    return {"translation_m": [round(value, 6) for value in translation],
+            "rotation_xyzw": [round(value, 6) for value in xyzw]}
+
+
 def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[str],
-            units: Mapping[str, tuple[str | None, float | None]]) -> str:
+            units: Mapping[str, tuple[str | None, float | None]],
+            offsets: Mapping[str, Any] | None = None) -> str:
     """Only what is true of the package in front of it."""
     lines = ["Simulation of one job", "", "What this is", "",
              "A simulation of the site a deployment company was asked about, with the job's object in it,",
@@ -531,9 +555,12 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
         lines.append("- scene/files/: files the parts above use.")
     lines += ["- success_rule.json: what counts as done, as numbers, with the run's timing and the object's",
               "  start position and size where known.", "- README.txt: this file.", ""]
-    lines += ["Each part's file is referenced on a child prim, /World/<part>/Asset. The part's position and",
-              "orientation in the simulation are on /World/<part>, so any transform the file itself holds (its",
-              "own scale or rotation) is kept and applied first, as Blueprint's simulation applies it."]
+    lines += ["Each part's file is referenced on a child prim, /World/<part>/Asset, under the part's position and",
+              "orientation in the simulation, which are on /World/<part>. The file keeps its own root transform."]
+    for prim, note in sorted((offsets or {}).items()):
+        lines += [f"/World/{prim}: this part's file carries its own offset (its root prim is moved or turned",
+                  "inside the file; see part_notes in success_rule.json). Where a tool places a file's root at the",
+                  "part's position instead of under it, this part lands somewhere else: check it."]
     for prim in hidden:
         lines += [f"/World/{prim} is in the scene but hidden, as in Blueprint's simulation, where it is used for",
                   "contact and not drawn. To see it, set its visibility to inherited (in usdview: select it and",
@@ -589,6 +616,7 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
         localizer = _Localizer(Path(source["assets_dir"]), staging)
         placed: dict[str, str] = {}
         units: dict[str, tuple[str | None, float | None]] = {}
+        offsets: dict[str, dict[str, list[float]]] = {}
         rows = []
         for prim, row in source["files"].items():
             on_time()
@@ -598,18 +626,26 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
             localizer.place(Path(row["path"]), staging / relative, row["role"])
             placed[prim] = relative
             units[prim] = _layer_units(staging / relative)
+            offset = _root_offset(staging / relative)
+            if offset is not None:
+                offsets[prim] = offset
             rows.append({**row["placement"], "file": relative})
         try:
             write_stage(staging / "scene.usda", rows, axis=source["axis"])
         except StageRefused as error:
             raise PackageRefused("website_company_simulation_" + str(error).removeprefix("scene_stage_")) from None
-        (staging / "success_rule.json").write_text(json.dumps(source["rule"], indent=2, sort_keys=True) + "\n",
+        rule = dict(source["rule"])
+        if offsets:
+            rule["part_notes"] = {f"/World/{prim}": {"own_root_offset": offset}
+                                  for prim, offset in sorted(offsets.items())}
+        (staging / "success_rule.json").write_text(json.dumps(rule, indent=2, sort_keys=True) + "\n",
                                                    encoding="utf-8")
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
-        (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units), encoding="utf-8")
+        (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units, offsets), encoding="utf-8")
         on_time()
         _resolves_inside(staging)
-        findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch, before_each=on_time)
+        findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch, before_each=on_time,
+                             words_except=("README.txt", "scene.usda"))
         on_time()
         if findings:
             raise PackageRefused("website_company_simulation_file_names_the_site", findings[0].sentence())
@@ -820,6 +856,8 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                 check = permission.record_live(root, identity, check_rights, now())
                 if check["outcome"] == "rights_refused":
                     return _refused_live(check, manifest, manifest_path, retract)
+            if check.get("outcome") == "rights_refused":  # recorded by this pass or the clip's: any basis stops
+                return _refused_live(check, manifest, manifest_path, retract)
             basis = (manifest.get("permission") or {}).get("permission_basis")
             if ((basis == "blueprint_owned_capture" and owned)
                     or (basis == "site_sharing_statement" and permission.live_grant_holds(check, now()))):
@@ -887,6 +925,17 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         with package_lock(root):
             if capture_withdrawn(root):
                 return {"status": "withdrawn"}
+            # The whole decision again before any upload: a takedown, a recorded "no" or removal from Blueprint's
+            # list that landed while the package was being built stops it here.
+            if not permission.delivery_gate_allows(root, surface="website_company_simulation"):
+                return {"status": "refused", "reason": "website_company_simulation_takedown_gate_closed"}
+            if not permission.basis_holds(root, identity["capture_id"], basis["permission_basis"],
+                                          upload_sha256(root), now(), _owned_list()):
+                recorded = permission.read_check(root)
+                if recorded.get("outcome") == "rights_refused":
+                    return {"status": "refused",
+                            "reason": _own_reason(recorded.get("reason") or permission.RIGHTS_REFUSED)}
+                return {"status": "not_permitted"}
             if needs_build:
                 fresh = simulation_source(root, queue_root=queue_root)
                 if fresh is None or simulation_revision(fresh, max_bytes=max_bytes) != revision:

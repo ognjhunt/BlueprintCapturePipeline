@@ -784,7 +784,15 @@ def test_the_assets_own_root_transform_is_kept_under_the_plans_pose(job, tmp_pat
         assert list(asset_world.GetRow(row)) == pytest.approx(list(expected.GetRow(row)))
     assert asset_world.GetRow3(0).GetLength() == pytest.approx(0.01)
     readme = (tmp_path / "out/README.txt").read_text()
-    assert "/World/<part>/Asset" in readme and "own scale or rotation" in readme
+    assert "/World/<part>/Asset" in readme and "keeps its own root transform" in readme
+    assert "Blueprint's simulation applies" not in readme
+    # The file's root turns 90 degrees: the case where tools that spawn a file AT the posed prim would differ.
+    assert "/World/Object: this part's file carries its own offset" in readme
+    rule = json.loads((tmp_path / "out/success_rule.json").read_text())
+    note = rule["part_notes"]["/World/Object"]["own_root_offset"]
+    assert note["translation_m"] == [0.0, 0.0, 0.0]
+    assert note["rotation_xyzw"] == pytest.approx([0.0, 0.0, 0.707107, 0.707107], abs=1e-5)
+    assert "part_notes" not in json.dumps({k: v for k, v in rule.items() if k != "part_notes"})
     assert "To see it, set its visibility to inherited" in readme
 
 
@@ -1177,3 +1185,136 @@ def test_a_scan_refusal_is_tried_again_after_the_window(job, monkeypatch):
     monkeypatch.setattr(sim, "build_package", lambda *a, **k: calls.append(1) or real(*a, **k))
     assert _at(world, 3600)["status"] == "refused" and calls == []
     assert _at(world, sim.permission.LIVE_STATEMENT_RECHECK_SECONDS + 1)["status"] == "refused" and calls == [1]
+
+
+
+# --- re-check fixes (N1 to N9) ---------------------------------------------------------------------------------
+
+def test_a_clean_scene_whose_room_is_random_geometry_is_published(job):
+    import numpy as np
+    from pxr import Vt
+    job.appearance.unlink()
+    stage = Usd.Stage.CreateNew(str(job.appearance))
+    UsdGeom.SetStageUpAxis(stage, "Z")
+    root = UsdGeom.Xform.Define(stage, "/Appearance")
+    stage.SetDefaultPrim(root.GetPrim())
+    points = UsdGeom.Points.Define(stage, "/Appearance/Splat")
+    points.CreatePointsAttr().Set(Vt.Vec3fArray.FromNumpy(np.random.default_rng(5).random((200000, 3),
+                                                                                        dtype=np.float32)))
+    stage.GetRootLayer().Save()
+    job.seal()
+    assert World(job).publish()["status"] == "published"
+
+
+def test_random_bytes_pass_the_raw_byte_patterns():
+    import io as _io
+    import random
+    data = random.Random(7).randbytes(64 << 20)
+    assert scan.scan_stream(_io.BytesIO(data), [], text=False) is None
+    # The same short patterns are still found in text.
+    for text in (b"at ~/x", b"in gs://b/x", b"at /tmp/x", b"C:\\Users\\x\\", b"b2://x"):
+        assert scan.scan_stream(_io.BytesIO(text), [], text=True) is not None
+
+
+def test_an_owned_package_is_taken_back_when_the_clip_records_a_definite_no(tmp_path, monkeypatch):
+    from blueprint_pipeline import company_share_permission as permission
+    job = _owned_job(tmp_path, monkeypatch)
+    world = World(job, rights={"consent_status": "granted", "consent_revoked": False, "statement_version": OLDER})
+    assert world.publish()["status"] == "published"
+    revoked = {"consent_status": "revoked", "consent_revoked": True, "statement_version": OLDER}
+    permission.record_live(job.capture, permission.capture_identity(job.capture), lambda _i: dict(revoked), NOW + 60)
+    assert _read_route(job, world, now=NOW + 90) == "unavailable"
+    assert _at(world, 120) == {"status": "refused", "reason": "website_company_simulation_rights_refused"}
+    assert len(world.retracted) == 1
+
+
+def test_a_site_package_is_taken_back_when_the_clip_records_a_definite_no(job):
+    from blueprint_pipeline import company_share_permission as permission
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    revoked = {"consent_status": "revoked", "consent_revoked": True, "statement_version": SHARED}
+    permission.record_live(job.capture, permission.capture_identity(job.capture), lambda _i: dict(revoked), NOW + 60)
+    assert _read_route(job, world, now=NOW + 90) == "unavailable"
+    assert _at(world, 120)["status"] == "refused" and len(world.retracted) == 1
+
+
+def test_an_ordinary_description_never_trips_on_blueprints_own_readme(job):
+    _write(job.capture / "pipeline/website_task_context.json",
+           {"description": "Stack the boxes on the pallet and do not pass it on to the next shift",
+            "capture_rights": {"consent_status": "granted", "consent_revoked": False, "statement_version": SHARED}})
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        assert "do not pass it on" in archive.read("README.txt").decode().lower()
+
+
+def test_an_inside_job_keeps_its_relation_and_bounds_and_nothing_of_the_site():
+    from blueprint_pipeline import scene_package_stage as stage_module
+    criteria = {
+        "mode": "jane_placeholder_shelf",
+        "surface_target": {"shape": "flat_green_disc", "radius_m": 0.1, "surface_position_world_m": [1, 2, 3],
+                           "support_prim_path": "/World/x/jane", "visible_label": "Jane's shelf",
+                           "placement_relation": "inside", "success_rule": "subject_centre_within_radius",
+                           "interior_bounds_world_m": {"minimum": [0, 0, 0], "maximum": [1, 1, 1]},
+                           "maximum_tilt_rad": 0.2, "stable_seconds": 1.0},
+        "temporal_invariants": {"forbidden_contact_classes": ["robot_background", "destination_background", "jane"]},
+        "support": {"jane_house": 1}, "controls": {"x": 1}}
+    kept, left_out = stage_module.neutral_criteria(criteria)
+    target = kept["surface_target"]
+    assert target["placement_relation"] == "inside" and target["success_rule"] == "subject_centre_within_radius"
+    assert target["interior_bounds_world_m"] == {"minimum": [0, 0, 0], "maximum": [1, 1, 1]}
+    assert kept["temporal_invariants"]["forbidden_contact_classes"] == ["robot_background", "destination_background"]
+    assert "jane" not in json.dumps(kept).lower() and "shelf" not in json.dumps(kept).lower()
+    assert left_out >= 6
+
+
+def test_a_large_layer_with_a_sublayer_is_walked(tmp_path, monkeypatch):
+    monkeypatch.setattr(scan, "SPEC_WALK_BYTES", 0)
+    _stage(tmp_path / "under.usda", "Under")
+    path = _stage(tmp_path / "layer.usdc", "Root", sublayer="./under.usda")
+    layer = Sdf.Layer.FindOrOpen(str(path))
+    layer.subLayerOffsets[0] = Sdf.LayerOffset(3.0, 1.0)
+    layer.Save()
+    assert scan._usd_text_finding(path, scan.literal_forms([(REQUEST, "a job id")])) is None
+    planted = _stage(tmp_path / "planted.usdc", "Root", sublayer=f"./{REQUEST}.usda")
+    assert scan._usd_text_finding(planted, scan.literal_forms([(REQUEST, "a job id")]))[0] == "a job id"
+
+
+@pytest.mark.parametrize("kind", ["string[]", "token[]"])
+def test_the_spec_walk_reads_string_and_token_arrays(tmp_path, monkeypatch, kind):
+    monkeypatch.setattr(scan, "SPEC_WALK_BYTES", 0)
+    path = tmp_path / "layer.usdc"
+    stage = Usd.Stage.CreateNew(str(path))
+    root = UsdGeom.Xform.Define(stage, "/Root").GetPrim()
+    value_type = Sdf.ValueTypeNames.StringArray if kind == "string[]" else Sdf.ValueTypeNames.TokenArray
+    root.CreateAttribute("names", value_type).Set(["a", "b", REQUEST.replace("-", "_")])
+    stage.GetRootLayer().Save()
+    found = scan._usd_text_finding(path, scan.literal_forms([(REQUEST, "a job id")]))
+    assert found is not None and found[0] == "a job id"
+
+
+@pytest.mark.parametrize("event", ["takedown", "revoked_recorded", "owned_removed"])
+def test_an_event_during_the_build_stops_the_upload(tmp_path, monkeypatch, event):
+    from blueprint_pipeline import company_share_permission as permission
+    job = _owned_job(tmp_path, monkeypatch) if event == "owned_removed" else Job(tmp_path)
+    rights = ({"consent_status": "granted", "consent_revoked": False, "statement_version": OLDER}
+              if event == "owned_removed" else None)
+    world = World(job, rights=rights)
+    real = sim.build_package
+
+    def during(*args, **kwargs):
+        built = real(*args, **kwargs)
+        if event == "takedown":
+            _write(job.capture / "pipeline/consent_takedown/takedown_manifest.json", {"takedown_open": True})
+        elif event == "revoked_recorded":
+            permission.record_live(job.capture, permission.capture_identity(job.capture),
+                                   lambda _i: {"consent_status": "revoked", "consent_revoked": True,
+                                               "statement_version": SHARED}, NOW)
+        else:
+            _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "purpose": "test",
+                                             "captures": []})
+        return built
+    monkeypatch.setattr(sim, "build_package", during)
+    result = world.publish()
+    assert result["status"] in {"refused", "not_permitted"}, result
+    assert world.archived == [] and world.delivered == []

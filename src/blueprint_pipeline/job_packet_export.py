@@ -1206,7 +1206,8 @@ def _scan_packet(packet: Path, secrets: list[tuple[bytes, str]], words: list[tup
     site's description on purpose.
     """
     from .outbound_file_scan import first_finding, literal_forms
-    finding = first_finding(packet, [*literal_forms(secrets), *(words or [])], words_only_under="files/")
+    finding = first_finding(packet, [*literal_forms(secrets), *(words or [])], words_only_under="files/",
+                           words_except=(SIMULATION_STAGE,))
     if finding is not None:
         raise JobPacketRefused("job_packet_file_names_the_site", finding.sentence())
 

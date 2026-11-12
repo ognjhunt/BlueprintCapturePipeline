@@ -671,8 +671,11 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
                 check = _record_live(root, identity, check_rights, now())
                 if check["outcome"] == "rights_refused":
                     return _refused_live(check, manifest, manifest_path, retract)
-            if owned or live_grant_holds(check, now()):
+            # A recorded definite "no" (this pass's read or the simulation package's) stops any basis.
+            if check.get("outcome") != "rights_refused" and (owned or live_grant_holds(check, now())):
                 return {"status": "current", "clip_revision": revision}
+            if check.get("outcome") == "rights_refused":
+                return _refused_live(check, manifest, manifest_path, retract)
             _take_back(manifest, manifest_path, retract)
             return {"status": "not_permitted"}
         if manifest.get("clip_revision") == revision and manifest.get("refused") == OVER_CAP:

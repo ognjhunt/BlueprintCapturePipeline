@@ -55,13 +55,13 @@ OTHER_LINK, IP_ADDRESS, EMAIL, SITE_WORDS = "a link", "an IP address", "an email
 #: metadata value; numeric arrays skipped) instead of exporting all its geometry to text.
 SPEC_WALK_BYTES = 8 << 20
 
-#: Checked on every byte of every file, in this order (after the caller's own values).
+#: Checked on every byte of every file, binary included, in this order (after the caller's own values). Only a
+#: pattern with at least six fixed bytes is here: in 512 MiB of random bytes each is expected to match by chance
+#: fewer than 1 time in 10,000 (``/data/``, the weakest, about 2e-6; ``file:/`` about 3e-5). Shorter patterns would
+#: match ordinary float geometry (``~/`` about 8 times a MiB) and are in ``_TEXT_PATTERNS``.
 _BINARY_PATTERNS: tuple[tuple[re.Pattern[bytes], str], ...] = (
-    (re.compile(rb"(?i)\b(?:gs|s3)://"), STORAGE_LINK),
     (re.compile(rb"/var/+lib/+blueprint|/mnt/+blueprint-work"
-                rb"|(?<![A-Za-z0-9_.])/(?:home|tmp|opt|root|Users|srv|data)/|(?<![A-Za-z0-9_.])~/"), HOST_PATH),
-    (re.compile(rb"(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\s\"'@<>|:*?\\/\x00-\x1f]{1,64}[\\/]"), HOST_PATH),
-    (re.compile(rb"(?<![A-Za-z0-9_\\])\\\\[A-Za-z0-9][A-Za-z0-9._$-]{0,62}\\[A-Za-z0-9._$ -]{1,80}"), HOST_PATH),
+                rb"|(?<![A-Za-z0-9_.])/(?:home|root|Users|data)/"), HOST_PATH),
     (re.compile(rb"(?i)\bfile:/"), FILE_LINK),
     (re.compile(
         rb"(?:(?<![A-Za-z0-9])sk-(?:proj-|live-|svcacct-|ant-)?[A-Za-z0-9_-]{20,}"
@@ -73,9 +73,19 @@ _BINARY_PATTERNS: tuple[tuple[re.Pattern[bytes], str], ...] = (
         rb"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
         rb"|(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\."
         rb"|(?i:(?:aws_)?secret_access_key\s*[=:])"
-        rb"|(?i:(?<![A-Za-z0-9])bearer\s+[A-Za-z0-9._~+/-]{20,})"
-        rb"|(?i:[?&](?:access_token|refresh_token|id_token|token|api_key|apikey|key|secret|password|sig"
-        rb"|signature|x-amz-signature|x-goog-signature|x-amz-credential|x-goog-credential)=[^\s&\"'<>]{8,}))"),
+        rb"|(?i:(?<![A-Za-z0-9])bearer\s+[A-Za-z0-9._~+/-]{20,}))"), KEY),
+)
+#: Looked for only in text: text files, the text form (or spec walk) of a USD layer, image text metadata. Each
+#: would match random bytes by chance in 512 MiB: ``gs://``/``s3://`` about 0.002 times, ``/tmp/``, ``/opt/`` and
+#: ``/srv/`` about 0.0015, a signed-link parameter about 0.005, any ``scheme://`` about 1,000, a UNC share about
+#: 500, a Windows drive path about 1,600 and ``~/`` about 4,000.
+_TEXT_PATTERNS: tuple[tuple[re.Pattern[bytes], str], ...] = (
+    (re.compile(rb"(?i)\b(?:gs|s3)://"), STORAGE_LINK),
+    (re.compile(rb"(?<![A-Za-z0-9_.])/(?:tmp|opt|srv)/|(?<![A-Za-z0-9_.])~/"), HOST_PATH),
+    (re.compile(rb"(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\s\"'@<>|:*?\\/\x00-\x1f]{1,64}[\\/]"), HOST_PATH),
+    (re.compile(rb"(?<![A-Za-z0-9_\\])\\\\[A-Za-z0-9][A-Za-z0-9._$-]{0,62}\\[A-Za-z0-9._$ -]{1,80}"), HOST_PATH),
+    (re.compile(rb"(?i:[?&](?:access_token|refresh_token|id_token|token|api_key|apikey|key|secret|password|sig"
+                rb"|signature|x-amz-signature|x-goog-signature|x-amz-credential|x-goog-credential)=[^\s&\"'<>]{8,})"),
      KEY),
 )
 _WEB_LINK = re.compile(rb"(?i)https?://")
@@ -240,11 +250,9 @@ def _match_window(window: bytes, literals: Sequence[tuple[bytes, str]], *, text:
     match = _WEB_LINK.search(cleaned)
     if match:
         return WEB_LINK, match.start()
-    match = _ANY_LINK.search(cleaned)
-    if match:
-        return OTHER_LINK, match.start()
     if text:
-        for pattern, kind in ((_EMAIL, EMAIL), (_WEB_ADDRESS, WEB_ADDRESS), (_IP_ADDRESS, IP_ADDRESS)):
+        for pattern, kind in (*_TEXT_PATTERNS, (_ANY_LINK, OTHER_LINK), (_EMAIL, EMAIL), (_WEB_ADDRESS, WEB_ADDRESS),
+                              (_IP_ADDRESS, IP_ADDRESS)):
             match = pattern.search(cleaned)
             if match:
                 return kind, match.start()
@@ -335,11 +343,16 @@ def _spec_text(layer: object) -> Iterator[tuple[bytes, str]]:
     def fields(spec: object) -> Iterator[bytes]:
         for key in spec.ListInfoKeys():
             yield key.encode()
-            text = _textual(spec.GetInfo(key))
+            try:
+                value = spec.GetInfo(key)
+            except Exception:  # noqa: BLE001 - a field with no Python form (subLayerOffsets) is read below
+                continue
+            text = _textual(value)
             if text:
                 yield text
     root = layer.pseudoRoot
-    yield b"\n".join([*fields(root), *(path.encode() for path in layer.subLayerPaths)]), "layer metadata"
+    offsets = [str(offset).encode() for offset in layer.subLayerOffsets]
+    yield b"\n".join([*fields(root), *(path.encode() for path in layer.subLayerPaths), *offsets]), "layer metadata"
     paths: list = []
     layer.Traverse(Sdf.Path.absoluteRootPath, paths.append)
     for path in paths:
@@ -460,14 +473,18 @@ def _scan_zip(path: Path, relative: str, literals: Sequence[tuple[bytes, str]], 
     return None
 
 
-def _needles(relative: str, literals: Sequence[tuple[bytes, str]], words_only_under: str | None):
-    if words_only_under is None or relative.startswith(words_only_under):
+def _needles(relative: str, literals: Sequence[tuple[bytes, str]], words_only_under: str | None,
+             words_except: Sequence[str] = ()):
+    """The needles for one file: the site's own words only where they could come from the site's scene or job,
+    never in a file Blueprint writes with fixed text (``words_except``)."""
+    if relative not in words_except and (words_only_under is None or relative.startswith(words_only_under)):
         return literals
     return [row for row in literals if row[1] != SITE_WORDS]
 
 
 def scan_tree(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Path | None = None,
-              words_only_under: str | None = None, before_each: Callable[[], None] | None = None) -> list[Finding]:
+              words_only_under: str | None = None, words_except: Sequence[str] = (),
+              before_each: Callable[[], None] | None = None) -> list[Finding]:
     """Every file under ``root`` in name order, at most one finding per file.
 
     ``words_only_under``: look for the site's own words only in files under this prefix. ``before_each`` is
@@ -479,19 +496,19 @@ def scan_tree(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Pat
         if before_each is not None:
             before_each()
         relative = path.relative_to(root).as_posix()
-        finding = scan_file(path, relative, _needles(relative, literals, words_only_under), scratch)
+        finding = scan_file(path, relative, _needles(relative, literals, words_only_under, words_except), scratch)
         if finding:
             findings.append(finding)
     return findings
 
 
 def first_finding(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Path | None = None,
-                  words_only_under: str | None = None) -> Finding | None:
+                  words_only_under: str | None = None, words_except: Sequence[str] = ()) -> Finding | None:
     """The first finding under ``root`` in name order, or None; stops at the first."""
     root = Path(root)
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = path.relative_to(root).as_posix()
-        finding = scan_file(path, relative, _needles(relative, literals, words_only_under), scratch)
+        finding = scan_file(path, relative, _needles(relative, literals, words_only_under, words_except), scratch)
         if finding:
             return finding
     return None

@@ -228,15 +228,25 @@ def refused_live(check: Mapping[str, Any], manifest: dict[str, Any], manifest_pa
     return None
 
 
+def basis_holds(root: Path, capture_id: str, basis: str | None, upload_sha256: str | None, now: float,
+                owned_list: Path | None = None) -> bool:
+    """A basis holds now, by the stored record alone (no network). A recorded definite "no" (``rights_refused``)
+    means no basis holds, whatever the basis: Blueprint's own capture too."""
+    check = read_check(root)
+    if check.get("outcome") == "rights_refused":
+        return False
+    if basis == "blueprint_owned_capture":
+        return owned_basis_holds(capture_id, upload_sha256, owned_list)
+    if basis == "site_sharing_statement":
+        return live_grant_holds(check, now)
+    return False
+
+
 def basis_still_holds(root: Path, capture_id: str, manifest: Mapping[str, Any], now: float,
                       owned_list: Path | None = None) -> bool:
-    """For a route read: the published thing's basis holds now, by the stored record alone (no network)."""
-    basis = (manifest.get("permission") or {}).get("permission_basis")
-    if basis == "blueprint_owned_capture":
-        return owned_basis_holds(capture_id, manifest.get("upload_sha256"), owned_list)
-    if basis == "site_sharing_statement":
-        return live_grant_holds(read_check(root), now)
-    return False
+    """For a route read: the published thing's basis holds now (``basis_holds``)."""
+    return basis_holds(root, capture_id, (manifest.get("permission") or {}).get("permission_basis"),
+                       manifest.get("upload_sha256"), now, owned_list)
 
 
 def delivery_gate_allows(capture_root: Path, *, surface: str) -> bool:
@@ -262,7 +272,7 @@ def site_withdrawn(storage_root: Path, request_id: str) -> bool:
     return False
 
 
-__all__ = ["CHECK_DIRECTORY", "capture_identity", "retract_object", "sha256_file", "LIVE_GRANT_LIFETIME_SECONDS", "LIVE_STATEMENT_RECHECK_SECONDS", "NOT_PERMITTED",
+__all__ = ["CHECK_DIRECTORY", "basis_holds", "capture_identity", "retract_object", "sha256_file", "LIVE_GRANT_LIFETIME_SECONDS", "LIVE_STATEMENT_RECHECK_SECONDS", "NOT_PERMITTED",
            "RIGHTS_REFUSALS", "RIGHTS_REFUSED", "STATEMENT_CHECK_FILE", "basis_still_holds", "check_path",
            "decided_basis", "delivery_gate_allows", "hidden", "live_due", "live_grant_holds", "live_rights",
            "may_be_permitted", "on_owned_list", "owned_basis_holds", "read_check", "read_json", "reason_code",
