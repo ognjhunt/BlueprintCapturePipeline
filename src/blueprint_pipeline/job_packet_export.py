@@ -1080,6 +1080,10 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, level: str = "summ
             "code_revision": manifest["code_revision"], "job": keys, "takedown_keys": {
                 **keys, "withdrawal_tombstone": f"scenes/{context['scene_id']}/website_withdrawal/tombstone.json"},
             "permission_basis": basis, "input_sha256": dict(sorted(read.items())),
+            # The operator's own statement of what was pulled and what the host lacked, kept whole, so a
+            # false "absent" can be traced to who made the packet.
+            "pull_record": _read_json(Path(inputs.pull_root), Path(inputs.pull_root) / PULL_RECORD, required=True),
+            "pull_record_sha256": _sha256(_inside(Path(inputs.pull_root), Path(inputs.pull_root) / PULL_RECORD)),
             "job_state_checked": {"capture_rights": {k: _mapping(context.get("capture_rights")).get(k)
                                                      for k in ("consent_status", "statement_version", "consent_revoked")},
                                   "withdrawal": "not withdrawn in the pulled site roots"},

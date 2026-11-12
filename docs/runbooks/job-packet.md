@@ -23,8 +23,10 @@ $D pull $P/beta-policy-screening/publications/<campaign>.json ./publication.json
 Then write `./pulled/pull_record.json`: `{"schema_version": "job_packet_pull_record.v1",
 "buckets": [every bucket from ls, "" for the root], "absent_on_host": [each
 `[b/]scenes/site-<request>/website_withdrawal` and `<capture path>/pipeline/consent_takedown`
-the door said is missing]}`. A place neither pulled nor listed absent is refused,
-naming it. A run in cold storage must be restored first. Full level also needs
+the door said is missing]}`. A place neither pulled nor listed absent is refused.
+The record is your own statement of what you pulled: marking a place "absent"
+without having looked is how a withdrawn job could get a packet. It is kept,
+whole, in the operator record. Restore a cold run first; full level also needs
 `$P/team-scene-packets/<packet>` and the launch run's `configured_scene_publication`.
 
 ## 2. Run it
@@ -34,7 +36,8 @@ python3 scripts/export_job_packet.py --pull-root ./pulled --capture-dir <the cap
   --operator <you> --output-root ./out [--screening-publication ./publication.json]
 ```
 
-`--level summary` (the default) is all that may be shared today. It takes no
+`config/beta_policy_candidates.v1.json` must not be group-writable (`chmod 644`), or every summary
+with a trial is refused (`job_packet_policy_catalog_unreadable`). `--level summary` (the default) is all that may be shared today. It takes no
 free text from any input: names come from the Pipeline's catalogs, verdicts and
 statuses are fixed words, and rows that do not match are left out and counted.
 Its folder (`packet-<random>`) and manifest carry no site, request or capture id.
@@ -45,15 +48,12 @@ recording statement covers sharing (`SHARING_PERMISSION_STATEMENT_VERSIONS`,
 empty), or, for Blueprint's own capture, with `--blueprint-owned-capture
 --capture-id <id> --approved-by <owner> --approved-on <date> --approval-evidence
 "<the owner's words>"` and the id in `config/blueprint_owned_captures.v1.json`.
-Every input must belong to this job. The full manifest keeps the job's ids,
-because the company is being given the job. Withdrawn, unconsented,
-authority-ended and owner-closed jobs are refused at both levels.
+Every input must belong to this job; the full manifest keeps the job's ids. Withdrawn,
+unconsented, authority-ended and owner-closed jobs are refused at both levels.
 
 ## 3. Before it leaves
 
-Read `JOB_SHEET.md` whole. Beside the folder is
-`packet-<random>.operator-record.json`: the job's ids, takedown keys, the
-permission basis, input digests and who ran it. Keep it; never send it.
-Record recipient, date and `packet_id` in the register on the website side;
-`recipients` in the manifest stays empty. On a withdrawal, find the packets by
-the record's takedown keys and ask each recipient to delete them.
+Read `JOB_SHEET.md` whole. Beside the folder, `packet-<random>.operator-record.json` holds the job's ids, takedown keys, the
+permission basis, input digests, the pull record and who ran it. Keep it; never send it.
+Record recipient, date and `packet_id` in the website's register (`recipients` stays
+empty). On a withdrawal, find packets by the record's takedown keys; ask each recipient to delete.

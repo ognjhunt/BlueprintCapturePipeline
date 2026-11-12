@@ -846,3 +846,15 @@ def test_an_approval_dated_in_the_future_or_over_90_days_ago_is_refused(tmp_path
     assert build_job_packet(_job(tmp_path / "ok"), output_root=_out(tmp_path, "ok-out"), level="full", now=NOW,
                             owned=OwnedCaptureApproval(CAPTURE, "owner", "yes", "2026-08-14"),
                             owned_list=_owned_list(tmp_path, [CAPTURE]))["permission_basis"]["approved_on"] == "2026-08-14"
+
+
+def test_the_operator_record_keeps_the_pull_record_whole_and_outside_the_packet(tmp_path: Path) -> None:
+    inputs = _job(tmp_path)
+    record_path = inputs.pull_root / "pull_record.json"
+    supplied = json.loads(record_path.read_text())
+    manifest = build_job_packet(inputs, output_root=_out(tmp_path))
+    record = json.loads(Path(manifest["operator_record"]).read_text())
+    assert record["pull_record"] == supplied
+    assert record["pull_record_sha256"] == hashlib.sha256(record_path.read_bytes()).hexdigest()
+    blob = _all_bytes(Path(manifest["packet_dir"])).decode()
+    assert "absent_on_host" not in blob and "website_withdrawal" not in blob and "consent_takedown" not in blob
