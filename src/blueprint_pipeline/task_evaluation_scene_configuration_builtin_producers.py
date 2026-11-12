@@ -399,7 +399,11 @@ def _open_at(name: str, directory: int, info: os.stat_result, *, flags: int) -> 
         descriptor = os.open(name, flags, dir_fd=directory)
     except OSError:
         return None
-    opened = os.fstat(descriptor)
+    try:
+        opened = os.fstat(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        raise
     if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
         os.close(descriptor)
         return None
@@ -412,26 +416,28 @@ def _entries(directory: int) -> list[tuple[str, os.stat_result]]:
         return [(entry.name, entry.stat(follow_symlinks=False)) for entry in listing]
 
 
-def _mount_points_under(root: Path) -> frozenset[str]:
+def _mount_points_under(root: Path) -> frozenset[str] | None:
     """Mount points below ``root``, relative to it, from this process's mount table.
 
     A bind mount of the same filesystem keeps its ``st_dev``, so the device
-    alone does not show it. Paths here are only compared, never acted on.
+    alone does not show it. Paths here are only compared, never acted on. The
+    table is read as bytes (a mount path need not be UTF-8); ``None`` means it
+    could not be read or parsed, and then no directory is removed at all.
     """
     try:
-        table = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
-    except OSError:
-        return frozenset()
-    base = os.path.realpath(root)
-    points = set()
-    for line in table.splitlines():
-        fields = line.split(" ")
-        if len(fields) < 5:
-            continue
-        point = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
-        if point.startswith(base + "/"):
-            points.add(point[len(base) + 1:])
-    return frozenset(points)
+        table = Path("/proc/self/mountinfo").read_bytes()
+        base = os.fsencode(os.path.realpath(root))
+        points = set()
+        for line in table.splitlines():
+            fields = line.split(b" ")
+            if len(fields) < 5:
+                continue
+            point = re.sub(rb"\\([0-7]{3})", lambda match: bytes([int(match.group(1), 8) & 0xFF]), fields[4])
+            if point.startswith(base + b"/"):
+                points.add(os.fsdecode(point[len(base) + 1:]))
+        return frozenset(points)
+    except Exception:  # noqa: BLE001 - any failure means the table is not known
+        return None
 
 
 class _Removal:
@@ -531,7 +537,7 @@ def restore_run_toolchain_copy(
 
 
 def _restore_from_handle(
-    root_handle: int, seen: os.stat_result, *, mounts: frozenset[str], expected_source_commit: str,
+    root_handle: int, seen: os.stat_result, *, mounts: frozenset[str] | None, expected_source_commit: str,
     expected_toolchain_digest: str,
 ) -> dict[str, Any]:
     root_info = os.fstat(root_handle)
@@ -608,7 +614,7 @@ def _restore_from_handle(
                 continue
             name, info = frame["entries"].pop()
             relative = frame["prefix"] + name
-            if info.st_dev != device or relative in mounts:
+            if info.st_dev != device or relative in (mounts or ()):
                 # A mount inside the tree: never act on another filesystem.
                 note("left", {"relative_path": relative, "reason": "other_filesystem"})
                 continue
@@ -620,9 +626,10 @@ def _restore_from_handle(
                     if handle is None:
                         note("left", {"relative_path": relative, "reason": "entry_changed"})
                         continue
+                    # Held by the frame before listing, so a failed listing closes it too.
                     frames.append({"handle": handle, "relative": relative, "prefix": relative + "/",
-                                   "mode": stat.S_IMODE(info.st_mode), "opened": False,
-                                   "entries": _entries(handle)})
+                                   "mode": stat.S_IMODE(info.st_mode), "opened": False, "entries": []})
+                    frames[-1]["entries"] = _entries(handle)
                 elif stat.S_ISREG(info.st_mode) and relative in inventory and info.st_mode & 0o222:
                     if info.st_nlink > 1:
                         # A mode change would reach every other name of this inode.
@@ -641,6 +648,11 @@ def _restore_from_handle(
             kind = ("symlink" if stat.S_ISLNK(info.st_mode) else
                     "directory" if stat.S_ISDIR(info.st_mode) else
                     "file" if stat.S_ISREG(info.st_mode) else "other")
+            if kind == "directory" and mounts is None:
+                # Without the mount table a same-filesystem bind mount below this
+                # directory cannot be seen, so no directory is removed.
+                note("left", {"relative_path": relative, "reason": "mount_table_unavailable"})
+                continue
             if unprivileged and not frame["opened"] and not frame["mode"] & 0o200:
                 # An unprivileged owner must open the parent to remove a name;
                 # it is sealed again when the directory is done.
@@ -648,7 +660,7 @@ def _restore_from_handle(
                 frame["opened"] = True
             contained = 0
             if kind == "directory":
-                removal = _Removal(device=device, mounts=mounts, unprivileged=unprivileged)
+                removal = _Removal(device=device, mounts=mounts or frozenset(), unprivileged=unprivileged)
                 reason = removal.remove(frame["handle"], name, info, relative)
                 if reason is not None:
                     note("left", {"relative_path": relative, "reason": reason})

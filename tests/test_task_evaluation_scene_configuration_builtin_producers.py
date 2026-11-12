@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -829,3 +830,106 @@ def test_a_very_deep_planted_tree_is_removed_without_recursion(tmp_path, monkeyp
                                   "contained_entries": 3000}]
     assert not base.exists()
     _validate(module, root, commit)
+
+
+def _open_handles() -> int:
+    import os
+
+    return len(os.listdir("/proc/self/fd"))
+
+
+def test_without_a_mount_table_no_directory_is_removed(tmp_path, monkeypatch):
+    """A same-filesystem bind mount is visible only in the table; without it, remove no directory."""
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    real = Path.read_bytes
+
+    def read_bytes(self):
+        if str(self) == "/proc/self/mountinfo":
+            raise FileNotFoundError(self)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    cache = root / _PACKAGE / "__pycache__"
+    cache.mkdir()
+    (cache / "data.txt").write_text("could be a bind mount's data", encoding="utf-8")
+    stray = root / "stages" / "stray.txt"
+    stray.write_text("x", encoding="utf-8")
+    link = root / "stages" / "link"
+    link.symlink_to(tmp_path)
+    (root / "components").chmod(0o755)
+
+    record = _restore(module, root, commit, digest)
+
+    assert record["left"] == [{"relative_path": f"{_PACKAGE}/__pycache__", "reason": "mount_table_unavailable"}]
+    assert (cache / "data.txt").read_text() == "could be a bind mount's data"
+    assert sorted(row["relative_path"] for row in record["removed"]) == ["stages/link", "stages/stray.txt"]
+    assert not stray.exists() and not link.is_symlink()
+    assert [row["relative_path"] for row in record["modes_restored"]] == ["components"]
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_not_read_only:{_PACKAGE}/__pycache__$"):
+        _validate(module, root, commit)
+
+
+def test_a_mount_table_with_non_utf8_paths_is_still_read(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = os.fsencode(os.path.realpath(root))
+    table = (b"36 35 98:0 / /mnt/caf\xe9\\040x rw - ext4 /dev/x rw\n"
+             b"37 35 98:0 / " + base + b"/stages/m\\040nt rw - ext4 /dev/y rw\n"
+             b"38 35 98:0 / " + base + b"/stages/\xff rw - ext4 /dev/z rw\n")
+    real = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes",
+                        lambda self: table if str(self) == "/proc/self/mountinfo" else real(self))
+
+    assert module._mount_points_under(root) == {"stages/m nt", os.fsdecode(b"stages/\xff")}
+    mounted = root / "stages" / "m nt"
+    mounted.mkdir()
+    (mounted / "data.txt").write_text("other filesystem", encoding="utf-8")
+    record = _restore(module, root, commit, digest)
+    assert record["left"] == [{"relative_path": "stages/m nt", "reason": "other_filesystem"}]
+    assert (mounted / "data.txt").exists()
+
+
+def test_a_failed_listing_leaks_no_handle(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    (root / "stages" / "stray").write_text("x", encoding="utf-8")
+    real = module._entries
+    calls = []
+
+    def entries(handle):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError(24, "listing failed")
+        return real(handle)
+
+    monkeypatch.setattr(module, "_entries", entries)
+    before = _open_handles()
+    with pytest.raises(OSError, match="listing failed"):
+        _restore(module, root, commit, digest)
+    assert _open_handles() == before
+
+
+def test_a_kept_folder_swapped_for_an_outside_link_before_it_is_opened(tmp_path, monkeypatch):
+    """Review probe P10a: refused by ``O_NOFOLLOW`` and by the device and inode comparison."""
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    mirror = outside / Path(_PACKAGE).relative_to("components")
+    mirror.mkdir(parents=True)
+    (mirror / "planted.txt").write_text("OUTSIDE", encoding="utf-8")
+    (root / _PACKAGE / "planted.txt").write_text("foreign", encoding="utf-8")
+    real = module._open_at
+    swapped = []
+
+    def open_at(name, directory, info, *, flags):
+        if name == "components" and not swapped:
+            swapped.append(1)
+            root.chmod(0o755)
+            (root / "components").rename(root / "components-moved")
+            (root / "components").symlink_to(outside, target_is_directory=True)
+        return real(name, directory, info, flags=flags)
+
+    monkeypatch.setattr(module, "_open_at", open_at)
+
+    record = _restore(module, root, commit, digest)
+
+    assert swapped and (mirror / "planted.txt").read_text() == "OUTSIDE"
+    assert {"relative_path": "components", "reason": "entry_changed"} in record["left"]
