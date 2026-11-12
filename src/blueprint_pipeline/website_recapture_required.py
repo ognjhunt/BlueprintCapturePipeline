@@ -32,7 +32,8 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 
-__all__ = ["CODES", "FIELD", "FRONT_NORMAL_CODE", "REGISTRATION_CODES", "SCHEMA", "record", "retains_recapture_required"]
+__all__ = ["CODES", "FIELD", "FRONT_NORMAL_CODE", "ABSTENTION_CODES", "FRAMES_UNUSABLE_CODE", "NOT_OBSERVED_CODE", "REGISTRATION_CODES", "SCHEMA", "record",
+           "retain_recapture_hold", "retains_recapture_required"]
 
 SCHEMA = "website_recapture_required.v1"
 FIELD = "recapture_required"
@@ -42,7 +43,15 @@ REGISTRATION_CODES = frozenset({
     "website_registration_conflicts_provider_anchor", "website_registration_anchor_deviation",
     "website_registration_ground_plane_inconsistent",
 })
-CODES = REGISTRATION_CODES | {FRONT_NORMAL_CODE}
+#: The analysis of the video found nothing the task is about: no object to move, no support, no
+#: destination (``task_relevant_target_not_observed``). The same video gives the same answer; the
+#: site is asked to film again with the object in view.
+NOT_OBSERVED_CODE = "website_task_object_not_observed"
+#: The scene review found no usable frame at all (``frames_unusable``).
+FRAMES_UNUSABLE_CODE = "website_capture_frames_unusable"
+CODES = REGISTRATION_CODES | {FRONT_NORMAL_CODE, NOT_OBSERVED_CODE, FRAMES_UNUSABLE_CODE}
+#: A final scene-review abstention (``atlas_scene_planner.FINAL_ABSTENTION_REASONS``) and what the site is asked.
+ABSTENTION_CODES = {"task_object_or_region_not_visible": NOT_OBSERVED_CODE, "frames_unusable": FRAMES_UNUSABLE_CODE}
 
 
 def record(code: str, *, task_context_digest: str) -> dict[str, Any]:
@@ -66,3 +75,21 @@ def retains_recapture_required(handoff: Mapping[str, Any], task_context: Mapping
             and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
             and handoff.get("status") == "needs_input" and handoff.get("blockers") == [stop["code"]]
             and not any(key in handoff for key in ("source_registration", "website_intake_outbox")))
+
+
+def retain_recapture_hold(*, capture_root, task_context: Mapping[str, Any], code: str) -> dict[str, Any]:
+    """Write the scene handoff of a preparation that ended on ``code``: a hold that asks for a new video.
+
+    Used where the stop is found before any scene handoff exists (the analysis found nothing the task
+    is about). Nothing is bought; status v7 names the code as the job's outcome.
+    """
+    from pathlib import Path
+
+    from .core.handoff_lease import guarded_handoff_write_json
+    result = {"schema_version": "website_scene_handoff.v1", "scene_id": task_context["scene_id"],
+              "capture_id": task_context["capture_id"], "status": "needs_input", "blockers": [code],
+              FIELD: record(code, task_context_digest=task_context["context_digest"]),
+              "simulator_ready": False, "provider_mutation_performed": False, "claim_ceiling": "development_only"}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    guarded_handoff_write_json(Path(capture_root) / "pipeline" / "website_scene_preparation" / "handoff.json", result)
+    return result

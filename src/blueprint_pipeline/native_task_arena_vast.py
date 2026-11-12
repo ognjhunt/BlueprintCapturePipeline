@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -629,7 +631,9 @@ def run_native_task_arena_policy_canary_session_vast(
     # records the mode and why.
     from . import policy_canary_output_members as output_members
     try:
-        resolved = output_members.resolve_output_delivery()
+        # A screening attempt's pre-launch check resolved it already: the same mode, never a second resolution.
+        resolved = ((output_members.resolved_for_attempt(job_dir) if authority.get("run_kind") == "blueprint_beta_screening"
+                     else None) or output_members.resolve_output_delivery())
     except output_members.PolicyCanaryOutputDeliveryError as exc:
         return _unconsumed_policy_canary_refusal([str(exc)])
     delivery, recorded = resolved.mode, {output_members.RESOLUTION_FIELD: resolved.record()}
@@ -650,7 +654,21 @@ def run_native_task_arena_policy_canary_session_vast(
                 refusal = _unconsumed_policy_canary_refusal(["policy_canary_output_disk_admission_refused"])
                 return {**refusal, "provider_output_admission": {"status": "refused", "reason": str(exc)},
                         **recorded}
+    elif execute and authority.get("run_kind") == "blueprint_beta_screening":
+        # A downloaded screening output's zip and expansion: room held from here, before any spend, until it
+        # lands or the run ends; the extraction's exact hold inside it does not count it twice.
+        from .beta_screening_disk_admission import reserve_landing_hold
+        from .control_plane_disk_budget import ControlPlaneDiskBudgetError
+        try:
+            output_hold = reserve_landing_hold(job_dir)
+        except ControlPlaneDiskBudgetError as exc:
+            refusal = _unconsumed_policy_canary_refusal(["policy_canary_output_disk_admission_refused"])
+            return {**refusal, "provider_output_admission": {"status": "refused", "reason": str(exc)}, **recorded}
     outcome = "failed"
+    landing = contextlib.nullcontext()
+    if output_hold is not None and delivery != output_members.STREAM:
+        from .beta_screening_disk_admission import enclosing
+        landing = enclosing(output_hold.token)
     try:
         consumption = (
             consume_session_authority_once(
@@ -711,7 +729,8 @@ def run_native_task_arena_policy_canary_session_vast(
         elif cosmos:
             from .cosmos_droid_bundle import transfer_byte_budget
             download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
-        result = run_arena_native_control_vast(
+        with landing:
+            result = run_arena_native_control_vast(
             **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
             pre_provider_mutation_hook=(pre_create if pre_provider_create is not None or "scene_execution_owner" in authority
                                         else None),
@@ -758,8 +777,8 @@ def run_native_task_arena_policy_canary_session_vast(
             provider_output_delivery=delivery,
             provider_output_delivery_resolution=resolved.record(),
             provider_output_member_contract=member_contract,
-            provider_output_reservation=output_hold,
-        )
+            provider_output_reservation=output_hold if delivery == output_members.STREAM else None,
+            )
         outcome = "completed" if result.get("status") == "completed" else "blocked"
         return result
     finally:

@@ -381,7 +381,11 @@ def corrections(pipeline_root: Path) -> list[dict[str, str]]:
 
 def correction_binding_digest(pipeline_root: Path) -> str | None:
     """Input binding of the website preparation stage, so a correction reruns it and a confirmation does not."""
-    fixes = corrections(pipeline_root)
+    from .website_destination_choice import place_correction
+    fixes, place = corrections(pipeline_root), place_correction(pipeline_root)
+    if place is not None:
+        # The site picked another place for the object (``website_destination_choice``).
+        return canonical_digest({"corrections": fixes, "destination_place": place})
     return canonical_digest({"corrections": fixes}) if fixes else None
 
 
@@ -399,7 +403,25 @@ def public_question(capture_root: Path) -> dict[str, Any] | None:
                 "question_digest", "target_id", "semantic_label", "candidate_set_digest", "guessed_candidate_id")},
                 "candidates": [{key: row[key] for key in ("candidate_id", "label", "reference_time_ms")}
                                for row in question["candidates"]]}
+    from .website_preparation_outcome import website_lists_place_question
+    if website_lists_place_question():
+        # Once the website lists it: the optional question about the place (``website_destination_choice``).
+        from .website_destination_choice import public_place_question
+        return public_place_question(capture_root)
     return None
+
+
+def asked_place_question(pipeline_root: Path) -> dict[str, Any] | None:
+    """The place question the website is asked about, once it lists it; else None.
+
+    Until the website's switch (``website_preparation_outcome.PLACE_QUESTION_ENV``) is on, the question and
+    its picture are only kept on the host: the status never shows it and its answer is never polled.
+    """
+    from .website_preparation_outcome import website_lists_place_question
+    if not website_lists_place_question():
+        return None
+    from .website_destination_choice import read_place_question
+    return read_place_question(Path(pipeline_root))
 
 
 def replay_record(listener, *, payload, payload_digest, producer_delivery_key, capture_root: Path) -> dict | None:
@@ -407,7 +429,9 @@ def replay_record(listener, *, payload, payload_digest, producer_delivery_key, c
     from .website_assessment_resume import _payload_bytes
     try:
         pipeline = Path(capture_root) / "pipeline"
-        if producer_delivery_key is None or not (current_questions(pipeline) or corrections(pipeline)):
+        from .website_destination_choice import read_place_question
+        if producer_delivery_key is None or not (current_questions(pipeline) or corrections(pipeline)
+                                                 or read_place_question(pipeline)):
             return None
         raw = _payload_bytes(listener, payload, payload_digest)
     except Exception:  # noqa: BLE001 - without the bytes the guess stands and is still shown
@@ -429,6 +453,16 @@ def correction_pending(ledger: Mapping[str, Any], pipeline_root: Path) -> str | 
     (Pub/Sub, or the reconstruction drain's armed wait) owns its retry.
     """
     fixes = corrections(pipeline_root)
+    from .website_destination_choice import place_correction
+    if not fixes and place_correction(pipeline_root) is not None:
+        # The site picked another place: owed until a run on it completed, or while that run stopped short.
+        digest = correction_binding_digest(pipeline_root)
+        marks = [row.get(CORRECTION_MARK) for row in ledger.get("attempt_history") or [] if isinstance(row, Mapping)]
+        last = marks[-1] if marks else None
+        if digest not in marks or (ledger.get("status") in {"failed_retryable", "retryable_blocked"}
+                                   and last == digest and not _reconstruction_armed(ledger)):
+            return digest
+        return None
     if not fixes:
         # Reaffirming the original guess normally does no work. After a
         # negative answer stopped preparation, it must release that evidence
@@ -452,7 +486,7 @@ def correction_pending(ledger: Mapping[str, Any], pipeline_root: Path) -> str | 
                 and rejection.get('digest') == canonical_digest(rejection, digest_field='digest')):
             return canonical_digest({'restored_rejected_guesses': sorted(restored, key=lambda row: row['target_id'])})
         return None
-    digest = canonical_digest({"corrections": fixes})
+    digest = correction_binding_digest(pipeline_root)  # the place the site picked, too
     history = ledger.get("attempt_history")
     last = history[-1] if type(history) is list and history else None
     handoff = _read(pipeline_root / 'website_scene_preparation' / 'handoff.json') or {}
@@ -586,7 +620,8 @@ def reconcile_target_choices(listener, *, storage_root: Path, process_args, limi
             before = listener._read_job_ledger(root)
             if before.get("status") == listener.TERMINAL_AUTHORITY_STATUS:
                 continue
-            for question in current_questions(pipeline):
+            place = asked_place_question(pipeline)
+            for question in [*current_questions(pipeline), *([place] if place is not None else [])]:
                 retained = read_answer(pipeline, question)
                 if retained is not None and retained['choice']['kind'] != 'none_of_these':
                     continue

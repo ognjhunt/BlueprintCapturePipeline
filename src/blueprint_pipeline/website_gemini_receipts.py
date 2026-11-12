@@ -152,7 +152,8 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
                         task_context: Mapping[str, Any], maximum_cost_usd: float,
                         preflight: Callable[[], None], invoke: Callable[[], dict[str, Any]],
                         source_video_digest: str | None = None,
-                        earlier_requests: Sequence[tuple[Mapping[str, Any], float]] = ()) -> dict[str, Any]:
+                        earlier_requests: Sequence[tuple[Mapping[str, Any], float]] = (),
+                        accept_earlier: Callable[[Mapping[str, Any], Mapping[str, Any]], bool] | None = None) -> dict[str, Any]:
     """Reuse completed results; each reservation pays for exactly one dispatch of unknown outcome.
 
     Every Gemini call of website preparation goes through here. ``earlier_requests`` are
@@ -161,7 +162,9 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
     again under one new reservation, at most twice (``_dispatch_chain``); a 429 or 503 answer,
     or a run stopped before its dispatch, reuses its own reservation. An earlier form's
     unanswered dispatch is counted the same way and this form is bought under its own
-    reservation. The existing WebApp transaction is the cross-worker spending authority. Local
+    reservation. ``accept_earlier(earlier_binding, result)``, when given, says which earlier answer still stands; one it
+    refuses is kept as it is and this form is bought once. The existing WebApp transaction is the
+    cross-worker spending authority. Local
     flock and exclusive durable intent cover restarts on this worker.
     """
     request, digest = _request(binding=binding, task_context=task_context, maximum_cost_usd=maximum_cost_usd,
@@ -180,7 +183,7 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
                 _, earlier = _request(binding=earlier_binding, task_context=task_context,
                                       maximum_cost_usd=earlier_cost, source_video_digest=source_video_digest)
                 retained = _dispatch_chain(output_root, earlier)[0]
-                if retained is not None:
+                if retained is not None and (accept_earlier is None or accept_earlier(earlier_binding, retained)):
                     return retained
         preflight()
         if reuse is not None:

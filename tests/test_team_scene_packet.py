@@ -594,3 +594,30 @@ def test_a_bodys_station_keeps_off_a_moving_part_and_leaves_its_unmodelled_body_
     [grip] = row["grippers"]
     assert grip["joint_type"] == "prismatic" and grip["gripper"]["full_stroke_m"] == 0.08
 
+
+
+def test_the_website_test_packet_runs_the_clearance_and_says_so_in_its_variant(tmp_path, monkeypatch) -> None:
+    # The packet that publishes results builds its own appearance; it must press the room down there too.
+    import numpy as np
+
+    from blueprint_pipeline import scene_appearance_task_clearance as clearance
+    from blueprint_pipeline import task_evaluation_native_arena_episode_compiler as compiler
+    from tests.test_scene_appearance_task_clearance import _native_appearance, _particlefield
+
+    start = [2.9742285, -6.7605156, 0.818319]
+    room = np.random.default_rng(7).uniform([start[0] - 3, start[1] - 3, 0.0], [start[0] + 3, start[1] + 3, 2.5], (1999, 3))
+    room = room[np.abs(room[:, 2] - start[2]) > 0.2]  # nothing else near the tray's plane
+    points = np.vstack([[[start[0], start[1], start[2] - 0.02]], room])
+    field = _particlefield(tmp_path / "field.usdc", points)
+    monkeypatch.setattr(compiler, "_materialize_native_particlefield_appearance",
+                        lambda **_kwargs: _native_appearance(field))
+    monkeypatch.setattr(clearance, "task_volumes", lambda spec: [{
+        "kind": "box", "role": "task_object", "pose_world": [*start, 0, 0, 0, 1],
+        "minimum_m": [-0.1, -0.1, -0.01], "maximum_m": [0.1, 0.1, 0.05]}])
+    _compiled, request = _compile(tmp_path, _scene(tmp_path))
+    variant = request["appearance_variant"]
+    assert variant["task_clearance"]["status"] == "pressed" and variant["task_clearance"]["pressed_count"] == 1
+    assert variant["exact_learned_arrays_preserved"] is False
+    appearance = next(row for row in request["assets"] if row["semantic_role"] == "scene_appearance")
+    assert appearance["source"]["sha256"] == variant["task_clearance"]["derived_particlefield_digest"]
+    assert variant["render_backend"]["particlefield_digest"] == appearance["source"]["sha256"]

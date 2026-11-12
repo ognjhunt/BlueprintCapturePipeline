@@ -53,8 +53,7 @@ from .common import write_json
 from .job_retry_policy import REFUSAL_RETRY_DELAYS_SECONDS
 from .website_preparation_recovery import note_recovery, recovery_failures  # noqa: F401 - re-exported for the tick
 
-FIELD = "preparation_retry"
-SCHEMA = "website_preparation_retry.v1"
+from .website_preparation_retry_record import FIELD, RETRIES_SPENT, SCHEMA, armed  # noqa: E402,F401 - one record
 PAYLOAD_FILE = ".pipeline_preparation_retry_payload.json"
 PAYLOAD_SCHEMA = "website_preparation_retry_payload.v1"
 #: A dead process is not a failure of the job: its attempt runs again soon, so the job
@@ -69,34 +68,83 @@ _OUTAGE = re.compile(r"http_(?:429|5[0-9][0-9])(?![0-9])|timeout|timed out|conne
                      r"|no space left|disk_budget|capacity_insufficient", re.IGNORECASE)
 _CHAIN_LIMIT = 16
 OUTAGE, REFUSAL, DETERMINISTIC = "outage", "refusal", "deterministic"
+#: The WebApp's ``website_run_closed_by_owner``: the run is closed until the site gives a new instruction.
+OWNER_CLOSED = "owner_closed"
+#: The job has no sentence yet (``website_task_context_contracts.task_named``): it waits for the
+#: site, buying nothing, and each run re-reads the website's current context.
+AWAITING_JOB_SENTENCE = "awaiting_job_sentence"
+#: A failure whose timed retries are spent (an unclassified refusal after its six, or any failure of a job
+#: with no grant). It is never left with no next run: it runs again once on each new release, like a
+#: deterministic refusal, and the status tells the site so (``website_preparation_outcome``). The code,
+#: ``RETRIES_SPENT``, lives in the leaf ``website_preparation_retry_record`` that the status reads.
 
 
 def classify(*texts: str) -> str:
-    """privacy_rights, money (``job_retry_policy.hard_stop_kind``), outage or refusal (unclassified)."""
-    from .job_retry_policy import PRIVACY_RIGHTS, hard_stop_kind
+    """privacy_rights, money (``job_retry_policy.hard_stop_kind``), the wait for the job's sentence, outage or
+    refusal (unclassified)."""
+    from .job_retry_policy import PRIVACY_RIGHTS, hard_stop_kind, owner_closed_refusal
+    if any(owner_closed_refusal(text) for text in texts if text):
+        # The site's owner closed the run: never retried. The listener ends the job, and the sweep
+        # (``end_owner_closed_preparation``) ends one this same match left behind.
+        return OWNER_CLOSED
     stripped = [_OPERATION.sub("website_control_http_", text) for text in texts if text]
     kinds = {hard_stop_kind(text) for text in stripped} - {None}
     if kinds:
         return PRIVACY_RIGHTS if PRIVACY_RIGHTS in kinds else kinds.pop()
+    from .website_task_context_contracts import TASK_NOT_NAMED
+    if any(text.endswith(TASK_NOT_NAMED) for text in stripped):
+        return AWAITING_JOB_SENTENCE
     return OUTAGE if any(_OUTAGE.search(text) for text in stripped) else REFUSAL
 
 
 def retry_delay(kind: str, failures: int, *, deadline: bool = True) -> int | None:
     """Seconds before the next run after ``failures`` failed attempts in a row; None: not retried.
 
-    An outage or a money wait runs until the job's deadline, the grant's expiry. A job with no
+    An outage, a money wait or the wait for the job's sentence runs until the job's deadline, the
+    grant's expiry, each run at most an hour apart and buying nothing until the job is named. A job with no
     grant has no deadline, so every failure of it takes the six timed retries instead, and is
     then left. The silence sweep ends it once the WebApp says the job ended with no grant
     (``end_no_grant_preparation``); ``end_expired_preparation`` needs a grant.
     """
     from .job_retry_policy import MONEY, outage_retry_delay, refusal_retry_delay
-    if kind in (OUTAGE, MONEY) and deadline:
+    if kind in (OUTAGE, MONEY, AWAITING_JOB_SENTENCE) and deadline:
         return outage_retry_delay(failures)  # The job's deadline, not a count, ends these.
-    if kind in (OUTAGE, MONEY, REFUSAL):
+    if kind in (OUTAGE, MONEY, REFUSAL, AWAITING_JOB_SENTENCE):
         return refusal_retry_delay(max(0, failures - 1))
-    if kind == DETERMINISTIC:
-        return 0  # Gated on its key (``deterministic_waiting``), never on a timer.
+    if kind in (DETERMINISTIC, RETRIES_SPENT):
+        return 0  # Gated on its key or release (``deterministic_waiting``, ``spent_waiting``), never a timer.
     return None
+
+
+def _spent(kind: str, failures: int, *, deadline: bool) -> bool:
+    """A refusal or outage whose timed retries are spent: it waits for the next release instead of ending."""
+    return kind in (OUTAGE, REFUSAL) and retry_delay(kind, failures, deadline=deadline) is None
+
+
+def _release() -> str | None:
+    """The running release's commit, read as ``team_scene_packet_worker.current_release_commit`` reads it
+    (this checkout's exact HEAD, else the release directory's name), without importing that worker's lane."""
+    from .task_evaluation_release_identity import running_release_commit
+    try:
+        commit = running_release_commit(__file__)
+        if not re.fullmatch(r"[0-9a-f]{40}", commit or ""):
+            commit = Path(__file__).resolve().parents[2].name
+    except (OSError, ValueError, IndexError):
+        return None
+    return commit if re.fullmatch(r"[0-9a-f]{40}", commit) else None
+
+
+def spent_waiting(record: Mapping[str, Any] | None) -> bool:
+    """A spent streak already run on the running release (or with no release identity to tell)."""
+    if not isinstance(record, Mapping) or record.get("kind") != RETRIES_SPENT:
+        return False
+    current = _release()
+    if current is None:
+        # No release identity to tell: never a silent wait. It runs on the last timed interval (a day).
+        import logging
+        logging.getLogger(__name__).warning("website_preparation_retry.release_unreadable_timed_fallback")
+        return False
+    return record.get("release_commit") == current
 
 
 def has_deadline(capture_root: Path) -> bool:
@@ -220,6 +268,8 @@ def failure_retry(*, exc: BaseException, capture_root: Path, payload_digest: str
         deterministic = find(exc) if kind == REFUSAL else None
         if deterministic is not None:
             kind = DETERMINISTIC
+        if _spent(kind, failures, deadline=has_deadline(capture_root)):
+            kind = RETRIES_SPENT
         delay = retry_delay(kind, failures, deadline=has_deadline(capture_root))
         if producer_delivery_key is None or owned_elsewhere or delay is None:
             return None
@@ -231,22 +281,15 @@ def failure_retry(*, exc: BaseException, capture_root: Path, payload_digest: str
         at = _parse_utc(failed_at) or _now(None)
         record = _record({"source_payload_sha256": payload_digest, "producer_delivery_key": producer_delivery_key},
                          failures=failures, error=str(exc), due=at + timedelta(seconds=delay), kind=kind)
+        if kind == RETRIES_SPENT:
+            # Already run on this release: the next one runs it again. With no release identity it runs on
+            # the last timed interval instead (``spent_waiting``).
+            record["release_commit"] = _release()
+            if record["release_commit"] is None:
+                record["next_attempt_at"] = _iso(at + timedelta(seconds=REFUSAL_RETRY_DELAYS_SECONDS[-1]))
         return record if deterministic is None else {**record, "deterministic_refusal": deterministic.record()}
     except Exception:  # noqa: BLE001 - the failure itself is recorded either way
         return None
-
-
-def armed(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
-    """This ledger's current retry record, or None (another status, another delivery, another error)."""
-    from .website_preparation_terminal import _parse_utc
-    record = ledger.get(FIELD)
-    if (ledger.get("status") != "failed_retryable" or not isinstance(record, Mapping)
-            or record.get("schema_version") != SCHEMA or record.get("error") != ledger.get("last_error")
-            or record.get("source_payload_sha256") != ledger.get("source_payload_sha256")
-            or record.get("producer_delivery_key") != ledger.get("producer_delivery_key")
-            or type(record.get("retry_count")) is not int or _parse_utc(record.get("next_attempt_at")) is None):
-        return None
-    return dict(record)
 
 
 # --- a process that died holding its lease ------------------------------------------------------
@@ -401,6 +444,10 @@ def _adopt(listener: Any, root: Path, ledger: Mapping[str, Any], now: datetime) 
     """A job that failed before this release: its retry, when its own bytes are still kept."""
     failures = max(1, consecutive_failures(ledger.get("attempt_history") or []))
     kind = classify(str(ledger.get("last_error") or ""))
+    if _spent(kind, failures, deadline=has_deadline(root)):
+        # Left with no next run before this release (capture-f88f1bd0 and others: ``next_retry_at`` null):
+        # it runs once on this release, then once per release.
+        kind = RETRIES_SPENT
     if (ledger.get("status") != "failed_retryable" or ledger.get(FIELD) is not None or _owned_elsewhere(ledger)
             or type(ledger.get("producer_delivery_key")) is not str or retry_delay(kind, failures, deadline=has_deadline(root)) is None):
         return None
@@ -453,7 +500,8 @@ def _redrive(listener: Any, root: Path, *, storage_root: Path, process_args: Map
     delay = (retry_delay(str(record.get("kind") or REFUSAL), retries, deadline=has_deadline(root))
              or REFUSAL_RETRY_DELAYS_SECONDS[-1])
     bumped = {**before, FIELD: {**record, "retry_count": retries, "last_redrive_at": _iso(now),
-                                "next_attempt_at": _iso(now + timedelta(seconds=delay))}}
+                                "next_attempt_at": _iso(now + timedelta(seconds=delay)),
+                                **({"release_commit": _release()} if record.get("kind") == RETRIES_SPENT else {})}}
     committed = _transition(listener, root, before, bumped)
     if committed is None:
         return None
@@ -512,7 +560,7 @@ def reconcile_preparation_retries(listener: Any, *, storage_root: Path, process_
                 counts["adopted"] += 1
                 ledger = committed
             when = _due(root, ledger, armed(ledger))
-            if when > current or deterministic_waiting(armed(ledger)):
+            if when > current or deterministic_waiting(armed(ledger)) or spent_waiting(armed(ledger)):
                 counts["waiting"] += 1
             else:
                 due.append((when, "ledger", root))

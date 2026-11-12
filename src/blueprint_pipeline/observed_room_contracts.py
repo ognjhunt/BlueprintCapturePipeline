@@ -46,8 +46,13 @@ def read_room_limit(capture_root, context):
                 or re.fullmatch(r'sha256:[a-f0-9]{64}', archive['digest']) is None
                 or archive.get('digest') != download.get('zip_sha256')):
             return None
+        from .atlas_review_abstention import abstention_reasons, final_room
+        if not final_room(root):
+            # Not the job's answer: its task is reviewed once more (``atlas_scene_planner.final_abstention``).
+            return None
         return {'source_result_digest': result['digest'], 'source_video_digest': result['source_video_digest'],
-                'task_evidence_limitation': limit, 'archive_digest': archive['digest']}
+                'task_evidence_limitation': limit, 'archive_digest': archive['digest'],
+                'abstention_reasons': abstention_reasons(root)}
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -69,3 +74,27 @@ def retains_observed_room_limit(handoff, context):
         and valid_task_limit(value.get('task_evidence_limitation'), context.get('context_digest'), value.get('source_video_digest')))
 
 
+
+
+def read_final_abstention(capture_root, context):
+    """A final scene-review abstention for this context and video, before or without its room being built.
+
+    The site's ask (film again) never waits on the room purchase that follows the abstention.
+    """
+    from .atlas_review_abstention import SELECTION, final_room
+    from .decision_evidence_contracts import canonical_digest as digest_of
+    root = Path(capture_root) / 'pipeline/atlas'
+    try:
+        if not final_room(root):
+            return None
+        selection = json.loads((root / SELECTION).read_text())
+        receipt = selection['planner_receipt']
+        binding = receipt.get('binding') or {}
+        if (selection.get('task_context_digest', binding.get('task_context_digest')) != context.get('context_digest')
+                or binding.get('task_context_digest') != context.get('context_digest')
+                or not isinstance(binding.get('source_video_digest'), str)):
+            return None
+        return {'source_video_digest': binding['source_video_digest'], 'planner_receipt_digest': digest_of(receipt),
+                'abstention_reasons': list(receipt['proposal']['abstention_reasons']), 'room': 'not_yet_built'}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None

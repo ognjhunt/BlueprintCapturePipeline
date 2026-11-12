@@ -82,6 +82,17 @@ def _has_symlink_component(path: Path, *, root: Path) -> bool:
     return False
 
 
+def _cleared_appearance(request: Mapping[str, Any], variant: Mapping[str, Any]) -> bool:
+    """A field the task clearance pressed down: accepted only with its receipt and the file it names."""
+    from .scene_appearance_task_clearance import cleared_quality_is_qualified
+
+    rows = [row for row in request.get("assets") or []
+            if isinstance(row, Mapping) and row.get("semantic_role") == "scene_appearance"]
+    source = rows[0].get("source") if len(rows) == 1 and isinstance(rows[0].get("source"), Mapping) else {}
+    return cleared_quality_is_qualified(variant.get("gaussian_field_quality"), variant.get("task_clearance"),
+                                        appearance_sha256=source.get("sha256"))
+
+
 def _clone_request(
     value: Mapping[str, Any], *, require_particlefield_quality: bool = True
 ) -> dict[str, Any]:
@@ -99,6 +110,7 @@ def _clone_request(
         and isinstance(appearance_variant, Mapping)
         and appearance_variant.get("representation") == "particlefield_3d_gaussian_splat"
         and not gaussian_quality_is_qualified(appearance_variant.get("gaussian_field_quality"))
+        and not _cleared_appearance(request, appearance_variant)
     ):
         raise NativeTaskArenaPacketError(
             ["native_task_arena_particlefield_quality_missing_or_invalid"]

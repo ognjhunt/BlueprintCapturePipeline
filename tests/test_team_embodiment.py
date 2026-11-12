@@ -178,7 +178,6 @@ def test_an_arm_that_cannot_be_evaluated_is_refused_by_name_before_any_gpu(tmp_p
         "team_embodiment_model_joint_missing:wrist_3_joint": {"joints": manifest(model)["joints"] + [
             {"name": "wrist_3_joint", "control": "position", "lower": -1.0, "upper": 1.0, "max_velocity": 1.0}],
             "reset_joint_positions": {**dict.fromkeys([*ARM, "wrist_3_joint"], 0.0), "finger_joint": 0.04}},
-        "team_embodiment_station_out_of_reach": {"reach_m": 0.2},
         # A fixed arm cannot be declared free (a free base goes to the task instead of reaching from a station).
         "team_embodiment_form_base_mismatch": {"base": {"mode": "free", "root_height_m": 0.8, "fall_height_m": 0.4,
                                                         "footprint_half_extent_m": [0.3, 0.3],
@@ -189,6 +188,10 @@ def test_an_arm_that_cannot_be_evaluated_is_refused_by_name_before_any_gpu(tmp_p
         with pytest.raises(TeamEmbodimentError) as error:
             binding(tmp_path / str(index), **overrides)
         assert blocker in error.value.blockers
+    # Out of reach from its station is a judgement, not an inability (owner, 2026-11-12): bound, then flagged on
+    # the robot's own result (``website_candidate_feasibility.REACH_CANNOT_SPAN_FLAG``).
+    (tmp_path / "short").mkdir()
+    binding(tmp_path / "short", reach_m=0.2)
     # A model that does not pin its base to the world would float under contact: refused.
     floating = write_robot_usd(tmp_path / "floating.usda", anchored=False)
     loose = validate_embodiment_manifest(manifest(floating))
@@ -1011,8 +1014,8 @@ def test_a_fixed_body_bound_to_its_own_station_stands_there_in_every_cell(tmp_pa
     assert "station" not in unbound and apply_team_embodiment(plan, unbound)["robot"]["base_pose_world"] == base
     # Reach is checked from the station the body will stand at.
     far = {**station, "position_world_m": [station["position_world_m"][0] + 50.0, *station["position_world_m"][1:]]}
-    with pytest.raises(TeamEmbodimentError, match="team_embodiment_station_out_of_reach"):
-        team_embodiment_binding(declared, scene_plan=plan, station=far, **inputs)
+    # Out of reach from there is bound too (owner, 2026-11-12); the feasibility record says so, not a refusal.
+    assert team_embodiment_binding(declared, scene_plan=plan, station=far, **inputs)["station"] == far
     with pytest.raises(TeamEmbodimentError, match="team_embodiment_own_station_invalid"):
         team_embodiment_binding(declared, scene_plan=plan, station={"position_world_m": [0.0, 0.0]}, **inputs)
 
@@ -1025,9 +1028,9 @@ def test_a_station_the_bodys_own_arm_reached_from_is_bound_whatever_its_declared
     base = plan["robot"]["base_pose_world"]
     station = {"position_world_m": [base["position_world_m"][0] + 1.0, *base["position_world_m"][1:]],
                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
-    # A declared 20 cm misses the task from there; the arm's own model reached it, so the run stands there.
-    with pytest.raises(TeamEmbodimentError, match="team_embodiment_station_out_of_reach"):
-        team_embodiment_binding(declared, scene_plan=plan, station=station, **inputs)
+    # A declared 20 cm misses the task from there; that is no refusal any more (owner, 2026-11-12), and the arm's
+    # own model reached it, so the run stands there.
+    team_embodiment_binding(declared, scene_plan=plan, station=station, **inputs)
     sealed = team_embodiment_binding(declared, scene_plan=plan, station=station, station_reached_by_own_arm=True,
                                      **inputs)
     assert apply_team_embodiment(plan, sealed)["robot"]["base_pose_world"] == station

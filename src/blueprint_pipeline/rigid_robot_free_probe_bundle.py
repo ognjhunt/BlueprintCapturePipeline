@@ -109,7 +109,11 @@ def current_probe_state(capture_root: str | Path) -> dict[str, Any]:
                 "task_kind": (task_spec or {}).get("task_kind") if isinstance(task_spec, Mapping) else None}
     probe_root = Path(str(profile.get("robot_free_probe_root") or ""))
     if not probe_root.is_absolute() or not probe_root.is_dir():
-        return {"status": "probe_root_unavailable", "capture_root": str(root)}
+        from .scene_run_cold_storage import COLD_STORAGE, in_cold_storage
+
+        # The root is the job's scene run; when the storage GC moved it to cold storage, say so by name.
+        return {"status": COLD_STORAGE if in_cold_storage(probe_root) else "probe_root_unavailable",
+                "capture_root": str(root)}
     try:
         receipt = retained_probe_receipt(probe_root)
     except (OSError, RobotFreeProbeGateError) as exc:

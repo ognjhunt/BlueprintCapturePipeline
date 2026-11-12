@@ -973,14 +973,107 @@ def packet_appearance_variant(native_appearance: Mapping[str, Any]) -> dict[str,
         return {key: native_appearance[key] for key in (
             "representation", "source_configured_appearance_digest", "representation_conversion_performed",
             "source_bytes_preserved", "claim_ceiling", "captured_scene_fidelity_proven")}
-    return {
+    clearance = native_appearance.get("appearance_task_clearance")
+    removed = isinstance(clearance, Mapping) and clearance.get("status") == "pressed"
+    variant = {
         "representation": "particlefield_3d_gaussian_splat",
         "source_configured_appearance_digest": native_appearance["source_configured_appearance_digest"],
         "representation_conversion_performed": native_appearance["representation_conversion_performed"],
-        "exact_learned_arrays_preserved": True,
+        # False only when particles were pressed down out of the task object or its mark.
+        "exact_learned_arrays_preserved": not removed,
         "gaussian_field_quality": native_appearance["gaussian_field_quality"],
         "render_backend": native_appearance["appearance_render_backend"],
     }
+    if clearance is not None:
+        variant["task_clearance"] = dict(clearance)
+    return variant
+
+
+def apply_task_volume_clearance(
+    native_appearance: Mapping[str, Any], *, task_spec: Mapping[str, Any], output_root: Path
+) -> dict[str, Any]:
+    """Press the room's particles down out of the placed task object and its mark, keeping their colour.
+
+    See ``scene_appearance_task_clearance``. The derived field is written next to the run's
+    other evidence. The source file is never changed. When nothing is pressed (nothing reaches,
+    or the press would be too large, which is flagged), the appearance is returned unchanged
+    except for the receipt.
+    """
+    from .scene_appearance_task_clearance import (
+        SceneAppearanceClearanceError, clearance_plan, task_volumes,
+    )
+
+    if native_appearance.get("representation") != "particlefield_3d_gaussian_splat":
+        return dict(native_appearance)
+    volumes = task_volumes(task_spec)
+    if not volumes:
+        return dict(native_appearance)
+    import numpy as np
+    from pxr import Usd, UsdGeom, Vt
+
+    source = Path(str(native_appearance["path"]))
+    try:
+        stage = Usd.Stage.Open(str(source))
+    except Exception:  # pxr raises Tf.ErrorException; the runtime's stage readback still checks the file.
+        stage = None
+    fields = ([prim for prim in stage.Traverse() if str(prim.GetTypeName()) == "ParticleField3DGaussianSplat"]
+              if stage is not None else [])
+    if len(fields) != 1:
+        # Nothing removed and nothing claimed: the receipt says the field could not be read here.
+        return dict(native_appearance, appearance_task_clearance={
+            "schema_version": "scene_appearance_task_clearance.v3", "status": "not_assessed_field_unreadable",
+            "flags": [], "pressed_count": 0, "source_assets_mutated": False})
+    field = fields[0]
+    local = np.asarray(field.GetAttribute("positions").Get(), dtype=np.float64).reshape(-1, 3)
+    opacities = np.asarray(field.GetAttribute("opacities").Get(), dtype=np.float64)
+    # USD matrices act on row vectors: world = [local, 1] @ M.
+    matrix = np.asarray(UsdGeom.Xformable(field).ComputeLocalToWorldTransform(Usd.TimeCode.Default()), float)
+    world = local @ matrix[:3, :3] + matrix[3, :3]
+    # The largest standard deviation in world metres: the field's activated scales times its frame's scale.
+    frame_scale = abs(float(np.linalg.det(matrix[:3, :3]))) ** (1.0 / 3.0)
+    sigma = np.asarray(field.GetAttribute("scales").Get(), dtype=np.float64).reshape(-1, 3).max(axis=1) * frame_scale
+    try:
+        plan = clearance_plan(positions_world=world, sigma_world=sigma, opacities=opacities, volumes=volumes)
+    except SceneAppearanceClearanceError as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            f"episode_compiler_appearance_clearance_invalid:{exc}") from exc
+    receipt = dict(plan["receipt"])
+    result = dict(native_appearance)
+    receipt["source_particlefield_digest"] = _sha256_and_size(source)[0]
+    if receipt["status"] != "pressed":
+        receipt["derived_particlefield_digest"] = None
+        result["appearance_task_clearance"] = receipt
+        return result
+    # Author on the session layer so the shared root layer is never edited; Export flattens both.
+    stage.SetEditTarget(stage.GetSessionLayer())
+    # Back to the field's own frame; colour, size and opacity stay exactly as they were.
+    pressed_local = (plan["positions_world"] - matrix[3, :3]) @ np.linalg.inv(matrix[:3, :3])
+    field.GetAttribute("positions").Set(Vt.Vec3fArray.FromNumpy(pressed_local.astype(np.float32)))
+    directory = output_root / "native-appearance-clearance"
+    directory.mkdir(mode=0o750, exist_ok=False)
+    derived = directory / "scene_appearance.usdc"
+    if not stage.Export(str(derived)):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError("episode_compiler_appearance_clearance_write_failed")
+    derived.chmod(0o440)
+    digest, size = _sha256_and_size(derived)
+    receipt["derived_particlefield_digest"] = digest
+    backend = dict(native_appearance["appearance_render_backend"], particlefield_digest=digest, backend_digest="")
+    backend["backend_digest"] = canonical_digest(backend, digest_field="backend_digest")
+    quality = measure_gaussian_field_quality(positions=field.GetAttribute("positions").Get(),
+                                             activated_scales=field.GetAttribute("scales").Get(),
+                                             opacities=opacities)
+    # Positions were moved: say so, and name the receipt that did it (``cleared_quality_is_qualified``).
+    receipt["receipt_digest"] = ""
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    quality = {**quality, "learned_tensors_mutated": True,
+               "mutation": {"kind": "scene_appearance_task_clearance",
+                            "clearance_receipt_digest": receipt["receipt_digest"],
+                            "source_particlefield_digest": receipt["source_particlefield_digest"],
+                            "derived_particlefield_digest": digest}}
+    result.update(path=str(derived), particlefield_digest=digest, particlefield_size_bytes=size,
+                  exact_learned_arrays_preserved=False, gaussian_field_quality=quality,
+                  appearance_render_backend=backend, appearance_task_clearance=receipt)
+    return result
 
 
 def _target_joint_prim_path(task_definition: Mapping[str, Any], target: Mapping[str, Any],
@@ -1321,6 +1414,10 @@ def compile_native_arena_episode(
             raise TaskEvaluationNativeArenaEpisodeCompilerError(
                 "episode_compiler_native_appearance_invalid"
             )
+        if not articulated:
+            native_appearance = apply_task_volume_clearance(
+                native_appearance, task_spec=task_spec, output_root=root)
+            native_appearance_path = Path(str(native_appearance["path"]))
     object_pose = task_definition.get("task_object_pose_world")
     runtime_replacement_path = configured_assets["replacement"]
     runtime_articulation_adaptation = None
@@ -1684,5 +1781,6 @@ __all__ = [
     "TaskEvaluationNativeArenaEpisodeCompilerError",
     "compile_native_arena_episode",
     "evidence_asset_row",
+    "apply_task_volume_clearance",
     "packet_appearance_variant",
 ]

@@ -631,8 +631,13 @@ def build_native_task_arena_bundle(
     generated_at: str | None = None,
     team_embodiment: Mapping[str, Any] | None = None,
     team_robot_model: str | Path | None = None,
+    reach_refusal_as_flag: bool = False,
 ) -> dict[str, Any]:
     """Package one exact native-task packet without reconstructing its scene.
+
+    ``reach_refusal_as_flag`` (the website screening only, owner 2026-11-12): a packet the arm-path gate
+    refuses for reach alone (``robot_reach_insufficient:*``) is packaged with that refusal as evidence and
+    ``fixed_arm_reach_cannot_span_pick_and_place``, so the robot is tested and its result says so.
 
     ``team_embodiment`` is the binding of a team's robot that the worker puts at the
     station in place of the packet's. The CPU checks then measure that robot and its
@@ -753,7 +758,19 @@ def build_native_task_arena_bundle(
                 plan_digest=plan_digest, refused_prefix="robot_arm_path_refused:", execution_mode=execution_mode)
             evidence_only_checks["robot_arm_path_clearance"] = arm_path_report["status"]
         elif team_plan is None:
-            arm_path_report = require_robot_arm_path_admission(packet_root)
+            try:
+                arm_path_report = require_robot_arm_path_admission(packet_root)
+            except RobotArmPathAdmissionBlocked as exc:
+                reach_only = bool(exc.blockers) and all(str(code).startswith("robot_reach_insufficient:")
+                                                         for code in exc.blockers)
+                if not (reach_refusal_as_flag and reach_only):
+                    raise
+                from .robot_arm_path_clearance import REACH_CANNOT_SPAN_FLAG
+                arm_path_report = _evidence_only(
+                    lambda: packet_arm_path_clearance(packet_root), schema_version=ARM_PATH_SCHEMA_VERSION,
+                    plan_digest=plan_digest, refused_prefix="robot_arm_path_refused:", execution_mode=execution_mode)
+                arm_path_report = {**arm_path_report, "flags": [REACH_CANNOT_SPAN_FLAG], "report_digest": ""}
+                arm_path_report["report_digest"] = canonical_digest(arm_path_report, digest_field="report_digest")
         elif team_robot_model is None:
             arm_path_report = _team_arm_path_unassessed(team_plan)
         else:

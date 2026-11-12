@@ -428,13 +428,14 @@
     },
     "reach_rank": {
       "additionalProperties": false,
-      "description": "The candidate's reach evidence and the tier it places it in (website_candidate_feasibility.reach_rank): 1 own arm solved through the task and reached it, 2 unmeasured, 3 solve searched and did not reach without a proof. The plan funds tier 3 after every unflagged candidate; with an intake ranking that is the only change to its order, and without one learned policies go before scripted baselines and tier 1 before tier 2, each group in the default order. Ranking removes nothing.",
+      "description": "The candidate's reach evidence and the tier it places it in (website_candidate_feasibility.reach_rank): 1 own arm solved through the task and reached it, 2 unmeasured, 3 solve searched and did not reach without a proof, 4 measured unable to reach both places from its station (reach_cannot_span: tested anyway, funded after every robot that can reach, flagged fixed_arm_reach_cannot_span_pick_and_place). The plan funds tier 3 after every unflagged candidate; with an intake ranking that is the only change to its order, and without one learned policies go before scripted baselines and tier 1 before tier 2, each group in the default order. Ranking removes nothing.",
       "properties": {
         "basis": {
           "enum": [
             "own_arm_solve_passed",
             "reach_unmeasured",
-            "own_arm_solve_flagged"
+            "own_arm_solve_flagged",
+            "reach_cannot_span"
           ]
         },
         "feasibility_digest": {
@@ -515,7 +516,8 @@
           "enum": [
             1,
             2,
-            3
+            3,
+            4
           ]
         }
       },
@@ -883,7 +885,13 @@
                 "type": "string"
               },
               "blockers": {
-                "maxItems": 0,
+                "items": {
+                  "enum": [
+                    "site_screening_budget_insufficient",
+                    "website_job_ceiling_insufficient"
+                  ]
+                },
+                "maxItems": 1,
                 "type": "array"
               },
               "candidate_id": {
@@ -922,93 +930,159 @@
                 "type": "array"
               },
               "status": {
-                "const": "selected"
+                "enum": [
+                  "selected",
+                  "waitlisted"
+                ],
+                "description": "waitlisted: funded later from what the AI robot rows give back (version 2 only)."
               },
               "known_good_control": {
-                "additionalProperties": false,
-                "properties": {
-                  "schema_version": {
-                    "const": "beta_screening_known_good_control.v1"
-                  },
-                  "role": {
-                    "const": "reference_only"
-                  },
-                  "episodes": {
-                    "const": 3
-                  },
-                  "pass_at_successes": {
-                    "const": 1
-                  },
-                  "for_candidate_id": {
-                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                    "type": "string"
-                  },
-                  "for_model_id": {
-                    "description": "The spec-catalog model whose body runs when no selected candidate's robot has a scripted profile (the job's robot fit table chose it).",
-                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                    "type": "string"
-                  },
-                  "flags": {
-                    "description": "Only with for_model_id: the body stands at the scene packet's station, not its own.",
-                    "items": {
-                      "const": "scene_packet_station"
-                    },
-                    "maxItems": 1,
-                    "minItems": 1,
-                    "type": "array"
-                  },
-                  "preferred": {
-                    "description": "Only with for_model_id, and only when the website sent preferred_robot_model_ids: whether this body's model was one of them.",
-                    "type": "boolean"
-                  },
-                  "chosen_by": {
-                    "description": "Which rule chose the body: a selected candidate's own robot (only with for_candidate_id), the body nearest the candidates' robot, the website's pick, or the fit table's order. Absent in markers written before it.",
-                    "enum": ["candidate_robot", "nearest_body", "preferred", "fit_table"]
-                  }
-                },
-                "required": [
-                  "schema_version",
-                  "role",
-                  "episodes",
-                  "pass_at_successes"
-                ],
                 "oneOf": [
                   {
+                    "additionalProperties": false,
+                    "properties": {
+                      "schema_version": {
+                        "const": "beta_screening_known_good_control.v1"
+                      },
+                      "role": {
+                        "const": "reference_only"
+                      },
+                      "episodes": {
+                        "const": 3
+                      },
+                      "pass_at_successes": {
+                        "const": 1
+                      },
+                      "for_candidate_id": {
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                        "type": "string"
+                      },
+                      "for_model_id": {
+                        "description": "The spec-catalog model whose body runs when no selected candidate's robot has a scripted profile (the job's robot fit table chose it).",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                        "type": "string"
+                      },
+                      "flags": {
+                        "description": "Only with for_model_id: the body stands at the scene packet's station, not its own.",
+                        "items": {
+                          "const": "scene_packet_station"
+                        },
+                        "maxItems": 1,
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "preferred": {
+                        "description": "Only with for_model_id, and only when the website sent preferred_robot_model_ids: whether this body's model was one of them.",
+                        "type": "boolean"
+                      },
+                      "chosen_by": {
+                        "description": "Which rule chose the body: a selected candidate's own robot (only with for_candidate_id), the body nearest the candidates' robot, the website's pick, or the fit table's order. Absent in markers written before it.",
+                        "enum": [
+                          "candidate_robot",
+                          "nearest_body",
+                          "preferred",
+                          "fit_table"
+                        ]
+                      }
+                    },
                     "required": [
-                      "for_candidate_id"
+                      "schema_version",
+                      "role",
+                      "episodes",
+                      "pass_at_successes"
                     ],
-                    "not": {
-                      "anyOf": [
-                        {
-                          "required": [
-                            "for_model_id"
-                          ]
-                        },
-                        {
-                          "required": [
-                            "flags"
-                          ]
-                        },
-                        {
-                          "required": [
-                            "preferred"
+                    "oneOf": [
+                      {
+                        "required": [
+                          "for_candidate_id"
+                        ],
+                        "not": {
+                          "anyOf": [
+                            {
+                              "required": [
+                                "for_model_id"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "flags"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "preferred"
+                              ]
+                            }
                           ]
                         }
-                      ]
-                    }
+                      },
+                      {
+                        "required": [
+                          "for_model_id"
+                        ],
+                        "not": {
+                          "required": [
+                            "for_candidate_id"
+                          ]
+                        }
+                      }
+                    ],
+                    "type": "object",
+                    "description": "Version 1: planned last, on leftover money; passed at 1 of 3."
                   },
                   {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "const": "beta_screening_known_good_control.v2"
+                      },
+                      "role": {
+                        "const": "reference_only"
+                      },
+                      "episodes": {
+                        "const": 3
+                      },
+                      "pass_at_successes": {
+                        "const": 2
+                      },
+                      "partly_at_successes": {
+                        "const": 1
+                      },
+                      "for_candidate_id": {
+                        "description": "The tested candidate of this plan whose robot (or arm family) the body stands for.",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                        "type": "string"
+                      },
+                      "chosen_by": {
+                        "description": "The tested robot's own scripted body, or its arm family's registered body.",
+                        "enum": [
+                          "candidate_robot",
+                          "arm_family"
+                        ]
+                      },
+                      "flags": {
+                        "description": "The body stands at the scene packet's station, not its own.",
+                        "items": {
+                          "const": "scene_packet_station"
+                        },
+                        "maxItems": 1,
+                        "minItems": 1,
+                        "type": "array"
+                      }
+                    },
                     "required": [
-                      "for_model_id"
+                      "schema_version",
+                      "role",
+                      "episodes",
+                      "pass_at_successes",
+                      "partly_at_successes",
+                      "for_candidate_id",
+                      "chosen_by"
                     ],
-                    "not": {
-                      "required": [
-                        "for_candidate_id"
-                      ]
-                    }
+                    "description": "Version 2 (owner, 2026-11-12): the plan's first row on every campaign, funded before any candidate; passes at 2 of 3, partly at 1 of 3."
                   }
-                ],
-                "type": "object"
+                ]
               }
             },
             "required": [
@@ -1027,7 +1101,7 @@
               "known_good_control"
             ],
             "type": "object",
-            "description": "The campaign's known-good control (beta_policy_screening_known_good_control): Blueprint's scripted pick/place controller on three nominal cells, reference only, never a candidate or part of the estimate. At most one, after every candidate row."
+            "description": "The campaign's scripted reference check (beta_policy_screening_known_good_control): Blueprint's scripted pick/place controller on three nominal cells, reference only, never a candidate or part of the estimate. At most one: the first row (version 2), or after every candidate row (version 1)."
           },
           {
             "additionalProperties": false,
@@ -1058,37 +1132,82 @@
                 "const": "unavailable"
               },
               "known_good_control": {
-                "additionalProperties": false,
-                "properties": {
-                  "schema_version": {
-                    "const": "beta_screening_known_good_control.v1"
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "schema_version": {
+                        "const": "beta_screening_known_good_control.v1"
+                      },
+                      "role": {
+                        "const": "reference_only"
+                      },
+                      "episodes": {
+                        "const": 3
+                      },
+                      "pass_at_successes": {
+                        "const": 1
+                      },
+                      "unavailable": {
+                        "enum": [
+                          "task_kind",
+                          "embodiment",
+                          "backend",
+                          "budget",
+                          "reach"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "role",
+                      "episodes",
+                      "pass_at_successes",
+                      "unavailable"
+                    ],
+                    "type": "object",
+                    "description": "Version 1: planned last, on leftover money; passed at 1 of 3."
                   },
-                  "role": {
-                    "const": "reference_only"
-                  },
-                  "episodes": {
-                    "const": 3
-                  },
-                  "pass_at_successes": {
-                    "const": 1
-                  },
-                  "unavailable": {
-                    "enum": [
-                      "task_kind",
-                      "embodiment",
-                      "backend",
-                      "budget"
-                    ]
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "const": "beta_screening_known_good_control.v2"
+                      },
+                      "role": {
+                        "const": "reference_only"
+                      },
+                      "episodes": {
+                        "const": 3
+                      },
+                      "pass_at_successes": {
+                        "const": 2
+                      },
+                      "partly_at_successes": {
+                        "const": 1
+                      },
+                      "unavailable": {
+                        "enum": [
+                          "task_kind",
+                          "embodiment",
+                          "backend",
+                          "budget",
+                          "reach"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "role",
+                      "episodes",
+                      "pass_at_successes",
+                      "partly_at_successes",
+                      "unavailable"
+                    ],
+                    "description": "Version 2 (owner, 2026-11-12): planned first on every campaign; the row's reason is per job."
                   }
-                },
-                "required": [
-                  "schema_version",
-                  "role",
-                  "episodes",
-                  "pass_at_successes",
-                  "unavailable"
-                ],
-                "type": "object"
+                ]
               }
             },
             "required": [

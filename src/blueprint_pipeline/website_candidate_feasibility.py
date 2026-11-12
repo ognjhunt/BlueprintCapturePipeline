@@ -327,14 +327,22 @@ def own_stance(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def infeasible_blockers(feasibility: Mapping[str, Any]) -> dict[str, list[str]]:
-    """The planner's input: measured refusals only."""
+    """The planner's input: refusals that are a true inability to run. None comes from reach any more.
+
+    A measured reach refusal is a judgement about the outcome: the row is planned and tested, funded after
+    every robot that can reach (``reach_rank`` ``reach_cannot_span``), and flagged on its own result.
+    """
     return {key: list(row["blockers"]) for key, row in feasibility["candidates"].items()
-            if row["status"] == "infeasible"}
+            if row["status"] == "infeasible" and not all(is_measured_refusal(code) for code in row["blockers"])}
 
 
 #: A row's reach tier by basis. The plan funds tier 3 last; without an intake ranking, learned before
 #: scripted and then 1 before 2.
-REACH_TIERS = {"own_arm_solve_passed": 1, "reach_unmeasured": 2, "own_arm_solve_flagged": 3}
+REACH_TIERS = {"own_arm_solve_passed": 1, "reach_unmeasured": 2, "own_arm_solve_flagged": 3, "reach_cannot_span": 4}
+#: A fixed arm measured unable to reach the pick-up and the put-down from its station (owner, 2026-11-12): it is
+#: still planned and tested, funded after every robot that can reach, and its result says so about the robot.
+REACH_CANNOT_SPAN = "reach_cannot_span"
+from .robot_arm_path_clearance import REACH_CANNOT_SPAN_FLAG  # noqa: E402 - one code, defined with the reach rule
 REACH_RANK_FIELDS = frozenset({"tier", "basis", "feasibility_status", "reach_source", "solve_source",
                                "solve_status", "report_digest", "reasons", "feasibility_digest"})
 _REASONS = 16
@@ -367,6 +375,13 @@ def reach_rank(row: Mapping[str, Any] | None, *, feasibility_digest: str | None 
     It only orders (``beta_policy_screening_plan.build_screening_plan``); no candidate is removed.
     """
     row = row or {}
+    if row.get("status") == "infeasible":
+        # Measured out of reach from its station: planned and tested last, flagged (``REACH_CANNOT_SPAN_FLAG``).
+        return {"tier": REACH_TIERS[REACH_CANNOT_SPAN], "basis": REACH_CANNOT_SPAN, "feasibility_status": None,
+                "reach_source": _name(row.get("reach_source")), "solve_source": _name(row.get("reach_source")),
+                "solve_status": "out_of_reach", "report_digest": _sha((row.get("own_arm") or {}).get("report_digest")),
+                "reasons": _codes(row.get("blockers")) or ["robot_reach_insufficient"],
+                "feasibility_digest": _sha(feasibility_digest)}
     free = (row.get("own_station") or {}).get("base_mode") == "free"
     solves = [(source, arm) for source, arm in (
         ("own_arm_model", row.get("own_arm")),
@@ -394,9 +409,10 @@ def reach_rank(row: Mapping[str, Any] | None, *, feasibility_digest: str | None 
 
 
 def reach_ranks(feasibility: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """Every candidate's reach rank but the measured refusals', which are never funded."""
+    """Every candidate's reach rank, a measured refusal's included (``reach_cannot_span``, funded last)."""
+    blocked = infeasible_blockers(feasibility)
     return {key: reach_rank(row, feasibility_digest=feasibility.get("feasibility_digest"))
-            for key, row in feasibility["candidates"].items() if row["status"] != "infeasible"}
+            for key, row in feasibility["candidates"].items() if key not in blocked}
 
 
 #: The packet arm's scripted carry found no path (``robot_arm_path_clearance.SCRIPTED_CARRY_FLAG``).
@@ -410,7 +426,7 @@ _RIGID_PHASES = ("approach", "lift", "carry", "lower", "retreat")
 #: Every code ``scene_check`` may publish. A recorded reason is kept only when it is one of these, whole or
 #: by its leading code, so no link name, object name or measured distance leaves the plan.
 SCENE_CHECK_FLAGS = frozenset({
-    SCENE_CHECK_SCRIPTED_CARRY, SCENE_CHECK_ARM_SOLVE, SCENE_CHECK_OUT_OF_REACH,
+    SCENE_CHECK_SCRIPTED_CARRY, SCENE_CHECK_ARM_SOLVE, SCENE_CHECK_OUT_OF_REACH, REACH_CANNOT_SPAN_FLAG,
     "robot_rigid_pick_place_unreachable", *(f"robot_rigid_pick_place_unreachable:{phase}" for phase in _RIGID_PHASES),
     "robot_rigid_pick_place_scene_strike", "robot_arm_task_unreached", "robot_arm_task_beyond_reach",
 })
@@ -424,11 +440,25 @@ def scene_check(plan_row: Mapping[str, Any]) -> tuple[str, list[str]]:
     either way, which includes every plan written before rows recorded a ``reach_rank``. Read from the
     retained plan alone, so a campaign's verdict never changes between its revisions.
     """
+    status, flags = _reach_check(plan_row)
+    # Whether this robot's hand can hold the object (``website_candidate_grasp_screen``) joins its flags.
+    grasp = plan_row.get("grasp_screen")
+    held = [code for code in (grasp.get("flags") if isinstance(grasp, Mapping) else None) or []
+            if isinstance(code, str)]
+    if held:
+        return "flagged", sorted(set(flags) | set(held))
+    return status, flags
+
+
+def _reach_check(plan_row: Mapping[str, Any]) -> tuple[str, list[str]]:
     if plan_row.get("status") == "infeasible":
         measured = any(is_measured_refusal(code) for code in plan_row.get("blockers") or [])
         return ("flagged", [SCENE_CHECK_OUT_OF_REACH]) if measured else ("unknown", [])
     rank = plan_row.get("reach_rank")
     basis = rank.get("basis") if isinstance(rank, Mapping) else None
+    if basis == REACH_CANNOT_SPAN:
+        # A fact about this robot (a fixed arm of this reach), not a doubt about the set-up.
+        return "flagged", [REACH_CANNOT_SPAN_FLAG]
     if basis == "own_arm_solve_passed":
         return "clear", []
     if basis != "own_arm_solve_flagged":
@@ -442,7 +472,7 @@ def scene_check(plan_row: Mapping[str, Any]) -> tuple[str, list[str]]:
     return "flagged", sorted(code for code in flags if not any(other.startswith(code + ":") for other in flags))
 
 
-__all__ = ["FILENAME", "MEASURED_REFUSALS", "REACH_INSUFFICIENT_PREFIX", "REACH_RANK_FIELDS", "REACH_TIERS",
+__all__ = ["FILENAME", "MEASURED_REFUSALS", "REACH_CANNOT_SPAN", "REACH_CANNOT_SPAN_FLAG", "REACH_INSUFFICIENT_PREFIX", "REACH_RANK_FIELDS", "REACH_TIERS",
            "SCENE_CHECK_FLAGS", "SCHEMA_VERSION", "bound_station", "candidate_feasibility", "infeasible_blockers",
            "is_measured_refusal", "own_stance", "own_station", "reach_rank", "reach_ranks", "scene_check",
            "station_scene_plan"]

@@ -256,6 +256,10 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     if result.get("digest") != canonical_digest(result, digest_field="digest") or result["digest"] != job.get("result_digest"):
         raise ValueError("website_atlas_scene_result_changed")
     if result.get('observed_scene_only') is True:
+        from .atlas_observed_room import final_room
+        if not final_room(job_dir):
+            # The Atlas job reviews the task once more (``website_atlas_preview``): the usual wait.
+            return {"status": "pending", "reason": "website_atlas_job_processing", "stage": "observed_room_review"}
         return {'status': 'needs_input', 'reason': 'website_atlas_task_evidence_incomplete',
                 'observed_scene_available': True, 'simulation_qualified': False}
     if retained_result_path is not None or retained_result_digest is not None:

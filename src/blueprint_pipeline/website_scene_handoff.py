@@ -301,7 +301,8 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
     (``website_preparation_renewal``) share it, so the inputs bound to a
     preparation's digest cannot drift between them. Records into ``result``
     and returns whether the preparation may be registered: intake ready,
-    appearance authored, no abstention and no ``website_robot_fit_none`` hold.
+    appearance authored and no support hold. The capability verdict and the
+    robot fit precheck are recorded and never hold the job.
     """
     if runtime_inputs is None:
         runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base_scene,
@@ -352,25 +353,24 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
                     **({"risks": verdict["risks"]} if "risks" in verdict else {}),
                     "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
                 result["robot_fit_table"] = fit
-                if verdict["status"] == "abstained":
-                    result.update(status="needs_input", blockers=list(verdict["blockers"]))
-            # Before ARTISAN and the GPU scene build: hold, never fail, when no catalog robot can do the
-            # task here by a refusal the late checks also make; an unknown is flagged and goes on.
+                # An abstained verdict (no enabled arm, no clear stance found, or the object beyond reach
+                # from every stance it found) is a judgement about the outcome: recorded, never a stop. It
+                # travels as ``scene_estimate:capability_unassessed`` (``atlas_scene_estimates``).
+            # Before ARTISAN and the GPU scene build: whether a catalog robot can do the task here, on paper.
+            # Recorded for the site's first look; it never holds the job (below).
             precheck = _robot_fit_precheck(preparation=preparation, verdict=verdict, collision_path=collision,
                                            native_root=native_root)
+        # The precheck is recorded exactly as before (the site's first look reads it), and it never stops the
+        # job (owner, 2026-11-11: the test runs even when no robot fits on paper). A ``no_fit`` travels with
+        # the job as ``scene_estimate:robot_fit_none:<cause>`` (``atlas_scene_estimates.preparation_flags``).
         result["robot_fit_precheck"] = precheck
-        if precheck.get("status") == "no_fit" and isinstance(precheck.get("hold_reason"), str):
-            held = True
-            prior = list(result.get("blockers") or []) if result.get("status") == "needs_input" else []
-            result.update(status="needs_input", blockers=prior + [precheck["hold_reason"]])
         if isinstance(support_hold, str):
             # The object cannot rest where it is scored on the collider the scene would seal: no stage of it
             # can be scored, so nothing is registered, enqueued or paid for (``website_support_pad``).
             held = True
             prior = list(result.get("blockers") or []) if result.get("status") == "needs_input" else []
             result.update(status="needs_input", blockers=prior + [support_hold])
-    return (preparation["status"] == "intake_ready" and not held
-            and result.get("capability_verdict", {}).get("status") != "abstained")
+    return preparation["status"] == "intake_ready" and not held
 
 
 #: Where a run keeps the records a base scene from an earlier Atlas result named (``retain_superseded_records``).

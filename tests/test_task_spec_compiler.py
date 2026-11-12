@@ -137,3 +137,30 @@ def test_goal_clear_of_start_moves_a_coincident_goal_along_the_hint() -> None:
     goal, moved = goal_clear_of_start(goal=[0.0, 0.0, 0.0], radius=0.3, start=[0.0, 0.0, 0.0],
                                       start_footprint_m=0.25, direction_hint=[0.0, 1.0])
     assert moved and goal[0] == pytest.approx(0.0) and goal[1] > 0.55
+
+
+@pytest.mark.parametrize("kind", ["resting_on", "inside", "at_least"])
+def test_a_spec_needing_a_per_object_release_channel_is_refused_until_a_runtime_writes_it(kind) -> None:
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_predicates import seal_predicates
+    from blueprint_pipeline.task_spec_compiler import TaskSpecCompileError, validate_task_spec
+
+    spec = compile_task_spec(brief=_aisle_brief(), scene=_aisle_scene(),
+                             task_requirements={"locomote": True, "manipulate": False})
+    box = {"minimum": [-0.1, -0.1, 0.0], "maximum": [0.1, 0.1, 0.1]}
+    inside = {"id": "a_in_c", "kind": "inside", "subject": {"kind": "object", "object_id": "a"},
+              "subject_extent": box, "container": {"kind": "object", "object_id": "c"},
+              "container_interior": {"minimum": [-0.3, -0.3, 0.0], "maximum": [0.3, 0.3, 0.3]},
+              "tolerance_m": 0.005, "settle_motion_m": 0.005, "hold_samples": 2, "when": "terminal"}
+    rows = {"inside": inside,
+            "resting_on": {**inside, "kind": "resting_on", "support": inside["container"], "support_extent": box}
+            | {"id": "a_on_c"},
+            "at_least": {"id": "n", "kind": "at_least", "minimum": 1, "predicates": [inside]}}
+    row = rows[kind]
+    if kind == "resting_on":
+        row = {k: v for k, v in row.items() if k not in ("container", "container_interior")}
+    spec["success"] = seal_predicates([*spec["success"]["predicates"], row])
+    spec["spec_digest"] = canonical_digest(spec, digest_field="spec_digest")
+    with pytest.raises(TaskSpecCompileError, match=f"task_spec_predicate_release_channel_missing:{kind}:"
+                                                   "native_task_arena_readback.object_robot_contact_active"):
+        validate_task_spec(spec)

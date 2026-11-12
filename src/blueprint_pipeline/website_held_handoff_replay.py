@@ -132,8 +132,43 @@ def _pipeline_missing(handoff: dict[str, Any]) -> list[str]:
     return sorted(missing)
 
 
+def registration_recapture_code(root: Path, handoff: dict[str, Any] | None,
+                                context: dict[str, Any] | None) -> str | None:
+    """The registration code a retained recapture hold stopped on, when it may be looked at again; else None.
+
+    Registration is decided on the capture's retained geometry alone (CPU, nothing bought), and a release
+    can decide it differently (capture-39ecdc97, 2026-11-12: held by a pose search that counted a
+    turned-over scene as a candidate). Only the registration stops qualify: the front-normal stop and the
+    Atlas coverage and scale asks depend on what the video shows, or on paid reviews, and stay as they are.
+    """
+    from .website_recapture_required import REGISTRATION_CODES, retains_recapture_required
+    from .website_task_context_lineage import binding_contexts
+
+    if handoff is None or context is None:
+        return None
+    code = (handoff.get("recapture_required") or {}).get("code")
+    if code not in REGISTRATION_CODES or not any(
+            retains_recapture_required(handoff, bound) for bound in binding_contexts(root, context)):
+        return None
+    return code
+
+
+def _grant_live(pipeline_root: Path) -> bool:
+    """The job's retained grant has not expired; a job without one, or past it, is left as it is."""
+    import json
+
+    try:
+        grant = json.loads((Path(pipeline_root) / "website_scene_sponsorship.json").read_text())
+    except (OSError, ValueError):
+        return False
+    ends = [value for value in (grant.get("expires_at_epoch"), grant.get("valid_until"))
+            if isinstance(value, (int, float)) and not isinstance(value, bool)] if isinstance(grant, dict) else []
+    return bool(ends) and max(ends) > time.time()
+
+
 def held_kind(pipeline_root: Path) -> str | None:
-    """How the retained handoff waits on a later fact: ``consent``, ``intake_receipt``, ``integration_gap`` or None.
+    """How the retained handoff waits on a later fact: ``consent``, ``intake_receipt``, ``integration_gap``,
+    ``registration_recapture`` or None.
 
     ``integration_gap``: the hold names a missing Blueprint piece (``pipeline:*``), which a new release
     can build, so the job is re-evaluated once per release.
@@ -143,6 +178,8 @@ def held_kind(pipeline_root: Path) -> str | None:
 
     root = Path(pipeline_root)
     handoff, context = _handoff(root), _retained_context(root)
+    if registration_recapture_code(root, handoff, context) is not None:
+        return "registration_recapture"
     # A hold decided before the brief was confirmed stays bound to the retained context's verified parent
     # until a run rewrites it (website_task_context_lineage.binding_contexts).
     if handoff is None or context is None or not any(
@@ -183,6 +220,14 @@ def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str,
         if lineage is not None:
             fact = {"kind": "confirmed_successor", **{key: lineage[key] for key in (
                 "confirmation_parent_context_digest", "context_digest", "confirmed_at")}}
+    elif kind == "registration_recapture":
+        # Once per release: a release that decides the registration differently runs it again, at $0.
+        from .team_scene_packet_worker import current_release_commit
+
+        release = current_release_commit()
+        if release and _grant_live(root):
+            fact = {"kind": "release", "release_commit": release,
+                    "recapture_code": registration_recapture_code(root, _handoff(root), _retained_context(root))}
     elif kind == "intake_receipt":
         from .website_navigation_intake import read_navigation_intake_receipt, receipt_exists
 
@@ -356,13 +401,30 @@ def preparation_binding(pipeline_root: Path, binding: str | None) -> str | None:
     return canonical_digest({"binding": binding, "held_handoff_replay": state["fact_digest"]})
 
 
+def require_still_open(capture_root: Path, *, revision: int) -> None:
+    """Refuse, before anything runs, a held job the site can no longer go on with.
+
+    The status reader re-checks the active birth and membership, fresh owner, local consent (a withdrawal
+    tombstone), the website's current context and the unchanged ledger. The website refuses that context
+    for a capture it no longer runs: one the site re-filmed (its active capture is another,
+    ``website_run_capture_superseded``) or one whose run the owner closed (``website_run_closed_by_owner``).
+    """
+    from .website_assessment_resume import _require
+    from .website_preparation_status import DELIVERY_FILE, _read as read_json, read_preparation_status, \
+        validate_selectors
+
+    root = Path(capture_root)
+    selectors = validate_selectors((read_json(root / DELIVERY_FILE) or {}).get("selectors"))
+    status = read_preparation_status(capture_root=root, selectors=selectors)
+    _require(status["revision"] == revision and status["state"] != "authority_ended")
+
+
 def reconcile_held_handoffs(listener, *, storage_root: Path, process_args, limit=1,
                             now: float | None = None, load_current_context=None) -> dict[str, int]:
     """Run each held job again whose awaited fact arrived; once per fact, at most ``limit`` per tick."""
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     from .website_assessment_resume import MAX_BYTES, _payload_bytes, _require
-    from .website_preparation_status import DELIVERY_FILE, _read as read_json, _root, read_preparation_status, \
-        validate_selectors
+    from .website_preparation_status import _root
 
     current = time.time() if now is None else now
     counts = {"replayed": 0, "held": 0, "already_replayed": 0}
@@ -401,12 +463,7 @@ def reconcile_held_handoffs(listener, *, storage_root: Path, process_args, limit
                      and before.get("source_payload_sha256") == record["source_payload_sha256"]
                      and before.get("producer_delivery_key") == record["producer_delivery_key"])
             _require(handoff.source_finalize is not None and handoff.source_membership_selector is not None)
-            # The status reader re-checks the active birth and membership, fresh owner, local consent,
-            # current context (a confirmed successor included) and unchanged ledger; a withdrawn or ended
-            # job is never run again.
-            selectors = validate_selectors((read_json(root / DELIVERY_FILE) or {}).get("selectors"))
-            status = read_preparation_status(capture_root=root, selectors=selectors)
-            _require(status["revision"] == before["revision"] and status["state"] != "authority_ended")
+            require_still_open(root, revision=before["revision"])
             birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
             _require(birth is not None and birth["source_membership_selector"] == handoff.source_membership_selector)
             _require(listener._read_job_ledger(root) == before)
@@ -443,6 +500,13 @@ def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path,
     fact = superseded_scene(pipeline) or arrived_fact(pipeline)
     if fact is None:
         raise ValueError("website_held_handoff_resume_not_eligible")
+    if fact.get("kind") == "release" and fact.get("recapture_code"):
+        # A registration hold the site was told to film again: never re-driven once the site re-filmed,
+        # closed the run or withdrew (the door's own snapshot reads the same context first).
+        try:
+            require_still_open(capture_root, revision=ledger_revision)
+        except Exception:  # noqa: BLE001 - the refusal is by name; the cause stays in the status read
+            raise ValueError("website_held_handoff_resume_not_eligible") from None
     spent = _state(pipeline)
     # As in the drain: a fact is spent once a run claimed the job (its ledger revision moved).
     if spent.get("fact_digest") == fact["fact_digest"] and spent.get("ledger_revision") != ledger_revision:
@@ -459,5 +523,6 @@ def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path,
 
 
 __all__ = ["CONSENT_HOLDS", "FIELD", "MARK", "OPERATOR_SCHEMA", "SCHEMA", "arrived_fact", "claim_matches",
-           "held_kind", "preparation_binding", "reconcile_held_handoffs", "replay_record", "resume_held_preparation",
+           "held_kind", "preparation_binding", "reconcile_held_handoffs", "replay_record", "require_still_open",
+           "resume_held_preparation",
            "superseded_atlas_result", "superseded_levelling", "superseded_scene"]

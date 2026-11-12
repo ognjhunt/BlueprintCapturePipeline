@@ -205,6 +205,11 @@ def scored_cells(*, scene_revision_digest: str, scene_id: str, salt: str, task_s
         for draw in draws:
             parameters = {name: _rounded(name, value) for name, value in sorted(draw.items())}
             ordinal = len(cells)
+            if task_kind == "rigid_pick_place":
+                # A varied start never lies inside the scored area: re-drawn, never dropped (``varied_start_clearance``).
+                from .varied_start_clearance import clear_start_parameters
+                parameters = dict(sorted(clear_start_parameters(task_spec, parameters, bounds,
+                                                                key=(*root, family, ordinal)).items()))
             scenario = {"family": family, "ordinal": ordinal, "parameters": parameters}
             cells.append({
                 "cell_id": f"scene{scene_id}.scored{count}.{ordinal:03d}.{family}",

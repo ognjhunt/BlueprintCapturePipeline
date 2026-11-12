@@ -257,7 +257,7 @@ RETAINED_BEFORE_REGION = "d0d0be4de8fb4fc6181580b73485010315fd0cf56e022a72e658fc
 
 
 @pytest.mark.parametrize("status", ["completed", "submitting"])
-def test_an_analysis_bought_before_the_region_prompt_is_never_bought_again(tmp_path, monkeypatch, status):
+def test_an_analysis_bought_before_the_region_prompt_is_bought_once_more(tmp_path, monkeypatch, status):
     from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
     _args, calls = setup_call(tmp_path / "receipts", monkeypatch)
     video = tmp_path / "video.mov"
@@ -273,8 +273,11 @@ def test_an_analysis_bought_before_the_region_prompt_is_never_bought_again(tmp_p
             {"admission": {"status": "admitted", "allocation_binding_digest": "sha256:" + RETAINED_BEFORE_REGION}})}))
     kwargs = dict(video_path=video, task_context=context(), output_root=root)
     if status == "completed":
-        # Reused as it stands, with no gate, key, SDK, reservation or call; it names no region.
-        assert analysis.analyze_removal_targets(**kwargs) == result
+        # It was never asked for the place the task names (owner direction 2026-11-11): the current
+        # revision is bought once, under its own reservation, which first needs the runtime (not
+        # configured here). The earlier receipt is kept as it is.
+        with pytest.raises(ValueError, match="runtime_not_configured"):
+            analysis.analyze_removal_targets(**kwargs)
         assert calls == [] and [path.name for path in root.glob("*.json")] == [f"{RETAINED_BEFORE_REGION}.json"]
     else:
         # A call that may have been charged is counted as spent; the current prompt is then bought
@@ -496,3 +499,36 @@ def test_a_withdrawn_source_stops_a_reused_reservation_before_anything_is_sent(t
     with pytest.raises(ValueError, match="source_revoked"):
         module.retained_gemini_call(**args)
     assert [row[0] for row in calls] == ["reserve", "invoke"]
+
+
+def test_an_older_answer_is_bought_again_exactly_once_across_retries(tmp_path, monkeypatch):
+    """Review 2026-11-12: a completed answer from before the destination region is re-bought once, under one
+    reservation; every later run reuses that purchase, whatever it said."""
+    import sys
+    import types
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+    from blueprint_pipeline.common import sha256_file
+    _args, calls = setup_call(tmp_path / "receipts", monkeypatch)
+    video = tmp_path / "video.mov"
+    video.write_bytes(b"original video")
+    monkeypatch.setattr(analysis, "_video_processing", lambda *a: ("static", 13.525))
+    monkeypatch.setattr(analysis, "_truthy", lambda value: True)
+    monkeypatch.setattr(analysis, "_api_key", lambda: ("fixture", "fixture"))
+    monkeypatch.setitem(sys.modules, "google.genai", types.ModuleType("google.genai"))
+    invokes = []
+
+    def answer(**_kwargs):
+        invokes.append(1)
+        return {"status": "blocked", "targets": [], "blockers": ["task_target_requires_clarification:x"],
+                "input_video_sha256": sha256_file(video), "prompt_revision": analysis.PROMPT_REVISION}
+    monkeypatch.setattr(analysis, "_analyze_removal_targets", answer)
+    root = tmp_path / "receipts"
+    root.mkdir()
+    old = {"status": "completed", "targets": ["box"]}
+    (root / f"{RETAINED_BEFORE_REGION}.json").write_text(json.dumps({
+        "status": "completed", "request_digest": "sha256:" + RETAINED_BEFORE_REGION, "result": old,
+        "result_digest": canonical_digest(old)}))
+    kwargs = dict(video_path=video, task_context=context(), output_root=root)
+    results = [analysis.analyze_removal_targets(**kwargs) for _ in range(3)]
+    assert len(invokes) == 1 and [row[0] for row in calls] == ["reserve"]
+    assert results[0] == results[1] == results[2]

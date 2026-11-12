@@ -39,11 +39,11 @@ except ModuleNotFoundError:  # repository package
     from .decision_evidence_contracts import canonical_digest
 try:  # flat provider-bundle layout
     from policy_episode_lifecycle import (
-        TERMINAL_POLICY_SAFETY, TERMINAL_SCIENTIFIC, observation_quality_flag_codes,
+        TERMINAL_POLICY_SAFETY, TERMINAL_SCIENTIFIC, gate_flag_codes, observation_quality_flag_codes,
     )
 except ModuleNotFoundError:  # repository package
     from .policy_episode_lifecycle import (
-        TERMINAL_POLICY_SAFETY, TERMINAL_SCIENTIFIC, observation_quality_flag_codes,
+        TERMINAL_POLICY_SAFETY, TERMINAL_SCIENTIFIC, gate_flag_codes, observation_quality_flag_codes,
     )
 
 
@@ -152,7 +152,9 @@ def prepolicy_visual_readiness_evidence(
     # lets the episode proceed; its blockers become this receipt's flags.  A
     # forged, unbound or unsealed gate, and unusable frames, still refuse.
     runtime_gate_flags = (
-        observation_quality_flag_codes(runtime_gate["blockers"])
+        # The same flags the session continued with: what the cameras really showed
+        # (``gate_flag_codes``); a job that is not visible never reaches an episode.
+        gate_flag_codes(runtime_gate, observation_quality_flag_codes(runtime_gate["blockers"])) or []
         if runtime_gate_bound
         and binding.get("run_kind") == BETA_SCREENING_RUN_KIND
         and runtime_gate.get("status") == "blocked"

@@ -1225,7 +1225,13 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
             "fresh_native_mount_sweep_required": True,
         }
     else:
-        assert observed["packet_request"]["appearance_variant"] == {
+        variant = dict(observed["packet_request"]["appearance_variant"])
+        # A task with an object box or marker records the clearance; the fixture's appearance is a
+        # placeholder, not a USD field, so nothing is removed and nothing is claimed.
+        assert variant.pop("task_clearance", None) in (None, {
+            "schema_version": "scene_appearance_task_clearance.v3", "status": "not_assessed_field_unreadable",
+            "flags": [], "pressed_count": 0, "source_assets_mutated": False})
+        assert variant == {
             "representation": "particlefield_3d_gaussian_splat",
             "source_configured_appearance_digest": result[
                 "native_scene_appearance"

@@ -658,9 +658,11 @@ def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mappin
         scene_plan = {**scene_plan, "robot": {**(scene_plan.get("robot") or {}), "base_pose_world": own}}
     if station_reached_by_own_arm and own is None:
         raise TeamEmbodimentError(["team_embodiment_own_station_invalid"])
-    reach = station_reach_blockers(scene_plan, manifest)
-    if station_reached_by_own_arm:
-        reach = [code for code in reach if code != "team_embodiment_station_out_of_reach"]
+    # A station out of reach is a judgement about the outcome, not an inability to run (owner, 2026-11-12):
+    # the robot is bound and tested, and its result carries ``fixed_arm_reach_cannot_span_pick_and_place``
+    # (``website_candidate_feasibility.reach_rank``). The measurement stays in the feasibility record.
+    reach = [code for code in station_reach_blockers(scene_plan, manifest)
+             if code != "team_embodiment_station_out_of_reach"]
     blockers = [*model_structure_blockers(manifest, structure), *reach]
     if free and not (isinstance(stance, Mapping) and _vector(stance.get("position_world_m"), 3)
                      and _vector(stance.get("orientation_xyzw"), 4) and _finite(stance.get("floor_z_m"))):

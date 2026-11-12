@@ -581,3 +581,34 @@ def test_stop_before_any_create_blocks_only_on_a_definite_answer(tmp_path, monke
     assert result["status"] == "blocked" and result["no_allocation_proven"] is True
     assert result.get("retryable_unstarted_refusal", False) is retryable
     assert (path.parent / "no_create_fence.json").exists() is retryable
+
+
+def test_a_website_row_that_cannot_reach_gets_a_flagged_bundle_not_a_refusal(tmp_path, monkeypatch):
+    """Stage 8 2c through the real launch arguments: the screening launch builds with ``reach_refusal_as_flag``."""
+    from blueprint_pipeline import robot_arm_path_clearance as clearance
+
+    code = "robot_reach_insufficient:place:1.086m_vs_0.990m"
+
+    def refused(_packet):
+        raise clearance.RobotArmPathAdmissionBlocked([code])
+
+    monkeypatch.setattr(clearance, "require_robot_arm_path_admission", refused)
+    monkeypatch.setattr(clearance, "packet_arm_path_clearance",
+                        lambda _packet: {"schema_version": clearance.SCHEMA_VERSION, "status": "blocked", "blockers": [code]})
+    plan, _facts = _plan(tmp_path, monkeypatch)
+    candidate = next(row for row in plan["candidates"] if row["candidate_id"] == "pi05_droid")
+    prepared = launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=tmp_path / "attempt")
+    assert prepared["bundle_receipt"]["path"]
+    [report] = list((tmp_path / "attempt").rglob(clearance.PACKET_REPORT_FILENAME))
+    value = json.loads(report.read_text())
+    assert value["flags"] == [clearance.REACH_CANNOT_SPAN_FLAG] and code in value["advisories"]
+    assert value["admission"] == "evidence_only" and value["blockers"] == []
+    # The finding reaches the row's published scene check (review 36: main refused it unpaid; a paid zero
+    # with no reach flag would tell the site nothing). The coordinator keeps ``prepared`` on the attempt.
+    assert prepared[launch.LAUNCH_SCENE_CHECK_FIELD] == [clearance.REACH_CANNOT_SPAN_FLAG]
+    from blueprint_pipeline.beta_policy_screening_result import _with_launch_findings
+
+    row = {"status": "completed", "attempt": {"prepared": dict(prepared)}}
+    assert _with_launch_findings({}, row) == {"scene_check_flags": [clearance.REACH_CANNOT_SPAN_FLAG]}
+    assert _with_launch_findings({"scene_check_flags": ["arm_reach_solve_flagged"]}, row) == {
+        "scene_check_flags": ["arm_reach_solve_flagged", clearance.REACH_CANNOT_SPAN_FLAG]}

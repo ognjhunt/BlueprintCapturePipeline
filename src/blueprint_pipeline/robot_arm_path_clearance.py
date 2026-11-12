@@ -1230,6 +1230,11 @@ def _packet_rigid_clearance(root: Path, plan: Mapping[str, Any], spec: Mapping[s
         max(attempts, key=lambda row: (row["furthest_sample"], "scene_strike" in row["blockers"][0])), reach)
 
 
+#: A fixed arm measured unable to reach the pick-up and the put-down from any clear station: on a website
+#: screening it is tested anyway and its result says so about the robot (owner, 2026-11-12).
+REACH_CANNOT_SPAN_FLAG = "fixed_arm_reach_cannot_span_pick_and_place"
+
+
 def rigid_carry_verdict(carry: Mapping[str, Any], reach: Mapping[str, Any] | None) -> dict[str, Any]:
     """A rigid carry's admission: refused only by the reach rule; a scripted carry miss is a flag.
 

@@ -19,6 +19,26 @@ from .control_plane_lane_scratch import LEASE_FILE, SCHEMA_VERSION, _ID, _lease_
 from .control_plane_storage_pin_observation import StoragePinObservationError, observe_storage_pins
 from .decision_evidence_contracts import canonical_digest
 
+LANE_SCRATCH_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH_ROOTS"
+LANE_SCRATCH_ENV = "BLUEPRINT_CONTROL_PLANE_GC_LANE_SCRATCH"
+
+
+def lane_settings(args: Any) -> tuple[tuple[str, ...], bool, str | None]:
+    """The storage GC's lane-scratch roots, switch and alert, from its CLI ``args`` and environment."""
+
+    raw = str(os.getenv(LANE_SCRATCH_ENV) or "").strip().lower()
+    invalid = raw not in {"", "0", "false", "1", "true"} or bool(args.lane_roots_invalid)
+    enabled = raw in {"1", "true"}
+    roots = tuple(args.lane_scratch_root or ())
+    if args.lane_scratch_root is None:
+        configured = str(os.getenv(LANE_SCRATCH_ROOTS_ENV) or "")
+        # Bound before splitting/collecting; paths receive the leaf's stricter policy.
+        if len(configured) > 8193 or configured.count(":") > 1:
+            invalid = True
+        else:
+            roots = tuple(configured.split(":")) if configured else ()
+    return (() if invalid else roots), enabled, "lane_configuration_invalid" if invalid else None
+
 MAX_ROOTS, MAX_LANES, MAX_FOLDERS = 2, 100, 1000
 MAX_ENTRIES, MAX_DEPTH = 10_000, 64
 MAX_LEASE_BYTES, MAX_TOTAL_LEASE_BYTES = 8192, 8 * 1024 * 1024

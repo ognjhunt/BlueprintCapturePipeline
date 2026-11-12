@@ -8,6 +8,8 @@ import json
 import math
 
 from .common import write_json
+from .atlas_review_abstention import (  # noqa: F401 - re-exported for the Atlas lane
+    abstention_reasons, final_room, reopens_for_review, retained_selection)
 from .decision_evidence_contracts import canonical_digest
 
 SELECTION = 'observed_room/selection.json'
@@ -68,6 +70,24 @@ def _read(path):
     if path.is_symlink():
         raise ValueError('atlas_observed_room_path_unsafe')
     return json.loads(path.read_text())
+
+
+def set_aside_selection(output_root):
+    """Move a non-final observed-room selection beside the job so the task is reviewed once more.
+
+    Nothing is deleted: the selection and the room it bought stay retained under ``superseded``.
+    """
+    path = output_root / SELECTION
+    value = _read(path)
+    kept = output_root / 'observed_room' / 'superseded' / f"{str(value.get('digest', ''))[7:] or 'undigested'}.selection.json"
+    if kept.is_file():
+        if _read(kept) != value:
+            raise ValueError('atlas_observed_room_selection_changed')
+        path.unlink()
+        return kept
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    path.rename(kept)
+    return kept
 
 
 def retain_selection(*, output_root, survey_path, survey, receipt, task_context, configuration):
@@ -134,7 +154,8 @@ def run_observed_room(*, output_root, source_digest, task_context, max_polls, ch
     limitation = {'schema_version': 'atlas_task_evidence_limitation.v1', 'status': 'abstained',
         'reason': 'atlas_scene_planner_abstained', 'planner_receipt_digest': canonical_digest(selection['planner_receipt']),
         'original_task_context_digest': task_context['context_digest'], 'source_video_digest': source_digest,
-        'summary': selection['planner_receipt']['proposal']['summary']}
+        'summary': selection['planner_receipt']['proposal']['summary'],
+        'abstention_reasons': abstention_reasons(output_root), 'final': final_room(output_root)}
     limitation['digest'] = canonical_digest(limitation, digest_field='digest')
     result = pipeline._preserved_scene(pose_root=root / 'pose', output_root=root, inputs=inputs, review=review,
         policy=current['policy'], task_context=task_context, source_digest=source_digest, configuration=current,

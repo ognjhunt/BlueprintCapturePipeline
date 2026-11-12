@@ -78,7 +78,7 @@ def _identity(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str
 
 
 def _check_quote(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
-    from .beta_policy_screening_plan import SITE_BUDGET_USD
+    from .beta_policy_screening_site_limit import plan_site_limit
 
     quote = candidate["cost_quote"]
     expires = datetime.fromisoformat(str(quote["valid_until"]).replace("Z", "+00:00"))
@@ -87,7 +87,7 @@ def _check_quote(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
     rate = Decimal(str(execution["max_hourly_rate_usd"]))
     ttl = execution["hard_ttl_seconds"]
     if (expires.tzinfo is None or expires <= datetime.now(timezone.utc)
-            or not cap.is_finite() or not Decimal("0") < cap <= Decimal(str(plan["budget_usd"])) <= SITE_BUDGET_USD
+            or not cap.is_finite() or not Decimal("0") < cap <= Decimal(str(plan["budget_usd"])) <= plan_site_limit(plan)
             or not rate.is_finite() or rate <= 0 or type(ttl) is not int or ttl < 1800
             or rate * Decimal(ttl) / Decimal(3600) > cap
             or quote.get("quote_digest") != canonical_digest(quote, digest_field="quote_digest")
@@ -276,6 +276,8 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
         checkpoint_inventory_paths={candidate["candidate_id"]: _bound_path(inventory)} if inventory else {},
         team_robot_model_path=_bound_path(execution["team_robot_model"]) if execution.get("team_robot_model") else None,
         minimum_gpu_memory_gb=execution.get("minimum_gpu_memory_gb"),
+        # A robot that cannot reach both places is tested and flagged, never refused (owner, 2026-11-12).
+        reach_refusal_as_flag=True,
         implementation_commit=execution["implementation_commit"]))
     bundle_path = _stage(root / "bundle_receipt.json", bundle)
     preflight = preflight_sealed_policy_canary_bundle(bundle)
@@ -297,10 +299,31 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
         argv += ["--adp-machine-avoidlist", str(execution["machine_avoidlist_path"])]
     prepared = {"schema_version": "beta_policy_screening_prepared.v1", **identity, "run_id": run_id,
                 "attempt_dir": str(root), "argv": argv, "authority": _record(authority_path),
-                "bundle_receipt": _record(bundle_path), "prepared_digest": ""}
+                "bundle_receipt": _record(bundle_path), **_launch_scene_check(root / "bundle"), "prepared_digest": ""}
     prepared["prepared_digest"] = canonical_digest(prepared, digest_field="prepared_digest")
     _write(previous, prepared)
     return prepared
+
+
+#: What the bundle's own checks found at launch about this row's robot, carried to its published scene check.
+LAUNCH_SCENE_CHECK_FIELD = "launch_scene_check_flags"
+
+
+def _launch_scene_check(bundle_root: Path) -> dict[str, list[str]]:
+    """The bundle's arm-path flags (``reach_refusal_as_flag``): a robot found out of reach only at launch.
+
+    Nothing when the bundle flagged nothing, so a prepared record without a finding is what it always was.
+    """
+    from .robot_arm_path_clearance import PACKET_REPORT_FILENAME, REACH_CANNOT_SPAN_FLAG
+
+    flags: set[str] = set()
+    for path in sorted(bundle_root.rglob(PACKET_REPORT_FILENAME)) if bundle_root.is_dir() else ():
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        flags |= {code for code in report.get("flags") or [] if code == REACH_CANNOT_SPAN_FLAG}
+    return {LAUNCH_SCENE_CHECK_FIELD: sorted(flags)} if flags else {}
 
 
 def _validate_prepared(plan: Mapping[str, Any], candidate: Mapping[str, Any], root: Path,
@@ -326,7 +349,31 @@ def preflight_candidate_capacity(*, plan: Mapping[str, Any], candidate: Mapping[
     blockers = admission.get("blockers") or []
     busy = admission.get("status") == "deferred" and blockers in (
         ["vast_paid_launch_lock_busy"], ["vast_release_deployment_in_progress"])
-    return {"capacity_available": not busy, "blockers": blockers}
+    if busy:
+        return {"capacity_available": False, "blockers": blockers}
+    # Room to land the result, asked of the same disk ledger the landing uses, before anything is paid
+    # for: a launch that would not fit waits in line and costs nothing (``beta_screening_disk_admission``).
+    from .beta_screening_disk_admission import WORK_DISK_WAIT_BLOCKER, work_disk_admission
+
+    backend = (candidate.get("execution_spec") or {}).get("backend")
+    if backend != "robolab.v1":
+        # The G1 and task-family lanes keep their own collection holds; nothing is added for them here.
+        return {"capacity_available": True, "blockers": blockers}
+    from .policy_canary_output_members import (
+        STREAM, PolicyCanaryOutputDeliveryError, record_resolution, resolve_output_delivery,
+    )
+
+    try:
+        resolved = resolve_output_delivery()
+    except PolicyCanaryOutputDeliveryError:
+        return {"capacity_available": True, "blockers": blockers}  # the session refuses it before any spend
+    # Resolved once, here: the session uses this record, so the hold checked is the hold it takes.
+    record_resolution(Path(attempt_dir).resolve(), resolved)
+    streamed = resolved.mode == STREAM
+    disk = work_disk_admission(Path(attempt_dir).resolve(), streamed=streamed)
+    if not disk["admitted"]:
+        return {"capacity_available": False, "blockers": [WORK_DISK_WAIT_BLOCKER], "work_disk": disk}
+    return {"capacity_available": True, "blockers": blockers}
 
 
 def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,

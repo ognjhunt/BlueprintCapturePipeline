@@ -140,7 +140,9 @@ def admit_surface_target(*, destination: Mapping[str, Any], support: Mapping[str
     start_max = [m + (float(b) - m) * scale if axis != 2 else float(b)
                  for axis, (m, b) in enumerate(zip(middle, subject_max, strict=True))]
     target = derive_surface_target(
-        destination={**destination, "kind": "green_region", "radius_m": website_target_radius()},
+        destination={**destination, "kind": "green_region",
+                     # The destination's own area (``website_destination_area``); the 5 cm disc before it.
+                     "radius_m": float(destination.get("radius_m") or website_target_radius())},
         support=target_support, source_min=start_min, source_max=start_max,
         support_instance_id=target_support["publisher_instance_id"], start_support=start_support,
         height_tolerance_m=tolerance, success_rule=CENTRE_RULE)
@@ -161,6 +163,9 @@ def submission_relocates_destination(preparation: Mapping[str, Any], destination
     """
     from .website_support_geometry import destination_clear_of_start
 
+    if (preparation.get("destination_choice") or {}).get("basis") in {"named_region", "site_choice"}:
+        # The place the job's sentence names, or the site picked, is never moved away from at submission.
+        return False
     size_tolerance = preparation_size_tolerance(preparation)
     recorded = preparation.get("destination_relocation")
     return (destination.get("support") is None and destination.get("relation") == "on"

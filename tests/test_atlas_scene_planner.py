@@ -293,12 +293,19 @@ def test_unseen_floor_and_access_are_named_for_atlas_completion_not_abstained_on
     text = " ".join(planner.INSTRUCTIONS.split())
     assert "list in uncaptured_regions every area the task needs that no frame shows" in text
     assert "floor, approach/access space, clearances" in text
-    assert "never by itself a reason to abstain" in text
+    assert "Anything else is not a reason to abstain" in text
+    assert "unseen floor, access space, clearance or surrounding area" in text
     assert "If a safe, consistent task-and-room set cannot be seen, abstain" not in text
-    causes = set(get_args(planner.AbstentionReason))
-    assert causes == {"task_object_or_region_not_visible", "support_or_destination_not_visible",
-                      "scene_state_inconsistent", "frames_unusable", "subject_origin_uncertain"}
-    assert all(cause in text for cause in causes)
+    # Retained receipts still read with every cause they could name.
+    assert set(get_args(planner.AbstentionReason)) == {
+        "task_object_or_region_not_visible", "support_or_destination_not_visible",
+        "scene_state_inconsistent", "frames_unusable", "subject_origin_uncertain"}
+    # Owner direction 2026-11-11: a current review abstains only when the video cannot serve.
+    causes = set(get_args(planner.CurrentAbstentionReason))
+    assert causes == planner.FINAL_ABSTENTION_REASONS == {"task_object_or_region_not_visible", "frames_unusable"}
+    assert all(cause in text for cause in causes) and "estimated_aspects" in text
+    for retired in ("support_or_destination_not_visible", "scene_state_inconsistent", "subject_origin_uncertain"):
+        assert retired not in text
     assert not any(word in cause for cause in causes for word in ("floor", "access", "clearance", "surround"))
     for prompt in (planner.COMPLETION_INSTRUCTIONS, planner.PRESERVED_COMPLETION_INSTRUCTIONS):
         assert "Treat each one as a completion target" in " ".join(prompt.split())
@@ -315,8 +322,18 @@ def test_an_abstention_must_name_a_blocking_cause_at_the_sdk_boundary(tmp_path):
     for refused in (floor_only, {**proposal, "abstention_reasons": ["frames_unusable"]}):
         with pytest.raises(ModelBehaviorError):
             sdk.validate_json(json.dumps(refused))
-    named = {**floor_only, "abstention_reasons": ["support_or_destination_not_visible"]}
+    named = {**floor_only, "abstention_reasons": ["task_object_or_region_not_visible"]}
     assert sdk.validate_json(json.dumps(named)).status == "abstained"
+    # A doubt about the support, the destination, the origin or the scene state is proposed through.
+    for retired in ("support_or_destination_not_visible", "subject_origin_uncertain", "scene_state_inconsistent"):
+        with pytest.raises(ModelBehaviorError):
+            sdk.validate_json(json.dumps({**floor_only, "abstention_reasons": [retired]}))
+    with pytest.raises(ModelBehaviorError):
+        sdk.validate_json(json.dumps({**proposal, "subject_origin": "uncertain"}))
+    estimated = {**proposal, "estimated_aspects": ["destination end only partly filmed"]}
+    assert sdk.validate_json(json.dumps(estimated)).estimated_aspects == ["destination end only partly filmed"]
+    review = planner.proposal_review(estimated, survey=survey, policy=policy, pose_budget=4)
+    assert review["estimated_aspects"] == ["destination end only partly filmed"]
     # A receipt retained before abstentions named a cause still reads, and still abstains.
     legacy = {key: value for key, value in floor_only.items() if key != "abstention_reasons"}
     assert planner.SceneProposal.model_validate(legacy).abstention_reasons is None

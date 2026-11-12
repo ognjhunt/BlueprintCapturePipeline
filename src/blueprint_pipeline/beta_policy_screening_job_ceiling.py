@@ -1,12 +1,17 @@
 """Size each new screening plan to its website job's one dollar ceiling.
 
 Owner decision 2026-10-30 (WebApp #1168): one dollar ceiling per website job,
-$40 by default, across Atlas, upstream, native construction and screening. The
-WebApp refuses preparation spend and scene intakes past it, but this queue
-reserves screening without asking the WebApp, so the plan is where screening
-stops: each new plan's budget is the smaller of the $30 site allowance and what
-the ceiling leaves, read once over the existing signed transport. Plans already
-built are never resized.
+across Atlas, upstream, native construction and screening; the WebApp sets its
+figure (the job's Atlas grant, $25 on every job granted before 2026-11-11; the
+owner moves new jobs to $100). The WebApp refuses preparation spend and scene
+intakes past it, but this queue reserves screening without asking the WebApp,
+so the plan is where screening stops. Since 2026-11-11 (owner: "yes replace
+them - $300 monthly limit, $100 fuse") each new plan's budget is everything the
+ceiling leaves, read once over the existing signed transport: no $15 plan size
+and no $30 site allowance below it. The ceiling is a fuse against a fault
+burning the month in one job, not a ration. Plans already built are never
+resized, and every paid launch reads the ceiling again
+(``require_current_job_ceiling``).
 
 If the ceiling cannot be read (a WebApp without the summary, a job without its
 retained Atlas configuration, a refusal, the network), planning holds with
@@ -90,9 +95,8 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
         for campaign_id, state in ledger["campaigns"].items():
             # Waitlisted rows count too: money a selected row releases before
             # spend can fund them, up to what the plan's budget still allows.
-            # An unreserved known-good control is not held here: it runs only on money left over.
-            unfunded = {key for key, row in state["candidates"].items()
-                        if row["status"] in {"pending", "waitlisted"} and not row.get("known_good_control")}
+            # The scripted reference check counts like any row: it is funded first (owner, 2026-11-12).
+            unfunded = {key for key, row in state["candidates"].items() if row["status"] in {"pending", "waitlisted"}}
             if state["site_id"] != site_id or not unfunded or campaign_id == superseding:
                 continue
             plan = _plan(root, campaign_id, state["plan_digest"])
@@ -120,8 +124,12 @@ def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any]
     read_at = dt.datetime.now(dt.timezone.utc).isoformat()
     preferred = _preferred_robot_model_ids(extras.get(PREFERENCE_FIELD), options.get("capabilities"))
     if preferred:
-        # Orders only the known-good control's body; outside every digest (``robot_fit_rows`` too).
+        # Read beside the ceiling; the reference check's body no longer depends on it (owner, 2026-11-12).
         options["capabilities"] = {**(options.get("capabilities") or {}), PREFERENCE_FIELD: preferred}
+    # The reference check's $3.00 is a total per scene revision and task contract (owner, 2026-11-12).
+    from .beta_policy_screening_known_good_control import REMAINING_CAPABILITY, reference_remaining_usd
+    options["capabilities"] = {**(options.get("capabilities") or {}),
+                               REMAINING_CAPABILITY: f"{reference_remaining_usd(queue_root, scene):.2f}"}
     # Without the WebApp's screening figure, count every local reservation again: less, never more.
     published = summary.get("screening_cost_usd")
     published = (Decimal(str(published)) if isinstance(published, (int, float)) and not isinstance(published, bool)
@@ -132,7 +140,11 @@ def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any]
         record = job_ceiling_record(summary, local_holds_usd=holds, read_at=read_at)
     except BetaPolicyScreeningPlanError:
         raise ValueError(UNAVAILABLE) from None
-    options.setdefault("site_remaining_usd", site_screening_remaining(queue_root, site_id=scene["site_id"]))
+    from .website_job_limits import fuse
+    if not fuse():
+        # nested (shipped): the site's remaining allowance fits a last quote, as before 2026-11-11.
+        options.setdefault("site_remaining_usd", site_screening_remaining(queue_root, site_id=scene["site_id"]))
+    # fuse: no site allowance is passed; the ceiling is the only bound (owner decision 2026-11-11).
     return build_job_ceiling_screening_plan(catalog, scene, job_ceiling=record, **options)
 
 
@@ -198,13 +210,21 @@ def require_current_job_ceiling(plan: Mapping[str, Any], *, context: Mapping[str
 
 
 def site_screening_remaining(queue_root: str | Path, *, site_id: str) -> str:
-    """What the site's screening allowance has left after every commitment, as funding counts it."""
+    """What the site's screening limit has left after every commitment, as funding counts it.
+
+    The limit is the site's job ceiling once one of its campaigns recorded it
+    (``beta_policy_screening_site_limit.site_limit``). A read for people; planning no
+    longer passes it to the plan (the ceiling read itself bounds a new plan).
+    """
     from .beta_policy_screening_coordinator import SITE_LIMIT, _amount, _budget, _ledger, _lock, _root
+    from .beta_policy_screening_site_limit import site_limit
 
     root = _root(queue_root)
     with _lock(root):
-        committed = _amount(_budget(_ledger(root), site_id)["committed_upper_bound_usd"])
-    return f"{max(Decimal(0), SITE_LIMIT - committed):.2f}"
+        ledger = _ledger(root)
+        committed = _amount(_budget(ledger, site_id)["committed_upper_bound_usd"])
+        limit = site_limit(ledger, site_id, SITE_LIMIT)
+    return f"{max(Decimal(0), limit - committed):.2f}"
 
 
 __all__ = ["EXCEEDED", "UNAVAILABLE", "local_screening_holds", "plan_within_job_ceiling", "read_job_ceiling_summary",

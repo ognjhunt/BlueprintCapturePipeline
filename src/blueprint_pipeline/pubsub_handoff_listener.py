@@ -32,6 +32,7 @@ from .pubsub_handoff_disk_admission import (  # noqa: F401 - native bodies resol
     staging_manifest_row as _staging_manifest_row,
 )
 from .decision_evidence_contracts import canonical_digest
+from .job_retry_policy import OWNER_CLOSED_CODE
 from .handoff_job_state import (  # noqa: F401 - compatibility exports and shared durability primitives
     JOB_LEDGER_FILENAME,
     JOB_LEDGER_SCHEMA_VERSION,
@@ -530,7 +531,12 @@ _PROVIDER_STATUS_FIELD_NAMES = {
 # fixed by a person, so they stay retryable. website_scene_job_no_grant_ended is
 # the WebApp's own ending of a job whose grant never arrived (websiteJobWindowSweep):
 # the site was told the job ended, so the host never asks for its first grant again.
-AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked", "website_scene_job_no_grant_ended"})
+# website_run_closed_by_owner (job_retry_policy.OWNER_CLOSED_CODE) is the site owner's own
+# closure of this capture's run: the WebApp answers it to the reads that start or pay for work on
+# the run (task context, scene sponsorship) until a new instruction, so re-running the same
+# delivery can only meet it again.
+AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked", "website_scene_job_no_grant_ended",
+                                    OWNER_CLOSED_CODE})
 # The same token boundary on both sides: no identifier character or hyphen may
 # touch the typed refusal, so "...:source_revokedX" is not "source_revoked".
 # Group 1 is the refusing operation (e.g. scene-sponsorship), group 2 the code.
@@ -1465,6 +1471,9 @@ def _write_terminal_receipt(
     if ledger.get("terminal_code") == "website_scene_job_no_grant_ended":
         # The WebApp declared this ending itself: no preparation status report is owed for it.
         receipt["preparation_status_report"] = "not_owed_webapp_recorded_this_ending"
+    elif ledger.get("terminal_code") == OWNER_CLOSED_CODE:
+        # The site's owner closed this run, and the WebApp shows that closure itself.
+        receipt["preparation_status_report"] = "not_owed_owner_closed_this_run"
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     write_json(capture_root / JOB_TERMINAL_RECEIPT_FILENAME, receipt)
     return receipt
@@ -1569,6 +1578,9 @@ def _finish_terminal_authority_ending(
     redelivery writes the receipt from it.
     """
 
+    # A grant that ran out while the job waited for the month's room: Blueprint held it, not the site.
+    from .website_job_start_room import room_wait_ending
+    code = room_wait_ending(code, previous_history)
     ended_at = utc_now_iso()
     ledger = _finish_job_lease(
         capture_root,

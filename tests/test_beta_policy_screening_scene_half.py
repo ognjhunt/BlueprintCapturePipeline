@@ -159,7 +159,7 @@ def test_a_finished_campaign_whose_half_was_compiled_again_is_planned_again_once
     now = current_half(world["profile"], scene_revision_digest=world["revision"])
     assert planned_half(plan_of(world, second)) == now != planned_half(plan_of(world, first))
     # No candidate spent, so every one is planned again, and the plan is sized as a re-plan.
-    assert {row["candidate_id"] for row in plan_of(world, second)["candidates"]} == set(rows)
+    assert {row["candidate_id"] for row in candidate_rows(plan_of(world, second))} == set(rows)
     ledger = coordinator._ledger(root)
     assert ledger["campaigns"][first]["superseded_by"] == second
     assert ledger["campaigns"][second]["supersedes"] == first

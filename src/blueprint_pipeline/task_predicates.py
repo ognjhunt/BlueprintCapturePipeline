@@ -51,6 +51,18 @@ PREDICATE_KINDS: dict[str, frozenset[str]] = {
     "joint_in_interval": frozenset({"id", "kind", "joint", "interval", "hold_samples", "when"}),
     # The episode ends within ``max_steps`` samples (the runner's cut-off is not a success).
     "time_limit": frozenset({"id", "kind", "max_steps"}),
+    # One object resting on another, from both live poses and their boxes in their own frames:
+    # the subject's lowest corner within ``tolerance_m`` of the support's highest corner, the
+    # subject's centre over the support's footprint, and the subject moving at most
+    # ``settle_motion_m`` across the held window.
+    "resting_on": frozenset({"id", "kind", "subject", "subject_extent", "support", "support_extent",
+                             "tolerance_m", "settle_motion_m", "hold_samples", "when"}),
+    # One object inside a container: every corner of the subject's box inside the container's
+    # interior box (in the container's own frame) widened by ``tolerance_m``, held and settled.
+    "inside": frozenset({"id", "kind", "subject", "subject_extent", "container", "container_interior",
+                         "tolerance_m", "settle_motion_m", "hold_samples", "when"}),
+    # At least ``minimum`` of the nested ``predicates`` (region_reached, resting_on or inside).
+    "at_least": frozenset({"id", "kind", "minimum", "predicates"}),
 }
 _OPTIONAL = {
     "region_reached": frozenset({"max_height_drift_m", "require_start_outside", "label"}),
@@ -58,7 +70,12 @@ _OPTIONAL = {
     "no_contact": frozenset({"minimum_clearance_m", "label"}),
     "joint_in_interval": frozenset({"label"}),
     "time_limit": frozenset({"label"}),
+    "resting_on": frozenset({"label"}),
+    "inside": frozenset({"label"}),
+    "at_least": frozenset({"label"}),
 }
+#: Kinds an ``at_least`` may count.
+COUNTABLE_KINDS = ("region_reached", "resting_on", "inside")
 REGION_SHAPES = ("disc", "box")
 DEFAULT_GRIPPER_CLOSE_WIDTH_M = 0.04
 
@@ -139,51 +156,93 @@ def validate_predicates(value: Mapping[str, Any]) -> dict[str, Any]:
     rows = spec["predicates"]
     _require(isinstance(rows, list) and bool(rows), "task_predicates_empty")
     ids = [row.get("id") if isinstance(row, Mapping) else None for row in rows]
-    _require(all(isinstance(key, str) and key for key in ids) and len(set(ids)) == len(ids),
+    nested = [item.get("id") if isinstance(item, Mapping) else None for row in rows
+              if isinstance(row, Mapping) and row.get("kind") == "at_least" and isinstance(row.get("predicates"), list)
+              for item in row["predicates"]]
+    every = ids + nested
+    _require(all(isinstance(key, str) and key for key in every) and len(set(every)) == len(every),
              "task_predicate_ids_invalid")
     for row in rows:
-        kind = row.get("kind")
-        _require(kind in PREDICATE_KINDS, "task_predicate_kind_unknown")
-        _require(PREDICATE_KINDS[kind] <= set(row) <= PREDICATE_KINDS[kind] | _OPTIONAL[kind],
-                 f"task_predicate_fields_invalid:{row['id']}")
-        if kind == "region_reached":
-            _validate_subject(row["subject"], f"task_predicate_subject_invalid:{row['id']}")
-            validate_region(row["region"])
-            _hold(row["hold_samples"])
-            _require(row["when"] in ("terminal", "any"), f"task_predicate_when_invalid:{row['id']}")
-            if "max_height_drift_m" in row:
-                drift = _finite(row["max_height_drift_m"])
-                _require(drift is not None and 0.0 < drift <= 5.0, f"task_predicate_drift_invalid:{row['id']}")
-            _require(type(row.get("require_start_outside", False)) is bool, f"task_predicate_fields_invalid:{row['id']}")
-        elif kind == "height_stable":
-            _validate_subject(row["subject"], f"task_predicate_subject_invalid:{row['id']}")
-            drift = _finite(row["max_drift_m"])
-            _require(drift is not None and 0.0 < drift <= 5.0, f"task_predicate_drift_invalid:{row['id']}")
-        elif kind == "no_contact":
-            geometry = row["geometry"]
-            _require(geometry == "scene_obstacles" or (
-                isinstance(geometry, list) and bool(geometry)
-                and all(isinstance(item, str) and item for item in geometry)
-                and len(set(geometry)) == len(geometry)), f"task_predicate_geometry_invalid:{row['id']}")
-            threshold = _finite(row["contact_force_threshold_n"])
-            _require(threshold is not None and threshold > 0.0, f"task_predicate_threshold_invalid:{row['id']}")
-            if "minimum_clearance_m" in row:
-                clearance = _finite(row["minimum_clearance_m"])
-                _require(clearance is not None and 0.0 <= clearance <= 5.0,
-                         f"task_predicate_clearance_invalid:{row['id']}")
-        elif kind == "joint_in_interval":
-            interval = _vector(row["interval"], 2)
-            _require(isinstance(row["joint"], str) and bool(row["joint"]) and interval is not None
-                     and interval[0] <= interval[1], f"task_predicate_interval_invalid:{row['id']}")
-            _hold(row["hold_samples"])
-            _require(row["when"] in ("terminal", "any"), f"task_predicate_when_invalid:{row['id']}")
-        else:
-            steps = row["max_steps"]
-            _require(isinstance(steps, int) and not isinstance(steps, bool) and steps >= 1,
-                     f"task_predicate_max_steps_invalid:{row['id']}")
+        _validate_row(row)
     _require(spec["predicates_digest"] == canonical_digest(spec, digest_field="predicates_digest"),
              "task_predicates_digest_invalid")
     return spec
+
+
+def _validate_extent(value: Any, code: str) -> None:
+    _require(isinstance(value, Mapping) and set(value) == {"minimum", "maximum"}, code)
+    low, high = _vector(value["minimum"], 3), _vector(value["maximum"], 3)
+    _require(low is not None and high is not None and all(a < b for a, b in zip(low, high, strict=True))
+             and all(abs(item) <= 50.0 for item in [*low, *high]), code)
+
+
+def _validate_object(subject: Any, code: str) -> None:
+    _validate_subject(subject, code)
+    _require(subject["kind"] == "object", code)
+
+
+def _validate_row(row: Mapping[str, Any], *, nested: bool = False) -> None:
+    kind = row.get("kind")
+    _require(kind in PREDICATE_KINDS, "task_predicate_kind_unknown")
+    _require(not nested or kind in COUNTABLE_KINDS, f"task_predicate_at_least_member_invalid:{row.get('id')}")
+    _require(PREDICATE_KINDS[kind] <= set(row) <= PREDICATE_KINDS[kind] | _OPTIONAL[kind],
+             f"task_predicate_fields_invalid:{row['id']}")
+    if kind == "region_reached":
+        _validate_subject(row["subject"], f"task_predicate_subject_invalid:{row['id']}")
+        validate_region(row["region"])
+        _hold(row["hold_samples"])
+        _require(row["when"] in ("terminal", "any"), f"task_predicate_when_invalid:{row['id']}")
+        if "max_height_drift_m" in row:
+            drift = _finite(row["max_height_drift_m"])
+            _require(drift is not None and 0.0 < drift <= 5.0, f"task_predicate_drift_invalid:{row['id']}")
+        _require(type(row.get("require_start_outside", False)) is bool, f"task_predicate_fields_invalid:{row['id']}")
+    elif kind == "height_stable":
+        _validate_subject(row["subject"], f"task_predicate_subject_invalid:{row['id']}")
+        drift = _finite(row["max_drift_m"])
+        _require(drift is not None and 0.0 < drift <= 5.0, f"task_predicate_drift_invalid:{row['id']}")
+    elif kind == "no_contact":
+        geometry = row["geometry"]
+        _require(geometry == "scene_obstacles" or (
+            isinstance(geometry, list) and bool(geometry)
+            and all(isinstance(item, str) and item for item in geometry)
+            and len(set(geometry)) == len(geometry)), f"task_predicate_geometry_invalid:{row['id']}")
+        threshold = _finite(row["contact_force_threshold_n"])
+        _require(threshold is not None and threshold > 0.0, f"task_predicate_threshold_invalid:{row['id']}")
+        if "minimum_clearance_m" in row:
+            clearance = _finite(row["minimum_clearance_m"])
+            _require(clearance is not None and 0.0 <= clearance <= 5.0,
+                     f"task_predicate_clearance_invalid:{row['id']}")
+    elif kind == "joint_in_interval":
+        interval = _vector(row["interval"], 2)
+        _require(isinstance(row["joint"], str) and bool(row["joint"]) and interval is not None
+                 and interval[0] <= interval[1], f"task_predicate_interval_invalid:{row['id']}")
+        _hold(row["hold_samples"])
+        _require(row["when"] in ("terminal", "any"), f"task_predicate_when_invalid:{row['id']}")
+    elif kind in ("resting_on", "inside"):
+        other, extent = ("support", "support_extent") if kind == "resting_on" else ("container", "container_interior")
+        _validate_object(row["subject"], f"task_predicate_subject_invalid:{row['id']}")
+        _validate_object(row[other], f"task_predicate_subject_invalid:{row['id']}")
+        _require(row["subject"]["object_id"] != row[other]["object_id"], f"task_predicate_subject_invalid:{row['id']}")
+        _validate_extent(row["subject_extent"], f"task_predicate_extent_invalid:{row['id']}")
+        _validate_extent(row[extent], f"task_predicate_extent_invalid:{row['id']}")
+        # A resting gap is millimetres: an object held 4.5 cm above its support is not resting on it.
+        for field, ceiling in (("tolerance_m", MAXIMUM_RESTING_TOLERANCE_M), ("settle_motion_m", 0.05)):
+            value = _finite(row[field])
+            _require(value is not None and 0.0 < value <= ceiling, f"task_predicate_tolerance_invalid:{row['id']}")
+        _hold(row["hold_samples"])
+        _require(row["when"] in ("terminal", "any"), f"task_predicate_when_invalid:{row['id']}")
+    elif kind == "at_least":
+        members, minimum = row["predicates"], row["minimum"]
+        _require(isinstance(members, list) and bool(members) and isinstance(minimum, int)
+                 and not isinstance(minimum, bool) and 1 <= minimum <= len(members),
+                 f"task_predicate_at_least_invalid:{row['id']}")
+        for member in members:
+            _require(isinstance(member, Mapping), f"task_predicate_at_least_member_invalid:{row['id']}")
+            _validate_row(member, nested=True)
+    else:
+        steps = row["max_steps"]
+        _require(isinstance(steps, int) and not isinstance(steps, bool) and steps >= 1,
+                 f"task_predicate_max_steps_invalid:{row['id']}")
 
 
 def seal_predicates(predicates: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -332,8 +391,157 @@ def _time_limit(row: Mapping[str, Any], trace: list[Mapping[str, Any]]) -> dict[
     return {"status": "scored", "satisfied": len(trace) <= row["max_steps"], "sample_count": len(trace)}
 
 
+def _rotate_xyzw(quaternion: Sequence[float], vector: Sequence[float]) -> list[float]:
+    x, y, z, w = quaternion
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    x, y, z, w = x / norm, y / norm, z / norm, w / norm
+    tx, ty, tz = 2 * (y * vector[2] - z * vector[1]), 2 * (z * vector[0] - x * vector[2]), 2 * (x * vector[1] - y * vector[0])
+    return [vector[0] + w * tx + (y * tz - z * ty), vector[1] + w * ty + (z * tx - x * tz),
+            vector[2] + w * tz + (x * ty - y * tx)]
+
+
+def _to_local(pose: Sequence[float], point: Sequence[float]) -> list[float]:
+    """A world point in the frame of ``pose`` (position and xyzw rotation)."""
+    offset = [point[index] - pose[index] for index in range(3)]
+    return _rotate_xyzw([-pose[3], -pose[4], -pose[5], pose[6]], offset)
+
+
+def _corners(pose: Sequence[float], extent: Mapping[str, Any]) -> list[list[float]]:
+    from itertools import product
+    return [[pose[i] + value for i, value in enumerate(_rotate_xyzw(pose[3:7], corner))]
+            for corner in product(*zip(extent["minimum"], extent["maximum"], strict=True))]
+
+
+def _object_pose(sample: Mapping[str, Any], object_id: str) -> list[float] | None:
+    """An object's full pose: ``object_poses_world``, else the single task object's fields."""
+    poses = sample.get("object_poses_world")
+    pose = poses.get(object_id) if isinstance(poses, Mapping) else None
+    if pose is None and sample.get("task_object_id") == object_id:
+        pose = sample.get("task_object_pose_world")
+    vector = _vector(pose, 7)
+    if vector is None or sum(item * item for item in vector[3:]) < 1e-12:
+        return None
+    return vector
+
+
+#: The largest resting gap a ``resting_on`` or ``inside`` predicate may allow.
+MAXIMUM_RESTING_TOLERANCE_M = 0.01
+
+
+def _released(sample: Mapping[str, Any], object_id: str) -> bool | None:
+    """Whether the robot is clear of this object at this sample, from the contact channels the scorer has.
+
+    The task object's own channel is ``task_contact_active``; another object's is
+    ``object_robot_contact_active[object_id]``. None when no channel says.
+    """
+    channels = sample.get("object_robot_contact_active")
+    if isinstance(channels, Mapping) and isinstance(channels.get(object_id), bool):
+        return not channels[object_id]
+    if object_id in (sample.get("task_object_id"), sample.get("subject_asset_id")) or (
+            not isinstance(sample.get("object_poses_world"), Mapping)):
+        contact = sample.get("task_contact_active")
+        if isinstance(contact, bool):
+            return not contact
+    return None
+
+
+def _release_flags(row: Mapping[str, Any], trace: list[Mapping[str, Any]]) -> list[bool] | None:
+    released = [_released(sample, row["subject"]["object_id"]) for sample in trace]
+    return None if any(item is None for item in released) else released  # type: ignore[return-value]
+
+
+def _held_and_settled(flags: list[bool], centres: list[list[float]], row: Mapping[str, Any]) -> tuple[bool, int | None]:
+    """The held window of ``flags`` in which the subject also moved at most ``settle_motion_m``."""
+    hold, limit = row["hold_samples"], row["settle_motion_m"]
+
+    def settled(end: int) -> bool:
+        window = centres[end - hold + 1:end + 1]
+        return all(flags[end - hold + 1:end + 1]) and max(
+            math.dist(window[0], point) for point in window) <= limit
+
+    if row["when"] == "terminal":
+        return len(flags) >= hold and settled(len(flags) - 1), None
+    first = next((end for end in range(hold - 1, len(flags)) if settled(end)), None)
+    return first is not None, first
+
+
+def _pair(row: Mapping[str, Any], trace: list[Mapping[str, Any]], other: str):
+    subject = [_object_pose(sample, row["subject"]["object_id"]) for sample in trace]
+    holder = [_object_pose(sample, row[other]["object_id"]) for sample in trace]
+    if any(pose is None for pose in subject + holder):
+        return None
+    centres = [[sum(corner[i] for corner in _corners(pose, row["subject_extent"])) / 8 for i in range(3)]
+               for pose in subject]
+    return subject, holder, centres
+
+
+def _resting_on(row: Mapping[str, Any], trace: list[Mapping[str, Any]]) -> dict[str, Any]:
+    poses = _pair(row, trace, "support")
+    if poses is None:
+        return {"status": "unscored", "missing_readback": "object_pose"}
+    released = _release_flags(row, trace)
+    if released is None:
+        return {"status": "unscored", "missing_readback": "robot_object_contact"}
+    subject, support, centres = poses
+    tolerance, extent = row["tolerance_m"], row["support_extent"]
+    low, high = row["subject_extent"]["minimum"], row["subject_extent"]["maximum"]
+    bottom = [(low[0] + high[0]) / 2, (low[1] + high[1]) / 2, low[2]]
+    flags, gaps, overs = [], [], []
+    for pose, base, centre, free in zip(subject, support, centres, released, strict=True):
+        # Along the support's own normal, under the object's footprint: the bottom face's centre
+        # in the support's frame, against the support's top face (a tilted table is no different).
+        point = [pose[i] + value for i, value in enumerate(_rotate_xyzw(pose[3:7], bottom))]
+        local = _to_local(base, point)
+        gap = local[2] - extent["maximum"][2]
+        over = all(extent["minimum"][i] <= _to_local(base, centre)[i] <= extent["maximum"][i] for i in range(2))
+        gaps.append(gap)
+        overs.append(over)
+        flags.append(abs(gap) <= tolerance and over and free)
+    satisfied, first = _held_and_settled(flags, centres, row)
+    return {"status": "scored", "satisfied": satisfied, "first_held_step": first,
+            "terminal_gap_m": gaps[-1], "terminal_over_support": overs[-1], "terminal_released": released[-1]}
+
+
+def _inside(row: Mapping[str, Any], trace: list[Mapping[str, Any]]) -> dict[str, Any]:
+    poses = _pair(row, trace, "container")
+    if poses is None:
+        return {"status": "unscored", "missing_readback": "object_pose"}
+    released = _release_flags(row, trace)
+    if released is None:
+        return {"status": "unscored", "missing_readback": "robot_object_contact"}
+    subject, container, centres = poses
+    tolerance, interior = row["tolerance_m"], row["container_interior"]
+    flags, outside = [], []
+    for pose, holder, free in zip(subject, container, released, strict=True):
+        local = [_to_local(holder, corner) for corner in _corners(pose, row["subject_extent"])]
+        count = sum(1 for point in local if not all(
+            interior["minimum"][i] - tolerance <= point[i] <= interior["maximum"][i] + tolerance for i in range(3)))
+        outside.append(count)
+        # Released and down: held still in mid-air inside the container is not "inside" yet.
+        floor_gap = min(point[2] for point in local) - interior["minimum"][2]
+        flags.append(count == 0 and free and floor_gap <= tolerance)
+    satisfied, first = _held_and_settled(flags, centres, row)
+    return {"status": "scored", "satisfied": satisfied, "first_held_step": first,
+            "terminal_corners_outside": outside[-1], "terminal_released": released[-1]}
+
+
+def _at_least(row: Mapping[str, Any], trace: list[Mapping[str, Any]]) -> dict[str, Any]:
+    members = [{"id": member["id"], "kind": member["kind"], **_EVALUATORS[member["kind"]](member, trace)}
+               for member in row["predicates"]]
+    satisfied = sum(1 for member in members if member["status"] == "scored" and member["satisfied"])
+    unscored = sum(1 for member in members if member["status"] != "scored")
+    result = {"minimum": row["minimum"], "satisfied_count": satisfied, "member_results": members}
+    if satisfied >= row["minimum"]:
+        return {"status": "scored", "satisfied": True, **result}
+    if satisfied + unscored < row["minimum"]:
+        return {"status": "scored", "satisfied": False, **result}
+    # Missing readback could decide it either way: never a success, never a failure.
+    return {"status": "unscored", "missing_readback": "member_unscored", **result}
+
+
 _EVALUATORS = {"region_reached": _region_reached, "height_stable": _height_stable,
-               "no_contact": _no_contact, "joint_in_interval": _joint_in_interval, "time_limit": _time_limit}
+               "no_contact": _no_contact, "joint_in_interval": _joint_in_interval, "time_limit": _time_limit,
+               "resting_on": _resting_on, "inside": _inside, "at_least": _at_least}
 
 
 def score_episode(*, predicates: Mapping[str, Any], samples: Sequence[Mapping[str, Any]],
@@ -488,7 +696,7 @@ def g1_navigation_goal_predicates(task_spec: Mapping[str, Any]) -> dict[str, Any
 
 
 __all__ = [
-    "BEHAVIOUR_SCHEMA", "PREDICATE_KINDS", "REPORT_SCHEMA", "SPEC_SCHEMA", "TaskPredicateError",
+    "BEHAVIOUR_SCHEMA", "COUNTABLE_KINDS", "PREDICATE_KINDS", "REPORT_SCHEMA", "SPEC_SCHEMA", "TaskPredicateError",
     "episode_behaviour", "g1_navigation_goal_predicates", "region_distance", "score_episode", "seal_predicates", "validate_predicates",
     "validate_region",
 ]

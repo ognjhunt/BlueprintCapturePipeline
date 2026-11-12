@@ -922,3 +922,34 @@ def test_an_estimated_website_template_binds_within_its_placement_uncertainty():
     assert _estimated_support_height_tolerance({"dimension_authority": "estimated"}) == .005
     assert _estimated_support_height_tolerance(
         {"dimension_authority": "estimated", "placement_uncertainty_m": float("nan")}) == .005
+
+
+def test_the_sealed_height_window_moves_onto_the_destinations_own_support_by_a_bounded_distance():
+    """Stage 8 2e (review 36): own support, not the highest collider; bounded; the existing flag is never hidden."""
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import MAX_WINDOW_MOVE_M, _window_on_goal_rest
+
+    spec = {"target_position_world_m": [0.1, 0.2, 0.80],
+            "destination_position_bounds_world_m": {"minimum": [0.05, 0.15, 0.79], "maximum": [0.15, 0.25, 0.81]},
+            "support_height_interval_m": [0.79, 0.81]}
+
+    def reading(own_top, collider_top=0.80, collider_rest=0.80):
+        # The object's lowest point is 0.0 below its origin in these fixtures: rest = surface top.
+        return {"rest_scoring_z_m": collider_rest, "collider_top_z_m": collider_top,
+                "registered_support_top_z_m": own_top, "success_window_scoring_z_m": [0.79, 0.81],
+                "within_success_window": 0.79 <= collider_rest <= 0.81}
+
+    # The destination's own support sits 2 cm lower (the other end of a sloping table): moved, recorded.
+    lower = reading(0.78, collider_top=0.78, collider_rest=0.78)
+    moved = _window_on_goal_rest(spec, lower)
+    low, high = (moved["destination_position_bounds_world_m"][key][2] for key in ("minimum", "maximum"))
+    assert low <= 0.78 <= high and abs((high - low) - 0.02) < 1e-12 and moved["support_height_interval_m"] == [low, high]
+    assert abs(lower["window_aligned_to_goal_rest"]["distance_m"] + 0.02) < 1e-9
+    assert lower["within_success_window"] is True
+    # A shelf above the goal (the collider's highest point) is not the destination's support: own top wins.
+    shelf = reading(0.80, collider_top=1.20, collider_rest=1.20)
+    assert _window_on_goal_rest(spec, shelf) is spec and shelf["within_success_window"] is False  # flag stands
+    # Farther than the bound: left as sealed, and the existing flag (within False) is raised exactly as before.
+    far = reading(0.80 - 2 * MAX_WINDOW_MOVE_M, collider_top=0.80 - 2 * MAX_WINDOW_MOVE_M,
+                  collider_rest=0.80 - 2 * MAX_WINDOW_MOVE_M)
+    assert _window_on_goal_rest(spec, far) is spec and far["within_success_window"] is False
+    assert "window_aligned_to_goal_rest" not in far and far["window_move_refused_m"] < -MAX_WINDOW_MOVE_M

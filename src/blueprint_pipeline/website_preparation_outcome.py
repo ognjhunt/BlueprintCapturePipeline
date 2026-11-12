@@ -26,6 +26,92 @@ _MISSING = frozenset({
 })
 
 
+#: Three switches, one per website contract, because the website's readers are strict: a reason or a
+#: question kind it does not know refuses the job's whole status (review 2026-11-12).
+#: (i) ``NEW_REASONS_ENV``, ON unless set to ``false``: the reasons the live website already words,
+#: ``website_task_object_not_observed``, ``website_capture_frames_unusable`` and ``website_task_not_named``
+#: (with its waiting status). Off, each travels as the nearest reason the older website words.
+NEW_REASONS_ENV = "BLUEPRINT_WEBSITE_ACCEPTS_STAGE6_RECAPTURE_REASONS"
+#: (ii) OFF unless ``true``: ``website_preparation_not_possible`` (with ``cause``) and
+#: ``website_preparation_retries_spent``, until the website's follow-up lists them.
+ENDINGS_ENV = "BLUEPRINT_WEBSITE_ACCEPTS_PREPARATION_ENDINGS"
+#: (iii) OFF unless ``true``: the place question (``task_destination_choice``) and its picture.
+PLACE_QUESTION_ENV = "BLUEPRINT_WEBSITE_ACCEPTS_PLACE_QUESTION"
+#: The reason sent instead while the switch is off: not enough evidence for a robot decision.
+NEW_REASON_FALLBACK = {"website_task_object_not_observed": "task_evidence_incomplete",
+                       "website_capture_frames_unusable": "task_evidence_incomplete"}
+
+
+#: Part 6 (2026-11-12): endings that told the site "Blueprint will review" when nothing reviews. Each now
+#: says what is true. ``NOT_POSSIBLE``: this release cannot prepare the job, for the cause it names (a
+#: retained blocker code). The preparation stage fails on it (``website_capture_preparation``: the
+#: ledger is ``failed_retryable``), so the retry lane runs it again: six timed retries, then once per
+#: release (``website_preparation_retry.RETRIES_SPENT``).
+#: ``RETRIES_SPENT``: a step kept failing after its timed retries; it runs again once on each new release
+#: (``website_preparation_retry.spent_waiting``), or daily when the release cannot be read.
+NOT_POSSIBLE = "website_preparation_not_possible"
+RETRIES_SPENT = "website_preparation_retries_spent"
+
+
+def _switch(name: str, *, default: bool) -> bool:
+    import os
+    value = os.environ.get(name, "").strip().lower()
+    return default if value not in {"true", "false"} else value == "true"
+
+
+def website_lists_new_reasons() -> bool:
+    """Switch (i): on by default."""
+    return _switch(NEW_REASONS_ENV, default=True)
+
+
+def website_lists_endings() -> bool:
+    """Switch (ii): off by default."""
+    return _switch(ENDINGS_ENV, default=False)
+
+
+def website_lists_place_question() -> bool:
+    """Switch (iii): off by default."""
+    return _switch(PLACE_QUESTION_ENV, default=False)
+
+
+def retries_spent(ledger: dict[str, Any], *, task_context_digest: str) -> dict[str, Any] | None:
+    """Status v7's outcome for a job whose timed retries are spent, while the website lists it; else None."""
+    from .website_preparation_retry_record import RETRIES_SPENT as KIND, armed
+    record = armed(ledger)
+    if not website_lists_endings() or record is None or record.get("kind") != KIND:
+        return None
+    evidence = canonical_digest({"capture_id": ledger.get("capture_id"), "task_context_digest": task_context_digest,
+                                 "code": RETRIES_SPENT, "source_payload_sha256": ledger.get("source_payload_sha256"),
+                                 "retry_count": record.get("retry_count")})
+    return {"category": "processing_failure", "reason": RETRIES_SPENT, "basis": "execution_failure",
+            "robot_id": None, "evidence_digest": evidence}
+
+
+def sent_recapture_reason(code: str) -> str:
+    """The outcome reason the status sends for a recapture stop, honouring what the website accepts."""
+    if code in NEW_REASON_FALLBACK and not website_lists_new_reasons():
+        return NEW_REASON_FALLBACK[code]
+    return code
+
+
+def awaiting_job_sentence(ledger: dict[str, Any], *, task_context_digest: str) -> dict[str, Any] | None:
+    """Status v7's outcome for a job waiting for the site to name it, while the website accepts it; else None.
+
+    The preparation stopped, buying nothing, on ``website_task_not_named`` and retries until the job is named
+    (``website_preparation_retry.AWAITING_JOB_SENTENCE``). Behind the same switch as the new reasons.
+    """
+
+    from .website_task_context_contracts import TASK_NOT_NAMED
+    if (not website_lists_new_reasons()
+            or ledger.get("status") != "failed_retryable"
+            or not str(ledger.get("last_error") or "").endswith(TASK_NOT_NAMED)):
+        return None
+    evidence = canonical_digest({"capture_id": ledger.get("capture_id"), "task_context_digest": task_context_digest,
+                                 "code": TASK_NOT_NAMED, "source_payload_sha256": ledger.get("source_payload_sha256")})
+    return {"category": "insufficient_evidence", "reason": TASK_NOT_NAMED, "basis": "missing_evidence",
+            "robot_id": None, "evidence_digest": evidence}
+
+
 def _load(path: Path, root: Path, digest_field: str) -> dict[str, Any]:
     absolute = path.absolute()
     if (".." in absolute.parts or not absolute.is_relative_to(root)
@@ -88,13 +174,22 @@ def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
     from .observed_room_contracts import retains_observed_room_limit
     context = {"capture_id": root.name, "scene_id": root.parent.parent.name,
                "context_digest": task_context_digest}
-    if retains_rejected_selection(handoff, context) or retains_observed_room_limit(handoff, context):
+    if retains_rejected_selection(handoff, context):
+        # The site said none of the objects we found is the one: the video does not show it, so ask for one
+        # that does (part 6), never a review nobody makes.
+        from .website_recapture_required import NOT_OBSERVED_CODE
+        return {"category": "insufficient_evidence",
+                "reason": sent_recapture_reason(NOT_OBSERVED_CODE) if recapture else "task_evidence_incomplete",
+                "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
+    if retains_observed_room_limit(handoff, context):
+        # A hold written before the observed-room review became final: the Atlas lane reviews its task once
+        # more (``website_atlas_preview._reopen_observed_room``) while its window and grant are live.
         return {"category": "insufficient_evidence", "reason": "task_evidence_incomplete",
                 "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
     if recapture:
         from .website_recapture_required import retains_recapture_required
         if retains_recapture_required(handoff, context):
-            return {"category": "insufficient_evidence", "reason": handoff["recapture_required"]["code"],
+            return {"category": "insufficient_evidence", "reason": sent_recapture_reason(handoff["recapture_required"]["code"]),
                     "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
     if robot_fit_hold:
         held = _robot_fit_hold(root, handoff, task_context_digest)
@@ -142,6 +237,10 @@ def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
                 or preparation.get("binding", {}).get("task_context_digest") != task_context_digest
                 or handoff.get("preparation_digest") != preparation["digest"]):
             raise ValueError("preparation_outcome_context_mismatch")
+        if recapture and website_lists_endings() and len(blockers) == 1:
+            # What is true: this release cannot prepare the job, and why (part 6).
+            return {"category": "insufficient_evidence", "reason": NOT_POSSIBLE, "cause": blockers[0],
+                    "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
         return {"category": "insufficient_evidence", "reason": "task_evidence_incomplete",
                 "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
     return None

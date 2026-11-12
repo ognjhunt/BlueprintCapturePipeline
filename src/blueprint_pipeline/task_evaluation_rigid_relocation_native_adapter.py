@@ -381,6 +381,54 @@ def _goal_support_reading(support_surface: Callable[..., float | None], *, task_
     return reading
 
 
+#: The most the sealed height window is moved to the goal's own support. capture-447's registered table top
+#: (0.8166 m) and the scan's collider top under it (0.8039 m) differ by 1.27 cm: the reconstruction's own
+#: support uncertainty. Twice that covers a support registered that far off; a larger gap is not one surface
+#: misread, so the window stays as sealed and the gap is flagged as before.
+MAX_WINDOW_MOVE_M = 0.025
+HEIGHT_ADJUSTED_FLAG = "scene_estimate:success_height_adjusted"
+
+
+def _window_on_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> dict[str, Any]:
+    """The sealed height window, moved onto the rest height on the destination's own support when it missed it.
+
+    Owner, 2026-11-12: a correct placement must be able to score. The rest height is the destination's own
+    registered support top (the surface it was sealed on) less the object's lowest point, never the highest
+    collider under the goal (a shelf above it, or the floor where the support is missing). Moved only when it
+    lies outside the window by at most ``MAX_WINDOW_MOVE_M``; the goal height, its box and its support
+    interval move by the same distance, and the reading records it (``window_aligned_to_goal_rest``, the
+    distance) for the result's estimate flag (``HEIGHT_ADJUSTED_FLAG``). ``within_success_window`` stays the
+    collider's own verdict against the window as it now is, so ``goal_rest_outside_sealed_success_window`` is
+    raised exactly when it still applies.
+    """
+    collider_rest, top, own = (reading.get(key) for key in ("rest_scoring_z_m", "collider_top_z_m",
+                                                            "registered_support_top_z_m"))
+    window = reading.get("success_window_scoring_z_m") or [None, None]
+    if None in (collider_rest, top, own) or None in window:
+        return task_spec
+    low, high = float(window[0]), float(window[1])
+    rest = float(own) - (float(top) - float(collider_rest))  # the object's lowest point on its own support
+    if low <= rest <= high:
+        return task_spec
+    move = rest - (low + high) / 2.0
+    if abs(move) > MAX_WINDOW_MOVE_M:
+        reading["window_move_refused_m"] = round(move, 4)  # left as sealed; the existing flag stands
+        return task_spec
+    spec = dict(task_spec)
+    target = list(spec["target_position_world_m"])
+    spec["target_position_world_m"] = [*target[:2], float(target[2]) + move]
+    bounds = {key: list(value) for key, value in spec["destination_position_bounds_world_m"].items()}
+    bounds["minimum"][2], bounds["maximum"][2] = float(bounds["minimum"][2]) + move, float(bounds["maximum"][2]) + move
+    spec["destination_position_bounds_world_m"] = bounds
+    if spec.get("support_height_interval_m") is not None:
+        spec["support_height_interval_m"] = [float(value) + move for value in spec["support_height_interval_m"]]
+    moved = [low + move, high + move]
+    reading.update(window_aligned_to_goal_rest={"distance_m": round(move, 4), "basis": "destination_own_support"},
+                   sealed_window_before_m=list(window), success_window_scoring_z_m=moved,
+                   within_success_window=moved[0] <= float(collider_rest) <= moved[1])
+    return spec
+
+
 def _runtime_geometry(
     *,
     replacement_identity: Mapping[str, Any],
@@ -1253,10 +1301,21 @@ def _adapt_rigid_relocation_documents(
                 "collision_bounds_body_frame_m"),
             center=geometry["center_body_frame_m"], support_top=float(goal_support["top_z_m"]),
             below_m=_estimated_support_height_tolerance(template))
+        native_task_spec = _window_on_goal_rest(native_task_spec, reading)
         affordance = dict(native_task_spec["interaction_affordance"])
         affordance["support_alignment"] = {**affordance["support_alignment"], "goal_support": reading}
         affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
         native_task_spec["interaction_affordance"] = affordance
+    # On every path: the scored area is kept off the start, only ever shrunk, never below the 5 cm disc
+    # (``varied_start_clearance``; the destination step upstream already keeps it off, this is its guard).
+    from .varied_start_clearance import shrink_area_off_start
+    native_task_spec, shrunk = shrink_area_off_start(native_task_spec)
+    if shrunk is not None:
+        affordance = dict(native_task_spec["interaction_affordance"])
+        affordance["support_alignment"] = {**(affordance.get("support_alignment") or {}),
+                                           "destination_area_off_start": shrunk}
+        affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+        native_task_spec = {**native_task_spec, "interaction_affordance": affordance}
     native_definition = {
         "schema_version": "task_evaluation_native_task_definition.v1",
         "identity": dict(task["identity"]),

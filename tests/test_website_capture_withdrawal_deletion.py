@@ -604,3 +604,43 @@ def test_cli_delete_is_a_dry_run_unless_applied_with_authorization(world, tmp_pa
     with pytest.raises(deletion.WithdrawalDeletionError, match="explicit_authorization_required"):
         deletion.main()
     assert _snapshot(tmp_path) == before
+
+
+def test_a_withdrawal_still_deletes_a_scene_run_the_clean_up_keeps_for_an_open_job(world, tmp_path, monkeypatch):
+    """Stage 8 keeps an open website job's scene run on the host (``open_job_source_runs``). Privacy wins: the
+    withdrawal deletion never reads that reason, and the kept run goes at once with the site's other copies."""
+    import time
+
+    from blueprint_pipeline import completed_replay_cache_retention as retention
+    from blueprint_pipeline.control_plane_storage_gc_reasons import (
+        PROTECTED_OPEN_JOB_SOURCE,
+        evidence_protection_reason,
+    )
+
+    run = world["construction"]
+    intent = _sealed({"intent_id": world["intent_id"],
+                      "request": {"execution": {"expires_at_epoch": time.time() + 86_400}}}, "intent_digest")
+    intent_root = tmp_path / "gc-scene-intents"
+    _write(intent_root / world["intent_id"] / "intent.json", intent)
+    packets = tmp_path / "gc-team-scene-packets"
+    _write(packets / "processed" / "request.json", {"intent_id": world["intent_id"],
+                                                    "intent_digest": intent["intent_digest"],
+                                                    "source_launch_root": str(run)})
+    monkeypatch.setattr(retention, "process_reference", lambda _root, **_kwargs: None)
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import open_job_source_runs as open_jobs
+
+    # The work disk has room, so the open job's run is kept (under the floor it may be moved, oldest first).
+    monkeypatch.setattr(open_jobs, "measure_disk", lambda _path: SimpleNamespace(total=100 * 1024**3,
+                                                                                 free=90 * 1024**3, used=0))
+    # The job is open (its window runs, no campaign is final): the clean-up keeps the run.
+    assert evidence_protection_reason(
+        run, settlement_roots=(), pins_root=tmp_path / "pins", queue_roots=[], now=time.time,
+        team_scene_packet_queue_root=packets, screening_queue_root=tmp_path / "no-screening",
+        scene_intent_root=intent_root) == PROTECTED_OPEN_JOB_SOURCE
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    assert run.name in {row["name"] for row in plan["runs"]}
+    _apply(world, plan, cloud_storage=gcs)
+    assert not run.exists()

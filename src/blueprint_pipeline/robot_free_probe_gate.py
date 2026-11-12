@@ -143,7 +143,19 @@ def retained_probe_receipt(root: Path) -> dict[str, Any] | None:
     if any(part.is_symlink() for part in (path, *path.parents)):
         raise RobotFreeProbeGateError("receipt_path_unsafe")
     if not path.is_file():
-        return None
+        if Path(root).exists():
+            return None
+        # The launch run is in cold storage: its pointer may keep this receipt (stage 8, 2026-11-12).
+        from .control_plane_retained_receipt import retained_member
+
+        raw = retained_member(Path(root), RECEIPT_FILENAME)
+        if raw is None:
+            return None
+        try:
+            value = json.loads(raw)
+        except ValueError as exc:
+            raise RobotFreeProbeGateError("receipt_unreadable") from exc
+        return value if isinstance(value, dict) else {}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:

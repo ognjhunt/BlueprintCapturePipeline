@@ -310,6 +310,15 @@ def _previous_holds(previous: Mapping[str, Any]) -> dict[str, Decimal]:
     return held
 
 
+def _website_job_limits_mode() -> str:
+    """``nested`` or ``fuse``; an unreadable switch is reported by its refusal code, never guessed."""
+    from .website_job_limits import WebsiteJobLimitsInvalid, limits_mode
+    try:
+        return limits_mode()
+    except WebsiteJobLimitsInvalid as exc:
+        return str(exc)
+
+
 def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: str | None, config: Path,
                  readings: Mapping[str, Mapping[str, Any]], meter: Mapping[str, Any],
                  previous: Mapping[str, Any] | None = None, limit_is_required: bool = False) -> dict[str, Any]:
@@ -390,6 +399,8 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
         "config_path": str(config),
         "policy_sha256": policy.get("policy_sha256") if policy is not None else None,
         "limit_usd": None if limit is None else str(limit),
+        # Which website money model this release runs (``website_job_limits``), for ``door status``.
+        "website_job_limits_mode": _website_job_limits_mode(),
         "alert_lines_usd": {str(percent): usd(limit * percent / 100) for percent in ALERT_PERCENTS} if limit else None,
         "spend_usd": usd(spend), "held_usd": usd(held), "counted_usd": usd(counted_total),
         "held_by_source_usd": {name: usd(amount) for name, amount in sorted(by_source.items()) if name != SOURCE_ATLAS},

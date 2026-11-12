@@ -494,3 +494,24 @@ def test_clean_plate_continues_on_the_guess_and_hands_answers_to_the_masks(tmp_p
                                    privacy_processing={"status": "pending_website_review"})
     assert result["blockers"] == [] and seen[-1]["target-1"]["candidate_id"] == picked
     assert choice.current_questions(capture_root / "pipeline") == []
+
+
+def test_an_ambiguous_kept_surface_is_a_flagged_guess_not_a_stop(tmp_path, monkeypatch):
+    """Part 5 (2026-11-12, capture-05d7f712): the desk the object is put on matched two instances and the
+    job stopped. Now the better supported one is kept, recorded as a guess; no object question is asked
+    (the place question shows where it goes)."""
+    from blueprint_pipeline import website_task_masks as masks
+    surface = {**TARGET, "task_effect": "static_contact", "disposition": "keep", "target_role": "destination"}
+    registry = [{"source_frame_id": "f-4", "decoded_pts_seconds": 4.0, "width": 10, "height": 10},
+                {"source_frame_id": "f-5", "decoded_pts_seconds": 5.0, "width": 10, "height": 10}]
+    tracks = [_track("sam-left", 1), _track("sam-right", 6, frames=("f-4", "f-5"))]
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    monkeypatch.setattr(masks, "prepare_continuous_video", lambda **kw: (registry, {"path": "prepared.mp4"}))
+    monkeypatch.setattr(masks, "run_meta_sam31", lambda **kw: {"tracks": tracks})
+    guesses = []
+    result = masks.run_website_task_masks(plan={"targets": [surface], "task_context_sha256": "task"},
+        source_geometry={"digest": "source", "geometry_available": False, "binding": {"source_video_digest": "video"},
+                         "frames": [{"frame_id": "f-4", "timestamp_seconds": 4.0, "width": 10, "height": 10}]},
+        source_video=tmp_path / "source.mov", output_root=tmp_path / "masks", target_guesses=guesses)
+    assert result["status"] == "completed" and result["targets"][0]["track"]["track_id"] == "sam-right"
+    assert result["targets"][0]["selection_basis"] == "best_supported_guess" and guesses == []

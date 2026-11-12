@@ -557,7 +557,14 @@ def apply_evidence_offload(
                 skipped.append({"name": name, "reason": "candidate_changed_during_archive"})
                 continue
             retained_receipts = {}
+            from .control_plane_retained_receipt import replan_members
+            replan = replan_members(directory, members)
             for member in members:
+                if member["relative_path"] in replan:
+                    raw = (directory / member["relative_path"]).read_bytes()
+                    if "sha256:" + hashlib.sha256(raw).hexdigest() == member["sha256"]:
+                        retained_receipts[member["relative_path"]] = base64.b64encode(raw).decode("ascii")
+                    continue
                 if member["relative_path"] in RETAINED_RECEIPTS:
                     if member["size_bytes"] > MAX_RECEIPT_BYTES:
                         raise ControlPlaneEvidenceOffloadError("accounting_receipt_too_large")

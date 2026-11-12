@@ -766,7 +766,12 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             # Owner direction 2026-10-28: an ambiguous object to move is flagged
             # and the job continues on the best supported guess; the site can
             # correct it on its job page, which reruns the same job.
-            if target.get("task_effect") != "manipulated" or not unresolved.candidates:
+            # Part 5 (2026-11-12, capture-05d7f712): a kept surface the object is put on, still ambiguous
+            # after the grounding and single-frame rescue, is the same recorded best guess, flagged
+            # ``destination_guessed``; the site sees the place it was put and may pick another
+            # (``website_destination_choice``).
+            surface = target.get("task_effect") == "static_contact" and target.get("disposition") == "keep"
+            if (target.get("task_effect") != "manipulated" and not surface) or not unresolved.candidates:
                 raise
             try:
                 weights = unresolved.scores or {str(track["track_id"]): score for score, track in anchor_scores(
@@ -776,7 +781,9 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             identity = best_supported_guess(target_id=target["target_id"], candidates=unresolved.candidates,
                                             anchor_scores=weights)
             selected_prompt = unresolved.segmentation_prompt or selected_prompt
-            if target_guesses is not None:
+            if surface:
+                identity = {**identity, "selection_basis": "best_supported_guess"}
+            elif target_guesses is not None:
                 target_guesses.append({"target": dict(target), "candidates": plain_runs(list(unresolved.candidates)),
                                        "frames": list(unresolved.frames or identity_frames),
                                        "guessed_track_id": str(identity["track_id"])})
@@ -784,6 +791,21 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                 tracks = [row for row in tracks if row["track_id"] != identity["track_id"]]
                 tracks.append(track_at_geometry_resolution({**identity, "observations": [
                     row for row in identity["observations"] if row["source_frame_id"] in geometry_ids]}, frames))
+        if (target.get("uncertain_guess") or {}).get("code") == "task_object_guessed":
+            # The analysis could not decide that this is the object to move (``resolve_uncertain_targets``):
+            # whatever instance was selected, it is a guess the site may correct. Its answer applies even
+            # when the anchors decided, and the question is recorded once.
+            pool = (candidates if any(str(row["track_id"]) == str(identity["track_id"]) for row in candidates)
+                    else [identity])
+            chosen = chosen_track(target["target_id"], pool, site_choice) if site_choice else None
+            if chosen is not None:
+                identity = {**chosen, "selection_basis": "site_choice",
+                            "site_choice_question_digest": site_choice["question_digest"]}
+            elif target_guesses is not None and not any(
+                    (row.get("target") or {}).get("target_id") == target["target_id"] for row in target_guesses):
+                target_guesses.append({"target": dict(target), "candidates": plain_runs(list(pool)),
+                                       "frames": list(identity_frames),
+                                       "guessed_track_id": str(identity["track_id"])})
         track = {**next(row for row in tracks if row["track_id"] == identity["track_id"]),
                  "label": target["target_id"]}
         if track["track_id"] in selected_track_ids:
@@ -797,6 +819,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                          "articulation_kind": target.get("articulation_kind") or "",
                          "disposition": target["disposition"], "track": track,
                          "estimated_visible_bounds": estimate_target_bounds(track, frames) if geometry_available else None})
+        if identity.get("selection_basis") == "best_supported_guess":
+            selected[-1]["selection_basis"] = "best_supported_guess"  # a recorded guess, flagged downstream
         if provider == "meta":
             selected[-1]["source_track"] = identity
             if grounding is not None:

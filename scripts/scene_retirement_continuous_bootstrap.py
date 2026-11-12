@@ -32,6 +32,11 @@ _DAEMONS = frozenset(('blueprint_pipeline.live_pipeline_intake_service',
 _ACTIONS = frozenset(('blueprint_pipeline.control_plane_storage_gc',
                      'blueprint_pipeline.task_evaluation_scene_retirement_cli'))
 _ERROR = 'scene_retirement_bootstrap_unproven'
+# The runtime this process selected, held open for its whole life: /proc/<pid>/fd then names the
+# exact source and SDK generations it runs, which nothing else of a pure-Python process shows (its
+# sys.path is only in memory). The runtime pruner (scene_retirement_runtime_prune) keeps any
+# generation a live process holds, and refuses to prune while a bootstrap process holds none.
+_SELECTED = []
 _MAX_SOURCE = 1024 * 1024
 
 
@@ -109,10 +114,22 @@ def _unique_object(pairs):
     return value
 
 
+def _hold_selection(*paths):
+    """Keep one read-only descriptor per selected runtime directory open until the process exits."""
+    for path in paths:
+        if any(held == str(path) for held, _ in _SELECTED):
+            continue
+        try:
+            _SELECTED.append((str(path), os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)))
+        except OSError:
+            pass  # Without the descriptor the pruner treats this process as unknown and prunes no generation.
+
+
 def _select_runtime():
     """Select one protected source/SDK tuple before application import."""
     current = _BOOT_ROOT / 'CURRENT.json'
     if not os.path.lexists(current):
+        _hold_selection(_RUNTIME_ROOT)
         return _RUNTIME_ROOT, _RUNTIME_ROOT / 'dependencies'
     raw = _source(current)
     _require(len(raw) <= 4096)
@@ -146,6 +163,7 @@ def _select_runtime():
     _directory(source / 'scripts')
     _directory(sdk)
     _require(_source(current) == raw)
+    _hold_selection(source, sdk)
     return source, sdk
 
 

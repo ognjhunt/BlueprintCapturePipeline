@@ -2,7 +2,9 @@
 
 Owner decision 2026-11-07, "Meter + monthly cap", and the amount set the same
 day: USD 200 a UTC calendar month for the whole account. Alerts go at 50 %,
-80 % and 100 % ($100, $160, $200). New paid admissions are refused by name,
+80 % and 100 % ($100, $160, $200). (Owner decision 2026-11-11 raises it to USD
+300 together with the job fuse; that is a later change to the config file.)
+New paid admissions are refused by name,
 ``account_monthly_spend_limit_reached``, once the month's metered spend plus
 held reservations reaches the limit. This is stage 1, which only adds: every
 existing per-job budget, grant, reservation, provider ceiling and runaway
@@ -338,7 +340,8 @@ def current_world_labs(observation: Mapping[str, Any] | None, *, now: float) -> 
 def summary(report: Mapping[str, Any], *, max_jobs: int = 10) -> dict[str, Any]:
     """The compact projection the spend guard's own report (``door status``) carries."""
 
-    keys = ("schema_version", "generated_at", "period", "cap_status", "limit_usd", "alert_lines_usd", "spend_usd",
+    keys = ("schema_version", "generated_at", "period", "cap_status", "limit_usd", "website_job_limits_mode",
+            "alert_lines_usd", "spend_usd",
             "held_usd", "counted_usd", "fraction", "alert_threshold_percent", "limit_reached", "admission_allowed",
             "blockers", "complete", "gaps", "report_path", "policy_sha256", "old_unsettled_held_usd",
             "forecast", "reconciliation")
@@ -468,11 +471,24 @@ def account_alerts(row: Mapping[str, Any]) -> list[dict[str, Any]]:
 FORECAST_CODE = "account_spend_forecast_reaches_limit_this_month"
 #: Warn: a provider's settled ledger and its billing delta differ past tolerance (``account_spend_reconciliation``).
 RECONCILIATION_CODE = "account_spend_reconciliation_outside_tolerance"
+#: Warn, one row while any website job waits for the month's room to start (``website_job_start_room``):
+#: how many wait (``count``) and how long the oldest has (``age_seconds``). Never a page.
+JOBS_WAITING_CODE = "account_spend_jobs_waiting_for_room"
 ACCOUNT_PAGE_CODES = frozenset({"account_spend_month_80pct", "account_spend_month_limit_reached",
                                 "account_spend_limit_config_invalid", "account_spend_limit_missing",
                                 "account_spend_report_stale"})
 ACCOUNT_WARN_CODES = frozenset({"account_spend_month_50pct", "account_spend_limit_not_set", "account_spend_unverifiable",
-                                FORECAST_CODE, RECONCILIATION_CODE})
+                                FORECAST_CODE, RECONCILIATION_CODE, JOBS_WAITING_CODE})
+
+
+def jobs_waiting_alert(waits: Mapping[str, Any] | None, *, now: float, period: str) -> list[dict[str, Any]]:
+    """The one warn row for jobs waiting for this month's room (``website_job_start_room.waiting_jobs``)."""
+    count = waits.get("count") if isinstance(waits, Mapping) else None
+    oldest = waits.get("oldest_since_epoch") if isinstance(waits, Mapping) else None
+    if type(count) is not int or count <= 0 or not isinstance(oldest, (int, float)):
+        return []
+    return [{"code": JOBS_WAITING_CODE, "provider": "account", "window": f"utc_month:{period}", "count": count,
+             "age_seconds": max(0, int(now - oldest)), "reason": "oldest_since:" + _utc(oldest).isoformat()}]
 
 
 def describe(alert: Mapping[str, Any]) -> str | None:

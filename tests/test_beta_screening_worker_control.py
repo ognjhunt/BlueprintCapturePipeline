@@ -20,6 +20,20 @@ from tests.test_beta_policy_screening_launch import _plan
 from tests.test_beta_screening_runtime_control import staged_control, install
 
 
+@pytest.fixture(autouse=True)
+def landing_room_held(monkeypatch):
+    """The session's landing hold (``beta_screening_disk_admission``), hermetic: it never measures this host."""
+    from blueprint_pipeline import beta_screening_disk_admission as disk_admission
+
+    class Hold:
+        token = "c" * 32
+
+        def release(self, *, outcome="completed"):
+            pass
+
+    monkeypatch.setattr(disk_admission, "reserve_landing_hold", lambda _job: Hold())
+
+
 def stage_beta_bundle(tmp_path, monkeypatch, *, hosted=False):
     if hosted:
         from tests.test_beta_policy_screening_hosted import hosted_plan

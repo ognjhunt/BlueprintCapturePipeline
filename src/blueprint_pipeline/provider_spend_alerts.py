@@ -445,7 +445,19 @@ def spend_alerts(providers: Mapping[str, Mapping[str, Any]], lines: Mapping[str,
     account = providers.get("account")
     if isinstance(account, Mapping):
         alerts.extend(_account_alerts(account))
+        from .account_monthly_spend import jobs_waiting_alert
+        alerts.extend(jobs_waiting_alert(account.get("start_waits"), now=float(account.get("observed_at_epoch") or 0),
+                                         period=str(account.get("period"))))
     return alerts
+
+
+def _start_waits(now: float, env: Mapping[str, str]) -> dict[str, Any]:
+    """Website jobs waiting for this month's room, from the same storage root the Atlas walk reads."""
+    from .website_job_start_room import waiting_jobs
+    try:
+        return waiting_jobs(Path(str(env.get(ATLAS_STORAGE_ROOT_ENV) or DEFAULT_ATLAS_STORAGE_ROOT)), now=now)
+    except OSError:
+        return {"count": None, "oldest_since_epoch": None}
 
 
 def observe_provider_spend(now: float, *, environ: Mapping[str, str] | None = None,
@@ -460,7 +472,8 @@ def observe_provider_spend(now: float, *, environ: Mapping[str, str] | None = No
         "world_labs": observe_world_labs_spend(
             now=now, storage_root=Path(str(env.get(ATLAS_STORAGE_ROOT_ENV) or DEFAULT_ATLAS_STORAGE_ROOT))),
         "gcp": observe_gcp_spend(now=now, config_path=env.get(GCP_BUDGET_CONFIG_ENV)),
-        "account": observe_account_spend(now=now, environ=env),
+        "account": {**observe_account_spend(now=now, environ=env), "observed_at_epoch": now,
+                    "start_waits": _start_waits(now, env)},
     }
     alerts.extend(spend_alerts(providers, lines))
     return {"schema_version": SCHEMA_VERSION, "observed_at_epoch": now, "lines": lines, "providers": providers,

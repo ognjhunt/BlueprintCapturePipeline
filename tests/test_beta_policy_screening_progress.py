@@ -44,7 +44,7 @@ from tests.test_policy_episode_graded_report import _task_spec
 ROOT = Path(__file__).parents[1]
 FIXTURE = ROOT / "tests/fixtures/beta_policy_screening_progress_publication.v4.json"
 #: The fixture's bytes. The WebApp pins the same value for its copy.
-FIXTURE_SHA256 = "5ad8e51f64357ff520ad2b961c0db169e21ec9f5d82b17583cc04cdd33c75da6"
+FIXTURE_SHA256 = "4b3e90887c3df6dcceb17cc01c690106c1ef28686ebbc6f0117264d4c51fb540"
 SCHEMA = {version: json.loads((ROOT / f"docs/schemas/beta_policy_screening_publication.{version}.schema.json").read_text())
           for version in ("v2", "v3", "v4")}
 
@@ -142,6 +142,14 @@ CAMPAIGN = {
 }
 
 
+def _learned(value):
+    return [row for row in value["candidates"] if not row.get("known_good_control")]
+
+
+def _control(value):
+    return next(row for row in value["candidates"] if row.get("known_good_control"))
+
+
 def campaign_plan():
     value = deepcopy(queue_plan(cost="3.00", count=len(CAMPAIGN)))
     for row, (candidate_id, options) in zip(value["candidates"], CAMPAIGN.items(), strict=True):
@@ -157,14 +165,12 @@ def run_to_completion(root):
     observations = {row["candidate_id"]: closed(session_result(
         value, row, CAMPAIGN[row["candidate_id"]]["depths"], approach=CAMPAIGN[row["candidate_id"]].get("approach", True),
         heights=CAMPAIGN[row["candidate_id"]].get("heights")))
-        for row in value["candidates"][:-1]}
-    control = value["candidates"][-1]
+        for row in value["candidates"] if not row.get("known_good_control")}
+    control = next(row for row in value["candidates"] if row.get("known_good_control"))
     observations[control["candidate_id"]] = closed(session_result(value, control, [7, 7, 6], scripted=True))
     coordinator.enqueue_screening_campaign(value, queue_root=root)
     backend = PerRow(observations)
-    with pytest.MonkeyPatch.context() as patch:
-        # The job's source stays current, so the known-good control may run once every candidate has ended.
-        patch.setattr(coordinator, "_source_still_current", lambda _plan: True)
+    with pytest.MonkeyPatch.context():
         for _ in range(3 * len(value["candidates"])):
             coordinator.process_screening_queue(require_publication_ack=False, queue_root=root, executor=backend)
     [publication] = coordinator.pending_publications(queue_root=root)
@@ -262,7 +268,7 @@ def test_only_the_pick_and_place_ladder_is_graded():
 
 def test_a_grading_error_or_an_unbound_episode_is_skipped_and_never_fails_the_summary(monkeypatch):
     value = queue_plan()
-    candidate = value["candidates"][0]
+    candidate = _learned(value)[0]
     result = session_result(value, candidate, [5] * 10)
     rows = deepcopy(result["episodes"])
     rows[0]["episode"]["state_trace"]["task_state_samples"][3]["task_contact_active"] = False  # trace not as sealed
@@ -289,7 +295,7 @@ def test_a_grading_error_or_an_unbound_episode_is_skipped_and_never_fails_the_su
 
 def test_a_summary_with_nothing_to_grade_keeps_its_bytes():
     value = queue_plan()
-    candidate = value["candidates"][0]
+    candidate = _learned(value)[0]
     # Today's results: a score without a trace, so nothing is graded and nothing is added.
     plain = native_result(value)
     summary = candidate_result_summary(plain, plan=value, candidate=candidate)
@@ -311,7 +317,7 @@ def test_a_summary_with_nothing_to_grade_keeps_its_bytes():
 def test_graded_never_exceeds_scored_and_scripted_or_control_rows_carry_no_progress(tmp_path):
     value, publication = run_to_completion(tmp_path)
     ledger = state_of(tmp_path, value["campaign_id"])["candidates"]
-    control_id = value["candidates"][-1]["candidate_id"]
+    control_id = _control(value)["candidate_id"]
     assert ledger[control_id]["summary"]["execution_evidence_kind"] == SCRIPTED
     assert "progress" not in ledger[control_id]["summary"]
     rows = {row["candidate_id"]: row for row in publication["candidates"]}
@@ -320,12 +326,12 @@ def test_graded_never_exceeds_scored_and_scripted_or_control_rows_carry_no_progr
         assert rows[candidate_id]["progress"] == ledger[candidate_id]["summary"]["progress"]
         assert rows[candidate_id]["progress"]["episodes_graded"] <= rows[candidate_id]["episodes_scored"]
     # A scripted run of a learned row's own cells is never graded either.
-    summary = candidate_result_summary(session_result(value, value["candidates"][0], [7] * 10, scripted=True),
-                                       plan=value, candidate=value["candidates"][0])
+    summary = candidate_result_summary(session_result(value, _learned(value)[0], [7] * 10, scripted=True),
+                                       plan=value, candidate=_learned(value)[0])
     assert summary["execution_evidence_kind"] == SCRIPTED and "progress" not in summary
     assert progress.publication_progress({"candidate_id": "x"}, {"status": "completed"},
                                          {**ledger["policy-a"]["summary"], "execution_evidence_kind": SCRIPTED}) == {}
-    assert progress.publication_progress(value["candidates"][-1], {"status": "completed"},
+    assert progress.publication_progress(_control(value), {"status": "completed"},
                                          ledger["policy-a"]["summary"]) == {}
 
 
@@ -504,7 +510,7 @@ def test_a_refusal_that_is_not_about_the_schema_never_downgrades_v4(tmp_path):
 
 def test_the_offline_driver_grades_a_partial_retained_result_and_writes_nothing_else(tmp_path, capsys):
     value = campaign_plan()
-    candidate = value["candidates"][0]
+    candidate = _learned(value)[0]
     full = session_result(value, candidate, CAMPAIGN["policy-a"]["depths"])
     partial = deepcopy(full)
     partial["status"] = "blocked"
@@ -540,7 +546,7 @@ def test_the_offline_driver_grades_a_partial_retained_result_and_writes_nothing_
 def test_an_older_score_without_behaviour_has_no_rung_unless_the_driver_is_asked_to_recompute(tmp_path, capsys):
     """The summary reads only the sealed score; the offline driver recomputes only on its explicit flag."""
     value = campaign_plan()
-    candidate = value["candidates"][0]
+    candidate = _learned(value)[0]
     result = native_result(value, candidate)
     for row, depth in zip(result["episodes"], [2, 1, 1, 1, 1, 0, 0, 0, 0, 0], strict=True):
         score, samples = episode(depth)

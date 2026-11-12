@@ -770,6 +770,11 @@ def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[
             requeued.append({"request_key": path.stem, "reason": "unscorable_half", "detail": unscorable,
                              "release_commit": release})
             continue
+        if not target.exists() and _run_restored_since_refused(path, status):
+            # Refused while its scene run was in cold storage; the run has come back (``scene_run_restore``).
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "scene_run_restored"})
+            continue
         stale = None if target.exists() else _stance_search_untried(status, release)
         if stale is not None:
             from .team_embodiment_stance import STANCE_SEARCH_VERSION
@@ -1176,7 +1181,11 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
 
     run = Path(request["source_launch_root"])
     if run.is_symlink() or not run.is_dir():
-        raise TeamScenePacketRequestRefused("team_scene_source_launch_unavailable")
+        from .scene_run_cold_storage import COLD_STORAGE, in_cold_storage
+
+        # Moved to cold storage by the storage GC: its own typed refusal, which the screening pass tells the job.
+        raise TeamScenePacketRequestRefused(COLD_STORAGE if in_cold_storage(run)
+                                            else "team_scene_source_launch_unavailable")
     result, _receipt, _zero = _validate_source(run)
     if result.get("configured_scene_revision_digest") != request["scene_revision_digest"]:
         raise TeamScenePacketRequestRefused("team_scene_source_launch_revision_changed")
@@ -1689,6 +1698,16 @@ def _record_website_robot_access(root: Path, outcomes: Mapping[str, Mapping[str,
                 or not (root / "processed" / f"{key}.json").exists() or status.get(STATUS_FIELD) == dict(outcome)):
             continue
         _write_replace(path, {**status, STATUS_FIELD: dict(outcome)})
+
+
+def _run_restored_since_refused(path: Path, status: Mapping[str, Any]) -> bool:
+    """A half blocked only because its scene run was in cold storage, whose run is on disk again."""
+    from .scene_run_cold_storage import COLD_STORAGE
+
+    if status.get("status") != "blocked" or status.get("blockers") != [COLD_STORAGE]:
+        return False
+    run = Path(str((_read_json(path) or {}).get("source_launch_root") or ""))
+    return run.is_absolute() and run.is_dir() and not run.is_symlink()
 
 
 def requeue_transient_blocked(*, queue_root: str | Path,

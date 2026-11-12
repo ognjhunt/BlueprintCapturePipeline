@@ -1,8 +1,44 @@
 # Automatic beta policy screening
 
 For the free beta, a completed customer scene can run a configurable set of
-candidate policies under one persistent **$30 per site** screening allowance
-(`SITE_LIMIT`, raised from $15 on 2026-11-05).
+candidate policies. Which money model runs is one switch (`mode` in
+`config/website_job_limits.v1.json`, shown in `door status` as
+`website_job_limits_mode`; changed by a reviewed pull request and a normal
+release). It ships `nested`: a website plan budgets the smaller of $15 and what
+the job's dollar ceiling leaves, and every site's screening limit is $30, as
+before 2026-11-11. At `fuse` (owner decision 2026-11-11, "yes replace them -
+$300 monthly limit, $100 fuse") a plan is funded by whatever the ceiling leaves
+after the build, and the site limit, read by
+`beta_policy_screening_site_limit.site_limit`, is the largest job ceiling any of
+the site's campaigns recorded when it was enqueued (`site_limit_usd` on the
+ledger), where a campaign that recorded none counts at $30 (`SITE_LIMIT`): a
+site with an older campaign and a $25 ceiling has a $30 site limit, and its job
+ceiling still binds every plan and every launch. In both modes a site past its
+limit holds only itself: its reservations wait as
+`beta_screening_site_budget_exceeded` and other sites go on (before, the whole
+ledger refused for every site).
+### Changing the money mode
+
+The mode is `mode` in `config/website_job_limits.v1.json`. Change it in a reviewed pull request and ship it
+with a normal release; `door status` then shows the new value as `website_job_limits_mode`. Moving to `fuse`
+goes with the owner's $300 monthly limit, changed in `config/account_monthly_spend_limit.v1.json` in the same
+pull request.
+
+When switching back from `fuse` to `nested`, check two things by hand:
+
+1. **Rows closed for a job's ceiling are not planned again.** Under `fuse`, a robot the job's ceiling could
+   not pay for, closed after the waitlist ran out, is recorded `deferred` with
+   `website_job_ceiling_insufficient`. After the switch back, a release no longer re-plans such a row on its
+   own. Look at each site with rows closed that way; if the site still has money and should test them, ask
+   for a new campaign for that site.
+2. **Start records from `fuse` are ignored, and may be out of date if you switch to `fuse` again.** Under `fuse`
+   each started job has a `.website_job_start.json` beside its scene that records what it spent each month.
+   Under `nested` nothing reads or updates these files. If you later go back to `fuse`, a job that kept
+   spending meanwhile is still recorded at its older, lower spend, so it holds back more of the month than
+   it needs until its grant expires. If new jobs then wait longer than they should, read those records
+   (`started_jobs` in a waiting job's start check, or the files themselves) and expect the room to come
+   back as those grants expire.
+
 The default catalog contains 136 candidate rows (counted in
 `config/beta_policy_candidates.v1.json` on 2026-11-10; the breakdown that follows
 was written for 128 rows and has not been recounted): ten original policy candidates,
@@ -135,13 +171,14 @@ on an operator launching the probe or copying its trace separately.
 The stable site key is `site-<website_request_id>` across recaptures and scene
 revisions. A catalog change, restart or new campaign never resets its budget.
 
-Each new plan also fits the website job's one dollar ceiling (owner decision
-2026-10-30, $40 by default, WebApp #1168), which counts Atlas, upstream, native
-construction and screening together. Before planning, the worker reads the
+Each new plan fits the website job's one dollar ceiling (owner decision
+2026-10-30, WebApp #1168; $25 on jobs granted before 2026-11-11, $100 for new
+jobs once the owner moves the Render grant policy), which counts Atlas,
+upstream, native construction and screening together. Before planning, the worker reads the
 job's `job_ceiling` from the non-creating `atlas-configuration` read and
 subtracts this queue's own screening the WebApp has not seen yet (reservations
 since its last accepted publication and other campaigns' unreserved
-selections). The plan's `budget_usd` is the smaller of $30 and what is left; the
+selections). The plan's `budget_usd` is the smaller of $15 and what is left at `nested`, everything that is left at `fuse`; the
 plan records `budget_basis: "website_job_ceiling"` and the read. Candidates that
 no longer fit are deferred with `website_job_ceiling_insufficient`; with less
 left than any quote, every candidate is deferred and the plan still publishes.
@@ -159,11 +196,12 @@ Runnable candidates the budget cannot fund yet are `waitlisted`, frozen in the
 plan like selected ones. When a funded candidate is refused before spend (no
 offer, preparation or static preflight, credit guard, disk admission), each
 worker pass funds the next waitlisted candidate in plan order whose whole cap
-fits under the site allowance and the plan's budget, after every reservation,
+fits under the site's limit (above) and the plan's budget, after every reservation,
 commitment and pending row. A funded row is `pending` and still needs the
 website's acknowledgment before it is reserved. Once the site holds no
 reservation and no pending row, rows that still do not fit close as `deferred`
-(`beta_screening_site_budget_exhausted`). Plans from before the waitlist keep
+(`website_job_ceiling_insufficient` for a plan sized to its job's ceiling;
+`beta_screening_site_budget_exhausted` for any other plan). Plans from before the waitlist keep
 their `deferred` rows and are never funded.
 
 Plan order, which is also the waitlist's funding order, uses each candidate's
@@ -361,7 +399,7 @@ Only an explicit `hosted_inference_payment` of `free` or `caller_paid` permits
 both API price and API maximum to be `"0"`. For Blueprint-paid inference, both
 must be positive. The candidate reservation and quote include GPU **plus** API
 ceilings; the canonical GPU allocator receives only the GPU portion. The $4
-GPU and $1 API example reserves $5 from the site's shared $30 allowance. Live
+GPU and $1 API example reserves $5 from the site's shared limit (above). Live
 metadata identity is verified before every inference inside the paid session;
 planning performs no potentially billable endpoint calls.
 

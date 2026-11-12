@@ -78,6 +78,21 @@ GATE_REFUSED_STOP = "prepolicy_observation_gate_refused"
 _STOP_CODE = re.compile(r"[a-z][a-z0-9_]{0,127}(?::[a-z0-9_]{1,64})?")
 
 
+def _with_launch_findings(flags: dict[str, list[str]], row: Mapping[str, Any]) -> dict[str, list[str]]:
+    """The row's flags with what its bundle found at launch (``beta_policy_screening_launch.LAUNCH_SCENE_CHECK_FIELD``).
+
+    A robot planned as in reach (or unmeasured) whose bundle then found it out of reach is published with
+    that finding on its own ``scene_check_flags``, never as a plain zero.
+    """
+    attempts = [*(row.get("attempt_history") or []), *([row["attempt"]] if isinstance(row.get("attempt"), Mapping) else [])]
+    found = {code for attempt in attempts if isinstance(attempt, Mapping)
+             for code in ((attempt.get("prepared") or {}).get("launch_scene_check_flags") or [])
+             if isinstance(code, str)}
+    if not found:
+        return flags
+    return {**flags, "scene_check_flags": sorted(set(flags.get("scene_check_flags") or []) | found)}
+
+
 def _not_returned_reasons(result: Mapping[str, Any], cells: list[Mapping[str, Any]],
                           returned: set[str]) -> dict[str, str]:
     """Why each planned cell without a returned row is missing, as a typed code."""
@@ -282,7 +297,7 @@ def screening_publication(
             "success_rate": summary.get("success_rate"),
             "session_result_digest": summary.get("session_result_digest"),
             **_publication_execution_evidence(configured, summary),
-            **row_flags(configured, summary),
+            **_with_launch_findings(row_flags(configured, summary), row),
             # The known-good control's outcome, as its own one flag (never part of the estimate).
             **control_flags(configured, row),
             # How far a learned policy got (publication v4); absent for every other row.
