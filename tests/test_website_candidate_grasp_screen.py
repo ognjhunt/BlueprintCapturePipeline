@@ -120,20 +120,15 @@ def test_a_failing_grasp_screen_never_stops_planning(monkeypatch) -> None:
     assert grasp.validate_grasp_screen(screens["pi05_droid"])["flags"] == []
 
 
-@pytest.mark.parametrize("mode", ["nested", "fuse"])
-def test_every_plan_the_planner_builds_with_grasp_records_validates_against_the_plan_schema(tmp_path, monkeypatch, mode):
+def test_every_plan_the_planner_builds_with_grasp_records_validates_against_the_plan_schema():
     """Review 8d (3): the published plan schema accepts each record exactly as the code writes it."""
     import json
     from pathlib import Path
 
     from jsonschema import Draft202012Validator
 
-    from blueprint_pipeline import website_job_limits
     from tests.test_beta_policy_screening_website_rows import website_plans
 
-    config = tmp_path / "website_job_limits.v1.json"
-    config.write_text(json.dumps({"schema_version": website_job_limits.SCHEMA, "mode": mode}), encoding="utf-8")
-    monkeypatch.setenv(website_job_limits.CONFIG_ENV, str(config))
     schema = json.loads((Path(__file__).resolve().parents[1]
                          / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
     validator = Draft202012Validator(schema)
@@ -154,3 +149,27 @@ def test_every_plan_the_planner_builds_with_grasp_records_validates_against_the_
                     assert any("grasp_screen" in row for row in plan["candidates"])
     assert built == 40
     assert {row["status"] for row in failing.values()} == {"assessed", "not_assessed"}
+
+
+def test_a_figure_that_is_not_a_number_is_not_assessed_and_planning_goes_on() -> None:
+    """A measurement never stops a job (review of R2): a non-finite figure cannot be sealed in the plan."""
+    import math
+
+    record = grasp.grasp_screens(catalog={"candidates": [{"candidate_id": "robot_a", "interface": {}}]},
+                                 profile={}, task_spec=TRAY_TASK_SPEC)
+    assert record["robot_a"]["status"] == "not_assessed"
+    with pytest.raises(ValueError, match="grasp_screen_figure_not_finite"):
+        grasp.grasp_screen([0.3, 0.5, 0.04], [{"model": "m", "full_stroke_m": math.inf}])
+
+
+def test_a_grasp_record_the_planner_cannot_read_is_left_off_its_row_and_the_plan_is_built() -> None:
+    from tests.test_beta_policy_screening_website_rows import website_plans
+
+    catalog = load_default_catalog()
+    screens = _screens(TRAY_TASK_SPEC)
+    broken = next(iter(screens))
+    screens[broken] = {"schema_version": grasp.SCHEMA_VERSION, "status": "assessed", "flags": ["not_a_flag"]}
+    for plan in website_plans(catalog, remaining=15, capabilities={"candidate_grasp_screen": screens}):
+        rows = {row["candidate_id"]: row for row in plan["candidates"]}
+        assert broken not in rows or "grasp_screen" not in rows[broken]
+        assert any("grasp_screen" in row for row in plan["candidates"])

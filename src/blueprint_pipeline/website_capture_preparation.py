@@ -13,10 +13,10 @@ from .core.handoff_lease import handoff_lease_checkpoint
 
 
 def require_task_named(capture_root: Path) -> None:
-    """Stop before the month's start room is taken when the retained context has no job sentence.
+    """Stop before any paid step when the retained context has no job sentence.
 
-    A job waiting for its sentence has started nothing: it holds no reserve and buys nothing
-    (``website_job_start_room``; the retry re-reads the website's context until it is named).
+    A job waiting for its sentence has started nothing and buys nothing (the retry re-reads the
+    website's context until it is named).
     """
     import json
 

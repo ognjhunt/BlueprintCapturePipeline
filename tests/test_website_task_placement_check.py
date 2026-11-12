@@ -142,16 +142,17 @@ def test_the_stated_placement_uncertainty_and_the_box_fit_reach_the_published_re
     import json
 
     from blueprint_pipeline.atlas_scene_estimates import (
-        PLACEMENT_UNCERTAINTY, SUPPORT_HEIGHT, TASK_OBJECT_BOX_FIT, preparation_flags,
+        PLACEMENT_UNCERTAINTY, SUPPORT_HEIGHT, preparation_flags,
     )
     from blueprint_pipeline.beta_policy_screening_publication_flags import scene_feasibility
 
     path = tmp_path / "preparation.json"
     path.write_text(json.dumps({"coordinate_frame": {"placement_uncertainty_m": 0.072},
-                                "video_box_fit_check": {"flags": ["task_object_box_fit_offset"]},
+                                "video_box_fit_check": {"flags": ["task_object_box_fit_offset", "unknown_flag"]},
                                 "support_height_agreement": {"flags": [SUPPORT_HEIGHT]}}))
     codes = preparation_flags(path)
-    assert codes == {PLACEMENT_UNCERTAINTY, TASK_OBJECT_BOX_FIT, SUPPORT_HEIGHT}
+    # The box fit is published under the check's own name, which the website words (``task_object_box_fit_*``).
+    assert codes == {PLACEMENT_UNCERTAINTY, "task_object_box_fit_offset", SUPPORT_HEIGHT}
     # The plan carries them as scene_estimate_flags; the publication lists them in scene_feasibility.
     assert scene_feasibility([], estimates=sorted(codes)) == {"status": "flagged", "flags": sorted(codes)}
     path.write_text(json.dumps({"coordinate_frame": {"placement_uncertainty_m": 0.03}}))

@@ -113,7 +113,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
         latest_campaign, replan_scope, supersede_campaign,
     )
     from .beta_policy_screening_holds import (
-        PROBE_UNDECIDED, RELEASE, WINDOW_CLOSED, blocked_since, campaign_hold, packet_hold, probe_hold, settle_hold,
+        RELEASE, WINDOW_CLOSED, blocked_since, campaign_hold, packet_hold, probe_hold, settle_hold,
         stalled_source_hold,
     )
     from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
@@ -319,8 +319,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                 if hold is None and request is not None and code.startswith("team_evaluation_robot_free_probe_"):
                     try:
                         # A probe refusal read as not final (queued, waiting, due a new release's try) is progress.
-                        probed = probe_hold(code, resolve_capture_root(request), release=probe_release)
-                        hold = None if probed == PROBE_UNDECIDED else probed or RELEASE
+                        hold = probe_hold(code, resolve_capture_root(request), release=probe_release) or RELEASE
                     except (OSError, ValueError, KeyError, TypeError):
                         hold = None  # unreadable now: the hold is kept and the next pass decides again
                 # A refusal that keeps coming back the same way is told to the job as held, once it has
@@ -697,12 +696,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # A held evaluation (no campaign could start) reaches the website by name, like a campaign.
     holds = deliver_holds(queue_root=root)
-    from .beta_policy_screening_holds import alert_scene_check_failures
-    from .control_plane_capacity_controller import WEBHOOK_URL_ENV
-
-    # A scene check that decided the scene cannot tell success from failure is our fault: page it once.
-    scene_check_alerts = alert_scene_check_failures(root, webhook_url=os.getenv(WEBHOOK_URL_ENV) or "")
     from .beta_screening_disk_admission import alert_disk_waits
+    from .control_plane_capacity_controller import WEBHOOK_URL_ENV
 
     # Rows waiting in line for room on the work disk: one alert while any waits (how many, since when).
     disk_wait_alert = alert_disk_waits(root, webhook_url=os.getenv(WEBHOOK_URL_ENV) or "")
@@ -724,8 +719,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Its publication goes out on the next tick, like any other progress.
     review_videos = backfill_review_videos(queue_root=root)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
-                      "publication_after": after, "holds": holds, "scene_check_alerts": scene_check_alerts,
-                      "selections": selections,
+                      "publication_after": after, "holds": holds, "selections": selections,
                       "runtime_diagnostics_backfill": diagnostics, "review_video_backfill": review_videos,
                       "unspent_bundle_prune": unspent_bundles, "open_job_testing": open_job_testing, "work_disk_wait_alert": disk_wait_alert, "worker_status": status,
                       "known_good_control_alerts": control_alerts},

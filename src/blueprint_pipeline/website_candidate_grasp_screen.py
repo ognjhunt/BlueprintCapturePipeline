@@ -36,6 +36,7 @@ The screen's own test (the smallest side of any orientation) is kept unchanged b
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -120,8 +121,14 @@ def grasp_screen(dimensions_m: Any, grippers: list[Mapping[str, Any]] | None, *,
                      "closes_across_object": closes_across, "flags": sorted(flags)})
     # A robot with several hands is flagged only when none of them can take the object.
     flags = sorted(set.intersection(*(set(row["flags"]) for row in rows)))
-    return {"schema_version": SCHEMA_VERSION, "status": "assessed", "grippers": rows, "flags": flags,
-            "dimensions_m": [float(value) for value in dimensions_m], "approach": approach}
+    record = {"schema_version": SCHEMA_VERSION, "status": "assessed", "grippers": rows, "flags": flags,
+              "dimensions_m": [float(value) for value in dimensions_m], "approach": approach}
+    numbers = [*record["dimensions_m"], *(value for row in rows
+                                          for value in (row["full_stroke_m"], row["horizontal_width_upper_m"]))]
+    if not all(math.isfinite(value) for value in numbers):
+        # A figure that is not a number cannot be published or sealed in the plan: not assessed (grasp_screens).
+        raise ValueError("grasp_screen_figure_not_finite")
+    return record
 
 
 def object_dimensions(task_spec: Mapping[str, Any]) -> list[float] | None:

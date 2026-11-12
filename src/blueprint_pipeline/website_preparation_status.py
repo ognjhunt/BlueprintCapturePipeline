@@ -277,11 +277,6 @@ def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
     from .website_preparation_terminal import capacity_only, current_terminal, current_overdue
     status = ledger.get("status")
     _require(status in _LEDGER_STATES)
-    from .website_job_start_room import ROOM_WAIT_EXPIRED_CODE
-    if status == "terminal_authority_ended" and ledger.get("terminal_code") == ROOM_WAIT_EXPIRED_CODE:
-        # Blueprint held the job for the month's room until its grant ran out: an end on our side,
-        # reported in the shared v2 vocabulary as capacity, never as the site's consent ending.
-        return "failed_terminal", "capacity_blocked"
     terminal = current_terminal(ledger) if status != "terminal_authority_ended" else None
     if terminal is not None:
         return "failed_terminal", terminal["reason"]

@@ -80,9 +80,12 @@ def measured_gate(composition=None, qualifications=None) -> dict[str, Any]:
 def test_capture_447_is_visible_with_a_caveat_and_says_what_was_hidden() -> None:
     verdict = visibility_verdict(measured_gate())
     assert verdict["outcome"] == VISIBLE_WITH_CAVEAT
-    assert verdict["flags"] == ["task_object_not_in_view:wrist", "task_object_partly_hidden:external",
-                                "task_object_partly_hidden:overview", "task_target_marker_partly_hidden:external",
-                                "task_target_marker_partly_hidden:overview"]
+    # Published: only whole-view flags (each target is partly hidden in every camera that measures coverage).
+    assert verdict["flags"] == ["task_object_partly_hidden", "task_target_marker_partly_hidden"]
+    # What each camera showed stays in the record, never published as a flag.
+    assert verdict["camera_flags"] == ["task_object_not_in_view:wrist", "task_object_partly_hidden:external",
+                                       "task_object_partly_hidden:overview", "task_target_marker_partly_hidden:external",
+                                       "task_target_marker_partly_hidden:overview"]
     assert verdict["stops_the_tries"] is False
     # The flag claims only what was measured: the cameras the gate checked are named.
     assert verdict["checked_cameras"] == ["external", "overview", "wrist"]
@@ -102,11 +105,20 @@ def test_the_verdict_replaces_the_visibility_blockers_and_keeps_every_other_bloc
     gate = measured_gate()
     codes = observation_quality_flag_codes(gate["blockers"] + ["policy_canary_external_destination_visibility_failed"])
     assert gate_flag_codes(gate, codes) == sorted(["policy_canary_external_destination_visibility_failed",
-                                                   "task_object_not_in_view:wrist",
-                                                   "task_object_partly_hidden:external",
-                                                   "task_object_partly_hidden:overview",
-                                                   "task_target_marker_partly_hidden:external",
-                                                   "task_target_marker_partly_hidden:overview"])
+                                                   "task_object_partly_hidden",
+                                                   "task_target_marker_partly_hidden"])
+
+
+def test_partly_hidden_is_published_only_when_no_checked_camera_shows_it_clean() -> None:
+    clean_overview = {**CAPTURE_447_COMPOSITION, ("overview", "task_object"): (5406, 0)}
+    verdict = visibility_verdict(measured_gate(clean_overview))
+    assert "task_object_partly_hidden" not in verdict["flags"]
+    assert "task_object_partly_hidden:external" in verdict["camera_flags"]
+    assert verdict["flags"] == ["task_target_marker_partly_hidden"]
+    # No flag ever names a camera: per-camera detail is the record's, not the website's.
+    for composition in (CAPTURE_447_COMPOSITION, clean_overview,
+                        {**CAPTURE_447_COMPOSITION, ("external", "task_object"): (16880, 16000)}):
+        assert all(":" not in code for code in visibility_verdict(measured_gate(composition))["flags"])
 
 
 def test_a_clean_view_in_one_policy_camera_is_visible() -> None:
@@ -131,7 +143,9 @@ def test_more_than_half_covered_in_every_policy_camera_is_flagged_never_a_stop(t
     gate = measured_gate(composition)
     verdict = visibility_verdict(gate)
     assert verdict["outcome"] == NOT_VISIBLE and verdict["faults"] == [] and verdict["stops_the_tries"] is False
-    assert f"{target}_not_in_view_of_checked_cameras" in verdict["flags"] and f"{target}_not_in_view:external" in verdict["flags"]
+    assert f"{target}_not_in_view_of_checked_cameras" in verdict["flags"]
+    assert f"{target}_not_in_view:external" in verdict["camera_flags"]
+    assert f"{target}_not_in_view:external" not in verdict["flags"]
     assert f"{target}_not_in_view_of_checked_cameras" in gate_flag_codes(gate, [])
     composition[("external", target)] = (16880, 8440)  # exactly half: still seen, partly hidden
     assert visibility_verdict(measured_gate(composition))["outcome"] == VISIBLE_WITH_CAVEAT
@@ -142,7 +156,8 @@ def test_the_wrist_alone_can_carry_the_object_and_too_few_pixels_are_flagged() -
     qualifications = deepcopy(CAPTURE_447_QUALIFICATIONS)
     qualifications["wrist"].update(passed=True, pixel_count=900)
     verdict = visibility_verdict(measured_gate(composition, qualifications))
-    assert verdict["outcome"] == VISIBLE_WITH_CAVEAT and "task_object_not_in_view:external" in verdict["flags"]
+    assert verdict["outcome"] == VISIBLE_WITH_CAVEAT and "task_object_not_in_view:external" in verdict["camera_flags"]
+    assert "task_object_not_in_view_of_checked_cameras" not in verdict["flags"]
     small = {**CAPTURE_447_COMPOSITION, ("external", "task_object"): (63, 0)}
     assert "task_object_not_in_view_of_checked_cameras" in visibility_verdict(measured_gate(small))["flags"]
 
@@ -164,9 +179,7 @@ def test_the_session_counts_447s_tries_with_the_caveat_flags(tmp_path, monkeypat
     calls = {"loads": []}
     result = _gated_session(authority, inputs, measured_gate(), calls)
     assert result["status"] == "completed_unqualified" and calls["loads"] == inputs["candidate_ids"]
-    assert result["observation_quality_flags"] == ["task_object_not_in_view:wrist", "task_object_partly_hidden:external",
-                                                   "task_object_partly_hidden:overview", "task_target_marker_partly_hidden:external",
-                                                   "task_target_marker_partly_hidden:overview"]
+    assert result["observation_quality_flags"] == ["task_object_partly_hidden", "task_target_marker_partly_hidden"]
     whole = _gated_session(authority, inputs, measured_gate(), {"loads": []}, selected_cell_index=None)
     assert session.validate_session_result(whole)["observation_quality_flags"] == result["observation_quality_flags"]
 

@@ -1030,3 +1030,27 @@ def test_the_flag_comes_from_the_same_rounded_figure_that_decides_the_move(width
         return
     assert height_adjusted_flag(reading["window_aligned_to_goal_rest"]) == f"{HEIGHT_ADJUSTED_FLAG}:{flag}"
     assert height_adjusted_flag({"distance_m": 0.0005}) is None  # no decided figure: never published as a move
+
+
+@pytest.mark.parametrize("rest, window", [(float("nan"), [0.79, 0.81]), ("not a height", [0.79, 0.81]),
+                                          (0.83, [0.79, None]), (0.83, ["x", 0.81])])
+def test_a_rest_or_window_it_cannot_read_leaves_the_window_as_sealed_and_says_why(rest, window):
+    """A measurement never stops the build (review of R2): the sealed window stands, flagged in the reading."""
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import _window_on_goal_rest
+
+    spec = {"target_position_world_m": [0.1, 0.2, 0.80],
+            "destination_position_bounds_world_m": {"minimum": [0.05, 0.15, 0.79], "maximum": [0.15, 0.25, 0.81]}}
+    reading = {"own_support_rest_scoring_z_m": rest, "success_window_scoring_z_m": window}
+    assert _window_on_goal_rest(spec, reading) is spec
+    assert "window_aligned_to_goal_rest" not in reading
+    if None not in window:
+        assert reading["window_alignment_not_assessed"].split(":")[0] in {"ValueError", "TypeError"}
+
+
+def test_a_spec_without_its_target_is_left_as_sealed():
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import _window_on_goal_rest
+
+    spec = {"destination_position_bounds_world_m": {"minimum": [0.05, 0.15, 0.79], "maximum": [0.15, 0.25, 0.81]}}
+    reading = {"own_support_rest_scoring_z_m": 0.82, "success_window_scoring_z_m": [0.79, 0.81]}
+    assert _window_on_goal_rest(spec, reading) is spec
+    assert reading["window_alignment_not_assessed"].startswith("KeyError")

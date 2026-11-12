@@ -55,8 +55,12 @@ def start_clearance_m(task_spec: Mapping[str, Any], parameters: Mapping[str, Any
     if area is None:
         return None
     start, low, high = area
-    point = [start[axis] + float(parameters.get(name, 0.0)) for axis, name in enumerate(START_PARAMETERS)]
-    return math.hypot(*(max(low[axis] - point[axis], 0.0, point[axis] - high[axis]) for axis in range(2)))
+    try:
+        point = [start[axis] + float(parameters.get(name, 0.0)) for axis, name in enumerate(START_PARAMETERS)]
+    except (AttributeError, TypeError, ValueError):
+        return None  # a shift that is not a number: not assessed, never a stop
+    distance = math.hypot(*(max(low[axis] - point[axis], 0.0, point[axis] - high[axis]) for axis in range(2)))
+    return distance if math.isfinite(distance) else None
 
 
 def clear(task_spec: Mapping[str, Any], parameters: Mapping[str, Any]) -> bool:
@@ -76,6 +80,14 @@ def clear_start_parameters(task_spec: Mapping[str, Any], parameters: Mapping[str
     Deterministic in ``key``. Up to ``REDRAWS`` uniform draws; then the bounds' corner (or no shift) that
     lies farthest outside the area, which is clear whenever any start within the bounds is.
     """
+    try:
+        return _clear_start_parameters(task_spec, parameters, bounds, key=key)
+    except (ArithmeticError, KeyError, IndexError, TypeError, ValueError):
+        return dict(parameters)  # bounds it cannot read: the draw stands as drawn, never a stop
+
+
+def _clear_start_parameters(task_spec: Mapping[str, Any], parameters: Mapping[str, Any],
+                            bounds: Mapping[str, tuple[float, float]], *, key: Sequence[Any]) -> dict[str, Any]:
     shifted = [name for name in START_PARAMETERS if name in parameters and name in bounds]
     if not shifted or clear(task_spec, parameters):
         return dict(parameters)
@@ -131,9 +143,19 @@ def shrink_area_off_start(task_spec: dict[str, Any]) -> tuple[dict[str, Any], di
 
 
 def uncleared_cells(task_spec: Mapping[str, Any], cells: Sequence[Mapping[str, Any]]) -> list[str]:
-    """The $0 plan-time check: the ids of cells whose varied (or nominal) start is not clear of the area."""
-    return [str(cell.get("cell_id")) for cell in cells
-            if not clear(task_spec, (cell.get("resolved_scenario") or {}).get("parameters") or {})]
+    """The $0 plan-time check: the ids of cells whose varied (or nominal) start is not clear of the area.
+
+    A cell it cannot read is not assessed (left out), never a stop.
+    """
+    uncleared = []
+    for cell in cells:
+        try:
+            parameters = (cell.get("resolved_scenario") or {}).get("parameters") or {}
+            if not clear(task_spec, parameters):
+                uncleared.append(str(cell.get("cell_id")))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return uncleared
 
 
 __all__ = ["DESTINATION_NEAR_START", "INSIDE_SCORED_AREA", "MINIMUM_HALF_WIDTH_M", "START_CLEARANCE_M", "clear",

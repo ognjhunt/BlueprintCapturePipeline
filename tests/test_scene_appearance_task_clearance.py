@@ -221,3 +221,56 @@ def test_an_unmoved_field_keeps_its_quality_exactly(tmp_path) -> None:
     original = _native_appearance(source)
     appearance = apply_task_volume_clearance(original, task_spec=TASK_SPEC, output_root=tmp_path)
     assert appearance["gaussian_field_quality"] == original["gaussian_field_quality"]
+
+
+# --- A measurement never stops the build (review of R2, finding 6) ------------------------------
+
+
+def _degenerate_box(spec):
+    spec["subject_collision_bounds_scoring_frame_m"]["maximum"][2] = spec["subject_collision_bounds_scoring_frame_m"]["minimum"][2]
+
+
+def _marker_without_radius(spec):
+    del spec["visible_target_marker"]["radius_m"]
+
+
+@pytest.mark.parametrize("change, reason", [(_degenerate_box, "scene_appearance_clearance_box_invalid"),
+                                            (_marker_without_radius, "KeyError:")])
+def test_inputs_the_clearance_cannot_use_leave_the_field_as_it_was_and_say_why(tmp_path, change, reason) -> None:
+    import copy
+
+    from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import apply_task_volume_clearance
+
+    spec = copy.deepcopy(TASK_SPEC)
+    change(spec)
+    source = _particlefield(tmp_path / "field.usdc", _with_filler([UNDER_TRAY, INSIDE_TRAY, IN_FRONT]))
+    before = source.read_bytes()
+    appearance = _native_appearance(source)
+    result = apply_task_volume_clearance(appearance, task_spec=spec, output_root=tmp_path)
+    receipt = result.pop("appearance_task_clearance")
+    assert result == appearance and source.read_bytes() == before
+    assert receipt["status"] == "not_assessed_inputs_invalid" and receipt["reason"].startswith(reason)
+    assert receipt["flags"] == [] and receipt["pressed_count"] == 0 and receipt["source_assets_mutated"] is False
+
+
+def test_a_particle_that_is_not_finite_leaves_the_field_as_it_was(tmp_path) -> None:
+    from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import apply_task_volume_clearance
+
+    points = _with_filler([UNDER_TRAY, INSIDE_TRAY, IN_FRONT])
+    points[-1, 0] = np.nan
+    appearance = _native_appearance(_particlefield(tmp_path / "field.usdc", points))
+    result = apply_task_volume_clearance(appearance, task_spec=TASK_SPEC, output_root=tmp_path)
+    assert result["path"] == appearance["path"]
+    assert result["appearance_task_clearance"]["status"] == "not_assessed_inputs_invalid"
+    assert result["appearance_task_clearance"]["reason"] == "scene_appearance_clearance_positions_not_finite"
+
+
+def test_a_second_build_in_the_same_root_presses_again(tmp_path) -> None:
+    from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import apply_task_volume_clearance
+
+    appearance = _native_appearance(_particlefield(tmp_path / "field.usdc",
+                                                   _with_filler([UNDER_TRAY, INSIDE_TRAY, IN_FRONT])))
+    first = apply_task_volume_clearance(appearance, task_spec=TASK_SPEC, output_root=tmp_path)
+    second = apply_task_volume_clearance(appearance, task_spec=TASK_SPEC, output_root=tmp_path)
+    assert first["appearance_task_clearance"]["status"] == second["appearance_task_clearance"]["status"] == "pressed"
+    assert first["path"] != second["path"] and first["particlefield_digest"] == second["particlefield_digest"]

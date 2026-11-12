@@ -998,18 +998,46 @@ def apply_task_volume_clearance(
     other evidence. The source file is never changed. When nothing is pressed (nothing reaches,
     or the press would be too large, which is flagged), the appearance is returned unchanged
     except for the receipt.
+
+    A measurement never stops the build: inputs it cannot use (a degenerate object box, a mark
+    without a radius, a particle that is not finite) or a derived field it cannot write leave the
+    appearance exactly as it was, with a ``not_assessed_inputs_invalid`` receipt naming the reason.
     """
-    from .scene_appearance_task_clearance import (
-        SceneAppearanceClearanceError, clearance_plan, task_volumes,
-    )
+    from .scene_appearance_task_clearance import task_volumes
 
     if native_appearance.get("representation") != "particlefield_3d_gaussian_splat":
         return dict(native_appearance)
-    volumes = task_volumes(task_spec)
+    try:
+        volumes = task_volumes(task_spec)
+    except (KeyError, TypeError, ValueError) as exc:
+        return _clearance_not_assessed(native_appearance, exc)
     if not volumes:
         return dict(native_appearance)
+    try:
+        return _apply_task_volume_clearance(native_appearance, volumes=volumes, output_root=output_root)
+    except Exception as exc:  # noqa: BLE001 - a flag-only measurement: the build goes on with the field as it was
+        return _clearance_not_assessed(native_appearance, exc)
+
+
+def _clearance_not_assessed(native_appearance: Mapping[str, Any], exc: BaseException) -> dict[str, Any]:
+    """The appearance unchanged, with a receipt that says the clearance was not assessed and why."""
+    from .scene_appearance_task_clearance import SceneAppearanceClearanceError
+
+    reason = str(exc)[:200] if isinstance(exc, SceneAppearanceClearanceError) else (
+        f"{type(exc).__name__}:{str(exc)[:160]}")
+    return dict(native_appearance, appearance_task_clearance={
+        "schema_version": "scene_appearance_task_clearance.v3", "status": "not_assessed_inputs_invalid",
+        "reason": reason, "flags": [], "pressed_count": 0, "source_assets_mutated": False})
+
+
+def _apply_task_volume_clearance(native_appearance: Mapping[str, Any], *, volumes: list[dict[str, Any]],
+                                 output_root: Path) -> dict[str, Any]:
+    import tempfile
+
     import numpy as np
     from pxr import Usd, UsdGeom, Vt
+
+    from .scene_appearance_task_clearance import clearance_plan
 
     source = Path(str(native_appearance["path"]))
     try:
@@ -1032,11 +1060,7 @@ def apply_task_volume_clearance(
     # The largest standard deviation in world metres: the field's activated scales times its frame's scale.
     frame_scale = abs(float(np.linalg.det(matrix[:3, :3]))) ** (1.0 / 3.0)
     sigma = np.asarray(field.GetAttribute("scales").Get(), dtype=np.float64).reshape(-1, 3).max(axis=1) * frame_scale
-    try:
-        plan = clearance_plan(positions_world=world, sigma_world=sigma, opacities=opacities, volumes=volumes)
-    except SceneAppearanceClearanceError as exc:
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            f"episode_compiler_appearance_clearance_invalid:{exc}") from exc
+    plan = clearance_plan(positions_world=world, sigma_world=sigma, opacities=opacities, volumes=volumes)
     receipt = dict(plan["receipt"])
     result = dict(native_appearance)
     receipt["source_particlefield_digest"] = _sha256_and_size(source)[0]
@@ -1050,7 +1074,12 @@ def apply_task_volume_clearance(
     pressed_local = (plan["positions_world"] - matrix[3, :3]) @ np.linalg.inv(matrix[:3, :3])
     field.GetAttribute("positions").Set(Vt.Vec3fArray.FromNumpy(pressed_local.astype(np.float32)))
     directory = output_root / "native-appearance-clearance"
-    directory.mkdir(mode=0o750, exist_ok=False)
+    try:
+        directory.mkdir(mode=0o750, exist_ok=False)
+    except FileExistsError:
+        # A second build in the same root never meets the first one's file: it writes beside it.
+        directory = Path(tempfile.mkdtemp(prefix="native-appearance-clearance-", dir=output_root))
+        directory.chmod(0o750)
     derived = directory / "scene_appearance.usdc"
     if not stage.Export(str(derived)):
         raise TaskEvaluationNativeArenaEpisodeCompilerError("episode_compiler_appearance_clearance_write_failed")

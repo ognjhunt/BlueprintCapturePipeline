@@ -157,3 +157,24 @@ def test_the_area_guard_property_over_random_areas():
             symmetric = {**spec, "destination_position_bounds_world_m": {
                 "minimum": [tx - half[0], ty - half[1], 0.79], "maximum": [tx + half[0], ty + half[1], 0.81]}}
             assert not v.clear(symmetric, {})
+
+
+def test_the_varied_start_check_never_stops_a_plan_on_input_it_cannot_read():
+    """A measurement never stops a job (review of R2): unreadable input is not assessed, the draw stands."""
+    from blueprint_pipeline.varied_start_clearance import (
+        clear_start_parameters, shrink_area_off_start, start_clearance_m, uncleared_cells,
+    )
+
+    spec = {"start_pose_world": [0.0, 0.0, 0.8, 0, 0, 0, 1], "target_position_world_m": [0.3, 0.0, 0.8],
+            "destination_position_bounds_world_m": {"minimum": [0.2, -0.1, 0.7], "maximum": [0.4, 0.1, 0.9]}}
+    assert start_clearance_m(spec, {"object_start_x_delta_m": "far"}) is None
+    assert start_clearance_m(spec, {"object_start_x_delta_m": float("nan")}) is None
+    odd = {"object_start_x_delta_m": 0.25, "object_start_y_delta_m": 0.0}
+    assert clear_start_parameters(spec, odd, {"object_start_x_delta_m": (float("nan"), 0.3),
+                                              "object_start_y_delta_m": (-0.01, 0.01)}, key=("k",)) == odd
+    assert clear_start_parameters(spec, odd, {"object_start_x_delta_m": None,
+                                              "object_start_y_delta_m": (-0.01, 0.01)}, key=("k",)) == odd
+    assert uncleared_cells(spec, [None, {"cell_id": "a", "resolved_scenario": "x"},
+                                  {"cell_id": "b", "resolved_scenario": {"parameters": odd}}]) == ["b"]
+    nan_start = {**spec, "start_pose_world": [float("nan"), 0.0, 0.8]}
+    assert shrink_area_off_start(nan_start) == (nan_start, None)

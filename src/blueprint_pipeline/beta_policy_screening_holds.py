@@ -114,12 +114,6 @@ def packet_hold(status: Mapping[str, Any], *, release: str | None) -> tuple[str,
     return "team_scene_packet_blocked", _code(blockers[0] if blockers else None)
 
 
-#: Probe states nothing will clear by itself; and the one that may, read neither as a hold nor as progress.
-PROBE_SETUP_FAULTS = frozenset({"probe_root_unavailable", "profile_missing"})
-PROBE_FACTS_UNREADABLE = "scene_facts_unavailable"
-PROBE_UNDECIDED = "probe_undecided"
-
-
 def probe_hold(code: str, capture_root: str | Path, *, queue_root: str | Path | None = None,
                release: str | None = None) -> tuple[str, str | None] | None:
     """The hold a robot-free probe gate refusal stands for once nothing will decide the probe; else None.
@@ -158,14 +152,6 @@ def probe_hold(code: str, capture_root: str | Path, *, queue_root: str | Path | 
         terminal = final_terminal(state, queue_root=queue_root, release=release)
         if terminal is not None:
             return "robot_free_probe_not_completed", _code(terminal.get("status"))
-    if status in PROBE_SETUP_FAULTS:
-        # Nothing will decide the probe by itself (no run and no pointer, or no profile): held by name and
-        # paged (``alert_scene_check_failures``), never read as "in progress".
-        return "robot_free_probe_not_completed", status
-    if status == PROBE_FACTS_UNREADABLE:
-        # May clear by itself (a record still being written): not progress, so the stall rule holds it by
-        # name once it has lasted its bound (``stalled_source_hold``).
-        return PROBE_UNDECIDED
     return None
 
 
@@ -372,58 +358,7 @@ def deliver_holds(*, queue_root: str | Path, transport=None) -> dict[str, Any]:
     return {"acknowledged": sent, "pending": failed, **failure}
 
 
-#: The page a decided failed scene check raises: our fault to fix (the scene or its task contract cannot tell
-#: success from failure), never the site's step.
-SCENE_CHECK_FAILED_ALERT = "beta_screening_scene_check_failed"
-SCENE_CHECK_ALERTS_FILENAME = "scene_check_failed_alerts.json"
-
-
-def alert_scene_check_failures(queue_root: str | Path, *, webhook_url: str,
-                               poster: Any = None) -> dict[str, Any]:
-    """Page the operator once per job held ``robot_free_probe_failed``; a failed post is tried next pass.
-
-    The robot-free check decided that the built scene cannot tell success from failure, so no AI robot test
-    is run on it (its results would mean nothing). That is a fault in what Blueprint built. Never raises.
-    """
-    from .beta_policy_screening_coordinator import _lock, _read, _write
-
-    record: dict[str, Any] = {"posted_hold_ids": [], "posted_now": [], "last_error": None}
-    try:
-        store = _store(queue_root)
-        state_path = store.parent / SCENE_CHECK_ALERTS_FILENAME
-        with _lock(store.parent, ".holds.lock"):
-            rows = [_read(path) for path in sorted(store.glob("hold-*.json")) if not path.is_symlink()]
-            previous = _read(state_path) if state_path.is_file() else {}
-        posted = set(previous.get("posted_hold_ids") or [])
-        failed = sorted(row["publication"]["hold_id"] for row in rows
-                        if row["publication"].get("status") == "held"
-                        and (row["publication"].get("reason_code") == "robot_free_probe_failed"
-                             or row["publication"].get("reason_code") == "robot_free_probe_not_completed"
-                             and row["publication"].get("detail_code") in {*PROBE_SETUP_FAULTS, PROBE_FACTS_UNREADABLE}))
-        new = [hold for hold in failed if hold not in posted]
-        record["posted_hold_ids"] = sorted(posted)
-        if not new:
-            return record
-        if not webhook_url:
-            record["last_error"] = "operator_alert_route_unconfigured"
-        else:
-            from . import control_plane_capacity_controller as capacity
-
-            alerts = [{"severity": "page", "code": SCENE_CHECK_FAILED_ALERT, "mount": f"beta screening {hold}",
-                       "hold_id": hold} for hold in new]
-            try:
-                (poster or capacity.post_alert)(webhook_url, {"level": "critical", "mounts": [], "alerts": alerts})
-            except Exception as error:  # noqa: BLE001 - tried again next pass; the message may carry the URL
-                record["last_error"] = type(error).__name__
-            else:
-                record.update(posted_hold_ids=sorted(posted | set(new)), posted_now=new)
-        _write(state_path, record)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        record["last_error"] = type(exc).__name__
-    return record
-
-
 __all__ = ["HOLD_SCHEMA", "REASONS", "RELEASE", "ROUTE", "STALL_HOLD_AFTER_SECONDS", "STALL_HOLD_REASON",
-           "WINDOW_CLOSED", "SCENE_CHECK_FAILED_ALERT", "acknowledge_hold", "alert_scene_check_failures", "blocked_since", "campaign_hold", "deliver_holds", "hold_id",
+           "WINDOW_CLOSED", "acknowledge_hold", "blocked_since", "campaign_hold", "deliver_holds", "hold_id",
            "packet_hold", "pending_holds", "probe_hold", "publish_hold", "scene_preparation_probe_failed",
            "settle_hold", "stalled_source_hold"]

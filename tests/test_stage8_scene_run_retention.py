@@ -469,53 +469,6 @@ def test_a_team_half_refused_for_cold_storage_is_held_by_name_on_the_first_pass(
     assert (held["reason_code"], held["detail_code"]) == ("team_scene_packet_blocked", "scene_run_in_cold_storage")
 
 
-# A decided failure of the robot-free check pages us.
-
-def test_a_decided_failed_scene_check_pages_us_once(tmp_path):
-    root = tmp_path / "screening"
-    root.mkdir()
-    store = holds._store(root)
-    publication = {"hold_id": "hold-" + "a" * 32, "status": "held", "reason_code": "robot_free_probe_failed",
-                   "hold_digest": "sha256:" + "3" * 64}
-    (store / f"{publication['hold_id']}.json").write_text(json.dumps({"publication": publication}))
-    posts = []
-    first = holds.alert_scene_check_failures(root, webhook_url="https://alerts.invalid/hook",
-                                             poster=lambda url, payload: posts.append(payload))
-    assert first["posted_now"] == [publication["hold_id"]]
-    assert posts[0]["alerts"][0]["code"] == "beta_screening_scene_check_failed"
-    again = holds.alert_scene_check_failures(root, webhook_url="https://alerts.invalid/hook",
-                                             poster=lambda url, payload: posts.append(payload))
-    assert again["posted_now"] == [] and len(posts) == 1
-
-
-@pytest.mark.parametrize("state, expected", [
-    ({"status": "probe_root_unavailable"}, ("robot_free_probe_not_completed", "probe_root_unavailable")),
-    ({"status": "profile_missing"}, ("robot_free_probe_not_completed", "profile_missing")),
-    ({"status": "scene_facts_unavailable"}, holds.PROBE_UNDECIDED),
-])
-def test_no_probe_state_is_read_as_progress_for_ever(tmp_path, monkeypatch, state, expected):
-    """2f: before, each returned None and the screening pass published it as "in progress" (RELEASE)."""
-    from blueprint_pipeline import rigid_robot_free_probe_bundle as bundle
-
-    monkeypatch.setattr(bundle, "current_probe_state", lambda _root: state)
-    assert holds.probe_hold("team_evaluation_robot_free_probe_receipt_missing", tmp_path) == expected
-
-
-def test_a_probe_with_no_run_and_no_pointer_pages_us_once(tmp_path):
-    root = tmp_path / "screening"
-    root.mkdir()
-    store = holds._store(root)
-    publication = {"hold_id": "hold-" + "b" * 32, "status": "held", "reason_code": "robot_free_probe_not_completed",
-                   "detail_code": "probe_root_unavailable", "hold_digest": "sha256:" + "4" * 64}
-    (store / f"{publication['hold_id']}.json").write_text(json.dumps({"publication": publication}))
-    posts = []
-    holds.alert_scene_check_failures(root, webhook_url="https://alerts.invalid/hook",
-                                     poster=lambda url, payload: posts.append(payload))
-    holds.alert_scene_check_failures(root, webhook_url="https://alerts.invalid/hook",
-                                     poster=lambda url, payload: posts.append(payload))
-    assert len(posts) == 1
-
-
 def _kept_pointer(run: Path, files: dict[str, bytes]) -> None:
     import base64
     import hashlib

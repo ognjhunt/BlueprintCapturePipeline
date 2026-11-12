@@ -357,7 +357,7 @@ def validate_policy_episode_lifecycle(receipt: Mapping[str, Any]) -> dict[str, A
 #   is given. Tries run and count.
 # - ``visible_with_caveat``: each is seen enough in at least one policy camera, but one is partly
 #   covered there, or a policy camera does not show it at the start. Tries run and count, and
-#   the flags say what was hidden where.
+#   the record says what was hidden where (only whole-view flags are published).
 # - ``not_visible``: the object or the marker is not seen enough in any policy camera. No try
 #   runs; the reason is a fault in our scene, never a result for the policy.
 #
@@ -493,30 +493,35 @@ def visibility_verdict(gate: Any) -> dict[str, Any]:
     measured[TASK_OBJECT]["wrist"] = wrist
     if TARGET_MARKER in measured and "external" not in measured[TARGET_MARKER]:
         return unmeasured
-    # Never a stop: the tries run on every outcome, with flags that name the camera and what is
-    # hidden. A target none of the CHECKED policy cameras sees carries
-    # ``<target>_not_in_view_of_checked_cameras``: the gate measures the external camera and the wrist
-    # qualification only, so a policy that also reads ``exterior_right`` may still see it there.
+    # Never a stop: the tries run on every outcome. Only whole-view flags are published (``flags``):
+    # ``<target>_not_in_view_of_checked_cameras`` when none of the CHECKED policy cameras sees it (the gate
+    # measures the external camera and the wrist qualification only, so a policy that also reads
+    # ``exterior_right`` may still see it there), and ``<target>_partly_hidden`` when it is seen but no
+    # checked camera that measures coverage shows it clean (each of them shows it partly hidden). What each
+    # camera showed stays in the record (``camera_flags``, ``targets``) and is not published: the wrist
+    # camera often does not see the object at the start, which is no finding about the scene.
     flags: set[str] = set()
+    camera_flags: set[str] = set()
     unseen: list[str] = []
     for target in required:
         cameras = measured[target]
+        every = {**review[target], **cameras}
         if not any(reading["seen"] for reading in cameras.values()):
             unseen.append(target)
             flags.add(f"{target}_not_in_view_of_checked_cameras")
-        for role, reading in sorted(cameras.items()):
+        else:
+            covered = [reading for reading in every.values() if reading["clean"] is not None]
+            if covered and all(reading["seen"] and reading["clean"] is False for reading in covered):
+                flags.add(f"{target}_partly_hidden")
+        for role, reading in sorted(every.items()):
             if not reading["seen"]:
-                flags.add(f"{target}_not_in_view:{role}")
+                camera_flags.add(f"{target}_not_in_view:{role}")
             elif reading["clean"] is False:
-                flags.add(f"{target}_partly_hidden:{role}")
-        for role, reading in sorted(review[target].items()):
-            if not reading["seen"]:
-                flags.add(f"{target}_not_in_view:{role}")
-            elif reading["clean"] is False:
-                flags.add(f"{target}_partly_hidden:{role}")
-    outcome = NOT_VISIBLE if unseen else VISIBLE_WITH_CAVEAT if flags else VISIBLE
+                camera_flags.add(f"{target}_partly_hidden:{role}")
+    outcome = NOT_VISIBLE if unseen else VISIBLE_WITH_CAVEAT if flags or camera_flags else VISIBLE
     return {"schema_version": VISIBILITY_VERDICT_SCHEMA_VERSION, "outcome": outcome,
-            "flags": sorted(flags), "faults": [], "not_seen_by_the_checked_cameras": sorted(unseen),
+            "flags": sorted(flags), "camera_flags": sorted(camera_flags), "faults": [],
+            "not_seen_by_the_checked_cameras": sorted(unseen),
             "checked_cameras": sorted({role for target in required for role in measured[target]}
                                       | {role for target in required for role in review[target]}),
             "stops_the_tries": False,

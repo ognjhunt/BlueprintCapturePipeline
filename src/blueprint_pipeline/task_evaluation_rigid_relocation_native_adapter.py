@@ -421,6 +421,19 @@ def height_adjusted_flag(moved: Any) -> str | None:
 
 
 def _window_on_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> dict[str, Any]:
+    """``_move_window_to_goal_rest``, which never stops the build: on input it cannot use (a height that is not
+    a number, a spec without its target) the sealed window stands and the reading says why
+    (``window_alignment_not_assessed``)."""
+    try:
+        return _move_window_to_goal_rest(task_spec, reading)
+    except (ArithmeticError, KeyError, IndexError, TypeError, ValueError) as exc:
+        for key in ("window_aligned_to_goal_rest", "sealed_window_before_m", "moved_window_scoring_z_m"):
+            reading.pop(key, None)
+        reading["window_alignment_not_assessed"] = f"{type(exc).__name__}:{str(exc)[:160]}"
+        return task_spec
+
+
+def _move_window_to_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> dict[str, Any]:
     """The sealed height window, moved the least it must to hold where the object rests on its own support.
 
     Owner, 2026-11-12: a correct placement must be able to score, and the simulation rests the object on the
@@ -1346,13 +1359,17 @@ def _adapt_rigid_relocation_documents(
     # On every path: the scored area is kept off the start, only ever shrunk, never below the 5 cm disc
     # (``varied_start_clearance``; the destination step upstream already keeps it off, this is its guard).
     from .varied_start_clearance import shrink_area_off_start
-    native_task_spec, shrunk = shrink_area_off_start(native_task_spec)
-    if shrunk is not None:
-        affordance = dict(native_task_spec["interaction_affordance"])
-        affordance["support_alignment"] = {**(affordance.get("support_alignment") or {}),
-                                           "destination_area_off_start": shrunk}
-        affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
-        native_task_spec = {**native_task_spec, "interaction_affordance": affordance}
+    try:
+        shrunk_spec, shrunk = shrink_area_off_start(native_task_spec)
+        if shrunk is not None:
+            affordance = dict(shrunk_spec["interaction_affordance"])
+            affordance["support_alignment"] = {**(affordance.get("support_alignment") or {}),
+                                               "destination_area_off_start": shrunk}
+            affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+            shrunk_spec = {**shrunk_spec, "interaction_affordance": affordance}
+        native_task_spec = shrunk_spec
+    except (ArithmeticError, KeyError, IndexError, TypeError, ValueError):
+        pass  # A measurement never stops the build: the sealed area stands exactly as it was.
     native_definition = {
         "schema_version": "task_evaluation_native_task_definition.v1",
         "identity": dict(task["identity"]),

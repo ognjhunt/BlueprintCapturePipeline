@@ -44,8 +44,7 @@ def _seal_terminal(tmp_path, state, status, release):
     ({}, ("staging_refused", NEXT_RELEASE), None),
     # Queued, waiting or running: still being evaluated.
     ({}, None, None),
-    # Stage 8 2f: no run and no pointer is held by name, never read as progress for ever.
-    ({"status": "probe_root_unavailable"}, None, ("robot_free_probe_not_completed", "probe_root_unavailable")),
+    ({"status": "probe_root_unavailable"}, None, None),
 ])
 def test_a_probe_refusal_is_held_only_once_nothing_will_decide_the_probe(tmp_path, monkeypatch, state, terminal,
                                                                          expected):

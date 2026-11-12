@@ -130,6 +130,13 @@ def _grasp_screen(value: Any) -> dict[str, Any]:
         raise BetaPolicyScreeningPlanError(str(exc)) from exc
 
 
+def _grasp_screen_or_none(value: Any) -> dict[str, Any] | None:
+    try:
+        return _grasp_screen(value)
+    except BetaPolicyScreeningPlanError:
+        return None
+
+
 def money(value: Any) -> Decimal:
     if not isinstance(value, str) or not _MONEY.fullmatch(value):
         raise BetaPolicyScreeningPlanError("beta_screening_money_invalid")
@@ -662,7 +669,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     if grasp is not None:
         if not isinstance(grasp, dict) or any(not isinstance(key, str) for key in grasp):
             raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
-        grasp = {key: _grasp_screen(value) for key, value in grasp.items()}
+        # A record it cannot read is left off its row (a flag-only check, never a reason to stop planning).
+        grasp = {key: value for key, value in grasp.items() if _grasp_screen_or_none(value) is not None}
     available = capabilities.get("credentials_available", [])
     if not isinstance(available, list) or any(not isinstance(name, str) for name in available):
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")

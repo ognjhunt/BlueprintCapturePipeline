@@ -125,8 +125,8 @@ def test_atlas_preview_waits_on_the_sentence_and_rechecks_it(monkeypatch):
     assert after["retry_at_epoch"] == 1000 + preview.AUTHORITY_RECHECK_SECONDS
 
 
-def test_a_job_with_no_sentence_takes_no_room_in_the_month(tmp_path):
-    """A job waiting for its sentence has started nothing: the check runs before the start-room record."""
+def test_a_job_with_no_sentence_starts_nothing(tmp_path):
+    """A job waiting for its sentence has started nothing: the check runs before any paid step."""
     import json
     import inspect
     from blueprint_pipeline import pubsub_handoff_scene_operations as operations
@@ -139,7 +139,7 @@ def test_a_job_with_no_sentence_takes_no_room_in_the_month(tmp_path):
     (tmp_path / "pipeline/website_task_context.json").write_text(json.dumps(NAMED))
     require_task_named(tmp_path)
     source = inspect.getsource(operations)
-    assert source.index("require_task_named(capture_root)") < source.index("require_job_start_room(capture_root=")
+    assert source.index("require_task_named(capture_root)") < source.index("# Capture delivery prepares the site/task package.")
 
 
 def test_the_wait_is_reported_as_waiting_on_the_site_only_when_the_website_accepts_it(monkeypatch):

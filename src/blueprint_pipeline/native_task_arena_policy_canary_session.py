@@ -107,8 +107,8 @@ def observation_quality_flags(gate: Any, *, run_kind: Any) -> list[str] | None:
 
     A gate that carries its camera measurements is read for what the cameras really
     showed (``policy_episode_lifecycle.visibility_verdict``): its visibility blockers are
-    replaced by the verdict's own flags, which name the camera and what is hidden. That is
-    never a stop, even when no policy camera sees the object (``task_object_not_in_view``):
+    replaced by the verdict's own whole-view flags (what is hidden from every checked camera). That is
+    never a stop, even when no policy camera sees the object (``task_object_not_in_view_of_checked_cameras``):
     the owner's rule is that the tries run, and a camera check cannot change on an unchanged
     scene, so it must never cost a new paid start.
     """
