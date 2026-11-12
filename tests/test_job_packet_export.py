@@ -11,7 +11,9 @@ import json
 import os
 import random
 import re
+import shutil
 import string
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -72,6 +74,13 @@ def _job(tmp_path: Path, *, trial: str = "zero", simulation: bool = True) -> Job
     _write(capture / "pipeline" / "website_task_context.json", _context())
     _write(capture / "pipeline_job_ledger.json", {"schema_version": "pipeline_job_ledger.v1", "status": "terminal_success"})
     _write(capture / "raw" / "video.mp4", b"synthetic video bytes")
+    # As the WebApp's browser upload writes it (browserCaptureManifest.ts): the consent the delivery gate reads.
+    _write(capture / "raw" / "manifest.json", {"schema_version": "v1", "scene_id": "site-req-1", "capture_id": CAPTURE,
+                                               "site_submission_id": "req-1", "capture_rights": {
+                                                   "derived_scene_generation_allowed": True, "consent_status": "granted",
+                                                   "consent_revoked": False}})
+    _pull_record(tmp_path / "job", [""], ["scenes/site-req-1/website_withdrawal",
+                                          f"scenes/site-req-1/captures/{CAPTURE}/pipeline/consent_takedown"])
     prep = capture / "pipeline" / "website_scene_preparation"
     _write(prep / "preparation.json", {
         "digest": "sha256:" + "b" * 64,
@@ -95,7 +104,7 @@ def _job(tmp_path: Path, *, trial: str = "zero", simulation: bool = True) -> Job
                  {"model_id": "universal_robots_ur10e", "name": "UR10e", "manufacturer": "Universal Robots",
                   "body_type": "fixed_arm", "verdict": "doesnt_fit", "reasons": ["payload: 2.71828 kg over"],
                   "checks": [{"check": "payload", "result": "fail", "reason": "2.71828 kg over"}]}]}})
-    inputs = {"capture_dir": capture}
+    inputs = {"capture_dir": capture, "pull_root": tmp_path / "job"}
     if simulation:
         _write(capture / "pipeline" / "atlas" / "atlas_refined_splat.spz", b"splat")
         _write(capture / "pipeline" / "atlas" / "atlas_mesh_levelled.glb", b"glb")
@@ -121,6 +130,42 @@ def _job(tmp_path: Path, *, trial: str = "zero", simulation: bool = True) -> Job
         _write(tmp_path / "clips" / "01-run-external.mp4", b"clip")
         inputs["review_videos_dir"] = tmp_path / "clips"
     return JobInputs(**inputs)
+
+
+def _pull_record(root: Path, buckets: list[str], absent: list[str]) -> Path:
+    return _write(root / "pull_record.json", {"schema_version": "job_packet_pull_record.v1", "buckets": buckets,
+                                              "absent_on_host": absent})
+
+
+@pytest.fixture(autouse=True)
+def _catalog_copy(tmp_path_factory, monkeypatch):
+    """The screening catalog loader refuses a group-writable file; read a private copy, whatever the checkout's umask."""
+    copy_path = tmp_path_factory.mktemp("catalog") / "beta_policy_candidates.v1.json"
+    shutil.copyfile(packet.POLICY_CATALOG_PATH, copy_path)
+    copy_path.chmod(0o644)
+    monkeypatch.setattr(packet, "POLICY_CATALOG_PATH", copy_path)
+    yield
+    for stop in _UNBLOCK:
+        stop.set()
+    _UNBLOCK.clear()
+
+
+_UNBLOCK: list[threading.Event] = []
+
+
+def _unblock_readers(path: Path) -> None:
+    """Open the pipe's write end as soon as anyone reads it, so a reader that should never have opened it
+    gets end-of-file at once and its test fails instead of hanging."""
+    stop = threading.Event()
+    _UNBLOCK.append(stop)
+
+    def writer():
+        while not stop.wait(0.02):
+            try:
+                os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:
+                continue
+    threading.Thread(target=writer, daemon=True).start()
 
 
 def _out(tmp_path: Path, name: str = "out") -> Path:
@@ -225,10 +270,10 @@ def test_summary_rows_take_names_from_the_catalog_and_leave_out_the_rest(tmp_pat
     for secret in ("Marigold", "Quillfeather", "Jane", "40.7128", "blue tray", "555-0142"):
         assert secret not in sheet
     assert "| UR5e | Universal Robots | fixed arm | fits on published figures | none |" in sheet
-    assert "1 row left out: a check this tool does not know." in sheet
-    assert "1 row left out: not a known robot." in sheet and "1 row left out: not a known verdict." in sheet
+    # The fit table: an unknown check, an unknown robot and an unknown verdict; the trial: a repeat that also has
+    # an unknown status, and one with more successes than tries.
+    assert sheet.count("Some rows were left out (3)") == 1 and sheet.count("Some rows were left out (2)") == 1
     assert "| π0.5 DROID | completed | 10 | 0 of 10 |" in sheet
-    assert "1 row left out: not a known status." in sheet and "1 row left out: counts out of range." in sheet
     assert "Trial status: not recorded." in sheet
 
 
@@ -254,6 +299,7 @@ def _set(value, path, new):
 GATE_FIELDS = {"website_task_context.json": {("schema_version",), ("request_id",), ("scene_id",), ("capture_id",),
                                              ("capture_rights", "consent_status")},
                "pipeline_job_ledger.json": {("status",)},
+               "manifest.json": {("capture_rights", "consent_status")},
                "publication.json": {("site_id",), ("source", "capture_id")}}
 
 
@@ -266,7 +312,7 @@ def test_property_no_planted_secret_reaches_any_byte_of_the_summary(tmp_path: Pa
     for path in sorted(tmp_path.rglob("*.json")):
         value = json.loads(path.read_text())
         for leaf in list(_leaves(value)):
-            if leaf in GATE_FIELDS.get(path.name, set()) or rng.random() >= share:
+            if path.name == "pull_record.json" or leaf in GATE_FIELDS.get(path.name, set()) or rng.random() >= share:
                 continue
             token = "".join(rng.choice(string.ascii_letters + string.digits) for _ in range(10))
             secret = rng.choice([token, f"{token} Lane", f"{token}’s Bakery", f"{token[:5]}\n{token[5:]}",
@@ -354,10 +400,58 @@ def _fifo(relative):
         if path.exists():
             path.unlink()
         os.mkfifo(path)
+        _unblock_readers(path)
     return change
 
 
+def _record_edit(change):
+    def apply(inputs):
+        _edit(inputs.pull_root / "pull_record.json", change)
+    return apply
+
+
+def _takedown_open(inputs):
+    _write(inputs.capture_dir / "pipeline" / "consent_takedown" / "takedown_manifest.json", {"takedown_open": True})
+    _record_edit(lambda value: value["absent_on_host"].remove(
+        f"scenes/site-req-1/captures/{CAPTURE}/pipeline/consent_takedown"))(inputs)
+
+
+def _both(*changes):
+    return lambda inputs: [change(inputs) for change in changes]
+
+
 REFUSALS = {
+    "takedown_manifest_open": (_takedown_open, "job_packet_delivery_gate_blocked_open_consent_takedown"),
+    "consent_unverifiable": (lambda inputs: (inputs.capture_dir / "raw" / "manifest.json").unlink(),
+                             "job_packet_delivery_gate_blocked_consent_state_unverifiable"),
+    "consent_file_bom": (_file("raw/rights_consent.json", "\ufeff" + json.dumps({"consent_status": "revoked"})),
+                         "job_packet_consent_state_unreadable"),
+    "consent_file_truncated": (_file("raw/rights_consent.json", '{"consent_status":"revo'), "job_packet_consent_state_unreadable"),
+    "consent_file_list": (_file("rights_consent.json", '[{"consent_status":"revoked"}]'), "job_packet_consent_state_unreadable"),
+    "consent_file_duplicate_keys": (_file("rights_consent.json", '{"consent_status":"revoked","consent_status":"granted"}'),
+                                    "job_packet_consent_state_unreadable"),
+    "first_active_second_revoked": (_both(_file("raw/rights_consent.json", {"consent_status": "granted"}),
+                                          _file("raw/manifest.json", {"consent_status": "revoked"})),
+                                    "job_packet_capture_withdrawn"),
+    "consent_expired": (_rights(consent_expires_at="2020-01-01T00:00:00Z"), "job_packet_consent_expired"),
+    "ledger_code_as_key": (_file("pipeline_job_ledger.json", {"status": "terminal_success",
+                                                             "terminal": {"website_run_closed_by_owner": True}}),
+                           "job_packet_job_closed_by_owner"),
+    "ledger_code_in_sentence": (_ledger(last_error="WebApp said consent_expired for this job"),
+                                "job_packet_capture_authority_ended"),
+    "ledger_code_as_status": (_file("pipeline_job_ledger.json", {"status": "source_revoked"}),
+                              "job_packet_capture_authority_ended"),
+    "tombstone_dir_other_bucket": (lambda inputs: (inputs.pull_root / "bkt" / "scenes" / "site-req-1" / "website_withdrawal"
+                                                   / "tombstone.json").mkdir(parents=True), "job_packet_capture_withdrawn"),
+    "no_pull_record": (lambda inputs: (inputs.pull_root / "pull_record.json").unlink(), "job_packet_withdrawal_state_not_pulled"),
+    "withdrawal_not_pulled": (_record_edit(lambda value: value["absent_on_host"].remove("scenes/site-req-1/website_withdrawal")),
+                              "job_packet_withdrawal_state_not_pulled"),
+    "takedown_not_pulled": (_record_edit(lambda value: value["absent_on_host"].remove(
+        f"scenes/site-req-1/captures/{CAPTURE}/pipeline/consent_takedown")), "job_packet_withdrawal_state_not_pulled"),
+    "recorded_absent_but_pulled": (lambda inputs: (inputs.capture_dir.parent.parent / "website_withdrawal").mkdir(),
+                                   "job_packet_withdrawal_state_not_pulled"),
+    "bucket_not_in_record": (lambda inputs: (inputs.pull_root / "bkt" / "scenes").mkdir(parents=True),
+                             "job_packet_withdrawal_state_not_pulled"),
     "status_withdrawn": (_rights(consent_status="withdrawn"), "job_packet_capture_withdrawn"),
     "status_rescinded": (_rights(consent_status="rescinded"), "job_packet_capture_withdrawn"),
     "status_pending": (_rights(consent_status="pending"), "job_packet_consent_not_active"),
@@ -418,7 +512,7 @@ def test_a_capture_pulled_without_the_site_root_layout_is_refused(tmp_path: Path
     flat = tmp_path / "flat" / "x" / "y" / CAPTURE
     flat.parent.mkdir(parents=True)
     inputs.capture_dir.rename(flat)
-    assert _refused(JobInputs(capture_dir=flat), tmp_path) == "job_packet_withdrawal_state_unknown"
+    assert _refused(JobInputs(capture_dir=flat), tmp_path) == "job_packet_pull_root_required"
     assert _refused(JobInputs(capture_dir=flat, pull_root=tmp_path / "flat"), tmp_path) == "job_packet_withdrawal_state_unknown"
 
 
@@ -429,6 +523,9 @@ def test_a_capture_under_a_bucket_is_checked_across_every_bucket(tmp_path: Path)
     moved.parent.mkdir(parents=True)
     inputs.capture_dir.parent.parent.rename(moved)
     capture = moved / "captures" / CAPTURE
+    _pull_record(root, ["bucketA", "bucketB"], ["bucketA/scenes/site-req-1/website_withdrawal",
+                                                "bucketB/scenes/site-req-1/website_withdrawal",
+                                                f"bucketA/scenes/site-req-1/captures/{CAPTURE}/pipeline/consent_takedown"])
     manifest = build_job_packet(JobInputs(capture_dir=capture, pull_root=root), output_root=_out(tmp_path))
     assert manifest["level"] == "summary"
     _write(root / "bucketB" / "scenes" / "site-req-1" / "website_withdrawal" / "tombstone.json", "{}")
@@ -683,3 +780,69 @@ def test_the_command_writes_and_refuses(tmp_path: Path, capsys) -> None:
     with pytest.raises(SystemExit):
         script.main([*common, "--output-root", str(tmp_path / "o2"), "--level", "full", "--blueprint-owned-capture",
                      "--capture-id", CAPTURE, "--approved-by", "owner", "--approval-evidence", "yes"])
+
+
+# --- round 2 ----------------------------------------------------------------------------------------------
+
+def test_the_delivery_gate_allows_an_ordinary_website_job(tmp_path: Path) -> None:
+    from blueprint_pipeline.consent_takedown import evaluate_delivery_time_takedown_gate
+    inputs = _job(tmp_path)
+    gate = evaluate_delivery_time_takedown_gate(capture_root=inputs.capture_dir, surface="job_packet")
+    assert gate["status"] == "allowed" and gate["consent"]["source_path"].endswith("raw/manifest.json")
+    assert packet.job_state_refusal(inputs.capture_dir, _context(), pull_root=inputs.pull_root) is None
+
+
+def test_the_pipelines_withdrawal_readers_are_obeyed(tmp_path, monkeypatch) -> None:
+    import blueprint_pipeline.screening_site_withdrawal as screening
+    import blueprint_pipeline.website_atlas_preview_store as preview
+    inputs = _job(tmp_path)
+    monkeypatch.setattr(screening, "site_withdrawal_state", lambda *args, **kwargs: "unknown")
+    assert _refused(inputs, tmp_path / "a") == "job_packet_withdrawal_state_unknown"
+    monkeypatch.undo()
+    seen = []
+    monkeypatch.setattr(preview, "capture_withdrawn", lambda root: seen.append(root) or True)
+    assert _refused(inputs, tmp_path / "b") == "job_packet_capture_withdrawn" and seen == [inputs.capture_dir]
+
+
+def test_duplicate_keys_in_the_task_context_are_refused(tmp_path: Path) -> None:
+    inputs = _job(tmp_path)
+    path = _context_path(inputs)
+    path.write_text(path.read_text()[:-1] + ', "capture_id": "walkthrough-other"}')
+    assert _refused(inputs, tmp_path) == "job_packet_input_unreadable"
+
+
+def test_a_group_writable_catalog_is_a_clean_refusal(tmp_path: Path) -> None:
+    packet.POLICY_CATALOG_PATH.chmod(0o664)
+    assert _refused(_job(tmp_path), tmp_path) == "job_packet_policy_catalog_unreadable"
+
+
+@pytest.mark.parametrize(("scored", "succeeded"), [(0, 0), (1001, 3), (5, 6), (True, 0), (10, -1)])
+def test_trial_counts_out_of_bounds_are_left_out(tmp_path, scored, succeeded) -> None:
+    inputs = _job(tmp_path)
+    _edit(inputs.screening_publication, lambda value: value["candidates"][0].update(
+        episodes_scored=scored, episodes_succeeded=succeeded))
+    sheet = (Path(build_job_packet(inputs, output_root=_out(tmp_path))["packet_dir"]) / "JOB_SHEET.md").read_text()
+    assert "No row of the trial could be shown." in sheet and "Some rows were left out (1)" in sheet
+
+
+def test_repeats_are_left_out_and_large_counts_are_capped(tmp_path: Path) -> None:
+    inputs = _job(tmp_path)
+    _edit(inputs.screening_publication, lambda value: value.update(
+        candidates=value["candidates"] * 3 + [{"candidate_id": "junk"}] * 7))
+    handoff = inputs.capture_dir / "pipeline" / "website_scene_preparation" / "handoff.json"
+    _edit(handoff, lambda value: value["robot_fit_table"].update(
+        rows=value["robot_fit_table"]["rows"] * 4 + [{"model_id": "x"}] * 42))
+    sheet = (Path(build_job_packet(inputs, output_root=_out(tmp_path))["packet_dir"]) / "JOB_SHEET.md").read_text()
+    assert sheet.count("| π0.5 DROID |") == 1 and sheet.count("| UR5e |") == 1 and sheet.count("| UR10e |") == 1
+    assert "Some rows were left out (9)" in sheet and "Some rows were left out (more than 20)" in sheet
+    assert "48" not in sheet
+
+
+@pytest.mark.parametrize("approved_on", ["2026-11-13", "2026-08-13", "2020-01-01"])
+def test_an_approval_dated_in_the_future_or_over_90_days_ago_is_refused(tmp_path, approved_on) -> None:
+    approval = OwnedCaptureApproval(CAPTURE, "owner", "yes", approved_on)
+    assert _refused(_job(tmp_path), tmp_path, level="full", owned=approval, now=NOW,
+                    owned_list=_owned_list(tmp_path, [CAPTURE])) == "job_packet_owned_capture_approval_out_of_date"
+    assert build_job_packet(_job(tmp_path / "ok"), output_root=_out(tmp_path, "ok-out"), level="full", now=NOW,
+                            owned=OwnedCaptureApproval(CAPTURE, "owner", "yes", "2026-08-14"),
+                            owned_list=_owned_list(tmp_path, [CAPTURE]))["permission_basis"]["approved_on"] == "2026-08-14"

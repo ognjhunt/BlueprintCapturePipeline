@@ -28,7 +28,11 @@ Both levels refuse what the Pipeline itself would treat as withdrawn, not consen
 
 - withdrawal: ``screening_site_withdrawal.site_withdrawal_state`` over the pull root (every
   ``<root>[/<bucket>]/scenes/<site>/website_withdrawal/tombstone.json``) and
-  ``website_atlas_preview_store.capture_withdrawn`` on the capture;
+  ``website_atlas_preview_store.capture_withdrawn`` on the capture; the pull root's ``pull_record.json``
+  must show every such place, and the capture's takedown directory, pulled or absent on the host;
+- delivery: ``consent_takedown.evaluate_delivery_time_takedown_gate`` must say ``allowed`` (an open
+  takedown manifest or a consent state the files cannot verify is refused), and every consent file
+  present must parse;
 - consent: ``consent_takedown.read_consent_state`` (its consent files) and
   ``consent_normalization.resolve_consent_signals`` on the task context, which must be ``active``;
 - authority ended: ``pubsub_handoff_listener.AUTHORITY_ENDING_CODES`` and ``authority_ending_code``
@@ -98,7 +102,10 @@ STATUS_WORDS = {"pending": "waiting to run", "waitlisted": "waiting for budget",
                 "deferred": "not run"}
 CAMPAIGN_WORDS = {"completed": "completed", "running": "still running", "queued": "waiting to run",
                   "blocked": "stopped", "reconciliation_required": "being reconciled"}
-MAX_TRIES = 10_000
+MAX_TRIES = 1000
+#: The most left-out rows the summary counts out loud; above it, "more than" this.
+MAX_SHOWN_LEFT_OUT = 20
+MAX_APPROVAL_AGE_DAYS = 90
 #: Plain sentences for the scene estimate flags (``atlas_scene_estimates``).
 ESTIMATE_SENTENCES = {
     "scene_estimate:level": "Which way is up was not observed; the reconstruction provider's up direction stands in.",
@@ -135,7 +142,8 @@ class JobInputs:
     first_look_file: Path | None = None
     video: Path | None = None
     #: The directory the operator pulled into, laid out as the host's site roots
-    #: (``<root>[/<bucket>]/scenes/site-<request>/captures/<capture>``). Default: the directory above ``scenes``.
+    #: (``<root>[/<bucket>]/scenes/site-<request>/captures/<capture>``) with its ``pull_record.json``.
+    #: Required: a call without it is refused.
     pull_root: Path | None = None
 
 
@@ -230,8 +238,8 @@ def _number(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
 
 
-def _count(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_TRIES else None
+def _count(value: Any, *, low: int = 0, high: int = MAX_TRIES) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high else None
 
 
 def _sha256(path: Path) -> str:
@@ -255,11 +263,17 @@ def _texts(value: Any) -> Iterable[str]:
 
 # --- the hard stops -----------------------------------------------------------------------------------
 
-def _layout(capture_dir: Path, pull_root: Path | None) -> Path:
-    """The pull root, when the capture sits where the host's site roots put it; else a refusal."""
-    parents = capture_dir.absolute().parents
-    root = pull_root if pull_root is not None else parents[3] if len(parents) > 3 else None
-    if root is None or root.is_symlink() or not root.is_dir():
+PULL_RECORD = "pull_record.json"
+PULL_RECORD_SCHEMA = "job_packet_pull_record.v1"
+TAKEDOWN_DIRECTORY = "pipeline/consent_takedown"
+
+
+def _layout(capture_dir: Path, pull_root: Path | None) -> tuple[Path, str]:
+    """The pull root and the capture's bucket ('' at the root), when the layout is the host's; else a refusal."""
+    if pull_root is None:
+        raise JobPacketRefused("job_packet_pull_root_required")
+    root = Path(pull_root)
+    if root.is_symlink() or not root.is_dir():
         raise JobPacketRefused("job_packet_withdrawal_state_unknown", "pull root")
     try:
         relative = capture_dir.absolute().relative_to(root.absolute()).parts
@@ -269,47 +283,133 @@ def _layout(capture_dir: Path, pull_root: Path | None) -> Path:
     if (len(relative) not in (4, 5) or shape[0] != "scenes" or not shape[1].startswith("site-")
             or shape[2] != "captures" or any(part.startswith(".") for part in relative)):
         raise JobPacketRefused("job_packet_withdrawal_state_unknown", "layout")
-    return root
+    return root, relative[0] if len(relative) == 5 else ""
 
 
-def job_state_refusal(capture_dir: Path, context: Mapping[str, Any], *, pull_root: Path | None = None) -> str | None:
+def _pulled_or_absent(root: Path, capture_dir: Path, bucket: str) -> None:
+    """Every place a withdrawal or takedown record could live was pulled, or recorded as absent on the host.
+
+    The operator writes ``pull_record.json`` at the pull root: ``buckets`` (every site-root bucket the
+    host has, ``""`` for the root itself, from ``door ls``) and ``absent_on_host`` (the places the door
+    reported missing). A place neither pulled nor recorded absent is a refusal naming it.
+    """
+    try:
+        record = _read_json(root, root / PULL_RECORD, required=True)
+    except JobPacketRefused as exc:
+        raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", "write pull_record.json at the pull root") from exc
+    buckets, absent = record.get("buckets"), record.get("absent_on_host")
+    if (record.get("schema_version") != PULL_RECORD_SCHEMA or not isinstance(buckets, list) or not isinstance(absent, list)
+            or not all(isinstance(item, str) and "/" not in item and item not in {".", ".."} for item in buckets)
+            or not all(isinstance(item, str) for item in absent) or bucket not in buckets):
+        raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", "pull_record.json invalid")
+    local = {""} if (root / "scenes").is_dir() else set()
+    local |= {entry.name for entry in root.iterdir() if entry.is_dir() and not entry.is_symlink()
+              and entry.name != "scenes" and (entry / "scenes").is_dir()}
+    if not local <= set(buckets):
+        raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", "a pulled bucket is not in pull_record.json")
+    site = capture_dir.parent.parent.name
+    capture_relative = capture_dir.absolute().relative_to(root.absolute()).as_posix()
+    needed = [f"{b}/scenes/{site}/website_withdrawal".lstrip("/") for b in buckets]
+    needed.append(f"{capture_relative}/{TAKEDOWN_DIRECTORY}")
+    for place in needed:
+        here = root / place
+        if place in absent:
+            if os.path.lexists(here):
+                raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", f"{place} is recorded absent but present")
+        elif here.is_symlink() or not here.is_dir():
+            raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", f"pull {place}, or record it absent")
+
+
+def _ended_or_closed(texts: list[str]) -> str | None:
+    from .pubsub_handoff_listener import AUTHORITY_ENDING_CODES, authority_ending_code
+    if any(_OWNER_CLOSED.search(text) for text in texts):
+        return "job_packet_job_closed_by_owner"
+    token = re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(map(re.escape, sorted(AUTHORITY_ENDING_CODES))) + r")(?![A-Za-z0-9_-])")
+    if any(token.search(text) or authority_ending_code(ValueError(text)) for text in texts):
+        return "job_packet_capture_authority_ended"
+    return None
+
+
+def _keys_and_texts(value: Any) -> Iterable[str]:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            yield str(key)
+            yield from _keys_and_texts(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _keys_and_texts(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def _expired(value: Any, now: datetime) -> bool:
+    """Any ``*expires_at*`` field at or before now, or unreadable, in the task context or its rights."""
+    for source in (value, _mapping(_mapping(value).get("capture_rights"))):
+        for key, item in _mapping(source).items():
+            if "expires_at" not in str(key) or item is None:
+                continue
+            try:
+                moment = datetime.fromisoformat(str(item).replace("Z", "+00:00"))
+            except ValueError:
+                return True
+            if moment.tzinfo is None or moment <= now:
+                return True
+    return False
+
+
+def job_state_refusal(capture_dir: Path, context: Mapping[str, Any], *, pull_root: Path | None = None,
+                      now: datetime | None = None) -> str | None:
     """Why this job may not be packed at any level (withdrawn, not consented, ended, closed), or None."""
     from .consent_normalization import resolve_consent_signals
-    from .consent_takedown import read_consent_state
-    from .pubsub_handoff_listener import AUTHORITY_ENDING_CODES, authority_ending_code
+    from .consent_takedown import TAKEDOWN_MANIFEST_RELATIVE_PATH, evaluate_delivery_time_takedown_gate
     from .screening_site_withdrawal import SITE_ROOTS_ENV, site_withdrawal_state
     from .website_atlas_preview_store import capture_withdrawn
 
     try:
-        root = _layout(capture_dir, pull_root)
+        root, bucket = _layout(capture_dir, pull_root)
     except JobPacketRefused as exc:
         return exc.code
-    site_state = site_withdrawal_state(capture_dir.parent.parent.name, environ={SITE_ROOTS_ENV: str(root)})
+    site = capture_dir.parent.parent.name
+    # Whatever a tombstone is (a file, a directory, a link, a pipe), its presence is a withdrawal; answering
+    # first keeps a pipe from ever being opened by the pipeline's readers below.
+    places = [root / "scenes" / site] + [entry / "scenes" / site for entry in root.iterdir() if entry.name != "scenes"]
+    if any(os.path.lexists(place / "website_withdrawal" / "tombstone.json") for place in places):
+        return "job_packet_capture_withdrawn"
+    site_state = site_withdrawal_state(site, environ={SITE_ROOTS_ENV: str(root)})
     if site_state == "withdrawn":
         return "job_packet_capture_withdrawn"
     if site_state != "not_withdrawn":
         return "job_packet_withdrawal_state_unknown"
-    if os.path.lexists(capture_dir.parent.parent / "website_withdrawal" / "tombstone.json"):
-        # Whatever it is (a file, a directory, a link, a pipe), capture_withdrawn would call it withdrawn;
-        # answering here keeps a pipe from ever being opened.
-        return "job_packet_capture_withdrawn"
     try:
-        for relative in CONSENT_FILES:  # read_consent_state opens these; a FIFO or a link out must not reach it
+        _pulled_or_absent(root, capture_dir, bucket)
+    except JobPacketRefused as exc:
+        return exc.code
+    # Every consent or takedown file the pipeline reads must be a regular file that parses as an object;
+    # a present file that does not is a refusal, never skipped.
+    consent_records = []
+    try:
+        for relative in (*CONSENT_FILES, TAKEDOWN_MANIFEST_RELATIVE_PATH):
             if os.path.lexists(capture_dir / relative):
-                _regular(_inside(capture_dir, capture_dir / relative), relative)
+                consent_records.append((relative, _read_json(capture_dir, capture_dir / relative)))
     except JobPacketRefused:
         return "job_packet_consent_state_unreadable"
     if capture_withdrawn(capture_dir):
         return "job_packet_capture_withdrawn"
-    recorded = read_consent_state(capture_dir)
-    if recorded.get("source_path") and recorded.get("state") != "active":
-        # A consent file the pipeline reads exists and does not say active.
-        return "job_packet_capture_withdrawn" if recorded.get("state") == "revoked" else "job_packet_consent_not_active"
+    for relative, value in consent_records:  # each one, not only the first the reader stops at
+        if relative == TAKEDOWN_MANIFEST_RELATIVE_PATH:
+            continue
+        signals = resolve_consent_signals(value)
+        if signals["state"] == "revoked":
+            return "job_packet_capture_withdrawn"
+        if signals["has_consent_fields"] and signals["state"] != "active":
+            return "job_packet_consent_not_active"
     signals = resolve_consent_signals(context)
     if signals["state"] == "revoked":
         return "job_packet_capture_withdrawn"
     if signals["state"] != "active":
         return "job_packet_consent_not_active"
+    if _expired(context, now or datetime.now(timezone.utc)):
+        return "job_packet_consent_expired"
     rights = context.get("capture_rights")
     if (not isinstance(rights, Mapping) or rights.get("derived_scene_generation_allowed") is not True
             or rights.get("consent_revoked") is not False):
@@ -321,14 +421,17 @@ def job_state_refusal(capture_dir: Path, context: Mapping[str, Any], *, pull_roo
         return "job_packet_job_state_unreadable"
     if ledger is None:
         return "job_packet_job_ledger_missing"
-    texts = [*_texts(ledger), *_texts(receipt or {})]
-    if any(_OWNER_CLOSED.search(text) for text in texts):
-        return "job_packet_job_closed_by_owner"
-    if (ledger.get("status") == AUTHORITY_ENDED_STATUS or (receipt or {}).get("status") == "authority_ended"
-            or any(text.strip() in AUTHORITY_ENDING_CODES or authority_ending_code(ValueError(text)) for text in texts)):
+    ended = _ended_or_closed([*_keys_and_texts(ledger), *_keys_and_texts(receipt or {})])
+    if ended:
+        return ended
+    if ledger.get("status") == AUTHORITY_ENDED_STATUS or (receipt or {}).get("status") == "authority_ended":
         return "job_packet_capture_authority_ended"
     if ledger.get("status") == "corrupt" or not isinstance(ledger.get("status"), str):
         return "job_packet_job_state_unreadable"
+    # A packet is a delivery: the pipeline's own serve-time gate must allow it.
+    gate = evaluate_delivery_time_takedown_gate(capture_root=capture_dir, surface="job_packet")
+    if gate.get("status") != "allowed":
+        return "job_packet_delivery_gate_" + re.sub(r"[^a-z0-9_]", "_", str(gate.get("status")))
     return None
 
 
@@ -350,7 +453,7 @@ def owned_capture_ids(path: Path | None = None) -> set[str]:
 
 
 def permission_basis(level: str, context: Mapping[str, Any], *, owned: OwnedCaptureApproval | None,
-                     owned_list: Path | None = None) -> dict[str, Any]:
+                     owned_list: Path | None = None, now: datetime | None = None) -> dict[str, Any]:
     """Which rule allows this level, or a refusal."""
     if level == "summary":
         return {"rule": "summary_only"}
@@ -365,6 +468,9 @@ def permission_basis(level: str, context: Mapping[str, Any], *, owned: OwnedCapt
         approved_on = None
     if not owned.approved_by.strip() or not owned.approval_evidence.strip() or approved_on is None:
         raise JobPacketRefused("job_packet_owned_capture_approval_missing")
+    today = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+    if approved_on > today or (today - approved_on).days > MAX_APPROVAL_AGE_DAYS:
+        raise JobPacketRefused("job_packet_owned_capture_approval_out_of_date")
     if owned.capture_id != context.get("capture_id"):
         raise JobPacketRefused("job_packet_owned_capture_id_mismatch")
     path = owned_list or OWNED_CAPTURES_PATH
@@ -409,18 +515,29 @@ def kind_of_job(preparation: Mapping[str, Any] | None, context: Mapping[str, Any
 
 
 def _robot_catalog() -> dict[str, Mapping[str, Any]]:
-    from .robot_spec_catalog import load_robot_spec_catalog
-    return {row["model_id"]: row for row in load_robot_spec_catalog()["models"]}
+    try:
+        from .robot_spec_catalog import load_robot_spec_catalog
+        return {row["model_id"]: row for row in load_robot_spec_catalog()["models"]}
+    except Exception as exc:  # noqa: BLE001 - any catalog failure is one clean refusal
+        raise JobPacketRefused("job_packet_robot_catalog_unreadable", type(exc).__name__) from exc
 
 
 def _policy_catalog() -> dict[str, Mapping[str, Any]]:
     # The reviewed checkout's catalog, never the host override: its names are what the summary may print.
-    from .beta_policy_candidate_catalog import load_catalog
-    return {row["candidate_id"]: row for row in load_catalog(POLICY_CATALOG_PATH)["candidates"]}
+    try:
+        from .beta_policy_candidate_catalog import load_catalog
+        return {row["candidate_id"]: row for row in load_catalog(POLICY_CATALOG_PATH)["candidates"]}
+    except Exception as exc:  # noqa: BLE001 - e.g. BetaPolicyCatalogError for a group-writable file
+        raise JobPacketRefused("job_packet_policy_catalog_unreadable", type(exc).__name__) from exc
 
 
-def _left_out(reasons: Counter) -> list[str]:
-    return [f"{count} row{'s' if count != 1 else ''} left out: {reason}." for reason, count in sorted(reasons.items())]
+def _left_out(dropped: int) -> list[str]:
+    """One fixed line; the count is capped so a number of rows cannot carry a message."""
+    if not dropped:
+        return []
+    shown = str(dropped) if dropped <= MAX_SHOWN_LEFT_OUT else f"more than {MAX_SHOWN_LEFT_OUT}"
+    return ["", f"Some rows were left out ({shown}): not a known name, a repeat, a value outside the fixed "
+            "sets this tool knows, or counts out of range."]
 
 
 def summary_fit_lines(table: Mapping[str, Any] | None) -> list[str]:
@@ -428,18 +545,16 @@ def summary_fit_lines(table: Mapping[str, Any] | None) -> list[str]:
     from .website_robot_fit import VERDICTS
     if not table:
         return [f"First look: {NOT_RECORDED} (the job's robot fit table was not among the files given)."]
-    catalog, rows, dropped = _robot_catalog(), [], Counter()
+    catalog, rows, dropped, seen = _robot_catalog(), [], 0, set()
     for row in table.get("rows") if isinstance(table.get("rows"), list) else []:
         model = catalog.get(row.get("model_id")) if isinstance(row, Mapping) and isinstance(row.get("model_id"), str) else None
         checks = row.get("checks") if isinstance(row, Mapping) and isinstance(row.get("checks"), list) else None
-        if model is None:
-            dropped["not a known robot"] += 1
-        elif row.get("verdict") not in VERDICTS:
-            dropped["not a known verdict"] += 1
-        elif checks is None or any(not isinstance(c, Mapping) or c.get("check") not in CHECK_WORDS
-                                   or c.get("result") not in RESULT_WORDS for c in checks):
-            dropped["a check this tool does not know"] += 1
+        if (model is None or model["name"] in seen or row.get("verdict") not in VERDICTS or checks is None
+                or any(not isinstance(c, Mapping) or c.get("check") not in CHECK_WORDS
+                       or c.get("result") not in RESULT_WORDS for c in checks)):
+            dropped += 1
         else:
+            seen.add(model["name"])
             open_checks = [f"{CHECK_WORDS[c['check']]} ({RESULT_WORDS[c['result']]})" for c in checks if c["result"] != "pass"]
             rows.append((model, row["verdict"], open_checks))
     lines = ["Source: the pipeline's robot fit table.", ""]
@@ -452,7 +567,7 @@ def summary_fit_lines(table: Mapping[str, Any] | None) -> list[str]:
         lines += ["", "Counts: " + ", ".join(f"{VERDICT_WORDS[k]}: {counts[k]}" for k in VERDICTS if counts[k])]
     else:
         lines.append("No row of the table could be shown.")
-    lines += [*([""] + _left_out(dropped) if dropped else []), "",
+    lines += [*_left_out(dropped), "",
               "Checked against published specifications and the scene's estimated geometry (reach, payload, "
               "base footprint, cycle time). It is not a test of any robot."]
     return lines
@@ -463,18 +578,16 @@ def summary_trial_lines(publication: Mapping[str, Any] | None) -> list[str]:
     lines = [f"**{EARLY_TRIAL_LABEL}**", ""]
     if publication is None:
         return lines + ["No early trial result is included: none was given to the tool for this job."]
-    catalog, rows, dropped = _policy_catalog(), [], Counter()
+    catalog, rows, dropped, seen = _policy_catalog(), [], 0, set()
     for row in publication.get("candidates") if isinstance(publication.get("candidates"), list) else []:
         entry = catalog.get(row.get("candidate_id")) if isinstance(row, Mapping) and isinstance(row.get("candidate_id"), str) else None
-        scored = _count(row.get("episodes_scored")) if isinstance(row, Mapping) else None
-        succeeded = _count(row.get("episodes_succeeded")) if isinstance(row, Mapping) else None
-        if entry is None:
-            dropped["not a known robot software"] += 1
-        elif row.get("status") not in CANDIDATE_STATUSES or row.get("status") not in STATUS_WORDS:
-            dropped["not a known status"] += 1
-        elif scored is None or succeeded is None or succeeded > scored:
-            dropped["counts out of range"] += 1
+        scored = _count(row.get("episodes_scored"), low=1) if isinstance(row, Mapping) else None
+        succeeded = _count(row.get("episodes_succeeded"), high=scored or 0) if scored is not None else None
+        if (entry is None or entry["display_name"] in seen or row.get("status") not in CANDIDATE_STATUSES
+                or row.get("status") not in STATUS_WORDS or scored is None or succeeded is None):
+            dropped += 1
         else:
+            seen.add(entry["display_name"])
             rows.append((entry, row["status"], scored, succeeded))
     if rows:
         lines += ["| Robot software | Status | Runs scored | Runs that met the success rule |", "|---|---|---|---|"]
@@ -482,8 +595,7 @@ def summary_trial_lines(publication: Mapping[str, Any] | None) -> list[str]:
                   for entry, status, scored, succeeded in rows]
     else:
         lines.append("No row of the trial could be shown.")
-    if dropped:
-        lines += [""] + _left_out(dropped)
+    lines += _left_out(dropped)
     campaign = CAMPAIGN_WORDS.get(publication.get("status")) if isinstance(publication.get("status"), str) else None
     return lines + ["", f"Trial status: {campaign or NOT_RECORDED}. A zero is a valid result of the trial."]
 
@@ -827,12 +939,12 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, level: str = "summ
     context = _read_json(capture_dir, capture_dir / "pipeline" / "website_task_context.json", required=True)
     if context.get("schema_version") != TASK_CONTEXT_SCHEMA:
         raise JobPacketRefused("job_packet_task_context_unsupported")
-    refusal = job_state_refusal(capture_dir, context, pull_root=inputs.pull_root)
+    refusal = job_state_refusal(capture_dir, context, pull_root=inputs.pull_root, now=now)
     if refusal:
         raise JobPacketRefused(refusal)
     if context.get("capture_id") != capture_dir.name or context.get("scene_id") != capture_dir.parent.parent.name:
         raise JobPacketRefused("job_packet_input_identity_mismatch", "task context")
-    basis = permission_basis(level, context, owned=owned, owned_list=owned_list)
+    basis = permission_basis(level, context, owned=owned, owned_list=owned_list, now=now)
     full = level == "full"
     output_root = Path(output_root)
     if output_root.is_symlink() or not output_root.is_dir():

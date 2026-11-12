@@ -7,25 +7,25 @@ company needs the owner's go-ahead first.
 
 ## 1. Pull the job's files
 
-Pull into one root laid out as the host's site roots
-(`/var/lib/blueprint/pubsub-handoffs`, the units'
+Pull into one root laid out as the host's site roots (`/var/lib/blueprint/pubsub-handoffs`,
 `BLUEPRINT_WEBSITE_WITHDRAWAL_SITE_ROOTS`): `<root>[/<bucket>]/scenes/site-<request>/`.
-Pull every bucket's `scenes/site-<request>/website_withdrawal` (a refused pull:
-none exists). The tool checks withdrawal across the whole root as the
-Pipeline does and refuses when the layout is not that.
 
 ```bash
-D=python3\ scripts/operator_door.py
-S=<site root>[/<bucket>]/scenes/site-<request>
-$D pull $S/captures/<capture id> ./pulled[/<bucket>]/scenes/site-<request>/captures/<capture id>
-# only when they exist (full level):
-$D pull /var/lib/blueprint/pipeline-control-plane/team-scene-packets/<packet> ./team-scene
-$D pull /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/<launch>/configured_scene_publication ./configured
-$D pull /var/lib/blueprint/pipeline-control-plane/beta-policy-screening/publications/<campaign>.json ./publication.json
+D=python3\ scripts/operator_door.py; H=/var/lib/blueprint/pubsub-handoffs; P=/var/lib/blueprint/pipeline-control-plane
+$D ls $H                          # the buckets: every directory beside scenes/ ("" is the root itself)
+# For EACH bucket b (and the root): the withdrawal state. A refused pull means none on the host.
+$D pull $H/[b/]scenes/site-<request>/website_withdrawal ./pulled/[b/]scenes/site-<request>/website_withdrawal
+$D pull $H/<b>/scenes/site-<request>/captures/<capture id> ./pulled/<b>/scenes/site-<request>/captures/<capture id>
+# (the capture brings raw/manifest.json, pipeline_job_ledger.json and pipeline/consent_takedown when present)
+$D pull $P/beta-policy-screening/publications/<campaign>.json ./publication.json      # when a trial exists
 ```
 
-The capture directory must hold `pipeline/website_task_context.json` and
-`pipeline_job_ledger.json`. A run in cold storage must be restored first.
+Then write `./pulled/pull_record.json`: `{"schema_version": "job_packet_pull_record.v1",
+"buckets": [every bucket from ls, "" for the root], "absent_on_host": [each
+`[b/]scenes/site-<request>/website_withdrawal` and `<capture path>/pipeline/consent_takedown`
+the door said is missing]}`. A place neither pulled nor listed absent is refused,
+naming it. A run in cold storage must be restored first. Full level also needs
+`$P/team-scene-packets/<packet>` and the launch run's `configured_scene_publication`.
 
 ## 2. Run it
 
