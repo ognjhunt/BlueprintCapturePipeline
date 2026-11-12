@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from blueprint_pipeline.adp_scene_literal_lint import scan_scene_literal_violations
+from blueprint_pipeline.scene_literal_lint import scan_scene_literal_violations
 
 
 def test_reusable_source_has_no_historical_scene_literals() -> None:

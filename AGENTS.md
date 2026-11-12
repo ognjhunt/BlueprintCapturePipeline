@@ -24,7 +24,8 @@ with its learned, camera-driven policy) stays as supporting evidence inside the
 packet, labelled an early trial of openly available robot software. It is not
 the site's answer and does not predict what a deployment company's own robot
 would do. A zero is a valid result. A scripted run only checks this
-simulation, never a contender.
+simulation, never a contender. The trial covers every kind of robot body:
+arms, mobile manipulators, wheeled humanoids and humanoids.
 
 Paused (keep the code, start no new work): hardening the automatic test for
 any kind of job, for several objects and for unattended scale, and standing
@@ -58,8 +59,8 @@ instead of its own retry rule; never make a deploy or an operator command the
 only way to retry
 ([`docs/architecture/job-retry-and-deadlines.md`](docs/architecture/job-retry-and-deadlines.md)).
 
-Ask the owner first before contacting outside companies, sending email, or
-deleting retained data.
+Contacting a company that Blueprint has not approved is outreach and needs the owner's word first. Ask the owner first before sending email by
+hand or deleting retained data.
 
 ## Spend limits
 
@@ -108,12 +109,6 @@ Runbooks for credit, provider spend, disk and stalls: [`docs/runbooks/beta-opera
   Unknown stays unknown.
 - Simulation results are bounded estimates; they never certify physical
   performance or safety.
-
-## Arm Decision Proof v1
-
-`arm-decision-proof-v1` is a separate evidence program with its own protocol in
-`docs/arm_decision_proof_v1/`. That protocol applies only to ADP work. Beta
-results never enter ADP evidence, and only ADP may claim physical validation.
 
 ## Sibling Checkouts
 

@@ -4,8 +4,7 @@ This owner-requested finance visibility slice reads already received evidence.
 It does not add provider calls, pages, grouping, credentials, services, timers,
 admission authority or reservation changes. The active AWS removal owner owns
 the small `provider_billing_reconciler.py` hook and Pipeline deployment.
-The actual ADP backlog/day-gate metadata was not supplied; this is not a program
-closeout or physical proof artifact.
+This is not a program closeout or physical proof artifact.
 
 The existing reconciliation refresh writes the unchanged billing-v1 export.
 `MeteredTransport` fsyncs an immutable private attempted record before each

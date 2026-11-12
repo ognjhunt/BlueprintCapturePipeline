@@ -1,6 +1,6 @@
 # Approved CPU model service
 
-ADP-011/day 7 and ADP-050/day 28. This is the HTTP service for the explicit
+This is the HTTP service for the explicit
 `onnx_state_mlp_cpu_v1` profile, executed only inside the dedicated runsc policy
 sandbox. No caller-selected model path or Python import is accepted over HTTP.
 The image contains immutable model bytes and a secret-clean artifact manifest.

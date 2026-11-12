@@ -33,7 +33,7 @@ python -m blueprint_pipeline.website_atlas_pipeline --source-video VIDEO \
   --output-root ROOT --request-id REQUEST --scene-id SCENE --capture-id CAPTURE
 ```
 
-ADP-040 / Day 28, owner-directed Atlas integration. Extend the admitted
+Owner-directed Atlas integration. Extend the admitted
 `website_atlas_pose` producer; do not submit Atlas through the Marble world API.
 The source adapter remains interchangeable and all results are development-only.
 

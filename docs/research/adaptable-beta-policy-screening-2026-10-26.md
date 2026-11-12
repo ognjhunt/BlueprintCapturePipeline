@@ -17,7 +17,7 @@ Inspected pipeline main: `140cefe5699c1088d95bf92691ebfe7d4f5df640`; WebApp main
 - [Website copy PR #1109](https://github.com/ognjhunt/Blueprint-WebApp/pull/1109) is open, unmerged and has no auto-merge setting. Its copy changes are separate from this runner design.
 - [Owner decisions PR #2957](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/2957) records Blueprint-operated candidates, $15 total screening budget per site, approximately ten episodes per candidate, per-site authorization for full finalist scoring, and owner-approved deployment-company contact. It also records that Blueprint’s own finalist scoring may support a recommended pilot.
 - The deployed packet setup was inspected read-only: production release `eb72434ea`, watcher enabled, registry fingerprint and profile digest verified, downloaded inputs passed the compiler validators locally. No automatic packet compilation had occurred at inspection. The referenced runtime archive exists at its declared size; its full bytes were not downloaded/rehashed. Live ownership and service environment binding were not independently rechecked. Configuration validity is not a successful scene compile.
-- The reusable ADP two-candidate protocol remains distinct. Per-site beta screening does not create a cross-site policy ranking or a physical-validation claim.
+- Per-site beta screening does not create a cross-site policy ranking or a physical-validation claim.
 
 ## Candidate support table
 
@@ -126,7 +126,7 @@ Deployment companies belong on separate reviewed compatibility/proposal records 
 
 | Increment | Reused implementation | Completion evidence |
 | --- | --- | --- |
-| Catalog and dry planner | `task_evaluation_policy_candidate_registry.py` metadata, `policy_interface_binding.py`, `team_embodiment.py`, scene packet compiler | 40+ candidates resolve deterministically; duplicate IDs, incompatible profiles, unknown costs and unverified artifacts cannot become runnable; existing ADP pair tests unchanged. |
+| Catalog and dry planner | `task_evaluation_policy_candidate_registry.py` metadata, `policy_interface_binding.py`, `team_embodiment.py`, scene packet compiler | 40+ candidates resolve deterministically; duplicate IDs, incompatible profiles, unknown costs and unverified artifacts cannot become runnable. |
 | Beta campaign execution | Existing single-candidate episode clients, `team_evaluation_plan.py` variation machinery, canonical allocator and durable progression | Explicit Blueprint screening admission; aggregate reservations cannot exceed cap; restart/timeout cases cannot double-launch; actual ten-episode purpose distinct from scored-200. Do not loosen team guards globally. |
 | RoboLab scene bridge | Existing pinned runtime plus external registration, scene/task definitions and policy clients | One existing compatible DROID candidate passes retained-observation replay and a bounded site smoke; matched second candidate proves configuration switching. Every new profile repeats affected checks. |
 | Qualified finalist publication | Pipeline result scoring/qualification, WebApp managed-run projection, existing evidence predicates | Screening, development fixtures, stale captures, invalid runtime, failed robot-free probe and bad episode accounting all rejected; qualified Blueprint finalist accepted with operator separate from proposed deployers. |

@@ -5,8 +5,8 @@ on the website, research two movement and two manipulation candidates, and wire
 configuration to actual execution. The owner clarified that there must be two
 candidates **per task type** and requested benchmark-based selection.
 
-This extends the ADP-050/day-21 policy/runtime integration seam under explicit
-owner direction; it does not change historical ADP qualification receipts.
+This extends the policy/runtime integration seam under explicit owner
+direction; it does not change historical qualification receipts.
 Completion requires a deployed website robot/hand/task selector, immutable
 compatible policy bindings, real runtime dispatch, matched scenario and media
 coverage, focused regression/browser tests, and deployed readback. A catalog,

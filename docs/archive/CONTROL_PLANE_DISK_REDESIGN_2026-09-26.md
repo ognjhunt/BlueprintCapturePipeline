@@ -9,8 +9,7 @@ document records why the host still ran out of space on 2026-09-26, what is miss
 plan. Quick wins come first, then the volume split and ephemeral workers.
 
 Backlog: platform capacity that every paid lane depends on. On 2026-09-26 it blocked the
-website dishwasher scene (`site-capture-e70b9764…`, development_only; ADP-009 downstream
-seams). It also held deploys and other lanes. The implementing session confirms the exact
+website dishwasher scene (`site-capture-e70b9764…`, development_only). It also held deploys and other lanes. The implementing session confirms the exact
 backlog item in its PR.
 
 ## 1. What happened on 2026-09-26 (measured)

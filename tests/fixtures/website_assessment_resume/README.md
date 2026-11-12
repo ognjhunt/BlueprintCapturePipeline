@@ -21,7 +21,7 @@ fields, duplicate/unknown fields, signed URLs, nonfinite values, source changes,
 terminal state and an intervening unknown-provider failure are independently
 covered. The public preparation status remains bounded and excludes raw bytes.
 
-ADP-010 / partner day-14 blocker: finite upload notification delivery can expire
+Blocker: finite upload notification delivery can expire
 before the positive assessment. The existing worker tick and job ledger suffice;
 no new endpoint, queue, account or permission is introduced. Run the focused
 provider-free contracts from the repo root:

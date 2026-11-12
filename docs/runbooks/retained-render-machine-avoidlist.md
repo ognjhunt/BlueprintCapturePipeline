@@ -1,6 +1,6 @@
 # Retained-render machine exclusions
 
-ADP-009D/day-28 operator input handling: retain the selected-offer and adapter
+Operator input handling: retain the selected-offer and adapter
 receipts before classifying a failed machine. A completed bootstrap input-download
 timeout is an observed machine-to-store transport failure, not a permanent
 provider outage or a hardware diagnosis.

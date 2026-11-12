@@ -11,7 +11,7 @@ Primary references:
 Required behavior:
 - Treat the WebApp as the site side: the job page, the first look on paper, the site's permissions and the responses of deployment companies.
 - Keep what the site sees in line with what the Pipeline's records show. Tell the site plainly where the job stands.
-- Send a site's video or simulation to a deployment company only with the site's permission, and only to companies Blueprint has approved.
+- Share a job only with the deployment companies Blueprint has approved, and only when its site accepted recording statement `2026-11-12.v4` or later; a job under an older statement is not shown to any company until its site accepts the current one. Never share a site's name, street address or contact details without asking the site first.
 
 Do not:
 - Present the simulation or the early trial as the site's answer.

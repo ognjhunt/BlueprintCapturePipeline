@@ -28,7 +28,7 @@ TASKS = ("task_a_washer_door_open", "task_b_notebook_relocation")
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "supervise_scene_strict_family_ledger.py"
 REACHABILITY = (
     Path(__file__).resolve().parents[1]
-    / "docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md"
+    / "docs/LIVE_LANE_REACHABILITY.md"
 )
 
 

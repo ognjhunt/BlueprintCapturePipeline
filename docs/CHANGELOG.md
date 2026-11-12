@@ -4,7 +4,7 @@
 
 ### Employee-Facing
 
-- ADP-009D/day-28 autonomous-operation funding guard: the capacity controller can
+- Autonomous-operation funding guard: the capacity controller can
   retain sanitized Vast credit observations and alert on low or unknown funds.
   With `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true`, both Vast execution adapters
   require a fresh balance covering the bounded attempt plus a reserve before

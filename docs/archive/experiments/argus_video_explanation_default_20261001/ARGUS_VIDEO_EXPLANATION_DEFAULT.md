@@ -9,7 +9,7 @@ acceptance contract remain authoritative for task success and failure.
 
 This is the user's requested follow-on to the merged offline shadow comparison
 [PR #2520](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/2520).
-It supports ADP-009D's optional Day-28 episode evidence seam. The completion
+It supports the optional episode evidence seam. The completion
 artifact is a sealed default profile, offline request/import adapter, focused
 tests, independent Sol review and scoped PR. The existing explanation closeout
 already prevents score overwrite and ranking effects, but did not select an

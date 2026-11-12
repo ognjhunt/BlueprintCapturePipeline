@@ -17,7 +17,7 @@ internal development simulation on the scene 841757 book task.
 
 ## Decision Context
 
-ADP-050 Day 28 compatibility work verified the 841757 packet handoff. The G1
+Compatibility work verified the 841757 packet handoff. The G1
 worker requires a human-reviewed rights receipt for **each** candidate before
 a checkpoint can run. The same worker uses SONIC controller assets.
 The repository validator checks the receipt's identity and digest; it cannot

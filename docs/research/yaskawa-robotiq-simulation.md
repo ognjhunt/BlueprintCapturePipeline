@@ -86,7 +86,7 @@ existing allocator and site budget. The controller uses authored targets and
 live simulator TCP state; the independent scorer remains separate. Evidence is
 `scripted_simulator_state_baseline`, with scripted invocation/counts and zero
 learned queries. Neither import success nor controller motion implies task
-success, vendor endorsement, physical readiness or ADP evidence.
+success, vendor endorsement or physical readiness.
 
 ## Offline validation
 

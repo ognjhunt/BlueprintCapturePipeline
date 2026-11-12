@@ -362,10 +362,6 @@
     "src/blueprint_pipeline/pubsub_handoff_listener.py": 2663
   },
   "grandfathered_personal_path_files": [
-    "docs/arm_decision_proof_v1/ADP_009D_FRANKA_PUBLIC_SCENE_SIM_GOAL_PROMPT.md",
-    "docs/arm_decision_proof_v1/CODEX_OVERNIGHT_HANDOFF_2026-08-08.md",
-    "docs/arm_decision_proof_v1/SECOND_SCENE_E2E_RESULTS.md",
-    "docs/arm_decision_proof_v1/THIRD_SCENE_DUAL_TASK_E2E_RESULTS.md",
     "docs/arm_decision_proof_v1/immutable_execution/provider_evidence/adp_simpler_bundle_receipt.json",
     "docs/arm_decision_proof_v1/immutable_execution/provider_evidence/adp_simpler_vast_result.json",
     "docs/arm_decision_proof_v1/immutable_execution/provider_evidence/vast_final_validation.json",
@@ -424,7 +420,6 @@
     "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_pan_chera_multi_agent_cad_cad_agent_request.v1.json",
     "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_simready_graph_asset_receipt.v1.json",
     "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_simready_graph_asset_static_qualification.v1.json",
-    "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/shared_scene/README.md",
     "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/task_a/removal/heldout_audit_v1/adp009b_gaussian_excision_heldout_audit.v1.json",
     "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/task_a/removal/ownership_v1/adp009b_gaussian_excision_ownership_receipt.v1.json",
     "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/task_b/removal/heldout_audit_v1/adp009b_gaussian_excision_heldout_audit.v1.json",

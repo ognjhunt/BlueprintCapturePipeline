@@ -2,16 +2,16 @@
 
 ### Strategy
 
-All backend and infrastructure choices serve the two active programs: the
-**free beta's job packet** and **Arm Decision Proof v1**. The owner direction
-of 2026-11-12 makes the job packet the unit of the product. The simulation of
+All backend and infrastructure choices serve the one active program: the
+**free beta's job packet**. The owner direction of 2026-11-12 makes the job
+packet the unit of the product. The simulation of
 the site is how a job becomes testable without a visit; it is a means, not the
 product. Reuse capture, reconstruction and site-package paths to build it.
 Blueprint's own test of openly available robot software is an early trial
-inside the packet, never the site's answer. Hardening the automatic test for
-every kind of job, several objects or unattended scale is paused. Keep the
-separate prospective fixed-arm proof and its exactly two frozen candidates
-unchanged.
+inside the packet, never the site's answer. It covers every kind of robot
+body: arms, mobile manipulators, wheeled humanoids and humanoids. Hardening the
+automatic test for every kind of job, several objects or unattended scale is
+paused.
 
 World models, classical simulators, reconstruction systems, 3DGS renderers,
 SimReady tools, analytic geometry, learned evaluators, and physical evidence are
@@ -45,56 +45,6 @@ Reuse cannot turn correlated prior evidence into independent repeated proof;
 reported outcomes cannot recalibrate a method without an authoritative
 Physical Outcome Join.
 
-### Arm Decision Proof: Public Evidence Ladder First, Fresh Partner Site Last
-
-ADP-008 already qualified the decision/outcome harness retrospectively on
-SIMPLER. Preserve that replay and the historical `7/10` suite. The earlier
-ADP-009 scene-editing and physicalization plan recorded the following
-orthogonal public evidence:
-
-1. an exact released Inpaint360GS revision and unchanged author-data
-   reproducibility smoke, plus exact InFusion and AuraFusion360 author smokes;
-2. one exact rights-admitted InteriorGS/SAGE-3D appearance/static-collision pair
-   for synthetic source-object removal and hybrid composition; an authored
-   scene remains a separate physics positive control, never a substitute;
-3. a digest-bound virtual-camera adapter that renders RGB and only each
-   preregistered method's native splat depth/disparity inputs into disjoint
-   calibration and test trajectories when original source frames are
-   unavailable, while withholding external metric geometry and clean-background
-   truth from the method; InFusion is the primary world-frame supplemental-Ply
-   adapter and AuraFusion360 is the multiview quality challenger;
-4. one targeted ScanNet++ scene as the second and only public real measured
-   transfer after access and rights admission;
-5. one exact SimReady USD task object, one physics-authored Isaac control, and a
-   manual-USD versus NVIDIA USD Content Agents v0.5.2 authoring comparison.
-
-For current execution, the owner-selected appearance path is artifixer3D+ with
-`gpt-image-2`; Inpaint360GS and AuraFusion360 are retired lanes. Fresh Raw V3.2
-capture replaces ScanNet++ as the required real metric transfer. Follow the
-current ADP lane-reachability record. These updates do not change the frozen
-two-candidate proof or make development data qualified physical evidence.
-
-No one dataset supplies the product proof. Every public result is
-`development_only`, noncommercial terms remain noncommercial, and paper-only
-methods are inadmissible. Do not select a permanent robot, simulator, policy
-family, renderer, provider, or reconstruction system from this development
-result.
-
-For the later prospective proof, partner first and backend second:
-
-After ADP-009 and partner admission:
-
-1. record the partner's working robot, observation/action interface, policy
-   runtime, simulator, source assets, and task;
-2. identify the exact missing evidence for the bounded decision;
-3. reuse the partner's and Blueprint's existing stack where it meets the need;
-4. add only the thinnest adapter or measurement required;
-5. qualify each method for its exact claim and envelope;
-6. abstain when the evidence is insufficient.
-
-A DROID/Franka partner may justify one stack; another fixed arm may justify
-another. That does not change the product or proof contract.
-
 ### Development Substrates And Editing
 
 Existing captures and exact public scenes are the default way to make the full
@@ -115,11 +65,8 @@ If the released inpainting path retrains an editable splat from render-derived
 views, record that new artifact identity. Do not call it an in-place edit of the
 publisher PLY unless exact initialization from that PLY is separately proven.
 
-ADP public-scene rehearsal work stays focused on exact admissions, metric
-frame/geometry, object partition/removal, background completion, SimReady physicalization, hybrid
-Isaac checks, deterministic variation, abstention, media, and replay. New capture
-feature work is frozen unless a measured blocker proves it is the smallest
-missing measurement.
+New capture feature work is frozen unless a measured blocker proves it is the
+smallest missing measurement.
 
 ### Minimum Replica Rule
 
@@ -172,8 +119,7 @@ Keep these stable across backend swaps:
 
 External research motivates candidates; it does not qualify Blueprint results.
 Simulation and generated evidence remains inside its measured validation
-envelope. General rank correlation requires enough independent policies and is
-not a claim of the two-candidate first proof.
+envelope. General rank correlation requires enough independent policies.
 
 Before physical holdout release, freeze candidates, task distribution,
 conditions, resets, success rules, invalid-trial handling, minimum meaningful
@@ -210,9 +156,9 @@ contradicts the simulated decision, or repeated inconclusive results reveal no
 measurable missing input. More backend sophistication is not the default answer
 to a failed business or scientific premise.
 
-World-model, humanoid, dynamic-scene, deformable, universal-runtime,
-post-training, cross-site generalization, and provider-marketplace work remains
-frozen unless an observed active-program blocker and explicit scope decision
-require the smallest dependency. Building another embodiment or task family
-still needs the recorded owner focus decision based on demand evidence.
+World-model, dynamic-scene, deformable, universal-runtime, post-training,
+cross-site generalization, and provider-marketplace work remains frozen unless
+an observed active-program blocker and explicit scope decision require the
+smallest dependency. Building another task family still needs the recorded
+owner focus decision based on demand evidence.
 Operating several free beta jobs is not a cross-site generalization claim.

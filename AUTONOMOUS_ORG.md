@@ -1,8 +1,7 @@
 # Blueprint Autonomous Organization Guide
 
 > **History moved, 2026-11-12.** The org description that was here (a mirror
-> of the WebApp file, written when Arm Decision Proof was the sole program) is
-> now `docs/archive/2026-11-12-pre-packet/AUTONOMOUS_ORG.md`. Read it only for
+> of the WebApp file) is now `docs/archive/2026-11-12-pre-packet/AUTONOMOUS_ORG.md`. Read it only for
 > history.
 
 ## What is current
@@ -18,5 +17,3 @@
 - **Paperclip and the agent org:** see `AUTONOMOUS_ORG.md` in the
   `Blueprint-WebApp` sibling checkout. If that checkout is missing, say so
   rather than guess.
-- **Arm Decision Proof v1** keeps its own protocol in
-  `docs/arm_decision_proof_v1/`.

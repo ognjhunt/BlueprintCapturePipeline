@@ -23,7 +23,6 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .adp009d_sage_franka_placement import PLACEMENT_PACKET_SCHEMA_VERSION
 from .freeze_amendment_carry_forward import (
     FreezeAmendmentCarryForwardError,
     validate_freeze_amendment_carry_forward_content,
@@ -44,6 +43,7 @@ from .paired_target_native_camera_rig_candidate import (
 )
 
 
+PLACEMENT_PACKET_SCHEMA_VERSION = "registered_sage_franka_placement_packet.v1"
 SCHEMA_VERSION = "paired_target_native_manipulation_preflight.v1"
 PAIRED_PREFLIGHT_SCHEMA = "paired_target_native_preflight.v1"
 NATIVE_IMPORT_RESULT_SCHEMA = "paired_target_native_import_runtime_result.v1"

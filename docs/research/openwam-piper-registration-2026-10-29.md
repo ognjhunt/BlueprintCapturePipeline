@@ -61,7 +61,7 @@ all other registry fields remain unchanged.
 The public rights record identifies the pinned model card's `Apache-2.0`
 declaration and exact hash, checkpoint identity, actual user-request reference,
 and scope. It explicitly disclaims private-vendor authorization, physical
-validation, policy self-grading, official ranking and ADP evidence permission.
+validation, policy self-grading and official ranking.
 Registration does not assert downloaded weights or successful learned inference.
 
 A privileged lock serializes these installation operations. The expected

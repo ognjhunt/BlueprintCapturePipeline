@@ -122,7 +122,7 @@ archive writer, restores it at the same path and continues to stage 6).
 
 ## Retired reservations after an early refusal
 
-ADP-040/050, day 28: a website construction retry was refused at
+A website construction retry was refused at
 `scene_intake_spend_cap_exhausted` because retired attempts retained API allowances
 despite failing before model entry. `budget_retained_hold` now recognizes the
 pretraining first-adapter refusal and the initial Astra disclosure refusal. The

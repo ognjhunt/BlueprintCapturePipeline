@@ -268,31 +268,26 @@ def test_unknown_candidates_are_refused_everywhere() -> None:
     assert validate_provisioning({"candidate_id": "some_other_policy"})
 
 
-def test_provisioning_agrees_with_the_standup_and_materialization_contracts() -> None:
-    """Three modules describe one worker; they must not disagree about it."""
+def test_provisioning_agrees_with_the_materialization_contract() -> None:
+    """Two modules describe one worker; they must not disagree about it."""
 
     from blueprint_pipeline.adp009d_checkpoint_materialization import (
         plan_checkpoint_materialization,
     )
-    from blueprint_pipeline.adp009d_policy_server_standup import describe_standup_plan
 
     for candidate_id in ("pi05_droid", "groot_n17_droid"):
         provisioning = describe_provisioning(candidate_id)
         materialization = plan_checkpoint_materialization(candidate_id)
-        standup = describe_standup_plan(candidate_id)
 
         assert (
             provisioning["checkpoint_repository"]
             == materialization["checkpoint_repository"]
-            == standup["checkpoint_repository"]
         )
         assert (
             provisioning["checkpoint_revision"]
             == materialization["checkpoint_revision"]
-            == standup["checkpoint_revision"]
         )
-        assert provisioning["materialize_on"] == standup["checkpoint_materialized_on"]
-        assert provisioning["isaac_interpreter"] == standup["isaac_interpreter"]
+        assert provisioning["materialize_on"] == materialization["materialize_on"]
 
 
 def test_the_venv_is_built_from_the_measured_system_interpreter() -> None:

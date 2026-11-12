@@ -1,6 +1,6 @@
 # Continue original website preparation after retained Atlas recovery
 
-ADP-040 / Day 28 dependency and free-beta journey blocker: a retained original
+Free-beta journey blocker: a retained original
 website upload must continue from its stopped native preparation after its own
 Atlas reconstruction finishes. The completion artifact is an incremented original
 native attempt history, adopted completed stages and an actual scored result on

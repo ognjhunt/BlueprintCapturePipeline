@@ -4,7 +4,7 @@
   "artifacts": [
     {
       "path": "README.md",
-      "sha256": "b81fb9856868844ce7031894eaa40fb0107b1fc9746828fc99125e0ebb7735aa"
+      "sha256": "2b6d6fd4e8d36d44485172d1c349218938680254bd3b07151fb98084a6ab2348"
     },
     {
       "path": "contract.schema.json",

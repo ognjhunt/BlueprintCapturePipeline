@@ -1,6 +1,6 @@
 # Website task-object authoring session
 
-ADP-009B / day-21 construction rehearsal. The observed blocker was the website
+Construction rehearsal. The observed blocker was the website
 object authoring path's fixed sequence of one-turn calls: an ordinary compiler
 failure stopped authoring instead of returning to an agent that could repair it.
 The completion artifact is the independently accepted

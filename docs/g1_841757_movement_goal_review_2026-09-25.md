@@ -16,7 +16,7 @@ Confirm the marked-area destination for the G1 movement pair on scene 841757.
 
 ## Decision Context
 
-ADP-050 Day 28 compatibility materialized the movement scene packet and
+Compatibility work materialized the movement scene packet and
 proposed yellow marker. Because the movement goal changes task truth, the
 site/task owner confirmed the destination and criterion below before
 `seal_g1_navigation_goal_authority` bound it to the exact scene plan. The

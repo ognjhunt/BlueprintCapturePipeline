@@ -1,6 +1,6 @@
 # Website object/component test on an authored surface
 
-ADP-040/050, day 28. Owner-authorized continuation of website steps 10, 12, 13
+Owner-authorized continuation of website steps 10, 12, 13
 and 14 while step 11 (captured-scene registration/contact) remains pending.
 The observed blocker is `support_surface_not_found_under_subject` in the retained
 walkthrough. This mode does not repair or relax reconstruction geometry checks.

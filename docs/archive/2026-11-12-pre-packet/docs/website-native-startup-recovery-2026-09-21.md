@@ -1,6 +1,6 @@
 # Website evaluation: recover a GPU startup loss
 
-ADP-009D / day-21. A website-selected development evaluation lost Vast instance
+A website-selected development evaluation lost Vast instance
 51947666 during image startup. Its saved allocator result confirms no bundle or
 entrypoint started, no native result, terminal teardown and provider absence.
 The cleanup naming defect is fixed by #2079. The missing continuation meant the

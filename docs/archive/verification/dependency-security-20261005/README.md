@@ -8,8 +8,7 @@ job also refused two unreviewed package versions and one obsolete review.
 No matching active dependency repair PR was found when this isolated repair
 started.
 
-This is an ADP-009D day-14 rehearsal delivery-safety dependency, not a new
-program or proof claim. The existing frozen graph could not pass the security
+This is a delivery-safety dependency, not a new program or proof claim. The existing frozen graph could not pass the security
 gate. The smallest change is three targeted lock updates, their two canonical
 exports, and measured continuity evidence for previously reviewed license terms.
 No runtime configuration, dependency constraints, gate implementation, advisory

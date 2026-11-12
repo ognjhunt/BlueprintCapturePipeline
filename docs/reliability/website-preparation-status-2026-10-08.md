@@ -1,6 +1,6 @@
 # Current website preparation status
 
-ADP-010/day14; observed blocker: a source-selected preparation refusal commits a retryable local worker failure before the prepared-scene outbox exists. The customer scene-intake poll cannot represent that earlier failure. This slice adds a source-bound current read and a durable wake-up on the existing service and scheduled listener.
+Observed blocker: a source-selected preparation refusal commits a retryable local worker failure before the prepared-scene outbox exists. The customer scene-intake poll cannot represent that earlier failure. This slice adds a source-bound current read and a durable wake-up on the existing service and scheduled listener.
 
 `POST /api/live-pipeline/website-preparation-status` uses the existing client HMAC/timestamp/nonce and requires `blueprint-webapp`. Its signed selectors are the request, scene, capture, marker generation, immutable producer delivery key, bare payload SHA-256, and current task-context digest. Only the existing authenticated server capture-root mapping may select a root. Missing/unconfigured/mismatched mapping, missing provenance/context/ledger, unstable revisions and unavailable current authority return a fixed unavailable response. The route body does not write capture, customer or provider state; existing nonce/admission bookkeeping still writes its own stores.
 

@@ -1,9 +1,8 @@
 # Capture-to-screening audit, 2026-10-27
 
-Scope: beta capture preparation through automatic policy screening; ADP-009D's
-day-28 rehearsal is the related scientific precursor. The owner's request to
-support more sites, tasks, policies and embodiments authorizes implementation;
-it does not establish their performance or change ADP's frozen proof protocol.
+Scope: beta capture preparation through automatic policy screening. The
+owner's request to support more sites, tasks, policies and embodiments
+authorizes implementation; it does not establish their performance.
 
 ## Observations before repair
 

@@ -334,7 +334,7 @@ are in `Blueprint-WebApp`.
 `production_gpu_campaign_budget.py:25`, `judge_spend_governor.py:45`,
 `isaac_g1_spend_guard.py:9`, `native_task_arena_spend_ceiling.py:9`,
 `policy_ranking_cosmos_reasoner_gpu_admission.py:61`. These belong to
-development, ADP or research lanes. Keep them as runaway guards; stage 2 does
+development or research lanes. Keep them as runaway guards; stage 2 does
 not touch them.
 
 ### WebApp

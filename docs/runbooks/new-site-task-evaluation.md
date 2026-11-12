@@ -3,8 +3,8 @@
 The capture-admission development command that used to open this runbook,
 `blueprint_pipeline.new_site_task_evaluation`, was removed on 2026-11-05
 because no production path reached it (see git history). The committed
-`tests/fixtures/new_site_loading_bay_v1` fixture stays: Arm Decision Proof docs
-cite it as the capture-to-testbed compiler shape. It is fixture-only data, not
+`tests/fixtures/new_site_loading_bay_v1` fixture stays: the AI onboarding map
+cites it as the capture-to-testbed compiler shape. It is fixture-only data, not
 a customer capture, independent metrology or method qualification.
 
 This path does not allocate GPU capacity. If a task genuinely requires a paid

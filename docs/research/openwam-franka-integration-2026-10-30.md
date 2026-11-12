@@ -124,7 +124,7 @@ and atomic replacement.
 The body binding changes only native60Hz, one response row, and the two640×480
 camera dimensions; source tool, mount, camera poses, optics and reset are retained.
 Rights record the verified public Apache2 model card and user instruction, without
-private vendor permission, self-grading, official ranking, ADP or physical claims.
+private vendor permission, self-grading, official ranking or physical claims.
 Capture rights, task authority and the site screening budget still apply.
 
 ## Validation boundary

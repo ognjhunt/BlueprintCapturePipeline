@@ -11,8 +11,7 @@ during setup. It uses Blueprint's existing
 refused, a timeout, and a response-size cap.
 
 Scope: the user's explicit “Setup parallel find all api” instruction authorizes
-this non-secret agent utility. The example relates to ADP-010 partner discovery,
-but no observed ADP gate blocker or day-gate completion is claimed. Candidate
+this non-secret agent utility. The example relates to partner discovery. Candidate
 organizations require human admission; provider findings and citations are
 research leads, never capture, rights, task, or physical-outcome truth. The
 separate active provider benchmark and console comparison remain owner-managed.

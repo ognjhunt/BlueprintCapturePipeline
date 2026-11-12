@@ -1,6 +1,6 @@
 # Native Atlas splats
 
-ADP-040 / day 28 appearance construction. World Labs' Atlas beta API added
+Appearance construction. World Labs' Atlas beta API added
 `posedImages2Splats` on 2026-10-29: posed RGBD frames in, refined Gaussian
 splats (SPZ, keyed by count) out. It replaces our depth-fused draft as the
 final appearance of a website scene. The result is development-only: it does

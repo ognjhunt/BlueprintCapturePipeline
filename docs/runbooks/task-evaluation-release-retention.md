@@ -1,6 +1,6 @@
 # Task Evaluation release retention
 
-This is the ADP-009D day-28 disk-safety policy for the website-driven scene
+This is the disk-safety policy for the website-driven scene
 configuration control plane. Each deploy publishes three immutable trees for
 one protected-main commit:
 

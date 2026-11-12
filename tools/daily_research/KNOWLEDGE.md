@@ -10,8 +10,8 @@ evidence levels, raw artifact bytes and digests remain unchanged.
 
 This change is authorized by the owner's explicit 2026-09-30 request to implement
 Blueprint's versioned knowledge snapshot and research runner integration. It is a
-bounded scope exception to the repository's ADP-only default; no ADP backlog item
-or physical-proof gate is invented. It changes offline export, validation and the
+bounded scope exception to the repository's default; no physical-proof gate is
+invented. It changes offline export, validation and the
 existing research runner. It does not authorize a canary, access provisioning,
 production deployment, saved-agent changes, or schedule cutover.
 

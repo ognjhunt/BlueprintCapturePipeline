@@ -5,7 +5,7 @@ infrastructure cost; `blueprint-8c1ca` has a USD 100/calendar-month ceiling.
 The owner subsequently authorized USD 125 for October 2026 only. The recurring
 amount stays USD 100; the dated exception expires at the next billing month.
 This does not replace or increase a capture's provider allowance. This removes
-a beta capture-to-scene development blocker and protects ADP-040/day-28.
+a beta capture-to-scene development blocker.
 
 ## Before enabling Blaze
 

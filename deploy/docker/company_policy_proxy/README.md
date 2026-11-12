@@ -1,6 +1,6 @@
 # Blueprint-owned sandbox proxy image
 
-ADP-011/day 7 admission and ADP-050/day 28 execution. Build from the repository
+Build from the repository
 root with this Dockerfile. The image contains the fixed Unix proxy and its
 shared trusted command dispatcher. It contains no customer policy, model,
 scene, capture, scoring code or credentials.

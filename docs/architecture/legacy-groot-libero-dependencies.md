@@ -23,7 +23,7 @@ audit to install it.
 
 The used `groot-libero-cpu` extra retains base LeRobot 0.4.4 and its existing
 CPU dependency declarations. Frozen DROID policy identities, worker locks,
-weights, runtime admissions and the two-candidate ADP protocol are unchanged.
+weights and runtime admissions are unchanged.
 
 Sources: [Pillow 13 release notes](https://pillow.readthedocs.io/en/stable/releasenotes/13.0.0.html),
 [LeRobot 0.4.4 metadata](https://pypi.org/pypi/lerobot/0.4.4/json), and

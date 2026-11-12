@@ -1,10 +1,9 @@
 # AI Onboarding Map
 
-## Two Active Programs
+## Active Program
 
 BlueprintCapturePipeline is the packet factory for the free beta's **job
-packet** (owner direction 2026-11-12) and supports **Arm Decision Proof v1**.
-Read the shared block of `PLATFORM_CONTEXT.md` first. A job starts from
+packet** (owner direction 2026-11-12). Read the shared block of `PLATFORM_CONTEXT.md` first. A job starts from
 retained video. Blueprint's own test is an early trial inside the packet, never
 the site's answer.
 
@@ -12,55 +11,24 @@ For capture-derived bounded evaluation, use
 [first site/team acceptance](../runbooks/first-site-team-beta.md),
 [site-task qualification](../beta-site-task-simulation-qualification.md) and
 [execution recovery](../team-evaluation-recovery-contract.md). Those are
-conditional technical routes, not mandatory stages for every job. The
-historical north-star `sole_active_program` label does not override the owner
-update, and the job packet does not widen ADP's proof protocol.
+conditional technical routes, not mandatory stages for every job.
 
 Read completely, in order:
 
 1. [`../../AGENTS.md`](../../AGENTS.md)
-2. [`../arm_decision_proof_v1/north_star_contract.json`](../arm_decision_proof_v1/north_star_contract.json)
-3. [`../arm_decision_proof_v1/README.md`](../arm_decision_proof_v1/README.md)
-4. [`../arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](../arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-5. [`../arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`](../arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md)
-6. [`../arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](../arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md) — historical ADP-008 decision
-7. [`../../PLATFORM_CONTEXT.md`](../../PLATFORM_CONTEXT.md)
-8. [`../../WORLD_MODEL_STRATEGY_CONTEXT.md`](../../WORLD_MODEL_STRATEGY_CONTEXT.md)
-9. [`source-of-truth-map.md`](source-of-truth-map.md)
-10. [`../DOCTRINE_PRECEDENCE.md`](../DOCTRINE_PRECEDENCE.md)
+2. [`../../PLATFORM_CONTEXT.md`](../../PLATFORM_CONTEXT.md)
+3. [`../../WORLD_MODEL_STRATEGY_CONTEXT.md`](../../WORLD_MODEL_STRATEGY_CONTEXT.md)
+4. [`source-of-truth-map.md`](source-of-truth-map.md)
+5. [`../DOCTRINE_PRECEDENCE.md`](../DOCTRINE_PRECEDENCE.md)
 
-The north star is one prospective two-candidate fixed-arm decision on a new
-partner workcell, adjudicated by matched held-out physical trials. A Task
-Evaluation Run is bounded technical evidence when needed; the Site-Task Testbed
-is the substrate; the candidate MSER is the construction method; the Physical Outcome Join is the
-proof.
-
-## ADP Architecture Route
-
-| Program stage | Existing implementation to inspect first | Required v1 output |
-| --- | --- | --- |
-| Raw capture truth | `materialization.py`, capture Raw Contract consumers, reconstruction control plane | immutable capture descriptor, timestamps/poses/intrinsics/depth/provenance |
-| Partner task truth | `site_task_testbed_compiler.py`, decision/evidence contracts | owner-approved task distribution, reset, outcome, invalid region |
-| Testbed compilation | `site_task_testbed_compiler.py`, `canonical_site_package.py` | versioned testbed bound to exact evidence |
-| Claim routing | `decision_evidence_contracts.py`, `decision_evidence_router.py`, `decision_evidence_execution.py` | qualified evidence plan or smallest blocker |
-| Leaf run boundary | `evaluation_run_contract.py`, `evaluation_run_execution.py` | scene/robot/task/policy/runtime/proof bindings |
-| Condition matrix | `exact_workcell_variation_matrix.py`; `new_site_task_evaluation_matrix.py` remains five-policy compatibility | policy-neutral 100-cell exact-workcell matrix, stable condition IDs, frozen partitions, and later two-candidate binding |
-| Runtime | existing Franka/DROID, MuJoCo/Isaac, and provider-neutral adapters | closed-loop steps and complete episode receipts |
-| Statistics | `rank_fidelity_statistics.py`, `robot_eval_calibration.py` | power plan, uncertainty, decision rule, claim ceiling |
-| Prospective seal | decision envelopes and immutable artifact graph | result digest before holdout release |
-| Physical adjudication | `physical_outcome_learning.py` | exact condition-ID Physical Outcome Join and new testbed version |
-| Showable result | buyer readout and report renderers | evidence matrix and bounded case study |
-
-Inspect before adding. Prefer a thin adapter over a parallel SiteBench stack.
+A Task Evaluation Run is bounded technical evidence when needed; the Site-Task
+Testbed is the substrate.
 
 ## Development Substrates
 
-Preserve the completed SIMPLER ADP-008 replay and historical method evidence.
 Current appearance work uses the owner-selected artifixer3D+ with gpt-image-2;
-Inpaint360GS and AuraFusion360 are retired execution lanes. Follow
-[current lane reachability](../arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md)
-and current repo doctrine rather than launching methods named in historical
-ADP plans. Use existing local assets to isolate downstream paths:
+Inpaint360GS and AuraFusion360 are retired execution lanes. Follow current repo
+doctrine rather than launching methods named in historical plans. Use existing local assets to isolate downstream paths:
 
 - `tests/fixtures/decision_evidence_rigid_object_v1/vertical_slice.json` —
   routing, partial decisions, abstention, and outcome versioning;
@@ -75,11 +43,10 @@ truth, site/robot registration, task dynamics, observation-domain match,
 sim-to-real decision fidelity, or customer value. Do not hand-author substitute
 evidence. A missing partner measurement remains a typed blocker.
 
-ADP's prospective physical-validation route keeps its own evidence ladder.
 The active beta may onboard sites without capture or new execution. A
 simulation-based technical claim still requires exact site-task qualification
-and independently scored execution through a supported access route. Neither
-route may promote development fixtures to site proof.
+and independently scored execution through a supported access route. No route
+may promote development fixtures to site proof.
 
 ## Truth Route
 
@@ -103,8 +70,8 @@ and reports. Each derived method keeps its own claim ceiling.
 
 Before editing, answer:
 
-1. Which beta journey step or ADP backlog item is this?
-2. Which observed beta blocker or ADP day gate does it unblock?
+1. Which beta journey step is this?
+2. Which observed beta blocker does it unblock?
 3. What observed artifact proves completion?
 4. Why is the existing implementation insufficient?
 5. What is the smallest reversible change?
@@ -115,15 +82,14 @@ former lanes.
 ## Program Scope
 
 The 2026-10-27 owner direction authorizes beta evaluation support across task
-families and robot forms, including humanoids, deformables, cloth, pouring,
-wiping, insertion, stacking, button operations and multi-step jobs. Missing
+families and robot forms (arms, mobile manipulators, wheeled humanoids and
+humanoids), including deformables, cloth, pouring, wiping, insertion, stacking, button operations and multi-step jobs. Missing
 assets, reset contracts, state measurements or a compatible runtime must be
 reported specifically. A task-family label alone cannot impose a hold or
 establish that no robot can do the job. Reuse existing runtime and independent
 scoring seams; simulator support still needs executable, source-bound inputs.
 
-ADP's physical proof retains its fixed-arm, rigid-object scope and exactly two
-frozen candidates. General-ranking campaigns, world-model research, provider
+General-ranking campaigns, world-model research, provider
 bakeoffs, post-training products, multi-site generalization and unrelated
 buyer/growth work still need their own active-program blocker and authority.
 
@@ -141,7 +107,6 @@ is authorized by program status alone.
 ## Focused Verification
 
 ```bash
-python -m pytest -q tests/test_arm_decision_proof_focus.py
 python3 scripts/verify_shared_doctrine.py
 python -m blueprint_pipeline.impacted_test_selection
 ```

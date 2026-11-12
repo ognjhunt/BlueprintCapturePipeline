@@ -96,7 +96,7 @@ digests and `claim_ceiling=scripted_baseline_registration_only`. Its
 Controller rights bind Blueprint's MIT source license and the user's explicit
 simulation request. They grant no rights over third-party robot models; the
 existing source/import evidence remains attached. They claim no private vendor
-relationship, learned policy inference, self-grading, official ranking, ADP or
+relationship, learned policy inference, self-grading, official ranking or
 physical validation. Ordinary task privacy, rights and per-site budget checks
 still apply. Results retain the separate scripted evidence kind described in
 [the controller contract](scripted_robot_baseline.md).

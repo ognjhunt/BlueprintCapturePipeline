@@ -1,6 +1,6 @@
 # Provider billing audit retention
 
-This is the ADP-009D day-28 disk-safety procedure for the official billing
+This is the disk-safety procedure for the official billing
 evidence used by paid-resource admission. The billing reconciler refreshes
 about every ten minutes. `blueprint-gpu-spend-guard.service` wants it before
 every guard start, so it is started every minute or two, but a run whose own

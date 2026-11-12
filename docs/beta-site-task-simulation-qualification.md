@@ -12,7 +12,7 @@ The current implementation supports a team's declared, verified robot model.
 The default DROID provider asset has no retained model-byte proof at this
 boundary and therefore stays diagnostic. This is a model-evidence gap, not a
 change to which robot forms may apply. Every qualified result remains a bounded
-simulation estimate: physical performance and ADP evidence eligibility are false.
+simulation estimate and never claims physical performance.
 
 ## Local command
 

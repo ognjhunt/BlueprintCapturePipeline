@@ -1,6 +1,6 @@
 # Website native placement feedback: build prerequisite
 
-ADP-009D / day-21, owner-authorized development surface rehearsal. The native
+Owner-authorized development surface rehearsal. The native
 run on release `1ef008781d5e88c8375405f589796cff277ce0bf` reached all twelve
 construction phases and reset replay. Eight of fourteen rigid construction
 gates passed. Grasp/lift targets, retention, transport, clearance and destination

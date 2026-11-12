@@ -37,18 +37,16 @@ CAD/SimReady objects must utilize the following harness-installed skills.
 - Always retain the generating script, parameters, kernel identity, and the
   exported artifact together; a mesh without its generator is not reproducible
   evidence.
-- Claim boundary (binding, from `docs/arm_decision_proof_v1/north_star_contract.json`
-  `asset_authoring_contract`): generated geometry is a `development_only`
-  candidate or proposal. Geometry authority for ADP evidence remains measured
+- Claim boundary: generated geometry is a `development_only`
+  candidate or proposal. Geometry authority remains measured
   scan / manufacturer CAD / checked-in parametric geometry with independent
   deterministic verification — never VLM inference. Observed source-derived
   geometry (for scene `840796`, the registered SAGE-derived articulated source
   asset) outranks any generated candidate for exterior surfaces; unobserved
   surfaces (interiors) stay labeled `generated_candidate_geometry`.
-- Entering the ADP evidence chain (for example as a SimReady authoring
+- Entering an evidence chain (for example as a SimReady authoring
   comparison lane next to NVIDIA USD Content Agents) additionally requires an
-  exact component admission packet under the released-code rule
-  (`docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`) and passage of the
+  exact component admission packet under the released-code rule and passage of the
   independent static/native validators
   (`src/blueprint_pipeline/articulated_simready_replacement.py`,
   `public_scene_simready_*`).

@@ -1,6 +1,6 @@
 # Controlled policy integration capabilities
 
-ADP-011/day 7 admission and ADP-050/day 28 execution. Owner: Nijel Hunt.
+Owner: Nijel Hunt.
 Observed blocker: private model uploads and customer controllers previously
 had no compatible handoff to an isolated, observation-only execution path.
 Completion artifacts: the model service/image packaging, controlled executor,

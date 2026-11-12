@@ -1,4 +1,4 @@
-# ADP-009D / day 28: parentless Cloud Run bootstrap
+# Parentless Cloud Run bootstrap
 
 Observed blocker: live apply rejects project-level `roles/iam.denyAdmin` with
 400; this account has no organization. One worker project cannot protect a

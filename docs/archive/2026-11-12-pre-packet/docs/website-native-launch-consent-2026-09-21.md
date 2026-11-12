@@ -1,6 +1,6 @@
 # Website consent at native launch
 
-ADP-009D / day-21. Website evaluation activation reached the native launch preparer, which rejected the original `website_scene_preparation.v1` and `website_native_rights_admission.v1` records because it expected legacy source and rights schemas.
+Website evaluation activation reached the native launch preparer, which rejected the original `website_scene_preparation.v1` and `website_native_rights_admission.v1` records because it expected legacy source and rights schemas.
 
 The native preparer now reads the original records without rewriting them. It verifies transport hashes, embedded seals, scene, owner, task, consent and execution authority together. Only exact derived assets from the configured revision are eligible for provider staging. This does not admit raw capture video, training, redistribution or physical-proof claims.
 

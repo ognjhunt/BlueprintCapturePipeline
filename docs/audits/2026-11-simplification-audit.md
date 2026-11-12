@@ -92,7 +92,7 @@ Three things the reconciliation found that the audit could not know:
 | P-RT-07+P-A09 | Retire the GCP warm pool and staging intake | done | Merged 2026-11-10 (PR in the last column). Before the merge: The 4 units, the env examples, the install script, the workflow and 5 of the 6 modules are gone (#3407); none of the units is on the host. `production_gpu_runpod_autoscaler.py` and its test remain | approved 2026-11-05 | #3407; #3531 (merged; completes the repo side) |
 | P-RT-03 | Retire scene object discovery | still open | Both unit files exist; on the host the path unit is `active` | yes | |
 | P-A01 | Retire the measurement lane | partly done | The 31 modules and the workflow are gone (#3407). `scripts/measurement_research_monitor.py`, `measurement_research_monitor.py` and `measurement_research_monitoring.py` remain | approved 2026-11-05 | #3407; none; reason below |
-| P-A05 | Retire the articulated door lane | done | 15 of the 18 modules are gone (#3407). The other 3 stay: `articulated_simready_replacement` is ADP-cited and imports `articulated_dynamics_profiles` and `articulated_dynamics_realism` | approved 2026-11-05 | #3407 |
+| P-A05 | Retire the articulated door lane | done | 15 of the 18 modules are gone (#3407). The other 3 stay: `articulated_simready_replacement` imports `articulated_dynamics_profiles` and `articulated_dynamics_realism` | approved 2026-11-05 | #3407 |
 | P-A07 | Retention and reclamation tools | still open | All 11 modules exist | yes (they delete retained data) | |
 | P-W07 | Firestore index manifest | still open | Not changed | yes | |
 | P-DT-07 | Archive the July SC3 launch-evidence program | still open | The SC3 ledger and its tests exist | yes | |
@@ -100,7 +100,7 @@ Three things the reconciliation found that the audit could not know:
 | P-DT-13 | Archive WebApp design binaries | partly done | `docs/design` is under `docs/archive/design` (#1224), apart from one JSON file. `docs/visuals` (9.1 MB) is still in place | yes | #1224 |
 | P-D01 | Vast credit guard on by default | done | `credit_guard_setting()` reads `os.getenv(ENABLED_ENV, "true")` (#3407) | approved 2026-11-05 | #3407 |
 | P-D02 | Non-guard `ALLOW_*` switches | still open | 54 of the 55 flag names in the plan still have a reader | yes | |
-| P-DT-05 | Docs index lists the beta's operating docs | still open | `docs/README.md` still limits "active execution documents" to the ten ADP files | yes | |
+| P-DT-05 | Docs index lists the beta's operating docs | still open | `docs/README.md` still limits "active execution documents" to ten files, none of them a beta document | yes | |
 | P-RT-08 | Existing-policy canary continuation and watchdog | still open | The 3 unit files exist; the continuation units are not on the host | yes | |
 | P-B08 | Spend-cap arithmetic | still open | Not changed (money guard) | yes | |
 
@@ -132,15 +132,15 @@ All ten Pipeline branches merge into one tree without conflict. Measured with th
 |---|---|
 | P-DT-03 | `audit/policy-comparison-20260907/` cannot move under `docs/`: `scripts/verify_source_governance.py` then fails on personal absolute paths in `evidence/identity.json:8` and `evidence/worktrees.txt:1`. Of the 38 dated top-level docs, most are read by a script, a test or runtime code; the 2026-09-21 authorization notes and the two G1 rights reviews may be cited by stored records and stay |
 | P-DT-02 | `docs/experiments/policy_ranking_thesis_experiment_2_20260727/` is cited by path in four sealed evidence files in other experiment directories |
-| P-A06 | The five remaining modules are live (`frames_layout`, `gaussian_object_partition`), imported by an operator tool (`artifixer_heldout_evaluation`), tied to an Arm Decision Proof scene audit (`particlefield_upstream_parity`), or the writer of a record shape that `capture_reconstruction_downstream` reads (`capture_reconstruction_publication`) |
-| P-A08 | `external_scene_task_evaluation` is file 16 in `docs/arm_decision_proof_v1/ADP_009D_FRANKA_PUBLIC_SCENE_SIM_GOAL_PROMPT.md`, and the other three modules of that island exist only for it. `task_evaluation_sam31_service_provisioning` is the documented provisioning step in `docs/operations/sam31_preparation_services.md` |
+| P-A06 | The five remaining modules are live (`frames_layout`, `gaussian_object_partition`), imported by an operator tool (`artifixer_heldout_evaluation`), tied to a scene audit (`particlefield_upstream_parity`), or the writer of a record shape that `capture_reconstruction_downstream` reads (`capture_reconstruction_publication`) |
+| P-A08 | `external_scene_task_evaluation` is cited by a planning document, and the other three modules of that island exist only for it. `task_evaluation_sam31_service_provisioning` is the documented provisioning step in `docs/operations/sam31_preparation_services.md` |
 | P-A01 | `measurement_research_monitor` and `measurement_research_monitoring` are imported by `task_evaluation_supervisor/agents_sdk.py` and `capabilities.py` |
 | P-RT-02 | The collector also cancels orphaned Cloud Run executions (a teardown path). An idle exit must know every place a live execution can be recorded. The cheaper fix depends on decision R1: if the remote lane is switched off, the unit is simply disabled |
 | P-RT-09 | With a `-m` entry the chain preflight stops skipping this unit and runs its sandbox probe on it for the first time; a probe failure is a `blocker` finding. That can only be tried on the host, as root |
 | P-B01 | Not attempted. The rename touches the construction worker, the pose servo, the readback and the live screening adapter, and needs the calibration test the plan describes written first |
 | P-B02, P-B04, P-B05, P-B06 | Not attempted. Each changes behaviour if done wrong (normalisation, durability, lock paths, retries) and needs its own proof per lane |
 | P-B03 | A scan for single-statement helpers found 25 local sha256-of-JSON helpers and none byte-identical to `canonical_digest` (none passes exactly `canonical_json`'s arguments to `json.dumps`, and 22 of them return no `sha256:` prefix). The audit's list of 15 was not committed, so it has to be rebuilt before anything is delegated |
-| P-B07 | Of the 8 definitions, 2 are in Arm Decision Proof modules, 1 (`robot_arm_chains.py:310`) is not a camera flip, 1 is deleted by #3527, and the other 4 are one-line constants of different shape. No longer worth a PR |
+| P-B07 | Of the 8 definitions, 2 are in older evaluation modules, 1 (`robot_arm_chains.py:310`) is not a camera flip, 1 is deleted by #3527, and the other 4 are one-line constants of different shape. No longer worth a PR |
 | P-C | Not attempted. Three of the four modules are guards or ship in the GPU bundle; a move-only split still needs the bundle lists changed in step |
 | P-E | Waits for R1. `tomli` must stay in `uv.lock` in any case: `scripts/install_scene_retirement_runtime.py:1511-1537` loads a verified `tomli` wheel from the lock |
 | P-F | Not attempted. Declaring `pydantic` and `starlette` changes `uv.lock`, both generated `requirements*.txt` files and the supply-chain evidence; do it with the next dependency refresh |
@@ -149,7 +149,7 @@ All ten Pipeline branches merge into one tree without conflict. Measured with th
 ### Found past the inventory
 
 1. **Console scripts keep switched-off lanes installed, but fewer than first counted.** An import-graph scan found 61 of the 175 console scripts to be the only thing outside tests that imports their target module (67 modules, 51,076 lines behind them). That scan did not count two kinds of caller. A per-script check on 2026-11-10 found most of the 61 are named somewhere else: started by command name from another module (for example the G1 endpoint adapters named in `mujoco_g1_wam_vla_policy_endpoint_eval.py`), listed in `docs/architecture/command-safety-matrix.md`, or named in a doc the spend verifier reads (`docs/FIRST_GPU_E2E_RUNBOOK.md`, `docs/UNITREE_G1_POLICY_ENDPOINT_LANE.md`). Three are paid-resource surfaces. #3531 removed the 4 that belonged to the retired GCP warm pool, and a later PR the same day removed 5 that nothing named at all (`major_capability_scenario_suite`, `mujoco_scene_scenario_packet`, `scene_eval_autogen`, `site_reference_backfill`, `wam_model_runtime_bootstrap`). The rest need a lane decision made with those references in view, not a bulk delete.
-2. **34 unreachable modules the inventory does not list** (13,649 lines): `policy_ranking_successor_cosmos_provider_runtime`, `policy_improvement_run`, `public_scene_inpaint360_adapter`, `articulated_excision_join`, `gaussian_source_removal_qualification`, `public_reference_admission`, `public_scene_simready_replacement`, `gaussian_suppression_volume`, `paired_target_native_render_request`, `cosmos_edge_closed_loop_provider_bundle`, `task_evaluation_task_parameter_proposal`, `paired_target_native_preflight`, `fresh_scene_paired_target_preparation`, `policy_ranking_successor_cosmos_bundle`, `task_evaluation_planar_push_readiness_candidate`, `public_scene_artifixer3d_final_composite`, `task_evaluation_preparation_claim_recovery`, `semantic_teacher_pending_spend`, `public_scene_infusion_compose`, `public_scene_hybrid_replacement_seal`, `public_scene_task_selection`, `openai_unattributable_spend`, `task_evaluation_passive_destination_simready`, `task_object_artisan_replay`, `capture_reconstruction_checkpoints`, `capture_reconstruction_downstream`, `capture_reconstruction_postshot_allocator`, `company_policy_conformance`, `openpi_checkpoint_inventory`, `skypilot_promotion_gate`, `native_g1_packet_choice_handoff`, `optional_dependencies`, `stage_outcome`, `lane_resume`. Several look like Arm Decision Proof code (`public_scene_*`, `paired_target_*`) and two are spend records (`semantic_teacher_pending_spend`, `openai_unattributable_spend`); none was touched.
+2. **34 unreachable modules the inventory does not list** (13,649 lines): `policy_ranking_successor_cosmos_provider_runtime`, `policy_improvement_run`, `public_scene_inpaint360_adapter`, `articulated_excision_join`, `gaussian_source_removal_qualification`, `public_reference_admission`, `public_scene_simready_replacement`, `gaussian_suppression_volume`, `paired_target_native_render_request`, `cosmos_edge_closed_loop_provider_bundle`, `task_evaluation_task_parameter_proposal`, `paired_target_native_preflight`, `fresh_scene_paired_target_preparation`, `policy_ranking_successor_cosmos_bundle`, `task_evaluation_planar_push_readiness_candidate`, `public_scene_artifixer3d_final_composite`, `task_evaluation_preparation_claim_recovery`, `semantic_teacher_pending_spend`, `public_scene_infusion_compose`, `public_scene_hybrid_replacement_seal`, `public_scene_task_selection`, `openai_unattributable_spend`, `task_evaluation_passive_destination_simready`, `task_object_artisan_replay`, `capture_reconstruction_checkpoints`, `capture_reconstruction_downstream`, `capture_reconstruction_postshot_allocator`, `company_policy_conformance`, `openpi_checkpoint_inventory`, `skypilot_promotion_gate`, `native_g1_packet_choice_handoff`, `optional_dependencies`, `stage_outcome`, `lane_resume`. Several look like older public-scene code (`public_scene_*`, `paired_target_*`) and two are spend records (`semantic_teacher_pending_spend`, `openai_unattributable_spend`); none was touched.
 3. **RunPod code outlives RunPod.** 26 modules with `runpod` in the name hold 25,045 lines. RunPod is retired for new spend; the spend guard still needs its inventory read while a key exists.
 4. **Three more compatibility shims**, imported only by tests that pin them: `optional_dependencies.py`, `stage_outcome.py`, `lane_resume.py` (16 lines).
 5. **ruff `target-version = "py310"`** while the package requires Python 3.11 or later. Changing it to `py311` adds no finding with the locked ruff 0.15.21. Not sent as its own PR because any `pyproject.toml` change runs the full suite; it can ride with the next one.
@@ -168,7 +168,6 @@ Ordered by payoff. Items 14 to 16 repeat audit decisions that have not moved.
 | 2 | Which lanes behind the remaining single-use console scripts are retired | Finding 1 above, as corrected: most are named by another module, the command-safety matrix or a spend-verifier input doc | Decide lane by lane (first-GPU July lane, OpenVLA, Unitree UnifoLM, the WAM VLA endpoint, policy autoresearch, kitchen task scaling, manipulation task stack). Approved in general on 2026-11-10; the five scripts nothing named are gone | One PR per lane that also edits the matrix, the verifier inputs and the modules that start those commands |
 | 3 | RunPod: close the account and delete the key | `AGENTS.md` spend table, RunPod row; finding 3 | Close it | Remove the RunPod launchers and, once no key exists, the guard's RunPod read |
 | 4 | The other 14 policy-ranking modules | #3533 lists each with its reason | Remove the four OpenAI judge modules with their entries in `scripts/paid_api_call_sites.json`; decide the six contract-doc modules with those docs | One PR that also edits the paid-call-site list and the verifier's expected rows |
-| 5 | Arm Decision Proof leftovers | `external_scene_task_evaluation` and its three helpers, `particlefield_upstream_parity`, the 34 modules in finding 2 | Ask the ADP owner | Delete what ADP no longer cites |
 | 6 | The 23 non-guard `ALLOW_*` switches (P-D02) | 54 of the 55 flag names in the plan still have a reader | Delete them once the host env shows them unset | One PR per reader |
 | 7 | Scene object discovery (P-RT-03) | Both unit files exist; on the host the path unit is `active`; the audit found no record was ever written | Retire | Units, worker, intake routes, the WebApp panel |
 | 8 | WebApp: 8 legacy endpoints (P-W04) | No caller in either repo; Render request logs not readable | Read 30 days of Render logs, then remove | Routes, their rate-limiter lines, tests |
@@ -178,7 +177,7 @@ Ordered by payoff. Items 14 to 16 repeat audit decisions that have not moved.
 | 12 | `audit/policy-comparison-20260907/` | Reason under P-DT-03 | Delete it (60 files, history is in git) | One deletion PR |
 | 13 | `Wants=blueprint-scene-project-spend-refresh.service` on the replay-cache GC unit (P-RT-05) | Starts the spend refresh every 5 minutes; the capacity unit also pulls it | Drop the line if a 10-minute refresh is fresh enough | One-line unit change, deployed in the window |
 | 14 | R1: host venv from `uv.lock`, rebuild or switch off the remote-CPU image | Unchanged since the audit | Rebuild | Unblocks P-RT-02 and P-E |
-| 15 | Docs index (P-DT-05) | `docs/README.md` still lists only ADP files as active | Add the beta's operating docs, `SYSTEM_MAP.md` and `OPERATOR_TOOLS.md` | About 30 lines |
+| 15 | Docs index (P-DT-05) | `docs/README.md` still lists no beta document as active | Add the beta's operating docs, `SYSTEM_MAP.md` and `OPERATOR_TOOLS.md` | About 30 lines |
 | 16 | Unchanged audit owner calls | P-A07, P-W07, P-DT-07, P-DT-09, P-DT-10, P-DT-13, P-RT-08, P-B08, R3, P-INFRA-02 | As the audit recommends | As each plan says |
 
 ### Second batch (2026-11-10, after the owner approved the decision list)
@@ -191,7 +190,6 @@ The owner approved the eight highest-payoff decisions ("approved, do them all").
 | 2 | Retire the lanes behind single-use console scripts | **Partly done.** Finding 1 was corrected (see above). The five scripts nothing named were removed. The others are started by name from other modules or listed in the command-safety matrix and spend-verifier inputs, and need lane-by-lane PRs | the PR that added this section |
 | 3 | RunPod: close the account, then remove its code | **Waiting on the account.** Closing the account and deleting the key file is the owner's step and cannot be seen from a session. No RunPod code was removed | none |
 | 4 | The other 14 policy-ranking modules | **Partly done.** The four OpenAI judge modules and the evidence store went, with five `unadmitted` spend call sites. The spend governor pair and the six modules described in contract docs wait for a decision on those docs | #3540 |
-| 5 | Arm Decision Proof leftovers | **Not done.** The decision was "ask the ADP owner"; no module ADP cites was touched | none |
 | 6 | WebApp `ops/paperclip/reports/` | **Done.** 949 tracked files removed; `README.md` records the commit that has them | WebApp #1252 |
 | 7 | WebApp legacy endpoints | **Done for seven of eight**, after a check of the iOS app repo found no caller. `/api/storage/uploads` is kept: the iOS repo's credential validator uses it as its example of a correct upload path. Render request logs were not read | WebApp #1253 |
 | 8 | `AGENTS.md` per-site limit | **Done.** The spend table says $30 | #3538 |
@@ -229,7 +227,6 @@ The unit file paths are the standard ones; confirm them with `systemctl cat <uni
 
 | Lane | Why it stays |
 |---|---|
-| Kitchen task scaling | Its fixture `tests/fixtures/kitchen_task_min` is named in `docs/arm_decision_proof_v1/north_star_contract.json`, that folder's `README.md` and its `IMPLEMENTATION_BACKLOG.md`. Arm Decision Proof decides |
 | Policy autoresearch and `policy_improvement_run` | `post_training_data_package.py:5537-5541` reads their artifact paths, and `docs/webapp_handoff/decision-evidence-router.v1/compatibility-policy.json` names `policy_improvement_run`: a stored-record and WebApp handoff shape |
 | OpenVLA, WAM VLA endpoint | `mujoco_g1_wam_vla_policy_endpoint_eval.py` names their schemas and is itself started by command from `unitree_groot_n17_sonic_policy_runtime.py:1090`, part of the G1 stack that is in use. `tests/test_paid_lane_independent_watchdog_coverage.py` lists `openvla_policy_provider_smoke` among paid lanes that must have a teardown watchdog |
 | Unitree UnifoLM | `unitree_unifolm_runpod_server.py` is a listed paid-resource surface and is named in `tests/test_paid_lane_terminal_artifact_contract.py`. It goes with the RunPod code, after the account is closed |
@@ -244,7 +241,6 @@ Blueprint's running system is much smaller than its codebase.
 
 Before anything is removed, these checks protect the system:
 - The guards (privacy, rights, money, deploy gates and the door) stay as they are.
-- Arm Decision Proof v1 code and evidence stay.
 - Records already stored stay readable.
 
 Top 10 simplifications, safest and highest payoff first:
@@ -289,14 +285,14 @@ There are 99 unit files: 49 services, 30 timers and 20 paths. The deploy install
 | `blueprint-pipeline-control-plane.{service,timer}` (`live_pipeline_control_plane`) | OUTDATED | owner-call | Every 5 min: 27 CPU-s, a 6.7 MB manifest rewrite, `status=blocked`. Its 13 blockers are feature switches. Inbox last fed 09-29 (only by the paused agent-run dispatcher). Webhook last sent 20:38Z | P-RT-06 |
 | `blueprint-task-evaluation-episode-compilation-remote.*` | CONSOLIDATE | likely | 20.6–22.6 CPU-s every 60–90 s with zero rows. Last remote job 10-01 | P-RT-02 |
 | `blueprint-completed-replay-cache-gc.*` | CONSOLIDATE | likely | Removes 0 bytes every 5 min but writes 2 receipts (22,756+). Its `Wants=` also starts the 35 CPU-s spend refresh | P-RT-05 |
-| `blueprint-scene-object-discovery.{service,path}` | REMOVE-CANDIDATE | owner-call | Every queue and output dir is empty since the 08-26 deploy created them. Only producer: a panel on the WebApp's `/ops/task-evaluation-launches`, which Arm Decision Proof cites (keep the page) | P-RT-03 |
+| `blueprint-scene-object-discovery.{service,path}` | REMOVE-CANDIDATE | owner-call | Every queue and output dir is empty since the 08-26 deploy created them. Only producer: a panel on the WebApp's `/ops/task-evaluation-launches`, (keep the page) | P-RT-03 |
 | `blueprint-production-gpu-{campaign-control-plane,worker-agent,worker-pool}`, `blueprint-pipeline-intake-staging` | REMOVE-CANDIDATE | owner-call | Not installed on the host; not in the deploy list. A weekly workflow and a runbook still name them | P-RT-07+P-A09 |
 | `blueprint-scene-project-spend-refresh.service` | KEEP-GUARD (only its entry point needs renaming) | proven | Its `python -c` entry makes preflight report `entry_module_unrecognised` on every run | P-RT-09 |
-| Off on purpose: agent-run dispatcher (founder stop since 10-02), team evaluation runner, launch supervisor (OpenAI money), configured-controls progression (C-01), terminal resource release, Cloud Run team-scene lane (#3331), SAM-3.1 execution (idle since 09-16), native G1 campaigns | DORMANT-INTENDED / KEEP-ADP | proven | `beta-operations.md` §7 (D-06); tracker | none |
+| Off on purpose: agent-run dispatcher (founder stop since 10-02), team evaluation runner, launch supervisor (OpenAI money), configured-controls progression (C-01), terminal resource release, Cloud Run team-scene lane (#3331), SAM-3.1 execution (idle since 09-16), native G1 campaigns | DORMANT-INTENDED | proven | `beta-operations.md` §7 (D-06); tracker | none |
 | Existing-policy canary continuation and watchdog | DORMANT-INTENDED | owner-call | Installed, never started in 14 days. The watchdog is a teardown guard. Keep while a manual hand-off is possible | P-RT-08 |
 | Stuck: `blueprint-embodiment-preparation` | KEEP-LIVE | proven | Re-checks the 10-30 grant every 5 min; blockers `independent_vast_watchdog_exact_resource_name_invalid`, `spend_admission_lock_stale` | operator |
 
-Armed but with no real work for 30+ days: launch preparation (09-27), SAM-3.1 (09-16), host episode compilation (09-27), remote episode compilation (10-01) and native G1 dispatcher and settlement (09-26, ADP). They are cheap and dormant on purpose, apart from the remote poll (P-RT-02).
+Armed but with no real work for 30+ days: launch preparation (09-27), SAM-3.1 (09-16), host episode compilation (09-27), remote episode compilation (10-01) and native G1 dispatcher and settlement (09-26). They are cheap and dormant on purpose, apart from the remote poll (P-RT-02).
 
 ### Providers, images, Terraform, CI
 
@@ -336,10 +332,9 @@ Reachability: 2,592 modules, 1,348,789 lines.
 | One-off task-evaluation lanes (external scene, provider NuRec, ARKitScenes, new-site, diagnostic scene configuration, MoveIt adapter, …) | 22 / 8,258 | REMOVE-CANDIDATE | likely | P-A08 |
 | Compat shims and retired entrypoints (`aws_independent_watchdog_control` is a refusing stub, not a guard; `output_run_transaction`, `pipeline_settings`, `legacy_*`) | 7 / 361 | REMOVE-CANDIDATE | likely; needs the full suite | P-A10 |
 | Policy-ranking research | 35 / 13,944 | ARCHIVE | likely | P-A02 |
-| Articulated door task | 17 / 5,103 | REMOVE-CANDIDATE | owner-call (ADP-adjacent) | P-A05 |
+| Articulated door task | 17 / 5,103 | REMOVE-CANDIDATE | owner-call | P-A05 |
 | Measurement lane (only user of `newton`, `pyelastica`, `sapien`, `coal`) | 31 / 12,389 | DORMANT-INTENDED | owner-call | P-A01 |
 | `production_gpu_*` / `production_autonomy_*` | 6 / 1,460 | OUTDATED | owner-call | P-RT-07+P-A09 |
-| Public-scene ADP-009A lane, ADP modules | 51 / 21,797 | KEEP-ADP | proven | none |
 | Retention and reclamation tools | 11 / 4,245 | KEEP-RECORDS | owner-call | P-A07 |
 | Operator diagnostics (`vast_safe_status`, `atlas_*`, …) | 19 / 6,421 | RENAME/DOCUMENT | likely | P-A11 |
 
@@ -401,7 +396,7 @@ Dependencies:
 
 **Docs that are wrong:**
 - `AGENTS.md` (lines 24 and 51) still states the per-site screening limit as $15. The code and the WebApp have been at $30 since #3395 (11-05). This is a money figure in a binding guide, so the owner confirms it (P-DT-14).
-- `docs/README.md` names ten ADP files as the only active documents and no beta document.
+- `docs/README.md` names ten files as the only active documents and no beta document.
 - `beta-ops-incident-response.md` sends rollback to the legacy Cloud Run job; the real path is `door deploy`, `beta-operations.md` §5.
 - The July SC3 gap ledger still says it is authoritative, with 107 gaps.
 - `PRODUCTION_PIPELINE_PROFILE.md` and `LIVE_PIPELINE_SETUP.md` describe the July product.
@@ -411,7 +406,7 @@ Every unit, module and script name in the runbooks resolves.
 **Tests:**
 - 2,746 files, about 1.06M lines, about 34.5k cases.
 - 21 test files (3,184 lines) test only removal-candidate modules. They go in the same PR as their module.
-  - A first pass listed 36 files. The cross-check found that 15 of those test modules that stay: 4 KEEP-ADP, 2 KEEP-RECORDS, 1 dormant, 3 operator tools, 4 archive and 1 owner-call.
+  - A first pass listed 36 files. The cross-check found that 15 of those test modules that stay: 4 kept because a planning document cited them, 2 KEEP-RECORDS, 1 dormant, 3 operator tools, 4 archive and 1 owner-call.
 - About 40 `external_runtime`/`external_data` cases, including every Isaac case and both `gpu`-marked tests, run in no CI lane (P-DT-09, owner-call: a GPU lane costs money).
 
 **Scripts** (300 in `scripts/`):
@@ -424,7 +419,7 @@ Every unit, module and script name in the runbooks resolves.
 | No caller at all | 26 |
 | Named only in docs | 20 |
 
-Most of the uncalled ones are break-glass or ADP tools; document them, don't remove them. Six (MuSHRoom/Postshot bakeoff and similar) are likely removals (P-DT-11).
+Most of the uncalled ones are break-glass or older evaluation tools; document them, don't remove them. Six (MuSHRoom/Postshot bakeoff and similar) are likely removals (P-DT-11).
 
 **Catalog** (owner decision P-DT-12): 136 candidates, 39 enabled on the host.
 
@@ -452,11 +447,11 @@ Most of the uncalled ones are break-glass or ADP tools; document them, don't rem
 - The GPU bundle ships modules named only as strings (`CANARY_SHIPPED_PACKAGE_FILES`, `TEAM_RUNTIME_MODULE_NAMES`, `native_task_arena_policy_canary_bundle.py:61-83`). Remote CPU jobs get the whole `src` tree and `docs/schemas` through `git archive`.
 - Docs read at runtime:
   - `docs/experiments/policy_ranking_thesis_20260726/*.json`: the OpenPI inventories every screening plan reads.
-  - `docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_*`, `adp009d_scene_840920_policy_readiness.v1.json`, `policy_canary_episode_interpreter_profile.v1.json` and `image_editor_backends.v1.json`: beta screening and website image completion use them, despite the ADP names.
+  - `docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_*`, `adp009d_scene_840920_policy_readiness.v1.json`, `policy_canary_episode_interpreter_profile.v1.json` and `image_editor_backends.v1.json`: beta screening and website image completion use them, despite their names.
   - `docs/website-controls-pause-2026-09-21.md`: the authorization reference written into records.
   - `docs/runbooks/beta-operations.md` and `control-plane-capacity.md`: their paths and anchors are emitted in pages.
 - CI spend-guard verifier inputs: `docs/FIRST_GPU_E2E_RUNBOOK.md` (despite its "Archived" banner), `UNITREE_G1_POLICY_ENDPOINT_LANE.md`, `runbooks/groot-oscar-thin-release.md`, `architecture/command-safety-matrix.md` and `architecture/paid-resource-mutation-surfaces.json`.
-- Configured scenes in B2 live under `…/arm-decision-proof-v1/configured-scenes/website-…`, but they are beta data. The remote-CPU B2 prefix sits under the same name. Do not tie either to ADP retirement.
+- Configured scenes in B2 live under `…/arm-decision-proof-v1/configured-scenes/website-…`, but they are beta data. The remote-CPU B2 prefix sits under the same name.
 - The `storage-trigger` Cloud Function and the Pub/Sub "capture bridge" hand-off look legacy, but they carry every website upload (last hand-off 11-04 16:56Z).
 - DigitalOcean looks like a dead builder provider, but it bills the host. The RunPod and GCP-compute inventories in the spend guard are required provider-zero inputs.
 - Some units look off but run:
@@ -470,7 +465,7 @@ Most of the uncalled ones are break-glass or ADP tools; document them, don't rem
   - `ops/paperclip/plugins/blueprint-automation/src/*`, which is compiled into the server bundle.
   - `knowledge/` and `vendor/daily-research`.
   - The iOS-only endpoints (`/api/client/runtime-config`, `/api/qr/*`).
-  - The ADP-cited pages `/ops/task-evaluation-launches` and `/admin/jobs`.
+  - The pages `/ops/task-evaluation-launches` and `/admin/jobs`.
 - Write-only Firestore collections that are evidence (deletion receipts and similar).
 
 ## Version skew
@@ -576,12 +571,12 @@ One line each: the choice, the trade-off, and the recommendation.
 6. **RunPod.** Fix the billing call, or retire the account and drop it from the guard and the reconciler together. *Recommend: retire if unused (inventory 0 rows).*
 7. **Vast credit guard default (P-D01).** Flip `false` to `true`. It costs nothing and makes the guard fail safe. *Recommend: yes.*
 8. **Measurement lane (P-A01).** Retire it, with its monthly workflow and 4 heavy dependencies, or keep researching. *Recommend: retire unless it is planned.*
-9. **Articulated door lane (P-A05).** 5,100 lines, ADP-adjacent. *Recommend: ask the ADP owner; retire if the second-scene work is done.*
+9. **Articulated door lane (P-A05).** 5,100 lines. *Recommend: ask the owner; retire if the second-scene work is done.*
 10. **WebApp dormant lanes.** Growth and city-launch, the capturer network, Stripe payouts and checkout, and voice: about 70 endpoints and their pages. *Recommend: retire the growth and voice lanes. Keep capturer and Stripe until the iOS app's needs are checked.*
 11. **WebApp ops scheduler.** Confirm it is meant to be off, including the `agent_run_settlement` sweep. *Recommend: turn on just the settlement sweep if agent-team spend restarts.*
 12. **Legacy capture lane infrastructure.** Swap dispatch, the `pipeline` Cloud Run job, Cloud Tasks, video-to-world and, with the lane, the privacy services. *Recommend: first read what is actually deployed (owner gcloud), then retire with the non-website capture lane.*
 13. **Outdated images and the signed-release workflows.** *Recommend: retire the images with no consumer. Decide whether the signed-release path is wanted; today every deploy is "iteration".*
-14. **Docs index (P-DT-05).** `docs/README.md` limits "active execution documents" to ADP files (an owner decision of 10-14). *Recommend: list the beta's operating docs and `SYSTEM_MAP.md` there too.*
+14. **Docs index (P-DT-05).** `docs/README.md` limits "active execution documents" to ten files (an owner decision of 10-14). *Recommend: list the beta's operating docs and `SYSTEM_MAP.md` there too.*
 15. **Binaries in git.** The 20 MB HTML and 38 MB of WebApp design files could move to storage. *Recommend: archive in-tree first; moving them out of git is optional.*
 16. **Never-run GPU test suites (P-DT-09).** Run them in a paid GPU lane, run them manually, or delete them. *Recommend: manual and documented; keep the rigid-probe suite.*
 17. **Non-guard `ALLOW_*` switches (P-D02).** Delete the 23 that protect none of privacy, rights or money, once the host env shows they are unset. *Recommend: yes.*
@@ -640,9 +635,8 @@ Owner decisions 1–18 above. Each one, once approved, becomes a plan of the sam
 
 ## Re-check of every removal candidate against the rules
 
-Every REMOVE-CANDIDATE in the inventory (46 rows after this check) was checked once more against three questions:
+Every REMOVE-CANDIDATE in the inventory (46 rows after this check) was checked once more against two questions:
 - Is it a guard? None is. The AWS "watchdog" is a refusing stub for a retired provider. The spend-guard verifier inputs and the privacy face-blur shim are marked KEEP-GUARD.
-- Does Arm Decision Proof v1 cite it? Every ADP-cited module, doc and page is KEEP-ADP.
 - Does a stored record depend on it?
   - Retention tools and digest helpers are KEEP-RECORDS.
   - The gripper rename keeps a read alias.
@@ -651,7 +645,7 @@ Every REMOVE-CANDIDATE in the inventory (46 rows after this check) was checked o
 Four items changed in this check:
 - The capture-reconstruction dispatcher went from proven to likely, because of the host policy folder.
 - The 36 "tests of dead code" became 21.
-- `public_scene_simready_validation_stage` (no importer anywhere) moved to KEEP-ADP. It sits in the ADP-009A lane, so the ADP owner decides.
+- `public_scene_simready_validation_stage` (no importer anywhere) is kept; the owner decides.
 - `GIT_CONFIG_COUNT` moved to KEEP-LIVE: 32 unit files set it for git.
 
 ## Gaps (not checked, or refused)
@@ -662,4 +656,4 @@ Four items changed in this check:
 - **Not inspected:** `door show` does not list drop-ins, so the hotfix-overlay drop-in is unverified.
 - **Static only:** "no caller" for WebApp endpoints and unreachable Python modules is static evidence. Per-module journals and the stored records that name a producer module were not checked.
 - **History and PRs:** both clones are shallow, so there are no per-file last-change dates. Two open PRs (#3056, #2808) list more than 100 files and were read only in part.
-- **Assumed:** the KEEP-ADP status of agent execution and stage replay rests on the `adp-assessment-pilot` directory name.
+- **Assumed:** keeping agent execution and stage replay rests on the `adp-assessment-pilot` directory name.

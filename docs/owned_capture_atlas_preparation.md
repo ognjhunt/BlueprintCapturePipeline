@@ -1,7 +1,6 @@
 # Owned-upload Atlas preparation
 
-This development-only adapter closes an ADP-009D day-14 receipt/day-28 replay
-dependency. It reuses the existing Atlas controller, bounded worker, private
+This development-only adapter closes a receipt and replay dependency. It reuses the existing Atlas controller, bounded worker, private
 archive, provider cleanup and explicit replay lifecycle. It does not qualify a
 public-scene gate, measured geometry, an embodiment, robot execution or a
 physical outcome.

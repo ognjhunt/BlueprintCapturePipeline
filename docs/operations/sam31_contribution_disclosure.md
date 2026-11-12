@@ -1,6 +1,6 @@
 # SAM contribution source disclosure
 
-ADP-009D contribution measurement precedes source-object cutout. Its provider
+Contribution measurement precedes source-object cutout. Its provider
 bundle contains the complete source scene converted to standard PLY. Conversion
 preserves every Gaussian; permission to disclose derived frames does not cover
 this payload. General compute/spend authorization does not establish data rights.

@@ -70,8 +70,8 @@ come back.
 | BlueprintCapture #23 | Keeps the capture screen open until the recording ends (2025-11) | Close | The App Clip rebuild (#76) removed the file it edits. |
 | BlueprintCapture #13, #14, #15, #16, #18 | Nearby Targets and search screens (2025-10) | Close | Those screens were deleted on 07-21 as unused code. |
 | Pipeline #3056 | All Codex autonomy drafts on one branch (AUT-02/06/08/09/10/12/17) | Defer | Not on the beta path. Keep it as the one record of that work. It is 572 commits behind `main` with 32 conflicts, so it needs a rebuild before any merge. |
-| Pipeline #2808 | Isaac Lab GA runtime comparison (ADP-009D) | Defer | Research draft: 0 of 40 valid episodes. It contains #2806. |
-| Pipeline #2806 | SimReady Central asset intake (ADP-009) | Defer | Merges cleanly, but nothing in the beta uses it. |
+| Pipeline #2808 | Isaac Lab GA runtime comparison | Defer | Research draft: 0 of 40 valid episodes. It contains #2806. |
+| Pipeline #2806 | SimReady Central asset intake | Defer | Merges cleanly, but nothing in the beta uses it. |
 | Pipeline #2740 | Full exact-workcell evaluations for the rigid Franka/DROID profile | Defer | The beta stops at screening. 7 conflicts and open review findings. |
 | Pipeline #2736 | FLORA video grading for research | Defer | Research only. 6 conflicts. |
 | Pipeline #2714 | Agent instructions for site and contact research | Defer | Instructions only, no product change. Conflicts in `AGENTS.md`. |

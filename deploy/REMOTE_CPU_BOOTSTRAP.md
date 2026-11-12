@@ -1,4 +1,4 @@
-Arm Decision Proof v1, ADP-009D / day 28: deploy the episode-compilation CPU
+Deploy the episode-compilation CPU
 worker without restoring or adopting unrelated legacy infrastructure.
 
 The existing project has broad Editor and TokenCreator grants. Editors can

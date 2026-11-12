@@ -384,5 +384,5 @@ failures before planning are retried automatically.
 Successful screening is **diagnostic**. It never qualifies a pilot or replaces
 the separately authorized finalist protocol. Blueprint finalist scoring is
 eligible under the owner decision, but implementing that final recommendation
-path is separate from this ten-episode screening lane. ADP's frozen pair and
-the existing team scoring protocol retain their current rules.
+path is separate from this ten-episode screening lane. The existing team
+scoring protocol retains its current rules.

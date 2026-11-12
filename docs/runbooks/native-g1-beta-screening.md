@@ -36,7 +36,7 @@ is retained unchanged. Those choices, the right task hand and the 50 Hz control 
 200 Hz physics rates are explicit simulation assumptions, not measured camera
 or robot calibration. The action-step cap is resampled without increasing the
 source episode duration. No navigation goal, scene geometry, task instruction,
-human decision or ADP context is invented.
+or human decision is invented.
 
 Preparation writes under the protected site root at
 `native-g1/<base-receipt-digest>/<current-source-digest>/`. A changed current
@@ -119,7 +119,7 @@ request of each scene intent:
   builder: `native_g1_registration_contract.site_inputs` reads the team
   registry and the completed source queue.
 - The shared inputs come from the controller's pinned
-  `config/native_g1_shared_inputs.v1.json`, not from the historical ADP
+  `config/native_g1_shared_inputs.v1.json`, not from the historical
   registry. Each is measured when it is used:
   - the publisher source stage receipt, against its pinned `receipt_digest`;
   - the runtime source receipt, against its pinned sha256 and size, which are

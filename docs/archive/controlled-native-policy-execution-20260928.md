@@ -1,6 +1,6 @@
 # Controlled native policy execution
 
-ADP-011/day 7 admission; ADP-050/day 28 execution and delivery. Owner: Nijel Hunt.
+Owner: Nijel Hunt.
 The missing boundary was a configured native simulator and independently scored
 outcome behind the admitted agent queue.
 

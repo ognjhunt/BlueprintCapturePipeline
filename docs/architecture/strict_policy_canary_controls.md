@@ -1,6 +1,6 @@
 # Strict private Quick-10 controls and paired delivery
 
-ADP-009D/day-28 uses the existing internal policy canary with an optional,
+This uses the existing internal policy canary with an optional,
 preregistered success-contract prerequisite:
 
 ```json

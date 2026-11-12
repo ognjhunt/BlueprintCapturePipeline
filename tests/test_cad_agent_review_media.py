@@ -523,24 +523,3 @@ def test_visual_review_scales_to_five_independent_replacements(
     assert review["reviewed_reference_image_count"] == 5
     assert len(review["candidate_decisions"]) == 10
 
-
-def test_results_doc_points_to_manifest_driven_visual_comparison() -> None:
-    results = (
-        ROOT
-        / "docs/arm_decision_proof_v1/THIRD_SCENE_DUAL_TASK_E2E_RESULTS.md"
-    ).read_text(encoding="utf-8")
-
-    assert "cad_agent_visual_comparison.v1.json" in results
-    assert "third_scene_840920_dual_task_cad_agent_visual_comparison_binding.v1.json" in results
-    assert "sha256:14a5b702f0433c52fbdbdb144c0c8339fdabe577b01b1303e8e60ba1fd4c97af" in results
-    assert "sha256:182cf49123a1110a626c0e0302213360c64e03d201f4e83d85f244c7e737972d" in results
-    assert (
-        "Static Content Agents bundle/config/input-USD preflight receipts:"
-    ) in results
-    assert "scene_replacement_cad_agent_visual_reference_review.v1" in results
-    assert "requires one decision per candidate that covers every" in results
-    assert (
-        "all four bundles passed local/static preflight"
-    ) not in results
-    assert "third_scene_840920_agent_cad_visual_comparison_receipt.v1.json" not in results
-    assert "sha256:05febab49762d604f047df6a7f8975b25f50b6ac432493566feecb90e90f020c" not in results

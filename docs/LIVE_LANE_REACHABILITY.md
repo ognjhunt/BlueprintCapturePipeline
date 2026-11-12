@@ -101,8 +101,7 @@ explicitly changed.
 - `single-kitchen-finetune`
 - `single-kitchen-qualification`
 
-Arm Decision Proof v1 is the sole active program. Policy-ranking,
-world-model, and post-training work remains frozen.
+Policy-ranking, world-model, and post-training work remains frozen.
 
 ### Internal allocator preflight (1)
 
