@@ -8,6 +8,7 @@ for log redaction and never placed in argv, JSON inputs, receipts, or outputs.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -393,12 +394,17 @@ def _open_at(name: str, directory: int, info: os.stat_result, *, flags: int) -> 
     """``name`` under the ``directory`` handle, if it is still the entry ``info`` saw.
 
     Opened without following a link, relative to a handle we already hold, so
-    no path string is resolved again and a name swapped meanwhile is refused.
+    no path string is resolved again and a name swapped meanwhile is refused:
+    None when the name is gone, became a link or another kind, or is another
+    entry now. Any other failure (out of handles, permission) raises ``OSError``
+    for the caller to record under its own reason.
     """
     try:
         descriptor = os.open(name, flags, dir_fd=directory)
-    except OSError:
-        return None
+    except OSError as exc:
+        if exc.errno in _CHANGED_ERRNOS:
+            return None
+        raise
     try:
         opened = os.fstat(descriptor)
     except BaseException:
@@ -408,6 +414,21 @@ def _open_at(name: str, directory: int, info: os.stat_result, *, flags: int) -> 
         os.close(descriptor)
         return None
     return descriptor
+
+
+#: What ``os.open`` without following says when the name changed under us.
+_CHANGED_ERRNOS = frozenset({errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.ENXIO})
+#: The longest path a restoration record keeps; a longer one keeps its end behind a mark.
+_RECORD_PATH_CHARACTERS = 200
+
+
+def _bounded_path(relative: str) -> str:
+    return relative if len(relative) <= _RECORD_PATH_CHARACTERS else "..." + relative[-_RECORD_PATH_CHARACTERS:]
+
+
+def _failed(action: str, exc: OSError) -> str:
+    """``<action>_failed:<errno name>``: the reason a failed step is recorded under."""
+    return f"{action}_failed:{errno.errorcode.get(exc.errno or 0, 'OSError')}"
 
 
 def _entries(directory: int) -> list[tuple[str, os.stat_result]]:
@@ -445,6 +466,37 @@ def _is_empty(directory: int) -> bool:
         return next(listing, None) is None
 
 
+def _clear_file_write_bits(root_handle: int, relative: str, seen: os.stat_result) -> str | None:
+    """Clear the write bits of inventory file ``relative``, reached handle by handle from the root.
+
+    None when done; else why it was left: the name changed, it still has another link (a mode change
+    would reach every other name of this inode), or a step failed.
+    """
+    *parents, name = relative.split("/")
+    held: list[int] = []
+    try:
+        directory = root_handle
+        for part in parents:
+            directory = os.open(part, _DIRECTORY_FLAGS, dir_fd=directory)
+            held.append(directory)
+        handle = os.open(name, _FILE_FLAGS, dir_fd=directory)
+        try:
+            info = os.fstat(handle)
+            if (info.st_dev, info.st_ino) != (seen.st_dev, seen.st_ino) or not stat.S_ISREG(info.st_mode):
+                return "entry_changed"
+            if info.st_nlink > 1:
+                return "hard_linked"
+            os.fchmod(handle, stat.S_IMODE(info.st_mode) & ~0o222)
+            return None
+        finally:
+            os.close(handle)
+    except OSError as exc:
+        return "entry_changed" if exc.errno in _CHANGED_ERRNOS else _failed("seal_file", exc)
+    finally:
+        for descriptor in held:
+            os.close(descriptor)
+
+
 def restore_run_toolchain_copy(
     *, root: str | Path, expected_source_commit: str, expected_toolchain_digest: str
 ) -> dict[str, Any]:
@@ -453,15 +505,20 @@ def restore_run_toolchain_copy(
     A process the run itself started as container root can create entries in
     the copy (root ignores read-only modes), and the stage-start check would
     then end the job over a tree whose sealed files are untouched. It is never
-    stricter than that check (``_validate_toolchain``), which refuses a file the
-    inventory does not name and a writable directory, and ignores directories
-    otherwise. So it removes only:
+    stricter than that check (``_validate_toolchain``), which refuses a regular
+    file the inventory does not name, any symlink and a writable directory, and
+    skips directories otherwise and every other kind of entry (a FIFO, a socket,
+    a device node). So it removes only:
 
-    - an entry that is not a directory (a file, a link, a socket, a device, a
-      FIFO) and that the inventory does not name; the manifest is never removed;
+    - a regular file the inventory does not name, and a symlink (the name, never
+      its target); the manifest is never removed;
     - a directory that contained at least one entry this restore removed and is
       empty afterwards, applied bottom-up, so a tree of only planted files goes
       entirely.
+
+    A FIFO, a socket or a device node is left where it is and named in no list:
+    the check accepts it, and a socket the run's own process listens on is not
+    pulled from under it.
 
     A directory that was already empty, or that holds only other directories,
     stays where it is, shipped or not (the toolchain ships such directories),
@@ -472,12 +529,20 @@ def restore_run_toolchain_copy(
     a rule that cannot tell a shipped empty directory from a planted one.
 
     Write bits that the root, a directory or an inventory file gained are
-    cleared. It never writes an inventory file's bytes and never
-    acts outside ``root``: the root is opened once without following a link and
-    every later step is relative to a directory handle. An entry on another
-    filesystem, a sealed file with more than one link, or a name that changed
-    while we looked is left alone and recorded. The caller then runs the full
-    byte check, which still refuses any changed, resized or missing sealed file.
+    cleared; an inventory file's mode is restored after every removal, so a
+    planted hard link to it is gone first whatever order the listing gives. It
+    never writes an inventory file's bytes and never acts outside ``root``: the
+    root is opened once without following a link and every later step is
+    relative to a directory handle. An entry on another filesystem, a sealed
+    file that still has more than one link, a name that changed while we looked,
+    or a step that failed (a removal refused, out of handles) is left alone and
+    recorded with its own reason, and the walk goes on. Whatever happens, every
+    directory this run opened for writing gets its mode back before its handle
+    is closed, also when an error escapes: after this returns or raises, no
+    directory or inventory file has a write bit it did not have before. Each
+    path in the record keeps at most its last 200 characters. The caller then
+    runs the full byte check, which still refuses any changed, resized or
+    missing sealed file.
 
     Only the run's unpacked copy is accepted (``is_run_toolchain_copy``), and only
     when its manifest is the one the stage input is bound to; otherwise nothing
@@ -554,21 +619,43 @@ def _restore_from_handle(
     def note(field: str, row: dict[str, Any]) -> None:
         record[f"{field}_count"] += 1
         if len(record[field]) < _RESTORATION_LIST_LIMIT:
-            record[field].append(row)
+            record[field].append({**row, "relative_path": _bounded_path(row["relative_path"])})
 
     def restored(relative: str, kind: str, mode: int) -> None:
         note("modes_restored", {"relative_path": relative, "kind": kind,
                                 "before_mode": oct(mode), "after_mode": oct(mode & ~0o222)})
 
-    def open_for_removal(frame: dict[str, Any]) -> None:
+    def left(relative: str, reason: str) -> None:
+        note("left", {"relative_path": _bounded_path(relative), "reason": reason})
+
+    def open_for_removal(frame: dict[str, Any]) -> bool:
+        """Whether ``frame``'s directory may now have a name removed from it."""
         if not frame["opened"] and not frame["mode"] & 0o200:
             # Removing a name needs write access to the parent. Open it for
             # its owner, whatever our user id: a user id of 0 is not proof of
             # the override of file modes (a container can drop it), and the
             # host prestage runs as the service user. It is sealed again when
-            # the directory is done.
-            os.fchmod(frame["handle"], frame["mode"] | 0o700)
+            # the directory is done, or in the ``finally`` below.
+            try:
+                os.fchmod(frame["handle"], frame["mode"] | 0o700)
+            except OSError as exc:
+                left(frame["relative"], _failed("open_for_removal", exc))
+                return False
             frame["opened"] = True
+        return True
+
+    def seal(frame: dict[str, Any]) -> None:
+        """Put the directory's mode back as found, less any write bit; recorded when it gained one."""
+        mode = frame["mode"]
+        try:
+            if mode & 0o222:
+                os.fchmod(frame["handle"], mode & ~0o222)
+                restored(frame["relative"], "directory", mode)
+            elif frame["opened"]:
+                os.fchmod(frame["handle"], mode)
+            frame["opened"] = False
+        except OSError as exc:
+            left(frame["relative"], _failed("seal", exc))
 
     def removal() -> dict[str, Any]:
         # What one directory's subtree removed, held until we know whether the
@@ -580,6 +667,14 @@ def _restore_from_handle(
         into["count"] += count
         into["entries"] += entries
 
+    def empty(handle: int) -> bool:
+        try:
+            return _is_empty(handle)
+        except OSError:
+            return False  # not known to be empty: kept
+
+    # Inventory files that gained a write bit, put back once every removal is done.
+    sealed_files: list[tuple[str, os.stat_result]] = []
     # One frame per directory on the current path: its handle, relative name,
     # its own name and whether the inventory needs it, mode as found, whether we
     # opened it, its entries, whether one of them was removed, and what its
@@ -599,29 +694,22 @@ def _restore_from_handle(
                 # holds only directories, is never removed (the check ignores it).
                 gone_here = False
                 if (parent is not None and not frame["kept"] and frame["removed_here"]
-                        and _is_empty(frame["handle"])):
-                    open_for_removal(parent)
+                        and empty(frame["handle"]) and open_for_removal(parent)):
                     try:
                         os.rmdir(frame["name"], dir_fd=parent["handle"])
                         gone_here = True
-                    except OSError:
-                        # Something appeared or the name changed meanwhile.
-                        note("left", {"relative_path": frame["relative"], "reason": "entry_changed"})
+                    except OSError as exc:
+                        left(frame["relative"], _failed("rmdir", exc))
                 if gone_here:
                     os.close(frame["handle"])
                     frame["handle"] = None
                     parent["removed_here"] = True
                     merge(parent["removed"],
-                          [{"relative_path": frame["relative"], "kind": "directory",
+                          [{"relative_path": _bounded_path(frame["relative"]), "kind": "directory",
                             "contained_entries": frame["removed"]["entries"]}],
                           1, 1 + frame["removed"]["entries"])
                     continue
-                mode = frame["mode"]
-                if mode & 0o222:
-                    os.fchmod(frame["handle"], mode & ~0o222)
-                    restored(frame["relative"], "directory", mode)
-                elif frame["opened"]:
-                    os.fchmod(frame["handle"], mode)
+                seal(frame)
                 if frame["handle"] != root_handle:
                     os.close(frame["handle"])
                 frame["handle"] = None
@@ -637,62 +725,82 @@ def _restore_from_handle(
             relative = frame["prefix"] + name
             if info.st_dev != device or relative in (mounts or ()):
                 # A mount inside the tree: never act on another filesystem.
-                note("left", {"relative_path": relative, "reason": "other_filesystem"})
+                left(relative, "other_filesystem")
                 continue
             if stat.S_ISDIR(info.st_mode):
                 kept = relative in keep
                 if not kept and mounts is None:
                     # Without the mount table a same-filesystem bind mount below
                     # this directory cannot be seen, so nothing in it is touched.
-                    note("left", {"relative_path": relative, "reason": "mount_table_unavailable"})
+                    left(relative, "mount_table_unavailable")
                     continue
-                handle = _open_at(name, frame["handle"], info, flags=_DIRECTORY_FLAGS)
+                try:
+                    handle = _open_at(name, frame["handle"], info, flags=_DIRECTORY_FLAGS)
+                except OSError as exc:
+                    left(relative, _failed("open", exc))
+                    continue
                 if handle is None:
-                    note("left", {"relative_path": relative, "reason": "entry_changed"})
+                    left(relative, "entry_changed")
                     continue
-                # Held by the frame before listing, so a failed listing closes it too.
+                # Held by the frame before anything else, so it is sealed and closed whatever follows.
                 frames.append({"handle": handle, "relative": relative, "prefix": relative + "/",
                                "name": name, "kept": kept, "mode": stat.S_IMODE(info.st_mode),
                                "opened": False, "entries": [], "removed_here": False,
                                "removed": removal()})
-                if not kept and stat.S_IMODE(info.st_mode) & 0o500 != 0o500:
-                    # A planted directory its owner cannot list: opened like a
-                    # parent (above) and sealed again when it is done.
-                    os.fchmod(handle, stat.S_IMODE(info.st_mode) | 0o700)
-                    frames[-1]["opened"] = True
-                frames[-1]["entries"] = _entries(handle)
+                try:
+                    if not kept and stat.S_IMODE(info.st_mode) & 0o500 != 0o500:
+                        # A planted directory its owner cannot list: opened like a
+                        # parent (above) and sealed again when it is done.
+                        os.fchmod(handle, stat.S_IMODE(info.st_mode) | 0o700)
+                        frames[-1]["opened"] = True
+                    frames[-1]["entries"] = _entries(handle)
+                except OSError as exc:
+                    # Not listed: nothing below it is touched, and it is kept.
+                    left(relative, _failed("list", exc))
+                    frames[-1]["kept"] = True
                 continue
             if relative in keep:
                 # A kept name of the wrong kind (a link, a file where a directory
                 # belongs) is left for the full check to refuse by name.
                 if stat.S_ISREG(info.st_mode) and relative in inventory and info.st_mode & 0o222:
-                    if info.st_nlink > 1:
-                        # A mode change would reach every other name of this inode.
-                        note("left", {"relative_path": relative, "reason": "hard_linked"})
-                        continue
-                    handle = _open_at(name, frame["handle"], info, flags=_FILE_FLAGS)
-                    if handle is None:
-                        note("left", {"relative_path": relative, "reason": "entry_changed"})
-                        continue
-                    try:
-                        os.fchmod(handle, stat.S_IMODE(info.st_mode) & ~0o222)
-                    finally:
-                        os.close(handle)
-                    restored(relative, "file", stat.S_IMODE(info.st_mode))
+                    sealed_files.append((relative, info))
                 continue
-            # Not a directory and not named by the inventory: the full check
-            # refuses it (a file by name, a link as forbidden), so it goes.
-            kind = ("symlink" if stat.S_ISLNK(info.st_mode) else
-                    "file" if stat.S_ISREG(info.st_mode) else "other")
-            open_for_removal(frame)
-            # Removes the name itself; a link's target is never touched.
-            os.unlink(name, dir_fd=frame["handle"])
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                # A FIFO, a socket or a device node: the full check skips it, so it stays.
+                continue
+            # A regular file the inventory does not name, or a symlink: the full
+            # check refuses either (the file by name, the link as forbidden).
+            if not open_for_removal(frame):
+                continue
+            try:
+                # Removes the name itself; a link's target is never touched.
+                os.unlink(name, dir_fd=frame["handle"])
+            except OSError as exc:
+                left(relative, "entry_changed" if exc.errno in (errno.ENOENT, errno.EISDIR)
+                     else _failed("unlink", exc))
+                continue
             frame["removed_here"] = True
-            merge(frame["removed"], [{"relative_path": relative, "kind": kind, "contained_entries": 0}], 1, 1)
+            merge(frame["removed"], [{"relative_path": _bounded_path(relative),
+                                      "kind": "symlink" if stat.S_ISLNK(info.st_mode) else "file",
+                                      "contained_entries": 0}], 1, 1)
     finally:
-        for frame in frames:
-            if frame["handle"] is not None and frame["handle"] != root_handle:
+        # Whatever escaped: each directory still held gets its mode back, deepest first, then is closed.
+        for frame in reversed(frames):
+            if frame["handle"] is None:
+                continue
+            seal(frame)
+            if frame["handle"] != root_handle:
                 os.close(frame["handle"])
+            frame["handle"] = None
+    for relative, info in sorted(sealed_files):
+        # After every removal, so a planted hard link to it is already gone whatever the listing order.
+        reason = _clear_file_write_bits(root_handle, relative, info)
+        if reason is None:
+            restored(_bounded_path(relative), "file", stat.S_IMODE(info.st_mode))
+        else:
+            left(relative, reason)
+    if mounts is None:
+        record["directories_kept_because"] = "mount_table_unavailable"
     if record["removed_count"] or record["modes_restored_count"]:
         record["status"] = "restored"
     elif record["left_count"]:

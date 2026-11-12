@@ -1066,6 +1066,7 @@ def test_without_a_mount_table_no_directory_is_removed(tmp_path, monkeypatch):
     record = _restore(module, root, commit, digest)
 
     assert record["left"] == [{"relative_path": f"{_PACKAGE}/__pycache__", "reason": "mount_table_unavailable"}]
+    assert record["directories_kept_because"] == "mount_table_unavailable"  # said in the record (RA5)
     assert (cache / "data.txt").read_text() == "could be a bind mount's data"
     assert sorted(row["relative_path"] for row in record["removed"]) == ["stages/link", "stages/stray.txt"]
     assert not stray.exists() and not link.is_symlink()
@@ -1110,9 +1111,10 @@ def test_a_failed_listing_leaks_no_handle(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module, "_entries", entries)
     before = _open_handles()
-    with pytest.raises(OSError, match="listing failed"):
-        _restore(module, root, commit, digest)
+    # Recorded under its own reason and the walk goes on (review of 877cc3a98, RA1 and RA4).
+    record = _restore(module, root, commit, digest)
     assert _open_handles() == before
+    assert len(record["left"]) == 1 and record["left"][0]["reason"] == "list_failed:EMFILE"
 
 
 def test_a_kept_folder_swapped_for_an_outside_link_before_it_is_opened(tmp_path, monkeypatch):
@@ -1141,3 +1143,240 @@ def test_a_kept_folder_swapped_for_an_outside_link_before_it_is_opened(tmp_path,
 
     assert swapped and (mirror / "planted.txt").read_text() == "OUTSIDE"
     assert {"relative_path": "components", "reason": "entry_changed"} in record["left"]
+
+
+# Review of 877cc3a98 (RA1 to RA4): a failing step never aborts the restore or leaves the tree worse than it
+# found it, and only what the full check refuses is removed. Ported from the reviewer's probes.
+
+
+def _verdict(module, root, commit) -> str | None:
+    """The full check's verdict: None when it passes, else the refusal's code."""
+    try:
+        _validate(module, root, commit)
+    except module.TaskEvaluationSceneConfigurationStageProducerError as exc:
+        return str(exc)
+    return None
+
+
+def _directory_write_bits(root: Path) -> dict[str, int]:
+    import os
+    import stat as stat_module
+
+    return {directory: stat_module.S_IMODE(os.lstat(directory).st_mode) & 0o222
+            for directory, _names, _files in os.walk(root)}
+
+
+def test_a_name_swapped_for_a_directory_before_its_unlink_is_left_and_the_walk_goes_on(tmp_path, monkeypatch):
+    """Probe p13b: it raised IsADirectoryError and left the shipped parent writable; the check then refused."""
+    import os
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "zz").write_bytes(b"x")
+    assert _verdict(module, root, commit) == f"scene_configuration_toolchain_file_invalid:{_SHIPPED}/zz"
+    real = module._entries
+
+    def entries(handle):
+        rows = real(handle)
+        if any(name == "zz" for name, _info in rows):
+            with _unsealed(base):
+                (base / "zz").unlink()
+                (base / "zz").mkdir()
+                os.chmod(base / "zz", 0o555)
+        return rows
+
+    monkeypatch.setattr(module, "_entries", entries)
+
+    record = _restore(module, root, commit, digest)
+
+    assert {"relative_path": f"{_SHIPPED}/zz", "reason": "entry_changed"} in record["left"]
+    assert stat_module.S_IMODE(base.stat().st_mode) == 0o555
+    assert _verdict(module, root, commit) is None  # better than before: an empty sealed folder is accepted
+
+
+def test_an_unlink_refused_is_recorded_and_its_parent_is_sealed_again(tmp_path, monkeypatch):
+    """Probe p15: the refusal then named the shipped parent (not_read_only) instead of the planted file."""
+    import os
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "zz").write_bytes(b"x")
+    before = _verdict(module, root, commit)
+    real_unlink = os.unlink
+
+    def unlink(name, *args, **kwargs):
+        if name == "zz":
+            raise PermissionError(1, "Operation not permitted")
+        return real_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "unlink", unlink)
+    record = _restore(module, root, commit, digest)
+    monkeypatch.setattr(module.os, "unlink", real_unlink)
+
+    assert record["left"] == [{"relative_path": f"{_SHIPPED}/zz", "reason": "unlink_failed:EPERM"}]
+    assert stat_module.S_IMODE(base.stat().st_mode) == 0o555
+    assert _verdict(module, root, commit) == before == f"scene_configuration_toolchain_file_invalid:{_SHIPPED}/zz"
+
+
+def test_an_error_that_escapes_still_seals_every_directory_it_opened(tmp_path, monkeypatch):
+    import os
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "planted").mkdir()
+    (base / "planted" / "zz").write_bytes(b"x")
+    (base / "planted").chmod(0o555)
+    bits = _directory_write_bits(root)
+    handles = _open_handles()
+
+    def unlink(name, *args, **kwargs):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(module.os, "unlink", unlink)
+    with pytest.raises(RuntimeError, match="synthetic"):
+        _restore(module, root, commit, digest)
+    monkeypatch.setattr(module.os, "unlink", os.unlink)
+
+    assert _directory_write_bits(root) == bits and _open_handles() == handles
+
+
+def test_running_out_of_handles_deep_in_a_planted_tree_never_makes_the_verdict_worse(tmp_path, monkeypatch):
+    """Probe p17: 400 planted levels with 256 handles. It raised EMFILE and left shipped folders writable."""
+    import os
+    import resource
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "deep").mkdir()
+    here = os.open(base / "deep", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for _ in range(400):
+            os.mkdir("d", dir_fd=here)
+            child = os.open("d", os.O_RDONLY | os.O_DIRECTORY, dir_fd=here)
+            os.close(here)
+            here = child
+        os.close(os.open("x.pyc", os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=here))
+    finally:
+        os.close(here)
+    before = _verdict(module, root, commit)
+    assert before is not None and f"{_SHIPPED}/deep" in before
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (256, hard))
+    try:
+        record = _restore(module, root, commit, digest)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+    assert any(row["reason"] in ("open_failed:EMFILE", "list_failed:EMFILE") for row in record["left"])
+    assert stat_module.S_IMODE(base.stat().st_mode) == 0o555
+    after = _verdict(module, root, commit)
+    # Still refused, and still by a planted entry under deep/: never by a shipped folder.
+    assert after is not None and f"{_SHIPPED}/deep" in after
+
+
+def test_a_fifo_a_socket_and_a_device_node_are_left_as_the_check_leaves_them(tmp_path, monkeypatch):
+    """Probe p6, inverted: the check skips them, so the restore removes none and names none."""
+    import os
+    import socket
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    made = []
+    with _unsealed(base):
+        os.mkfifo(base / "fifo")
+        made.append("fifo")
+        cwd = os.getcwd()
+        os.chdir(base)
+        try:
+            listening = socket.socket(socket.AF_UNIX)
+            listening.bind("sock")
+            made.append("sock")
+        finally:
+            os.chdir(cwd)
+        try:
+            os.mknod(base / "dev", 0o400 | stat_module.S_IFCHR, os.makedev(1, 3))
+            made.append("dev")
+        except PermissionError:
+            pass  # no device nodes without the right to make them; the FIFO and the socket still run
+    try:
+        assert _verdict(module, root, commit) is None
+        record = _restore(module, root, commit, digest)
+        assert all(os.path.lexists(base / name) for name in made)
+        assert record["status"] == "unchanged" and record["removed"] == [] and record["left"] == []
+        assert _verdict(module, root, commit) is None
+    finally:
+        listening.close()
+
+
+@pytest.mark.parametrize("order", ["forward", "reverse"])
+def test_a_sealed_file_with_a_write_bit_and_a_planted_hard_link_is_restored_in_either_order(
+        tmp_path, monkeypatch, order):
+    """Probe p9b: the sealed file was left ``hard_linked`` when listed before its planted link."""
+    import os
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    sealed = root / _PACKAGE / "run"
+    with _unsealed(sealed.parent):
+        os.link(sealed, sealed.parent / "zz_link")
+        os.link(sealed, sealed.parent / "aa_link")
+    sealed.chmod(stat_module.S_IMODE(sealed.stat().st_mode) | 0o200)
+    real = module._entries
+    monkeypatch.setattr(module, "_entries",
+                        lambda handle: sorted(real(handle), key=lambda row: row[0], reverse=order == "reverse"))
+
+    record = _restore(module, root, commit, digest)
+
+    assert not os.path.lexists(sealed.parent / "zz_link") and not os.path.lexists(sealed.parent / "aa_link")
+    assert sealed.stat().st_nlink == 1 and not sealed.stat().st_mode & 0o222
+    assert {"relative_path": f"{_PACKAGE}/run", "kind": "file", "before_mode": "0o755",
+            "after_mode": "0o555"} in record["modes_restored"]
+    assert record["left"] == []
+    assert _verdict(module, root, commit) is None
+
+
+def test_a_refused_rmdir_is_recorded_under_its_own_reason(tmp_path, monkeypatch):
+    """Probe p16: an EPERM was recorded as entry_changed."""
+    import os
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "pd").mkdir()
+    (base / "pd" / "f").write_bytes(b"x")
+    real = os.rmdir
+
+    def rmdir(name, *args, **kwargs):
+        if name == "pd":
+            raise PermissionError(1, "nope")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "rmdir", rmdir)
+    record = _restore(module, root, commit, digest)
+    monkeypatch.setattr(module.os, "rmdir", real)
+
+    assert record["left"] == [{"relative_path": f"{_SHIPPED}/pd", "reason": "rmdir_failed:EPERM"}]
+    assert _verdict(module, root, commit) is None
+
+
+def test_each_recorded_path_keeps_only_its_last_200_characters(tmp_path, monkeypatch):
+    """Probe p19: each path was bounded only by PATH_MAX."""
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    name = "n" * 250
+    with _unsealed(base):
+        (base / name).write_bytes(b"x")
+
+    record = _restore(module, root, commit, digest)
+
+    [row] = record["removed"]
+    assert row["relative_path"] == "..." + f"{_SHIPPED}/{name}"[-200:]
+    assert _verdict(module, root, commit) is None
