@@ -41,7 +41,10 @@ UNKNOWN_CAUSES = (ESTIMATE_STRADDLES, "item_mass_missing", "catalog_figure_missi
                   "no_clear_station", "footprint_not_searched", "arm_pose_search_inconclusive",
                   "carry_check_undecided", "not_modelled", "not_checked")
 #: The quantities a condition bounds, and their units.
-QUANTITY_UNITS = {"item_mass_kg": "kg", "reach_m": "m", "cycle_time_s": "s", "route_clear": None}
+#: For ``floor_width_m`` the range is the clear floor the job seems to offer, and the condition holds
+#: when the true floor is at least ``limit`` (the base's longest side); every other holds at most.
+QUANTITY_UNITS = {"item_mass_kg": "kg", "reach_m": "m", "cycle_time_s": "s", "route_clear": None,
+                  "floor_width_m": "m", "hand_height_m": "m"}
 #: A condition with no numbers: the route from the entrance, never checked, which the site or the
 #: deployment company can judge. Its need, limit and unit are None and both bases ``not_checked``.
 ROUTE_CLEAR = "route_clear"
@@ -49,6 +52,9 @@ ROUTE_CLEAR = "route_clear"
 NEED_BASES = frozenset({"estimated_from_video", "owner_stated", "unavailable", "not_checked"})
 LIMIT_BASES = frozenset({"catalog", "owner_target", "not_checked"})
 CHECKS = frozenset({"stance", "reach", "payload", "cycle_time", "access"})
+QUANTITY_CHECKS = {"item_mass_kg": "payload", "reach_m": "reach", "cycle_time_s": "cycle_time",
+                   "route_clear": "access", "floor_width_m": "stance",
+                   "hand_height_m": "reach"}
 #: Why a geometry-only job's check did not run (``geometry_only_fit_check``, the handoff).
 NOT_RUN_REASONS = frozenset({"preparation_blocked", "task_strategy_not_modelled", "subject_not_excised",
                              "task_family_not_modelled"})
@@ -185,7 +191,7 @@ def _published_condition(row: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("website_robot_fit_condition_unreadable")
         return {"quantity": ROUTE_CLEAR, "need_min": None, "need_max": None, "limit": None,
                 "need_basis": "not_checked", "limit_basis": "not_checked"}
-    if (row.get("check") not in CHECKS or row.get("quantity") not in QUANTITY_UNITS
+    if (QUANTITY_CHECKS.get(row.get("quantity")) != row.get("check") or row.get("quantity") not in QUANTITY_UNITS
             or QUANTITY_UNITS[row["quantity"]] != row.get("unit")
             or row.get("need_basis") not in NEED_BASES - {"not_checked"}
             or row.get("limit_basis") not in LIMIT_BASES - {"not_checked"}

@@ -322,3 +322,25 @@ def test_a_first_look_row_a_reader_could_not_word_is_left_out(tmp_path, fault):
     root = capture_root(tmp_path)
     write_fit_table(root, rows=rows)
     assert projection.read_robot_fit_v2(capture_root=root, task_context_digest=CONTEXT) is None
+
+
+@pytest.mark.parametrize("quantity, check", [("floor_width_m", "stance"), ("hand_height_m", "reach")])
+def test_v2_publishes_the_floor_and_hand_height_conditions_as_values_only(tmp_path, quantity, check):
+    rows = [dict(row) for row in FIRST_LOOK_ROWS]
+    rows[1]["conditions"] = [{"check": check, "quantity": quantity, "unit": "m", "need_min": 0.6, "need_max": 1.06,
+                              "limit": 0.9, "need_basis": "estimated_from_video", "limit_basis": "catalog"}]
+    root = capture_root(tmp_path)
+    write_fit_table(root, rows=rows)
+    value = projection.read_robot_fit_v2(capture_root=root, task_context_digest=CONTEXT)
+    assert value["models"][2]["conditions"] == [{"quantity": quantity, "need_min": 0.6, "need_max": 1.06,
+                                                 "limit": 0.9, "need_basis": "estimated_from_video",
+                                                 "limit_basis": "catalog"}]
+    # The same keys at every level as revision 2: a new value, never a new field.
+    assert set(value["models"][2]) == set(value["models"][0])
+    jsonschema = pytest.importorskip("jsonschema")
+    jsonschema.validate(value, json.loads((Path(__file__).resolve().parents[1]
+                                           / "docs/schemas/website_robot_fit_projection.v2.schema.json").read_text()))
+    # A condition on the wrong check is not one a reader could word.
+    rows[1]["conditions"] = [{**rows[1]["conditions"][0], "check": "payload"}]
+    write_fit_table(root, rows=rows)
+    assert projection.read_robot_fit_v2(capture_root=root, task_context_digest=CONTEXT) is None

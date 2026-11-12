@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://tryblueprint.io/contracts/website-robot-fit-projection.v2.schema.json",
   "title": "The first look on paper: the website_preparation_status.v8 'robot_fit' field",
-  "description": "v1 (status v5 to v7) plus what each robot can do. Every completed projection is a spec-bounded estimate: every scene figure is estimated from the site's video (geometry_basis) and the item weight's origin is weight_basis; nothing is measured. verdict: fits (every check passed, its carry path-checked), fits_spec (every check passed on figures), fits_if (every check passed or is conditional on an estimate: it becomes verdict_if_conditions_hold when each of its conditions holds), doesnt_fit (failed_checks ruled it out), unknown (missing names each open check and why). A condition gives what the job seems to need (need_min to need_max, null when nothing estimates it) beside what the robot can do (limit), in the quantity's unit: item_mass_kg (kg, the payload check; limit is payload_limit_kg), reach_m (m, the reach check), cycle_time_s (s, the cycle_time check; limit is the owner's target), route_clear (the access check: the route from the entrance, never checked; no numbers, need and limit null, both bases not_checked). payload_limit_kg is the heaviest item that passes: the rated payload less the default tool on a fixed arm. models are ordered fits, fits_spec, fits_if by ascending payload_limit_kg, doesnt_fit, unknown; past 4096 bytes the last are dropped (models_truncated) while counts and unknown_causes stay those of the whole table.",
+  "description": "v1 (status v5 to v7) plus what each robot can do. Every completed projection is a spec-bounded estimate: every scene figure is estimated from the site's video (geometry_basis) and the item weight's origin is weight_basis; nothing is measured. verdict: fits (every check passed, its carry path-checked), fits_spec (every check passed on figures), fits_if (every check passed or is conditional on an estimate: it becomes verdict_if_conditions_hold when each of its conditions holds), doesnt_fit (failed_checks ruled it out), unknown (missing names each open check and why). A condition gives what the job seems to need (need_min to need_max, null when nothing estimates it) beside what the robot can do (limit), in the quantity's unit: item_mass_kg (kg, the payload check; limit is payload_limit_kg), reach_m (m, the reach check), cycle_time_s (s, the cycle_time check; limit is the owner's target), hand_height_m (m, the reach check of a robot that drives to the job: need_min to need_max are the pick and place heights above the floor across the scale band, limit its published highest hand height), floor_width_m (m, the stance check: need_min to need_max is the clear floor the job seems to offer and the condition holds when the true floor is at least limit, the base's longest side), route_clear (the access check: the route from the entrance, never checked; no numbers, need and limit null, both bases not_checked). payload_limit_kg is the heaviest item that passes: the rated payload less the default tool on a fixed arm. models are ordered fits, fits_spec, fits_if by ascending payload_limit_kg, doesnt_fit, unknown; past 4096 bytes the last are dropped (models_truncated) while counts and unknown_causes stay those of the whole table.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -216,7 +216,9 @@
                     "item_mass_kg",
                     "reach_m",
                     "cycle_time_s",
-                    "route_clear"
+                    "route_clear",
+                    "floor_width_m",
+                    "hand_height_m"
                   ]
                 },
                 "need_min": {

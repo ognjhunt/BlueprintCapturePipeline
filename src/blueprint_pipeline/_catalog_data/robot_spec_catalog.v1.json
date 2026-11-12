@@ -187,7 +187,7 @@
         "rated_payload_kg": {"value": 12, "unit": "kg", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "12 kg payload", "conversion": null},
         "max_tcp_speed_m_s": null,
         "base_footprint_diameter_m": null,
-        "base_footprint_l_w_m": null,
+        "base_footprint_l_w_m": {"value": [0.3, 0.3], "unit": "m", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "VIEW C 300 300", "conversion": "Base underside (View C) outline 300 mm x 300 mm = 0.3 m x 0.3 m"},
         "robot_mass_kg": {"value": 150, "unit": "kg", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "Weight kg 150", "conversion": null},
         "repeatability_mm": {"value": 0.02, "unit": "mm", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "0.02 mm repeatability", "conversion": null},
         "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "Controlled axes 6", "conversion": null},
@@ -195,10 +195,9 @@
       },
       "unknown_figures": {
         "max_tcp_speed_m_s": "Yaskawa publishes only per-axis maximum speeds (deg/s) for the GP12, no TCP speed.",
-        "base_footprint_diameter_m": "No footprint figure; base dimensions appear only in the datasheet drawing.",
-        "base_footprint_l_w_m": "No footprint figure; base dimensions appear only in the datasheet drawing."
+        "base_footprint_diameter_m": "No footprint figure; base dimensions appear only in the datasheet drawing."
       },
-      "notes": "Yaskawa America datasheet DS-867-A (July 2021), linked from the motoman.com GP12 page. Reach is the horizontal reach; vertical reach is 2,511 mm; the datasheet does not name the reach reference point. Mounting Options: 'Floor, Wall, Tilt or Ceiling' (tilt has no token here)."
+      "notes": "Yaskawa America datasheet DS-867-A (July 2021), linked from the motoman.com GP12 page. Reach is the horizontal reach; vertical reach is 2,511 mm; the datasheet does not name the reach reference point. Mounting Options: 'Floor, Wall, Tilt or Ceiling' (tilt has no token here). Base footprint (base_footprint_l_w_m): read off the maker's dimensioned base drawing (basis: dimensioned_drawing), researched 2026-11-12."
     },
     {
       "model_id": "yaskawa_gp20",
@@ -212,7 +211,7 @@
         "rated_payload_kg": {"value": 20, "unit": "kg", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "Powerful: 20 kg payload", "conversion": null},
         "max_tcp_speed_m_s": null,
         "base_footprint_diameter_m": null,
-        "base_footprint_l_w_m": null,
+        "base_footprint_l_w_m": {"value": [0.375, 0.375], "unit": "m", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "View C 375 375", "conversion": "Base underside (View C) outline 375 mm x 375 mm = 0.375 m x 0.375 m"},
         "robot_mass_kg": {"value": 250, "unit": "kg", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "Weight [kg] 250", "conversion": null},
         "repeatability_mm": {"value": 0.02, "unit": "mm", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "Repeatability [mm] ±0.02", "conversion": null},
         "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "Controlled axes 6", "conversion": null},
@@ -220,10 +219,9 @@
       },
       "unknown_figures": {
         "max_tcp_speed_m_s": "Yaskawa publishes only per-axis maximum speeds (deg/s) for the GP20, no TCP speed.",
-        "base_footprint_diameter_m": "No footprint figure; base dimensions appear only in the flyer drawing.",
-        "base_footprint_l_w_m": "No footprint figure; base dimensions appear only in the flyer drawing."
+        "base_footprint_diameter_m": "No footprint figure; base dimensions appear only in the flyer drawing."
       },
-      "notes": "Yaskawa Europe English flyer 'MOTOMAN GP20' (C-03-2024, A-No. 195934) hosted on yaskawa.eu.com. Reach is the 'Max. working range R', drawn to 'Point P' in the flyer's working-range drawing. 'Mounting options: Floor, ceiling, wall, tilt*' (tilt and steeper installation angles restrict the S-axis range). The GP20 is a Yaskawa Europe model; motoman.com has no GP20 page (404). Do not confuse with the GP20HL (3,124 mm reach)."
+      "notes": "Yaskawa Europe English flyer 'MOTOMAN GP20' (C-03-2024, A-No. 195934) hosted on yaskawa.eu.com. Reach is the 'Max. working range R', drawn to 'Point P' in the flyer's working-range drawing. 'Mounting options: Floor, ceiling, wall, tilt*' (tilt and steeper installation angles restrict the S-axis range). The GP20 is a Yaskawa Europe model; motoman.com has no GP20 page (404). Do not confuse with the GP20HL (3,124 mm reach). Base footprint (base_footprint_l_w_m): read off the maker's dimensioned base drawing (basis: dimensioned_drawing), researched 2026-11-12."
     },
     {
       "model_id": "yaskawa_hc20",
@@ -428,7 +426,7 @@
         "rated_payload_kg": {"value": 1.5, "unit": "kg", "source_url": "https://www.agilex.ai/products/piper", "quote": "有效负载 1.5kg", "conversion": null},
         "max_tcp_speed_m_s": null,
         "base_footprint_diameter_m": null,
-        "base_footprint_l_w_m": null,
+        "base_footprint_l_w_m": {"value": [0.095, 0.08], "unit": "m", "source_url": "https://cdn.shopify.com/s/files/1/0551/0630/6141/files/PIPER_Product_User_Manual_EN_1.pdf?v=1794214904", "quote": "9.5 Base 80 95", "conversion": "95 mm = 0.095 m; 80 mm = 0.08 m"},
         "robot_mass_kg": {"value": 4.2, "unit": "kg", "source_url": "https://www.agilex.ai/products/piper", "quote": "本体重量 4.2kg", "conversion": null},
         "repeatability_mm": {"value": 0.1, "unit": "mm", "source_url": "https://www.agilex.ai/products/piper", "quote": "重复定位精度 ±.0.1mm", "conversion": null},
         "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.agilex.ai/products/piper", "quote": "自由度 6", "conversion": null},
@@ -436,10 +434,9 @@
       },
       "unknown_figures": {
         "max_tcp_speed_m_s": "AgileX publishes only per-joint maximum speeds (deg/s), no TCP speed.",
-        "base_footprint_diameter_m": "Only the base mounting size '70mm*70mm*M5*4' (a bolt pattern) is published, not a footprint.",
-        "base_footprint_l_w_m": "Only the base mounting size '70mm*70mm*M5*4' (a bolt pattern) is published, not a footprint."
+        "base_footprint_diameter_m": "Only the base mounting size '70mm*70mm*M5*4' (a bolt pattern) is published, not a footprint."
       },
-      "notes": "AgileX official product page on www.agilex.ai (Chinese; standard edition 'PiPER（标准版）', not the PiPER X); the English page on global.agilex.ai could not be fetched (blocked by the fetch tool). Label meanings: 工作半径 = working radius, 有效负载 = payload, 本体重量 = arm weight, 重复定位精度 = repeatability, 自由度 = degrees of freedom. Repeatability is printed '±.0.1mm' (stray period), read as ±0.1 mm (doubtful formatting). Mounting: '安装: 台面安装' (tabletop mounting). Recipe: none; the asset catalog has only the two-arm station agilex_piper_bimanual."
+      "notes": "AgileX official product page on www.agilex.ai (Chinese; standard edition 'PiPER（标准版）', not the PiPER X); the English page on global.agilex.ai could not be fetched (blocked by the fetch tool). Label meanings: 工作半径 = working radius, 有效负载 = payload, 本体重量 = arm weight, 重复定位精度 = repeatability, 自由度 = degrees of freedom. Repeatability is printed '±.0.1mm' (stray period), read as ±0.1 mm (doubtful formatting). Mounting: '安装: 台面安装' (tabletop mounting). Recipe: none; the asset catalog has only the two-arm station agilex_piper_bimanual. Base footprint (base_footprint_l_w_m): read off the maker's dimensioned base drawing (basis: dimensioned_drawing), researched 2026-11-12."
     },
     {
       "model_id": "i2rt_yam",
@@ -820,7 +817,7 @@
         "rated_payload_kg": {"value": 12, "unit": "kg", "source_url": "https://www.fanucamerica.com/docs/default-source/fanuc-robot-datasheets-new/flyer-m-10id-12-en.pdf", "quote": "Max. load capacity at wrist: 12 kg", "conversion": null},
         "max_tcp_speed_m_s": null,
         "base_footprint_diameter_m": null,
-        "base_footprint_l_w_m": null,
+        "base_footprint_l_w_m": {"value": [0.34, 0.34], "unit": "m", "source_url": "https://d16ohktstcjvly.cloudfront.net/asset/513891251684/document_822pq457fh2l72i6hkalbl6a66", "quote": "Robot footprint [mm] 340 x 340", "conversion": "340 mm = 0.34 m; 340 mm = 0.34 m"},
         "robot_mass_kg": {"value": 145, "unit": "kg", "source_url": "https://www.fanucamerica.com/products/robot/m-10id-12", "quote": "Mechanical Weight 145 kg", "conversion": null},
         "repeatability_mm": {"value": 0.02, "unit": "mm", "source_url": "https://www.fanucamerica.com/products/robot/m-10id-12", "quote": "Repeatability ±0.02 mm", "conversion": null},
         "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.fanucamerica.com/products/robot/m-10id-12", "quote": "Axes 6", "conversion": null},
@@ -828,10 +825,9 @@
       },
       "unknown_figures": {
         "max_tcp_speed_m_s": "FANUC publishes only per-axis maximum speeds (deg/s), no TCP speed.",
-        "base_footprint_diameter_m": "No base footprint figure in the page or datasheet text.",
-        "base_footprint_l_w_m": "No base footprint figure in the page or datasheet text."
+        "base_footprint_diameter_m": "No base footprint figure in the page or datasheet text."
       },
-      "notes": "fanucamerica.com M-10iD/12 product page and datasheet PDF ('Max. load capacity at wrist: 12 kg', 'Max. reach: 1441 mm'). Product page Mounting Method: 'Floor / Angle / Inverted' (mapped to floor and ceiling as the catalog's other FANUC entries do). The datasheet does not say where reach is measured to in its text layer. The fanuc.eu product URL returned 404."
+      "notes": "fanucamerica.com M-10iD/12 product page and datasheet PDF ('Max. load capacity at wrist: 12 kg', 'Max. reach: 1441 mm'). Product page Mounting Method: 'Floor / Angle / Inverted' (mapped to floor and ceiling as the catalog's other FANUC entries do). The datasheet does not say where reach is measured to in its text layer. The fanuc.eu product URL returned 404. Base footprint (base_footprint_l_w_m): the maker's datasheet line labelled 'Robot footprint' (basis: datasheet_table), researched 2026-11-12."
     },
     {
       "model_id": "almond_axol",
@@ -845,7 +841,7 @@
         "rated_payload_kg": {"value": 4, "unit": "kg", "source_url": "https://www.almond.bot/axol", "quote": "Nominal Payload 4kg per arm", "conversion": null},
         "max_tcp_speed_m_s": null,
         "base_footprint_diameter_m": null,
-        "base_footprint_l_w_m": null,
+        "base_footprint_l_w_m": {"value": [0.26, 0.12], "unit": "m", "source_url": "https://www.almond.bot/resources/axol_mounting_holes.pdf", "quote": "Bottom 260 120 ALL DIMENSIONS ARE IN MILIMETERS.", "conversion": "260 mm = 0.26 m; 120 mm = 0.12 m"},
         "robot_mass_kg": {"value": 19.5, "unit": "kg", "source_url": "https://www.almond.bot/axol", "quote": "Weight 19.5kg", "conversion": null},
         "repeatability_mm": {"value": 1, "unit": "mm", "source_url": "https://www.almond.bot/axol", "quote": "Repeatability 1mm", "conversion": null},
         "degrees_of_freedom": {"value": 7, "unit": "count", "source_url": "https://www.almond.bot/axol", "quote": "Degrees of Freedom 7 per arm", "conversion": null},
@@ -853,10 +849,9 @@
       },
       "unknown_figures": {
         "max_tcp_speed_m_s": "The maker publishes no arm or end-effector (TCP) speed.",
-        "base_footprint_diameter_m": "Not published (a mounting hole diagram PDF exists; not read).",
-        "base_footprint_l_w_m": "Not published (a mounting hole diagram PDF exists; not read)."
+        "base_footprint_diameter_m": "Not published (a mounting hole diagram PDF exists; not read)."
       },
-      "notes": "Almond Axol product page ('From $10,999', 'In stock', 'Ships from San Francisco'). Two 7-DoF arms; per arm: reach 860 mm, nominal payload 4 kg, peak payload 6.5 kg; repeatability 1 mm; weight 19.5 kg (standalone). The home page calls Axol 'a wheeled humanoid robot for physical AI', but the robot is sold standalone ('No base. Bolt Axol to your own table or fixture') with optional mounts: Owl Mount column, Ox Cart manual-lift cart, or Jelly Mobile powered base ('2.4 kWh battery, 610mm lift, and 1m/s drive'). Disagreement: the home page shows 'Lift680 mm' for Axol on Jelly vs '610mm lift' in the product text. Filed as a fixed dual arm on a table; an Axol-on-Jelly entry could be added as a wheeled humanoid with those base figures."
+      "notes": "Almond Axol product page ('From $10,999', 'In stock', 'Ships from San Francisco'). Two 7-DoF arms; per arm: reach 860 mm, nominal payload 4 kg, peak payload 6.5 kg; repeatability 1 mm; weight 19.5 kg (standalone). The home page calls Axol 'a wheeled humanoid robot for physical AI', but the robot is sold standalone ('No base. Bolt Axol to your own table or fixture') with optional mounts: Owl Mount column, Ox Cart manual-lift cart, or Jelly Mobile powered base ('2.4 kWh battery, 610mm lift, and 1m/s drive'). Disagreement: the home page shows 'Lift680 mm' for Axol on Jelly vs '610mm lift' in the product text. Filed as a fixed dual arm on a table; an Axol-on-Jelly entry could be added as a wheeled humanoid with those base figures. Base footprint (base_footprint_l_w_m): read off the maker's dimensioned base drawing (basis: dimensioned_drawing), researched 2026-11-12."
     }
   ]
 }

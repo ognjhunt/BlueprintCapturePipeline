@@ -199,8 +199,64 @@ def _stations(preparation: Mapping[str, Any], verdict: Mapping[str, Any], collis
     return [[float(v) for v in row["position_world_m"]] for row in found], "ground_stance_search"
 
 
+#: A robot that drives to the job is not limited by the distance between the spots but by how high and
+#: low its hand goes (planner decision 2026-11-11, as the WebApp composer checks it).
+HAND_HEIGHT_FIGURES = ("max_hand_height_m", "min_hand_height_m")
+
+
+def _hand_height_reach(model: Mapping[str, Any], points: Sequence[Sequence[float]], floor: Any,
+                       band: Sequence[float]) -> dict[str, Any]:
+    """Reach for a robot that moves: the pick and place heights above the floor, each across the scale
+    band, against the published hand-height range. Pass when every band lies inside it, fail when one
+    lies wholly above the top or below the bottom, conditional when a band straddles the top."""
+    top, bottom = (figure_value(model, name) for name in HAND_HEIGHT_FIGURES)
+    values: dict[str, Any] = {"decided_by": "published_hand_height_range", "max_hand_height_m": top,
+                              "min_hand_height_m": bottom, "scale_band": [_r(v) for v in band]}
+    if top is None and bottom is None:
+        values["missing_figures"] = list(HAND_HEIGHT_FIGURES)
+        return _check("reach", "unknown", "no published hand-height range", values, cause="catalog_figure_missing")
+    found = floor()
+    floor_z = None if found is None else found.get("floor_z_m")
+    if floor_z is None:
+        return _check("reach", "unknown", "the floor's height under the task was not found", values,
+                      cause="no_clear_station")
+    heights = [(max(0.0, (float(point[2]) - floor_z) * band[0]), max(0.0, (float(point[2]) - floor_z) * band[1]))
+               for point in points]
+    need = (min(lo for lo, _ in heights), max(hi for _, hi in heights))
+    values.update(floor_z_m=_r(floor_z), heights_above_floor_m=[[_r(lo), _r(hi)] for lo, hi in heights])
+    if (top is not None and any(lo > top for lo, _ in heights)) or (
+            bottom is not None and any(hi < bottom for _, hi in heights)):
+        return _check("reach", "fail", "a height of the job lies outside its hand range even across the scale "
+                      "band", values) | {"basis": "estimated_from_video"}
+    missing = [name for name, figure in zip(HAND_HEIGHT_FIGURES, (top, bottom)) if figure is None]
+    if missing:
+        values["missing_figures"] = missing
+        return _check("reach", "unknown", "the maker publishes only one end of the hand range", values,
+                      cause="catalog_figure_missing")
+    if all(bottom <= lo and hi <= top for lo, hi in heights):
+        return _check("reach", "pass", "the job's heights are within its hand range even across the scale band",
+                      values) | {"basis": "estimated_from_video"}
+    row = _check("reach", "unknown", "the job's heights straddle its hand range across the scale band", values,
+                 cause=ESTIMATE_STRADDLES) | {"basis": "estimated_from_video"}
+    if all(bottom <= lo for lo, _ in heights):
+        # Only the top is in question: the condition the website words with the robot's range.
+        row["condition"] = {"quantity": "hand_height_m", "unit": "m", "need_min": _r(need[0]),
+                            "need_max": _r(need[1]), "limit": _r(top), "need_basis": "estimated_from_video",
+                            "limit_basis": "catalog"}
+    return row
+
+
+def _footprints(model: Mapping[str, Any]) -> list[list[float]]:
+    diameter = figure_value(model, "base_footprint_diameter_m")
+    pair = figure_value(model, "base_footprint_l_w_m")
+    return ([[diameter, diameter]] if diameter is not None else []) + ([list(pair)] if pair is not None else [])
+
+
 def _stance(model: Mapping[str, Any], stations: Sequence[Sequence[float]], source: str,
-            footprint_half: Sequence[float], *, path_checked: bool) -> dict[str, Any]:
+            footprint_half: Sequence[float], *, path_checked: bool, floor: Any = None,
+            band: Sequence[float] = (1.0, 1.0)) -> dict[str, Any]:
+    """``floor`` returns the widest clear square base (``website_robot_fit_floor``), or None when it
+    could not be searched; it is called only for a base larger than the standard station."""
     if not stations:
         return _check("stance", "unknown", "no clear floor station was found; reconstructed floors have holes",
                       {"station_source": source}, cause="no_clear_station")
@@ -210,9 +266,7 @@ def _stance(model: Mapping[str, Any], stations: Sequence[Sequence[float]], sourc
         values.update(mount="station_pedestal_level_with_task_support",
                       assumption="the same standard mount as the existing station")
     cleared = sorted(2.0 * float(v) for v in footprint_half)
-    diameter = figure_value(model, "base_footprint_diameter_m")
-    pair = figure_value(model, "base_footprint_l_w_m")
-    sizes = ([[diameter, diameter]] if diameter is not None else []) + ([pair] if pair is not None else [])
+    sizes = _footprints(model)
     values["base_footprints_m"] = sizes
     if path_checked:
         return _check("stance", "pass", "the path check stood this arm on the station's pedestal", values)
@@ -221,8 +275,29 @@ def _stance(model: Mapping[str, Any], stations: Sequence[Sequence[float]], sourc
                       cause="catalog_figure_missing")
     if all(all(a <= b for a, b in zip(sorted(size), cleared)) for size in sizes):
         return _check("stance", "pass", "its base fits the cleared station footprint", values)
-    return _check("stance", "unknown", "its base is larger than the cleared station; its own footprint was not "
-                  "searched", values, cause="footprint_not_searched")
+    found = None if floor is None else floor()
+    if found is None:
+        return _check("stance", "unknown", "its base is larger than the cleared station; its own footprint was "
+                      "not searched", values, cause="footprint_not_searched")
+    from .website_robot_fit_floor import floor_stance
+
+    decided = floor_stance(sizes, found, band)
+    offered = [None if v is None else _r(v) for v in decided["offered_m"]]
+    values.update(floor_search="widest_clear_square_base", base_m=_r(decided["base_m"]), offered_floor_width_m=offered)
+    if decided["result"] == "pass":
+        row = _check("stance", "pass", "its base stands clear near the task even at the smaller scale", values)
+    elif decided["result"] == "fail":
+        row = _check("stance", "fail", "no place to stand for a base this size near the task, even at the larger "
+                     "scale", values)
+    else:
+        row = _check("stance", "unknown", "whether the floor near the task is wide enough for its base depends on "
+                     "the scene's scale", values, cause=ESTIMATE_STRADDLES)
+        # The floor the job seems to offer beside the base it must hold: it holds when the floor is wide enough.
+        row["condition"] = {"quantity": "floor_width_m", "unit": "m", "need_min": offered[0], "need_max": offered[1],
+                            "limit": _r(decided["base_m"]), "need_basis": "estimated_from_video",
+                            "limit_basis": "catalog"}
+    row["basis"] = "estimated_from_video"
+    return row
 
 
 def _verdict_reach(verdict: Mapping[str, Any], arm: str) -> dict[str, Any]:
@@ -499,6 +574,12 @@ def _condition_reason(check: str, condition: Mapping[str, Any]) -> str:
     """One condition in fixed words: what the robot can do, and what the job seems to need."""
     if condition["quantity"] == ROUTE_CLEAR:
         return f"{check}: fits if it has a clear route to the job; the route was not checked"
+    if condition["quantity"] == "hand_height_m":
+        return (f"{check}: fits if the job's heights are within its hand range up to {condition['limit']:g} m; it "
+                f"seems to need {condition['need_min']:g} to {condition['need_max']:g} m, estimated from the video")
+    if condition["quantity"] == "floor_width_m":
+        return (f"{check}: fits if there is {condition['limit']:g} m of clear floor to stand on; this job seems to "
+                f"offer {condition['need_min']:g} to {condition['need_max']:g} m, estimated from the video")
     unit, limit = condition["unit"], condition["limit"]
     can = {"item_mass_kg": f"the item weighs no more than {limit:g} kg",
            "reach_m": f"the job needs no more than its {limit:g} m reach",
@@ -591,6 +672,23 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
     mass_range, mass_basis, mass_record = _mass(preparation, band)
     target = _cycle_target(preparation)
     stations, source = _stations(preparation, verdict, collision, digest)
+    floor_record: dict[str, Any] = {}
+    # The largest half extent any robot's base could need, at the smaller scale: the search's top.
+    needed = max([max(max(size) for size in sizes) / 2.0 / band[0]
+                  for sizes in (_footprints(model) for model in catalog["models"]) if sizes], default=0.0)
+
+    def floor() -> dict[str, Any] | None:
+        # One bounded search per job, run only when a robot's base is larger than the standard station.
+        if "result" not in floor_record:
+            from .website_robot_fit_floor import widest_clear_square
+
+            try:
+                floor_record["result"] = widest_clear_square(
+                    preparation=preparation, collision_path=collision, collision_sha256=digest,
+                    known_clear_half_m=min(STATION_FOOTPRINT_HALF_EXTENT_M), needed_half_m=needed)
+            except Exception as exc:  # noqa: BLE001 - informational: the stance stays unsearched, named
+                floor_record.update(result=None, error=f"{type(exc).__name__}:{exc}"[:200])
+        return floor_record["result"]
     recipe_arms = {PROFILE_RECIPES[p]: arm for p, arm in ROBOT_PROFILE_ARMS.items() if p in PROFILE_RECIPES}
 
     rows = []
@@ -598,15 +696,16 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
     for model in catalog["models"]:
         body, arm = model["body_type"], recipe_arms.get(model.get("recipe_id"))
         chain = chains.get(model.get("recipe_id")) if body == "fixed_arm" else None
-        if body == "humanoid":
-            reach = _check("reach", "unknown", "a humanoid's reach from a station is not modeled", cause="not_modelled")
+        if body != "fixed_arm":
+            reach = _hand_height_reach(model, (grasp, place), floor, band)
         elif arm is not None:
             reach = _verdict_reach(verdict, arm)
         elif chain is not None:
             reach = _chain_reach(model, chain, stations, (grasp, place), tool_length, band)
         else:
             reach = _spec_reach(model, stations, (grasp, place), tool_length, band)
-        stance = _stance(model, stations, source, STATION_FOOTPRINT_HALF_EXTENT_M, path_checked=arm is not None)
+        stance = _stance(model, stations, source, STATION_FOOTPRINT_HALF_EXTENT_M, path_checked=arm is not None,
+                         floor=floor, band=band)
         payload = _payload(model, mass_range, tool_mass, mass_basis)
         checks = [stance, reach, payload, _cycle_time(model, target, min(straight), max(path))]
         if body != "fixed_arm":
@@ -640,6 +739,7 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
             "tool": {"tool_id": tool["tool_id"], "name": tool["name"],
                      **{name: figure_value(tool, name) for name in ("stroke_m", "mass_kg", "length_m")}},
             "stations": {"source": source, "positions_world_m": [[_r(v) for v in row] for row in stations]},
+            "floor_search": floor_record or None,
         },
         "rows": rows, "counts": {name: sum(row["verdict"] == name for row in rows) for name in VERDICTS},
         "first_look_counts": {name: sum(row["first_look_verdict"] == name for row in rows)
