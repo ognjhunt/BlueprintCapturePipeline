@@ -32,7 +32,19 @@ def scene_reservation_spend_record(path: Path) -> tuple[dict[str, Any], dict[str
         raise ValueError("scene_spend_reservation_invalid")
     from .task_evaluation_retained_controls_evidence import validated_cancellation
     from .task_evaluation_terminal_scene_attempt_settlement import budget_retained_hold
-    cancellation = validated_cancellation(path.parent.parent, attempt)
+    unverified = {}
+    try:
+        cancellation = validated_cancellation(path.parent.parent, attempt)
+    except (ValueError, RuntimeError, OSError, KeyError, TypeError) as exc:
+        # A release of this hold must be proven. When its evidence cannot be
+        # reopened (2026-11-12: a cleared folder held a controls intent's robot
+        # USD) the hold stays charged at its full cap, which is never less than
+        # what it can have spent, and every other reservation is still counted.
+        cancellation = None
+        code = str(exc).split(":", 1)[0] if isinstance(exc, (ValueError, RuntimeError)) else ""
+        if not code or not all(c.islower() or c.isdigit() or c == "_" for c in code):
+            code = "scene_spend_release_evidence_unavailable"
+        unverified = {"release_evidence_unverified": code}
     settlement = {}
     if cancellation is not None:
         settlement = {"settlement_digest": cancellation["receipt_digest"]}
@@ -43,7 +55,8 @@ def scene_reservation_spend_record(path: Path) -> tuple[dict[str, Any], dict[str
             if "evidence" in hold:
                 # A hold settled at proven spend names the evidence and policy that proved it.
                 settlement["settled_spend"] = {"basis": hold["basis"], "evidence": hold["evidence"]}
-    return {**attempt, "authorization_digest": attempt["attempt_digest"], "hard_attempt_spend_cap_usd": cap}, {
+    return {**attempt, "authorization_digest": attempt["attempt_digest"], "hard_attempt_spend_cap_usd": cap,
+            **unverified}, {
         **record, "authorization_digest": attempt["attempt_digest"], "hard_attempt_spend_cap_usd": cap,
         "accounting_kind": "persistent_scene_reservation", "owner_intent": intent_record, **settlement,
     }

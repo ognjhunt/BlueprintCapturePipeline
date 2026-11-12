@@ -64,8 +64,12 @@ def _publish_current_scene_project_spend_locked(*, scene_root: str | Path, seed_
     posted = {str(row.get("authority_digest")): row for row in seed["posted_entries"]
               if row.get("authority_digest")}
     covered = []
+    unproven = []
     for path in sorted(root.glob("scene-*/attempts/*.json")):
-        _, record = scene_reservation_spend_record(path)
+        reservation, record = scene_reservation_spend_record(path)
+        if reservation.get("release_evidence_unverified"):
+            unproven.append({"attempt_id": reservation.get("attempt_id"), "intent_id": reservation.get("intent_id"),
+                             "blocker": reservation["release_evidence_unverified"]})
         digest = record["authorization_digest"]
         if digest in posted:
             _require_reservation_posted_coverage(record, posted[digest])
@@ -129,6 +133,7 @@ def _publish_current_scene_project_spend_locked(*, scene_root: str | Path, seed_
         temporary.unlink(missing_ok=True)
     return {"status": "current_project_exposure_published", "pointer": pointer,
             "total_cost_usd": value["total_cost_usd"], "scene_reservation_count": len(records),
+            "reservations_charged_at_full_cap_release_unproven": unproven,
             "accounting_scope": "retained_official_source_seed_plus_full_enrolled_reservation_caps",
             "provider_mutation_performed": False, "reserved_caps_are_not_actual_billing": True}
 

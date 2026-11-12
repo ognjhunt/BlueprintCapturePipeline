@@ -599,3 +599,99 @@ def test_runtime_layers_use_the_publishers_bucket_without_rewriting_robot_select
         worker.provision_link(**kwargs)
     assert observed == ["artifact-store"]
     assert binding["external_layer_bucket"] == "legacy-bucket"
+
+
+def test_missing_asset_of_one_binding_holds_only_the_scenes_that_need_it(tmp_path, monkeypatch):
+    """2026-11-12: an old development binding's robot USD was cleared from the host.
+
+    Only scenes bound to it are held, by name and scoped; a scene on another
+    binding, a scene with no binding and a Website job proceed, and nothing
+    stops every scene."""
+    from blueprint_pipeline import task_evaluation_scene_scope_restriction as scope_restriction
+    kwargs = _configured_scene(tmp_path)
+    moment = NOW.timestamp()
+    monkeypatch.setattr(worker.time, "time", lambda: moment)
+    good = dict(kwargs["catalog"]["bindings"]["franka-droid"])
+    good.pop("expected_production_commit")
+    cleared = {**good, "robot_asset_usd": {"path": str(tmp_path / "cleared" / "franka.usd"),
+                                           "digest": good["robot_asset_usd"]["digest"]}}
+    content = worker._seal({"schema_version": worker.CONTENT_CATALOG_SCHEMA,
+        "bindings": {"franka-droid": good, "franka-pick-place-840938": cleared}}, "catalog_digest")
+    staged = {}
+    for name, binding in (("old", "franka-pick-place-840938"), ("unbound", None), ("website", None)):
+        owner = request()
+        owner["task"]["task_id"] = "task-" + name
+        owner["submission_id"] = "submission-" + name
+        if binding is not None:
+            owner["task"]["robot_binding_id"] = binding
+        owner["execution"].update(expires_at_epoch=moment + 7200, allowed_providers=["vast", "openai"])
+        owner["consent"]["accepted_at_epoch"] = moment - 1
+        staged[name] = intake.stage_scene_intent(value=owner, queue_root=kwargs["scene_root"],
+            authenticated_client="webapp", trusted_clients={"webapp"}, now=moment)["intent_id"]
+    original = scope_restriction.preparation_only
+    monkeypatch.setattr(scope_restriction, "preparation_only", lambda *, directory, intent:
+                        Path(directory).name == staged["website"] or original(directory=directory, intent=intent))
+    provisioned = {}
+
+    def provision(**provision_kwargs):
+        provisioned[provision_kwargs["intent_id"]] = sorted(provision_kwargs["catalog"]["bindings"])
+        return {"status": "installed", "intent_id": provision_kwargs["intent_id"]}
+
+    monkeypatch.setattr(worker, "provision_configured_scene_controls", provision)
+    config = _write(tmp_path / "config.json", {
+        "robot_catalog_path": str(_write(tmp_path / "catalog.json", content)),
+        **{key: str(kwargs[key]) for key in ("scene_root", "preparation_queue_root", "controls_root",
+                                            "intent_root", "profile_dir")},
+        "trusted_clients": ["webapp"]})
+    monkeypatch.setenv(worker.CONFIG_ENV, str(config))
+    scope = worker.progression_owner_scope(COMMIT)
+    rows = {row["intent_id"]: row for row in scope.rows}
+    assert scope.unresolved is False
+    assert rows[staged["old"]]["status"] == "controls_autoprovision_refused"
+    assert rows[staged["old"]]["blocker"] == worker.ROBOT_BINDING_UNAVAILABLE
+    assert rows[staged["old"]]["robot_binding_id"] == "franka-pick-place-840938"
+    assert rows[staged["old"]]["robot_binding_blocker"] == "controls_autoprovision_asset_invalid"
+    assert "scope_unresolved" not in rows[staged["old"]]
+    assert staged["old"] not in provisioned
+    assert rows[staged["website"]]["status"] == "scene_preparation_only"
+    assert scope.scene_progression_intent_digests
+    for name in (kwargs["intent_id"], staged["unbound"]):
+        assert rows[name]["status"] == "installed"
+        # Only the usable binding is offered; the cleared one never reaches provisioning.
+        assert provisioned[name] == ["franka-droid"]
+
+
+def test_missing_asset_does_not_lift_the_stop_for_a_scene_whose_owner_authority_ended(tmp_path, monkeypatch):
+    """The named hold is only for live scenes; an ended authority keeps today's path."""
+    kwargs = _configured_scene(tmp_path)
+    moment = NOW.timestamp()
+    good = dict(kwargs["catalog"]["bindings"]["franka-droid"])
+    good.pop("expected_production_commit")
+    cleared = {**good, "robot_asset_usd": {"path": str(tmp_path / "cleared" / "franka.usd"),
+                                           "digest": good["robot_asset_usd"]["digest"]}}
+    content = worker._seal({"schema_version": worker.CONTENT_CATALOG_SCHEMA,
+        "bindings": {"franka-droid": cleared}}, "catalog_digest")
+    _write(kwargs["scene_root"] / kwargs["intent_id"] / "revoked.json", {})
+    monkeypatch.setattr(worker.time, "time", lambda: moment)
+    config = _write(tmp_path / "config.json", {
+        "robot_catalog_path": str(_write(tmp_path / "catalog.json", content)),
+        **{key: str(kwargs[key]) for key in ("scene_root", "preparation_queue_root", "controls_root",
+                                            "intent_root", "profile_dir")},
+        "trusted_clients": ["webapp"]})
+    rows = worker.process_config(str(config), expected_production_commit=COMMIT)
+    assert len(rows) == 1 and rows[0]["status"] == "controls_autoprovision_refused"
+    assert rows[0]["blocker"] != worker.ROBOT_BINDING_UNAVAILABLE
+
+
+def test_usable_catalog_names_each_unusable_binding(tmp_path):
+    good = dict(setup(tmp_path)["catalog"]["bindings"]["franka-droid"])
+    good.pop("expected_production_commit")
+    cleared = {**good, "robot_asset_usd": {"path": str(tmp_path / "gone.usd"),
+                                           "digest": good["robot_asset_usd"]["digest"]}}
+    content = worker._seal({"schema_version": worker.CONTENT_CATALOG_SCHEMA,
+        "bindings": {"a": good, "b": cleared}}, "catalog_digest")
+    catalog, unusable = worker.resolve_usable_robot_catalog(content, source_commit="b" * 40)
+    assert sorted(catalog["bindings"]) == ["a"]
+    assert unusable == {"b": "controls_autoprovision_asset_invalid"}
+    with pytest.raises(ValueError, match="asset_invalid"):
+        worker.resolve_robot_catalog(content, source_commit="b" * 40)
