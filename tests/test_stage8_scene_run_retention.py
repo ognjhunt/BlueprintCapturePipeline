@@ -344,7 +344,7 @@ def test_an_open_jobs_run_comes_back_by_itself_and_the_screening_pass_releases_i
     run.parent.mkdir(parents=True, exist_ok=True)
     (run.parent / (run.name + cold.POINTER_SUFFIX)).write_text(
         json.dumps(_sealed({**pointer, "directory": run.name}, "pointer_digest")), encoding="utf-8")
-    monkeypatch.setattr(scene_run_restore, "RETRY_SECONDS", 0)
+    monkeypatch.setattr(scene_run_restore, "retry_delay", lambda _failures: 0)
     fake = _Restore(monkeypatch, disk=False)
     kwargs = {"queue_root": queue["screening_queue"], "packet_queue_root": queue["packet_queue"]}
     # No room for the download and its extraction: nothing is restored or spent, the job is held by name.
@@ -363,25 +363,32 @@ def test_an_open_jobs_run_comes_back_by_itself_and_the_screening_pass_releases_i
     assert min(path.stat().st_mtime for path in (run, *run.rglob("*"))) > time.time() - 60
 
 
-def test_a_restore_is_bounded_and_spends_nothing_on_a_closed_window(world, monkeypatch):
+def test_a_restore_keeps_trying_while_the_window_is_open_spaced_by_the_retry_policy(world, monkeypatch):
+    """A failed try spends nothing: it is tried again while the job's window runs (``job_retry_policy``), and
+    only the window closing ends it (AGENTS.md: the job's window is its deadline)."""
     from blueprint_pipeline import scene_run_restore as restore
+    from blueprint_pipeline.job_retry_policy import outage_retry_delay
 
     _offloaded(world)
     fake = _Restore(monkeypatch, transfer=False)
     assert restore.restore_open_job_run(world["run"], window_open=False) == {"status": "window_closed"}
     assert fake.calls == 0  # 447's window has ended: not restored
     clock = [1000.0]
-    results = []
-    for _ in range(5):
-        results.append(restore.restore_open_job_run(world["run"], window_open=True, now=lambda: clock[0])["status"])
-        clock[0] += restore.RETRY_SECONDS
-    assert results == ["refused", "refused", restore.GAVE_UP, restore.GAVE_UP, restore.GAVE_UP]
-    assert fake.calls == restore.MAX_ATTEMPTS
-    # Waiting out its retry time between tries.
-    (world["run"].parent / (world["run"].name + restore.STATE_SUFFIX)).unlink()
-    first = restore.restore_open_job_run(world["run"], window_open=True, now=lambda: 0.0)
-    assert first["status"] == "refused" and first["retry_not_before"] == restore.RETRY_SECONDS, first
-    assert restore.restore_open_job_run(world["run"], window_open=True, now=lambda: 1.0)["status"] == "waiting_retry"
+    for failures in range(1, 9):
+        result = restore.restore_open_job_run(world["run"], window_open=True, now=lambda: clock[0])
+        delay = outage_retry_delay(failures, first=900, cap=6 * 3600)
+        assert result["status"] == "refused" and result["retry_not_before"] == clock[0] + delay, result
+        assert restore.retry_delay(failures) == delay
+        # Before its time: it waits, and tries nothing.
+        assert restore.restore_open_job_run(world["run"], window_open=True,
+                                            now=lambda: clock[0] + delay - 1)["status"] == "waiting_retry"
+        clock[0] += delay
+    assert fake.calls == 8  # never given up while the window is open
+    assert [restore.retry_delay(n) for n in (1, 2, 3, 4, 5, 6)] == [900, 1800, 3600, 7200, 14400, 21600]
+    # The window closes: the tries end, nothing more is fetched.
+    assert restore.restore_open_job_run(world["run"], window_open=False, now=lambda: clock[0]) == {
+        "status": "window_closed"}
+    assert fake.calls == 8
 
 
 def test_a_job_marked_final_whose_half_is_compiled_again_gets_its_run_back(world, monkeypatch):
@@ -557,8 +564,8 @@ def test_a_restore_waits_while_a_deletion_holds_its_lock(world, monkeypatch):
     assert done["status"] == restore.RESTORED and world["run"].is_dir()
 
 
-def test_restore_attempts_are_bounded_per_episode_and_reset_when_one_lands(world, monkeypatch):
-    """Review 36 (7b): three tries for a run's whole life ended an open job in cold storage for good."""
+def test_three_failed_tries_then_a_success_inside_the_window_restore_the_run(world, monkeypatch):
+    """Review 36 (7b) and the PR review: three failed tries no longer end an open job in cold storage."""
     import shutil
 
     from blueprint_pipeline import scene_run_restore as restore
@@ -566,9 +573,9 @@ def test_restore_attempts_are_bounded_per_episode_and_reset_when_one_lands(world
     _offloaded(world)
     fake = _Restore(monkeypatch, transfer=False)
     clock = [0.0]
-    for _ in range(restore.MAX_ATTEMPTS - 1):
-        restore.restore_open_job_run(world["run"], window_open=True, now=lambda: clock[0])
-        clock[0] += restore.RETRY_SECONDS
+    for failures in range(1, 4):
+        assert restore.restore_open_job_run(world["run"], window_open=True, now=lambda: clock[0])["status"] == "refused"
+        clock[0] += restore.retry_delay(failures)
     fake.transfer = True
     assert restore.restore_open_job_run(world["run"], window_open=True, now=lambda: clock[0])["status"] == restore.RESTORED
     # Offloaded again later: a fresh episode with its own bound.
@@ -600,3 +607,122 @@ def test_a_crashed_restores_staging_is_cleaned_unless_a_restorer_holds_the_run(w
         fcntl.flock(held, fcntl.LOCK_EX)  # a restorer at work
         assert restore.clean_stale_staging(world["run"]) is False and staging.exists()
     assert restore.clean_stale_staging(world["run"]) is True and not staging.exists()
+
+
+# A restore killed mid-way leaves the site's bytes only where the run's own name ties them (PR review, privacy).
+
+
+def _real_offload(world, tmp_path):
+    """447's run archived for real, its pointer beside where it stood, and a store that serves the archive."""
+    import hashlib
+    import shutil
+    import tarfile
+
+    run = world["run"]
+    archive = tmp_path / "store" / "evidence.tar"
+    archive.parent.mkdir()
+    files = sorted(path for path in run.rglob("*") if path.is_file())
+    with tarfile.open(archive, "w") as tar:
+        for path in files:
+            tar.add(path, arcname=path.relative_to(run).as_posix())
+    digest = lambda raw: "sha256:" + hashlib.sha256(raw).hexdigest()  # noqa: E731
+    members = [{"relative_path": path.relative_to(run).as_posix(), "size_bytes": path.stat().st_size,
+                "sha256": digest(path.read_bytes())} for path in files]
+    pointer = _sealed({"schema_version": cold.POINTER_SCHEMA, "status": "offloaded", "directory": run.name,
+                       "uri": "gs://store/evidence.tar", "digest": digest(archive.read_bytes()),
+                       "size_bytes": archive.stat().st_size, "members": members}, "pointer_digest")
+    shutil.rmtree(run)
+    (world["runs"] / (run.name + cold.POINTER_SUFFIX)).write_text(json.dumps(pointer), encoding="utf-8")
+    return archive
+
+
+def _materializer(archive, *, kill_after_bytes=None):
+    def materialize(*, reference, destination, maximum_size_bytes):
+        raw = archive.read_bytes()
+        if kill_after_bytes is not None:
+            Path(destination).write_bytes(raw[:kill_after_bytes])  # part of the archive is on disk
+            raise KeyboardInterrupt  # the process is killed mid-download
+        Path(destination).write_bytes(raw)
+        return {"status": "materialized"}
+    return materialize
+
+
+def _restore_with(world, materializer):
+    from contextlib import nullcontext
+    from functools import partial
+
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+    from blueprint_pipeline import scene_run_restore as restore
+
+    return restore.restore_open_job_run(
+        world["run"], window_open=True, reserve=lambda *_a, **_k: nullcontext(),
+        restorer=partial(offload.restore_offloaded_evidence, materializer=materializer))
+
+
+def _outside_the_run_named_staging(world) -> list[str]:
+    """Everything in the runs folder a withdrawal could not tie to the run by its name, and any run bytes."""
+    run = world["run"].name
+    allowed = {run + cold.POINTER_SUFFIX, f".{run}.restore.lock", f".{run}.restoring", "pins"}
+    return sorted(path.name for path in world["runs"].iterdir() if path.name not in allowed)
+
+
+_KILLED_RESTORE = """
+import json, os, signal, sys, tarfile
+from contextlib import nullcontext
+from functools import partial
+from pathlib import Path
+
+from blueprint_pipeline import control_plane_evidence_offload as offload
+from blueprint_pipeline import scene_run_restore as restore
+
+run, archive, phase = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+raw = archive.read_bytes()
+
+def materialize(*, reference, destination, maximum_size_bytes):
+    if phase == "download":
+        Path(destination).write_bytes(raw[: len(raw) // 2])  # part of the archive is on disk
+        os.kill(os.getpid(), signal.SIGKILL)  # killed mid-download: no clean-up runs
+    Path(destination).write_bytes(raw)
+
+real = tarfile.TarFile.extractall
+
+def killed(self, path, *args, **kwargs):
+    real(self, path, members=self.getmembers()[:1], filter="data")  # one member written
+    os.kill(os.getpid(), signal.SIGKILL)  # killed mid-extraction
+
+tarfile.TarFile.extractall = killed
+restore.restore_open_job_run(run, window_open=True, reserve=lambda *_a, **_k: nullcontext(),
+                             restorer=partial(offload.restore_offloaded_evidence, materializer=materialize))
+"""
+
+
+@pytest.mark.parametrize("phase", ["download", "extraction"])
+def test_a_restore_killed_mid_way_leaves_its_bytes_only_in_the_run_named_staging(world, tmp_path, phase):
+    """The process is SIGKILLed during the download or the extraction (no ``finally`` runs)."""
+    import signal
+    import subprocess
+    import sys
+
+    from blueprint_pipeline import scene_run_restore as restore
+    from blueprint_pipeline import website_capture_withdrawal_deletion as deletion
+
+    archive = _real_offload(world, tmp_path)
+    staging = restore.staging_path(world["run"])
+    done = subprocess.run([sys.executable, "-c", _KILLED_RESTORE, str(world["run"]), str(archive), phase],
+                          capture_output=True, text=True, timeout=120)
+    assert done.returncode == -signal.SIGKILL, done.stderr
+    # Nothing of the run outside the one directory named after it; the run itself has not landed.
+    assert _outside_the_run_named_staging(world) == [] and not world["run"].exists()
+    written = [path for path in staging.rglob("*") if path.is_file()]
+    assert written, "the killed restore wrote part of the run"
+    assert all(staging in path.parents for path in written)
+    # A withdrawal deletion planned now ties the staging directory to the run and deletes it with it.
+    unresolved: list = []
+    units = deletion._Units([world["runs"]], unresolved)
+    assert unresolved == [] and staging in units.units[(str(world["runs"]), world["run"].name)]["leftovers"]
+    # The next pass removes it (no restorer holds the run), then restores the run whole.
+    assert restore.clean_stale_staging(world["run"]) is True and not staging.exists()
+    done = _restore_with(world, _materializer(archive))
+    assert done["status"] == restore.RESTORED and (world["run"] / "launch_receipt.json").is_file()
+    assert not staging.exists() and _outside_the_run_named_staging(world) == sorted(
+        [world["run"].name, world["run"].name + restore.STATE_SUFFIX])

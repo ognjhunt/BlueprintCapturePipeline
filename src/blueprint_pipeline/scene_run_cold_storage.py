@@ -15,10 +15,10 @@ They now all name the same code, ``scene_run_in_cold_storage``. The job is told
 it is held at once, under the accepted hold reason ``team_scene_packet_blocked``
 (the website says it is a problem on our side) with this code as its detail.
 
-What releases it today: an operator restores the run in place from its pointer
-(``control_plane_evidence_offload.restore_offloaded_evidence(pointer_path=...,
-destination=<the run's own path>)``). The next screening pass reads it again and
-publishes the hold as released. Nothing here restores, writes or spends.
+What releases it: an open job's run is restored by itself (``scene_run_restore``),
+which downloads and extracts only inside ``.<run>.restoring`` so a withdrawal can tie
+every byte to the run. The next screening pass reads it again and publishes the hold
+as released. Nothing here restores, writes or spends.
 """
 
 from __future__ import annotations

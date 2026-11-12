@@ -17,8 +17,13 @@ restores it in place for an OPEN job (its scene intent window still runs; ``open
   without spending anything when the disk cannot take it;
 - with every restored file and directory's times set to now, so the clean-up counts the run as fresh
   (the archive's own times are the offload's: without this the next pass would offload it again);
-- at most ``MAX_ATTEMPTS`` tries, ``RETRY_SECONDS`` apart, recorded beside the pointer; the screening pass
-  reads the run again on its next pass and its hold is published as released.
+- every byte the restore writes before the run lands (the download, its extraction) is inside one staging
+  directory named after the run, ``.<run>.restoring``: a restore killed mid-way leaves nothing anywhere
+  else, the next pass removes it (``clean_stale_staging``), and a withdrawal deletion counts it as the
+  run's own leftover and deletes it with the run (``website_capture_withdrawal_deletion._Units``);
+- a failed try spends nothing and is tried again while the job's window is open, never given up: the next
+  try waits ``job_retry_policy.outage_retry_delay`` (15 min, doubling, at most 6 h), recorded beside the
+  pointer; the screening pass reads the run again on its next pass and its hold is published as released.
 
 A job whose window has ended is not restored: there is nothing left to run for it, and the screening pass
 tells it its window closed (``beta_screening_job_window_closed``). Restoring never deletes the pointer.
@@ -39,11 +44,24 @@ STATE_SUFFIX = ".restore.v1.json"
 #: The restore's own record beside the run (sealed, so a withdrawal deletion removes it with the run): its
 #: attempt count, times, last status and an error type/code. No content of the job.
 STATE_SCHEMA = "scene_run_restore_state.v1"
-MAX_ATTEMPTS = 3
-RETRY_SECONDS = 3600
+#: The backoff between tries (``job_retry_policy.outage_retry_delay``): the first wait, and the longest.
+RETRY_FIRST_SECONDS = 900
+RETRY_CAP_SECONDS = 6 * 3600
 ROLE = "evidence_offload"
 RESTORED = "restored"
-GAVE_UP = "scene_run_restore_attempts_exhausted"
+
+
+def retry_delay(failures: int) -> int:
+    """Seconds before the next try after ``failures`` failed tries in a row; the job's window is the deadline."""
+    from .job_retry_policy import outage_retry_delay
+
+    return outage_retry_delay(failures, first=RETRY_FIRST_SECONDS, cap=RETRY_CAP_SECONDS)
+
+
+def staging_path(run_root: str | Path) -> Path:
+    """The one directory a restore of ``run_root`` writes into before the run lands: ``.<run>.restoring``."""
+    run = Path(run_root)
+    return run.parent / f".{run.name}.restoring"
 
 
 def _state_path(run: Path) -> Path:
@@ -106,7 +124,7 @@ def clean_stale_staging(run_root: str | Path) -> bool:
     import shutil
 
     run = Path(run_root)
-    staging = run.parent / f".{run.name}.restoring"
+    staging = staging_path(run)
     if not staging.exists() or staging.is_symlink():
         return False
     try:
@@ -132,11 +150,14 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
     Privacy first: ``still_current`` (the job is not withdrawn, its consent not revoked) is asked before
     anything is fetched and again, under the deletion's own lock (``deletion_lock``), before anything is
     placed; the run is fetched into a staging folder beside it, and if the job was withdrawn meanwhile the
-    staging folder is deleted and nothing lands. Attempts are counted per cold-storage episode: a restore that
-    lands resets them, so a later offload of the same run starts a fresh bound.
+    staging folder is deleted and nothing lands. The download and its extraction happen inside that staging
+    folder (the restorer's destination is ``.<run>.restoring/<run>``), so nothing of the run is ever written
+    under a name a withdrawal could not tie to it. Failed tries are counted per cold-storage episode only to
+    space them (``retry_delay``); a restore that lands resets them. Only the window closing or the job's
+    withdrawal ends the tries.
 
     Returns ``{"status": ...}``: ``on_disk``, ``window_closed``, ``WITHDRAWN``, ``BUSY``, ``restored``,
-    ``waiting_retry``, ``refused`` (this try failed: disk, transfer or digest), or ``GAVE_UP``.
+    ``waiting_retry``, or ``refused`` (this try failed: disk, transfer or digest; tried again later).
     """
     import fcntl
     import shutil
@@ -151,8 +172,6 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
     if not still_current():
         return {"status": WITHDRAWN}
     state, moment = _state(run), float(now())
-    if int(state.get("attempts") or 0) >= MAX_ATTEMPTS:
-        return {**state, "status": GAVE_UP}
     if moment < float(state.get("retry_not_before") or 0):
         return {**state, "status": "waiting_retry"}
     from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
@@ -160,7 +179,8 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
 
     attempt = int(state.get("attempts") or 0) + 1
     record: dict[str, Any] = {"attempts": attempt, "last_attempt_epoch": moment}
-    staging = run.parent / f".{run.name}.restoring"
+    staging = staging_path(run)
+    landing = staging / run.name
     lock = _restorer_lock(run).open("a+b")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -169,13 +189,17 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
         return {**state, "status": BUSY}  # another restorer runs now
     try:
         shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(mode=0o750)
+        with contextlib.suppress(OSError):  # the run root's owner, so the restored files are the service's
+            owner = run.parent.stat()
+            os.chown(staging, owner.st_uid, owner.st_gid)
         hold = (reserve or reserve_control_plane_disk)(
             ROLE, target_root=run.parent, expected_bytes=max(1, 2 * int(pointer["size_bytes"])),
             reservation_root=os.environ.get("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT") or DEFAULT_RESERVATION_ROOT,
             workload="scene_run_restore")
         with hold:
             (restorer or restore_offloaded_evidence)(pointer_path=run.parent / (run.name + POINTER_SUFFIX),
-                                                     destination=staging)
+                                                     destination=landing)
             with deletion_lock(packet_queue_root) as held:
                 if not held:
                     shutil.rmtree(staging, ignore_errors=True)
@@ -183,17 +207,16 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
                 if not still_current():
                     shutil.rmtree(staging, ignore_errors=True)  # withdrawn meanwhile: what was fetched is deleted
                     return {"status": WITHDRAWN}
-                _touch(staging, float(now()))
-                os.replace(staging, run)
+                _touch(landing, float(now()))
+                os.replace(landing, run)
+                shutil.rmtree(staging, ignore_errors=True)
         record = {"attempts": 0, "status": RESTORED, "restored_at_epoch": float(now()),
                   "attempts_this_episode": attempt}
-    except Exception as exc:  # noqa: BLE001 - a failed try spends nothing; it is tried again, bounded
+    except Exception as exc:  # noqa: BLE001 - a failed try spends nothing; it is tried again while the window runs
         shutil.rmtree(staging, ignore_errors=True)
         record.update(status="refused", error_type=type(exc).__name__,
                       error=str(exc)[:200] if isinstance(exc, ValueError) or "disk" in str(exc) else "",
-                      retry_not_before=moment + RETRY_SECONDS)
-        if attempt >= MAX_ATTEMPTS:
-            record["status"] = GAVE_UP
+                      retry_not_before=moment + retry_delay(attempt))
     finally:
         lock.close()
     _write_state(run, record)
@@ -224,5 +247,5 @@ def _write_state(run: Path, record: Mapping[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-__all__ = ["BUSY", "GAVE_UP", "MAX_ATTEMPTS", "RESTORED", "RETRY_SECONDS", "WITHDRAWN", "deletion_lock",
-           "restore_open_job_run"]
+__all__ = ["BUSY", "RESTORED", "RETRY_CAP_SECONDS", "RETRY_FIRST_SECONDS", "WITHDRAWN", "clean_stale_staging",
+           "deletion_lock", "restore_open_job_run", "retry_delay", "staging_path"]

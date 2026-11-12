@@ -728,3 +728,24 @@ def test_any_other_symlinked_leftover_still_refuses_the_withdrawal(world, tmp_pa
     assert any(row["reason"] == "website_withdrawal_deletion_unsafe_entry" or "unsafe_entry" in row["reason"]
                for row in plan["unresolved"])
     assert target.exists()
+
+
+def test_a_withdrawal_lists_and_deletes_a_killed_restores_staging_with_the_run(world):
+    """PR review, privacy: a restore killed mid-way leaves ``.<run>.restoring`` (its partial download and
+    extraction inside); the withdrawal's plan lists it as the run's leftover and the apply removes it."""
+    from blueprint_pipeline import scene_run_restore as restore
+
+    run = world["construction"]
+    staging = restore.staging_path(run)
+    partial = staging / run.name / ".restore-x1y2z3" / "evidence.tar"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"part of the site's archive")
+    (staging / run.name / ".restore-x1y2z3" / "tree" / "allocator").mkdir(parents=True)
+    (staging / run.name / ".restore-x1y2z3" / "tree" / "launch_receipt.json").write_text("{}")
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    assert not plan["unresolved"]
+    [row] = [row for row in plan["runs"] if row["name"] == run.name]
+    assert str(staging) in row["leftovers"]
+    _apply(world, plan, cloud_storage=gcs)
+    assert not run.exists() and not staging.exists()
