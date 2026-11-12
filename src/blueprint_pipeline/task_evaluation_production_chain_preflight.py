@@ -1699,7 +1699,8 @@ def _verified_false_conditions(props: Mapping[str, list[str]]) -> set[int]:
 
 
 def unit_health_checks(units: Mapping[str, dict[str, Any]], *, lane: str = "diagnostic") -> list[dict[str, Any]]:
-    findings: list[dict[str, Any]] = []
+    from .control_plane_stall_alarm import read_deploy_paused_triggers  # disarmed by every release: not a blocker
+    findings, paused_triggers = [], read_deploy_paused_triggers()
     for unit_name, unit in units.items():
         props = unit["properties"]
         state = _first(props, "ActiveState")
@@ -1720,7 +1721,7 @@ def unit_health_checks(units: Mapping[str, dict[str, Any]], *, lane: str = "diag
         for trigger in (_first(props, "TriggeredBy") or "").split():
             trigger_state = _first(unit_properties(trigger), "ActiveState")
             if trigger_state != "active":
-                required = lane != "beta_rigid" or unit_name in BETA_RIGID_UNITS
+                required = (lane != "beta_rigid" or unit_name in BETA_RIGID_UNITS) and trigger not in paused_triggers
                 findings.append(_finding("info" if held or not required else "blocker", "unit_intentionally_held" if held and lane == "beta_rigid" else ("unit_trigger_inactive" if required else "unit_trigger_not_required"), unit=unit_name, trigger=trigger, active_state=trigger_state))
     return findings
 

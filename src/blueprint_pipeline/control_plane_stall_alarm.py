@@ -263,6 +263,8 @@ _DEPLOY_OPTIONAL_LISTS = ("DEPLOY_EXEMPT_TRIGGER_UNITS",)
 # being off can be the owner's choice; left out of the trigger check.
 _DEPLOY_PRESERVABLE_LIST = "CONFIGURED_CONTROLS_AUTOMATION_UNITS"
 _DEPLOY_HOLDS_DIR = "DEFAULT_DOOR_HOLDS_DIR"
+# Paused lanes a release stops and disables; never armed, so never a stall.
+_DEPLOY_DISARM_LIST = "DEFAULT_PAUSED_LANE_DISARM_UNITS"
 
 
 class StallCheckError(RuntimeError):
@@ -789,8 +791,8 @@ def check_launch_activations(
 # --------------------------------------------------------------------------- #
 
 
-def read_deploy_trigger_contract(path: Path) -> tuple[tuple[str, ...], Path]:
-    """The deploy tool's always-armed ``.timer``/``.path`` units and its door holds dir."""
+def _deploy_tool_literals(path: Path, wanted: set[str]) -> dict[str, Any]:
+    """The named module-level literals of the deploy tool, read as data, never imported."""
 
     try:
         if path.stat().st_size > MAX_DEPLOY_TOOL_BYTES:
@@ -798,7 +800,6 @@ def read_deploy_trigger_contract(path: Path) -> tuple[tuple[str, ...], Path]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError, UnicodeDecodeError) as exc:
         raise StallCheckError("deploy_tool_unreadable") from exc
-    wanted = {*_DEPLOY_TRIGGER_LISTS, *_DEPLOY_OPTIONAL_LISTS, _DEPLOY_PRESERVABLE_LIST, _DEPLOY_HOLDS_DIR}
     values: dict[str, Any] = {}
     for node in tree.body:
         targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
@@ -808,6 +809,26 @@ def read_deploy_trigger_contract(path: Path) -> tuple[tuple[str, ...], Path]:
                     values[target.id] = ast.literal_eval(node.value)
                 except ValueError as exc:
                     raise StallCheckError(f"deploy_tool_list_not_literal:{target.id}") from exc
+    return values
+
+
+def read_deploy_paused_triggers(path: Path | None = None) -> frozenset[str]:
+    """The paused lanes' triggers a release disarms; empty when the deploy tool cannot be read."""
+
+    try:
+        value = _deploy_tool_literals(path or default_deploy_tool(), {_DEPLOY_DISARM_LIST}).get(_DEPLOY_DISARM_LIST)
+    except StallCheckError:
+        return frozenset()
+    if not isinstance(value, tuple) or not all(isinstance(item, str) for item in value):
+        return frozenset()
+    return frozenset(unit for unit in value if _UNIT.match(unit))
+
+
+def read_deploy_trigger_contract(path: Path) -> tuple[tuple[str, ...], Path]:
+    """The deploy tool's always-armed ``.timer``/``.path`` units and its door holds dir."""
+
+    values = _deploy_tool_literals(
+        path, {*_DEPLOY_TRIGGER_LISTS, *_DEPLOY_OPTIONAL_LISTS, _DEPLOY_PRESERVABLE_LIST, _DEPLOY_HOLDS_DIR})
 
     def units(name: str, *, required: bool) -> set[str]:
         value = values.get(name)
@@ -1789,6 +1810,7 @@ __all__ = [
     "hold_reason",
     "observe_stalls",
     "open_window_captures",
+    "read_deploy_paused_triggers",
     "read_deploy_trigger_contract",
     "read_lock_holders",
     "read_unit_states",

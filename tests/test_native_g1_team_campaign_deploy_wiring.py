@@ -38,7 +38,9 @@ def test_g1_team_queue_has_hardened_once_only_controller_and_timer() -> None:
     assert "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT=" in intake
     assert SERVICE in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     assert TIMER in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-    assert TIMER in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    # Paused by the 2026-11-12 frame: installed, but a release disarms it.
+    assert TIMER not in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    assert TIMER in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS
     assert f"deploy/systemd/{SERVICE}" in installer
     assert f"deploy/systemd/{TIMER}" in installer
     assert f"systemctl enable --now {TIMER}" in installer
@@ -57,7 +59,8 @@ def test_g1_team_settlement_is_armed_for_posted_billing_and_private_review() -> 
     assert SETTLEMENT_SERVICE in timer
     assert SETTLEMENT_SERVICE in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     assert SETTLEMENT_TIMER in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-    assert SETTLEMENT_TIMER in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    assert SETTLEMENT_TIMER not in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    assert SETTLEMENT_TIMER in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS
     assert f"deploy/systemd/{SETTLEMENT_SERVICE}" in installer
     assert f"deploy/systemd/{SETTLEMENT_TIMER}" in installer
     assert f"systemctl enable --now {SETTLEMENT_TIMER}" in installer

@@ -23,7 +23,7 @@ Most units do not run their module directly. Read the `--worker`, `--continuous-
 
 The full list of what every unit, drop-in, door script and deploy step starts is in [`audits/2026-11-inventory.json`](audits/2026-11-inventory.json) (rows with `kind: "unit"`).
 
-The deploy tool `scripts/deploy_control_plane_commit.py` installs the units in `DEFAULT_DEPLOYED_SYSTEMD_UNITS` (line 428). It always arms the triggers in `DEFAULT_ALWAYS_ARM_*` (lines 540-650). Every other trigger keeps its earlier state. Triggers that are off on purpose: [`runbooks/beta-operations.md` §7](runbooks/beta-operations.md#7-triggers-that-are-off-on-purpose-d-06).
+The deploy tool `scripts/deploy_control_plane_commit.py` installs the units in `DEFAULT_DEPLOYED_SYSTEMD_UNITS` (line 428). It always arms the triggers in `DEFAULT_ALWAYS_ARM_*` and stops and disables the paused lanes' triggers in `DEFAULT_PAUSED_LANE_DISARM_UNITS` ([`runbooks/beta-operations.md` §7](runbooks/beta-operations.md#lanes-paused-by-the-2026-11-12-frame)). Every other trigger keeps its earlier state. Triggers that are off on purpose: [`runbooks/beta-operations.md` §7](runbooks/beta-operations.md#7-triggers-that-are-off-on-purpose-d-06).
 
 ## The website job, step by step
 

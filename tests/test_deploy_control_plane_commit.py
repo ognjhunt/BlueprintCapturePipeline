@@ -1002,22 +1002,14 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-team-scene-packet.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
-        "blueprint-embodiment-preparation.timer",
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-beta-policy-screening.timer",
-        "blueprint-native-g1-team-campaign-dispatcher.timer",
-        "blueprint-native-g1-team-campaign-settlement.timer",
-        "blueprint-agent-run-dispatcher.timer",
         "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-sam31-preparation-execution.timer",
-        "blueprint-task-evaluation-episode-compilation.timer",
         "blueprint-task-evaluation-episode-compilation-remote.timer",
         "blueprint-team-scene-packet-remote.timer",
-        "blueprint-task-evaluation-configured-controls-progression.timer",
-        "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.timer",
         "blueprint-completed-replay-cache-gc.timer",
         "blueprint-website-withdrawal-deletion.timer",
@@ -1062,56 +1054,138 @@ def test_only_service_path_and_timer_unit_suffixes_may_be_installed(
         )
 
 
-def test_configured_controls_timer_is_installed_and_armed_by_default(
-    monkeypatch,
-) -> None:
-    calls: list[tuple[str, ...]] = []
-    unit = "blueprint-task-evaluation-configured-controls-progression.timer"
-    enabled = "disabled"
-    active = "inactive"
+PAUSED_LANE_UNITS = (
+    "blueprint-native-g1-team-campaign-dispatcher.timer",
+    "blueprint-native-g1-team-campaign-settlement.timer",
+    "blueprint-embodiment-preparation.timer",
+    "blueprint-agent-run-dispatcher.timer",
+    "blueprint-task-evaluation-sam31-preparation-execution.timer",
+    "blueprint-task-evaluation-episode-compilation.timer",
+    "blueprint-task-evaluation-configured-controls-progression.timer",
+    "blueprint-task-evaluation-configured-controls-progression.path",
+)
 
-    def completed(argv, **kwargs):
-        nonlocal enabled, active
+
+def test_paused_lanes_are_disarmed_and_never_armed_again_without_leaving_the_disarm_list() -> None:
+    """The 2026-11-12 frame pauses these lanes. Re-arming one means moving its name back."""
+
+    assert deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS == PAUSED_LANE_UNITS
+    armed = {*deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS, *deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS,
+             *deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS, *deploy.DEPLOY_EXEMPT_TRIGGER_UNITS}
+    assert not armed & set(deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS)
+    for unit in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS:
+        # The unit files stay installed; only their arming changes.
+        assert unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+        assert (Path(__file__).resolve().parents[1] / "deploy" / "systemd" / unit).is_file()
+
+
+@pytest.mark.parametrize("arm_list", ["always_arm_units", "always_arm_authority_gated_units", "always_arm_timer_units"])
+def test_a_unit_both_armed_and_disarmed_refuses_before_any_host_action(monkeypatch, arm_list: str) -> None:
+    unit = "blueprint-agent-run-dispatcher.timer"
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host action"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match="authority_ambiguous"):
+        deploy._restore_installed_path_units(
+            [{"unit": unit}], before={unit: {"enabled": "enabled", "state": "active"}},
+            arm_path_units=False, disarm_units=(unit,), **{arm_list: (unit,)},
+        )
+
+
+@pytest.mark.parametrize(
+    "case, before, returncode, final",
+    [
+        ("present_and_active", ("enabled", "active"), 0, ("disabled", "inactive")),
+        ("already_stopped", ("disabled", "inactive"), 0, ("disabled", "inactive")),
+        # systemctl refuses a unit file that is not there; its probe reads "not-found".
+        ("absent", ("not-found", "inactive"), 5, ("not-found", "inactive")),
+    ],
+)
+@pytest.mark.parametrize("preserve_controls", [False, True])
+def test_release_disarms_a_paused_lane_unit_idempotently(
+    monkeypatch, case: str, before: tuple[str, str], returncode: int, final: tuple[str, str],
+    preserve_controls: bool,
+) -> None:
+    unit = "blueprint-task-evaluation-configured-controls-progression.timer"
+    state = {"is-enabled": before[0], "is-active": before[1]}
+    calls: list[tuple[str, ...]] = []
+
+    def completed(argv, **_kwargs):
         calls.append(tuple(argv))
-        if argv[:2] == ["systemctl", "enable"]:
-            enabled = "enabled"
-        elif argv[:2] == ["systemctl", "restart"]:
-            active = "active"
-        stdout = ""
-        if argv[:2] == ["systemctl", "is-enabled"]:
-            stdout = enabled + "\n"
-        elif argv[:2] == ["systemctl", "is-active"]:
-            stdout = active + "\n"
+        verb = argv[1]
+        if verb in {"is-enabled", "is-active"}:
+            return subprocess.CompletedProcess(argv, 0 if state[verb] in {"enabled", "active"} else 1,
+                                               stdout=state[verb] + "\n", stderr="")
+        if returncode == 0:
+            if verb == "stop":
+                state["is-active"] = final[1]
+            elif verb == "disable":
+                state["is-enabled"] = final[0]
+        return subprocess.CompletedProcess(argv, returncode, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    for _ in range(2):  # a second release finds it already disarmed
+        calls.clear()
+        restored = deploy._restore_installed_path_units(
+            [{"unit": unit}], before={unit: {"enabled": before[0], "state": before[1]}},
+            arm_path_units=False, always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+            preserve_configured_controls_state=preserve_controls,
+            disarm_units=deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS, defer_start_verification=True,
+        )
+        assert calls == [
+            ("systemctl", "stop", unit), ("systemctl", "disable", unit),
+            ("systemctl", "is-enabled", unit), ("systemctl", "is-active", unit),
+        ]
+        assert restored == [{
+            "unit": unit, "before": {"enabled": before[0], "state": before[1]},
+            "requested_intent": "disarm_paused_lane", "after": {"enabled": "disabled", "state": "inactive"},
+            "operator_freeze_preserved": False, "disarmed": True,
+        }]
+        assert deploy._verify_deferred_path_unit_starts(restored, door_holds_dir="/nonexistent") is None
+
+
+def test_disarm_reports_a_unit_it_cannot_stop_without_failing_the_release(monkeypatch) -> None:
+    unit = "blueprint-agent-run-dispatcher.timer"
+
+    def completed(argv, **_kwargs):
+        if argv[1] in {"stop", "disable"}:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="busy")
+        return subprocess.CompletedProcess(argv, 0, stdout={"is-enabled": "enabled", "is-active": "active"}[argv[1]] + "\n",
+                                           stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={unit: {"enabled": "enabled", "state": "active"}}, arm_path_units=True,
+        disarm_units=(unit,),
+    )
+    assert restored[0]["disarmed"] is False
+    assert restored[0]["disarm_failed"] == ["stop", "disable"]
+    assert restored[0]["after"] == {"enabled": "enabled", "state": "active"}
+
+
+def test_disarm_touches_no_unit_outside_its_list(monkeypatch) -> None:
+    paused, other = "blueprint-agent-run-dispatcher.timer", "blueprint-task-evaluation-terminal-resource-release.path"
+    calls: list[tuple[str, ...]] = []
+
+    def completed(argv, **_kwargs):
+        calls.append(tuple(argv))
+        stdout = {"is-enabled": "enabled\n", "is-active": "active\n"}.get(argv[1], "")
+        if argv[2] == paused and argv[1] in {"is-enabled", "is-active"}:
+            stdout = {"is-enabled": "disabled\n", "is-active": "inactive\n"}[argv[1]]
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(deploy.subprocess, "run", completed)
-
-    observed = deploy._installed_path_unit_states([{"unit": unit}])
     restored = deploy._restore_installed_path_units(
-        [{"unit": unit}],
-        before=observed,
-        arm_path_units=False,
-        always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+        [{"unit": paused}, {"unit": other}],
+        before={paused: {"enabled": "enabled", "state": "active"}, other: {"enabled": "enabled", "state": "active"}},
+        arm_path_units=False, disarm_units=(paused,),
     )
+    assert [row["requested_intent"] for row in restored] == ["disarm_paused_lane", "preserve"]
+    assert ("systemctl", "enable", other) in calls and ("systemctl", "restart", other) in calls
+    assert ("systemctl", "disable", other) not in calls and ("systemctl", "stop", other) not in calls
 
-    assert observed == {unit: {"enabled": "disabled", "state": "inactive"}}
-    assert calls == [
-        ("systemctl", "is-enabled", unit),
-        ("systemctl", "is-active", unit),
-        ("systemctl", "enable", unit),
-        ("systemctl", "restart", unit),
-        ("systemctl", "is-enabled", unit),
-        ("systemctl", "is-active", unit),
-    ]
-    assert restored == [
-        {
-            "unit": unit,
-            "before": {"enabled": "disabled", "state": "inactive"},
-            "requested_intent": "arm_configured_controls_progression",
-            "after": {"enabled": "enabled", "state": "active"},
-            "operator_freeze_preserved": False,
-        }
-    ]
+
+def test_the_release_passes_the_paused_lane_list_to_its_one_successful_restore() -> None:
+    source = (Path(__file__).resolve().parents[1] / "scripts" / "deploy_control_plane_commit.py").read_text()
+    assert source.count("disarm_units=DEFAULT_PAUSED_LANE_DISARM_UNITS") == 1
 
 
 @pytest.mark.parametrize("explicit", [False, True])

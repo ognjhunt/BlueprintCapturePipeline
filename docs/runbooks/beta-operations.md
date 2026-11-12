@@ -775,6 +775,19 @@ unit is in `DEFAULT_ALWAYS_ARM_TIMER_UNITS`
 | `blueprint-task-evaluation-terminal-resource-release.path` | Watches the terminal resource release queue. It releases one terminal Vast record through the canonical allocator. | The queue has been empty since 2026-08-12 (one completed record). When `BLUEPRINT_ALLOW_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER` is set, the intake starts the release unit directly (`live_pipeline_intake_runtime_controls.py`). Teardown runs in the paid lane. The launch reconciler files the provider-zero receipt. | Add it to `DEFAULT_ALWAYS_ARM_TIMER_UNITS` if anything writes to its `pending/` folder again. |
 | `blueprint-capture-reconstruction-dispatcher.timer` and `.path` | Advanced the legacy capture reconstruction queue. | Retired: the website beta reconstructs through Atlas. The unit files, the dispatcher module and the listener's enqueue are gone from the repo (P-RT-01); the queue (`capture-reconstruction-queue/{pending,processing,completed}`) was empty. | The host still has the installed unit files until the host cleanup (H-03) disables and removes them. |
 
+### Lanes paused by the 2026-11-12 frame
+
+Every release stops and disables the triggers in `DEFAULT_PAUSED_LANE_DISARM_UNITS`
+(`scripts/deploy_control_plane_commit.py`): the humanoid G1 campaign dispatcher and
+settlement, embodiment preparation's timer, the agent-run dispatcher, the SAM 3.1
+preparation execution timer, the host episode compilation timer, and
+configured-controls progression (`.timer` and `.path`). No website job needs them;
+their unit files and code stay, and their path watchers that the arm lists still name
+stay armed. A unit already stopped or absent is fine; one that will not stop is
+reported in the receipt (`disarm_failed`) and does not fail the release. The stall
+alarm and the preflight do not count them. To bring a lane back, move its name from
+`DEFAULT_PAUSED_LANE_DISARM_UNITS` into `DEFAULT_ALWAYS_ARM_TIMER_UNITS` and deploy.
+
 Not done: `reset-failed` on the transient failed units (O-24). It needs a door
 unit action, and another operator uses the host, so do it in a deploy window.
 

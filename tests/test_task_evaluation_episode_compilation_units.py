@@ -411,7 +411,9 @@ def test_the_no_spend_unit_has_a_timer_backstop_and_deploy_creates_its_marker_di
     deploy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(deploy)
     assert f"{NO_SPEND}.timer" in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-    assert f"{NO_SPEND}.timer" in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    # Paused by the 2026-11-12 frame: installed, but a release disarms the backstop timer.
+    assert f"{NO_SPEND}.timer" not in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    assert f"{NO_SPEND}.timer" in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS
     directories = set(deploy.DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES)
     for kind in ("handoffs", "shadow", "fallback", "recovery"):
         assert {f"{JOBS}/{kind}", f"{JOBS}/{kind}/episode_compilation"} <= directories, kind
