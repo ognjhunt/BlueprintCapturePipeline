@@ -334,3 +334,53 @@ def test_posted_identity_does_not_erase_partially_covered_retained_cost():
     with pytest.raises(ValueError, match="identity_mismatch"):
         _require_reservation_posted_coverage(reservation, {"authority_digest": "sha256:other", "cost_usd": 4.5})
     _require_reservation_posted_coverage(reservation, {"authority_digest": "sha256:attempt", "cost_usd": 4.5})
+
+
+def test_hold_whose_release_evidence_cannot_be_reopened_stays_at_full_cap_and_others_refresh(tmp_path, monkeypatch):
+    """2026-11-12: a cleared folder held the robot USD a cancelled controls hold's
+    evidence names; one unprovable release stopped the refresh for every project.
+
+    The refresh may never count less than is real: that hold is charged at its
+    full cap and named, and every other reservation is still counted."""
+    from blueprint_pipeline import task_evaluation_retained_controls_evidence as evidence
+    from blueprint_pipeline.task_evaluation_configured_controls_autostart_support import (
+        TaskEvaluationConfiguredControlsAutostartError,
+    )
+    prior = seed(tmp_path)
+    root = tmp_path / "intents"
+    intent = stage(root)
+    attempt(root, intent)
+    attempt(root, intent, "a2")
+    real = evidence.validated_cancellation
+
+    def cancellation(directory, value):
+        if value["attempt_id"] == "a1":
+            raise TaskEvaluationConfiguredControlsAutostartError("configured_controls_autostart_artifact_invalid")
+        return real(directory, value)
+
+    monkeypatch.setattr(evidence, "validated_cancellation", cancellation)
+    args = dict(scene_root=root, seed_reconciliation_path=prior, output_root=tmp_path / "spend",
+                current_path=tmp_path / "current.json")
+    report = publish_current_scene_project_spend(**args, now=200)
+    assert report["total_cost_usd"] == pytest.approx(43.197914 + 4)
+    assert report["reservations_charged_at_full_cap_release_unproven"] == [
+        {"attempt_id": "a1", "intent_id": intent["intent_id"],
+         "blocker": "configured_controls_autostart_artifact_invalid"}]
+    assert json.loads((tmp_path / "current.json").read_text())["observed_at_epoch"] == 200
+    validate_project_spend_reconciliation(report["pointer"]["path"])
+
+
+def test_invalid_cancellation_receipt_never_releases_its_hold(tmp_path):
+    prior = seed(tmp_path)
+    root = tmp_path / "intents"
+    intent = stage(root)
+    attempt(root, intent)
+    cancelled = root / intent["intent_id"] / "cancelled-unstarted-controls" / "a1.json"
+    cancelled.parent.mkdir()
+    cancelled.write_text(json.dumps({"schema_version": "unknown", "status": "cancelled_before_controls_eligibility"}))
+    args = dict(scene_root=root, seed_reconciliation_path=prior, output_root=tmp_path / "spend",
+                current_path=tmp_path / "current.json")
+    report = publish_current_scene_project_spend(**args, now=200)
+    assert report["total_cost_usd"] == pytest.approx(43.197914 + 2)
+    assert report["reservations_charged_at_full_cap_release_unproven"][0]["blocker"] == \
+        "unstarted_controls_cancellation_invalid"

@@ -3877,6 +3877,48 @@ def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: st
     return report
 
 
+#: Failures of the terminal-controls helper that come from the lane's own
+#: retained inputs or configuration. A non-quiescent worker is not one of them.
+_TERMINAL_CONTROLS_LANE_FAILURES = (
+    "deploy_terminal_controls_adoptions_failed",
+    "deploy_terminal_controls_report_invalid",
+)
+
+
+def _install_controls_autoprovision_lane(*, bootstrap: Path, release_path: str | Path,
+                                         commit: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Install the controls lane; its own inputs never block the release.
+
+    The installer validates every retained robot asset before it writes
+    anything, so a refusal leaves the catalog, config and environment pointer
+    exactly as the last successful install left them; nothing new is armed.
+    The receipt names the blocker. The lane then holds, by name, only the
+    scenes that need an unusable binding (``process_config``).
+    """
+    from blueprint_pipeline.task_evaluation_controls_autoprovision_installation import (
+        install_controls_autoprovision,
+    )
+
+    try:
+        installation = install_controls_autoprovision(bootstrap_path=bootstrap)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        code = str(exc).split(":", 1)[0] if isinstance(exc, ValueError) else ""
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,159}", code):
+            code = "controls_autoprovision_installation_failed:" + type(exc).__name__
+        blocked = {"status": "blocked", "blocker": code, "bootstrap_path": str(bootstrap),
+                   "configuration_written": False, "provider_mutation_performed": False}
+        return blocked, {"status": "skipped", "blocker": code, "provider_mutation_performed": False}
+    try:
+        adoptions = _prepare_terminal_controls_adoptions(
+            release_path=release_path, commit=commit, config_path=installation["config"]["path"],
+        )
+    except ControlPlaneDeployError as exc:
+        if not str(exc).startswith(_TERMINAL_CONTROLS_LANE_FAILURES):
+            raise
+        adoptions = {"status": "blocked", "blocker": str(exc), "provider_mutation_performed": False}
+    return installation, adoptions
+
+
 def _install_intake_runtime_identity_drop_in(
     drop_in: Path, *, source_repo: Path, source_commit: str
 ) -> dict[str, Any]:
@@ -5548,16 +5590,10 @@ def deploy_control_plane_commit(
             controls_autoprovision_bootstrap_file
         ).expanduser()
         if controls_autoprovision_bootstrap.exists():
-            from blueprint_pipeline.task_evaluation_controls_autoprovision_installation import (
-                install_controls_autoprovision,
-            )
-
-            controls_autoprovision_installation = install_controls_autoprovision(
-                bootstrap_path=controls_autoprovision_bootstrap
-            )
-            terminal_controls_adoptions = _prepare_terminal_controls_adoptions(
+            (controls_autoprovision_installation,
+             terminal_controls_adoptions) = _install_controls_autoprovision_lane(
+                bootstrap=controls_autoprovision_bootstrap,
                 release_path=staged_release['release_path'], commit=commit,
-                config_path=controls_autoprovision_installation['config']['path'],
             )
         else:
             controls_autoprovision_installation = {

@@ -5949,3 +5949,65 @@ def test_deploy_git_runs_with_the_checkout_owners_identity(tmp_path, monkeypatch
                         subprocess.CompletedProcess(argv, 0, stdout="head\n", stderr=""))
     assert deploy._git(tmp_path, "rev-parse", "HEAD") == (0, "head")
     assert (seen["user"], seen["group"]) == (995, 986)
+
+
+def _controls_lane_installed(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+    from tests.test_task_evaluation_controls_autoprovision import _configured_scene
+    from tests.test_task_evaluation_controls_autoprovision_installation import _install
+    monkeypatch.setenv(intake.CLIENTS_ENV, "webapp")
+    kwargs = _configured_scene(tmp_path)
+    config_root = tmp_path / "etc"
+    config_root.mkdir()
+    previous = _install(tmp_path, kwargs, config_root)
+    assert previous["status"] == "installed"
+    return kwargs, config_root, previous
+
+
+def test_controls_lane_with_a_cleared_robot_asset_does_not_block_the_release(tmp_path, monkeypatch):
+    """2026-11-12: a cleared development folder held a bootstrap binding's robot
+    USD; the release activated, then refused at this step and stayed half-switched."""
+    kwargs, config_root, previous = _controls_lane_installed(tmp_path, monkeypatch)
+    armed = {name: Path(previous[name]["path"]).read_bytes() for name in ("config", "catalog", "environment")}
+    Path(kwargs["catalog"]["bindings"]["franka-droid"]["robot_asset_usd"]["path"]).unlink()
+
+    def unexpected(**_):
+        pytest.fail("terminal adoptions need an installed configuration")
+
+    monkeypatch.setattr(deploy, "_prepare_terminal_controls_adoptions", unexpected)
+    installation, adoptions = deploy._install_controls_autoprovision_lane(
+        bootstrap=config_root / "controls-autoprovision-bootstrap.json",
+        release_path=tmp_path, commit="a" * 40)
+    assert installation["status"] == "blocked"
+    assert installation["blocker"] == "controls_autoprovision_asset_invalid"
+    assert installation["configuration_written"] is False
+    assert adoptions == {"status": "skipped", "blocker": "controls_autoprovision_asset_invalid",
+                         "provider_mutation_performed": False}
+    # Nothing new is armed: the last installed configuration is left exactly as it was.
+    assert {name: Path(previous[name]["path"]).read_bytes() for name in armed} == armed
+
+
+def test_terminal_controls_lane_failure_is_recorded_but_a_live_worker_still_stops_the_release(tmp_path, monkeypatch):
+    _kwargs, config_root, _previous = _controls_lane_installed(tmp_path, monkeypatch)
+    bootstrap = config_root / "controls-autoprovision-bootstrap.json"
+    failure = ["deploy_terminal_controls_adoptions_failed:controls_autoprovision_asset_invalid:exit_1:stderr_sha256_x"]
+
+    def lane_failure(**_):
+        raise deploy.ControlPlaneDeployError(failure[0])
+
+    monkeypatch.setattr(deploy, "_prepare_terminal_controls_adoptions", lane_failure)
+    installation, adoptions = deploy._install_controls_autoprovision_lane(
+        bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)
+    assert installation["status"] == "installed"
+    assert adoptions == {"status": "blocked", "blocker": failure[0], "provider_mutation_performed": False}
+    failure[0] = "deploy_terminal_controls_worker_not_quiescent"
+    with pytest.raises(deploy.ControlPlaneDeployError, match="worker_not_quiescent"):
+        deploy._install_controls_autoprovision_lane(bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)
+
+
+def test_release_installs_the_controls_lane_through_the_non_blocking_step():
+    source = (REPO_ROOT / "scripts" / "deploy_control_plane_commit.py").read_text()
+    body = source[source.index("def deploy_control_plane_commit("):]
+    assert "install_controls_autoprovision(" not in body
+    assert "_prepare_terminal_controls_adoptions(" not in body
+    assert "_install_controls_autoprovision_lane(" in body
