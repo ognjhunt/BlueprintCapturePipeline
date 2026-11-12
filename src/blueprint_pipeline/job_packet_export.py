@@ -11,9 +11,10 @@ early trial (a scripted run kept apart as a check of the simulation) and how to 
 what does not exist yet: the status line says what is not in it.
 
 Who may get one: (a) the task context's ``capture_rights.statement_version`` is a recording statement that covers
-sharing (``SHARING_PERMISSION_STATEMENT_VERSIONS``); a job under any older version is refused until the site accepts
-the current one; or (b) the operator states the capture is Blueprint's own, names the approver, the date and quotes
-the owner, and the capture id is on ``config/blueprint_owned_captures.v1.json``.
+sharing (``sharing_statement.SHARING_STATEMENT_VERSIONS``); a job under any older version is refused until the site
+accepts the current one; or (b) the operator states the capture is Blueprint's own, names the approver, the date and
+quotes the owner, and the capture id is on ``config/blueprint_owned_captures.v1.json`` (read by
+``sharing_statement.owned_captures``).
 
 What never goes in: the site's name or organisation, its street address, contact details, sign-in or upload tokens,
 links and storage paths. Blueprint makes the introduction by hand. So the sheet is written from named fields only,
@@ -55,6 +56,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .sharing_statement import OWNED_CAPTURES_PATH, SHARING_STATEMENT_VERSIONS, covers_sharing, owned_captures
 from .site_roots import is_bucket
 
 SCHEMA_VERSION = "job_packet_manifest.v3"
@@ -63,13 +65,11 @@ EARLY_TRIAL_LABEL = ("Early trial of openly available robot software. It does no
                      "deployment company's own robot would do.")
 TERMS_LINE = ("This packet is shared for evaluating one job. Do not pass it on, train on it, or keep it "
               "after you are asked to delete it.")
-#: Recording statement versions whose wording shares the job in full with approved deployment companies. The
-#: website records the accepted version at ``request.consent_attestation.statement_version``; it reaches the task
-#: context as ``capture_rights.statement_version``. The last one is the current statement.
-SHARING_PERMISSION_STATEMENT_VERSIONS: tuple[str, ...] = ("2026-11-12.v4",)
+#: The recording statement versions that share a job in full with approved deployment companies are
+#: ``sharing_statement.SHARING_STATEMENT_VERSIONS``. The website records the accepted version at
+#: ``request.consent_attestation.statement_version``; it reaches the task context as
+#: ``capture_rights.statement_version``. The last one is the current statement.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-OWNED_CAPTURES_SCHEMA = "blueprint_owned_captures.v1"
-OWNED_CAPTURES_PATH = REPO_ROOT / "config" / "blueprint_owned_captures.v1.json"
 POLICY_CATALOG_PATH = REPO_ROOT / "config" / "beta_policy_candidates.v1.json"
 TASK_CONTEXT_SCHEMA = "website_site_task_context.v1"
 FIT_TABLE_SCHEMA = "website_robot_fit_table.v1"
@@ -99,7 +99,7 @@ SCRIPTED_CHECK_TITLE = "Check of the simulation (scripted, not robot software)"
 SCRIPTED_CHECK_SENTENCE = ("We ran a scripted pick and place in this simulation to check the simulation itself. "
                            "It says nothing about any robot's software.")
 VERDICT_WORDS = {"fits": "fits (its carry was path-checked)", "fits_spec": "fits on published figures",
-                 "doesnt_fit": "does not fit", "unknown": "unknown"}
+                 "fits_if": "fits if the conditions below hold", "doesnt_fit": "does not fit", "unknown": "unknown"}
 BODY_WORDS = {"fixed_arm": "fixed arm", "mobile_manipulator": "arm on a moving base", "humanoid": "humanoid",
               "wheeled_humanoid": "humanoid on wheels"}
 STATUS_WORDS = {"pending": "waiting to run", "waitlisted": "waiting for budget", "preparing": "being prepared",
@@ -535,38 +535,6 @@ def check_job_state(capture_dir: Path, context: Mapping[str, Any], *, pull_root:
     return pull
 
 
-#: The keys an allow-list row may carry. Only ``capture_id`` is required.
-OWNED_CAPTURE_KEYS = frozenset({"capture_id", "approved_by", "approved_on", "evidence", "video_sha256_prefix"})
-
-
-def owned_captures(path: Path | None = None) -> dict[str, Mapping[str, Any]]:
-    """The allow-list's rows by capture id, each checked: known keys only, text where text is expected, a real date,
-    and a video fingerprint prefix of 12 to 64 lowercase hex digits."""
-    try:
-        value = json.loads((path or OWNED_CAPTURES_PATH).read_text(encoding="utf-8"), object_pairs_hook=_unique_pairs)
-        if value.get("schema_version") != OWNED_CAPTURES_SCHEMA or not isinstance(value.get("captures"), list):
-            raise ValueError("schema")
-        rows: dict[str, Mapping[str, Any]] = {}
-        for row in value["captures"]:
-            if (not isinstance(row, Mapping) or not isinstance(row.get("capture_id"), str)
-                    or not set(row) <= OWNED_CAPTURE_KEYS or row["capture_id"] in rows):
-                raise ValueError("row")
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", row["capture_id"]):
-                raise ValueError("id")
-            if any(key in row and (not isinstance(row[key], str) or not row[key].strip())
-                   for key in ("approved_by", "approved_on", "evidence")):
-                raise ValueError("text")
-            if "approved_on" in row:
-                date.fromisoformat(row["approved_on"])
-            if "video_sha256_prefix" in row and not (isinstance(row["video_sha256_prefix"], str)
-                                                     and re.fullmatch(r"[0-9a-f]{12,64}", row["video_sha256_prefix"])):
-                raise ValueError("prefix")
-            rows[row["capture_id"]] = row
-    except (OSError, UnicodeError, ValueError, TypeError, AttributeError) as exc:
-        raise JobPacketRefused("job_packet_owned_capture_list_invalid", str(path or OWNED_CAPTURES_PATH)) from exc
-    return rows
-
-
 def recorded_video_sha256(capture_dir: Path, pull: PullRecord) -> str | None:
     """The sha256 the staging manifest recorded for the capture's raw video when it was staged, or None."""
     if not pull.in_capture("pipeline_staging_manifest.json"):
@@ -584,11 +552,11 @@ def permission_basis(context: Mapping[str, Any], *, owned: OwnedCaptureApproval 
                      video_sha256: str | None = None) -> dict[str, Any]:
     """Which rule allows this job to be shared, or a refusal."""
     version = _mapping(context.get("capture_rights")).get("statement_version")
-    if isinstance(version, str) and version in SHARING_PERMISSION_STATEMENT_VERSIONS:
+    if covers_sharing(version):
         return {"rule": "site_sharing_permission", "statement_version": version}
     if owned is None:
         raise JobPacketRefused("job_packet_sharing_statement_not_accepted",
-                               f"the site must accept the current statement ({SHARING_PERMISSION_STATEMENT_VERSIONS[-1]}) "
+                               f"the site must accept the current statement ({SHARING_STATEMENT_VERSIONS[-1]}) "
                                f"first; {TASK_CONTEXT} capture_rights.statement_version is {version!r}")
     try:
         approved_on = date.fromisoformat(owned.approved_on.strip()) if isinstance(owned.approved_on, str) else None
@@ -604,21 +572,25 @@ def permission_basis(context: Mapping[str, Any], *, owned: OwnedCaptureApproval 
     if owned.capture_id != context.get("capture_id"):
         raise JobPacketRefused("job_packet_owned_capture_id_mismatch", f"--capture-id against {TASK_CONTEXT} capture_id")
     path = owned_list or OWNED_CAPTURES_PATH
-    row = owned_captures(path).get(owned.capture_id)
-    if row is None:
+    # The one reader of the allow-list (``sharing_statement``); a list it cannot read is a refusal here.
+    rows, flag = owned_captures(path)
+    if flag is not None:
+        raise JobPacketRefused("job_packet_owned_capture_list_invalid", str(path))
+    if owned.capture_id not in rows:
         raise JobPacketRefused("job_packet_capture_not_blueprint_owned", f"the capture id is not on {path.name}")
-    # An entry names one video: a different video uploaded later under the same capture id is not covered.
-    prefix = row.get("video_sha256_prefix")
-    if prefix is not None and video_sha256 is None:
+    # Every entry names one video (the list's rule): a different video uploaded later under the same capture id
+    # is not covered.
+    prefix = rows[owned.capture_id]
+    if video_sha256 is None:
         raise JobPacketRefused("job_packet_owned_capture_video_not_recorded",
                                "pipeline_staging_manifest.json records no sha256 for the capture's raw video")
-    if prefix is not None and not video_sha256.startswith(prefix):
+    if not video_sha256.startswith(prefix):
         raise JobPacketRefused("job_packet_owned_capture_video_mismatch",
                                f"the video recorded in pipeline_staging_manifest.json is not the one {path.name} names")
     return {"rule": "blueprint_owned_capture", "capture_id": owned.capture_id,
             "approved_by": owned.approved_by.strip(), "approved_on": approved_on.isoformat(),
             "approval_evidence": owned.approval_evidence.strip(), "allow_list_sha256": _sha256(path),
-            **({"video_sha256": video_sha256} if prefix is not None else {})}
+            "video_sha256": video_sha256}
 
 
 # --- what the records say -----------------------------------------------------------------------------
@@ -724,41 +696,82 @@ def _range(value: Any, unit: str) -> str:
     return INVALID
 
 
+def _conditions(row: Mapping[str, Any], checks: list) -> list[tuple[str, str]] | None:
+    """A ``fits_if`` row's conditions as (check, the Pipeline's sentence), or None when the row is not one this
+    tool can word: every number checked, every word from ``condition_sentence``, never text from the table."""
+    from .website_robot_fit_projection import condition_sentence, published_condition
+    conditions = row.get("conditions")
+    open_checks = {c["check"] for c in checks if c["result"] == "unknown"}
+    if (row.get("verdict") != "unknown" or row.get("verdict_if_conditions_hold") not in ("fits", "fits_spec")
+            or row.get("missing") or any(c["result"] == "fail" for c in checks)
+            or not isinstance(conditions, list) or not conditions):
+        return None
+    worded = []
+    try:
+        for condition in conditions:
+            published_condition(condition)  # a quantity, unit, origin or number outside the fixed sets: ValueError
+            worded.append((condition["check"], condition_sentence(condition)))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return worded if {check for check, _ in worded} == open_checks else None
+
+
 def fit_lines(table: Mapping[str, Any]) -> list[str]:
-    """The first look from the verified fit table: names from the catalog, verdicts and checks in fixed words."""
+    """The first look from the verified fit table: names from the catalog, verdicts and checks in fixed words.
+
+    A ``fits_if`` row (``first_look_verdict``) is shown with each condition in the Pipeline's own sentence
+    (``website_robot_fit_projection.condition_sentence``), and rows are then listed fits, fits if, does not
+    fit, unknown. A table without such rows reads as before, in its own order.
+    """
     from .website_robot_fit import VERDICTS
+    from .website_robot_fit_projection import FIRST_LOOK_VERDICTS, FITS_IF, row_order
     catalog, rows, dropped, seen = _robot_catalog(), [], 0, set()
     for row in table.get("rows") if isinstance(table.get("rows"), list) else []:
         model = catalog.get(row.get("model_id")) if isinstance(row, Mapping) and isinstance(row.get("model_id"), str) else None
         checks = row.get("checks") if isinstance(row, Mapping) and isinstance(row.get("checks"), list) else None
+        verdict = row.get("first_look_verdict", row.get("verdict")) if isinstance(row, Mapping) else None
         if (model is None or model["model_id"] in seen or row.get("verdict") not in VERDICTS or checks is None
                 or any(not isinstance(c, Mapping) or c.get("check") not in CHECK_WORDS
-                       or c.get("result") not in RESULT_WORDS for c in checks)):
+                       or c.get("result") not in RESULT_WORDS for c in checks)
+                or verdict not in FIRST_LOOK_VERDICTS or (verdict != FITS_IF and verdict != row["verdict"])):
             dropped += 1
-        else:
-            seen.add(model["model_id"])
-            rows.append((model, row["verdict"], checks))
+            continue
+        conditions = _conditions(row, checks) if verdict == FITS_IF else []
+        if conditions is None:
+            dropped += 1
+            continue
+        seen.add(model["model_id"])
+        rows.append((model, verdict, checks, conditions, row))
     lines = ["Source: the pipeline's robot fit table.", ""]
     if not rows:
         return lines + ["No row of the table could be shown.", *_left_out(dropped)]
+    if any(verdict == FITS_IF for _, verdict, _, _, _ in rows):
+        rows.sort(key=lambda shown: row_order(shown[4]))
     lines += ["| Robot | Maker | Kind | Fit | Checks not passed |", "|---|---|---|---|---|"]
-    for model, verdict, checks in rows:
-        open_checks = [f"{CHECK_WORDS[c['check']]} ({RESULT_WORDS[c['result']]})" for c in checks
+    for model, verdict, checks, conditions, _ in rows:
+        conditional = {check for check, _ in conditions}
+        open_checks = [f"{CHECK_WORDS[c['check']]} (a condition below)" if c["check"] in conditional
+                       else f"{CHECK_WORDS[c['check']]} ({RESULT_WORDS[c['result']]})" for c in checks
                        if c["result"] not in NOT_A_FAILED_CHECK]
         lines.append(f"| {model['name']} | {model['manufacturer']} | {BODY_WORDS.get(model['body_type'], 'robot')} | "
                      f"{VERDICT_WORDS[verdict]} | {', '.join(open_checks) or 'none'} |")
-    counts = Counter(verdict for _, verdict, _ in rows)
-    lines += ["", "Counts: " + ", ".join(f"{VERDICT_WORDS[k]}: {counts[k]}" for k in VERDICTS if counts[k]),
+    worded = [f"- {model['name']}, {CHECK_WORDS[check]}: {sentence}." for model, _, _, conditions, _ in rows
+              for check, sentence in conditions]
+    if worded:
+        lines += ["", "Conditions: what each robot that fits if needs, beside what the job seems to need.", *worded]
+    counts = Counter(verdict for _, verdict, _, _, _ in rows)
+    lines += ["", "Counts: " + ", ".join(f"{VERDICT_WORDS[k]}: {counts[k]}" for k in FIRST_LOOK_VERDICTS if counts[k]),
               *_left_out(dropped)]
-    results = [(c["check"], c["result"]) for _, _, checks in rows for c in checks]
+    results = [(c["check"], c["result"]) for _, _, checks, _, _ in rows for c in checks]
     ran = [CHECK_WORDS[name] for name in CHECK_WORDS if any(c == name and r != "not_requested" for c, r in results)]
     lines += ["", f"Checked against published specifications and the scene's estimated geometry: {', '.join(ran)}. "
               "It is not a test of any robot."]
     if any(c == "cycle_time" for c, _ in results) and all(r == "not_requested" for c, r in results if c == "cycle_time"):
         lines.append("Cycle time was not checked: the site gave no target.")
     inputs = _mapping(table.get("inputs"))
-    payload_unknown = sum(1 for _, _, checks in rows if any(c["check"] == "payload" and c["result"] == "unknown"
-                                                             for c in checks))
+    # A conditional payload check is worded above; this line counts only the rows left open.
+    payload_unknown = sum(1 for _, verdict, checks, _, _ in rows if verdict != FITS_IF and any(
+        c["check"] == "payload" and c["result"] == "unknown" for c in checks))
     if payload_unknown and inputs.get("mass_basis") == "estimated":
         mass = _range(inputs.get("mass_kg_range"), "kg")
         lines.append(f"Payload is unknown for {payload_unknown} of the {len(rows)} robots listed: the object was not "
