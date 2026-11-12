@@ -576,11 +576,7 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
     # Only an explicit, exact-release, single-use operator batch grant can spend.
     "blueprint-embodiment-preparation.path",
-    "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
-    # Runs only evaluations the agent-run dispatcher already staged under a
-    # founder's free-beta admission; each shard keeps its own cap and TTL.
-    "blueprint-team-evaluation-runner.path",
     # Records a queued rigid scene's robot-free probe while its enable setting
     # is on (the service default, with an operator opt-out), and
     # only under that capture's own website grant, $1.00 and 3600 s per attempt.
@@ -594,15 +590,13 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
     # config without team_scene_packet keeps it in host mode.
     "blueprint-team-scene-packet-remote.path",
 )
-#: This fixed timer advances only a sealed, qualifying configured-scene plan
-#: through the canonical Website APIs.  It cannot be supplied by a request or
-#: launch profile and never invokes an allocator directly, but unlike the
-#: no-spend queue watchers above it may eventually reach already-authorized
-#: downstream spend.  Keep that authority distinct in the deployment receipt.
-#: The compilation-result path watcher wakes the same oneshot service the
-#: moment a no-spend canary compiles, so it carries the same progression
-#: authority rather than the no-spend watcher category.
+#: Timers (and the replay path that carries a timer's authority) every release
+#: re-arms.  Each may eventually reach already-authorized downstream spend, so
+#: the receipt names that authority instead of the no-spend watcher category.
+#: Paused lanes are not here: see DEFAULT_PAUSED_LANE_DISARM_UNITS below.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    # A door grant (its armed path) can start paid embodiment work; only this
+    # timer retries, promotes and reconciles it, so the lane stays armed whole.
     "blueprint-embodiment-preparation.timer",
     "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-task-evaluation-launch-preparation.timer",
@@ -610,22 +604,19 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # sealed admission and allocator. This does not release the paid agent
     # dispatcher's existing explicit hold.
     "blueprint-beta-policy-screening.timer",
-    "blueprint-native-g1-team-campaign-dispatcher.timer",
-    "blueprint-native-g1-team-campaign-settlement.timer",
-    # The service retains its explicit enable flag and capture scope. Installing
-    # its timer makes admitted website runs progress after deployment/reboot.
-    "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.timer",
     # Wakes the same no-network offline replay oneshot as its timer, so it
     # carries the timer's authority rather than the no-spend watcher category.
     "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-scene-progression.timer",
-    "blueprint-task-evaluation-sam31-preparation-execution.timer",
+    # The armed launch-preparation lane stages reuse_configured_scene work here
+    # (operator and company runs) and the remote lane hands fallbacks back; this
+    # backstop finishes deferred rows no path event reaches, so it stays armed.
     "blueprint-task-evaluation-episode-compilation.timer",
+    # Follow, collect and tear down a remote compilation (compute-zero and
+    # provider-zero) that their armed path units can still dispatch: money.
     "blueprint-task-evaluation-episode-compilation-remote.timer",
     "blueprint-team-scene-packet-remote.timer",
-    "blueprint-task-evaluation-configured-controls-progression.timer",
-    "blueprint-task-evaluation-configured-controls-progression.path",
     # The storage reaper is no-spend housekeeping. By default it removes
     # unpinned cache and replay bytes, releases stale pins, offloads sealed
     # evidence and registry residue behind pointers, and retires finished
@@ -656,6 +647,35 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
 )
 
 CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
+    "blueprint-task-evaluation-configured-controls-progression.timer",
+    "blueprint-task-evaluation-configured-controls-progression.path",
+)
+#: Triggers of lanes paused by the owner's frame of 2026-11-12 (one site video
+#: in, one job packet out; keep the code, start no new work).  No website job
+#: or safeguard needs them.  A lane is wholly armed or wholly disarmed: every
+#: trigger that can start work in a lane listed here is listed too, and no lane
+#: whose work an armed trigger can start is listed.  A release stops and
+#: disables each one that is installed, idempotently, and never touches a unit
+#: outside this list.  Their unit files and code stay.  To re-arm a lane, move
+#: all its names back into the arm lists (a name in both refuses the release).
+DEFAULT_PAUSED_LANE_DISARM_UNITS = (
+    # Humanoid G1 team campaigns: only these timers start or settle them (the
+    # intake only queues a campaign; no WebApp caller submits one). Beta
+    # screening runs its G1 candidates through its own launch.
+    "blueprint-native-g1-team-campaign-dispatcher.timer",
+    "blueprint-native-g1-team-campaign-settlement.timer",
+    # Agent runs: founder stop since 2026-10-02. The dispatcher stages team
+    # evaluations and reads their terminal results; the runner path runs them.
+    "blueprint-agent-run-dispatcher.timer",
+    "blueprint-team-evaluation-runner.path",
+    # SAM 3.1 preparation execution: a website job segments inside the hand-off
+    # (website_task_masks); a website recipe never asks for a SAM child. Only
+    # the timer polls waiting_external and wake-pending, so the path goes too.
+    # A non-website parent that asks waits; the child is what spends.
+    "blueprint-task-evaluation-sam31-preparation-execution.timer",
+    "blueprint-task-evaluation-sam31-preparation-execution.path",
+    # Configured-controls progression: website jobs have no controls plan
+    # (task_evaluation_scene_progression writes their launch itself).
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
 )
@@ -3342,6 +3362,66 @@ def _locked_door_holds(root: str | Path, *, deadline: float | None = None):
         os.close(fd)
 
 
+def _systemctl_verb(verb: str, unit: str, *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    """One ``systemctl <stop|disable> <unit>`` with a fixed argv."""
+
+    if verb not in {"stop", "disable"}:
+        raise ControlPlaneDeployError(f"deploy_systemctl_verb_refused:{verb}")
+    return subprocess.run(  # nosec B603 B607 - fixed systemctl argv
+        ["systemctl", verb, unit], capture_output=True, text=True, check=False,
+        **({"timeout": timeout} if timeout is not None else {}),
+    )
+
+
+def _disarm_paused_lane_unit(unit: str) -> dict[str, Any]:
+    """Stop and disable one paused lane's trigger; never fails the release.
+
+    Idempotent: a unit already stopped, disabled or absent from the host ends
+    in the same receipt.  A unit that cannot be disarmed is reported, not
+    raised: a paused trigger left running costs a tick, not money or privacy.
+    """
+
+    failed: list[str] = []
+    for verb in ("stop", "disable"):
+        try:
+            result = _systemctl_verb(verb, unit, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            failed.append(verb)
+            continue
+        if result.returncode != 0:
+            failed.append(verb)
+    try:
+        after: dict[str, str] = _systemd_unit_state(unit)
+    except ControlPlaneDeployError:
+        after = {"enabled": "unknown", "state": "unknown"}
+    disarmed = after["state"] == "inactive" and after["enabled"] not in {"enabled", "unknown"}
+    return {
+        "requested_intent": "disarm_paused_lane",
+        "after": after,
+        "operator_freeze_preserved": False,
+        "disarmed": disarmed,
+        **({} if disarmed else {"disarm_failed": failed or ["state_mismatch"]}),
+    }
+
+
+def _paused_lane_disarm_summary(receipts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The release's top-level account of the paused lanes, so a failed disarm is seen."""
+
+    rows = [row for row in receipts if row.get("requested_intent") == "disarm_paused_lane"]
+    off = {"enabled": "disabled", "state": "inactive"}
+    failed = [row["unit"] for row in rows if row.get("disarmed") is not True]
+    return {
+        "status": "failed" if failed else "disarmed",
+        "disarmed": [row["unit"] for row in rows if row.get("disarmed") is True
+                     and {key: row["before"].get(key) for key in off} != off],
+        "already_off": [row["unit"] for row in rows if row.get("disarmed") is True
+                        and {key: row["before"].get(key) for key in off} == off],
+        "failed": failed,
+        "held": [row["unit"] for row in receipts
+                 if row.get("held") is True and row["unit"] in DEFAULT_PAUSED_LANE_DISARM_UNITS],
+    }
+
+
 def _restore_installed_path_units(
     installed_units: Sequence[Mapping[str, Any]],
     *,
@@ -3353,8 +3433,13 @@ def _restore_installed_path_units(
     preserve_configured_controls_state: bool = False,
     held_units: Mapping[str, Mapping[str, Any]] | None = None,
     defer_start_verification: bool = False,
+    disarm_units: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     """Restore path/timer intent without widening arbitrary launch authority.
+
+    A unit in ``disarm_units`` (a paused lane) is stopped and disabled instead,
+    whatever its prior state, ``--arm-path-units`` or the configured-controls
+    preservation; a door hold still comes first.
 
     A stopped paid watcher is an operational freeze, so paths preserve both boot
     and active state unless explicitly armed or fixed as no-spend.  The one
@@ -3375,9 +3460,7 @@ def _restore_installed_path_units(
         if hold is not None:
             # Keep the existing boot policy; do not enable, restart or start a
             # trigger whose owner has explicitly held it through this deploy.
-            result = subprocess.run(  # nosec B603 B607 - fixed systemctl argv
-                ["systemctl", "stop", unit], capture_output=True, text=True, check=False,
-            )
+            result = _systemctl_verb("stop", unit)
             after = _systemd_unit_state(unit)
             if result.returncode != 0 and after["state"] != "inactive":
                 raise ControlPlaneDeployError(f"deploy_held_unit_stop_failed:{unit}")
@@ -3389,6 +3472,11 @@ def _restore_installed_path_units(
                              "expires_at": hold["expires_at"],
                              **({"require_explicit_release": True}
                                 if hold.get("require_explicit_release") is True else {})})
+            continue
+        if unit in disarm_units:
+            if unit in always_arm_units or unit in always_arm_authority_gated_units or unit in always_arm_timer_units:
+                raise ControlPlaneDeployError(f"deploy_automation_unit_authority_ambiguous:{unit}")
+            receipts.append({"unit": unit, "before": prior, **_disarm_paused_lane_unit(unit)})
             continue
         arm_no_spend = unit in always_arm_units
         arm_authority_gated = unit in always_arm_authority_gated_units
@@ -5689,6 +5777,7 @@ def deploy_control_plane_commit(
                 preserve_configured_controls_state=preserve_configured_controls_state,
                 held_units=held_units,
                 defer_start_verification=True,
+                disarm_units=DEFAULT_PAUSED_LANE_DISARM_UNITS,
             )
         verification_warning = _verify_deferred_path_unit_starts(
             automation_unit_state_receipts, door_holds_dir=door_holds_dir,
@@ -5763,6 +5852,7 @@ def deploy_control_plane_commit(
         "configured_controls_autostart_registry": (
             configured_controls_autostart_registry
         ),
+        "paused_lane_disarm": _paused_lane_disarm_summary(automation_unit_state_receipts),
         "path_unit_states": [
             row for row in automation_unit_state_receipts if row["unit"].endswith(".path")
         ],

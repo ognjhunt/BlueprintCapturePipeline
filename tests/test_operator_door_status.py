@@ -812,3 +812,16 @@ def test_status_says_whether_the_work_holding_the_deploy_is_paid(host_tree: dict
     assert hold["paid_stages"] == ["paid_launch_lock"]
     assert hold["unpaid_stages"] == ["scene_configuration_preparation"]
     assert (hold["bound"], hold["cap_at_epoch"]) == ("paid", 9.0)
+
+
+def test_a_release_that_could_not_disarm_a_paused_lane_shows_it_in_status(host_tree: dict[str, Path]) -> None:
+    receipt = host_tree["state"] / "deploy-receipts" / "iteration_eeeeeeeeeeee.json"
+    summary = {"status": "failed", "disarmed": ["blueprint-native-g1-team-campaign-dispatcher.timer"],
+               "already_off": [], "failed": ["blueprint-agent-run-dispatcher.timer"], "held": []}
+    receipt.write_text(json.dumps({"status": "deployed", "source_commit": "e" * 40,
+                                   "paused_lane_disarm": summary, "timer_unit_states": []}), encoding="utf-8")
+    os.utime(receipt, (3_000, 3_000))
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    newest = status["deploys"]["recent_receipts"][0]
+    assert newest["name"] == receipt.name and newest["paused_lane_disarm"] == summary
+    assert "timer_unit_states" not in newest

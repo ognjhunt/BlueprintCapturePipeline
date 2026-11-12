@@ -48,7 +48,9 @@ def test_installer_and_deploy_carry_the_progression_path_with_timer_authority() 
         assert f"${{SYSTEMD_DIR}}/{unit}" in installer
         assert f"systemctl enable --now {unit}" in installer
         assert unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-        assert unit in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+        # Paused by the 2026-11-12 frame: installed, but a release disarms it.
+        assert unit not in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+        assert unit in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS
         assert unit not in deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS
 
 
