@@ -10,17 +10,22 @@ website capture and publishes it exactly as the scene preview is published
 - made from the clip website preparation reads (``website_source_video``:
   ``pipeline/source_video/normalization.json`` names it), re-encoded every time, so the raw
   upload is never what is served, even when it was already within the normalization bounds.
-  A capture handed off before normalization existed has no such record: its clip is made, the
-  same way, from the raw upload its ``raw/manifest.json`` names (``video_uri``). The manifest
+  A capture handed off before normalization existed (no record, a derived folder already there)
+  has its clip made, the same way, from the raw upload its ``raw/manifest.json`` names
+  (``video_uri``); a new capture waits for normalization. The manifest
   records which (``source``: ``normalized`` or ``raw_upload``). A record that exists but cannot
   be used never falls back to the raw upload;
 - video stream only: no audio stream at all (sites are told people heard in a clip must know
   it is shared; a company does not need sound), no subtitle or data stream, and no metadata
-  (``-map_metadata -1``: a phone's location tags do not travel);
+  (``-map_metadata -1``: a phone's location tags do not travel), and nothing inside the video
+  either: captions are not re-embedded (``-a53cc 0``), every SEI unit is dropped, and every frame
+  is decoded after writing to prove none carries side data;
 - H.264 in MP4 with ``+faststart`` so a browser can seek, at most ``MAX_LONG_EDGE`` px on the
-  long side and ``MAX_FPS`` frames a second, at a bitrate that keeps a 60 to 120 second clip
-  well under ``MAX_CLIP_BYTES``. A clip that cannot be brought under the cap is recorded as
-  refused for that source and never retried for it (flagged, never failing anything);
+  long side and exactly ``MAX_FPS`` frames a second at most, at a bitrate that keeps a 60 to 120
+  second clip well under ``MAX_CLIP_BYTES``, the file bounded while encoding. A clip that cannot
+  be brought under the cap is recorded as refused for that source and never retried for it; a
+  build that runs past ``ENCODE_TIMEOUT_SECONDS`` is tried again a window later (flagged, never
+  failing anything);
 - the bytes go to the private artifact store under a name for the capture (withdrawal deletion
   finds them by that name, also after workspace retirement); the WebApp is told the clip's
   identity through the signed ``company-clip`` control operation and reads the bytes, by range,
@@ -30,8 +35,13 @@ Rights are a hard stop. Nothing is made unless the capture is unwithdrawn, the d
 takedown gate allows it, the WebApp's current task context grants consent, and the recording
 statement version covers sharing or the capture is Blueprint's own, as
 ``sharing_statement.sharing_basis`` decides (``config/blueprint_owned_captures.v1.json``, its row's
-video digest prefix matched against the upload's recorded digest). A
+video digest prefix matched against the digest of the upload the clip is made from). A
 capture under an older statement gets nothing, and nothing about it is sent anywhere.
+
+A basis that ends takes the clip back (host copy and stored versions) and closes the route:
+Blueprint's list is re-read on every pass and every route read, and a published clip's live
+rights at least once every ``LIVE_STATEMENT_RECHECK_SECONDS``, each answer recorded. A WebApp
+refusal is remembered: nothing is uploaded again until the live rights differ or a window passes.
 
 Which statement: the capture's files keep the one accepted at submission
 (``pipeline/website_task_context.json``, else ``raw/manifest.json``, ``capture_rights.
@@ -46,7 +56,8 @@ per window.
 
 It runs in the Atlas preview timer's pass, after the scene preview pass
 (``website_atlas_preview.company_clip_tick``): local ffmpeg only, no model, provider or paid
-resource. It never touches a job: every failure is a returned status, retried on the next pass.
+resource. It stops between captures for a hold, a quiesce or a new release, and keeps to
+``TICK_BUDGET_SECONDS``. It never touches a job: every failure is a returned status, retried on the next pass.
 The Pipeline runs no privacy screen on a website video itself (faces are blurred only in the
 frames sent to World Labs), so consent, withdrawal and the takedown gate are the screen.
 """
@@ -70,7 +81,8 @@ from typing import Any
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from .sharing_statement import sharing_basis
+from .permission_recheck import recheck_requested_since
+from .sharing_statement import covers_sharing, owned_captures, sharing_basis
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
 
 logger = logging.getLogger(__name__)
@@ -86,9 +98,13 @@ LOCK_FILE = "company_clip.lock"
 ARTIFACT_KIND = "website-company-clip"
 FORMAT = "mp4_h264_faststart_video_only"
 CONTENT_TYPE = "video/mp4"
-#: Beside the manifest: when the live statement was last read for a capture whose snapshot does not cover sharing.
+#: Beside the manifest: the last live read of the capture's rights (``_record_live``), on success and on failure.
 STATEMENT_CHECK_FILE = "statement_check.json"
+#: The live rights are read at most once a window per capture, and at least once a window for a published clip.
 LIVE_STATEMENT_RECHECK_SECONDS = 6 * 3600
+#: A clip shared on a live grant stays shared while the last grant is younger than this, so a WebApp that does
+#: not answer one re-read does not take every clip back; a definite "no" takes it back at once.
+LIVE_GRANT_LIFETIME_SECONDS = 2 * LIVE_STATEMENT_RECHECK_SECONDS
 MAX_CLIP_BYTES = 64 * 1024 * 1024
 MAX_LONG_EDGE = 1280
 MAX_FPS = 30
@@ -100,9 +116,20 @@ MIN_VIDEO_KBPS = 250
 _SIZE_HEADROOM = 0.85
 ENCODER = {"codec": "libx264", "profile": "high", "preset": "veryfast", "crf": 23, "pix_fmt": "yuv420p",
            "threads": 2, "scale_flags": "lanczos"}
-BUILDER_REVISION = "website_company_clip_builder.v1"
+#: v2: closed captions and every SEI unit stripped, frames decoded and proven free of side data, the frame
+#: rate capped at exactly ``MAX_FPS``, the output size bounded while encoding. A v1 clip is rebuilt.
+BUILDER_REVISION = "website_company_clip_builder.v2"
 OVER_CAP = "website_company_clip_over_size_cap"
-_ENCODE_TIMEOUT_SECONDS = 3600
+ENCODE_TIMED_OUT = "website_company_clip_encode_timed_out"
+#: One clip's whole build (both encodes and the checks). A 30-minute source, the longest the bitrate floor
+#: allows, encodes in about 12 minutes at the measured 0.4x real time on the host's two threads.
+ENCODE_TIMEOUT_SECONDS = 900
+#: One pass of the clip tick starts no new capture after this. The pass runs last in the Atlas preview unit
+#: (``TimeoutStartSec=2h``) after up to an hour of continued Atlas steps that hold paid work, so it is kept to
+#: at most this plus one build (900 + 900 s, about 30 minutes): the unit still ends well inside its 2 hours.
+TICK_BUDGET_SECONDS = 900
+#: The highest frame rate a clip may carry, as the contract states it.
+MAX_CLIP_FPS = MAX_FPS + 0.0001
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 #: The only tags a clip may carry: what the MP4 muxer and encoder write themselves. Anything else
 #: (a phone's location, make, model, title, comment, creation time, QuickTime keys) came from the
@@ -115,6 +142,9 @@ _STREAM_TAGS = {"language": re.compile(r"und"), "handler_name": re.compile(r"Vid
 _RIGHTS_REFUSALS = re.compile(r"(source_revoked|consent_revoked|consent_expired|website_capture_withdrawn"
                               r"|capture_revoked_or_expired|website_company_clip_not_permitted)\b")
 _NOT_PERMITTED = "website_company_clip_not_permitted"
+_RIGHTS_REFUSED = "website_company_clip_rights_refused"
+#: The ATSC A53 caption identifier inside an H.264 SEI unit; a clip whose bytes carry it is refused.
+_CAPTION_MARKER = b"GA94"
 
 
 class CompanyClipUnavailable(ValueError):
@@ -171,11 +201,15 @@ _RAW_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")
 def raw_upload_source(capture_root: Path) -> dict[str, Any] | None:
     """The raw upload ``raw/manifest.json`` names (``video_uri``), a regular file in this capture's ``raw/``.
 
+    Only for a capture handed off before normalization existed: ``website_source_video``'s own test, a
+    derived folder (``DERIVED_ARTIFACT_DIRS``) and no record. A new capture waits for normalization.
     Cheap: no read of the video. Its digest and whether it is a readable video are decided under the lock.
-    A capture with no ``pipeline/`` directory was never handed off (or was retired): it has no source.
     """
+    from .website_source_video import DERIVED_ARTIFACT_DIRS
     root = Path(capture_root)
-    if (root / "pipeline").is_symlink() or not (root / "pipeline").is_dir():
+    pipeline = root / "pipeline"
+    if pipeline.is_symlink() or not any((pipeline / name).is_dir() and not (pipeline / name).is_symlink()
+                                        for name in DERIVED_ARTIFACT_DIRS):
         return None
     named = _read(root / "raw" / "manifest.json").get("video_uri")
     prefix = f"scenes/{root.parent.parent.name}/captures/{root.name}/raw/"
@@ -214,8 +248,8 @@ def _raw_upload_digest(source: Mapping[str, Any], manifest: Mapping[str, Any]) -
 
 
 def clip_source(capture_root: Path) -> dict[str, Any] | None:
-    """The clip website preparation reads, as its normalization record names it; without a record, the raw
-    upload the capture's manifest names; or None.
+    """The clip website preparation reads, as its normalization record names it; without a record, for a
+    capture handed off before normalization existed, the raw upload the capture's manifest names; or None.
 
     A record that exists but cannot be used is None: it never falls back to the raw upload. A raw upload's
     ``digest`` is not set here (see ``_raw_upload_digest``).
@@ -265,14 +299,21 @@ def recorded_video_sha256(capture_root: Path) -> str | None:
     return digest if isinstance(digest, str) and _DIGEST.fullmatch(digest) else None
 
 
-def _basis(root: Path, identity: Mapping[str, str], rights: Mapping[str, Any]) -> dict[str, Any] | None:
-    found = sharing_basis({"capture_id": identity["capture_id"], "capture_rights": dict(rights)},
-                          video_sha256=recorded_video_sha256(root), owned_list=OWNED_CAPTURES_LIST)
-    if found is None:
-        return None
-    version = rights.get("statement_version")
-    return {"permission_basis": found["permission_basis"], "statement_version": version if isinstance(version, str)
-            else None}
+def upload_sha256(capture_root: Path, source: Mapping[str, Any]) -> str | None:
+    """The digest of the upload the clip is made from, which Blueprint's own list names by prefix: the
+    original normalization recorded, or for a capture with no record the raw upload itself."""
+    return source.get("digest") if source.get("source") == "raw_upload" else recorded_video_sha256(capture_root)
+
+
+def owned_basis_holds(capture_id: str, video_sha256: str | None) -> bool:
+    """The capture is on Blueprint's own list and its row's prefix names this upload. A local read, made
+    every pass and on every route read; an unreadable list holds for nothing."""
+    return sharing_basis({"capture_id": capture_id}, video_sha256=video_sha256,
+                         owned_list=OWNED_CAPTURES_LIST) is not None
+
+
+def _on_owned_list(capture_id: str) -> bool:
+    return capture_id in owned_captures(OWNED_CAPTURES_LIST)[0]
 
 
 def recorded_statement_version(capture_root: Path) -> str | None:
@@ -295,22 +336,73 @@ def _live_rights(identity: Mapping[str, str]) -> Mapping[str, Any]:
     return rights if isinstance(rights, Mapping) else {}
 
 
-def permission_from_rights(root: Path, rights: Mapping[str, Any], identity: Mapping[str, str]) -> dict[str, Any]:
-    """Which rule lets this capture's video be shared, from current rights; a typed refusal otherwise."""
-    if rights.get("consent_revoked") is not False or rights.get("consent_status") != "granted":
-        raise ValueError("website_company_clip_rights_refused")
-    basis = _basis(root, identity, rights)
-    if basis is None:
-        raise ValueError(_NOT_PERMITTED)
-    return basis
+def _record_live(root: Path, identity: Mapping[str, str], check_rights: Callable[..., Mapping[str, Any]],
+                 now: float) -> dict[str, Any]:
+    """Read the live rights once and record the answer, a failure included.
+
+    ``outcome``: ``covers_sharing`` (consent granted, sharing statement), ``not_sharing`` (consent granted,
+    an older statement), ``rights_refused`` (consent not granted, or the WebApp said revoked: definite) or
+    ``unanswered`` (no answer: the clip's state does not change on it). ``granted_at_epoch`` is the last
+    time the answer covered sharing; a definite answer that does not clears it.
+    """
+    previous = _read(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE)
+    try:
+        rights = check_rights(identity)
+    except Exception as error:  # noqa: BLE001 - classified: a definite refusal, or no answer
+        rights, failure = None, error
+    if rights is None:
+        outcome = "rights_refused" if _RIGHTS_REFUSALS.search(str(failure)) else "unanswered"
+        version, fingerprint, reason = None, None, _reason(failure)
+    else:
+        version = rights.get("statement_version")
+        version = version if isinstance(version, str) else None
+        granted = rights.get("consent_revoked") is False and rights.get("consent_status") == "granted"
+        outcome = ("rights_refused" if not granted else "covers_sharing" if covers_sharing(version)
+                   else "not_sharing")
+        fingerprint = canonical_digest({"statement_version": version, "consent_status": rights.get("consent_status"),
+                                        "consent_revoked": rights.get("consent_revoked")})
+        reason = {"rights_refused": _RIGHTS_REFUSED, "not_sharing": _NOT_PERMITTED}.get(outcome)
+    kept = previous.get("granted_at_epoch") if outcome == "unanswered" else None
+    value = {"checked_at_epoch": int(now), "outcome": outcome, "reason": reason, "statement_version": version,
+             "rights_fingerprint": fingerprint,
+             "granted_at_epoch": int(now) if outcome == "covers_sharing" else kept if isinstance(kept, int) else None}
+    write_json(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE, value)
+    return value
+
+
+def _live_due(check: Mapping[str, Any], now: float, root: Path) -> bool:
+    """A live read is due: none yet, the window has passed, or the website asked for a recheck since
+    (``permission_recheck``: a job's permission changed)."""
+    checked = check.get("checked_at_epoch")
+    return (not isinstance(checked, int) or not 0 <= now - checked < LIVE_STATEMENT_RECHECK_SECONDS
+            or recheck_requested_since(root, checked))
+
+
+def live_grant_holds(check: Mapping[str, Any], now: float | None = None) -> bool:
+    """The last live read granted sharing and no definite answer has said otherwise since; with ``now``,
+    also that the grant is younger than ``LIVE_GRANT_LIFETIME_SECONDS``."""
+    granted = check.get("granted_at_epoch")
+    if check.get("outcome") not in ("covers_sharing", "unanswered") or not isinstance(granted, int):
+        return False
+    return now is None or 0 <= now - granted < LIVE_GRANT_LIFETIME_SECONDS
 
 
 def _may_be_permitted(root: Path, identity: Mapping[str, str], now: float) -> bool:
-    """No network: the snapshot covers sharing, the capture is Blueprint's own, or a live recheck is due."""
-    if _basis(root, identity, {"statement_version": recorded_statement_version(root)}) is not None:
+    """No network: the snapshot covers sharing, the capture is on Blueprint's own list, the last live read
+    granted sharing, or a live read is due. Otherwise a capture gets no directory, file or request."""
+    if covers_sharing(recorded_statement_version(root)) or _on_owned_list(identity["capture_id"]):
         return True
-    checked = _read(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE).get("checked_at_epoch")
-    return not isinstance(checked, int) or not 0 <= now - checked < LIVE_STATEMENT_RECHECK_SECONDS
+    check = _read(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE)
+    return _live_due(check, now, root) or live_grant_holds(check, now)
+
+
+def _decided_basis(check: Mapping[str, Any], owned: bool) -> dict[str, Any] | None:
+    """The rule that lets the clip be shared now: a live grant, else Blueprint's own capture, else None."""
+    if check.get("outcome") == "covers_sharing":
+        return {"permission_basis": "site_sharing_statement", "statement_version": check.get("statement_version")}
+    if owned and check.get("outcome") == "not_sharing":  # consent definitely granted, Blueprint's own video
+        return {"permission_basis": "blueprint_owned_capture", "statement_version": check.get("statement_version")}
+    return None
 
 
 def delivery_gate_allows(capture_root: Path) -> bool:
@@ -388,26 +480,56 @@ def moov_before_mdat(path: Path) -> bool:
     return b"moov" in order and b"mdat" in order and order.index(b"moov") < order.index(b"mdat")
 
 
-def _encode(source: Path, target: Path, *, width: int, height: int, fps_cap: bool, kbps: int) -> None:
+def _encode(source: Path, target: Path, *, width: int, height: int, fps_cap: bool, kbps: int, max_bytes: int,
+            timeout: float) -> None:
     filters = [f"scale={width}:{height}:flags={ENCODER['scale_flags']}"] + ([f"fps={MAX_FPS}"] if fps_cap else [])
     # Video stream 0 only: -an/-sn/-dn drop every other stream; no tag or chapter of the source is copied.
+    # -a53cc 0: libx264 would re-embed the source's closed captions (on by default). The bitstream filter
+    # drops every SEI unit (type 6), x264's own settings string included, so a decoded frame carries no side
+    # data at all and ``frames_clean`` can demand exactly that. -fs stops the file just past the cap, so a
+    # partial file never grows beyond it; such a file is then over the cap and refused.
     command = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-threads", str(ENCODER["threads"]), "-i", str(source),
                "-map", "0:v:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-map_metadata:s:v", "-1",
                "-map_chapters", "-1",
                "-filter_threads", "1", "-vf", ",".join(filters),
                "-c:v", ENCODER["codec"], "-profile:v", ENCODER["profile"], "-preset", ENCODER["preset"],
-               "-crf", str(ENCODER["crf"]), "-maxrate", f"{kbps}k", "-bufsize", f"{2 * kbps}k",
+               "-crf", str(ENCODER["crf"]), "-maxrate", f"{kbps}k", "-bufsize", f"{2 * kbps}k", "-a53cc", "0",
                "-pix_fmt", ENCODER["pix_fmt"], "-threads", str(ENCODER["threads"]),
+               "-bsf:v", "filter_units=remove_types=6", "-fs", str(int(max_bytes) + 1),
                "-movflags", "+faststart", "-f", "mp4", str(target)]
-    subprocess.run(command, check=True, capture_output=True, timeout=_ENCODE_TIMEOUT_SECONDS)
+    subprocess.run(command, check=True, capture_output=True, timeout=max(1.0, timeout))
 
 
-def build_clip(source: Path, output: Path, *, max_bytes: int = MAX_CLIP_BYTES) -> dict[str, Any]:
-    """Encode ``source`` (only read) to ``output``, proven video-only, seekable and under the cap.
+def frames_clean(path: Path, *, timeout: float = ENCODE_TIMEOUT_SECONDS) -> bool:
+    """Every frame decoded, and not one carries side data (captions, SEI user data, anything else)."""
+    completed = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_frames",
+                                "-show_entries", "frame=side_data_list", "-of", "json", str(path)],
+                               check=True, capture_output=True, text=True, timeout=max(1.0, timeout))
+    frames = json.loads(completed.stdout or "{}").get("frames")
+    return isinstance(frames, list) and bool(frames) and not any(
+        not isinstance(frame, dict) or frame.get("side_data_list") for frame in frames)
 
-    One lower-rate retry when the first encode lands over the cap; then ``OVER_CAP``.
+
+def carries_caption_units(path: Path) -> bool:
+    """The A53 caption identifier anywhere in the file's bytes."""
+    tail = b""
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            if _CAPTION_MARKER in tail + chunk:
+                return True
+            tail = chunk[-(len(_CAPTION_MARKER) - 1):]
+    return False
+
+
+def build_clip(source: Path, output: Path, *, max_bytes: int = MAX_CLIP_BYTES,
+               timeout_seconds: float = ENCODE_TIMEOUT_SECONDS) -> dict[str, Any]:
+    """Encode ``source`` (only read) to ``output``, proven video-only, caption-free, seekable and under the cap.
+
+    One lower-rate retry when the first encode lands over the cap; then ``OVER_CAP``. The whole build has
+    ``timeout_seconds``; past it, ``ENCODE_TIMED_OUT``.
     """
-    from .website_source_video import probe_video
+    from .website_source_video import _rate, probe_video
+    deadline = time.monotonic() + timeout_seconds
     try:
         probe = probe_video(source)
     except (subprocess.SubprocessError, OSError, ValueError):
@@ -421,7 +543,10 @@ def build_clip(source: Path, output: Path, *, max_bytes: int = MAX_CLIP_BYTES) -
         for attempt in range(2):
             partial.unlink(missing_ok=True)
             try:
-                _encode(source, partial, width=width, height=height, fps_cap=probe["fps"] > MAX_FPS + 0.01, kbps=kbps)
+                _encode(source, partial, width=width, height=height, fps_cap=probe["fps"] > MAX_FPS, kbps=kbps,
+                        max_bytes=max_bytes, timeout=deadline - time.monotonic())
+            except subprocess.TimeoutExpired:
+                raise ValueError(ENCODE_TIMED_OUT) from None
             except subprocess.SubprocessError:
                 raise ValueError("website_company_clip_encode_failed") from None
             size = partial.stat().st_size
@@ -442,14 +567,27 @@ def build_clip(source: Path, output: Path, *, max_bytes: int = MAX_CLIP_BYTES) -
             raise ValueError("website_company_clip_output_metadata_not_clean")
         if not moov_before_mdat(partial):
             raise ValueError("website_company_clip_output_not_faststart")
-        from .website_source_video import _rate
         fps = _rate(video[0].get("avg_frame_rate"))
+        if fps is None or fps > MAX_CLIP_FPS:
+            raise ValueError("website_company_clip_output_frame_rate_over_cap")
+        source_seconds, seconds = probe.get("duration_seconds"), streams["duration_seconds"]
+        if isinstance(source_seconds, (int, float)) and source_seconds > 0 and (
+                seconds is None or seconds < source_seconds - max(1.0, 0.02 * source_seconds)):
+            raise ValueError("website_company_clip_output_truncated")
+        try:
+            clean = frames_clean(partial, timeout=deadline - time.monotonic())
+        except subprocess.TimeoutExpired:
+            raise ValueError(ENCODE_TIMED_OUT) from None
+        except (subprocess.SubprocessError, ValueError):
+            clean = False
+        if not clean or carries_caption_units(partial):
+            raise ValueError("website_company_clip_output_frame_side_data")
         os.replace(partial, output)
     finally:
         partial.unlink(missing_ok=True)
     return {"format": FORMAT, "content_type": CONTENT_TYPE, "digest": _sha256_file(output), "size_bytes": size,
             "width": int(video[0]["width"]), "height": int(video[0]["height"]),
-            "fps": round(fps, 3) if fps else None, "duration_seconds": streams["duration_seconds"],
+            "fps": round(fps, 3), "duration_seconds": streams["duration_seconds"],
             "has_audio": False, "video_kbps_ceiling": kbps, "max_bytes": int(max_bytes)}
 
 
@@ -559,13 +697,14 @@ def publish_company_clip(capture_root: Path, *, now: Callable[[], float] = time.
                          retract: Callable[[str], None] = _retract,
                          deliver: Callable[..., None] = _deliver,
                          max_bytes: int = MAX_CLIP_BYTES) -> dict[str, Any]:
-    """One idempotent pass for one capture: make, archive and deliver what is not yet current.
+    """One idempotent pass for one capture: make, archive and deliver what is not yet current, and take
+    back what may no longer be shared.
 
-    Returns ``{"status": ...}``: ``current``, ``published``, ``not_permitted`` (older statement),
-    ``no_source`` (no normalization record and no readable raw upload named by the capture's manifest,
-    or a record that cannot be used), ``over_size_cap``, ``withdrawn``, ``refused`` (rights or
-    the takedown gate, with a reason), ``busy`` or ``failed`` (retried by the next pass). It
-    never raises and never touches the capture's job.
+    Returns ``{"status": ...}``: ``current``, ``published``, ``not_permitted`` (no basis to share; any
+    archived copy is taken back), ``no_source`` (no usable source video yet), ``over_size_cap``,
+    ``encode_timed_out`` (retried after ``LIVE_STATEMENT_RECHECK_SECONDS``), ``withdrawn``, ``refused``
+    (rights, the takedown gate or the WebApp, with a reason), ``busy`` or ``failed`` (retried by the next
+    pass). It never raises and never touches the capture's job.
     """
     try:
         return _publish(Path(capture_root), now, check_rights, archive, retract, deliver, max_bytes)
@@ -575,6 +714,19 @@ def publish_company_clip(capture_root: Path, *, now: Callable[[], float] = time.
         logger.warning("website_company_clip_failed capture=%s type=%s", Path(capture_root).name,
                        type(error).__name__)
         return {"status": "failed", "reason": _reason(error)}
+
+
+def _refused_live(check: Mapping[str, Any], manifest: dict[str, Any], manifest_path: Path,
+                  retract: Callable[[str], None]) -> dict[str, Any] | None:
+    """The answer to a live read that stops sharing: a definite refusal or no basis takes any archived copy
+    back; no answer refuses this pass only. None when the answer allows nothing to be said yet."""
+    if check["outcome"] == "rights_refused":
+        if manifest:
+            _take_back(manifest, manifest_path, retract)
+        return {"status": "refused", "reason": check.get("reason") or _RIGHTS_REFUSED}
+    if check["outcome"] == "unanswered":
+        return {"status": "refused", "reason": check.get("reason") or "website_company_clip_rights_unanswered"}
+    return None
 
 
 def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
@@ -592,7 +744,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
         _take_back_if_archived(root, manifest_path, retract)
         return {"status": "refused", "reason": "website_company_clip_takedown_gate_closed"}
     # Read-only first: a capture that may not be shared gets no directory, file or request
-    # until its live statement is due a recheck.
+    # until its live statement is due a recheck; any copy it still has is taken back.
     if not _may_be_permitted(root, identity, now()):
         _take_back_if_archived(root, manifest_path, retract)
         return {"status": "not_permitted"}
@@ -609,20 +761,51 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
             if source["digest"] is None:
                 return {"status": "no_source"}
         revision = clip_revision(source, max_bytes=max_bytes)
+        upload = upload_sha256(root, source)
+        owned = owned_basis_holds(identity["capture_id"], upload)
+        check = _read(directory / STATEMENT_CHECK_FILE)
         if _current(manifest, revision, clip_path):
-            return {"status": "current", "clip_revision": revision}
+            # A published clip keeps its basis or goes: Blueprint's list every pass (a local read), the live
+            # rights at least once a window. A definite "no" takes the clip back at once.
+            if _live_due(check, now(), root):
+                check = _record_live(root, identity, check_rights, now())
+                if check["outcome"] == "rights_refused":
+                    return _refused_live(check, manifest, manifest_path, retract)
+            if owned or live_grant_holds(check, now()):
+                return {"status": "current", "clip_revision": revision}
+            _take_back(manifest, manifest_path, retract)
+            return {"status": "not_permitted"}
         if manifest.get("clip_revision") == revision and manifest.get("refused") == OVER_CAP:
             return {"status": "over_size_cap"}
-        try:
-            basis = permission_from_rights(root, check_rights(identity), identity)
-        except Exception as error:  # noqa: BLE001 - any doubt about rights is a refusal
-            # Recorded either way: a capture its files do not permit is read live once a window, not every pass.
-            write_json(directory / STATEMENT_CHECK_FILE, {"checked_at_epoch": int(now()), "outcome": _reason(error)})
-            if str(error) != _NOT_PERMITTED:
-                return {"status": "refused", "reason": _reason(error)}
+        timed_out = manifest.get("refused_at_epoch")
+        if (manifest.get("clip_revision") == revision and manifest.get("refused") == ENCODE_TIMED_OUT
+                and isinstance(timed_out, int) and 0 <= now() - timed_out < LIVE_STATEMENT_RECHECK_SECONDS):
+            return {"status": "encode_timed_out"}
+        # A definite "no" from this window's live read stands until the window passes: no request every pass.
+        if not owned and not _live_due(check, now(), root) and check.get("outcome") in ("not_sharing", "rights_refused"):
+            if manifest:
+                _take_back(manifest, manifest_path, retract)
+            return ({"status": "not_permitted"} if check["outcome"] == "not_sharing"
+                    else {"status": "refused", "reason": check.get("reason") or _RIGHTS_REFUSED})
+        # A build or a delivery: always on a fresh live answer, recorded whatever it says.
+        check = _record_live(root, identity, check_rights, now())
+        stopped = _refused_live(check, manifest, manifest_path, retract)
+        if stopped is not None:
+            return stopped
+        basis = _decided_basis(check, owned)
+        if basis is None:
             if manifest:
                 _take_back(manifest, manifest_path, retract)
             return {"status": "not_permitted"}
+        # The WebApp refused this clip: nothing is archived again until the live rights change, a window passes
+        # or the website asks for a recheck.
+        memory = manifest.get("refused_by_webapp")
+        if (isinstance(memory, Mapping) and memory.get("clip_revision") == revision
+                and not recheck_requested_since(root, memory.get("at_epoch"))
+                and memory.get("rights_fingerprint") == check.get("rights_fingerprint")
+                and isinstance(memory.get("at_epoch"), int)
+                and 0 <= now() - memory["at_epoch"] < LIVE_STATEMENT_RECHECK_SECONDS):
+            return {"status": "refused", "reason": str(memory.get("reason"))}
         built = manifest.get("clip") or {}
         if (manifest.get("clip_revision") != revision or clip_path.is_symlink() or not clip_path.is_file()
                 or _sha256_file(clip_path) != built.get("digest")):
@@ -634,18 +817,19 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
                     "source": source["source"],
                     "source_video": {key: source[key] for key in ("kind", "digest", "relative", "size_bytes",
                                                                   "mtime_ns") if key in source},
-                    "permission": basis, "built_at_epoch": int(now()), "archive": None, "delivered": None}
+                    "upload_sha256": upload, "permission": basis, "built_at_epoch": int(now()), "archive": None,
+                    "delivered": None}
             try:
                 built = build_clip(Path(source["path"]), clip_path, max_bytes=max_bytes)
             except ValueError as error:
-                if str(error) != OVER_CAP:
+                if str(error) not in (OVER_CAP, ENCODE_TIMED_OUT):
                     raise
                 clip_path.unlink(missing_ok=True)
-                write_json(manifest_path, {**base, "clip": None, "refused": OVER_CAP})
-                logger.warning("website_company_clip_over_size_cap capture=%s", identity["capture_id"])
-                return {"status": "over_size_cap"}
+                write_json(manifest_path, {**base, "clip": None, "refused": str(error), "refused_at_epoch": int(now())})
+                logger.warning("%s capture=%s", str(error), identity["capture_id"])
+                return {"status": "over_size_cap" if str(error) == OVER_CAP else "encode_timed_out"}
             manifest = {**base, "clip": {**built, "path": CLIP_FILE}}
-        manifest["permission"] = basis
+        manifest["permission"], manifest["upload_sha256"] = basis, upload
         record = clip_record(identity=identity, manifest=manifest)
         manifest["clip_digest"] = record["clip_digest"]
         write_json(manifest_path, manifest)
@@ -667,12 +851,16 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
             reason = _reason(error)
             if _RIGHTS_REFUSALS.search(str(error)):
                 _take_back(manifest, manifest_path, retract)
+                manifest["refused_by_webapp"] = {"clip_revision": revision, "reason": reason, "at_epoch": int(now()),
+                                                 "rights_fingerprint": check.get("rights_fingerprint")}
+                write_json(manifest_path, manifest)
                 return {"status": "refused", "reason": reason}
             manifest["last_delivery_error"] = reason
             write_json(manifest_path, manifest)
             return {"status": "failed", "reason": reason}
         manifest["delivered"] = {"clip_digest": record["clip_digest"], "at_epoch": int(now())}
         manifest.pop("last_delivery_error", None)
+        manifest.pop("refused_by_webapp", None)
         write_json(manifest_path, manifest)
         return {"status": "published", "clip_revision": revision, "clip_digest": record["clip_digest"]}
 
@@ -690,10 +878,24 @@ def capture_roots(storage_root: Path) -> list[Path]:
     return sorted(found)
 
 
-def tick(storage_root: Path, **options: Any) -> dict[str, int]:
-    """One pass over every capture; counts of each outcome."""
+def tick(storage_root: Path, *, stop_reason: Callable[[], str | None] | None = None,
+         budget_seconds: float = TICK_BUDGET_SECONDS, clock: Callable[[], float] = time.monotonic,
+         **options: Any) -> dict[str, int]:
+    """One pass over every capture; counts of each outcome.
+
+    Between captures it stops for a hold, a quiesce or a new release (``stop_reason``, the Atlas preview
+    tick's own) and starts no capture after ``budget_seconds``; the captures left are counted ``deferred``.
+    The next pass starts from the first capture again; those already current cost one cheap check each.
+    """
     counts: dict[str, int] = {}
-    for capture in capture_roots(storage_root):
+    started = clock()
+    captures = capture_roots(storage_root)
+    for index, capture in enumerate(captures):
+        reason = stop_reason() if stop_reason is not None else None
+        if reason or clock() - started >= budget_seconds:
+            counts["deferred"] = len(captures) - index
+            counts["stopped_" + (reason or "time_budget")] = 1
+            break
         status = publish_company_clip(capture, **options)["status"]
         counts[status] = counts.get(status, 0) + 1
     return counts
@@ -705,7 +907,8 @@ def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
     Several ranges, another unit or a malformed value are ignored (the whole file, as RFC 9110
     allows); a range starting at or past the end is ``RangeNotSatisfiable``.
     """
-    match = re.fullmatch(r"\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*", header or "")
+    # At most 19 digits a side (any real offset); a longer number is not a range this route answers.
+    match = re.fullmatch(r"\s*bytes\s*=\s*(\d{0,19})\s*-\s*(\d{0,19})\s*", header or "")
     if match is None or size <= 0 or not (match.group(1) or match.group(2)):
         return None
     first, last = match.groups()
@@ -723,28 +926,40 @@ def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
     return start, end
 
 
+def _basis_still_holds(root: Path, capture_id: str, manifest: Mapping[str, Any]) -> bool:
+    basis = (manifest.get("permission") or {}).get("permission_basis")
+    if basis == "blueprint_owned_capture":
+        return owned_basis_holds(capture_id, manifest.get("upload_sha256"))
+    if basis == "site_sharing_statement":
+        return live_grant_holds(_read(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE))
+    return False
+
+
 def open_company_clip(*, request_id: str, capture_id: str, digest: str, storage_root: Path | None,
                       range_header: str | None = None, client: Any = None,
                       bucket: str | None = None) -> tuple[Any, int, tuple[int, int] | None]:
     """The archived clip body, its full size and the range served, for a read the WebApp authorized.
 
-    While the workspace exists the capture must be unwithdrawn, the takedown gate must allow it
-    and its manifest must name this digest as archived; after retirement only the object named
-    for this capture and digest exists to read (withdrawal deletion deletes it).
+    While the workspace exists the capture must be unwithdrawn, the takedown gate must allow it,
+    its manifest must name this digest as archived and not taken back, and its basis must still hold:
+    Blueprint's own list names it, or the last live read granted sharing and nothing has said no since.
+    After retirement only the object named for this capture and digest exists to read (withdrawal
+    deletion deletes it). With no storage root configured nothing can be checked, so nothing is served.
     """
-    if not capture_name_matches_request(request_id, capture_id) or not _DIGEST.fullmatch(str(digest)):
+    if (storage_root is None or not capture_name_matches_request(request_id, capture_id)
+            or not _DIGEST.fullmatch(str(digest))):
         raise CompanyClipUnavailable("website_company_clip_unavailable")
-    if storage_root is not None:
-        roots = [root for root in Path(storage_root).glob(f"*/scenes/site-{request_id}/captures/{capture_id}")
-                 if root.is_dir()]
-        if len(roots) > 1:
+    roots = [root for root in Path(storage_root).glob(f"*/scenes/site-{request_id}/captures/{capture_id}")
+             if root.is_dir()]
+    if len(roots) > 1:
+        raise CompanyClipUnavailable("website_company_clip_unavailable")
+    if roots:
+        manifest = _read(roots[0].joinpath(*DIRECTORY) / MANIFEST_FILE)
+        archive = manifest.get("archive") or {}
+        if (not delivery_gate_allows(roots[0]) or manifest.get("schema_version") != MANIFEST_SCHEMA
+                or archive.get("digest") != digest or _hidden(archive)
+                or not _basis_still_holds(roots[0], capture_id, manifest)):
             raise CompanyClipUnavailable("website_company_clip_unavailable")
-        if roots:
-            manifest = _read(roots[0].joinpath(*DIRECTORY) / MANIFEST_FILE)
-            archive = manifest.get("archive") or {}
-            if (not delivery_gate_allows(roots[0]) or manifest.get("schema_version") != MANIFEST_SCHEMA
-                    or archive.get("digest") != digest or _hidden(archive)):
-                raise CompanyClipUnavailable("website_company_clip_unavailable")
     from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
     from .task_evaluation_configured_scene_object_store import _artifact_object_store_client, _object_missing
     if client is None or bucket is None:
@@ -762,6 +977,33 @@ def open_company_clip(*, request_id: str, capture_id: str, digest: str, storage_
     served = parse_range(range_header, size)
     extra = {"Range": f"bytes={served[0]}-{served[1]}"} if served else {}
     return client.get_object(Bucket=bucket, Key=key, **extra)["Body"], size, served
+
+
+RECHECK_SCHEMA = "website_company_recheck.v1"
+
+
+def request_company_clip_recheck(*, request_id: str, capture_id: str, storage_root: Path | None,
+                                 now: float | None = None) -> str:
+    """The website says a job's permission changed: mark this capture's stored permission check and any
+    remembered refusal stale (``permission_recheck``) so the next pass reads the live rights again.
+
+    ``"accepted"``, ``"too_soon"`` (asked within a minute for this capture) or ``"unknown"`` (no such
+    capture for this request, or nothing can be checked). Nothing else happens here: no encode, upload or
+    deletion. It never raises and says nothing more about the capture.
+    """
+    from .permission_recheck import request_recheck
+    try:
+        if (storage_root is None or not isinstance(request_id, str) or not isinstance(capture_id, str)
+                or not capture_name_matches_request(request_id, capture_id)):
+            return "unknown"
+        roots = [root for root in Path(storage_root).glob(f"*/scenes/site-{request_id}/captures/{capture_id}")
+                 if root.is_dir() and not root.is_symlink()]
+        if len(roots) != 1:
+            return "unknown"
+        outcome = request_recheck(roots[0], now=now)
+    except Exception:  # noqa: BLE001 - a recheck request never fails loudly; the pass's own window is the fallback
+        return "unknown"
+    return "unknown" if outcome == "unavailable" else outcome
 
 
 def main(argv: list[str] | None = None) -> int:

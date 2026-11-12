@@ -96,7 +96,9 @@ A packet is made only when one of these holds:
   words>"`, and the id is in `config/blueprint_owned_captures.v1.json`
   (read by `sharing_statement.owned_captures`, the same reader the company
   video uses; a list it cannot read refuses with
-  `job_packet_owned_capture_list_invalid`).
+  `job_packet_owned_capture_list_invalid`). Every row must name its video by
+  `video_sha256_prefix` (12 to 64 hex digits); a row without one makes the
+  list unreadable.
 
 The first look lists robots that fit, then those that fit if conditions hold,
 then those that do not fit, then unknown. Each condition is written in the

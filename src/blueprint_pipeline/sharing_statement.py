@@ -47,21 +47,21 @@ def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return dict(pairs)
 
 
-def owned_captures(path: Path | None = None) -> tuple[dict[str, str | None], str | None]:
-    """Blueprint's own captures (capture id to video digest prefix, or None), and a flag.
+def owned_captures(path: Path | None = None) -> tuple[dict[str, str], str | None]:
+    """Blueprint's own captures (capture id to video digest prefix), and a flag.
 
     Strict: an unreadable or malformed list means no owned captures and a flag, never a crash
-    and never "everything is owned". Each row has only known keys, a capture id, non-empty text
-    for ``approved_by``, ``approved_on`` and ``evidence`` when present, a real ``approved_on``
-    date, and a ``video_sha256_prefix`` of 12 to 64 lowercase hex digits when present (a key
-    present with null is malformed). Only ``capture_id`` is required.
+    and never "everything is owned". Each row has only known keys, a capture id, a
+    ``video_sha256_prefix`` of 12 to 64 lowercase hex digits (required: a row names one video,
+    never every video under its capture id), non-empty text for ``approved_by``, ``approved_on``
+    and ``evidence`` when present, and a real ``approved_on`` date.
     """
     try:
         value = json.loads(Path(path or OWNED_CAPTURES_PATH).read_text(encoding="utf-8"), object_pairs_hook=_unique)
         if (not isinstance(value, dict) or value.get("schema_version") != OWNED_CAPTURES_SCHEMA
                 or not isinstance(value.get("captures"), list)):
             raise ValueError("schema")
-        owned: dict[str, str | None] = {}
+        owned: dict[str, str] = {}
         for row in value["captures"]:
             if not isinstance(row, dict) or not set(row) <= _ROW_KEYS:
                 raise ValueError("row")
@@ -72,10 +72,10 @@ def owned_captures(path: Path | None = None) -> tuple[dict[str, str | None], str
                 raise ValueError("text")
             if "approved_on" in row:
                 date.fromisoformat(row["approved_on"])
-            if "video_sha256_prefix" in row and (type(row["video_sha256_prefix"]) is not str
-                                                 or not _PREFIX.fullmatch(row["video_sha256_prefix"])):
+            prefix = row.get("video_sha256_prefix")
+            if type(prefix) is not str or not _PREFIX.fullmatch(prefix):
                 raise ValueError("video_sha256_prefix")
-            owned[capture_id] = row.get("video_sha256_prefix")
+            owned[capture_id] = prefix
     except (OSError, UnicodeError, ValueError, TypeError) as error:
         logger.warning("blueprint_owned_capture_list_invalid type=%s", type(error).__name__)
         return {}, "blueprint_owned_capture_list_invalid"
@@ -89,8 +89,8 @@ def sharing_basis(task_context: Mapping[str, Any], *, video_sha256: str | None =
     ``{"permission_basis": "site_sharing_statement", "statement_version": ...}`` when the task
     context's ``capture_rights.statement_version`` covers sharing; else
     ``{"permission_basis": "blueprint_owned_capture", "capture_id": ...}`` when its ``capture_id``
-    is on the allow-list and, where the row names a ``video_sha256_prefix``, the recorded video
-    digest begins with it; else None.
+    is on the allow-list and the digest of the upload the video is made from begins with its row's
+    ``video_sha256_prefix``; else None.
     """
     rights = task_context.get("capture_rights") if isinstance(task_context, Mapping) else None
     version = rights.get("statement_version") if isinstance(rights, Mapping) else None
@@ -100,9 +100,7 @@ def sharing_basis(task_context: Mapping[str, Any], *, video_sha256: str | None =
     owned, _flag = owned_captures(owned_list)
     if type(capture_id) is not str or capture_id not in owned:
         return None
-    prefix = owned[capture_id]
-    if prefix is not None:
-        digest = _DIGEST.fullmatch(video_sha256) if isinstance(video_sha256, str) else None
-        if digest is None or not digest.group(1).startswith(prefix):
-            return None
+    digest = _DIGEST.fullmatch(video_sha256) if isinstance(video_sha256, str) else None
+    if digest is None or not digest.group(1).startswith(owned[capture_id]):
+        return None
     return {"permission_basis": "blueprint_owned_capture", "capture_id": capture_id}

@@ -298,18 +298,19 @@ def test_the_sharing_basis_reads_a_strict_allow_list(tmp_path):
     assert sharing.sharing_basis(context, video_sha256=None, owned_list=good) is None
     assert sharing.sharing_basis(context, video_sha256="sha256:" + "cd" * 32, owned_list=good) is None
     assert sharing.sharing_basis({**context, "capture_id": "walkthrough-y"}, video_sha256=digest, owned_list=good) is None
-    no_prefix = _owned_list(tmp_path, [{"capture_id": "walkthrough-x"}])
-    assert sharing.sharing_basis(context, owned_list=no_prefix)["permission_basis"] == "blueprint_owned_capture"
-    for bad in ([{"capture_id": "walkthrough-x", "role": "admin"}], [{"capture_id": 7}], ["walkthrough-x"],
-                [{"capture_id": "walkthrough-x"}, {"capture_id": "walkthrough-x"}],
+    row = {"capture_id": "walkthrough-x", "video_sha256_prefix": "ab" * 6}
+    for bad in ([{**row, "role": "admin"}], [{"capture_id": 7, "video_sha256_prefix": "ab" * 6}], ["walkthrough-x"],
+                [row, row],
+                # Every row names one video: a row without a prefix, or with a one-digit prefix that 1 video in
+                # 16 under the capture id would match, makes the whole list malformed.
+                [{"capture_id": "walkthrough-x"}], [{"capture_id": "walkthrough-x", "video_sha256_prefix": "a"}],
                 [{"capture_id": "walkthrough-x", "video_sha256_prefix": "XYZ"}], {"capture_id": "walkthrough-x"},
                 # As strict as the packet tool was: a prefix of 12 to 64 hex digits, never null; text where
                 # text is expected; a real approval date.
                 [{"capture_id": "walkthrough-x", "video_sha256_prefix": "abab"}],
                 [{"capture_id": "walkthrough-x", "video_sha256_prefix": None}],
                 [{"capture_id": "walkthrough-x", "video_sha256_prefix": "ab" * 33}],
-                [{"capture_id": "walkthrough-x", "evidence": " "}], [{"capture_id": "walkthrough-x", "approved_by": 7}],
-                [{"capture_id": "walkthrough-x", "approved_on": "yesterday"}]):
+                [{**row, "evidence": " "}], [{**row, "approved_by": 7}], [{**row, "approved_on": "yesterday"}]):
         path = _owned_list(tmp_path, bad)
         assert sharing.owned_captures(path) == ({}, "blueprint_owned_capture_list_invalid")
         assert sharing.sharing_basis(context, video_sha256=digest, owned_list=path) is None
@@ -495,7 +496,7 @@ def test_the_tick_covers_every_capture_and_one_failure_stops_none(tmp_path, monk
 
 def test_the_atlas_preview_timer_pass_runs_the_clip_pass_and_swallows_its_failure(monkeypatch, tmp_path):
     from blueprint_pipeline import website_atlas_preview
-    monkeypatch.setattr(clip, "tick", lambda root: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(clip, "tick", lambda root, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
     assert website_atlas_preview.company_clip_tick(tmp_path) == {"tick_failed": 1}
 
 

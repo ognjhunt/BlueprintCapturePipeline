@@ -84,7 +84,9 @@ def register_website_atlas_preview_routes(app: FastAPI, *, require_admission: Ca
         from fastapi.responses import JSONResponse
 
         from .website_company_clip import CompanyClipUnavailable, RangeNotSatisfiable, open_company_clip
-        _webapp_only(request)
+        if (not request.headers.get("x-blueprint-pipeline-signature")
+                or getattr(request.state, "intake_client_id", "") != "blueprint-webapp"):
+            raise HTTPException(status_code=403, detail="website company clip issuer not authorized")
         try:
             body, size, served = await run_in_threadpool(
                 open_company_clip, request_id=request_id, capture_id=capture_id, digest=digest,
@@ -110,6 +112,27 @@ def register_website_atlas_preview_routes(app: FastAPI, *, require_admission: Ca
         first, last = served
         return StreamingResponse(chunks(), status_code=206, media_type="video/mp4", headers={
             **headers, "Content-Length": str(last - first + 1), "Content-Range": f"bytes {first}-{last}/{size}"})
+
+    @app.post("/api/live-pipeline/website-company-clips/{capture_id}/recheck",
+              dependencies=[Depends(require_admission)])
+    async def recheck_company_clip(request: Request, capture_id: str, request_id: str = ""):
+        """A job's permission changed: the next clip pass reads the live rights again (``permission_recheck``).
+        It only marks; it tells the caller nothing about the capture."""
+        from fastapi.responses import JSONResponse
+
+        from .website_company_clip import RECHECK_SCHEMA, request_company_clip_recheck
+        if (not request.headers.get("x-blueprint-pipeline-signature")
+                or getattr(request.state, "intake_client_id", "") != "blueprint-webapp"):
+            raise HTTPException(status_code=403, detail="website company clip issuer not authorized")
+        outcome = await run_in_threadpool(request_company_clip_recheck, request_id=request_id,
+                                          capture_id=capture_id, storage_root=_storage_root())
+        if outcome == "too_soon":
+            return JSONResponse({"detail": "website_company_clip_recheck_too_soon"}, status_code=429,
+                                headers={"Retry-After": "60", "Cache-Control": "private, no-store"})
+        if outcome != "accepted":
+            raise HTTPException(status_code=404, detail="website_company_clip_unavailable")
+        return JSONResponse({"schema_version": RECHECK_SCHEMA, "accepted": True}, status_code=202,
+                            headers={"Cache-Control": "private, no-store"})
 
     @app.get("/api/live-pipeline/website-atlas-previews/{capture_id}/bundle",
              dependencies=[Depends(require_admission)])

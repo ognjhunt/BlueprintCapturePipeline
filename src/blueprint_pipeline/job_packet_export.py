@@ -578,18 +578,19 @@ def permission_basis(context: Mapping[str, Any], *, owned: OwnedCaptureApproval 
         raise JobPacketRefused("job_packet_owned_capture_list_invalid", str(path))
     if owned.capture_id not in rows:
         raise JobPacketRefused("job_packet_capture_not_blueprint_owned", f"the capture id is not on {path.name}")
-    # An entry names one video: a different video uploaded later under the same capture id is not covered.
+    # Every entry names one video (the list's rule): a different video uploaded later under the same capture id
+    # is not covered.
     prefix = rows[owned.capture_id]
-    if prefix is not None and video_sha256 is None:
+    if video_sha256 is None:
         raise JobPacketRefused("job_packet_owned_capture_video_not_recorded",
                                "pipeline_staging_manifest.json records no sha256 for the capture's raw video")
-    if prefix is not None and not video_sha256.startswith(prefix):
+    if not video_sha256.startswith(prefix):
         raise JobPacketRefused("job_packet_owned_capture_video_mismatch",
                                f"the video recorded in pipeline_staging_manifest.json is not the one {path.name} names")
     return {"rule": "blueprint_owned_capture", "capture_id": owned.capture_id,
             "approved_by": owned.approved_by.strip(), "approved_on": approved_on.isoformat(),
             "approval_evidence": owned.approval_evidence.strip(), "allow_list_sha256": _sha256(path),
-            **({"video_sha256": video_sha256} if prefix is not None else {})}
+            "video_sha256": video_sha256}
 
 
 # --- what the records say -----------------------------------------------------------------------------

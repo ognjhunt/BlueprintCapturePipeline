@@ -314,9 +314,11 @@ def _out(tmp_path: Path, name: str = "out") -> Path:
     return path
 
 
-def _owned_list(tmp_path: Path, ids: list[str], **fields) -> Path:
-    return _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1",
-                                            "captures": [{"capture_id": item, **fields} for item in ids]})
+def _owned_list(tmp_path: Path, ids: list[str], clip: bytes | None = None, **fields) -> Path:
+    """Every row names one video (``video_sha256_prefix`` is required): the job's clip when given, else none."""
+    prefix = hashlib.sha256(clip).hexdigest()[:12] if clip is not None else "0" * 12
+    return _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "captures": [
+        {"capture_id": item, "video_sha256_prefix": prefix, **fields} for item in ids]})
 
 
 def _owned() -> OwnedCaptureApproval:
@@ -324,8 +326,8 @@ def _owned() -> OwnedCaptureApproval:
                                 approved_on="2026-11-12")
 
 
-def _owned_basis(tmp_path: Path) -> dict:
-    return {"owned": _owned(), "owned_list": _owned_list(tmp_path, [CAPTURE]), "now": NOW}
+def _owned_basis(tmp_path: Path, clip: bytes) -> dict:
+    return {"owned": _owned(), "owned_list": _owned_list(tmp_path, [CAPTURE], clip), "now": NOW}
 
 
 def _refusal(inputs: JobInputs, tmp_path: Path, **kwargs) -> JobPacketRefused:
@@ -765,7 +767,7 @@ def test_the_committed_allow_list_holds_only_the_reference_capture_and_its_video
 
 
 @pytest.mark.parametrize("row", [
-    {"capture_id": CAPTURE, "note": "x"}, {"capture_id": CAPTURE, "video_sha256_prefix": "9FE4715C4333"},
+    {"capture_id": CAPTURE}, {"capture_id": CAPTURE, "note": "x"}, {"capture_id": CAPTURE, "video_sha256_prefix": "9FE4715C4333"},
     {"capture_id": CAPTURE, "video_sha256_prefix": "9fe4"}, {"capture_id": CAPTURE, "approved_on": "yesterday"},
     {"capture_id": CAPTURE, "evidence": " "}, {"capture_id": CAPTURE, "approved_by": 7},
     {"capture_id": CAPTURE, "video_sha256_prefix": None}, {"capture_id": CAPTURE, "approved_on": None},
@@ -778,7 +780,7 @@ def test_an_allow_list_row_with_an_unknown_key_or_a_wrong_value_is_refused(tmp_p
 
 def test_a_repeated_capture_on_the_allow_list_is_refused(tmp_path, job) -> None:
     path = _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1",
-                                            "captures": [{"capture_id": CAPTURE}, {"capture_id": CAPTURE}]})
+                                            "captures": [{"capture_id": CAPTURE, "video_sha256_prefix": "a" * 12}] * 2})
     assert _refused(job(statement=OLDER), tmp_path, owned=_owned(), owned_list=path, now=NOW) == \
         "job_packet_owned_capture_list_invalid"
 
@@ -826,8 +828,8 @@ def test_a_malformed_allow_list_is_a_clean_refusal(tmp_path, job, raw) -> None:
         "job_packet_owned_capture_list_invalid"
 
 
-def test_an_allow_listed_capture_records_the_approval_beside_the_folder_only(tmp_path, job) -> None:
-    manifest = build_job_packet(job(statement=OLDER), output_root=_out(tmp_path), **_owned_basis(tmp_path))
+def test_an_allow_listed_capture_records_the_approval_beside_the_folder_only(tmp_path, job, clip_with_sound) -> None:
+    manifest = build_job_packet(job(statement=OLDER), output_root=_out(tmp_path), **_owned_basis(tmp_path, clip_with_sound))
     assert manifest["permission_basis"] == {"rule": "blueprint_owned_capture"}
     basis = json.loads(Path(manifest["operator_record"]).read_text())["permission_basis"]
     assert basis["approval_evidence"] == "Yes, share the reference job." and basis["approved_on"] == "2026-11-12"
@@ -835,13 +837,15 @@ def test_an_allow_listed_capture_records_the_approval_beside_the_folder_only(tmp
 
 
 @pytest.mark.parametrize("approved_on", ["2026-11-13", "2026-08-13", "2020-01-01"])
-def test_an_approval_dated_in_the_future_or_over_90_days_ago_is_refused(tmp_path, job, approved_on) -> None:
+def test_an_approval_dated_in_the_future_or_over_90_days_ago_is_refused(tmp_path, job, approved_on,
+                                                                         clip_with_sound) -> None:
     approval = OwnedCaptureApproval(CAPTURE, "owner", "yes", approved_on)
     assert _refused(job(statement=OLDER), tmp_path, owned=approval, now=NOW,
                     owned_list=_owned_list(tmp_path, [CAPTURE])) == "job_packet_owned_capture_approval_out_of_date"
     assert build_job_packet(job(root=tmp_path / "ok", statement=OLDER), output_root=_out(tmp_path, "ok-out"), now=NOW,
                             owned=OwnedCaptureApproval(CAPTURE, "owner", "yes", "2026-08-14"),
-                            owned_list=_owned_list(tmp_path, [CAPTURE]))["permission_basis"]["rule"] == "blueprint_owned_capture"
+                            owned_list=_owned_list(tmp_path, [CAPTURE], clip_with_sound)
+                            )["permission_basis"]["rule"] == "blueprint_owned_capture"
 
 
 # --- refusals: withdrawn, unconsented, ended or closed ------------------------------------------------------
@@ -985,11 +989,11 @@ REFUSALS = {
 
 @pytest.mark.parametrize("basis", ["site_statement", "blueprint_owned"])
 @pytest.mark.parametrize("case", sorted(REFUSALS))
-def test_withdrawn_unconsented_ended_or_closed_jobs_are_refused(tmp_path, job, basis, case) -> None:
+def test_withdrawn_unconsented_ended_or_closed_jobs_are_refused(tmp_path, job, basis, case, clip_with_sound) -> None:
     change, code = REFUSALS[case]
     inputs = job(statement=CURRENT if basis == "site_statement" else OLDER)
     change(inputs)
-    assert _refused(inputs, tmp_path, **(_owned_basis(tmp_path) if basis == "blueprint_owned" else {})) == code
+    assert _refused(inputs, tmp_path, **(_owned_basis(tmp_path, clip_with_sound) if basis == "blueprint_owned" else {})) == code
 
 
 def test_the_delivery_gate_is_asked_for_a_job_packet(tmp_path, job, monkeypatch) -> None:
