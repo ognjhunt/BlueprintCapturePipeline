@@ -197,6 +197,21 @@ def _package(job: Job) -> Path:
     return job.capture.joinpath(*sim.DIRECTORY) / sim.PACKAGE_FILE
 
 
+def _assert_absent_from_zip(job: Job, values) -> None:
+    """Every member of the published zip, and every member of a usdz in it, is free of every value."""
+    with zipfile.ZipFile(_package(job)) as archive:
+        for name in archive.namelist():
+            data = archive.read(name)
+            blobs = [name.encode(), data]
+            if name.endswith(".usdz"):
+                with zipfile.ZipFile(io.BytesIO(data)) as inner:
+                    blobs += [inner.comment] + [part for info in inner.infolist()
+                                                for part in (info.filename.encode(), info.extra, inner.read(info))]
+            for blob in blobs:
+                for value in values:
+                    assert value not in blob, (name, value)
+
+
 def _withdraw(capture: Path) -> None:
     value = {"schema_version": "website_capture_withdrawal_tombstone.v1", "scene_id": SITE,
              "request_id": REQUEST, "consent_revoked_at": "2026-11-12T12:00:00Z"}
@@ -400,6 +415,11 @@ def test_a_planted_id_path_link_or_key_refuses_the_package_and_names_the_file(tm
     expected = _plant(job, carrier, PLANTS[plant])
     world = World(job)
     result = world.publish()
+    if carrier == "texture":
+        # A PNG's text chunks are never written into the package (outbound_file_writer): the value cannot ship.
+        assert result["status"] == "published", result
+        _assert_absent_from_zip(job, [PLANTS[plant].encode()])
+        return
     assert result["status"] == "refused" and result["reason"] == "website_company_simulation_file_names_the_site"
     assert result["detail"].startswith(expected) and " holds " in result["detail"], result
     assert PLANTS[plant] not in json.dumps(result) and PLANTS[plant] not in _manifest(job)["detail"]
@@ -1504,17 +1524,21 @@ def test_short_or_common_identity_values_never_refuse_a_clean_scene(job, name, a
     assert World(job).publish()["status"] == "published"
 
 
-def test_a_text_member_with_an_odd_ending_inside_a_usdz_is_read(job, tmp_path):
+def test_a_text_member_with_an_odd_ending_inside_a_usdz_is_read_and_never_ships(job, tmp_path):
     layer = _stage(tmp_path / "obj.usdc", "Object")
     job.object.unlink()
     with zipfile.ZipFile(job.object, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.write(layer, "obj.usdc")
         archive.writestr("notes.cfgx", "made at gs://bucket-x/scan\n")
     job.seal()
-    result = World(job).publish()
-    assert result["status"] == "refused" and result["detail"] == "object.usdz holds a storage link inside a zip member"
-    finding = scan.scan_file(job.object, "object.usdz", [])
-    assert finding.kind == "a storage link inside a zip member"
+    world = World(job)
+    result = world.publish()
+    # A usdz is rebuilt from USD layers and images only: a text member is refused for its kind.
+    assert result == {"status": "refused", "reason": "website_company_simulation_file_kind_not_shipped",
+                      "detail": "task_object a usdz member that is not a USD layer, a PNG or a JPEG"}
+    assert world.archived == []
+    # The scan, used as the proof, reads it too.
+    assert scan.scan_file(job.object, "object.usdz", [], closed=True).kind == scan.NOT_SHIPPED
 
 
 def test_a_binary_member_of_another_kind_inside_a_usdz_never_ships(job, tmp_path):
@@ -1527,5 +1551,226 @@ def test_a_binary_member_of_another_kind_inside_a_usdz_never_ships(job, tmp_path
     world = World(job)
     result = world.publish()
     assert result == {"status": "refused", "reason": "website_company_simulation_file_kind_not_shipped",
-                      "detail": "object.usdz"}
+                      "detail": "task_object a usdz member that is not a USD layer, a PNG or a JPEG"}
     assert world.archived == []
+
+
+# --- round 4: nothing is copied, everything is written; the tests read the PUBLISHED zip ------------------------
+
+R4_VALUES = (b"gs://bucket-x", b"/tmp/work", b"jane@acmemail.example", b"req-1234")
+R4_PLANT = b" gs://bucket-x/obj /tmp/work/x jane@acmemail.example req-1234 "
+
+
+def _png_chunk(kind: bytes, body: bytes) -> bytes:
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+
+def _plain_png(extra: bytes = b"", after_iend: bytes = b"") -> bytes:
+    return (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) + extra
+            + _png_chunk(b"IDAT", zlib.compress(b"\x00\x80\x80\x80")) + _png_chunk(b"IEND", b"") + after_iend)
+
+
+def _jpeg(*, app1: bytes = b"", after_sos_com: bool = False, after_eoi: bytes = b"") -> bytes:
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 16), (120, 80, 40)).save(buffer, "JPEG", quality=80)
+    data = buffer.getvalue()
+    if app1:
+        segment = b"\xff\xe1" + struct.pack(">H", len(app1) + 2) + app1
+        data = data[:2] + segment + data[2:]
+    if after_sos_com:  # a COM segment between the entropy-coded data and EOI
+        com = b"\xff\xfe" + struct.pack(">H", len(R4_PLANT) + 2) + R4_PLANT
+        data = data[:-2] + com + data[-2:]
+    return data + after_eoi
+
+
+def _texture_job(job: Job, name: str, data: bytes) -> None:
+    _write(job.assets / f"textures/{name}", data)
+    job.appearance = _stage(job.appearance, "Appearance", texture=f"./textures/{name}")
+    job.seal()
+
+
+def _published_and_clean(job: Job, *, image: str | None = None) -> None:
+    world = World(job)
+    result = world.publish()
+    assert result["status"] == "published", result
+    _assert_absent_from_zip(job, R4_VALUES)
+    out = job.tmp / "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        archive.extractall(out)
+    assert UsdUtils.ComputeAllDependencies(str(out / "scene.usda"))[2] == []
+    assert Usd.Stage.Open(str(out / "scene.usda")).GetPrimAtPath("/World/Object").IsValid()
+    if image:
+        from PIL import Image
+        (picture,) = [path for path in (out / "scene/files").iterdir() if path.suffix == image]
+        with Image.open(picture) as opened:
+            opened.load()
+
+
+@pytest.mark.parametrize("carrier", ["after_iend", "private_chunk", "iccp", "text_chunk"])
+def test_a_png_is_written_from_its_kept_chunks_only(job, carrier):
+    extra, after = b"", b""
+    if carrier == "after_iend":
+        after = R4_PLANT
+    elif carrier == "private_chunk":
+        extra = _png_chunk(b"prVt", R4_PLANT)
+    elif carrier == "iccp":
+        extra = _png_chunk(b"iCCP", b"jane@acmemail.example\x00\x00" + zlib.compress(b"\x00" * 64 + R4_PLANT))
+    else:
+        extra = _png_chunk(b"tEXt", b"Comment\x00" + R4_PLANT)
+    _texture_job(job, "wood.png", _plain_png(extra, after))
+    _published_and_clean(job, image=".png")
+
+
+def test_png_magic_then_text_is_refused(job):
+    _texture_job(job, "wood.png", b"\x89PNG\r\n\x1a\n" + R4_PLANT)
+    result = World(job).publish()
+    assert result == {"status": "refused", "reason": "website_company_simulation_file_kind_not_shipped",
+                      "detail": "scene_appearance a PNG that cannot be read chunk by chunk"}
+
+
+@pytest.mark.parametrize("bad", ["crc", "critical", "no_iend", "ihdr_not_first"])
+def test_a_png_that_cannot_be_read_chunk_by_chunk_is_refused(job, bad):
+    good = _plain_png()
+    if bad == "crc":
+        data = good[:-5] + bytes([good[-5] ^ 1]) + good[-4:]
+    elif bad == "critical":
+        data = _plain_png(_png_chunk(b"ABCD", b"x"))
+    elif bad == "no_iend":
+        data = good[:-12]
+    else:
+        data = b"\x89PNG\r\n\x1a\n" + _png_chunk(b"gAMA", b"\x00\x00\xb1\x8f") + good[8:]
+    _texture_job(job, "wood.png", data)
+    assert World(job).publish()["detail"] == "scene_appearance a PNG that cannot be read chunk by chunk"
+
+
+@pytest.mark.parametrize("carrier", ["after_eoi", "com_after_sos", "app1_exif"])
+def test_a_jpeg_is_written_from_its_kept_segments_only(job, carrier):
+    data = _jpeg(after_eoi=R4_PLANT if carrier == "after_eoi" else b"", after_sos_com=carrier == "com_after_sos",
+                 app1=b"Exif\x00\x00" + R4_PLANT if carrier == "app1_exif" else b"")
+    _texture_job(job, "wood.jpg", data)
+    _published_and_clean(job, image=".jpg")
+
+
+def test_the_adobe_app14_is_kept_and_other_appn_dropped():
+    from blueprint_pipeline import outbound_file_writer as writer
+    data = _jpeg()
+    adobe = b"\xff\xee" + struct.pack(">H", 14) + b"Adobe\x00\x64\x00\x00\x00\x00\x01"
+    other = b"\xff\xed" + struct.pack(">H", len(R4_PLANT) + 2) + R4_PLANT
+    written = writer.jpeg_bytes(data[:2] + adobe + other + data[2:])
+    assert adobe in written and R4_PLANT not in written
+
+
+def test_text_in_a_jpeg_coding_table_is_numeric_payload_and_is_not_searched():
+    # The stated limit: a DQT body is a coding table, written as read and not searched as text. A table that is not
+    # a valid table does not decode, so the JPEG is refused; a valid table holding chosen bytes would ship.
+    from blueprint_pipeline import outbound_file_writer as writer
+    data = _jpeg()
+    dqt = b"\xff\xdb" + struct.pack(">H", 67) + b"\x00" + (b"jane@acme" * 8)[:64]
+    written = writer.jpeg_bytes(data[:2] + dqt + data[2:])
+    assert b"jane@acme" in written  # written as read: numeric payload is not searched
+
+
+def test_a_usdc_with_bytes_after_the_crate_is_written_without_them(job):
+    job.appearance.write_bytes(job.appearance.read_bytes() + R4_PLANT)
+    job.seal()
+    _published_and_clean(job)
+
+
+def test_a_usda_comment_is_not_written(job):
+    job.appearance.unlink()
+    job.appearance = _stage(job.assets / "appearance.usda", "Appearance", texture="./textures/wood.png")
+    text = job.appearance.read_text()
+    job.appearance.write_text(text.replace("#usda 1.0\n", "#usda 1.0\n# made from gs://bucket-x /tmp/work "
+                                           "jane@acmemail.example req-1234\n", 1))
+    job.seal()
+    _published_and_clean(job)
+
+
+def _object_usdz(job: Job, tmp_path: Path, *, members=None, comment: bytes = b"", extra: bytes = b"") -> None:
+    layer = _stage(tmp_path / "obj-src.usdc", "Object")
+    job.object.unlink()
+    with zipfile.ZipFile(job.object, "w", compression=zipfile.ZIP_STORED) as archive:
+        info = zipfile.ZipInfo("obj.usdc", date_time=(1980, 1, 1, 0, 0, 0))
+        info.extra = extra
+        archive.writestr(info, layer.read_bytes() + (R4_PLANT if members == "trailing" else b""))
+        for name, data in (members if isinstance(members, list) else []):
+            archive.writestr(name, data)
+        archive.comment = comment
+    job.seal()
+
+
+@pytest.mark.parametrize("carrier", ["comment", "extra_field", "trailing"])
+def test_a_usdz_is_rebuilt_without_its_comment_extra_fields_or_trailing_bytes(job, tmp_path, carrier):
+    _object_usdz(job, tmp_path, comment=R4_PLANT if carrier == "comment" else b"",
+                 extra=struct.pack("<HH", 0xCAFE, len(R4_PLANT)) + R4_PLANT if carrier == "extra_field" else b"",
+                 members="trailing" if carrier == "trailing" else None)
+    _published_and_clean(job)
+    with zipfile.ZipFile(_package(job)) as archive:
+        data = archive.read("object.usdz")
+    with zipfile.ZipFile(io.BytesIO(data)) as inner:
+        assert inner.comment == b"" and inner.infolist()[0].filename == "obj.usdc"
+        for info in inner.infolist():
+            assert info.extra in (b"",) or info.extra[:2] == struct.pack("<H", 0x1986)
+            assert set(info.extra[4:]) <= {0}
+            start = info.header_offset + 30 + len(info.filename) + len(info.extra)
+            assert start % 64 == 0 and info.date_time == (1980, 1, 1, 0, 0, 0)
+
+
+@pytest.mark.parametrize("name", ["gs:__bucket-x_jane@acmemail.example.png", "/tmp/work/x.png", "../../escape.png",
+                                  "C:/x.png", "a\\b.png"])
+def test_a_usdz_member_name_that_holds_a_value_or_is_not_relative_is_refused(job, tmp_path, name):
+    _object_usdz(job, tmp_path, members=[(name, _plain_png())])
+    world = World(job)
+    result = world.publish()
+    assert result["status"] == "refused" and world.archived == []
+    assert result["detail"] in {"task_object a usdz member name that is not a plain relative path",
+                                "object.usdz holds an email address inside a zip member",
+                                "object.usdz holds a storage link inside a zip member"}, result
+
+
+def test_a_rebuilt_usdz_opens_and_every_member_resolves(tmp_path):
+    from blueprint_pipeline import outbound_file_writer as writer
+    root = tmp_path / "src"
+    _write(root / "tex.png", _plain_png())
+    stage = Usd.Stage.CreateNew(str(root / "obj.usda"))
+    stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, "/Object").GetPrim())
+    shader = UsdShade.Shader.Define(stage, "/Object/Tex")
+    shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set("./tex.png")
+    stage.GetRootLayer().Save()
+    source = tmp_path / "in.usdz"
+    assert UsdUtils.CreateNewUsdzPackage(str(root / "obj.usda"), str(source))
+    target = tmp_path / "out.usdz"
+    writer.rewrite_usdz(source, target)
+    opened = Usd.Stage.Open(str(target))
+    assert opened.GetPrimAtPath("/Object").IsValid()
+    layers, assets, unresolved = UsdUtils.ComputeAllDependencies(str(target))
+    assert unresolved == [] and any(str(asset).endswith("tex.png]") for asset in assets)
+    with zipfile.ZipFile(target) as archive:
+        assert archive.namelist()[0] == "obj.usda"
+    again = tmp_path / "again.usdz"
+    writer.rewrite_usdz(source, again)
+    assert again.read_bytes() == target.read_bytes()  # deterministic
+
+
+def test_the_walk_reads_a_newline_inside_a_dictionary_value(tmp_path, monkeypatch):
+    monkeypatch.setattr(scan, "SPEC_WALK_BYTES", 0)
+    path = tmp_path / "layer.usdc"
+    stage = Usd.Stage.CreateNew(str(path))
+    root = UsdGeom.Xform.Define(stage, "/Root").GetPrim()
+    root.SetCustomDataByKey("note", "made by\nZebra Plant Foods\nlast week")
+    stage.GetRootLayer().Save()
+    needles = scan.site_identity(["Zebra Plant Foods"])
+    walked = scan._usd_text_finding(path, needles)
+    monkeypatch.setattr(scan, "SPEC_WALK_BYTES", 1 << 40)
+    exported = scan._usd_text_finding(path, needles)
+    assert walked is not None and exported is not None and walked[0] == exported[0] == scan.SITE_IDENTITY
+
+
+def test_the_raw_set_finds_links_and_long_paths_in_binary_bytes():
+    import io as _io
+    for planted in (b"gs://bucket-x/y", b"https://host.example/x", b"omniverse://srv/x", b"/var/lib/blueprint/x",
+                    b"/" + b"home/someone/x"):
+        assert scan.scan_stream(_io.BytesIO(b"\x00\x01" + planted + b"\x02"), [], text=False) is not None, planted
+    for short in (b"/tmp/work/x", b"~/x", b"jane@acmemail.example", b"10.1.2.3"):
+        assert scan.scan_stream(_io.BytesIO(b"\x00\x01" + short + b"\x02"), [], text=False) is None, short

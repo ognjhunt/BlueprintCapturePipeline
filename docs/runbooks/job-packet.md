@@ -127,15 +127,19 @@ is in it.
 
 Read the whole sheet, `JOB_SHEET.md`, before the packet leaves. The tool
 removes email addresses, phone numbers and web links from the site's own words,
-and reads every copied file with the shared scan (`outbound_file_scan`; its
-rules are a table in the module's docstring). The simulation folders
-(`files/simulation/`, `files/object/`) may hold only USD layers, usdz archives,
-PNG and JPEG images and text: any other kind of file there refuses the packet.
-Kinds are decided by content, not by the file's ending. Parsed text (a USD
-layer's text form, image metadata, text files) is read for ids, keys, paths,
-links, email and IP addresses and the site's identity; the raw bytes of binary
-files (the video, clips, reconstruction) only for the job's long ids and keys
-and long-prefix tokens. The site's identity is its name, organisation, typed
+and writes every simulation file itself instead of copying it: in
+`files/simulation/` and `files/object/` each USD layer is written by `Sdf`,
+each usdz is rebuilt from its members, and each PNG or JPEG is rewritten without
+its text, EXIF, ICC and comment data (`outbound_file_writer`; pixels unchanged).
+Any other kind of file there refuses the packet. Then the shared scan
+(`outbound_file_scan`; its rules are a table in the module's docstring) reads
+the whole packet as the proof. Kinds are decided by content, not by the file's
+ending. Parsed text (a USD layer's text form, image metadata, text files, a
+PLY's header, a GLB's JSON) is read for ids, keys, paths, links, email and IP
+addresses and the site's identity; the raw bytes of binary files (the video,
+clips, the PLY and GLB bodies) for the job's long ids and keys, long-prefix
+tokens, links and long host paths. The one limit: numeric payload (pixels,
+coding tables, numeric arrays) is not searched as text. The site's identity is its name, organisation, typed
 address, contact and submitter names, email and phone. It is matched as whole
 words, ignoring case and accents; a value of two or more words is also matched
 with separators removed (`Zebra Plant Foods` as `ZebraPlant_Foods`). Single

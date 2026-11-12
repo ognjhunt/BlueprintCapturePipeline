@@ -48,6 +48,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import tempfile
 import zipfile
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -1197,6 +1198,19 @@ def _secrets(capture_dir: Path, context: Mapping[str, Any], pull: PullRecord) ->
     return [(value.encode(), kind) for value, kind in found if isinstance(value, str) and len(value) >= 4]
 
 
+#: The packet's simulation folders: every file in them is written by Blueprint, never copied
+#: (``outbound_file_writer``, shared with the simulation package).
+SHIPPED_FOLDERS = ("files/simulation/", "files/object/")
+
+
+def _write_shipped(source: Path, target: Path, relative: str) -> None:
+    from .outbound_file_writer import WriteRefused, write_file
+    try:
+        write_file(source, target)
+    except WriteRefused as error:
+        raise JobPacketRefused("job_packet_input_unreadable", f"{relative}: {error.detail}") from None
+
+
 def _scan_packet(packet: Path, secrets: list[tuple[bytes, str]], words: list[tuple[bytes, str]] | None = None) -> None:
     """Refuse when any file written into the packet, or any member of a zip there, holds an id, key, path or link.
 
@@ -1209,7 +1223,7 @@ def _scan_packet(packet: Path, secrets: list[tuple[bytes, str]], words: list[tup
     from .outbound_file_scan import first_finding, literal_forms
     # Only the closed list of kinds may ship as simulation files; the video and clips are checked by their own code.
     finding = first_finding(packet, [*literal_forms(secrets), *(words or [])], words_only_under="files/",
-                            words_except=(SIMULATION_STAGE,), closed=("files/simulation/", "files/object/"))
+                            words_except=(SIMULATION_STAGE,), closed=SHIPPED_FOLDERS)
     if finding is not None:
         raise JobPacketRefused("job_packet_file_names_the_site", finding.sentence())
 
@@ -1453,12 +1467,18 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
         for root, source, relative in copies:
             target = packet / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(_regular(_inside(root, source), source.name), target)
+            if relative.startswith(SHIPPED_FOLDERS):
+                _write_shipped(_regular(_inside(root, source), source.name), target, relative)
+            else:
+                shutil.copyfile(_regular(_inside(root, source), source.name), target)
         for archive, info, relative in members:
             target = packet / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(info) as stream, target.open("wb") as handle:
-                shutil.copyfileobj(stream, handle)
+            with tempfile.TemporaryDirectory(prefix=".member-", dir=packet) as folder:
+                extracted = Path(folder) / Path(info.filename).name
+                with archive.open(info) as stream, extracted.open("wb") as handle:
+                    shutil.copyfileobj(stream, handle)
+                _write_shipped(extracted, target, relative)
         if stage is not None:
             from .scene_package_stage import StageRefused, write_stage
             try:

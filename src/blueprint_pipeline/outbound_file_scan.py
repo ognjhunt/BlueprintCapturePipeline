@@ -1,30 +1,43 @@
 """One scan for every file that leaves Blueprint: ids, keys, host paths, links and the site's identity.
 
 The job packet tool (``job_packet_export``) and the simulation package for deployment companies
-(``website_company_simulation``) both read every file they are about to hand over with this module and refuse,
-naming the file, when one holds something that says who or where the site is, where Blueprint keeps things, or how
-to reach it. A finding names the file, the kind and where; it never repeats what matched.
+(``website_company_simulation``) both hand over simulation files that Blueprint WROTE, never copied: every USD layer,
+usdz, PNG and JPEG is written by ``outbound_file_writer`` from what was read (what the reader does not read cannot
+be in the output). This scan then runs over the written output, as the proof, and refuses, naming the file, when
+one holds something that says who or where the site is, where Blueprint keeps things, or how to reach it. A finding
+names the file, the kind and where; it never repeats what matched.
+
+The one limit: numeric payload (pixel data, an image's coding tables, numeric arrays in a layer) is written as read
+and is not searched as text. These files come from Blueprint's own tools and from asset tools, never from a person
+typing; the scan guards against what tools write by accident (metadata, comments, names, paths, links), not against
+text deliberately encoded as numbers.
 
 Rule 1: a closed list of file kinds, each with one stated way its text is obtained. A file's kind is decided by
 its content (its magic bytes, or valid UTF-8 with no NUL byte for text), never by its ending.
 
 | Kind | How its text is obtained | Pattern classes applied |
 |---|---|---|
-| USD layer (``.usd``, ``.usda``, ``.usdc``; a usdz member) | ``pxr``: the text export for a layer up to ``SPEC_WALK_BYTES``, the spec walk above; a ``.usda`` file is also text itself | parsed text: all classes; raw bytes of a binary layer: long fixed strings only |
-| USDZ archive | each member by its own kind | as each member's kind |
-| PNG, JPEG | their metadata chunks (tEXt, zTXt, iTXt, eXIf; APPn and COM), decompressed; pixels never searched | metadata: all classes; raw bytes: long fixed strings only |
-| Text (by content), Blueprint's own README, ``success_rule.json``, ``scene.usda``, or a text usdz member | the file itself | all classes |
-| Any other kind | none | refused where only the closed list may ship (``closed``: the package, the packet's simulation folders); elsewhere (the packet's video, clips and reconstruction) raw bytes: long fixed strings only |
+| USD layer (``.usd``, ``.usda``, ``.usdc``; a usdz member) | ``pxr``: the text export for a layer up to ``SPEC_WALK_BYTES``, the spec walk above (each walked value whole, newlines included); a ``.usda`` file is also text itself | parsed text: all classes; raw bytes of a binary layer: the raw set |
+| USDZ archive | each member by its own kind (a USD layer, a PNG or a JPEG; anything else may not ship); each member's name as text; an archive comment may not ship | as each member's kind; names: all classes |
+| PNG, JPEG | their metadata chunks (tEXt, zTXt, iTXt, eXIf; APPn and COM), decompressed; the written files hold none | metadata: all classes; raw bytes: the raw set |
+| Text (by content): Blueprint's own README, ``success_rule.json``, ``scene.usda``, the packet's sheet and README | the file itself | all classes |
+| PLY (the packet's reconstruction splat, ascii or binary) | its header, up to and including ``end_header`` within 1 MiB, read as text (a header that does not end refuses); the body is not rewritten | header: all classes; body: the raw set |
+| GLB (the packet's collision mesh) | its JSON chunk, read as text | JSON: all classes; body: the raw set |
+| MP4 (the packet's video, written by Blueprint's own ffmpeg step without sound and checked with ffprobe by its own code; the trial clips, Blueprint's own review renders, copied) | none here | raw bytes: the raw set |
+| Any other kind | none | refused where only the closed list may ship (``closed``: the package, the packet's simulation folders); elsewhere raw bytes: the raw set |
 
-Rule 2: each pattern class has one place it is applied.
+Rule 2: each pattern class has one place it is applied. The raw set (raw bytes of a binary file) holds only
+patterns whose chance of matching random bytes is about 1e-5 per GiB or less (the arithmetic is beside
+``_RAW_LINKS_AND_PATHS``).
 
-| Pattern class | In parsed text | In raw bytes of a binary file |
+| Pattern class | In parsed text | In raw bytes of a binary file (the raw set) |
 |---|---|---|
 | The caller's ids, account ids and keys (hyphen and underscore forms) | yes, any length of 4 or more | only those of ``RAW_LITERAL_MINIMUM`` (16) characters or more |
-| Token formats with long fixed prefixes (``AKIA``/``ASIA`` key ids, ``github_pat_``, ``glpat-``, private-key blocks, JWTs, ``aws_secret_access_key=``) | yes | yes (``_RAW_TOKENS``; chance in 512 MiB of random bytes below 1e-9 each) |
-| Other tokens (``sk-``, ``gh*_``, ``xox*-``, ``AIza``, ``hf_``, bearer) and signed-link parameters | yes | no |
-| Storage links, ``file:`` links, host paths (``/var/lib/blueprint``, ``/mnt/blueprint-work``, ``/home/``, ``/root/``, ``/Users/``, ``/data/``, ``/tmp/``, ``/opt/``, ``/srv/``, ``~/``, drive and UNC paths) | yes | no |
-| Web links and any other ``scheme://`` (except ``http://www.w3.org/`` namespaces), email and IPv4 addresses, bare web addresses | yes | no |
+| Token formats with long fixed prefixes (``AKIA``/``ASIA`` key ids, ``github_pat_``, ``glpat-``, private-key blocks, JWTs, ``aws_secret_access_key=``) | yes | yes (``_RAW_TOKENS``; below 1e-9 each in 512 MiB) |
+| Links with three or more host characters: ``gs://``, ``s3://``, ``http(s)://``, ``file://``, any lower-case scheme of four letters or more | yes (any scheme, any case) | yes (``_RAW_LINKS_AND_PATHS``; about 1.7e-5 per GiB for ``gs``/``s3``, about 1e-5 for other schemes, far less for the rest) |
+| Long host paths: ``/var/lib/blueprint``, ``/mnt/blueprint-work``, ``/home/<3+>/``, ``/Users/<3+>/`` | yes | yes (below 1e-18 a position) |
+| Short host paths (``/tmp/``, ``/opt/``, ``/srv/``, ``/data/``, ``/root/``, ``~/``, drive and UNC paths), other tokens (``sk-``, ``gh*_``, ``xox*-``, ``AIza``, ``hf_``, bearer), signed-link parameters | yes | no |
+| Email and IPv4 addresses, bare web addresses | yes | no |
 | The site's identity (``site_identity``) | yes, whole words, accents folded | never |
 
 The site's identity, looked for in parsed text only, with accents folded (NFKD, combining marks dropped) and case
@@ -69,7 +82,8 @@ UNREADABLE_ZIP = "a zip that cannot be read"
 UNREADABLE_USD = "a USD file that cannot be opened"
 UNREADABLE_FILE = "a file that cannot be read"
 NOT_SHIPPED = "a kind of file that may not ship"
-UNREADABLE = frozenset({UNREADABLE_ZIP, UNREADABLE_USD, UNREADABLE_FILE, NOT_SHIPPED})
+UNREADABLE_HEADER = "a header that cannot be read"
+UNREADABLE = frozenset({UNREADABLE_ZIP, UNREADABLE_USD, UNREADABLE_FILE, NOT_SHIPPED, UNREADABLE_HEADER})
 
 STORAGE_LINK, HOST_PATH, FILE_LINK, WEB_LINK, WEB_ADDRESS, KEY = (
     "a storage link", "a host path", "a local file link", "a web link", "a web address", "a key or token")
@@ -85,7 +99,23 @@ _WORD, _NORMALISED = b"\x00w:", b"\x00n:"
 #: metadata value; numeric arrays skipped) instead of exporting all its geometry to text.
 SPEC_WALK_BYTES = 8 << 20
 
-#: Raw bytes of a binary file: only token formats with long fixed prefixes.
+#: Raw bytes of a binary file, besides long-prefix tokens: links and long host paths, each with a chance in random
+#: bytes of about 1e-5 per GiB or less (a GiB is about 1.07e9 positions):
+#: - ``gs://``, ``s3://`` + 3 host characters: (1/256)^5 x (66/256)^3, about 1.6e-14 a position, 1.7e-5 per GiB
+#:   each (lower-case schemes only; upper case is found in parsed text);
+#: - ``http://``, ``https://``, ``file://`` + 3: (1/256)^7 or less x 0.017, below 1e-18 a position;
+#: - any other scheme of 4 to 15 lower-case letters + ``://`` + 3: (26/256)^4 x (1/256)^3 x 0.017 x 0.9 (a
+#:   non-letter before it), about 1e-14 a position, about 1e-5 per GiB;
+#: - ``/var/lib/blueprint``, ``/mnt/blueprint-work``: below 1e-30 a position;
+#: - ``/home/`` or ``/Users/`` + 3 name characters + ``/``: (1/256)^7 x (40/256)^3, below 1e-18 a position.
+#: Short paths (``/tmp/``, ``~/``, ``/opt/``, ``/data/``), emails, IPv4 and bare domains stay in parsed text only.
+_RAW_LINKS_AND_PATHS = re.compile(
+    rb"(?<![A-Za-z0-9])(?:gs|s3|https?|file)://[A-Za-z0-9._~%/-]{3}"
+    rb"|(?<![A-Za-z])[a-z][a-z0-9+.-]{3,15}://[A-Za-z0-9._~%-]{3}"
+    rb"|/var/+lib/+blueprint|/mnt/+blueprint-work|/home/[A-Za-z0-9._-]{3,64}/|/Users/[A-Za-z0-9._ -]{3,64}/")
+_RAW_LINK_KINDS = ((b"gs:", STORAGE_LINK), (b"s3:", STORAGE_LINK), (b"http", WEB_LINK), (b"file:", FILE_LINK),
+                   (b"/", HOST_PATH))
+#: Raw bytes of a binary file: token formats with long fixed prefixes.
 _RAW_TOKENS = re.compile(
     rb"(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{30,}"
     rb"|(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----"
@@ -351,7 +381,14 @@ def _match_window(window: bytes, literals: Sequence[tuple[bytes, str]], *, text:
             return kind, position
     if not text:
         match = _RAW_TOKENS.search(window)
-        return (KEY, match.start()) if match else None
+        if match:
+            return KEY, match.start()
+        match = _RAW_LINKS_AND_PATHS.search(_blank_allowed_links(window))
+        if match:
+            value = match.group(0)
+            kind = next((name for prefix, name in _RAW_LINK_KINDS if value.startswith(prefix)), OTHER_LINK)
+            return kind, match.start()
+        return None
     found = _identity_found(window, identity)
     if found:
         return found, 0
@@ -433,6 +470,22 @@ def _textual(value: object) -> bytes | None:
         return None
     if kind.startswith(("Vec", "Matrix", "Quat", "Range", "Interval")):
         return None
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace")
+    if isinstance(value, Mapping) or hasattr(value, "items"):
+        # A dictionary (customData, assetInfo): its keys and values as they are, so a newline inside a value is
+        # read as a newline, not as the two characters a printed form would show.
+        try:
+            parts = [part for key, item in value.items()
+                     for part in (str(key).encode("utf-8", "replace"), _textual(item)) if part]
+            return b"\n".join(parts)
+        except Exception:  # noqa: BLE001 - fall back to its printed form
+            pass
+    if isinstance(value, (list, tuple)) or kind in _TEXT_ARRAYS:
+        try:
+            return b"\n".join(part for item in value if (part := _textual(item)))
+        except Exception:  # noqa: BLE001 - fall back to its printed form
+            pass
     try:
         return str(value).encode("utf-8", "replace")
     except Exception:  # noqa: BLE001 - a value that cannot be shown is shown by its type
@@ -524,6 +577,10 @@ def content_kind(path: Path) -> str:
             return "jpeg"
         if head.startswith(b"PK\x03\x04") and Path(path).suffix.lower() == ".usdz":
             return "usdz"
+        if head.startswith((b"ply\n", b"ply\r\n")):
+            return "ply"
+        if head.startswith(b"glTF"):
+            return "glb"
         stream.seek(0)
         decoder = codecs.getincrementaldecoder("utf-8")()
         try:
@@ -537,12 +594,40 @@ def content_kind(path: Path) -> str:
     return "zip" if zipfile.is_zipfile(path) else "text"
 
 
+PLY_HEADER_LIMIT = 1 << 20
+
+
+def _header_text(path: Path, kind: str) -> bytes | None:
+    """A PLY's header (up to and including ``end_header``, within 1 MiB) or a GLB's JSON chunk, as text; None when
+    it cannot be read."""
+    with path.open("rb") as stream:
+        if kind == "ply":
+            head = stream.read(PLY_HEADER_LIMIT)
+            end = head.find(b"end_header")
+            return head[:end + len(b"end_header")] if end >= 0 else None
+        head = stream.read(20)
+        if len(head) < 20:
+            return None
+        length, chunk = struct.unpack("<I4s", head[12:20])
+        if chunk != b"JSON" or length > 64 << 20:
+            return None
+        body = stream.read(length)
+        return body if len(body) == length else None
+
+
 def _scan_kind(path: Path, relative: str, kind: str, literals: Sequence[tuple[bytes, str]], *, closed: bool,
                scratch: Path | None, member: str = "") -> Finding | None:
     suffix = " inside a zip member" if member else ""
     where = f"{member}, " if member else ""
     if kind == "other" and closed:
         return Finding(relative, NOT_SHIPPED, f"{where}the file")
+    if kind in ("ply", "glb"):
+        header = _header_text(Path(path), kind)
+        if header is None:
+            return Finding(relative, UNREADABLE_HEADER, f"{where}the {kind.upper()} header")
+        hit = _match_window(header, literals, text=True)
+        if hit:
+            return Finding(relative, hit[0] + suffix, f"{where}its {kind.upper()} header")
     try:
         with Path(path).open("rb") as stream:
             found = scan_stream(stream, literals, text=kind in ("text", "usda"))
@@ -588,17 +673,26 @@ def _scan_zip(path: Path, relative: str, literals: Sequence[tuple[bytes, str]], 
         with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory(prefix="outbound-scan-",
                                                                            dir=scratch) as folder:
             layers = 0
+            if usdz and archive.comment:
+                return Finding(relative, NOT_SHIPPED, "the archive comment")
             for index, info in enumerate(archive.infolist()):
                 if info.is_dir():
                     continue
+                if usdz:
+                    from .outbound_file_writer import member_name_ok
+                    if not member_name_ok(info.filename):
+                        return Finding(relative, NOT_SHIPPED, f"member {index + 1}, its name")
+                    hit = _match_window(info.filename.encode("utf-8", "replace"), literals, text=True)
+                    if hit:
+                        return Finding(relative, hit[0] + " inside a zip member", f"member {index + 1}, its name")
                 extracted = Path(folder) / f"member-{index}{Path(info.filename).suffix.lower()}"
                 with archive.open(info) as source, extracted.open("wb") as target:
                     while chunk := source.read(CHUNK_BYTES):
                         target.write(chunk)
                 kind = content_kind(extracted)
                 layers += kind in ("usda", "usdc")
-                if kind in ("usdz", "zip"):
-                    kind = "other"  # an archive inside an archive is not read
+                if kind in ("usdz", "zip") or (usdz and kind not in ("usda", "usdc", "png", "jpeg")):
+                    kind = "other"  # an archive inside an archive is not read; a usdz holds layers and images only
                 found = _scan_kind(extracted, relative, kind, literals, closed=closed or usdz, scratch=folder,
                                    member=f"member {index + 1}")
                 extracted.unlink()

@@ -1539,8 +1539,8 @@ PLANTED_FILES = {
                       "files/simulation/configured-scene/appearance.usdc", "an owner or organisation id"),
     "clip_bytes": (lambda inputs: _write(inputs.review_videos_dir / "cell_runs" / "01" / f"{CAPTURE}-camera.mp4",
                                          b"\x00moov " + CAPTURE.encode()), "files/early-trial/clips/clip-01.mp4", "a job id"),
-    "reconstruction_link": (lambda inputs: _write(inputs.capture_dir / SPLAT, f"ply\ncomment {LINK}\n".encode()),
-                            "files/reconstruction/atlas_depth_splat_levelled.ply", "a web link"),
+    "reconstruction_link": (lambda inputs: _write(inputs.capture_dir / SPLAT, f"ply\ncomment {LINK}\nend_header\n".encode()),
+                            "files/reconstruction/atlas_depth_splat_levelled.ply", "a web link"),  # its header
     "pull_root_path": (lambda inputs: _write(inputs.capture_dir / COLLISION, str(inputs.pull_root.absolute()).encode()),
                        "files/reconstruction/collider_conditioned.glb", "the pull root's path"),
 }
@@ -1573,6 +1573,37 @@ def test_the_sites_description_in_a_copied_file_is_the_job_and_is_kept(tmp_path,
     _write(inputs.team_scene_dir / "native-task-packet" / "look.usda", f'#usda 1.0\n(doc = "{SENTENCE}")\n')
     result = build_job_packet(inputs, output_root=_out(tmp_path))
     assert SENTENCE in _sheet(result)
+
+
+@pytest.mark.parametrize("planted", [b"/tmp/work/site-scan", b"https://tool.example.org", b"jane@acmemail.example",
+                                     b"gs://bucket-x/capture"])
+def test_a_binary_ply_header_is_read_as_text(tmp_path, job, planted) -> None:
+    inputs = job()
+    header = (b"ply\nformat binary_little_endian 1.0\ncomment exported from " + planted
+              + b"\nelement vertex 1000\nproperty float x\nend_header\n")
+    _write(inputs.capture_dir / SPLAT, header + os.urandom(12000))
+    refusal = _refusal(inputs, tmp_path)
+    assert refusal.code == "job_packet_file_names_the_site"
+    assert "files/reconstruction/atlas_depth_splat_levelled.ply holds" in str(refusal)
+    assert planted.decode() not in str(refusal)
+
+
+def test_a_ply_whose_header_never_ends_is_refused(tmp_path, job) -> None:
+    inputs = job()
+    _write(inputs.capture_dir / SPLAT, b"ply\nformat binary_little_endian 1.0\n" + b"\x00" * (1 << 20) + b"end_header")
+    refusal = _refusal(inputs, tmp_path)
+    assert str(refusal).endswith("files/reconstruction/atlas_depth_splat_levelled.ply: a header that cannot be read")
+
+
+def test_the_packets_simulation_files_are_written_not_copied(tmp_path, job) -> None:
+    inputs = job()
+    usdz = inputs.configured_scene_dir / "replacement_asset.usdz"
+    data = usdz.read_bytes()
+    with zipfile.ZipFile(usdz, "a") as archive:
+        archive.comment = b"gs://bucket-x/comment"
+    folder = Path(build_job_packet(inputs, output_root=_out(tmp_path))["packet_dir"])
+    shipped = (folder / "files/object/replacement_asset.usdz").read_bytes()
+    assert b"gs://bucket-x" not in shipped and shipped != data
 
 
 def test_a_clip_sidecar_and_a_namespace_link_are_fine(tmp_path, job) -> None:

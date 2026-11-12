@@ -417,6 +417,15 @@ def _shippable(path: Path, label: str) -> None:
         raise PackageRefused(KIND_NOT_SHIPPED, f"{label} {suffix or 'no ending'}")
 
 
+def _write(source: Path, target: Path, label: str) -> None:
+    """Every file is written by Blueprint from what it read, never copied (``outbound_file_writer``)."""
+    from .outbound_file_writer import WriteRefused, write_file
+    try:
+        write_file(source, target)
+    except WriteRefused as error:
+        raise PackageRefused(KIND_NOT_SHIPPED, f"{label} {error.detail}") from None
+
+
 class _Localizer:
     """Copies each USD file into the package, rewriting every reference to a relative path inside it.
 
@@ -441,10 +450,10 @@ class _Localizer:
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.suffix.lower() == ".usdz":
             _check_usdz(source, label)
-            shutil.copyfile(source, target)
+            _write(source, target, label)
             return
         if source.suffix.lower() not in _USD:
-            shutil.copyfile(source, target)
+            _write(source, target, label)
             return
         layer = _open_layer(str(source))
         if layer is None:
@@ -503,7 +512,7 @@ class _Localizer:
                 number = pattern.fullmatch(tile.name).group(1)
                 tile_target = stem.with_name(f"{stem.name}.{number}{tail.lower() or tile.suffix.lower()}")
                 tile_target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(tile.resolve(), tile_target)
+                _write(tile.resolve(), tile_target, label)
                 self.placed.setdefault(tile.resolve(), tile_target)
             changed.append(True)
             return "./" + Path(os.path.relpath(stem.with_name(f"{stem.name}.{_UDIM}{tail.lower()}"),
@@ -518,11 +527,9 @@ class _Localizer:
             _rewrite_strings(layer, rewrite)
         if failure:
             raise PackageRefused(failure[0], label)
-        if changed:
-            if not layer.Export(str(target)):
-                raise PackageRefused("website_company_simulation_scene_unreadable", label)
-        else:
-            shutil.copyfile(source, target)
+        # Written by Sdf from the opened layer, changed or not: never copied (``outbound_file_writer``).
+        if not layer.Export(str(target)):
+            raise PackageRefused("website_company_simulation_scene_unreadable", label)
 
 
 def _layer_units(path: Path) -> tuple[str | None, float | None]:
