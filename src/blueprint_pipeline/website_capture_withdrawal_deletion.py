@@ -24,9 +24,10 @@ evidence, the B2 offload and the scene workspace archive kept every byte.
   artifacts name, with each object version and delete marker listed through
   the existing artifact store client, every archived Atlas preview of the
   site's walkthrough and every published web-sized scene preview the site's job
-  page showed (``website_scene_preview``) and every silent company clip of its
-  video (``website_company_clip``), each found by its name, so also after
-  workspace retirement;
+  page showed (``website_scene_preview``), every silent company clip of its
+  video (``website_company_clip``) and every simulation package deployment
+  companies download (``website_company_simulation``), each found by its name,
+  so also after workspace retirement;
 - every beta policy screening attempt of a campaign bound to the site by the
   screening ledger, and the provider output archives its promotion receipts name
   (``website_capture_withdrawal_screening``): one whose money is final and whose
@@ -536,6 +537,23 @@ def _company_clip_uris(object_store: Any, identity: Mapping[str, str],
         return []
 
 
+def _company_simulation_uris(object_store: Any, identity: Mapping[str, str],
+                             unresolved: list[dict[str, Any]]) -> list[str]:
+    """Every archived simulation package of the walkthrough and its same-job supplements, by name."""
+    from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
+    from .website_company_simulation import ARTIFACT_KIND, package_filename
+    prefix = f"{LARGE_ARTIFACT_KEY_PREFIX}/{ARTIFACT_KIND}/sha256/"
+    if object_store is None:
+        unresolved.append({"prefix": prefix, "reason": "website_withdrawal_deletion_object_store_unconfigured"})
+        return []
+    try:
+        return object_store.named(prefix, package_filename(identity["capture_id"], identity["request_id"]),
+                                  continuation_request_id=identity["request_id"], suffix=".zip")
+    except WithdrawalDeletionError as error:
+        unresolved.append({"prefix": prefix, "reason": str(error)})
+        return []
+
+
 def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = DEFAULT_RUN_ROOTS,
                              intent_root: Path | None = DEFAULT_INTENT_ROOT,
                              binding_root: Path | None = DEFAULT_BINDING_ROOT, object_store: Any = None,
@@ -623,7 +641,8 @@ def plan_withdrawal_deletion(*, capture_root: Path, run_roots: Sequence[Path] = 
                   | ({workspace["archive_uri"]} if workspace["archive_uri"] else set())
                   | set(_atlas_preview_uris(object_store, identity, unresolved))
                   | set(_scene_preview_uris(object_store, identity, unresolved))
-                  | set(_company_clip_uris(object_store, identity, unresolved)))
+                  | set(_company_clip_uris(object_store, identity, unresolved))
+                  | set(_company_simulation_uris(object_store, identity, unresolved)))
     # A content-addressed object an unbound run also names is not this site's to delete.
     unbound_uris = set(foreign_uris)
     for key, unit in units.items():
@@ -808,6 +827,19 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise WithdrawalDeletionError("website_withdrawal_deletion_company_clip_busy") from None
+        from .website_company_simulation import DIRECTORY as SIMULATION_DIRECTORY, LOCK_FILE as SIMULATION_LOCK
+        for path in sorted(site.glob(f"captures/*/{'/'.join(SIMULATION_DIRECTORY)}/{SIMULATION_LOCK}")):
+            _require(not any(item.is_symlink() for item in (path, *path.parents)), "unsafe_entry")
+            try:
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError:
+                raise WithdrawalDeletionError("website_withdrawal_deletion_company_simulation_lock_unsafe") from None
+            lock = locks.enter_context(os.fdopen(descriptor, "rb"))
+            _require(stat.S_ISREG(os.fstat(lock.fileno()).st_mode), "company_simulation_lock_unsafe")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise WithdrawalDeletionError("website_withdrawal_deletion_company_simulation_busy") from None
         from .beta_screening_review_videos import DIRNAME as REVIEW_VIDEOS, LOCK_NAME as REVIEW_LOCK
         for path in sorted(site.glob(f"captures/*/pipeline/{REVIEW_VIDEOS}/{REVIEW_LOCK}")):
             _require(not any(item.is_symlink() for item in (path, *path.parents)), "unsafe_entry")

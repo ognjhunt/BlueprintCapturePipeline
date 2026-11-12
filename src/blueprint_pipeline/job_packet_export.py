@@ -1070,6 +1070,33 @@ def _packet_files(inputs: JobInputs, plan_dir: Path | None) -> list[tuple[Path, 
     return rows
 
 
+#: The composed stage of the team scene (``scene_package_stage``): the only file that says where each part sits.
+SIMULATION_STAGE = "files/simulation/scene.usda"
+
+
+def _stage_rows(plan: Mapping[str, Any] | None, plan_dir: Path | None,
+                copies: list[tuple[Path, Path, str]]) -> tuple[list[dict[str, Any]], str] | None:
+    """Each plan row placed on the copied team scene file, and the up axis; None when any row cannot be placed.
+
+    The plan itself is a record and is never copied; without a composed stage the packet carries no simulation.
+    """
+    from .scene_package_stage import StageRefused, placements, up_axis
+    if plan is None or plan_dir is None:
+        return None
+    try:
+        rows, axis = placements(plan), up_axis(plan)
+    except StageRefused:
+        return None
+    copied = {source: relative for _root, source, relative in copies}
+    placed = []
+    for row in rows:
+        relative = copied.get(plan_dir.joinpath(*Path(row["usd_path"]).parts))
+        if relative is None:
+            return None
+        placed.append({**row, "file": Path(relative).relative_to("files/simulation").as_posix()})
+    return placed, axis
+
+
 def unique_destinations(rows: list[tuple[Path, Path, str]]) -> None:
     destinations = [row[2] for row in rows]
     if len(set(destinations)) != len(destinations):
@@ -1147,13 +1174,6 @@ def _copy_video(source: Path, target: Path) -> dict[str, Any]:
     return receipt
 
 
-#: Links a packet file may carry: XML namespace identifiers (an SVG or XML header names them); they point at no
-#: site, person or Blueprint storage.
-ALLOWED_LINK_PREFIXES = (b"http://www.w3.org/",)
-_ANY_LINK = re.compile(rb"https?://")
-_SCAN_CHUNK = 8 << 20
-
-
 def _secrets(capture_dir: Path, context: Mapping[str, Any], pull: PullRecord) -> list[tuple[bytes, str]]:
     """What must never be in a packet file, each with the kind of thing it is (the kind is printed, never the value)."""
     def record(relative: str) -> Mapping[str, Any]:
@@ -1177,40 +1197,16 @@ def _secrets(capture_dir: Path, context: Mapping[str, Any], pull: PullRecord) ->
     return [(value.encode(), kind) for value, kind in found if isinstance(value, str) and len(value) >= 4]
 
 
-def _match(stream, secrets: list[tuple[bytes, str]]) -> str | None:
-    """The kind of the first secret or outside link in ``stream``, read in chunks that overlap, or None."""
-    overlap, tail = max(len(value) for value, _ in secrets) + 4096, b""
-    for chunk in iter(lambda: stream.read(_SCAN_CHUNK), b""):
-        window = tail + chunk
-        for value, kind in secrets:
-            if value in window:
-                return kind
-        for link in _ANY_LINK.finditer(window):
-            if not window.startswith(ALLOWED_LINK_PREFIXES, link.start()):
-                return "a web link"
-        tail = window[-overlap:]
-    return None
-
-
 def _scan_packet(packet: Path, secrets: list[tuple[bytes, str]]) -> None:
-    """Refuse when any file written into the packet, or any member of a zip there, holds an id, key, path or link."""
-    for path in sorted(item for item in packet.rglob("*") if item.is_file()):
-        relative = path.relative_to(packet).as_posix()
-        with path.open("rb") as stream:
-            kind = _match(stream, secrets)
-        if kind is None and zipfile.is_zipfile(path):
-            try:
-                with zipfile.ZipFile(path) as archive:
-                    for info in archive.infolist():
-                        with archive.open(info) as member:
-                            kind = _match(member, secrets)
-                        if kind:
-                            kind += " inside a zip member"
-                            break
-            except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
-                raise JobPacketRefused("job_packet_file_names_the_site", f"{relative}: a zip that cannot be read") from exc
-        if kind:
-            raise JobPacketRefused("job_packet_file_names_the_site", f"{relative} holds {kind}")
+    """Refuse when any file written into the packet, or any member of a zip there, holds an id, key, path or link.
+
+    The scan is shared with the simulation package (``outbound_file_scan``): ids in both forms, host paths, storage,
+    file and web links, bare web addresses in text, tokens, and the text form of every binary USD layer.
+    """
+    from .outbound_file_scan import first_finding, literal_forms
+    finding = first_finding(packet, literal_forms(secrets))
+    if finding is not None:
+        raise JobPacketRefused("job_packet_file_names_the_site", finding.sentence())
 
 
 def _code_revision() -> str:
@@ -1231,6 +1227,9 @@ def _readme(*, files: list[str], preparation: Mapping[str, Any] | None, base_sce
     if not any(has(prefix) for prefix in ("files/simulation/", "files/object/", "files/reconstruction/")):
         lines.append("This packet has no 3D files yet.")
     else:
+        if has(SIMULATION_STAGE):
+            lines.append(f"- `{SIMULATION_STAGE}`: open this one. It places the room, its collision geometry and the "
+                         "job's object where the simulation puts them, in metres.")
         if has("files/simulation/team-scene/"):
             lines.append("- `files/simulation/team-scene/`: OpenUSD for NVIDIA Isaac Sim. Blueprint runs these in "
                          "Isaac Sim 6.0.1 (NGC image). A `scene_appearance.usdc` holds the room's look as a ParticleField "
@@ -1345,14 +1344,17 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
                 break
     _bind_inputs(inputs, context, team_record, plan)
     copies = _reconstruction(capture_dir, base_scene, pull) + _packet_files(inputs, plan_dir)
+    stage = _stage_rows(plan, plan_dir, copies)
     members = _configured_members(inputs.configured_scene_dir)
     contract = _mapping(team_record).get("task_success_contract")
     criteria = _mapping(contract).get("criteria") if isinstance(contract, Mapping) else None
     written_files = [row[2] for row in copies] + [row[2] for row in members]
     written_files += [f"files/video/video{video.suffix.lower()}"] if video is not None else []
     written_files += ["files/task/success_rule.json"] if isinstance(criteria, Mapping) else []
+    written_files += [SIMULATION_STAGE] if stage is not None else []
     clips = sum(1 for path in written_files if path.startswith("files/early-trial/clips/"))
-    simulation = any(path.startswith(("files/simulation/", "files/object/")) for path in written_files)
+    # The simulation is in the packet only with its composed stage: loose USD files do not say where anything sits.
+    simulation = stage is not None
     reconstruction = any(path.startswith("files/reconstruction/") for path in written_files)
     prep = _mapping(preparation)
     kind = kind_of_job(preparation, context)
@@ -1448,6 +1450,13 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info) as stream, target.open("wb") as handle:
                 shutil.copyfileobj(stream, handle)
+        if stage is not None:
+            from .scene_package_stage import StageRefused, write_stage
+            try:
+                write_stage(packet / SIMULATION_STAGE, stage[0], axis=stage[1])
+            except StageRefused as exc:
+                raise JobPacketRefused("job_packet_simulation_not_composed", f"{SIMULATION_STAGE}: the {exc.role or 'scene'} "
+                                       "part could not be placed") from exc
         sound = None
         if video is not None:
             target = packet / "files" / "video" / f"video{video.suffix.lower()}"
@@ -1456,6 +1465,7 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
         _scan_packet(packet, _secrets(capture_dir, context, pull))
         listed = []
         for relative in sorted([*written, *(row[2] for row in copies), *(row[2] for row in members),
+                                *([SIMULATION_STAGE] if stage is not None else []),
                                 *([f"files/video/video{video.suffix.lower()}"] if video is not None else [])]):
             path = packet / relative
             listed.append({"path": relative, "size": path.stat().st_size, "sha256": _sha256(path)})
