@@ -2,6 +2,7 @@
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/owner_approved_deletion.py
+#   src/blueprint_pipeline/website_scene_workspace_references.py
 #   deploy/owner-approved-deletions/2026-11-04-arena-scratch.json
 #   deploy/owner-approved-deletions/held/2026-11-04-authority-ended-scenes.json
 #   deploy/owner-approved-deletions/2026-11-04-controlled-policy-integration.json
@@ -749,7 +750,7 @@ def _privacy_scene_named_by_a_binding(tmp_path, host):
     # A development website source registration nobody claims any more, as on the host: the retention
     # checks let it go, and the live-state scan sees that it still names the workspace.
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-    from blueprint_pipeline.website_scene_workspace_retention import REGISTRATION_SCHEMA
+    from blueprint_pipeline.website_scene_workspace_references import REGISTRATION_SCHEMA
 
     scene = _authority_ended_scene(tmp_path, host)
     registration = {"schema_version": REGISTRATION_SCHEMA, "request_digest": "sha256:" + "a" * 64,
@@ -931,6 +932,31 @@ def test_the_journal_names_each_refused_path_its_reasons_and_naming_files_but_no
     assert [row["unreadable"] for row in rows if "unreadable" in row] == [{"path": str(broken), "code": "not_json"}]
     assert {row["refused"]["path"] for row in rows if "refused" in row} == {str(folder), str(other)}
     assert summary["reference_scan"] == "incomplete"
+
+
+def test_the_apply_journal_names_a_file_that_went_malformed_after_the_plan(host, monkeypatch, capsys):
+    folder = host.folder("arena-launch-r1")
+    naming = host.write(host.etc / "task-evaluation-launch-profiles" / "p.json",
+                        {"allocator": {"argv": ["run", "--input=/elsewhere/job"]}})
+    manifest = host.manifest([host.folder_entry(folder)])
+    assert host.plan(manifest)["eligible_count"] == 1
+    naming.write_text('{"allocator": {"argv": [', encoding="utf-8")
+    real_apply = oad.apply_manifest
+    # main() applies with production roots; run this host's apply instead, as the unit would print it.
+    monkeypatch.setattr(oad, "apply_manifest", lambda path, **_: real_apply(
+        manifest, report_root=host.reports, settings=host.settings, ack=oad.APPLY_ACK, now=lambda: APPROVED_EPOCH + 120))
+    monkeypatch.setenv(oad.QUEUE_ROOTS_ENV, str(host.control / "queue"))
+
+    assert oad.main(["apply", "--ack", oad.APPLY_ACK, "--manifest-dir", str(manifest.parent)]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    rows = [json.loads(line) for line in lines if line.startswith('{"manifest_id"')]
+    summary = json.loads("\n".join(lines[len(rows):]))["manifests"][0]
+    assert [row["unreadable"] for row in rows if "unreadable" in row] == [{"path": str(naming), "code": "not_json"}]
+    assert [row["refused"] for row in rows if "refused" in row] == [{
+        "path": str(folder), "reasons": ["reference_scan_incomplete"], "named_by": [], "named_by_released_code": []}]
+    assert (summary["reference_scan"], summary["unreadable_count"], summary["deleted_count"]) == ("incomplete", 1, 0)
+    assert folder.is_dir()
 
 
 def test_someone_elses_malformed_binding_or_queue_file_never_keeps_a_privacy_deletion(tmp_path, host):

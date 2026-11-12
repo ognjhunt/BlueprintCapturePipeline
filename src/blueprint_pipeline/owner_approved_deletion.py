@@ -1149,6 +1149,9 @@ def apply_manifest(manifest_path: Path, *, report_root: Path, settings: Settings
         "deleted_count": sum(1 for row in outcomes if row["outcome"] == "deleted"),
         "deleted_apparent_bytes": sum(row.get("apparent_bytes", 0) for row in outcomes if row["outcome"] == "deleted"),
         "outcome_counts": _outcome_counts(outcomes), "outcomes": outcomes,
+        # The apply-time scan, as the plan carries its own: the journal is the operator's only view of
+        # which file to repair when the scan went incomplete after the plan.
+        "reference_scan": live.summary(),
     }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     _publish(directory / f"apply-{int(observed_at)}.json", result)
@@ -1274,7 +1277,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = apply_manifest(path, report_root=args.report_root, settings=settings, ack=args.ack)
                 summaries.append({**{key: result[key] for key in ("manifest_id", "result_digest", "deleted_count",
                                                                   "deleted_apparent_bytes", "outcome_counts")},
-                                  **_journal(result["manifest_id"], result.get("outcomes") or [], {})})
+                                  **_journal(result["manifest_id"], result.get("outcomes") or [],
+                                             result.get("reference_scan") or {})})
         except OwnerApprovedDeletionError as error:
             failed = True
             summaries.append({"manifest": path.name, "error": str(error)})

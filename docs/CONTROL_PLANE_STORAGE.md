@@ -1199,9 +1199,10 @@ Nothing runs it on a timer. An operator starts two oneshot units by hand:
    scans), removes it without following links, and rewrites the receipt as
    `deleted`. A run that stopped after the rename is finished by the next apply;
    one that stopped before it starts over. Each run also writes
-   `apply-<epoch>.json` with every path's outcome. A path it does not delete
-   because a check refused it gets a `skipped` receipt with its `reasons`,
-   `named_by` and, for an incomplete scan, `reference_scan_unreadable`.
+   `apply-<epoch>.json` with every path's outcome and its own fresh
+   `reference_scan`. A path it does not delete because a check refused it gets a
+   `skipped` receipt with its `reasons`, `named_by` and, for an incomplete scan,
+   `reference_scan_unreadable`.
 
 When a folder is refused as `named_by_live_state`, the folder is still in use
 as far as the host can tell, even when what names it is old, revoked or
