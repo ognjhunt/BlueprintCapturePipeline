@@ -7,7 +7,8 @@ be in the output). This scan then runs over the written output, as the proof, an
 one holds something that says who or where the site is, where Blueprint keeps things, or how to reach it. A finding
 names the file, the kind and where; it never repeats what matched.
 
-The one limit: numeric payload (pixel data, an image's coding tables, numeric arrays in a layer) is written as read
+The one limit: numeric payload (pixel data, an image's coding tables, palette and transparency tables, numeric
+arrays in a layer) is written as read
 and is not searched as text. These files come from Blueprint's own tools and from asset tools, never from a person
 typing; the scan guards against what tools write by accident (metadata, comments, names, paths, links), not against
 text deliberately encoded as numbers.

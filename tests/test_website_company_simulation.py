@@ -1873,3 +1873,98 @@ def test_a_real_paletted_texture_still_publishes(job):
 @pytest.mark.parametrize("before", [b"A", b"7", b" ", b"\x00", b"\xff"])
 def test_a_fixed_link_scheme_is_found_in_raw_bytes_whatever_byte_precedes_it(scheme, before):
     assert scan.scan_stream(io.BytesIO(b"\x01\x02" + before + scheme + b"\x03"), [], text=False) is not None
+
+
+# --- round 6: the image data inflates to exactly the size its header calls for ---------------------------------
+
+def _zlib_stored(*blocks: bytes) -> bytes:
+    body = b"".join(bytes([1 if index == len(blocks) - 1 else 0]) + struct.pack("<HH", len(block), 0xFFFF ^ len(block))
+                    + block for index, block in enumerate(blocks))
+    return b"\x78\x01" + body + struct.pack(">I", zlib.adler32(b"".join(blocks)))
+
+
+def test_image_data_with_text_after_the_rows_inside_one_stream_refuses_end_to_end(job):
+    data = (b"\x89PNG\r\n\x1a\n" + _ihdr() + _png_chunk(b"IDAT", _zlib_stored(b"\x00\x80\x80\x80", R4_PLANT))
+            + _png_chunk(b"IEND", b""))
+    _texture_job(job, "wood.png", data)
+    world = World(job)
+    assert world.publish() == {"status": "refused", "reason": "website_company_simulation_file_kind_not_shipped",
+                               "detail": "scene_appearance a PNG that cannot be read chunk by chunk"}
+    assert world.archived == [] and not _package(job).exists()
+
+
+@pytest.mark.parametrize("case", ["one_byte_short", "one_byte_long", "bad_pair", "bad_interlace", "bad_filter",
+                                  "bomb"])
+def test_image_data_that_is_not_exactly_the_image_size_or_an_undefined_header_refuses(case):
+    from blueprint_pipeline import outbound_file_writer as writer
+    if case == "one_byte_short":
+        data = _png_with(b"", idat=zlib.compress(b"\x00\x80\x80"))
+    elif case == "one_byte_long":
+        data = _png_with(b"", idat=zlib.compress(b"\x00\x80\x80\x80\x80"))
+    elif case == "bomb":
+        data = _png_with(b"", idat=zlib.compress(b"\x00" * (64 << 20)))
+    else:
+        header = {"bad_pair": struct.pack(">IIBBBBB", 1, 1, 4, 2, 0, 0, 0),
+                  "bad_interlace": struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 2),
+                  "bad_filter": struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 1, 0)}[case]
+        data = (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header) + _png_chunk(b"IDAT", zlib.compress(b"\x00\x80\x80\x80"))
+                + _png_chunk(b"IEND", b""))
+    with pytest.raises(writer.WriteRefused, match="a PNG that cannot be read chunk by chunk"):
+        writer.png_bytes(data)
+
+
+def _adam7_png(width: int, height: int, colour: int = 2, depth: int = 8) -> bytes:
+    """A hand-built Adam7 image: each pass's rows (filter byte 0, then packed pixels of a varying value)."""
+    from blueprint_pipeline import outbound_file_writer as writer
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colour]
+    rows = bytearray()
+    for index, (x, y, dx, dy) in enumerate(writer._ADAM7):
+        columns = (width - x + dx - 1) // dx if width > x else 0
+        count = (height - y + dy - 1) // dy if height > y else 0
+        if not columns or not count:
+            continue
+        for row in range(count):
+            rows += b"\x00" + bytes(((index * 37 + row * 11 + byte) % 251)
+                                    for byte in range((columns * depth * channels + 7) // 8))
+    header = struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, 1)
+    return (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header) + _png_chunk(b"IDAT", zlib.compress(bytes(rows)))
+            + _png_chunk(b"IEND", b""))
+
+
+def _round6_images() -> dict[str, bytes]:
+    import numpy as np
+    from PIL import Image
+    rng = np.random.default_rng(5)
+
+    def encode(image, **options):
+        buffer = io.BytesIO()
+        image.save(buffer, "PNG", **options)
+        return buffer.getvalue()
+    rgb = Image.fromarray(rng.integers(0, 255, (13, 7, 3), dtype=np.uint8), "RGB")
+    images = {"16-bit": encode(Image.fromarray(rng.integers(0, 65535, (9, 5), dtype=np.uint16))),
+              "rgba": encode(rgb.convert("RGBA")),
+              "one_by_one": encode(Image.new("RGB", (1, 1), (1, 2, 3))),
+              "grey_trns": encode(Image.fromarray(rng.integers(0, 255, (6, 11), dtype=np.uint8), "L"), transparency=5)}
+    for bits, colours in ((1, 2), (2, 4), (4, 16), (8, 200)):
+        palette = rgb.convert("P", palette=Image.ADAPTIVE, colors=colours)
+        images[f"paletted_{bits}_bit"] = encode(palette, bits=bits, transparency=1)
+    for width in range(1, 10):
+        for height in (1, 3, 8, 9):
+            images[f"adam7_{width}x{height}"] = _adam7_png(width, height)
+    images["adam7_grey_1_bit_5x5"] = _adam7_png(5, 5, colour=0, depth=1)
+    images["adam7_rgba_16_bit_6x7"] = _adam7_png(6, 7, colour=6, depth=16)
+    return images
+
+
+@pytest.mark.parametrize("label", ["16-bit", "rgba", "one_by_one", "grey_trns", "paletted_1_bit", "paletted_2_bit",
+                                   "paletted_4_bit", "paletted_8_bit", "adam7_grey_1_bit_5x5", "adam7_rgba_16_bit_6x7",
+                                   *[f"adam7_{w}x{h}" for w in range(1, 10) for h in (1, 3, 8, 9)]])
+def test_real_and_interlaced_pngs_are_written_with_identical_pixels(label):
+    import numpy as np
+    from PIL import Image
+    from blueprint_pipeline import outbound_file_writer as writer
+    data = _round6_images()[label]
+    written = writer.png_bytes(data)
+    with Image.open(io.BytesIO(data)) as before, Image.open(io.BytesIO(written)) as after:
+        assert before.mode == after.mode and before.size == after.size
+        assert np.array_equal(np.asarray(before), np.asarray(after))

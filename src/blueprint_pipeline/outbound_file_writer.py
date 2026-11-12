@@ -14,7 +14,7 @@ shared scan (``outbound_file_scan``) then runs over the output as the proof.
 | USDZ | member by member | a new stored archive: each member written by its kind above, names checked, 64-byte aligned data with zero-filled padding, fixed times, no comment, no other extra field | the archive comment, extra fields, any member that is not a USD layer, a PNG or a JPEG (refused) |
 
 Pixels are unchanged (PNG and JPEG are not re-encoded). The one limit: numeric payload (pixel data, an image's
-coding tables, numeric arrays in a layer) is written as read and is not searched as text. These files come from
+coding tables, palette and transparency tables, numeric arrays in a layer) is written as read and is not searched as text. These files come from
 Blueprint's own tools and from asset tools, never from a person typing; the scan guards against what tools write
 by accident (metadata, comments, names, paths, links), not against text deliberately encoded as numbers.
 """
@@ -72,11 +72,38 @@ def _png_chunk_fits(kind: bytes, body: bytes, header: bytes, palette_entries: in
     return True  # IDAT: checked as one stream below
 
 
+#: The bit depths each colour type allows, and its channels.
+_PNG_DEPTHS = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: (8, 16)}
+_PNG_CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+#: Adam7: each pass's (first column, first row, column step, row step).
+_ADAM7 = ((0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2))
+
+
+def png_filtered_size(header: bytes) -> int | None:
+    """The exact length of the inflated image data an IHDR calls for (a filter byte, then the packed row, for
+    every row of every pass), or None for a header whose size cannot be computed (an illegal colour type and bit
+    depth pair, a compression, filter or interlace method that is not defined, a zero side)."""
+    width, height, depth, colour, compression, filtering, interlace = struct.unpack(">IIBBBBB", header)
+    if (depth not in _PNG_DEPTHS.get(colour, ()) or compression or filtering or interlace not in (0, 1)
+            or not width or not height):
+        return None
+    bits = depth * _PNG_CHANNELS[colour]
+
+    def rows(columns: int, count: int) -> int:
+        return 0 if not columns or not count else count * (1 + (columns * bits + 7) // 8)
+    if interlace == 0:
+        return rows(width, height)
+    return sum(rows((width - x + dx - 1) // dx if width > x else 0, (height - y + dy - 1) // dy if height > y else 0)
+               for x, y, dx, dy in _ADAM7)
+
+
 def png_bytes(data: bytes) -> bytes:
     """The PNG rewritten from its kept chunks, or ``WriteRefused``.
 
     Each kept chunk must have the length its type allows, and the image data (IDAT, joined) must be exactly one
-    complete compressed stream: no byte may follow its end. So no kept chunk can carry free text.
+    complete compressed stream (no byte may follow its end) that inflates to exactly the filtered image size the
+    header calls for (``png_filtered_size``). So a kept chunk holds only fixed-length fields and numeric payload
+    (pixel rows, palette and transparency tables), never free text after or beside them.
     """
     refuse = WriteRefused("a PNG that cannot be read chunk by chunk")
     if not data.startswith(PNG_SIGNATURE):
@@ -95,7 +122,7 @@ def png_bytes(data: bytes) -> bytes:
         if zlib.crc32(kind + body) & 0xFFFFFFFF != crc or (not header and kind != b"IHDR"):
             raise refuse
         if kind == b"IHDR":
-            if header or len(body) != 13:
+            if header or len(body) != 13 or png_filtered_size(body) is None:
                 raise refuse
             header = body
         if kind in PNG_KEPT:
@@ -114,16 +141,21 @@ def png_bytes(data: bytes) -> bytes:
             break  # nothing after IEND is written
     if not ended or not image_data:
         raise refuse
-    stream = zlib.decompressobj()
+    expected = png_filtered_size(header)
+    stream, inflated = zlib.decompressobj(), 0
     try:
         for part in image_data:
-            while part:  # bounded output per step: a small stream that inflates hugely is read in pieces
-                stream.decompress(part, 1 << 24)
+            while part:
+                # Bounded steps, and never more than one byte past the size the header calls for: a stream that
+                # inflates to more (rows, then text; or a decompression bomb) is refused as soon as it shows.
+                inflated += len(stream.decompress(part, min(1 << 24, expected - inflated + 1)))
+                if inflated > expected:
+                    raise refuse
                 part = stream.unconsumed_tail
     except zlib.error:
         raise refuse from None
-    if not stream.eof or stream.unused_data:
-        raise refuse  # a compressed stream that does not end, or bytes after its end
+    if not stream.eof or stream.unused_data or inflated != expected:
+        raise refuse  # a stream that does not end, bytes after its end, or not exactly the image's size
     written = b"".join(out)
     _decodes(written, "a PNG that cannot be read chunk by chunk")
     return written

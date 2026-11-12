@@ -139,7 +139,8 @@ PLY's header, a GLB's JSON) is read for ids, keys, paths, links, email and IP
 addresses and the site's identity; the raw bytes of binary files (the video,
 clips, the PLY and GLB bodies) for the job's long ids and keys, long-prefix
 tokens, links and long host paths. The one limit: numeric payload (pixels,
-coding tables, numeric arrays) is not searched as text. Textures lose their colour
+coding tables, palette and transparency tables, numeric arrays) is not searched
+as text. Textures lose their colour
 profile and their EXIF, so a photo that relied on an EXIF rotation shows
 unrotated. The site's identity is its name, organisation, typed
 address, contact and submitter names, email and phone. It is matched as whole
